@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An explicit SageAttention request on a GPU its installed kernel does not serve.
-
-diffusers accepts ``sage`` at set time on any CUDA card with a new enough package, and the kernel then
-raises "Unsupported CUDA architecture" on every forward (thu-ml 2.2.0 on sm75 / sm100). Which cards
-are served depends on the build, so the gate asks the kernel. Hermetic: the probe itself is stubbed.
-"""
+"""Explicit ``sage`` on a GPU the installed kernel does not serve falls back to native. Probe stubbed."""
 
 from __future__ import annotations
 
@@ -85,7 +80,6 @@ def test_sage_on_a_card_its_kernel_rejects_falls_back_to_native(monkeypatch):
 
 
 def test_sage_stays_engaged_where_its_kernel_runs(monkeypatch):
-    # A build whose dispatcher serves this card (a community build on sm100 or sm75) must keep it.
     _stub_probe(monkeypatch, "")
     t = _Transformer()
     assert (
@@ -107,7 +101,6 @@ def test_an_unanswerable_probe_keeps_the_request(monkeypatch, exc):
         == "sage"
     )
     assert t.calls == ["sage"]
-    # Not an answer, so not memoised: the next load asks again.
     assert att._sage_kernel_runs(_target()) is None and len(seen) == 2
 
 
@@ -171,8 +164,6 @@ def test_run_probe_raises_when_the_package_is_missing(monkeypatch):
 
 
 def test_bare_cuda_is_keyed_by_the_card_pinned_on_this_thread(monkeypatch):
-    # Video loads pin the selected ordinal with set_device and pass device="cuda"; on a mixed host a
-    # verdict for one card must not be reused for another.
     seen: list = []
     current = {"card": 0}
     monkeypatch.setattr(

@@ -274,17 +274,13 @@ def _cudnn_attention_supported() -> bool:
     return have is None or have >= (8, 0)
 
 
-# SageAttention picks its kernel by an exact CUDA arch match and raises "Unsupported CUDA architecture" for any other
-# card, but the set depends on the build: the reference 2.2.0 dispatch covers sm80/86/89/90/120 while widely used
-# community builds add sm75, sm87 and sm100. diffusers checks only the package version at set time, so on an unsupported
-# card the backend sets fine and then fails every generation. A capability list would be wrong for one build or the
-# other, so ask the installed kernel once per device and dtype: (device, dtype) -> "" when it ran, else its error.
+# sageattn dispatches on an exact arch match whose set varies by build (2.2.0: sm80/86/89/90/120; community builds add
+# sm75/87/100) and diffusers only checks the version, so ask the kernel. (device, dtype) -> "" or its error.
 _SAGE_PROBE_CACHE: dict[tuple[str, str], str] = {}
 
 
 def _run_sage_probe(device: str, dtype: Any) -> str:
-    """Run one tiny ``sageattn`` on ``device``: "" when it ran, else the error it raised. Raises
-    when the question cannot be asked (package not importable, no device, out of memory)."""
+    """Empty when a tiny ``sageattn`` ran on ``device``, else its error; raises when unaskable (import, device, OOM)."""
     import torch
     from sageattention import sageattn
 
@@ -296,26 +292,24 @@ def _run_sage_probe(device: str, dtype: Any) -> str:
         torch.cuda.synchronize(device)
     except torch.cuda.OutOfMemoryError:
         raise
-    except Exception as exc:  # noqa: BLE001 - "Unsupported CUDA architecture" / no kernel image is the answer
+    except Exception as exc:  # noqa: BLE001
         return f"{type(exc).__name__}: {exc}"
     return ""
 
 
 def _indexed_cuda_device(device: str) -> str:
-    """Bare "cuda" as the card it means on this thread. Callers pin a selected ordinal with
-    ``set_device`` and pass the un-indexed name, so the memo must not carry one card's answer to another."""
+    """Bare "cuda" -> the card pinned on this thread, so one card's verdict is never reused for another."""
     if device != "cuda":
         return device
     try:
         import torch
         return f"cuda:{torch.cuda.current_device()}"
-    except Exception:  # noqa: BLE001 - unreadable: keep the bare name
+    except Exception:  # noqa: BLE001
         return device
 
 
 def _sage_kernel_runs(target: Any, logger: Any = None) -> Optional[bool]:
-    """True when SageAttention runs on ``target``, False when its kernel raised, None when the probe
-    could not be asked. Only False blocks, so an unanswerable probe keeps the requested backend."""
+    """False only when the kernel raised; None (unaskable, not cached) keeps the requested backend."""
     device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
     if not device.startswith("cuda"):
         return None
@@ -326,7 +320,7 @@ def _sage_kernel_runs(target: Any, logger: Any = None) -> Optional[bool]:
     if error is None:
         try:
             error = _run_sage_probe(device, dtype)
-        except Exception:  # noqa: BLE001 - not importable / no device / OOM: not an answer, not cached
+        except Exception:  # noqa: BLE001
             return None
         error = _SAGE_PROBE_CACHE.setdefault(key, error)
     if error and logger is not None:
