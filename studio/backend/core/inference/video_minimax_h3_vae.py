@@ -1178,10 +1178,22 @@ def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
     return True
 
 
+def _audio_vae_search_gains_nothing() -> bool:
+    """sm80+ (TF32 convs): the heuristic pick matched the searched one on A100, B200 and RTX PRO 6000. On a T4 the
+    search still won 17-19% per call, so pre-Ampere cards, and any failed probe, keep it."""
+    try:
+        import torch
+        return torch.cuda.get_device_capability()[0] >= 8
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def install_audio_vae_without_cudnn_benchmark(audio_vae: Any) -> bool:
-    """Hold ``cudnn.benchmark`` off for the audio VAE's decode and encode: the search gains its 1D convs nothing at
-    steady state but costs host time and huge workspaces on every new shape per thread. Idempotent."""
+    """Hold ``cudnn.benchmark`` off for the audio VAE's decode and encode where the search gains its 1D convs nothing
+    at steady state; it costs host time and huge workspaces on every new shape per thread. Idempotent."""
     if audio_vae is None or getattr(audio_vae, "_unsloth_no_cudnn_benchmark", False):
+        return False
+    if not _audio_vae_search_gains_nothing():
         return False
 
     from .diffusion_speed import cudnn_benchmark_scope

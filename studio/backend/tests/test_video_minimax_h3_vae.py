@@ -840,6 +840,11 @@ def test_the_h3_load_holds_cudnn_benchmark_off_for_the_audio_decode_only_when_it
     )
 
 
+@pytest.fixture
+def _ampere(monkeypatch):
+    monkeypatch.setattr(H, "_audio_vae_search_gains_nothing", lambda: True)
+
+
 class _AudioVAE:
     def __init__(self):
         self.seen = []
@@ -854,7 +859,7 @@ class _AudioVAE:
 
 
 @pytest.mark.parametrize("before", [True, False])
-def test_audio_decode_runs_without_cudnn_benchmark_and_restores_it(before):
+def test_audio_decode_runs_without_cudnn_benchmark_and_restores_it(before, _ampere):
     from core.inference import diffusion_speed as S
     prev = torch.backends.cudnn.benchmark
     try:
@@ -873,7 +878,7 @@ def test_audio_decode_runs_without_cudnn_benchmark_and_restores_it(before):
         torch.backends.cudnn.benchmark = prev
 
 
-def test_audio_decode_scope_restores_after_a_raising_decode():
+def test_audio_decode_scope_restores_after_a_raising_decode(_ampere):
     prev = torch.backends.cudnn.benchmark
 
     class _Raises:
@@ -891,12 +896,12 @@ def test_audio_decode_scope_restores_after_a_raising_decode():
         torch.backends.cudnn.benchmark = prev
 
 
-def test_audio_decode_scope_ignores_missing_decoders():
+def test_audio_decode_scope_ignores_missing_decoders(_ampere):
     assert not H.install_audio_vae_without_cudnn_benchmark(None)
     assert not H.install_audio_vae_without_cudnn_benchmark(types.SimpleNamespace(decode = None))
 
 
-def test_audio_decode_scope_wraps_a_decode_only_vae():
+def test_audio_decode_scope_wraps_a_decode_only_vae(_ampere):
     prev = torch.backends.cudnn.benchmark
     seen = []
 
@@ -916,7 +921,7 @@ def test_audio_decode_scope_wraps_a_decode_only_vae():
 
 
 @pytest.mark.parametrize("mid", [True, False])
-def test_cudnn_benchmark_written_mid_decode_survives_it(mid):
+def test_cudnn_benchmark_written_mid_decode_survives_it(mid, _ampere):
     from core.inference import diffusion_speed as S
 
     seen = {}
@@ -944,7 +949,7 @@ def test_cudnn_benchmark_written_mid_decode_survives_it(mid):
         torch.backends.cudnn.benchmark = prev
 
 
-def test_enabling_cudnn_benchmark_mid_decode_lands_after_it(monkeypatch):
+def test_enabling_cudnn_benchmark_mid_decode_lands_after_it(monkeypatch, _ampere):
     from core.inference import diffusion_speed as S
 
     monkeypatch.setattr("core._torchao_stub._module_is_rocm", lambda torch: False)
@@ -966,6 +971,30 @@ def test_enabling_cudnn_benchmark_mid_decode_lands_after_it(monkeypatch):
         assert torch.backends.cudnn.benchmark is True
     finally:
         torch.backends.cudnn.benchmark = prev
+
+
+@pytest.mark.parametrize(
+    "capability, installs",
+    [
+        ((7, 5), False),
+        ((8, 0), True),
+        ((8, 9), True),
+        ((10, 0), True),
+        ((12, 0), True),
+        (RuntimeError("no GPU"), False),
+    ],
+)
+def test_the_audio_vae_keeps_the_search_before_ampere(monkeypatch, capability, installs):
+    def probe(device = None):
+        if isinstance(capability, Exception):
+            raise capability
+        return capability
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", probe)
+    vae = _AudioVAE()
+    stock = vae.decode
+    assert H.install_audio_vae_without_cudnn_benchmark(vae) is installs
+    assert (vae.decode == stock) is not installs
 
 
 def test_cudnn_benchmark_scopes_that_close_out_of_order():
