@@ -12,6 +12,7 @@ import {
   ChevronDownStandardIcon,
   ChevronUpStandardIcon,
 } from "@/lib/chevron-icons";
+import { useSnappedPaddingRef } from "@/lib/snap-padding";
 import { cn } from "@/lib/utils";
 import { useDialogPortalContainer } from "@/components/ui/dialog";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -115,14 +116,17 @@ function SelectContent({
   position = "popper",
   align = "center",
   container,
+  ref,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Content> & {
   container?: HTMLElement | null;
 }) {
   const dialogContainer = useDialogPortalContainer();
+  const snappedRef = useSnappedPaddingRef(ref);
   return (
     <SelectPrimitive.Portal container={container ?? dialogContainer ?? undefined}>
       <SelectPrimitive.Content
+        ref={snappedRef}
         data-slot="select-content"
         data-align-trigger={position === "item-aligned"}
         className={cn(

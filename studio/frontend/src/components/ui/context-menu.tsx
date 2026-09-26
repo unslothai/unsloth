@@ -8,6 +8,7 @@ import type * as React from "react";
 
 import { MenuChevronRightIcon } from "@/lib/chevron-icons";
 import { MenuTickIcon } from "@/lib/tick-icon";
+import { useSnappedPaddingRef } from "@/lib/snap-padding";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -65,13 +66,16 @@ function ContextMenuRadioGroup({
 
 function ContextMenuContent({
   className,
+  ref,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left";
 }) {
+  const snappedRef = useSnappedPaddingRef(ref);
   return (
     <ContextMenuPrimitive.Portal>
       <ContextMenuPrimitive.Content
+        ref={snappedRef}
         data-slot="context-menu-content"
         className={cn(
           "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] bg-popover text-popover-foreground min-w-48 max-w-[calc(100vw-32px)] rounded-2xl p-1 shadow-2xl ring-1 duration-100 z-50 max-h-(--radix-context-menu-content-available-height) origin-(--radix-context-menu-content-transform-origin) overflow-x-hidden overflow-y-auto",
@@ -136,14 +140,17 @@ function ContextMenuSubTrigger({
 
 function ContextMenuSubContent({
   className,
+  ref,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.SubContent>) {
+  const snappedRef = useSnappedPaddingRef(ref);
   return (
     // Portaled like DropdownMenuSubContent, for the same reason: rendered inline, the fixed
     // popper wrapper sits inside ContextMenuContent, whose open animation transforms it. That
     // makes it the containing block and its overflow clips the submenu away.
     <ContextMenuPrimitive.Portal>
       <ContextMenuPrimitive.SubContent
+        ref={snappedRef}
         data-slot="context-menu-sub-content"
         className={cn(
           "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 bg-popover text-popover-foreground min-w-32 max-w-[calc(100vw-32px)] rounded-md border p-1 shadow-lg duration-100 z-50 origin-(--radix-context-menu-content-transform-origin) overflow-hidden",
