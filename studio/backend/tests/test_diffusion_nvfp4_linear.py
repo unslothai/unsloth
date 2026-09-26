@@ -488,7 +488,7 @@ def test_a_whole_model_artifact_that_baked_nothing_says_the_flag_is_set():
 
 
 def test_an_fp32_layer_runs_and_answers_in_fp32():
-    """Wan2.2's fp32 time embedder feeds fp32, which ``fp4_quantize`` rejects."""
+    """Wan2.2's fp32 time embedder feeds FP32 activations, which ``fp4_quantize`` rejects."""
     torch = _cuda_or_skip()
     import torch.nn as nn
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig

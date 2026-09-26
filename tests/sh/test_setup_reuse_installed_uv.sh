@@ -281,7 +281,7 @@ done
 # Source contract: the reuse sits between the PATH probe and the download, in both shells.
 _probe_at=$(grep -n '^if command -v uv &>/dev/null; then$' "$SETUP_SH" | head -1 | cut -d: -f1)
 _reuse_at=$(grep -n '^elif _setup_find_installed_uv; then$' "$SETUP_SH" | head -1 | cut -d: -f1)
-_install_at=$(grep -n 'if _setup_install_uv_pinned; then' "$SETUP_SH" | head -1 | cut -d: -f1)
+_install_at=$(grep -n 'if _setup_install_uv_pinned[ ;]' "$SETUP_SH" | head -1 | cut -d: -f1)
 if [ -n "$_probe_at" ] && [ -n "$_reuse_at" ] && [ -n "$_install_at" ] \
    && [ "$_probe_at" -lt "$_reuse_at" ] && [ "$_reuse_at" -lt "$_install_at" ]; then
     ok "setup.sh reuses an installed uv before it downloads one"

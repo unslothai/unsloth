@@ -92,6 +92,10 @@ export const ptBR = {
     rateLimitedTitle: "Limite de requisições do Hugging Face atingido",
     rateLimitedBody:
       "Aguarde um momento e tente buscar {noun} novamente.",
+    modelScope: "ModelScope",
+    useModelScope: "Usar ModelScope",
+    useModelScopeHint: "Pesquise e baixe pelo ModelScope. Você pode voltar nas Configurações.",
+    useModelScopeFailed: "Não foi possível mudar para o ModelScope.",
     hfToken: {
       label: "Token do HF",
       saved: "Salvo",
@@ -122,6 +126,16 @@ export const ptBR = {
     shutdown: "Desligar",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Documentação",
+      keyboardShortcuts: "Atalhos de teclado",
+      whatsNew: "Novidades",
+      troubleshooting: "Solução de problemas",
+      systemStatus: "Status do sistema",
+      sendFeedback: "Enviar feedback",
+      about: "Sobre o Unsloth",
+    },
     find: {
       label: "Localizar na página",
       previous: "Ocorrência anterior",
@@ -229,8 +243,6 @@ export const ptBR = {
       organizeChats: "Organizar conversas",
       organizeProjects: "Organizar projetos",
       sortPinnedChats: "Ordenar conversas fixadas",
-      moveUp: "Mover para cima",
-      moveDown: "Mover para baixo",
     },
     dialog: {
       deleteChat: {
@@ -1047,6 +1059,19 @@ export const ptBR = {
           "Não foi possível carregar a configuração de inicialização no login.",
         saveError:
           "Não foi possível atualizar a configuração de inicialização no login.",
+      },
+      hub: {
+        source: "Origem dos modelos",
+        sourceDescription: "Onde o hub de modelos pesquisa e baixa. Escolha ModelScope se o Hugging Face estiver bloqueado ou lento na sua rede.",
+        sourceFallback: "Não foi possível iniciar o ModelScope, então o Hugging Face está em uso. Verifique os logs do Unsloth.",
+        sectionTitle: "Hub de modelos",
+        endpoint: "Endpoint do Hugging Face",
+        endpointDescription: "De onde os modelos e conjuntos de dados são baixados. Deixe vazio para usar huggingface.co ou informe um espelho como https://hf-mirror.com.",
+        datasetsServer: "Usar também nas prévias de conjuntos de dados",
+        datasetsServerDescription: "Enviar também as prévias de conjuntos de dados (HF_DATASETS_SERVER) para este endpoint. Ative só se o espelho oferecer esse serviço.",
+        invalidEndpoint: "Informe uma URL http(s) sem credenciais nem parâmetros. http simples só funciona com um endereço local.",
+        saveFailed: "Não foi possível salvar as configurações do hub.",
+        loadFailed: "Não foi possível carregar as configurações do hub.",
       },
       downloads: {
         sectionTitle: "Downloads",
