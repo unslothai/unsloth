@@ -330,6 +330,7 @@ jobs:
             tests/saving/test_fix_sentencepiece_tokenizer_guard.py \
             tests/saving/test_compressed_export_schemes.py \
             tests/saving/test_export_api_surface.py \
+            tests/saving/test_openvino_export.py \
             tests/saving/test_export_dispatch.py \
             tests/saving/test_imatrix_export.py \
             tests/saving/test_gguf_single_pass_export.py \
@@ -481,6 +482,7 @@ jobs:
             tests/saving/test_fix_sentencepiece_tokenizer_guard.py \
             tests/saving/test_compressed_export_schemes.py \
             tests/saving/test_export_api_surface.py \
+            tests/saving/test_openvino_export.py \
             tests/saving/test_export_dispatch.py \
             tests/saving/test_imatrix_export.py \
             tests/saving/test_gguf_single_pass_export.py \
