@@ -157,6 +157,35 @@ def grpo_config_fix_vllm_top_k(old_RLTrainer_source, old_RLConfig_source):
 RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_config_fix_vllm_top_k)
 
 
+def gkd_trainer_fix_liger_objective(function_name, function):
+    # Older TRL uses Liger's CE/JSD defaults and the generation temperature for its loss.
+    if function_name == "__init__":
+
+        def fix_loss(match):
+            kwargs = re.sub(
+                r"\btemperature\s*=\s*args\.temperature\b", "temperature = 1.0", match.group(1)
+            )
+            for name, value in (("weight_soft_loss", "1.0"), ("weight_hard_loss", "0.0")):
+                if not re.search(rf"\b{name}\s*=", kwargs):
+                    kwargs = re.sub(r"^(\s*)", rf"\1{name} = {value},\1", kwargs, count = 1)
+            return f"LigerFusedLinearJSDLoss({kwargs})"
+
+        function = re.sub(r"LigerFusedLinearJSDLoss\(([^()]*)\)", fix_loss, function)
+    elif function_name == "generate_on_policy_outputs":
+        # Keep upstream prompt masking when present; otherwise match the completion-only loss.
+        if not re.search(r"new_labels\s*\[\s*:\s*,\s*:", function):
+            function = re.sub(
+                r"(?m)^([ \t]*)new_labels\s*=\s*generated_tokens\.clone\(\)[ \t]*$",
+                r'\g<0>\n\1new_labels[:, : inputs["prompts"].shape[1]] = -100',
+                function,
+                count = 1,
+            )
+    return function
+
+
+RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_fix_liger_objective)
+
+
 def dpo_trainer_fix_columns(call_args, extra_args):
     if "model" in call_args and "train_dataset" in call_args:
         fix_dpo = (
