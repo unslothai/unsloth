@@ -94,14 +94,13 @@ def train(
     config_overrides: dict = None,
 ):
     """Launch training using the existing Unsloth training backend."""
+    config_overrides = config_overrides or {}
     try:
         cfg = load_config(config)
+        cfg.apply_overrides(**config_overrides)
     except (FileNotFoundError, ConfigError) as e:
         typer.echo(f"Error: {e}", err = True)
         raise typer.Exit(code = 2)
-
-    config_overrides = config_overrides or {}
-    cfg.apply_overrides(**config_overrides)
 
     # CLI/env tokens take precedence; guard against unresolved typer.Option.
     from typer.models import OptionInfo

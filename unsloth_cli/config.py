@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 class DataConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
 
     dataset: Optional[str] = None
     local_dataset: Optional[List[str]] = None
@@ -17,7 +17,7 @@ class DataConfig(BaseModel):
 
 
 class TrainingConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
 
     training_type: Literal["lora", "full"] = "lora"
     max_seq_length: int = 2048
@@ -38,7 +38,7 @@ class TrainingConfig(BaseModel):
 
 
 class LoraConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
 
     lora_r: int = 64
     lora_alpha: int = 16
@@ -55,7 +55,7 @@ class LoraConfig(BaseModel):
 
 
 class LoggingConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
 
     enable_wandb: bool = False
     wandb_project: str = "unsloth-training"
@@ -66,7 +66,7 @@ class LoggingConfig(BaseModel):
 
 
 class Config(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
 
     model: Optional[str] = None
     data: DataConfig = Field(default_factory = DataConfig)
@@ -76,16 +76,25 @@ class Config(BaseModel):
 
     def apply_overrides(self, **kwargs):
         """Apply CLI overrides by matching arg names to config fields."""
+        errors = []
         for key, value in kwargs.items():
             if value is None:
                 continue
-            if hasattr(self, key):
-                setattr(self, key, value)
-            else:
-                for section in (self.data, self.training, self.lora, self.logging):
-                    if hasattr(section, key):
-                        setattr(section, key, value)
-                        break
+            try:
+                if hasattr(self, key):
+                    setattr(self, key, value)
+                else:
+                    for section in (self.data, self.training, self.lora, self.logging):
+                        if hasattr(section, key):
+                            setattr(section, key, value)
+                            break
+            except ValidationError as error:
+                # validate_assignment checks each flag the way load_config checks the file.
+                flag = "--" + key.replace("_", "-")
+                for err in error.errors():
+                    errors.append(f"  - {flag}: {err.get('msg', 'invalid value')}")
+        if errors:
+            raise ConfigError("\n".join(["Invalid command line options:", *errors]))
 
     def model_kwargs(self, use_lora: bool, is_vision: bool) -> dict:
         """Return kwargs for trainer.prepare_model_for_training()."""
