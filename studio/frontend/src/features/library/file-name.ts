@@ -34,7 +34,9 @@ export function libraryFileName(item: {
   fileName?: string;
   textOnly?: boolean;
 }): string {
-  const extension = clean(item.textOnly ? "txt" : fileExtension(item.fileName ?? item.name));
+  // A text file chat stores whole (CSV, markdown, code) keeps its extension; extracted text is .txt.
+  const own = item.fileName ?? item.name;
+  const extension = clean(item.textOnly && !isTextAttachmentName(own) ? "txt" : fileExtension(own));
   let name = clean(item.name) || FALLBACK_STEM;
   if (extension && fileExtension(name) !== extension) name = `${name}.${extension}`;
   const [base, suffix] = splitName(name);
@@ -118,10 +120,9 @@ const SCRIPTABLE_TYPES = new Set([
   "application/xml",
 ]);
 
-export type EmbeddedBody = "image" | "pdf" | "audio" | "video";
+export type EmbeddedBody = "image" | "audio" | "video";
 
 export function embeddedBlobType(body: EmbeddedBody, serverType: string): string {
-  if (body === "pdf") return "application/pdf";
   const type = baseType(serverType);
   return type.startsWith(`${body}/`) && !SCRIPTABLE_TYPES.has(type) ? type : OPAQUE_TYPE;
 }

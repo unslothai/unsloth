@@ -29,6 +29,7 @@ import functools
 import hashlib
 import importlib
 import io
+import json
 import mimetypes
 import os
 import platform
@@ -98,6 +99,9 @@ def _item(
     model: Optional[dict] = None,
     archived: bool = False,
     fingerprint: Optional[str] = None,
+    pair_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> dict:
     return {
         "id": item_id,
@@ -112,6 +116,10 @@ def _item(
         "fileUrl": file_url,
         "threadId": thread_id,
         "threadTitle": thread_title,
+        # Origin links: compare pair, project, or training run.
+        "pairId": pair_id,
+        "projectId": project_id,
+        "runId": run_id,
         "textOnly": text_only,
         "model": model,
         "archived": archived,
@@ -416,10 +424,15 @@ def _attachment_items() -> list[dict]:
     from storage.studio_db import list_chat_attachments
 
     items = []
+    # One file on disk however many messages sent it, so disk usage counts each original once.
+    counted: set[str] = set()
     for attachment in list_chat_attachments():
         content_type = str(attachment.get("contentType") or "").split(";", 1)[0].strip().lower()
-        has_bytes = attachment.get("type") in ("image", "audio") or content_type.startswith(
-            ("image/", "audio/", "video/")
+        # A document sent with its original file (core.chat_originals) serves that file, not text.
+        has_bytes = (
+            attachment.get("type") in ("image", "audio")
+            or content_type.startswith(("image/", "audio/", "video/"))
+            or bool(attachment.get("hasOriginal"))
         )
         message_id, attachment_id = attachment["messageId"], attachment["id"]
         items.append(
@@ -434,8 +447,18 @@ def _attachment_items() -> list[dict]:
                 thread_id = attachment.get("threadId"),
                 thread_title = attachment.get("threadTitle"),
                 text_only = not has_bytes,
+                pair_id = attachment.get("pairId"),
             )
         )
+        # Disk usage: the extracted text in the database, plus the original the first time it appears.
+        sha256 = attachment.get("originalSha256")
+        if sha256:
+            text_bytes = attachment.get("textBytes") or 0
+            first = attachment.get("hasOriginal") and sha256 not in counted
+            items[-1]["storageBytes"] = text_bytes + (
+                (attachment.get("sizeBytes") or 0) if first else 0
+            )
+            counted.add(sha256)
     return items
 
 
@@ -559,6 +582,86 @@ def _tree_stats(path: Path) -> tuple[int, float, os.stat_result]:
     return total, newest, info
 
 
+_EXPORT_SUFFIX_RE = re.compile(r"[-_](gguf|adapter|merged|finetune)$", re.IGNORECASE)
+
+
+def _training_runs_by_dir() -> dict[str, str]:
+    """Folder name under outputs/ to the id of the newest training run that wrote it. A run that wrote
+    anywhere else is left out, so an external folder of the same name never claims a managed model.
+    A finished run outranks a running or failed one reusing the folder, which may have written nothing."""
+    from storage.studio_db import get_connection
+    from utils.paths.storage_roots import outputs_root, resolve_output_dir
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, output_dir FROM training_runs WHERE output_dir IS NOT NULL"
+            " ORDER BY status IN ('completed', 'stopped'), started_at"
+        ).fetchall()
+    except Exception:
+        logger.debug("library.training_runs_unavailable", exc_info = True)
+        return {}
+    finally:
+        conn.close()
+    root = Path(outputs_root()).resolve()
+    runs: dict[str, str] = {}
+    for row in rows:
+        try:
+            path = Path(resolve_output_dir(row["output_dir"])).resolve()
+        except (ValueError, OSError):
+            continue
+        if path.parent == root:
+            runs[path.name] = row["id"]
+    return runs
+
+
+def _export_metadata(path: str, root: Path) -> Optional[dict]:
+    """The export_metadata.json Studio writes beside an export, from the model up to its top folder."""
+    here = Path(path)
+    if not here.is_dir():
+        here = here.parent
+    while True:
+        meta = here / "export_metadata.json"
+        if meta.is_file():
+            try:
+                data = json.loads(meta.read_text(encoding = "utf-8-sig"))
+            except (OSError, ValueError):
+                return None
+            return data if isinstance(data, dict) else None
+        if here.parent == root or here == root or here.parent == here:
+            return None
+        here = here.parent
+
+
+def _model_run_id(path: str, origin: str, runs: dict[str, str]) -> Optional[str]:
+    """The training run a model came out of: its own folder under outputs/, or for an export the
+    checkpoint its metadata records. An older Studio export, with metadata but no checkpoint, falls
+    back to its folder name (``{run}/{checkpoint}``, ``{run}-GGUF``); a folder with no metadata
+    has no known origin."""
+    from utils.paths.storage_roots import exports_root, outputs_root
+
+    try:
+        outputs = Path(outputs_root()).resolve()
+        if origin == "training":
+            return runs.get(Path(path).resolve().relative_to(outputs).parts[0])
+        root = Path(exports_root()).resolve()
+        top = Path(path).resolve().relative_to(root).parts[0]
+        meta = _export_metadata(path, root)
+        if meta is None:
+            return None
+        source = meta.get("source_checkpoint")
+        if isinstance(source, str) and source:
+            return runs.get(Path(source).resolve().relative_to(outputs).parts[0])
+    except (ValueError, IndexError, OSError):
+        return None
+    while top and top not in runs:
+        stripped = _EXPORT_SUFFIX_RE.sub("", top)
+        if stripped == top:
+            break
+        top = stripped
+    return runs.get(top)
+
+
 def _model_items() -> list[dict]:
     from utils.models.model_config import (
         get_base_model_from_checkpoint,
@@ -575,6 +678,7 @@ def _model_items() -> list[dict]:
         (name, path, "exported", export_type, base_model)
         for name, path, export_type, base_model in scan_exported_models(str(exports_root()))
     )
+    runs = _training_runs_by_dir() if found else {}
     items = []
     for name, path, origin, model_type, base_model in found:
         stats_path = Path(path)
@@ -607,25 +711,39 @@ def _model_items() -> list[dict]:
                     "baseModel": base_model,
                 },
                 fingerprint = _fingerprint(info),
+                run_id = _model_run_id(path, origin, runs),
             )
         )
     return items
 
 
-def _sandbox_sessions() -> list[tuple[str, Optional[str], Optional[str]]]:
-    """(session id, thread id, title) for every chat or project that can own a sandbox."""
+class _SandboxSession(NamedTuple):
+    session_id: str
+    thread_id: Optional[str]
+    title: Optional[str]
+    pair_id: Optional[str] = None
+    project_id: Optional[str] = None
+
+
+def _sandbox_sessions() -> list[_SandboxSession]:
+    """Every chat or project that can own a sandbox."""
     from storage.studio_db import get_connection
 
     conn = get_connection()
     try:
         threads = conn.execute(
-            "SELECT id, title FROM chat_threads WHERE project_id IS NULL"
+            "SELECT id, title, pair_id FROM chat_threads WHERE project_id IS NULL"
         ).fetchall()
         projects = conn.execute("SELECT id, name, root_path FROM chat_projects").fetchall()
     finally:
         conn.close()
-    return [(row["id"], row["id"], row["title"]) for row in threads] + [
-        (f"{_PROJECT_SESSION_PREFIX}{row['id']}", None, row["name"])
+    return [
+        _SandboxSession(row["id"], row["id"], row["title"], pair_id = row["pair_id"])
+        for row in threads
+    ] + [
+        _SandboxSession(
+            f"{_PROJECT_SESSION_PREFIX}{row['id']}", None, row["name"], project_id = row["id"]
+        )
         for row in projects
         if _studio_project_root(row["root_path"])
     ]
@@ -785,7 +903,7 @@ def _sandbox_items() -> list[dict]:
 
     items = []
     generation = _LISTING.generation
-    for session_id, thread_id, title in _sandbox_sessions():
+    for session_id, thread_id, title, pair_id, project_id in _sandbox_sessions():
         try:
             directory = os.path.realpath(resolve_sandbox_workdir(session_id))
             names = _sandbox_listing_names(directory) if os.path.isdir(directory) else []
@@ -812,6 +930,8 @@ def _sandbox_items() -> list[dict]:
                     thread_id = thread_id,
                     thread_title = title,
                     fingerprint = _fingerprint(info),
+                    pair_id = pair_id,
+                    project_id = project_id,
                 )
             )
     return items
@@ -2024,7 +2144,12 @@ def delete_item(item_id: str, fingerprint: Optional[str] = None) -> bool:
     `fingerprint` it was listed with, a path-derived item is only deleted while it is that file;
     ItemChanged otherwise."""
     with _overlay_lock:
-        return _delete_item(item_id, fingerprint)
+        deleted = _delete_item(item_id, fingerprint)
+    if deleted and item_id.startswith("attachment:"):
+        # May have held the last reference to an original. Swept outside the lock.
+        from core import chat_originals
+        chat_originals.sweep()
+    return deleted
 
 
 def _delete_item(item_id: str, fingerprint: Optional[str]) -> bool:

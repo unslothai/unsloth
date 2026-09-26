@@ -364,13 +364,15 @@ def test_attachment_file_serves_text_parts(tmp_path, monkeypatch):
         "type": "document",
         "name": "notes.txt",
         "content": [
-            {"type": "text", "text": "first"},
-            {"type": "text", "text": "second"},
+            {"type": "text", "text": "<attachment name=notes.txt>\nfirst\n</attachment>"},
+            {"type": "text", "text": "[PDF: notes.pdf]\nsecond"},
+            {"type": "text", "text": "third"},
         ],
     }
     _seed(tmp_path, monkeypatch, [attachment])
     response = chat_history.get_attachment_file("msg-1", "att-txt", current_subject = "unsloth")
-    assert response.body.decode("utf-8") == "first\nsecond"
+    # Served as the file reads, without the wrappers chat adds for the model.
+    assert response.body.decode("utf-8") == "first\nsecond\nthird"
     assert response.media_type.startswith("text/plain")
 
 
@@ -661,3 +663,11 @@ def test_png_data_url_keeps_its_media_type(tmp_path, monkeypatch):
     image_id = _content_part_id_for("msg-cmp", "image")
     response = chat_history.get_attachment_file("msg-cmp", image_id, current_subject = "unsloth")
     assert response.media_type == "image/png"
+
+
+def test_a_sweep_never_creates_the_originals_folder(tmp_path, monkeypatch):
+    from core import chat_originals
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    assert chat_originals.sweep(force = True) == 0
+    assert not chat_originals.originals_dir().exists()

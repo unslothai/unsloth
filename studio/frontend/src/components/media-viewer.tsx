@@ -119,6 +119,8 @@ export function MediaViewer({
   actions,
   extra,
   onKeyDown,
+  flush = false,
+  redactFromReload = false,
   children,
 }: {
   open: boolean;
@@ -130,6 +132,10 @@ export function MediaViewer({
   actions: MediaViewerActions;
   extra?: ReactNode;
   onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
+  /** The body runs to the dialog's edges below the header, for content that pads itself. */
+  flush?: boolean;
+  /** Keeps what is shown (an unsent attachment) out of the reload snapshot. */
+  redactFromReload?: boolean;
   children: ReactNode;
 }) {
   const t = useT();
@@ -157,6 +163,7 @@ export function MediaViewer({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
+        data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
         onKeyDown={onKeyDown}
         onOpenAutoFocus={() => {
           const active = document.activeElement;
@@ -168,7 +175,7 @@ export function MediaViewer({
           returnFocus.current = null;
           if (target?.isConnected) target.focus({ preventScroll: true });
         }}
-        className="flex h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] w-[min(92vw,1200px)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
+        className="flex h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] w-[min(92vw,1200px)] max-w-none flex-col gap-0 overflow-hidden rounded-[1.5rem] p-0 sm:max-w-none"
       >
         <div className="flex items-center gap-2 py-3 pl-6 pr-4">
           <div className="min-w-0 flex-1">
@@ -257,7 +264,7 @@ export function MediaViewer({
             </button>
           </DialogClose>
         </div>
-        <div className={cn("flex min-h-0 flex-1", media ? "px-4 pb-4" : "px-6 pb-6")}>
+        <div className={cn("flex min-h-0 flex-1", !flush && (media ? "px-4 pb-4" : "px-6 pb-6"))}>
           {media ? (
             <MediaZoomStage zoom={zoom} onFitScale={setFitScale}>
               {children}

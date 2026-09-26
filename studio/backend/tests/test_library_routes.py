@@ -321,6 +321,55 @@ def test_chat_attachments_holding_bytes_are_known_by_their_type_in_any_case(clie
     assert deleted == [("m:1", "voice")]
 
 
+def test_deleting_a_chat_attachment_from_the_library_sweeps_its_original(client, monkeypatch):
+    import storage.studio_db as studio_db
+    from core import chat_originals
+
+    sweeps = []
+    monkeypatch.setattr(chat_originals, "sweep", lambda force = False: sweeps.append(force))
+    monkeypatch.setattr(studio_db, "delete_chat_attachment", lambda *ids: True)
+    assert _delete(client, "attachment:m:doc") == 200
+    assert sweeps == [False]
+
+
+def test_an_original_sent_many_times_counts_once_toward_disk_usage(client, monkeypatch):
+    import storage.studio_db as studio_db
+
+    def sent(
+        attachment_id,
+        sha256,
+        has_original = True,
+    ):
+        return {
+            "messageId": "m",
+            "id": attachment_id,
+            "type": "document",
+            "contentType": "application/pdf",
+            "sizeBytes": 1000,
+            "originalSha256": sha256,
+            "textBytes": 50,
+            "hasOriginal": has_original,
+        }
+
+    monkeypatch.setattr(library, "_SOURCES", (library._attachment_items,))
+    monkeypatch.setattr(
+        studio_db,
+        "list_chat_attachments",
+        lambda: [
+            sent("a", "1" * 64),
+            sent("b", "1" * 64),
+            sent("c", "2" * 64),
+            sent("d", "1" * 64),
+            sent("e", "3" * 64, has_original = False),
+        ],
+    )
+    items = _items(client)[0]
+    # Each message's extracted text counts; the original only once, and only while on disk.
+    usage = [items[f"attachment:m:{name}"]["storageBytes"] for name in "abcde"]
+    assert usage == [1050, 50, 1050, 50, 50]
+    assert all(items[f"attachment:m:{name}"]["sizeBytes"] == 1000 for name in "abcde")
+
+
 def test_a_chat_audio_part_is_typed_by_its_format_or_its_bytes():
     from storage.studio_db import _content_part_attachments
 
@@ -590,6 +639,57 @@ def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
     finally:
         shutil.rmtree(run, ignore_errors = True)
         shutil.rmtree(gguf, ignore_errors = True)
+
+
+def test_training_runs_map_only_folders_directly_under_outputs(monkeypatch):
+    """A newer run in an external folder of the same name, or a newer failed one in the same
+    folder, must not claim the managed model."""
+    import sqlite3
+
+    from storage import studio_db
+    from utils.paths.storage_roots import outputs_root
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE training_runs (id TEXT, output_dir TEXT, started_at TEXT, status TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO training_runs VALUES (?, ?, ?, ?)",
+        [
+            ("managed", str(outputs_root() / "my-run"), "2026-01-01", "completed"),
+            ("external", "/tmp/elsewhere/my-run", "2026-02-01", "completed"),
+            ("nested", str(outputs_root() / "group" / "other"), "2026-03-01", "completed"),
+            ("failed", str(outputs_root() / "my-run"), "2026-04-01", "error"),
+        ],
+    )
+    monkeypatch.setattr(studio_db, "get_connection", lambda: conn)
+    assert library._training_runs_by_dir() == {"my-run": "managed"}
+
+
+def test_an_export_links_to_its_run_only_through_studio_metadata(tmp_path, monkeypatch):
+    from utils.paths import storage_roots
+
+    outputs, exports = tmp_path / "outputs", tmp_path / "exports"
+    monkeypatch.setattr(storage_roots, "outputs_root", lambda: outputs)
+    monkeypatch.setattr(storage_roots, "exports_root", lambda: exports)
+    runs = {"foo": "run-foo", "bar": "run-bar"}
+    for name, meta in [
+        ("foo-GGUF", None),
+        ("foo-merged", '{"base_model": null}'),
+        ("renamed", f'{{"source_checkpoint": "{outputs}/bar/checkpoint-10"}}'),
+    ]:
+        (exports / name).mkdir(parents = True)
+        (exports / name / "model.gguf").write_bytes(b"x")
+        if meta:
+            (exports / name / "export_metadata.json").write_text(meta)
+    run_id = lambda name: library._model_run_id(
+        str(exports / name / "model.gguf"), "exported", runs
+    )
+    # No metadata: a copied-in folder claims nothing, whatever its name.
+    assert run_id("foo-GGUF") is None
+    # An older Studio export falls back to its name; a newer one names its checkpoint.
+    assert (run_id("foo-merged"), run_id("renamed")) == ("run-foo", "run-bar")
 
 
 def test_an_api_key_lists_fine_tunes_by_reference_and_can_still_act_on_them(client, monkeypatch):

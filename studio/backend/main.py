@@ -663,6 +663,19 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         return
     _start_linked_folder_auto_sync(generation)
 
+    # Sweep chat originals in every account: pending sweep timers died with the last process.
+    try:
+        from core import chat_originals
+        from core.training.account_jobs import startup_reconciliation_accounts
+        from utils.account_context import run_as
+
+        for account in startup_reconciliation_accounts():
+            if _post_warm_retired(generation):
+                return
+            run_as(account, chat_originals.sweep, True)
+    except Exception:  # noqa: BLE001
+        pass
+
     # Last, and deliberately so: it is the only item here that is pure latency work rather than
     # correctness, so everything above keeps its place in the queue. Roughly 5.3s of diffusers
     # import that the first image load would otherwise pay, moved onto this thread, and only on

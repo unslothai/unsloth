@@ -24,6 +24,12 @@ export interface LibraryItem {
   fileUrl: string;
   threadId: string | null;
   threadTitle: string | null;
+  /** The compare pair a chat pane belongs to, so its original chat opens as the pair. */
+  pairId?: string | null;
+  /** The project whose sandbox wrote a file. */
+  projectId?: string | null;
+  /** The training run a fine-tuned model came out of. */
+  runId?: string | null;
   textOnly: boolean;
   favorite: boolean;
   folderId: string | null;

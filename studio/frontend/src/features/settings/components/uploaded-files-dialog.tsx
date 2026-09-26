@@ -17,6 +17,7 @@ import {
   deleteChatAttachment,
   emitChatAttachmentDeleted,
   fetchChatAttachmentBlob,
+  isTextAttachmentName,
   listChatAttachments,
 } from "@/features/chat";
 import {
@@ -258,8 +259,8 @@ const EXT_BY_MIME: Record<string, string> = {
 };
 
 // Name the save after the bytes the route actually returns. Uploaded documents come back as
-// extracted text (TextAttachmentAdapter also wraps it in <attachment name=...>), so text/plain is
-// .txt whatever the upload was called. Managed content parts arrive named "Chat image"/"Chat audio"
+// extracted text, so text/plain is .txt, unless the upload was a text file the chat keeps whole
+// (CSV, markdown, code), which comes back as itself. Managed content parts arrive named "Chat image"/"Chat audio"
 // with no extension at all, which the OS cannot recognise. A dot at index 0 is a dotfile (.env),
 // not an extension: treating it as one would strip the whole name and save a bare ".txt".
 function extensionStart(name: string): number {
@@ -271,7 +272,7 @@ function savedAttachmentName(name: string, blobType: string): string {
   const mime = blobType.split(";")[0].trim().toLowerCase();
   const dot = extensionStart(name);
   if (mime === "text/plain") {
-    if (name.toLowerCase().endsWith(".txt")) return name;
+    if (name.toLowerCase().endsWith(".txt") || isTextAttachmentName(name)) return name;
     return `${dot === -1 ? name : name.slice(0, dot)}.txt`;
   }
   if (dot !== -1) return name;

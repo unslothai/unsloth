@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
@@ -855,7 +855,29 @@ export async function listChatAttachments(
   };
 }
 
-/** Stored attachment content (image bytes or extracted text) as a Blob. */
+/** Keeps a document's original file on the server, by content hash, for the attachment to name. */
+/** `epoch`: the auth session the send began in. The upload is refused, and a retry stopped, once it has
+ *  changed, so a document never lands in the account switched to. */
+export async function uploadChatAttachmentOriginal(
+  file: File,
+  epoch = getAuthSessionEpoch(),
+): Promise<{ sha256: string; sizeBytes: number }> {
+  const sameAccount = () => {
+    if (getAuthSessionEpoch() !== epoch) throw new Error("The account changed during the upload.");
+  };
+  sameAccount();
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const response = await authFetch(
+    "/api/chat/attachment-originals",
+    { method: "POST", body: form },
+    { beforeRetry: sameAccount },
+  );
+  sameAccount();
+  return parseJsonOrThrow<{ sha256: string; sizeBytes: number }>(response);
+}
+
+/** Stored attachment content (a document's original file, image bytes or extracted text) as a Blob. */
 export async function fetchChatAttachmentBlob(
   messageId: string,
   attachmentId: string,
