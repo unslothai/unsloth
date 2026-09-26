@@ -63,16 +63,20 @@ def ensure_repeated_blocks(model: Any) -> tuple[str, ...]:
 
 
 def _moe_infer_dense(self: Any, x: Any, flat_expert_indices: Any, flat_expert_weights: Any) -> Any:
-    # Every expert over every token, weighted by its routing weight (zero where not picked). Same products, same
-    # expert-order bf16 sum as the released loop, so eager output is bit-identical; nothing reads a count on the host.
+    # Every expert over every token, kept only where the router picked it: the released loop's products summed in the
+    # same expert order, with no per-expert count read on the host. `where`, not a zero weight, so an unpicked token
+    # that overflows in fp16 adds 0 instead of 0 * inf = NaN.
     import torch
 
     k = self.num_activated_experts
     idx = flat_expert_indices.view(-1, k)
     weights = flat_expert_weights.view(-1, k).to(x.dtype)
+    zero = x.new_zeros(())
     out = torch.zeros_like(x)
     for i, expert in enumerate(self.experts):
-        out = out + expert(x) * (weights * (idx == i)).sum(-1, keepdim = True)
+        hit = idx == i
+        weight = (weights * hit).sum(-1, keepdim = True)
+        out = out + torch.where(hit.any(-1, keepdim = True), expert(x) * weight, zero)
     return out
 
 

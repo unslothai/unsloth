@@ -310,6 +310,7 @@ def family_compiles_regionally(family: Any) -> bool:
     if cls._repeated_blocks:
         return True
     from .diffusion_regional_compile import verified_repeated_blocks
+
     return bool(verified_repeated_blocks(name))
 
 
