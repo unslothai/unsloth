@@ -57,3 +57,53 @@ test("a decomposed filename is the same candidate as its composed form", () => {
 test("repo ids still fold case", () => {
   assert.ok(sameKey("unsloth/Qwen3-0.6B-GGUF", "UNSLOTH/qwen3-0.6b-gguf"));
 });
+
+
+test("startup remembers an inactive quant through the logical chat inventory target", async () => {
+  const declarations = ["buildAutoLoadSources", "resolveAutoLoadCandidate"].map((name) => {
+    const begin = source.indexOf(`function ${name}(`);
+    assert.ok(begin >= 0);
+    const asyncPrefix = name === "resolveAutoLoadCandidate" ? "async " : "";
+    return asyncPrefix + source.slice(begin, source.indexOf("\n}", begin) + 2);
+  }).join("\n");
+  const compile = new Function(
+    "listGgufVariants", "isGgufLocalRow", "isAutoLoadableGgufVariant",
+    ts.transpileModule(declarations, {
+      compilerOptions: { target: ts.ScriptTarget.ES2020 },
+    }).outputText + "; return { buildAutoLoadSources, resolveAutoLoadCandidate };",
+  );
+  const repoId = "Org/Model";
+  const cachePath = "/cache/default/models--Org--Model";
+  const scopes: (string | undefined)[] = [];
+  const helpers = compile(
+    async (_id: string, _token: undefined, options: { localPath?: string }) => {
+      scopes.push(options.localPath);
+      const quants = options.localPath === repoId ? ["Q6_K", "Q8_0"] : ["Q6_K"];
+      return { variants: quants.map((quant, i) => ({
+        quant, downloaded: true, size_bytes: 100 + i,
+      })) };
+    },
+    () => true,
+    () => true,
+  );
+  const rows = [{ repo_id: repoId, load_id: repoId, cache_path: cachePath, size_bytes: 300 }];
+  const [logical] = helpers.buildAutoLoadSources(rows, [], [], 8192);
+  const candidate = await helpers.resolveAutoLoadCandidate(logical, "Q8_0", () => false);
+  assert.equal(candidate.ggufVariant, "Q8_0");
+  assert.equal(candidate.loadId, repoId);
+  assert.deepEqual(scopes, [repoId]);
+
+  const snapshot = cachePath + "/snapshots/revision";
+  const [explicit] = helpers.buildAutoLoadSources([{ ...rows[0], load_id: snapshot }], [], [], 8192);
+  await explicit.listVariants();
+  assert.equal(scopes.at(-1), snapshot);
+  const [legacy] = helpers.buildAutoLoadSources([{ ...rows[0], load_id: undefined }], [], [], 8192);
+  await legacy.listVariants();
+  assert.equal(scopes.at(-1), cachePath);
+  const localPath = "/models/local";
+  const [local] = helpers.buildAutoLoadSources([], [], [{
+    id: localPath, path: localPath, capabilities: { requires_variant: true },
+  }], 8192);
+  await local.listVariants();
+  assert.equal(scopes.at(-1), localPath);
+});

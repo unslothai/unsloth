@@ -42,6 +42,7 @@ function snapshot(
     backend: "cuda",
     denseQuantSupported: schemes.length > 0,
     denseQuantSchemes: schemes,
+    nvfp4Diffusion: false,
     name: "NVIDIA GeForce RTX 4090",
     memoryTotalGb: 24,
     memorySharedGb: 0,
