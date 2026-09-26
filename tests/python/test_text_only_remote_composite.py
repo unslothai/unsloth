@@ -27,6 +27,7 @@ LOADER_PATH = REPO_ROOT / "unsloth" / "models" / "loader.py"
 VISION_PATH = REPO_ROOT / "unsloth" / "models" / "vision.py"
 
 _HELPERS = (
+    "_resolve_remote_model_class",
     "resolve_model_class",
     "_is_family_text_decoder",
     "_remap_text_only_skip_modules",
@@ -45,15 +46,18 @@ _HELPERS = (
     "_adapter_fits_text_model",
 )
 
+_CONSTANTS = ("_REMOTE_CODE_HUB_KWARGS",)
+
 
 def _ns():
     # Exec the helpers without importing unsloth (which needs a GPU).
     from packaging.version import Version
 
     source = UTILS_PATH.read_text(encoding = "utf-8")
+    tree = ast.parse(source)
     funcs = {
         n.name: ast.get_source_segment(source, n)
-        for n in ast.parse(source).body
+        for n in tree.body
         if isinstance(n, ast.FunctionDef)
     }
     ns = {
@@ -62,8 +66,15 @@ def _ns():
         "Version": Version,
         "transformers_version": transformers.__version__,
     }
+    # Module-level constants the helpers read.
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id in _CONSTANTS for t in n.targets
+        ):
+            exec(ast.get_source_segment(source, n), ns)
     for name in _HELPERS:
-        exec(funcs[name], ns)
+        if name in funcs:
+            exec(funcs[name], ns)
     return ns
 
 
