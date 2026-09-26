@@ -79,6 +79,7 @@ def print_studio_access_banner(
     network_host: str = "",
     include_stop_hint: bool = True,
     lan_addresses: "tuple[str, ...]" = (),
+    wsl_windows_browser_hint: bool = False,
 ) -> None:
     """Pretty-print URLs once the server is listening. Set ``include_stop_hint=False`` to omit the
     trailing stop block; pair with :func:`print_studio_stop_hint` after inserting your own content.
@@ -87,7 +88,9 @@ def print_studio_access_banner(
     banner must say where else it answers. ``network_host`` is the address printed under "another
     device on your network", defaulting to ``display_host``. A wildcard-bind caller passes both:
     ``display_host`` can be a public WAN IP, which is the reachability probe's business and not what
-    a LAN peer can open (#8868)."""
+    a LAN peer can open (#8868). ``wsl_windows_browser_hint`` adds a line for WSL2 NAT launches
+    where no LAN URL can be advertised: open ``http://localhost:<port>`` from the Windows host
+    (#11187)."""
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
     title = "\033[38;5;150m"
@@ -137,16 +140,30 @@ def print_studio_access_banner(
     if (listen_all or loopback_bind) and primary_url != alt_local:
         lines.append(style(f"    (same as {alt_local})", dim))
 
-    if (
+    show_lan_share_line = (
         listen_all
         and not is_wildcard_host(resolved_network_host)
         and resolved_network_host not in ("127.0.0.1", "localhost", "::1")
-    ):
+    )
+    if show_lan_share_line:
         lines.extend(
             [
                 "",
                 style("  From another device on your network / to share:", dim),
                 style(f"    {network_url}", secondary),
+            ]
+        )
+    elif wsl_windows_browser_hint and listen_all:
+        lines.extend(
+            [
+                "",
+                style("  From the Windows host (WSL2):", dim),
+                style(f"    {alt_local}", secondary),
+                style(
+                    "    WSL forwards localhost from Windows -- use this in your browser, "
+                    "not the WSL eth0 IP.",
+                    dim,
+                ),
             ]
         )
     elif not listen_all and not loopback_bind and external_url != primary_url:
