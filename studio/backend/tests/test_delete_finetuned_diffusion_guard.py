@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 import routes.models as models_module
 from auth.authentication import get_current_subject
 from routes.models import router as models_router
+from storage import library_db
 
 
 class _Backend:
@@ -51,11 +52,23 @@ class _Backend:
         return self._loading
 
 
+@pytest.fixture(autouse = True)
+def forgotten(monkeypatch):
+    """Library entries the route dropped: a model's name, folder and star are keyed by its path,
+    and left behind they would land on the next model saved there."""
+    ids: list[str] = []
+    monkeypatch.setattr(library_db, "delete_entry", ids.append)
+    return ids
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     outputs = tmp_path / "outputs"
     outputs.mkdir()
     monkeypatch.setattr(models_module, "outputs_root", lambda: outputs)
+    monkeypatch.setattr(models_module, "exports_root", lambda: tmp_path / "exports")
+    entries = {f"model:training:{outputs / 'my-diffusion-model'}": {}, "upload:abc": {}}
+    monkeypatch.setattr(library_db, "list_entries", lambda: entries)
     # No chat model is resident, so only the diffusion / video guards can refuse.
     monkeypatch.setattr(models_module, "get_inference_backend", lambda: _NoChat())
 
@@ -85,7 +98,7 @@ def _delete(client, path):
     )
 
 
-def test_refuses_to_delete_a_model_the_images_engine_has_loaded(client, monkeypatch):
+def test_refuses_to_delete_a_model_the_images_engine_has_loaded(client, forgotten, monkeypatch):
     c, outputs = client
     target = _model_dir(outputs)
     monkeypatch.setattr(
@@ -97,6 +110,7 @@ def test_refuses_to_delete_a_model_the_images_engine_has_loaded(client, monkeypa
     assert resp.status_code == 400
     assert "Unload the model" in resp.json()["detail"]
     assert target.exists()
+    assert forgotten == []
 
 
 def test_refuses_the_companion_base_and_the_extra_repos_the_engine_reads(client, monkeypatch):
@@ -151,7 +165,7 @@ def test_allows_the_delete_when_no_diffusion_or_video_model_holds_it(client, mon
     assert not target.exists()
 
 
-def test_a_chat_only_install_can_still_delete(client, monkeypatch):
+def test_a_chat_only_install_can_still_delete(client, forgotten, monkeypatch):
     """No diffusion stack installed: the guard must fail OPEN, not 503 every delete."""
     c, outputs = client
     target = _model_dir(outputs)
@@ -160,6 +174,7 @@ def test_a_chat_only_install_can_still_delete(client, monkeypatch):
 
     assert _delete(c, target).status_code == 200
     assert not target.exists()
+    assert forgotten == [f"model:training:{target}"]
 
 
 def test_an_unreadable_engine_state_fails_closed(client, monkeypatch):
@@ -202,3 +217,25 @@ def test_refuses_the_delete_while_a_diffusion_training_run_is_active(client, mon
     stub.get_diffusion_training_service = lambda: types.SimpleNamespace(is_active = lambda: False)
     assert _delete(c, target).status_code == 200
     assert not target.exists()
+
+
+def test_deleting_a_gguf_variant_drops_its_library_entry(client, forgotten, monkeypatch):
+    """A GGUF export is listed by one of its files; deleting that variant ends its entry, and the
+    other variants keep theirs."""
+    c, outputs = client
+    run = outputs.parent / "exports" / "my-export"
+    run.mkdir(parents = True)
+    q4, q8 = run / "model-Q4_K_M.gguf", run / "model-Q8_0.gguf"
+    q4.write_bytes(b"x")
+    q8.write_bytes(b"x")
+    monkeypatch.setattr(models_module, "_active_diffusion_backend", lambda: None)
+    monkeypatch.setattr(models_module, "_active_video_backend", lambda: None)
+    entries = {f"model:exported:{q4}": {}, f"model:exported:{q8}": {}, "upload:abc": {}}
+    monkeypatch.setattr(library_db, "list_entries", lambda: entries)
+    body = {"source": "exported", "export_type": "gguf", "gguf_variant": "Q4_K_M"}
+    response = c.request(
+        "DELETE", "/api/models/delete-finetuned", json = {"model_path": str(q4), **body}
+    )
+    assert response.status_code == 200, response.text
+    assert not q4.exists() and q8.exists()
+    assert forgotten == [f"model:exported:{q4}"]

@@ -46,7 +46,7 @@ from core.rag.config import (
     effective_gguf_repo_for_embedding_model,
 )
 from loggers import get_logger
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
     PERSONALIZATION_VERSION,
@@ -75,9 +75,17 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
+from utils import systemone_settings
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
+)
+from utils.hub_settings import (
+    HubSettings,
+    active_source,
+    get_hub_settings,
+    set_hub_settings,
+    set_hub_source,
 )
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.reasoning_budget import validate_reasoning_budget_message
@@ -616,6 +624,42 @@ def clear_hugging_face_token(
     return HuggingFaceTokenResponse(token = None, has_token = False)
 
 
+class SystemOneModelOption(BaseModel):
+    name: str
+    description: str
+    download_bytes: int
+
+
+class SystemOneSettingsResponse(BaseModel):
+    enabled: bool
+    enabled_locked: bool
+    model: str
+    model_locked: bool
+    device: str
+    device_locked: bool
+    gpu_available: bool
+    models: list[SystemOneModelOption]
+    loaded_model: Optional[str] = None
+    loaded_device: Optional[str] = None
+    loading_model: Optional[str] = None
+    installing: bool = False
+    error: Optional[str] = None
+
+
+class SystemOneSettingsPayload(BaseModel):
+    enabled: Optional[bool] = None
+    model: Optional[str] = None
+    device: Optional[str] = None
+
+
+class SystemOneDownloadPlan(BaseModel):
+    repo: Optional[str] = None
+    files: list[str]
+    size_bytes: int
+    cached: bool
+    error: Optional[str] = None
+
+
 class HelperPrecachePayload(BaseModel):
     enabled: bool
 
@@ -636,6 +680,22 @@ class DownloadTransportResponse(BaseModel):
     xet_unavailable_reason: Optional[str] = None
     auto_resolves_to: str
     auto_reason: Optional[str] = None
+
+
+class HubSettingsPayload(BaseModel):
+    hf_endpoint: str = Field(max_length = 2048)
+    datasets_server_follows_endpoint: StrictBool
+
+
+class HubSourcePayload(BaseModel):
+    source: Literal["huggingface", "modelscope"]
+
+
+class HubSettingsResponse(BaseModel):
+    hf_endpoint: str
+    datasets_server_follows_endpoint: bool
+    source: Literal["huggingface", "modelscope"]
+    active_source: Literal["huggingface", "modelscope"]
 
 
 class XetNoticeReservePayload(BaseModel):
@@ -1294,6 +1354,92 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
+def _systemone_response() -> SystemOneSettingsResponse:
+    from core.systemone import catalog, laya_runtime
+
+    enabled = systemone_settings.get_enabled()
+    if enabled:
+        laya_runtime.install_in_background()
+    runtime = laya_runtime.status()
+    model = catalog.default_checkpoint().name
+    error = runtime["error"]
+    if runtime["error_model"] not in (None, model):
+        error = None
+    return SystemOneSettingsResponse(
+        enabled = enabled,
+        enabled_locked = systemone_settings.enabled_locked(),
+        model = model,
+        model_locked = systemone_settings.model_locked(),
+        device = systemone_settings.get_device(),
+        device_locked = systemone_settings.device_locked(),
+        gpu_available = systemone_settings.gpu_available(),
+        models = [
+            SystemOneModelOption(
+                name = c.name, description = c.description, download_bytes = c.download_bytes
+            )
+            for c in catalog.CHECKPOINTS.values()
+        ],
+        loaded_model = runtime["loaded_model"],
+        loaded_device = runtime["device"],
+        loading_model = runtime["loading_model"],
+        installing = runtime["installing"],
+        error = error,
+    )
+
+
+@_shared_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
+def get_systemone_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> SystemOneSettingsResponse:
+    return _systemone_response()
+
+
+@_owner_settings_router.put("/systemone", response_model = SystemOneSettingsResponse)
+def update_systemone_settings(
+    payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
+) -> SystemOneSettingsResponse:
+    from core.systemone import laya_runtime
+
+    try:
+        values = systemone_settings.validate(**payload.model_dump(exclude_none = True))
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid Decision API setting."),
+            event = "settings.update_systemone_failed",
+            log = logger,
+        ) from exc
+    if values:
+        # The resident model was built from the old settings; drop it so the next request uses the new ones.
+        try:
+            laya_runtime.unload()
+        except laya_runtime.Unavailable as exc:
+            raise HTTPException(status_code = 409, detail = exc.message) from None
+        systemone_settings.save(values)
+    return _systemone_response()
+
+
+@_owner_settings_router.get("/systemone/resolve", response_model = SystemOneDownloadPlan)
+def resolve_systemone_download(
+    current_subject: str = Depends(get_current_subject),
+) -> SystemOneDownloadPlan:
+    from core.systemone import catalog, laya_runtime
+    return SystemOneDownloadPlan(**laya_runtime.download_plan(catalog.default_checkpoint()))
+
+
+@_owner_settings_router.post("/systemone/unload", response_model = SystemOneSettingsResponse)
+def unload_systemone_model(
+    current_subject: str = Depends(get_current_subject),
+) -> SystemOneSettingsResponse:
+    from core.systemone import laya_runtime
+    try:
+        laya_runtime.unload()
+    except laya_runtime.Unavailable as exc:
+        raise HTTPException(status_code = 409, detail = exc.message) from None
+    return _systemone_response()
+
+
 @_shared_settings_router.get("/download-transport", response_model = DownloadTransportResponse)
 def get_download_transport(
     current_subject: str = Depends(get_current_subject),
@@ -1316,6 +1462,52 @@ def update_download_transport(
             log = logger,
         ) from exc
     return _download_transport_response(mode)
+
+
+def _hub_settings_response(settings: HubSettings) -> HubSettingsResponse:
+    return HubSettingsResponse(
+        hf_endpoint = settings.hf_endpoint,
+        datasets_server_follows_endpoint = settings.datasets_server_follows_endpoint,
+        source = settings.source,
+        active_source = active_source(),
+    )
+
+
+# Owner only: the endpoint can name a private address that other accounts' clients must not learn.
+@_owner_settings_router.get("/hub", response_model = HubSettingsResponse)
+def get_hub(current_subject: str = Depends(get_current_subject)) -> HubSettingsResponse:
+    return _hub_settings_response(get_hub_settings())
+
+
+@_owner_settings_router.put("/hub", response_model = HubSettingsResponse)
+def update_hub(
+    payload: HubSettingsPayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HubSettingsResponse:
+    # The endpoint receives the installation's Hugging Face token, like the token routes above.
+    require_ui_session(via_api_key)
+    try:
+        settings = set_hub_settings(payload.hf_endpoint, payload.datasets_server_follows_endpoint)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid Hugging Face endpoint."),
+            event = "settings.update_hub_failed",
+            log = logger,
+        ) from exc
+    return _hub_settings_response(settings)
+
+
+@_owner_settings_router.put("/hub/source", response_model = HubSettingsResponse)
+def update_hub_source(
+    payload: HubSourcePayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HubSettingsResponse:
+    require_ui_session(via_api_key)
+    return _hub_settings_response(set_hub_source(payload.source))
 
 
 @_owner_settings_router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
@@ -3633,8 +3825,9 @@ SIDEBAR_MENU_ITEM_DEFAULTS = {
 SIDEBAR_NAV_ITEM_DEFAULTS = {
     "hub": True,
     "projects": True,
+    "library": True,
     "images": True,
-    "video": True,
+    "video": False,
     "audio": False,
     "train": True,
     "recipes": False,
@@ -3674,6 +3867,7 @@ def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
 SidebarNavItemId = Literal[
     "hub",
     "projects",
+    "library",
     "images",
     "video",
     "audio",
