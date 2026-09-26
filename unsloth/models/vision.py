@@ -1188,6 +1188,7 @@ def _mxfp4_lora_keeps_experts_packed(
     revision = None,
     variant = None,
     cache_dir = None,
+    subfolder = None,
 ):
     """Whether a LoRA load of an MXFP4 checkpoint should take unsloth_zoo's packed-experts path.
 
@@ -1202,8 +1203,14 @@ def _mxfp4_lora_keeps_experts_packed(
     dequantize every expert to 16 bit at load instead. A placement strategy ("auto",
     "sequential", ...) is only resolved later, so it counts as offloading when the checkpoint
     does not fit in the accelerators' free memory (or the caller's max_memory)."""
+    # A config built in memory carries transformers' QuantizationMethod enum, whose str() is
+    # "QuantizationMethod.MXFP4"; compare its value.
+    quant_method = getattr(quant_method, "value", quant_method)
     if full_finetuning or str(quant_method).lower() != "mxfp4":
         return False
+    # transformers also takes a torch.device or a bare index and wraps it as {"": device}.
+    if device_map is not None and not isinstance(device_map, (dict, str)):
+        device_map = str(device_map)
     # unsloth_zoo only learns about offload once transformers resolves the map, after this
     # config is built, so an explicit map that offloads is checked here.
     if isinstance(device_map, dict) and any(
@@ -1233,25 +1240,31 @@ def _mxfp4_lora_keeps_experts_packed(
         # once the accelerators are full. Unknown sizes keep the packed path, as before.
         try:
             import os
+            import re
             import torch
 
+            prefix = subfolder.strip("/") + "/" if subfolder else ""
+            weights = re.compile(
+                "model" + (re.escape("." + variant) if variant else "") + r"(-\d+-of-\d+)?\.safetensors"
+            )
+
             def weight_bytes(files):
-                # What from_pretrained reads: top-level safetensors of the selected variant
-                # (model.safetensors, model-0000N-of-0000M.safetensors, model.<variant>...),
-                # never a subfolder such as gpt-oss's original/.
+                # What from_pretrained reads: model.safetensors or its model-0000N-of-0000M
+                # shards, of the selected variant (model.<variant>...) in the selected
+                # subfolder. Never gpt-oss's original/, consolidated.safetensors or adapters.
                 total = 0
                 for name, size in files:
-                    if "/" in name or os.sep in name or not name.endswith(".safetensors"):
-                        continue
-                    parts = name[: -len(".safetensors")].split(".")
-                    file_variant = parts[1].split("-")[0] if len(parts) > 1 else None
-                    if file_variant == variant:
+                    name = name.replace(os.sep, "/")
+                    if name.startswith(prefix) and weights.fullmatch(name[len(prefix) :]):
                         total += size or 0
                 return total
 
             def folder_files(folder):
+                folder = os.path.join(folder, prefix) if prefix else folder
+                if not os.path.isdir(folder):
+                    return []
                 return [
-                    (name, os.path.getsize(os.path.join(folder, name)))
+                    (prefix + name, os.path.getsize(os.path.join(folder, name)))
                     for name in os.listdir(folder)
                     if os.path.isfile(os.path.join(folder, name))
                 ]
@@ -1282,21 +1295,30 @@ def _mxfp4_lora_keeps_experts_packed(
                         allow_patterns = ["*.safetensors"],
                     )
                     checkpoint_bytes = weight_bytes(folder_files(folder))
-            probed = torch.cuda.is_available() and torch.cuda.device_count() > 0
+            # The backend accelerate fills: CUDA / ROCm, else Intel XPU.
+            backend = torch.cuda
+            if not torch.cuda.is_available() and getattr(torch, "xpu", None) is not None:
+                if torch.xpu.is_available():
+                    backend = torch.xpu
+            probed = backend.is_available() and backend.device_count() > 0
             if max_memory:
                 # Only the cards the caller allowed; an excluded card is never touched.
                 devices = sorted(
                     {
                         int(key)
                         for key in max_memory
-                        if str(key).isdigit() and int(key) < torch.cuda.device_count()
+                        if str(key).isdigit() and int(key) < backend.device_count()
                     }
                 ) if probed else []
             else:
-                devices = list(range(torch.cuda.device_count())) if probed else []
+                devices = list(range(backend.device_count())) if probed else []
             free_bytes = 0
             for index in devices:
-                free = torch.cuda.mem_get_info(index)[0]
+                try:
+                    free = backend.mem_get_info(index)[0]
+                except Exception:
+                    # accelerate leaves a card it cannot query out of the map.
+                    continue
                 budget = max_memory.get(index, max_memory.get(str(index))) if max_memory else None
                 if isinstance(budget, str):
                     from accelerate.utils import convert_file_size_to_int
@@ -1842,6 +1864,7 @@ class FastBaseModel:
                             _revision,
                             kwargs.get("variant", None),
                             kwargs.get("cache_dir", None),
+                            kwargs.get("subfolder", None),
                         )
                     ) and "dequantize" in inspect.signature(quantizer).parameters:
                         quantizer_kwargs["dequantize"] = True

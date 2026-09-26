@@ -333,3 +333,73 @@ def test_offline_load_sizes_the_cached_snapshot(zoo, sizes, tmp_path):
     # Not cached either: size unknown, packed path kept.
     sizes["snapshot"] = None
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is True
+
+
+def test_quantization_method_enum_is_recognized(zoo):
+    from transformers.utils.quantization_config import QuantizationMethod
+
+    assert _helper()(QuantizationMethod.MXFP4) is True
+
+
+def test_torch_device_cpu_map_keeps_native_load(zoo, sizes):
+    import torch
+
+    assert _helper()("mxfp4", False, torch.device("cpu"), "openai/gpt-oss-20b") is False
+    assert _helper()("mxfp4", False, torch.device("cuda:0"), "openai/gpt-oss-20b") is True
+    assert sizes["calls"] == [] and sizes["probes"] == []
+
+
+def test_subfolder_weights_are_sized(zoo, sizes, tmp_path):
+    sizes["checkpoint"], sizes["free"] = 0, [80]
+    sizes["extra"] = [("hf/model-00001-of-00002.safetensors", 45), ("hf/model-00002-of-00002.safetensors", 45)]
+    assert _helper()("mxfp4", False, "auto", "org/repo") is True
+    assert _helper()("mxfp4", False, "auto", "org/repo", None, None, None, None, "hf") is False
+    (tmp_path / "hf").mkdir()
+    (tmp_path / "hf" / "model.safetensors").write_bytes(b"0" * 8192)
+    sizes["free"] = [4096 / 2**30]
+    assert _helper()("mxfp4", False, "auto", str(tmp_path), None, None, None, None, "hf") is False
+    assert _helper()("mxfp4", False, "auto", str(tmp_path)) is True
+
+
+def test_files_transformers_ignores_are_not_counted(zoo, sizes):
+    sizes["checkpoint"], sizes["free"] = 13, [80]
+    sizes["extra"] = [
+        ("consolidated.safetensors", 70),
+        ("adapter_model.safetensors", 70),
+        ("model_old.safetensors", 70),
+    ]
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is True
+
+
+def test_xpu_capacity_is_probed(zoo, sizes, monkeypatch):
+    import torch
+
+    GiB = 2**30
+    probes = []
+
+    def _xpu_mem(i):
+        probes.append(i)
+        return (8 * GiB, 0)
+
+    xpu = types.SimpleNamespace(is_available = lambda: True, device_count = lambda: 1, mem_get_info = _xpu_mem)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch, "xpu", xpu, raising = False)
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is False
+    assert probes == [0]
+
+
+def test_a_card_that_fails_the_probe_adds_no_capacity(zoo, sizes, monkeypatch):
+    import torch
+
+    GiB = 2**30
+    sizes["checkpoint"], sizes["free"] = 60, [40, 40]
+
+    def _mem(i):
+        if i == 1:
+            raise RuntimeError("exclusive-process card")
+        return (40 * GiB, 0)
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", _mem)
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is False
+    sizes["checkpoint"] = 13
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is True
