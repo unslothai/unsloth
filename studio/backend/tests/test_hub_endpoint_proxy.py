@@ -115,9 +115,9 @@ def test_the_relay_tag_is_not_a_bare_hash_of_the_endpoint():
     assert tag != hashlib.sha256(endpoint.encode()).hexdigest()[:12]
 
 
-@pytest.mark.parametrize("peer, location", [("127.0.0.1", True), ("203.0.113.9", False)])
-def test_an_anonymous_redirect_names_a_saved_endpoint_only_to_a_loopback_browser(
-    proxy, monkeypatch, peer, location
+@pytest.mark.parametrize("peer", ["127.0.0.1", "203.0.113.9"])
+def test_a_signed_out_asset_names_a_saved_endpoint_only_to_a_loopback_browser(
+    proxy, monkeypatch, peer
 ):
     import utils.hub_settings as hub_settings
 
@@ -125,8 +125,27 @@ def test_an_anonymous_redirect_names_a_saved_endpoint_only_to_a_loopback_browser
     state["session"] = False
     monkeypatch.setattr(endpoint_proxy, "client_ip", lambda _request: peer)
     monkeypatch.setattr(hub_settings, "_saved_only_endpoints", frozenset({MIRROR}), raising = False)
-    page = client.get(f"{HUB}/org/m/resolve/main/a.png")
-    assert (page.status_code, "location" in page.headers) == (
-        (302, True) if location else (401, False)
+    page = client.get(
+        f"{HUB}/org/m/resolve/main/a.png",
+        headers = {endpoint_proxy.TOKEN_HEADER: "Bearer hf_x"},
+        follow_redirects = False,
     )
-    assert seen == []
+    if peer == "127.0.0.1":
+        assert page.status_code == 302 and page.headers["location"].startswith(MIRROR)
+        assert seen == []
+    else:
+        assert page.status_code == 200 and "location" not in page.headers
+        assert MIRROR not in page.text
+        assert [("authorization" in r.headers) for r in seen] == [False]
+        assert client.get(f"{HUB}/api/models").status_code == 401
+
+
+def test_a_signed_out_relay_refuses_large_files(proxy, monkeypatch):
+    import utils.hub_settings as hub_settings
+
+    client, seen, state = proxy
+    state["session"] = False
+    monkeypatch.setattr(endpoint_proxy, "client_ip", lambda _request: "203.0.113.9")
+    monkeypatch.setattr(hub_settings, "_saved_only_endpoints", frozenset({MIRROR}), raising = False)
+    monkeypatch.setattr(endpoint_proxy, "ANONYMOUS_ASSET_LIMIT", 1)
+    assert client.get(f"{HUB}/org/m/resolve/main/model.safetensors").status_code == 413

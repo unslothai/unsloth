@@ -107,6 +107,19 @@ def _rebase_link(link: str, upstream: str, base: str) -> str:
     return ", ".join(parts)
 
 
+ANONYMOUS_ASSET_LIMIT = 20 * 1024 * 1024
+
+
+async def _capped(chunks, limit: int):
+    """Bound what a signed-out README asset load can pull through the server."""
+    sent = 0
+    async for chunk in chunks:
+        sent += len(chunk)
+        if sent > limit:
+            raise RuntimeError("anonymous relay limit exceeded")
+        yield chunk
+
+
 def _saved_only(endpoint: str) -> bool:
     """A redirect's Location would name an endpoint the owner-only settings route keeps private."""
     from utils.hub_settings import saved_only_endpoints
@@ -115,7 +128,8 @@ def _saved_only(endpoint: str) -> bool:
 
 def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: bool) -> APIRouter:
     """``anonymous_pages`` redirects credential-less loads outside ``/api`` (README images,
-    repository links) to the endpoint without contacting it."""
+    repository links) to the endpoint; a settings-saved endpoint seen from off the host is
+    relayed without credentials instead, so its URL stays private."""
     router = APIRouter()
 
     @router.api_route("/{path:path}", methods = ["GET", "HEAD"])
@@ -133,19 +147,21 @@ def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: b
         query = request.scope.get("query_string", b"").decode("latin-1")
         target = f"{endpoint}{rest}{'?' + query if query else ''}"
 
-        if not await signed_in(request):
+        anonymous = not await signed_in(request)
+        if anonymous:
             if (
                 "authorization" in request.headers
                 or not anonymous_pages
                 or segments[1:2] == ["api"]
                 or not endpoint_is_reachable_by(endpoint, client_ip(request))
-                or (_saved_only(endpoint) and not is_loopback_host(client_ip(request)))
             ):
                 return _refuse(401, "Sign in again to browse the Hub.")
-            return RedirectResponse(target, status_code = 302)
+            # A Location would name an endpoint only the owner may read: relay the asset instead.
+            if not (_saved_only(endpoint) and not is_loopback_host(client_ip(request))):
+                return RedirectResponse(target, status_code = 302)
 
         headers = {"Accept": request.headers.get("accept", "*/*")}
-        if token := request.headers.get(TOKEN_HEADER):
+        if not anonymous and (token := request.headers.get(TOKEN_HEADER)):
             headers["Authorization"] = token
         http = _client()
         try:
@@ -154,6 +170,12 @@ def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: b
             )
         except httpx.HTTPError as exc:
             return _refuse(502, f"The Hub endpoint could not be reached ({type(exc).__name__}).")
+        body = answer.aiter_bytes()
+        if anonymous:
+            if int(answer.headers.get("content-length") or 0) > ANONYMOUS_ASSET_LIMIT:
+                await answer.aclose()
+                return _refuse(413, "Sign in to download files this large.")
+            body = _capped(body, ANONYMOUS_ASSET_LIMIT)
         passed = {name: answer.headers[name] for name in _PASSED_HEADERS if name in answer.headers}
         if link := answer.headers.get("link"):
             path = f"{request.scope.get('root_path', '')}{prefix}/{tag}"
@@ -162,7 +184,7 @@ def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: b
             )
         passed[UPSTREAM_HEADER] = "1"
         return StreamingResponse(
-            answer.aiter_bytes(),
+            body,
             status_code = answer.status_code,
             headers = passed,
             background = BackgroundTask(answer.aclose),
