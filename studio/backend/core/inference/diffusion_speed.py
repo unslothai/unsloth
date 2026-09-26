@@ -983,15 +983,15 @@ def _vae_contiguous(pipe: Any, logger: Any) -> bool:
 
 
 def _channels_last_decode_wins(
-    pipe: Any, target: Any, compiled_decode: bool, offload_active: bool = False
+    pipe: Any,
+    target: Any,
+    compiled_decode: bool,
+    offload_active: bool = False,
 ) -> bool:
-    """Whether channels_last VAE weights beat contiguous ones for this decode, as measured on NVIDIA (T4 to B200).
+    """Whether channels_last VAE weights beat contiguous ones for this decode (measured on NVIDIA only).
 
-    Eager CUDA GroupNorm has no NHWC kernel, so each norm copies NHWC -> NCHW and back with a strided copy: an eager
-    16-bit channels_last decode measured 0.56-0.78x, but contiguous peaks ~0.63 GiB/MP higher (cuDNN's own layout
-    transforms), so offloaded low-VRAM loads keep channels_last. Compiled, Inductor owns the layout: channels_last
-    measured 0.98-1.33x in 16-bit at a lower peak. An fp32 decode is faster and no larger contiguous, eager (1.4x) or
-    compiled (1.1x). Other backends were not measured: unchanged."""
+    Eager CUDA GroupNorm has no NHWC kernel, so an eager 16-bit channels_last decode is slower, but contiguous peaks
+    higher, so offloaded loads keep channels_last. Compiled 16-bit wins channels_last; fp32 is faster contiguous."""
     if getattr(target, "backend", "cuda") != "cuda" or getattr(target, "device", None) != "cuda":
         return True
     vae = getattr(pipe, "vae", None)
