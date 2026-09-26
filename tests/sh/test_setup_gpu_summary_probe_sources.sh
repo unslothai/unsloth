@@ -463,14 +463,14 @@ assert_eq "amd-smi answers list but not static --asic" \
     "|" "$(STUB_AMDSMI_MUTE_STATIC=1 summary "$WORK/empty" "$WORK/smi_three")"
 
 echo "=== the index-space line is read without SIGPIPE ==="
-# One-line head plus output larger than a pipe: a `| head -n 1` reader SIGPIPEs printf.
 mkdir -p "$WORK/head1"
 cat > "$WORK/head1/head" <<'STUB'
 #!/bin/sh
 IFS= read -r _l && printf '%s\n' "$_l"
 STUB
 chmod +x "$WORK/head1/head"
-awk '/MARKET_NAME: AMD Radeon RX 7900 XTX/ { s = sprintf("%200000s", ""); gsub(/ /, "X", s); sub(/AMD Radeon RX 7900 XTX/, s) } { print }' \
+# Doubling, not sprintf("%200000s"): mawk 1.3.4 caps sprintf at 8192 bytes.
+awk '/MARKET_NAME: AMD Radeon RX 7900 XTX/ { s = "X"; while (length(s) < 200000) s = s s; sub(/AMD Radeon RX 7900 XTX/, substr(s, 1, 200000)) } { print }' \
     "$WORK/smi_three" > "$WORK/smi_three_long"
 assert_eq "an amd-smi answer larger than a pipe does not abort the block" \
     "gfx1100|200000" \
