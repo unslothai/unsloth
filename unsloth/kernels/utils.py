@@ -270,12 +270,14 @@ if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):
     cdequantize_blockwise_fp32 = _bnb_required
     cdequantize_blockwise_fp16_nf4 = _bnb_required
     cdequantize_blockwise_bf16_nf4 = _bnb_required
+    cdequantize_blockwise_fp32_nf4 = _bnb_required
     cgemm_4bit_inference_naive_fp16 = _bnb_required
     cgemm_4bit_inference_naive_bf16 = _bnb_required
 else:
     cdequantize_blockwise_fp32 = bnb_functional.lib.cdequantize_blockwise_fp32
     cdequantize_blockwise_fp16_nf4 = bnb_functional.lib.cdequantize_blockwise_fp16_nf4
     cdequantize_blockwise_bf16_nf4 = bnb_functional.lib.cdequantize_blockwise_bf16_nf4
+    cdequantize_blockwise_fp32_nf4 = bnb_functional.lib.cdequantize_blockwise_fp32_nf4
 
     if DEVICE_TYPE == "xpu":
         # xpu inference gemv, per bitsandbytes backends/xpu/ops.py#L115.
@@ -302,6 +304,37 @@ torch_empty = torch.empty
 torch_float32 = torch.float32
 torch_float16 = torch.float16
 torch_bfloat16 = torch.bfloat16
+
+# torch's autocast APIs take the TORCH device name, so ROCm is "cuda" and mlx is "mps";
+# passing DEVICE_TYPE straight in raises `unknown device type for autocast`. Resolve the
+# probe once here rather than per matmul, in three tiers:
+#   "device" -- torch >= 2.4, the device-name form works;
+#   "legacy" -- torch 2.1-2.3 (the cu118onlytorch211 / cu121onlytorch220 extras), where
+#               is_autocast_enabled takes no argument and only ever means CUDA. Answering
+#               "disabled" there would make matmul_lora pre-cast the activation and then
+#               let autocast cast it again, changing results by the extra rounding;
+#   None     -- torch will not answer at all (npu on a build without that backend), so
+#               fail OPEN to "assume no ambient autocast" and let matmul_lora reconcile
+#               the dtypes itself rather than erroring on the probe.
+try:
+    torch.is_autocast_enabled(DEVICE_TYPE_TORCH)
+    _AUTOCAST_PROBE = "device"
+except TypeError:
+    try:
+        torch.is_autocast_enabled()
+        _AUTOCAST_PROBE = "legacy"
+    except Exception:
+        _AUTOCAST_PROBE = None
+except Exception:
+    _AUTOCAST_PROBE = None
+
+
+def torch_is_autocast_enabled():
+    if _AUTOCAST_PROBE == "device":
+        return torch.is_autocast_enabled(DEVICE_TYPE_TORCH)
+    if _AUTOCAST_PROBE == "legacy":
+        return torch.is_autocast_enabled()
+    return False
 
 
 if importlib.util.find_spec("torchao") is not None:
@@ -534,9 +567,14 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             )
             out_absmax += offset
 
+            # `out` is allocated with quant_state.dtype, so the kernel has to match
+            # it exactly: writing bf16 bits into an fp32 buffer silently corrupts the
+            # dequantized weight rather than failing.
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
+                else cdequantize_blockwise_fp32_nf4
+                if dtype == torch_float32
                 else cdequantize_blockwise_bf16_nf4
             )
             fx(
@@ -642,9 +680,14 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             )
             out_absmax += offset
 
+            # `out` is allocated with quant_state.dtype, so the kernel has to match
+            # it exactly: writing bf16 bits into an fp32 buffer silently corrupts the
+            # dequantized weight rather than failing.
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
+                else cdequantize_blockwise_fp32_nf4
+                if dtype == torch_float32
                 else cdequantize_blockwise_bf16_nf4
             )
             fx(
@@ -718,9 +761,12 @@ else:
         )
         out_absmax += offset
 
+        # See the note above: the kernel must match the dtype `out` was allocated with.
         fx = (
             cdequantize_blockwise_fp16_nf4
             if dtype == torch_float16
+            else cdequantize_blockwise_fp32_nf4
+            if dtype == torch_float32
             else cdequantize_blockwise_bf16_nf4
         )
         fx(
@@ -1091,8 +1137,6 @@ def matmul_lora(
     s,
     out = None,
 ):
-    dtype = X.dtype
-
     if X.dim() == 3:
         batch, seq_len, d = X.shape
         X = X.view(-1, X.shape[-1])
@@ -1107,18 +1151,35 @@ def matmul_lora(
             W = W.dequantize()
         else:
             W = W.contiguous()
+        # torch.matmul never promotes a mixed-precision pair, so reconcile the
+        # activation to the weight dtype the way a plain Linear would. Under
+        # autocast the matmul is reconciled for us, and pre-casting would only
+        # round X through a second dtype, so leave it alone there.
+        if X.dtype != W.dtype and not torch_is_autocast_enabled():
+            X = X.to(W.dtype)
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = True)
+        # See note above: align the activation dtype to the base weight dtype.
+        if X.dtype != W.dtype and not torch_is_autocast_enabled():
+            X = X.to(W.dtype)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W
 
     if A is not None:
+        # The base matmul above fixes the compute dtype for this call, and under
+        # autocast that is the autocast dtype rather than W's. `addmm_` is in-place
+        # and so is not autocast-eligible, so both LoRA operands must follow `out`.
+        dtype = out.dtype
+        if X.dtype != dtype:
+            X = X.to(dtype)
         A, B = A.t(), B.t()
         XA = torch_matmul(X, A.to(dtype))
+        if XA.dtype != dtype:
+            XA = XA.to(dtype)
         out.addmm_(XA, B.to(dtype), alpha = s)
 
     return out.view(batch, seq_len, -1) if reshape else out
