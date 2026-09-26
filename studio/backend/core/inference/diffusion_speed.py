@@ -372,6 +372,7 @@ def apply_speed_optims(
     CUDA-graph arm refuses only on ``cache_engaged``: the caller bypasses per chunk if it toggles."""
     applied = {
         "channels_last": False,
+        "vae_fp16_decode": False,
         "cudnn_benchmark": False,
         "tf32": False,
         "fp16_accum": False,
@@ -392,6 +393,8 @@ def apply_speed_optims(
 
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
     applied["channels_last"] = _vae_channels_last(pipe, logger)
+    # Near-lossless, not bit-identical, so never on "off" (returned above).
+    applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
 
     if on_cuda:
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
@@ -505,6 +508,70 @@ def _vae_channels_last(pipe: Any, logger: Any) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "channels_last", exc)
+        return False
+
+
+def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> bool:
+    """fp16 channels_last(_3d) decode for fp32-pinned video VAEs (Wan) on NVIDIA sm75+; non-finite output reruns fp32.
+
+    fp16, not bf16 (the pin exists because bf16 bands). channels_last_3d alone slows HV1.5 / LTX-2: keep it Wan-only.
+    """
+    if not getattr(family, "vae_force_fp32", False) or getattr(target, "device", None) != "cuda":
+        return False
+    vae = getattr(pipe, "vae", None)
+    decoder = getattr(vae, "decoder", None)
+    original = getattr(vae, "decode", None)
+    if decoder is None or not callable(original):
+        return False
+    # A dual-DiT family calls apply_speed_optims once per expert over the same VAE.
+    if getattr(vae, "_unsloth_half_decode", False):
+        return True
+    if getattr(target, "backend", None) != "cuda" or not _fp16_compile_capable(target):
+        return False
+    try:
+        import functools
+
+        import torch
+
+        parts = [m for m in (getattr(vae, "post_quant_conv", None), decoder) if m is not None]
+        for part in parts:
+            part.to(torch.float16)
+            for module in part.modules():
+                weight = getattr(module, "weight", None)
+                if isinstance(module, (torch.nn.Conv2d, torch.nn.Conv3d)) and weight is not None:
+                    fmt = torch.channels_last if weight.dim() == 4 else torch.channels_last_3d
+                    weight.data = weight.data.contiguous(memory_format = fmt)
+        fell_back: list = []
+
+        @functools.wraps(original)
+        def decode(z: Any, *args: Any, **kwargs: Any) -> Any:
+            if fell_back or not torch.is_tensor(z):
+                return original(z, *args, **kwargs)
+            out = original(z.to(torch.float16), *args, **kwargs)
+            sample = out[0] if isinstance(out, tuple) else getattr(out, "sample", out)
+            if not torch.is_tensor(sample) or bool(torch.isfinite(sample).all()):
+                return out
+            if logger is not None:
+                logger.warning(
+                    "diffusion.speed: fp16 VAE decode was not finite; decoding in fp32 from now on"
+                )
+            for part in parts:
+                part.to(torch.float32)
+            fell_back.append(True)
+            return original(z, *args, **kwargs)
+
+        vae.decode = decode
+        vae._unsloth_half_decode = True
+        return True
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        try:
+            import torch
+            for part in (getattr(vae, "post_quant_conv", None), decoder):
+                if part is not None:
+                    part.to(torch.float32)
+        except Exception:  # noqa: BLE001, S110 - best-effort restore of the fp32 pin
+            pass
+        _warn(logger, "video vae fp16 decode", exc)
         return False
 
 
@@ -690,6 +757,12 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "compile_repeated_blocks", exc)
             continue
+        if dit_kwargs["dynamic"] is None:
+            try:
+                from . import diffusion_dynamic_text
+                diffusion_dynamic_text.install(transformer, logger)
+            except Exception as exc:  # noqa: BLE001 - optimisation only
+                _warn(logger, "dynamic text dims", exc)
         # compile_repeated_blocks is lazy: inductor only runs on the first forward, inside generate(), where a lowering
         # bug would fail the render. Guard every compiled block so such a failure drops this DiT to eager instead.
         guard_compiled_blocks(transformer, logger)

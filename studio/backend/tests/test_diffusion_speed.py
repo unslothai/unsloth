@@ -418,6 +418,7 @@ def test_speed_off_applies_nothing(monkeypatch):
     )
     assert applied == {
         "channels_last": False,
+        "vae_fp16_decode": False,
         "cudnn_benchmark": False,
         "tf32": False,
         "fused_qkv": False,
@@ -2096,6 +2097,25 @@ def test_auto_dynamic_active_follows_the_torchao_marker():
     dit._unsloth_auto_dynamic = True
     assert ds_mod.auto_dynamic_active(pipe) is True
     assert isinstance(ds_mod.dynamo_graph_count(), int)
+
+
+def test_automatic_dynamic_compile_arms_the_prompt_length_allowlist(monkeypatch):
+    from core.inference import diffusion_dynamic_text
+
+    armed = []
+    monkeypatch.setattr(
+        diffusion_dynamic_text, "install", lambda t, logger = None: armed.append(t) or True
+    )
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True, with_fuse = True)
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
+    assert armed == [pipe.transformer]
+
+    armed.clear()
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
+    assert armed == []
 
 
 def test_speed_max_compiles_a_quantised_stream_merging_dit_static(monkeypatch):
