@@ -121,7 +121,11 @@ Check "a lookalike vendor ID is not matched" ((Test-NvidiaAdapterPresent) -eq $f
 foreach ($case in @(
     @{ N = "a healthy AMD adapter";   A = @(Adapter "AMD Radeon RX 7900 XTX" "PCI\VEN_1002&DEV_744C" 0); Want = $true },
     @{ N = "a healthy Intel adapter"; A = @(Adapter "Intel Arc A770" "PCI\VEN_8086&DEV_56A0" 0); Want = $true },
-    @{ N = "a faulted AMD adapter";   A = @(Adapter "AMD Radeon RX 7900 XTX" "PCI\VEN_1002&DEV_744C" 43); Want = $false },
+    # The AMD route keeps faulted, parked and PNP-less Radeons, so each must veto the promotion.
+    @{ N = "a faulted AMD adapter";   A = @(Adapter "AMD Radeon RX 7900 XTX" "PCI\VEN_1002&DEV_744C" 43); Want = $true },
+    @{ N = "a parked AMD adapter";    A = @(Adapter "AMD Radeon RX 7900 XTX" "PCI\VEN_1002&DEV_744C" 45); Want = $true },
+    @{ N = "an AMD adapter with no PNP ID"; A = @(Adapter "AMD Radeon RX 7900 XTX" "" 0); Want = $true },
+    @{ N = "a faulted Intel UHD adapter"; A = @(Adapter "Intel(R) UHD Graphics 770" "PCI\VEN_8086&DEV_4680" 43); Want = $false },
     @{ N = "an NVIDIA adapter only";  A = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0); Want = $false },
     @{ N = "a virtual adapter only";  A = @(Adapter "Microsoft Basic Display Adapter" "ROOT\BASICDISPLAY" 0); Want = $false }
 )) {
@@ -659,7 +663,11 @@ Check "a scan that answered takes no version from the registry" (
     $null -eq (Get-NvidiaAdapterDriverRelease))
 Check "and never consulted it" ($script:RegistryConsulted -eq $false)
 
+# The real helper, so the fallback reads the class keys through the Intel route's normalization.
+$registryNamesStub = ${function:Get-IntelRegistryAdapterNames}
+Invoke-Expression (Get-FunctionText $setupPs1 "Get-IntelRegistryAdapterNames")
 foreach ($case in @(
+    @{ N = "an Arc named without the vendor"; Id = "PCI\\VEN_8086&DEV_56A0"; Desc = "Arc A770 Graphics"; Want = $true },
     @{ N = "an Arc in the class keys";        Id = "PCI\\VEN_8086&DEV_56A0"; Desc = "Intel(R) Arc(TM) A770 Graphics"; Want = $true },
     @{ N = "a Data Center GPU";               Id = "PCI\\VEN_8086&DEV_0BD5"; Desc = "Intel(R) Data Center GPU Max 1100"; Want = $true },
     @{ N = "integrated Intel UHD";            Id = "PCI\\VEN_8086&DEV_9A49"; Desc = "Intel(R) UHD Graphics"; Want = $false },
@@ -679,6 +687,7 @@ foreach ($case in @(
         (Test-OtherVendorAdapterPresent) -eq $case.Want)
     Check "  and the registry really was the source" ($script:RegistryConsulted -eq $true)
 }
+${function:Get-IntelRegistryAdapterNames} = $registryNamesStub
 
 $script:CaseId = "PCI\\VEN_1002&DEV_744C"
 $script:CaseDesc = "AMD Radeon RX 7900 XTX"
@@ -691,8 +700,8 @@ Check "and the registry was never consulted" ($script:RegistryConsulted -eq $fal
 foreach ($file in @($installPs1, $setupPs1)) {
     Check "$(Split-Path -Leaf $file) gates the other-vendor fallback on a failed scan too" (
         (Get-FunctionText $file "Test-OtherVendorAdapterPresent") -match 'if \(\$Scan\.Ok\) \{ return \$false \}')
-    Check "$(Split-Path -Leaf $file) asks the shared XPU pattern of DriverDesc" (
-        (Get-FunctionText $file "Test-OtherVendorAdapterPresent") -match 'DriverDesc[\s\S]{0,60}Get-XpuCapableNameRegex')
+    Check "$(Split-Path -Leaf $file) asks the shared XPU pattern of the Intel route's registry names" (
+        (Get-FunctionText $file "Test-OtherVendorAdapterPresent") -match 'Get-IntelRegistryAdapterNames \| Where-Object \{ "\$_" -match \(Get-XpuCapableNameRegex\)')
 }
 
 # Runs the real Get-TorchIndexUrl: promoting without a version used to still yield a CPU index.

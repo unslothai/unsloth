@@ -3368,18 +3368,17 @@ function Test-OtherVendorAdapterPresent {
         } catch {}
     }
     foreach ($adapter in @($Scan.Adapters)) {
-        # 1002 is AMD/ATI, 8086 is Intel.
-        if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_(1002|8086)') { continue }
-        # Unknown status declines the promotion.
-        if ($null -ne $adapter.ConfigManagerErrorCode -and [int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
-        # Intel only blocks if the XPU route serves it (answered above; UHD/Iris do not). AMD is NOT
-        # narrowed: its route uses a name-to-gfx table this would drift from.
-        if ("$($adapter.PNPDeviceID)" -match '(?i)ven_8086') { continue }
-        return $true
+        # AMD vetoes on the AMD route's own test (name or 1002, any status: it keeps parked and
+        # PNP-less cards). Intel was answered above; UHD/Iris do not block.
+        if ("$($adapter.Name)" -match "AMD|Radeon" -or "$($adapter.PNPDeviceID)" -match '(?i)ven_1002') { return $true }
     }
     # Registry fallback here is deliberate: staleness only DECLINES a promotion. Without it, broken WMI
     # hid the Arc on a hybrid host and cost it its XPU wheels.
     if ($Scan.Ok) { return $false }
+    # Same normalized names as the Intel route (it prefixes "Intel" to a VEN_8086 DriverDesc).
+    try {
+        if (@(Get-IntelRegistryAdapterNames | Where-Object { "$_" -match (Get-XpuCapableNameRegex) }).Count -gt 0) { return $true }
+    } catch {}
     $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
     try {
         $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
@@ -3391,8 +3390,6 @@ function Test-OtherVendorAdapterPresent {
             if (-not $props) { continue }
             $match = "$($props.MatchingDeviceId)"
             if ($match -match '(?i)ven_1002') { return $true }
-            if ($match -match '(?i)ven_8086' -and
-                "$($props.DriverDesc)" -match (Get-XpuCapableNameRegex)) { return $true }
         } catch {}
     }
     return $false
