@@ -33,6 +33,7 @@ from hub.schemas.downloads import (
 )
 from hub.utils.hf_tokens import HfTokenArg
 from hub.schemas.inventory import (
+    AddModelLibraryRequest,
     AddScanFolderRequest,
     CachedGgufResponse,
     CachedModelsResponse,
@@ -41,11 +42,17 @@ from hub.schemas.inventory import (
     GgufVariantsResponse,
     HiddenModelsResponse,
     LocalModelListResponse,
+    ModelLibrariesResponse,
+    ModelLibraryInfo,
     ModelsFolderResponse,
+    MoveModelRequest,
+    MoveModelResponse,
     OrphanCompanionsResponse,
+    RemoveModelLibraryResponse,
     RemoveScanFolderResponse,
     ScanFolderInfo,
     ScanFoldersResponse,
+    SetDefaultLibraryResponse,
 )
 from hub.services.models import (
     cache_inventory,
@@ -53,6 +60,7 @@ from hub.services.models import (
     deletion,
     downloads,
     gguf_variants,
+    libraries,
     local_inventory,
 )
 
@@ -141,6 +149,33 @@ def get_models_folder(
             headers = error.headers,
         ) from error
     return redact_inventory_host_paths(payload, via_api_key = via_api_key)
+
+
+@router.get("/libraries", response_model = ModelLibrariesResponse)
+def get_model_libraries(current_subject: str = Depends(get_current_subject)):
+    return libraries.list_libraries_response()
+
+
+@router.post("/libraries", response_model = ModelLibraryInfo, status_code = 201)
+def add_model_library(
+    body: AddModelLibraryRequest, current_subject: str = Depends(get_current_subject)
+):
+    return libraries.add_library_response(body.path, body.label)
+
+
+@router.delete("/libraries/{library_id}", response_model = RemoveModelLibraryResponse)
+def remove_model_library(library_id: int, current_subject: str = Depends(get_current_subject)):
+    return libraries.remove_library_response(library_id)
+
+
+@router.post("/libraries/{library_id}/default", response_model = SetDefaultLibraryResponse)
+def set_default_model_library(library_id: int, current_subject: str = Depends(get_current_subject)):
+    return libraries.set_default_library_response(library_id)
+
+
+@router.post("/libraries/move", response_model = MoveModelResponse)
+def move_model(body: MoveModelRequest, current_subject: str = Depends(get_current_subject)):
+    return libraries.move_model_response(body.repo_id, body.variant, body.target_library_id)
 
 
 @router.get("/gguf-variants", response_model = GgufVariantsResponse)

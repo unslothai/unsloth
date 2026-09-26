@@ -404,6 +404,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS model_libraries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE {collation},
+            label TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_projects (
             id TEXT NOT NULL PRIMARY KEY,
