@@ -1135,7 +1135,6 @@ def _resolve_diffusion_compute_dtype(fam: Optional[DiffusionFamily], dtype: Any)
 
 
 def _float_load_itemsize(dtype: Any) -> Optional[int]:
-    """Bytes per element of a floating load dtype, or None when there is none to price by."""
     try:
         import torch
         if isinstance(dtype, torch.dtype) and dtype.is_floating_point:
@@ -1146,8 +1145,7 @@ def _float_load_itemsize(dtype: Any) -> Optional[int]:
 
 
 def _class_pins_fp32(class_name: str, load_dtype: Any) -> tuple[str, ...]:
-    """Module names a loaded class keeps in fp32 at this half dtype. Diffusers pins at both;
-    Transformers pins ``_keep_in_fp32_modules`` (T5's ``wo``) only at fp16, the strict set at both."""
+    """Diffusers pins at both halves; Transformers pins ``_keep_in_fp32_modules`` only at fp16."""
     for lib in ("diffusers", "transformers"):
         module = sys.modules.get(lib)
         try:
@@ -1165,7 +1163,6 @@ def _class_pins_fp32(class_name: str, load_dtype: Any) -> tuple[str, ...]:
 
 
 def _component_pins_fp32(folder: Path, load_dtype: Any) -> tuple[str, ...]:
-    """Module names the component's class keeps in fp32 when loaded at ``load_dtype``."""
     try:
         config = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
         names = [config.get("_class_name"), *(config.get("architectures") or ())]
@@ -4509,11 +4506,8 @@ class DiffusionBackend:
     ) -> dict[str, int]:
         """``{relative path: on-disk bytes}`` for the weight files under a diffusers directory. Per
         file, not a total, so callers merging several trees can dedupe by path. See
-        ``_local_dir_weight_bytes`` for what the filter is for.
-
-        ``load_dtype`` (the float dtype the pipeline loads in) prices what ``from_pretrained``
-        holds instead: default-variant component files, selectable safetensors over ``.bin``, and
-        floats at the load dtype (a surviving ``.bin`` too)."""
+        ``_local_dir_weight_bytes`` for what the filter is for. ``load_dtype`` prices what
+        ``from_pretrained`` holds instead (default variant, safetensors over ``.bin``, cast floats)."""
         load_itemsize = _float_load_itemsize(load_dtype)
         sizes: dict[str, int] = {}
         for f in path.rglob("*"):
@@ -4570,13 +4564,10 @@ class DiffusionBackend:
         itemsize: int,
         pinned: tuple[str, ...] = (),
     ) -> Optional[int]:
-        """Bytes once loaded at an ``itemsize``-byte float, or None to keep the stored size. An fp32
-        load and ``pinned`` modules hold four bytes; a half load narrows only a file stored wider
-        throughout (a mixed file pins its fp32 norms). Packed / fp8 weights keep their size."""
+        """A half load narrows only a file stored wider throughout (a mixed file pins its fp32 norms)."""
         try:
             with open(path, "rb") as fh:
                 length = int.from_bytes(fh.read(8), "little")
-                # The format caps the header at 100 MB; a larger length is not a safetensors file.
                 if length > 100_000_000:
                     return None
                 header = json.loads(fh.read(length))
@@ -4604,9 +4595,6 @@ class DiffusionBackend:
         itemsize: int,
         pinned: tuple[str, ...] = (),
     ) -> Optional[int]:
-        """``_safetensors_cast_bytes`` for a pickled ``.bin``: a memory-mapped weights-only load reads
-        dtypes and shapes without touching the tensor data. None (keep the stored size) for a legacy
-        non-zip file or anything that is not a flat tensor dict."""
         try:
             import torch
 
@@ -4643,7 +4631,6 @@ class DiffusionBackend:
         itemsize: int,
         pinned: tuple[str, ...] = (),
     ) -> Optional[int]:
-        """Price ``(name, float width or None, numel, stored bytes)`` rows at an ``itemsize``-byte load."""
         widths = [width for _, width, _, _ in tensors if width is not None]
         if not widths:
             return None
@@ -7657,8 +7644,7 @@ class DiffusionBackend:
                 self._cache_bytes(cache_repo) if cache_repo else 0,
             )
             if load_dtype is not None:
-                # Cached bytes are what the repo STORES: fp32 SDXL halves in bf16/fp16, a bf16 repo doubles in fp32,
-                # and variant twins or single files beside the pipeline are never opened.
+                # Cached bytes are what the repo STORES, not what the load holds at this dtype.
                 loaded = max(
                     self._local_dir_weight_bytes(
                         local_repo, exclude_transformer = False, load_dtype = load_dtype

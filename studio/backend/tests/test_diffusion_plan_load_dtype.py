@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The pipeline memory plan prices weights at the dtype the load casts them to.
-
-A bf16 repo loaded in fp32 (a Mac without bf16, an fp16-incompatible family on an fp16 card)
-doubles the same way.
-
-SDXL (and Lumina-2's text encoder, Z-Image-Turbo's transformer) publish fp32 shards that halve once
-loaded in bf16 / fp16, and a cache can also hold variant twins or single-file checkpoints that
-``from_pretrained`` never opens. Sizing the plan from those bytes sent SDXL-Turbo to whole-model
-offload on 24 GB cards."""
+"""SDXL-Turbo's fp32 shards, sized as stored, sent it to whole-model offload on 24 GB cards."""
 
 import json
 import sys
@@ -33,7 +25,6 @@ REV = "a" * 40
 
 
 def _safetensors(path, tensors):
-    """A sparse safetensors file: a real header for ``{name: (dtype, numel)}`` and a zero payload."""
     width = {"F64": 8, "F32": 4, "F16": 2, "BF16": 2, "U8": 1, "I64": 8}
     header, offset = {}, 0
     for name, (dtype, numel) in tensors.items():
@@ -61,7 +52,6 @@ def _bf16(mib):
 
 
 def _t5(dtype, wo_mib, rest_mib):
-    """A T5-like encoder: the ``wo`` projections Transformers may pin to fp32, and everything else."""
     width = 4 if dtype == "F32" else 2
     return {
         "encoder.block.0.layer.1.DenseReluDense.wo.weight": (dtype, wo_mib * MIB // width),
@@ -75,7 +65,6 @@ def _snapshot(
     files,
     repo = REPO,
 ):
-    """``files`` = {relative path: tensors} under the live cache root's refs/main snapshot."""
     from huggingface_hub import constants as hf_constants
 
     live = tmp_path / "hub"
@@ -145,7 +134,6 @@ def test_an_fp32_pipeline_is_planned_at_the_half_precision_it_loads_in(
     _snapshot(tmp_path, monkeypatch, SDXL_LIKE)
     _card(monkeypatch)
     plan = _plan(getattr(torch, dtype))
-    # 4000 MiB of fp32 shards hold 2000 MiB once cast: 2000 + 100 + 2048 fits the 5909 MiB margin.
     assert plan.estimates["model_dense_mib"] == 2000
     assert plan.estimates["companion_dense_mib"] == 2000
     assert plan.estimates["text_encoder_dense_mib"] == 150
@@ -177,7 +165,6 @@ def test_variant_twins_bin_twins_and_single_files_are_not_counted(tmp_path, monk
             "unet/diffusion_pytorch_model.fp16.safetensors": _bf16(1000),
             "text_encoder/model.safetensors": _bf16(300),
             "text_encoder/pytorch_model.bin": _bf16(300),
-            # A single-file checkpoint of the same model, cached by a single-file pick of this repo.
             "sd_xl_like_fp16.safetensors": _bf16(2500),
         },
     )
@@ -207,7 +194,6 @@ def test_a_mixed_precision_or_quantised_file_keeps_its_stored_size(tmp_path, mon
         tmp_path,
         monkeypatch,
         {
-            # bf16 weights with fp32 norms kept on purpose.
             "transformer/diffusion_pytorch_model.safetensors": {
                 "w": ("BF16", 900 * MIB // 2),
                 "norm": ("F32", 100 * MIB // 4),
@@ -236,7 +222,6 @@ def test_a_component_class_pinning_fp32_modules_keeps_those_modules_wide(tmp_pat
     _card(monkeypatch)
     pinned = types.SimpleNamespace(T5EncoderModel = type("T5", (), {"_keep_in_fp32_modules": ["wo"]}))
     monkeypatch.setitem(sys.modules, "transformers", pinned)
-    # wo stays fp32 (100), the rest halves (150).
     assert _plan(torch.float16).estimates["model_dense_mib"] == 1000 + 100 + 150
     free = types.SimpleNamespace(T5EncoderModel = type("T5", (), {"_keep_in_fp32_modules": None}))
     monkeypatch.setitem(sys.modules, "transformers", free)
@@ -283,7 +268,6 @@ def test_gguf_companions_are_priced_at_the_load_dtype(tmp_path, monkeypatch):
 
 def test_a_unified_pool_no_longer_refuses_an_fp32_repo_that_fits_in_bf16(tmp_path, monkeypatch):
     _snapshot(tmp_path, monkeypatch, SDXL_LIKE)
-    # budget 7000 - 2048 = 4952: 4000 + 2048 is refused, 2000 + 2048 fits.
     _card(monkeypatch, free = 7000, total = 7000, kind = "unified_memory")
     fp32 = _plan(torch.float32)
     bf16 = _plan(torch.bfloat16)
@@ -309,8 +293,6 @@ def test_safetensors_cast_bytes(tmp_path, tensors, itemsize, expected):
 
 
 def test_a_dotted_pin_matches_the_parameter_path_the_way_the_loader_does(tmp_path):
-    # Transformers matches a pin as whole dot-separated segments of the parameter name, so a
-    # multi-segment pin holds its tensor in fp32 while a name that only shares a prefix does not.
     path = _safetensors(
         tmp_path / "x.safetensors",
         {
@@ -330,7 +312,6 @@ def test_a_bin_checkpoint_is_priced_at_the_load_dtype(tmp_path):
         path,
     )
     assert DiffusionBackend._bin_cast_bytes(path, 4) == 10 * 4 + 5 * 4
-    # Mixed widths: a half load keeps the stored bytes, as for safetensors.
     assert DiffusionBackend._bin_cast_bytes(path, 2) == 10 * 2 + 5 * 4
 
 

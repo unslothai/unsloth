@@ -3657,8 +3657,6 @@ def test_plan_memory_sizes_the_mirrored_companion_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(
         DiffusionBackend,
         "_companion_cache_bytes",
-        # The staged snapshot dir and load dtype are unused here: what this pins is that the
-        # MIRROR id is the one sized.
         staticmethod(
             lambda base, staged = None, load_dtype = None: (
                 8 * 1024 * 1024 if base == "unsloth/FLUX.1-dev" else 0
