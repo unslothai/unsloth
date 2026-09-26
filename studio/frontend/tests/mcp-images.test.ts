@@ -11,12 +11,14 @@ import {
   MAX_TOTAL_MCP_IMAGES,
   MAX_MCP_IMAGE_MIME_CHARS,
   MAX_TOTAL_MCP_IMAGE_CHARS,
+  MCP_IMAGE_PARSE_ERROR_TEXT,
   planMcpImageBound,
   MCP_IMAGES_MARKER,
   boundMcpImageEnvelopes,
   mcpImagesEnvelope,
   splitMcpImages,
   stripMcpImageEnvelopes,
+  toolTextForModel,
 } from "../src/features/chat/api/mcp-images.ts";
 import { providerModelTakesMcpImages } from "../src/features/chat/external-providers.ts";
 import { localToolExchangeIndexes } from "../src/features/chat/codex-reasoning.ts";
@@ -574,6 +576,43 @@ test("a message's results are batched by replay exchange, not as one block", () 
   );
 });
 
+test("a result whose marker does not parse is fail-closed for missing/mcp__ provenance", () => {
+  const bad = "log" + MCP_IMAGES_MARKER + "{oops: " + "A".repeat(2_000_000);
+  assert.equal(toolTextForModel(bad, "mcp__fs__read_media_file"), MCP_IMAGE_PARSE_ERROR_TEXT);
+  assert.equal(toolTextForModel(bad, undefined), MCP_IMAGE_PARSE_ERROR_TEXT);
+  assert.equal(toolTextForModel(bad, ""), MCP_IMAGE_PARSE_ERROR_TEXT);
+  const nonMcp = toolTextForModel(bad, "read_file");
+  assert.equal(nonMcp, bad);
+  const small = "log" + MCP_IMAGES_MARKER + "{oops}";
+  assert.equal(toolTextForModel(small, "read_file"), small);
+  assert.equal(toolTextForModel(small, "web_search"), small);
+  const literal = "before" + MCP_IMAGES_MARKER + " literal\nafter";
+  assert.equal(toolTextForModel(literal, "read_file"), literal);
+});
+
+test("a valid envelope's payload still comes off for the model", () => {
+  const text = "[1 image returned]" + mcpImagesEnvelope(IMAGES);
+  assert.equal(toolTextForModel(text, "mcp__fs__read_media_file"), "[1 image returned]");
+});
+
+test("the serializer applies the fail-closed notice to string results", () => {
+  assert.match(adapter, /toolTextForModel\(result, tc\.toolName\)/);
+});
+
+test("a dead envelope uploads neither bytes nor base64 on a text-only target", () => {
+  const invalid = [
+    {
+      role: "tool",
+      name: "mcp__fs__shot",
+      content: "log" + MCP_IMAGES_MARKER + "{oops: " + "A".repeat(2_000_000),
+    },
+  ];
+  const stripped = stripMcpImageEnvelopes(invalid);
+  assert.equal(stripped[0].content, MCP_IMAGE_PARSE_ERROR_TEXT);
+  const bounded = boundMcpImageEnvelopes(invalid);
+  assert.equal(bounded[0].content, MCP_IMAGE_PARSE_ERROR_TEXT);
+});
+
 test("a client tool's structured result is not unwrapped as the MCP wrapper", () => {
   // Unwrapping by shape alone reduced {text, images, ...} from a non-MCP client tool
   // to its text, silently dropping every other field. The bare live-parser wrapper
@@ -586,4 +625,9 @@ test("a client tool's structured result is not unwrapped as the MCP wrapper", ()
     adapter,
     /export function isBareMcpImageWrapper\(val: unknown\): boolean \{\n\s*if \(!isMcpImageToolResult\(val\)\) return false;\n\s*const keys = Object\.keys\(val as object\)\.filter\(\(key\) => key !== "text" && key !== "images"\);\n\s*return keys\.length === 0;/,
   );
+});
+
+test("the wire contract matches the backend envelope exactly", () => {
+  assert.equal(MCP_IMAGES_MARKER, "\n__MCP_IMAGES__:");
+  assert.equal(MCP_IMAGE_PARSE_ERROR_TEXT, "[MCP image could not be parsed]");
 });

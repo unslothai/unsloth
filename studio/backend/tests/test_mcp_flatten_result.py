@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
+import struct
 import sys
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +17,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference import mcp_client
+from core.inference import mcp_images
 from core.inference.mcp_client import (
     MAX_IMAGE_PAYLOAD_CHARS,
     MCP_IMAGES_SENTINEL,
@@ -24,6 +28,18 @@ from core.inference.tool_loop_controller import is_tool_error, strip_result_for_
 
 PNG_B64 = "iVBORw0KGgoAAAANSUhEUg=="
 WAV_B64 = "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="
+
+
+def _png_pixel(rgba: bytes) -> str:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    raw = b"\x89PNG\r\n\x1a\n"
+    raw += chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+    raw += chunk(b"IDAT", zlib.compress(b"\x00" + rgba))
+    raw += chunk(b"IEND", b"")
+    return base64.b64encode(raw).decode("ascii")
 
 
 def _text(value: str) -> SimpleNamespace:
@@ -105,16 +121,16 @@ def test_strip_result_for_model_drops_image_payload():
 
 
 def test_strip_preserves_literal_mcp_sentinel_in_text():
-    # A tool that legitimately returns text containing the marker (e.g. reading
-    # source/docs that quote it) must not be truncated: the suffix is not a
-    # valid JSON image array.
+    # A named non-MCP tool that legitimately returns text containing the marker
+    # (e.g. reading source/docs that quote it) must not be truncated: the suffix
+    # is not a valid JSON image array.
     text = "before\n__MCP_IMAGES__: literal from source\nafter"
-    assert strip_result_for_model(text) == text
+    assert strip_result_for_model(text, "read_file") == text
 
 
 def test_strip_preserves_non_image_json_after_marker():
     text = 'log line\n__MCP_IMAGES__:["not", "image", "dicts"]'
-    assert strip_result_for_model(text) == text
+    assert strip_result_for_model(text, "web_search") == text
 
 
 def test_strip_removes_only_valid_terminal_envelope():
@@ -589,3 +605,184 @@ def test_registry_case_does_not_decide_whether_an_image_survives(monkeypatch):
     flat = _flatten_result(_result(_blob_resource(mime = "application/jxl")))
     payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
     assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/jxl"}]
+
+
+def test_invalid_mcp_envelope_fails_closed_for_an_mcp_tool():
+    # A result that claims images it cannot parse used to leak whole as tool text.
+    huge = "A" * 40_000
+    text = "log\n" + MCP_IMAGES_SENTINEL + "{oops: " + huge
+    stripped = strip_result_for_model(text, "mcp__fs__read_media_file")
+    assert stripped == mcp_images.MCP_IMAGE_PARSE_ERROR_TEXT
+    assert huge not in stripped
+
+
+def test_invalid_mcp_envelope_is_not_touched_for_a_named_non_mcp_tool():
+    # A named non-MCP tool owns the string; the marker alone never triggers the gate.
+    literal = "before\n__MCP_IMAGES__: literal from source\nafter"
+    assert strip_result_for_model(literal, "read_file") == literal
+    bad_json = 'log\n__MCP_IMAGES__:["not", "image", "dicts"]'
+    assert strip_result_for_model(bad_json, "web_search") == bad_json
+
+
+def test_unnamed_result_with_a_broken_envelope_fails_closed_live():
+    # Same rule as promote_history: provenance missing or empty is as good as mcp__.
+    huge = "A" * 40_000
+    text = "log\n" + MCP_IMAGES_SENTINEL + "{oops: " + huge
+    assert strip_result_for_model(text) == mcp_images.MCP_IMAGE_PARSE_ERROR_TEXT
+    assert strip_result_for_model(text, "") == mcp_images.MCP_IMAGE_PARSE_ERROR_TEXT
+    assert huge not in strip_result_for_model(text)
+
+
+def test_valid_mcp_envelope_is_still_stripped_for_an_mcp_tool():
+    text = (
+        "Took a screenshot\n[1 image returned]"
+        '\n__MCP_IMAGES__:[{"data": "AAAA", "mimeType": "image/png"}]'
+    )
+    assert (
+        strip_result_for_model(text, "mcp__fs__screenshot")
+        == "Took a screenshot\n[1 image returned]"
+    )
+
+
+def test_sanitize_stays_suffix_only_for_the_envelope_recovery_split():
+    # tools._split_frontend_suffix subtracts the strip from the original to recover
+    # the envelope, so sanitize must edit only a suffix.
+    text = (
+        "short\n[1 image returned]" '\n__MCP_IMAGES__:[{"data": "AAAA", "mimeType": "image/png"}]'
+    )
+    assert (
+        mcp_images.sanitize_tool_text(text, "mcp__fs__read_media_file")
+        == "short\n[1 image returned]"
+    )
+    assert text.startswith(mcp_images.sanitize_tool_text(text, "mcp__fs__read_media_file"))
+
+
+def test_promote_history_fails_closed_on_an_invalid_mcp_envelope():
+    huge = "A" * 30_000
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {"name": "mcp__fs__read_media_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": "mcp__fs__read_media_file",
+            "content": "head\n" + MCP_IMAGES_SENTINEL + "{oops: " + huge,
+        },
+    ]
+    out = mcp_images.promote_history(messages, vision = False)
+    tool = out[-1]
+    assert tool["role"] == "tool"
+    assert tool["content"] == mcp_images.MCP_IMAGE_PARSE_ERROR_TEXT
+    assert huge not in tool["content"]
+
+
+def test_promote_history_fails_closed_on_an_unnamed_tool_result():
+    huge = "A" * 30_000
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "head\n" + MCP_IMAGES_SENTINEL + "{oops: " + huge,
+        },
+    ]
+    out = mcp_images.promote_history(messages, vision = False)
+    tool = out[-1]
+    assert tool["role"] == "tool"
+    assert tool["content"] == mcp_images.MCP_IMAGE_PARSE_ERROR_TEXT
+    assert huge not in tool["content"]
+
+
+def test_promote_history_passes_unmarked_tool_text_through():
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {"name": "mcp__fs__read", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": "mcp__fs__read",
+            "content": "plain text",
+        },
+    ]
+    assert mcp_images.promote_history(messages, vision = False)[-1] is messages[-1]
+
+
+def test_multi_turn_replay_re_attaches_both_envelopes():
+    first, second = _png_pixel(b"\xde\x00\x00\xff"), _png_pixel(b"\x00\x00\xde\xff")
+    envelope = lambda data: (
+        "[1 image returned]\n"
+        + MCP_IMAGES_SENTINEL
+        + json.dumps([{"data": data, "mimeType": "image/png"}])
+    )
+    call = lambda call_id: {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": "mcp__fs__read_media_file", "arguments": "{}"},
+            }
+        ],
+    }
+    messages = [
+        {"role": "user", "content": "look at this"},
+        call("call_0"),
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": "mcp__fs__read_media_file",
+            "content": envelope(first),
+        },
+        {"role": "user", "content": "and this"},
+        call("call_1"),
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "mcp__fs__read_media_file",
+            "content": envelope(second),
+        },
+    ]
+    text_only = mcp_images.promote_history(messages, vision = False)
+    assert [tool["content"] for tool in text_only if tool["role"] == "tool"] == [
+        "[1 image returned]",
+        "[1 image returned]",
+    ]
+    assert not any(first in str(message) or second in str(message) for message in text_only)
+    promoted: list = []
+    out = mcp_images.promote_history(messages, vision = True, promoted_out = promoted)
+    urls = [part["image_url"]["url"] for part in promoted]
+    assert len(urls) == 2
+    assert all(url.startswith("data:image/png;base64,") for url in urls)
+    assert urls[0] != urls[1]
+    for message in out:
+        text = message.get("content")
+        if isinstance(text, str):
+            assert first not in text and second not in text
+        else:
+            assert not any(first in str(part) or second in str(part) for part in (text or []))
+
+
+def test_frontend_backend_marker_parity():
+    assert "\n" + MCP_IMAGES_SENTINEL == "\n__MCP_IMAGES__:"
+    assert mcp_images.SENTINEL == "__MCP_IMAGES__:"

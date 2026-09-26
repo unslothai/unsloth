@@ -134,6 +134,32 @@ def mentions_images(result: str) -> bool:
     return ("\n" + SENTINEL) in result
 
 
+# Fail-closed stand-in when an envelope does not parse; it is never replayed as tool text.
+MCP_IMAGE_PARSE_ERROR_TEXT = "[MCP image could not be parsed]"
+
+
+def sanitize_tool_text(result: str, tool_name: "str | None" = None) -> str:
+    """Strip a valid envelope's payload; it is image input, resolved in _promote.
+    A result that merely mentions the sentinel but does not parse fails closed to
+    a one-line notice -- the whole result goes, head included, because an
+    unparseable envelope gives no trustworthy place to cut."""
+    text, images = split_images(result)
+    if images:
+        return text
+    if mentions_images(result) and (
+        tool_name is None or tool_name == "" or tool_name.startswith(MCP_TOOL_PREFIX)
+    ):
+        logger.warning(
+            "Tool %r returned a result that mentions %r but does not parse into image "
+            "entries; %d chars withheld from the model.",
+            tool_name,
+            SENTINEL,
+            len(result),
+        )
+        return MCP_IMAGE_PARSE_ERROR_TEXT
+    return result
+
+
 def _decoded_urls(
     images: Sequence[dict],
     limit: int = MAX_MODEL_IMAGES,
@@ -1160,19 +1186,32 @@ def _promote(
         content = message.get("content")
         if message.get("role") == "tool" and isinstance(content, str):
             text, images = split_images(content)
-            # The suffix always comes off -- it is megabytes of base64 and the model
-            # must never read it as text. Provenance decides only whether it becomes
-            # IMAGE input: a named non-MCP tool that happens to end in a valid
-            # envelope is not one an MCP server served.
             name = message.get("name") or call_names.get(position)
+            if not images:
+                if (
+                    name is None or name == "" or name.startswith(MCP_TOOL_PREFIX)
+                ) and mentions_images(content):
+                    logger.warning(
+                        "Replay of tool result (name=%r) mentions %r but does not parse "
+                        "into image entries; %d chars withheld from the model.",
+                        name,
+                        SENTINEL,
+                        len(content),
+                    )
+                    text = MCP_IMAGE_PARSE_ERROR_TEXT
+                else:
+                    text = content
+            # The suffix always comes off; provenance decides whether it is IMAGE input,
+            # and a named non-MCP tool's envelope is not one an MCP server served.
             if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
                 # A non-MCP result sitting between the images and their turn makes
                 # "the tool call above" name web_search or read_file.
                 if pending:
                     interrupted[0] = True
-                out.append(
-                    {**message, "content": text or "[image returned]"} if images else message
-                )
+                if images or text != content:
+                    out.append({**message, "content": text or "[image returned]"})
+                else:
+                    out.append(message)
                 continue
             if images:
                 # Only the entries the cap can still admit. The suffix comes off the
@@ -1192,7 +1231,10 @@ def _promote(
                 returned_totals.append(_returned_count(images))
             elif pending:
                 interrupted[0] = True
-            out.append({**message, "content": text or "[image returned]"} if images else message)
+            if images or text != content:
+                out.append({**message, "content": text or "[image returned]"})
+            else:
+                out.append(message)
             continue
         if pending and vision and message.get("role") == "user":
             # Merged, not inserted ahead of it: two user turns in a row is what
