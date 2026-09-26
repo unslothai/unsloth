@@ -1178,8 +1178,7 @@ def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
     return True
 
 
-# Where skipping the audio VAE's cudnn.benchmark search was measured to cost at most ~1.4% (1.2 ms) per steady-state
-# call: A100, B200, RTX PRO 6000. It still won 17-19% on a T4 and 2-8% on an L4, so those and unmeasured GPUs keep it.
+# Skipping the search measured <= 1.4% slower here; a T4 / L4 still gain 17-19% / 2-8% from it, so they keep it.
 _AUDIO_VAE_NO_SEARCH_CAPABILITIES = frozenset({(8, 0), (10, 0), (12, 0)})
 
 
@@ -1192,8 +1191,7 @@ def _audio_vae_search_gains_nothing() -> bool:
 
 
 def install_audio_vae_without_cudnn_benchmark(audio_vae: Any) -> bool:
-    """Hold ``cudnn.benchmark`` off for the audio VAE's decode and encode where the search gains its 1D convs nothing
-    at steady state; it costs host time and huge workspaces on every new shape per thread. Idempotent."""
+    """Hold ``cudnn.benchmark`` off for the audio VAE (host seconds + huge workspaces per new shape). Idempotent."""
     if audio_vae is None or getattr(audio_vae, "_unsloth_no_cudnn_benchmark", False):
         return False
     if not _audio_vae_search_gains_nothing():

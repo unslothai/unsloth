@@ -108,7 +108,6 @@ def fp16_accumulation_scope(value: bool) -> Iterator[None]:
             )
 
 
-# cudnn.benchmark follows the same one-owner rule, so a decode that holds it off never leaks a stale value.
 _CUDNN_BENCH_LOCK = threading.RLock()
 _cudnn_bench_scopes: list = []
 _cudnn_bench_base: Optional[bool] = None
