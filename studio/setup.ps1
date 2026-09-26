@@ -952,7 +952,7 @@ function Get-GpuPrebuiltToKeepOverSourceBuild {
     if ("$($env:UNSLOTH_LLAMA_TAG)".Trim() -notin @("", "latest")) { return "" }
     $backend = Get-PrebuiltMarkerBackend -Marker (Join-Path $InstallDir "UNSLOTH_PREBUILT_INFO.json")
     if (-not $backend) { return "" }
-    $nvidia = $HasNvidiaSmi
+    $nvidia = $HasNvidiaSmi -or [bool]$script:NvidiaDriverLibraryOnly
     $amd = $HasROCm -or [bool]$script:ROCmGfxArch
     $present = switch ($backend) {
         "cuda"   { $nvidia }
@@ -3361,6 +3361,9 @@ if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
         $HasNvidiaSmi = $true
         $script:NvidiaSmiRejected = $true
         Write-StudioLine "   NVIDIA GPU found through the driver library; nvidia-smi is unavailable" -ForegroundColor Gray
+    } else {
+        # Still a physical NVIDIA GPU: an installed llama.cpp prebuilt it runs is kept, as before.
+        $script:NvidiaDriverLibraryOnly = $true
     }
 }
 # nvidia-smi was already resolved above and never asked which card it found, so the banner

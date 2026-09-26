@@ -279,6 +279,10 @@ $HasROCm = $true
 Check "a Vulkan prebuilt is kept for any GPU vendor" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "vulkan")
 $HasROCm = $false
 Check "a Vulkan prebuilt with no GPU at all is not kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
+# A driver library below CUDA 11 does not promote NVIDIA, but the card still runs Vulkan.
+$script:NvidiaDriverLibraryOnly = $true
+Check "a Vulkan prebuilt is kept for an NVIDIA GPU only the driver library found" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "vulkan")
+$script:NvidiaDriverLibraryOnly = $false
 $script:FakeIntelAdapters = @("Intel(R) UHD Graphics 770")
 Check "a Vulkan prebuilt is kept for an Intel adapter that is not an XPU part" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "vulkan")
 $script:FakeIntelAdapters = @()
@@ -343,8 +347,13 @@ foreach ($file in @($installPs1, $setupPs1)) {
         $script:FakeInventory = @{ Source = "nvml"; CudaMajor = $case.Major; CudaMinor = 2; ComputeCaps = @("6.1"); Count = 1 }
         function Get-NvidiaLibraryInventory { param([int]$TimeoutSec = 10) return $script:FakeInventory }
         $HasNvidiaSmi = $false
+        $script:NvidiaDriverLibraryOnly = $false
         Invoke-Expression $block
         Check "$(Split-Path -Leaf $file): a CUDA $($case.Major) driver library $(if ($case.Want) { 'promotes' } else { 'does not promote' }) NVIDIA" ($HasNvidiaSmi -eq $case.Want)
+        if ($file -eq $setupPs1) {
+            Check "setup.ps1: a CUDA $($case.Major) driver library still counts as an NVIDIA GPU for keeping a prebuilt" (
+                ($HasNvidiaSmi -or $script:NvidiaDriverLibraryOnly) -eq $true)
+        }
     }
 }
 
