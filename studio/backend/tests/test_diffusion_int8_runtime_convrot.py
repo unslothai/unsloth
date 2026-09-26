@@ -41,9 +41,7 @@ class _Block(nn.Module):
         super().__init__()
         self.attn = _Attn(dim)
         self.img_mlp = _Mlp(dim)
-        self.extra = nn.Linear(
-            dim, dim, bias = False
-        )
+        self.extra = nn.Linear(dim, dim, bias = False)
 
     def forward(self, x):
         x = x + self.attn(x)
@@ -270,9 +268,7 @@ def test_unreachable_hub_still_loads_the_plain_artifact_already_cached(monkeypat
     assert pq._resolve_checkpoint_path(source, None, None) == str(plain)
     assert asked == ["Qwen-Image-2.1-INT8-ConvRot.safetensors"]
     plain.unlink()
-    with pytest.raises(
-        LocalEntryNotFoundError
-    ):
+    with pytest.raises(LocalEntryNotFoundError):
         pq._resolve_checkpoint_path(source, None, None)
 
 
@@ -300,7 +296,6 @@ def test_builder_publishes_rotated_and_plain_int8_under_different_names():
 
 
 class _LoraLike(nn.Module):
-
     def __init__(self, base):
         super().__init__()
         self.base_layer = base
