@@ -69,8 +69,10 @@ def _hidream_inputs(batch = 2):
 def test_released_class_still_declares_no_repeated_blocks(build):
     # Drift guard: once Diffusers declares them, ensure_repeated_blocks returns theirs and changes nothing.
     model = build()
-    if type(model)._repeated_blocks:
-        pytest.skip("this Diffusers declares the blocks itself")
+    declared = list(type(model)._repeated_blocks or [])
+    if declared:
+        assert list(rc.ensure_repeated_blocks(model)) == declared
+        return
     with pytest.raises(ValueError):
         model.compile_repeated_blocks()
 
