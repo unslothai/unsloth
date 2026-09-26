@@ -54,6 +54,7 @@ function plannedDrop(
 const APP_SIDEBAR = await readSrcAsync("components/app-sidebar.tsx");
 const HOOK = await readSrcAsync("features/chat/hooks/use-sidebar-drag.ts");
 const EN = await readSrcAsync("i18n/locales/en.ts");
+const CSS = await readSrcAsync("index.css");
 
 // Two folders, "work" pinned and "home" not; chats c1 and c2 in work, c3 in home, r1 and r2 in
 // Recents, and p1 pinned from Recents. Pinned is one list: the folder, then the chat.
@@ -1261,7 +1262,7 @@ test("a chat can be dropped after a folder that ends the Pinned list", () => {
 // springs open under it, and when the sidebar re-renders, and only the frame loop is there to
 // see it. The release hit-tests the layout as it is, so the cue has to as well.
 test("the edge keeps scrolling while the pointer rests on it", () => {
-  assert.match(HOOK, /const onFrame = \(\) => \{[^]*?frame = requestAnimationFrame\(onFrame\);\n\s*edgeScroll\(at\.y\);\n\s*track\(at\.x, at\.y\);/);
+  assert.match(HOOK, /const onFrame = \(\) => \{[^]*?frame = requestAnimationFrame\(onFrame\);\n\s*edgeScroll\(at\.y\);\n\s*if \(ghost\.current\) placeGhost\(ghost\.current, at\.y\);\n\s*track\(at\.x, at\.y\);/);
   // Unconditionally: a re-aim only on the frames that scrolled leaves every other cause stale.
   assert.ok(!/if \(edgeScroll\(/.test(HOOK));
   // Started with the drag and cancelled with it, and it stops itself if the drag is gone.
@@ -1270,6 +1271,36 @@ test("the edge keeps scrolling while the pointer rests on it", () => {
   assert.match(HOOK, /if \(!sidebarDragSource\(\)\) \{\n\s*frame = 0;\n\s*return;\n\s*\}/);
   // track no longer scrolls: one driver, or a move and a frame would both step the list.
   assert.ok(!/const track = useCallback\(\n\s*\(x: number, y: number\) => \{\n\s*(auto|edge)Scroll/.test(HOOK));
+});
+
+// A carried chat or folder lifts as a copy under the pointer, as a section header does, while the
+// row it came from dims. The copy is DOM the hook draws and moves itself: no render per move.
+test("a carried row lifts a copy that follows the pointer", () => {
+  // Lifted when the press becomes a drag, from the row's face, and kept inside its list.
+  assert.match(HOOK, /started = true;\n\s*scroller\.current = scrollerOf\(row\);\n\s*ghost\.current = liftRow\(/);
+  assert.match(HOOK, /const face = row\.querySelector<HTMLElement>\(ROW_FACE_SELECTOR\);/);
+  assert.match(HOOK, /Math\.min\(Math\.max\(y - ghost\.grab, view\.top\), view\.bottom - height\)/);
+  assert.match(HOOK, /translate3d\(0, \$\{Math\.round\(top\)\}px, 0\)/);
+  // A picture only: no drop zone, row key, id, test id or open-chat mark rides along, so no hit
+  // test, lookup or test finds it, and it takes no pointer.
+  for (const attr of ["DROP_ZONE_ATTR", "ROW_KEY_ATTR", '"id"', '"data-active"', '"data-testid"', '"data-thread-id"']) {
+    assert.match(HOOK, new RegExp(`GHOST_DROPPED_ATTRS = \\[[^\\]]*${attr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  }
+  assert.match(CSS, /\.sidebar-row-ghost \* \{\n\s*pointer-events: none;/);
+  // Every way a drag ends takes it down: clear() is the one exit.
+  assert.match(HOOK, /const clear = useCallback\(\(\) => \{[^]*?ghost\.current\?\.element\.remove\(\);\n\s*ghost\.current = null;/);
+  // The row it came from dims as a section does, bare of its pressed look.
+  assert.equal(APP_SIDEBAR.match(/draggingRow\?\.id === (item|project)\.id && "opacity-40"/g)?.length, 2);
+  assert.match(CSS, /body\.sidebar-row-dragging \[data-sidebar="menu-button"\]:active \{\n\s*background-color: transparent;/);
+});
+
+test("a dropped row slides from where it was let go, unless motion is reduced", () => {
+  assert.match(HOOK, /const from = ghost\.current\?\.element\.getBoundingClientRect\(\)\.top \?\? null;\n\s*clear\(\);/);
+  assert.match(HOOK, /onDrop\(aimed\.outcome, dragged\);\n\s*if \(from !== null && !optionsRef\.current\.reducedMotion\?\.\(\)\) settleRow\(dragged, from\);/);
+  assert.match(APP_SIDEBAR, /onDrop: \(plan\) => commitDrop\(plan\),\n\s*reducedMotion: prefersReducedMotion,/);
+  // A folder carries its open chats: the spots naming it slide with its row, each once.
+  assert.match(HOOK, /zone\.folderId === item\.id &&/);
+  assert.match(HOOK, /!all\.some\(\(other\) => other !== element && other\.contains\(element\)\)/);
 });
 
 // The window hears every pointer, not just the one that pressed the row. Without this a finger

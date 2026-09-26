@@ -2867,7 +2867,7 @@ html[data-chat-font] .aui-root {
 			[data-slot="dropdown-menu-checkbox-item"],
 			[data-slot="dropdown-menu-radio-item"]
 		) {
-		@apply gap-2.5 pl-2.5 pr-8;
+		@apply gap-2.5 pl-2.5 pr-9;
 		border-radius: 10px;
 	}
 
@@ -2897,12 +2897,13 @@ html[data-chat-font] .aui-root {
 		color: inherit !important;
 	}
 
-	/* The tick's ink sits as far from the right edge as the row's text from the left. */
+	/* The tick's box sits on the row's right padding, the same 2.5 as its left: the tick is
+	   drawn inset like a leading icon (MenuTickIcon), so the two inks land level. */
 	.unsloth-plus-menu.sidebar-menu :is(
 			[data-slot="dropdown-menu-checkbox-item-indicator"],
 			[data-slot="dropdown-menu-radio-item-indicator"]
 		) {
-		@apply right-2;
+		@apply right-2.5;
 	}
 
 	.unsloth-plus-menu.sidebar-menu :is(
@@ -3678,6 +3679,12 @@ body.sidebar-row-dragging * {
 	cursor: grabbing !important;
 }
 
+/* The row it came from stays pressed while the button is held: it dims, bare, as a carried
+   section does, and the raised copy alone reads as the row in hand. */
+body.sidebar-row-dragging [data-sidebar="menu-button"]:active {
+	background-color: transparent;
+}
+
 /* A sidebar section carried by its header: it stays in place, dimmed, while a raised copy of the
    header follows the pointer and one line marks the gap it would land in. */
 [data-sidebar-section][data-section-dragging] {
@@ -3685,7 +3692,9 @@ body.sidebar-row-dragging * {
 	transition: opacity 120ms ease-out;
 }
 
-.sidebar-section-ghost {
+/* A carried section header or row: a raised copy under the pointer, over the list it came from. */
+.sidebar-section-ghost,
+.sidebar-row-ghost {
 	position: fixed;
 	top: 0;
 	z-index: 60;
@@ -3700,8 +3709,16 @@ body.sidebar-row-dragging * {
 	will-change: transform;
 }
 
-.sidebar-section-ghost > * {
+.sidebar-section-ghost > *,
+.sidebar-row-ghost * {
 	pointer-events: none;
+}
+
+/* A row's copy is its face as drawn, lit like a hovered row but never like the open chat. */
+.sidebar-row-ghost > [data-sidebar="menu-button"] {
+	width: 100%;
+	height: 100%;
+	background: transparent;
 }
 
 /* The name alone: the header's fold chevron means nothing on a header in flight. */

@@ -130,7 +130,7 @@ import {
   PanelLeftIcon,
   LeftToRightListBulletIcon,
   ArrowUpDownIcon,
-  Layers01Icon,
+  LayerIcon,
   MinusSignCircleIcon,
 } from "@hugeicons/core-free-icons";
 import {
@@ -2224,6 +2224,7 @@ export function AppSidebar() {
       else setChatOpen(true);
     },
     onDrop: (plan) => commitDrop(plan),
+    reducedMotion: prefersReducedMotion,
   });
   const draggingRow = dnd.drag;
 
@@ -4075,7 +4076,7 @@ export function AppSidebar() {
     return (
       <P.Sub>
         <P.SubTrigger>
-          <HugeiconsIcon icon={Layers01Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={LayerIcon} strokeWidth={1.75} className="size-icon" />
           <span>{config.label}</span>
         </P.SubTrigger>
         <P.SubContent
@@ -4110,7 +4111,7 @@ export function AppSidebar() {
               disabled={config.current === section.id}
               onSelect={() => fileSectionTarget(target, section.id)}
             >
-              <HugeiconsIcon icon={Layers01Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={LayerIcon} strokeWidth={1.75} className="size-icon" />
               <span className="truncate">{section.name}</span>
             </P.Item>
           ))}
@@ -4571,7 +4572,7 @@ export function AppSidebar() {
           <SidebarMenuItem
             className={cn(
               itemClass,
-              draggingRow?.id === item.id && "opacity-50",
+              draggingRow?.id === item.id && "opacity-40",
               dropCueClass(list.scope, item.id),
             )}
             onContextMenu={() => list && selectForContextMenu(item, list)}
@@ -4815,7 +4816,7 @@ export function AppSidebar() {
           className={cn(
             "group/recent-item relative",
             DROP_ROW_HIT,
-            draggingRow?.id === project.id && "opacity-50",
+            draggingRow?.id === project.id && "opacity-40",
             dropCueClass(order.scope, project.id),
             // Lit while a chat is over the folder row or any of the chats inside it.
             dnd.ringLit(folderRingKey(project.id)) && DROP_INTO_ROW_CUE,

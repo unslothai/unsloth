@@ -6,12 +6,10 @@
 import { ContextMenu as ContextMenuPrimitive } from "radix-ui";
 import type * as React from "react";
 
-import { Tick02Icon } from "@/lib/tick-icon";
+import { MenuChevronRightIcon } from "@/lib/chevron-icons";
+import { MenuTickIcon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  ChevronRightIcon,
-} from "lucide-react";
 
 function ContextMenu({
   ...props
@@ -127,10 +125,10 @@ function ContextMenuSubTrigger({
       {...props}
     >
       {children}
-      <ChevronRightIcon
-        strokeWidth={2}
-        // The glyph sits 7/24 further in than a leading icon, so pull it out to match.
-        className="ml-auto -mr-[calc(3.5px*var(--ui-space-scale,1))] size-[calc(12px*var(--ui-space-scale,1))]"
+      <HugeiconsIcon
+        icon={MenuChevronRightIcon}
+        strokeWidth={1.5}
+        className="ml-auto size-[calc(12px*var(--ui-space-scale,1))]"
       />
     </ContextMenuPrimitive.SubTrigger>
   );
@@ -167,15 +165,15 @@ function ContextMenuCheckboxItem({
     <ContextMenuPrimitive.CheckboxItem
       data-slot="context-menu-checkbox-item"
       className={cn(
-        "focus:bg-accent focus:text-accent-foreground gap-2 rounded-xl py-2 pr-8 pl-3 text-sm [&_svg:not([class*='size-'])]:size-4 relative flex cursor-default items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "focus:bg-accent focus:text-accent-foreground gap-2 rounded-xl py-2 pr-9 pl-3 text-sm [&_svg:not([class*='size-'])]:size-4 relative flex cursor-default items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       checked={checked}
       {...props}
     >
-      <span className="absolute right-2 pointer-events-none">
+      <span className="absolute right-3 pointer-events-none">
         <ContextMenuPrimitive.ItemIndicator>
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} />
         </ContextMenuPrimitive.ItemIndicator>
       </span>
       {children}
@@ -199,7 +197,7 @@ function ContextMenuRadioItem({
     >
       <span className="absolute right-2 pointer-events-none">
         <ContextMenuPrimitive.ItemIndicator>
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} />
         </ContextMenuPrimitive.ItemIndicator>
       </span>
       {children}
@@ -248,7 +246,7 @@ function ContextMenuShortcut({
     <span
       data-slot="context-menu-shortcut"
       className={cn(
-        "text-muted-foreground group-focus/context-menu-item:text-accent-foreground ml-auto text-xs tracking-widest",
+        "text-muted-foreground group-focus/context-menu-item:text-accent-foreground ml-auto -mr-[0.1em] text-xs tracking-widest",
         className,
       )}
       {...props}

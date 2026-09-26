@@ -4,6 +4,11 @@
 // The React side of sidebar drag-and-drop: the lifted row, the plan under the pointer, and the
 // pointer events that feed both. What a drop does is decided in lib/sidebar-drag.ts.
 //
+// The carried row lifts as a copy that follows the pointer, the way a section's header does
+// (use-section-drag.ts), while the row it came from dims. The copy is drawn straight onto the
+// DOM and moved from the frame loop, so the sidebar does not redraw as the pointer moves: React
+// only hears when the plan under the pointer changes, and on the drop.
+//
 // Pointer events, not the HTML5 drag API. The desktop webview answers every OS drag itself and
 // never forwards it to the page, so dragover and drop never fire there and a row wired to them
 // is dead. Same reason shared-composer.tsx skips its drop handlers under isTauri.
@@ -47,6 +52,12 @@ export const DRAGGING_BODY_CLASS = "sidebar-row-dragging";
 
 /** Controls that own their own press. A drag never starts from the pin or the kebab. */
 const NO_DRAG_SELECTOR = ".sidebar-row-action";
+
+/** The raised copy of a carried row. */
+export const ROW_GHOST_CLASS = "sidebar-row-ghost";
+
+/** How long a dropped row takes to slide from where it was let go into its slot. */
+const SETTLE_MS = 180;
 
 /** How near an edge of the scroller the pointer scrolls the list, and by how much per frame. */
 export const EDGE_PX = 48;
@@ -117,6 +128,137 @@ function rowNextTo(key: string, side: "below" | "above"): ZoneHit | null {
   return null;
 }
 
+/** A row's face: its icon and name, without the pin and menu that show on hover. */
+const ROW_FACE_SELECTOR = '[data-sidebar="menu-button"]';
+
+/** Attributes the copy of a row must not carry: it is a picture, not a control, a drop zone, a
+ *  row a test or a lookup can find, or the open chat. */
+const GHOST_DROPPED_ATTRS = [
+  "id",
+  DROP_ZONE_ATTR,
+  ROW_KEY_ATTR,
+  "data-active",
+  "data-testid",
+  "data-thread-id",
+  "data-thread-type",
+] as const;
+
+interface RowGhost {
+  element: HTMLElement;
+  /** Where on the row the press landed, so the copy does not jump when it lifts. */
+  grab: number;
+  /** The box the copy stays inside: the list it scrolls in. */
+  view: Element;
+}
+
+/** A copy of the row's face on a raised pill, over the row it came from. */
+function liftRow(row: HTMLElement, pressY: number, view: Element): RowGhost | null {
+  const face = row.querySelector<HTMLElement>(ROW_FACE_SELECTOR);
+  if (!face) return null;
+  const rect = face.getBoundingClientRect();
+  const style = getComputedStyle(face);
+  const copy = face.cloneNode(true) as HTMLElement;
+  for (const node of [copy, ...copy.querySelectorAll<HTMLElement>("*")]) {
+    for (const name of GHOST_DROPPED_ATTRS) node.removeAttribute(name);
+  }
+  copy.tabIndex = -1;
+  const element = document.createElement("div");
+  element.setAttribute("aria-hidden", "true");
+  element.className = ROW_GHOST_CLASS;
+  element.append(copy);
+  Object.assign(element.style, {
+    left: `${rect.left}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`,
+    borderRadius: style.borderRadius,
+    fontFamily: style.fontFamily,
+    color: style.color,
+  });
+  // The icon size is the sidebar's own variable, which the copy leaves behind on the body.
+  const iconSize = style.getPropertyValue("--icon-size");
+  if (iconSize) element.style.setProperty("--icon-size", iconSize);
+  document.body.append(element);
+  return { element, grab: pressY - rect.top, view };
+}
+
+/** Keeps the copy under the pointer, inside the list it came from. */
+function placeGhost(ghost: RowGhost, y: number) {
+  const view = ghost.view.getBoundingClientRect();
+  const height = ghost.element.offsetHeight;
+  const top = Math.min(Math.max(y - ghost.grab, view.top), view.bottom - height);
+  ghost.element.style.transform = `translate3d(0, ${Math.round(top)}px, 0)`;
+}
+
+/** What a drop zone says it is, or null if it cannot be read. */
+function zoneOf(element: Element): SidebarDropZone | null {
+  try {
+    return (JSON.parse(element.getAttribute(DROP_ZONE_ATTR) ?? "") as { zone: SidebarDropZone }).zone;
+  } catch {
+    return null;
+  }
+}
+
+/** Slides a dropped row from where its copy was let go into its new slot, and a folder's open
+ *  chats with it. Read once the drop has redrawn the list, so it costs one pass per drop. */
+function settleRow(item: SidebarDragItem, from: number) {
+  // Two frames: the drop re-renders the sidebar, and the row is measured once it has moved.
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      let row: HTMLElement | null = null;
+      const moving: HTMLElement[] = [];
+      for (const element of document.querySelectorAll<HTMLElement>(`[${DROP_ZONE_ATTR}]`)) {
+        if (element.offsetHeight === 0) continue;
+        const zone = zoneOf(element);
+        if (!zone) continue;
+        const isRow = zone.row?.id === item.id && zone.row.kind === item.kind && !zone.header;
+        if (isRow && element.hasAttribute(ROW_KEY_ATTR)) {
+          // The copy of the row nearest where it was let go, should it be drawn twice.
+          const face = element.querySelector(ROW_FACE_SELECTOR) ?? element;
+          const top = face.getBoundingClientRect().top;
+          const best = row?.querySelector(ROW_FACE_SELECTOR) ?? row;
+          if (!best || Math.abs(top - from) < Math.abs(best.getBoundingClientRect().top - from)) {
+            row = element;
+          }
+        }
+        // A folder carries its open chats and its empty line: the spots that name it.
+        if (
+          item.kind === "project" &&
+          zone.folderId === item.id &&
+          zone.row?.kind !== "project" &&
+          !zone.header
+        ) {
+          moving.push(element);
+        }
+      }
+      if (!row) return;
+      const to = (row.querySelector(ROW_FACE_SELECTOR) ?? row).getBoundingClientRect().top;
+      const delta = from - to;
+      if (Math.abs(delta) < 2) return;
+      // Only the outermost of nested spots move, or a spot would move twice.
+      const all = [row, ...moving.filter((element) => element !== row)];
+      const slide = all.filter(
+        (element) => !all.some((other) => other !== element && other.contains(element)),
+      );
+      for (const element of slide) {
+        element.style.transition = "none";
+        element.style.transform = `translateY(${delta}px)`;
+        element.style.zIndex = "1";
+      }
+      row.getBoundingClientRect();
+      for (const element of slide) {
+        element.style.transition = `transform ${SETTLE_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1)`;
+        element.style.transform = "";
+      }
+      window.setTimeout(() => {
+        for (const element of slide) {
+          element.style.transition = "";
+          element.style.zIndex = "";
+        }
+      }, SETTLE_MS + 20);
+    }),
+  );
+}
+
 /** The list the row scrolls while it is carried: the nearest ancestor that actually scrolls. */
 export function scrollerOf(element: Element | null): HTMLElement | null {
   for (let node = element; node; node = node.parentElement) {
@@ -139,10 +281,12 @@ export interface UseSidebarDragOptions {
   onDrop: (plan: SidebarDropPlan, drag: SidebarDragItem) => void;
   /** Opens the closed folder or section the pointer rested on. */
   onSpringOpen?: (zone: SidebarDropZone) => void;
+  /** Read on drop: whether the row may slide into place or should just appear there. */
+  reducedMotion?: () => boolean;
 }
 
 export interface SidebarDragApi {
-  /** The lifted row, for painting it faded. Null between drags. */
+  /** The carried row, for painting it dimmed where it was. Null between drags. */
   drag: SidebarDragItem | null;
   /** What the drop under the pointer would do. */
   plan: SidebarDropPlan | null;
@@ -175,6 +319,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
   });
   const spring = useRef<{ key: string; timer: number } | null>(null);
   const scroller = useRef<HTMLElement | null>(null);
+  const ghost = useRef<RowGhost | null>(null);
   /** The gesture in flight, so a second pointer cannot start another over the top of it. */
   const press = useRef<{ end: () => void } | null>(null);
 
@@ -196,6 +341,8 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
     setSidebarDragSource(null);
     cancelSpring();
     scroller.current = null;
+    ghost.current?.element.remove();
+    ghost.current = null;
     document.body.classList.remove(DRAGGING_BODY_CLASS);
     setDrag(null);
     showPlan(null);
@@ -342,6 +489,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           }
           frame = requestAnimationFrame(onFrame);
           edgeScroll(at.y);
+          if (ghost.current) placeGhost(ghost.current, at.y);
           track(at.x, at.y);
         };
         // Abandons this gesture whole, for a drop that never came: the same as a cancel.
@@ -380,6 +528,12 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
             }
             started = true;
             scroller.current = scrollerOf(row);
+            ghost.current = liftRow(
+              row,
+              startY,
+              scroller.current ?? row.closest('[data-sidebar="content"]') ?? document.documentElement,
+            );
+            if (ghost.current) placeGhost(ghost.current, moved.clientY);
             document.body.classList.add(DRAGGING_BODY_CLASS);
             // Without capture a release outside the window never arrives and the row stays
             // stuck. Capture retargets events only, so the hit test still finds the zone.
@@ -406,9 +560,11 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           if (escaped) return;
           const dragged = sidebarDragSource();
           const aimed = aim(released.clientX, released.clientY);
+          const from = ghost.current?.element.getBoundingClientRect().top ?? null;
           clear();
           if (dragged && aimed && aimed.outcome !== STAY) {
             optionsRef.current.onDrop(aimed.outcome, dragged);
+            if (from !== null && !optionsRef.current.reducedMotion?.()) settleRow(dragged, from);
           }
         }
 

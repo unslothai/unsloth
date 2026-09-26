@@ -726,7 +726,7 @@ test("sidebar and account menus read white on a lighter surface in dark mode", a
     /\.dark \.app-user-menu\.sidebar-menu :is\([\s\S]*?\):is\(:focus, \[data-state="open"\]\) \{\n\s*background-color: rgb\(255 255 255 \/ calc\(0\.1 \* var\(--contrast-wash-gain, 1\)\)\);\n\s*color: #fff;/,
   );
   // Tick rows hover as the rows beside them, and their tick sits as far in as the text.
-  assert.match(css, /\[data-slot="dropdown-menu-radio-item-indicator"\]\n\s*\) \{\n\s*@apply right-2;/);
+  assert.match(css, /\[data-slot="dropdown-menu-radio-item-indicator"\]\n\s*\) \{\n\s*@apply right-2\.5;/);
 });
 
 
