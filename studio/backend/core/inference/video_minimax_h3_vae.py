@@ -1178,25 +1178,31 @@ def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
     return True
 
 
-def install_audio_decode_without_cudnn_benchmark(audio_vae: Any) -> bool:
-    """Run the audio VAE decode with ``cudnn.benchmark`` held off. Its 1D convs gain nothing from the search at
-    steady state (0.03-0.04 s per decode either way), but the search itself costs seconds to minutes of host time on
-    the first decode of every shape on every thread. Idempotent; False when there is nothing to wrap."""
+def install_audio_vae_without_cudnn_benchmark(audio_vae: Any) -> bool:
+    """Run the audio VAE's decode and encode with ``cudnn.benchmark`` held off. Its 1D convs gain nothing from the
+    search at steady state, but the search costs seconds of host time (minutes on a loaded host) and ~25 GB of
+    workspace on the first call of every shape on every thread. Idempotent; False when there is nothing to wrap."""
     if audio_vae is None or getattr(audio_vae, "_unsloth_no_cudnn_benchmark", False):
-        return False
-    stock = getattr(audio_vae, "decode", None)
-    if not callable(stock):
         return False
 
     from .diffusion_speed import cudnn_benchmark_scope
 
-    def decode(self, *args, **kwargs):
-        with cudnn_benchmark_scope(False):
-            return stock(*args, **kwargs)
+    def _held_off(stock: Any) -> Any:
+        def call(self, *args, **kwargs):
+            with cudnn_benchmark_scope(False):
+                return stock(*args, **kwargs)
 
-    audio_vae.decode = types.MethodType(decode, audio_vae)
-    audio_vae._unsloth_no_cudnn_benchmark = True
-    return True
+        return call
+
+    wrapped = False
+    for name in ("decode", "encode"):
+        stock = getattr(audio_vae, name, None)
+        if callable(stock):
+            setattr(audio_vae, name, types.MethodType(_held_off(stock), audio_vae))
+            wrapped = True
+    if wrapped:
+        audio_vae._unsloth_no_cudnn_benchmark = True
+    return wrapped
 
 
 @lru_cache(maxsize = 4)

@@ -821,7 +821,7 @@ def test_the_h3_load_holds_cudnn_benchmark_off_for_the_audio_decode_only_when_it
         c
         for c in ast.walk(tree)
         if isinstance(c, ast.Call)
-        and getattr(c.func, "id", None) == "install_audio_decode_without_cudnn_benchmark"
+        and getattr(c.func, "id", None) == "install_audio_vae_without_cudnn_benchmark"
     ]
     (install,) = installs
     load = next(
@@ -844,6 +844,10 @@ class _AudioVAE:
         self.seen.append(torch.backends.cudnn.benchmark)
         return (z,)
 
+    def encode(self, x, return_dict = True):
+        self.seen.append(("encode", torch.backends.cudnn.benchmark))
+        return (x,)
+
 
 @pytest.mark.parametrize("before", [True, False])
 def test_audio_decode_runs_without_cudnn_benchmark_and_restores_it(before):
@@ -853,12 +857,13 @@ def test_audio_decode_runs_without_cudnn_benchmark_and_restores_it(before):
     try:
         torch.backends.cudnn.benchmark = before
         vae = _AudioVAE()
-        assert H.install_audio_decode_without_cudnn_benchmark(vae)
-        assert not H.install_audio_decode_without_cudnn_benchmark(vae), "installs once"
+        assert H.install_audio_vae_without_cudnn_benchmark(vae)
+        assert not H.install_audio_vae_without_cudnn_benchmark(vae), "installs once"
         z = torch.zeros(1)
         assert vae.decode(z, return_dict = False)[0] is z
         vae.decode(z)
-        assert vae.seen == [False, False]
+        assert vae.encode(z, return_dict = False)[0] is z
+        assert vae.seen == [False, False, ("encode", False)]
         assert torch.backends.cudnn.benchmark is before
         assert not S._cudnn_bench_scopes
     finally:
@@ -875,7 +880,7 @@ def test_audio_decode_scope_restores_after_a_raising_decode():
     try:
         torch.backends.cudnn.benchmark = True
         vae = _Raises()
-        assert H.install_audio_decode_without_cudnn_benchmark(vae)
+        assert H.install_audio_vae_without_cudnn_benchmark(vae)
         with pytest.raises(RuntimeError, match = "boom"):
             vae.decode(0)
         assert torch.backends.cudnn.benchmark is True
@@ -884,8 +889,27 @@ def test_audio_decode_scope_restores_after_a_raising_decode():
 
 
 def test_audio_decode_scope_ignores_missing_decoders():
-    assert not H.install_audio_decode_without_cudnn_benchmark(None)
-    assert not H.install_audio_decode_without_cudnn_benchmark(types.SimpleNamespace(decode = None))
+    assert not H.install_audio_vae_without_cudnn_benchmark(None)
+    assert not H.install_audio_vae_without_cudnn_benchmark(types.SimpleNamespace(decode = None))
+
+
+def test_audio_decode_scope_wraps_a_decode_only_vae():
+    prev = torch.backends.cudnn.benchmark
+    seen = []
+
+    class _DecodeOnly:
+        def decode(self, z):
+            seen.append(torch.backends.cudnn.benchmark)
+            return z
+
+    try:
+        torch.backends.cudnn.benchmark = True
+        vae = _DecodeOnly()
+        assert H.install_audio_vae_without_cudnn_benchmark(vae)
+        assert vae.decode(1) == 1 and seen == [False] and not hasattr(vae, "encode")
+        assert torch.backends.cudnn.benchmark is True
+    finally:
+        torch.backends.cudnn.benchmark = prev
 
 
 @pytest.mark.parametrize("mid", [True, False])
@@ -905,7 +929,7 @@ def test_cudnn_benchmark_written_mid_decode_survives_it(mid):
     try:
         torch.backends.cudnn.benchmark = True
         vae = _VAE()
-        assert H.install_audio_decode_without_cudnn_benchmark(vae)
+        assert H.install_audio_vae_without_cudnn_benchmark(vae)
         vae.decode(0)
         assert seen["snapshot"] is True, "a snapshot taken mid-decode must see the process value"
         assert seen["after_write"] is False, "the decode keeps its own value until it ends"
@@ -931,7 +955,7 @@ def test_enabling_cudnn_benchmark_mid_decode_lands_after_it(monkeypatch):
     try:
         torch.backends.cudnn.benchmark = False
         vae = _VAE()
-        assert H.install_audio_decode_without_cudnn_benchmark(vae)
+        assert H.install_audio_vae_without_cudnn_benchmark(vae)
         vae.decode(0)
         assert seen == {"enabled": True, "inside": False}
         assert torch.backends.cudnn.benchmark is True
