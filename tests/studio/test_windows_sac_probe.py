@@ -201,6 +201,7 @@ def _main(
     answers = {
         "/api/liveness": (200, {"status": "alive", "service": "Unsloth UI Backend"}),
         "/api/auth/login": (200, {"access_token": "tok"}),
+        "/api/inference/load": (200, {"status": "loaded", "is_gguf": True}),
         **(replies or {}),
     }
 
@@ -366,6 +367,15 @@ def test_a_model_already_resident_is_evicted_first_and_never_counts_as_loaded(
     assert results["steps"]["load"]["ok"] is False
     assert "already resident" in results["steps"]["load"]["error"]
     assert results["evicted_before_load"]["status"] == 200
+
+
+def test_a_load_that_is_not_gguf_never_counts_as_loaded(s, tmp_path, monkeypatch):
+    """A non-GGUF -Model loads through transformers, so the window holds no llama.cpp load to judge."""
+    reply = {"/api/inference/load": (200, {"status": "loaded", "is_gguf": False})}
+    rc, _, results = _main(s, monkeypatch, tmp_path, replies = reply)
+    assert rc == 1
+    assert results["steps"]["load"]["ok"] is False
+    assert "is_gguf false" in results["steps"]["load"]["error"]
 
 
 def test_a_tool_end_carrying_a_refusal_or_error_is_not_an_execution(s, monkeypatch):
@@ -1006,8 +1016,10 @@ def test_the_scenario_password_is_cleared_even_when_the_run_is_interrupted():
     """Ctrl+C skips both the normal path and the catch, and the console is the operator's own."""
     run = _run()
     clear = "Remove-Item Env:\\SAC_PROBE_STUDIO_PASSWORD -ErrorAction SilentlyContinue"
-    assert run.count(clear) == 1
-    _before(run, "} finally {", clear)
+    assert run.count(clear) == 2
+    assert run.index("} finally {") < run.rindex(clear)
+    # An inherited value is dropped before the captured one is set.
+    _before(run, clear, "if ($STUDIO_PASSWORD) { $env:SAC_PROBE_STUDIO_PASSWORD")
 
 
 def test_a_custom_studio_home_is_normalized_the_way_studio_normalizes_it(s, monkeypatch):
@@ -1016,12 +1028,34 @@ def test_a_custom_studio_home_is_normalized_the_way_studio_normalizes_it(s, monk
     monkeypatch.delenv("STUDIO_HOME", raising = False)
     assert s.resolve_studio_home(s.default_studio_home()) == Path.home() / "my-studio"
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "   ")
+    monkeypatch.delenv("UNSLOTH_HOME", raising = False)
     assert s.default_studio_home() == str(Path.home() / ".unsloth" / "studio")
+    monkeypatch.setenv("UNSLOTH_HOME", "~/portable")
+    assert s.resolve_studio_home(s.default_studio_home()) == Path.home() / "portable" / "studio"
     ps1 = _ps1()
     _has(ps1, "function Resolve-ConfiguredPath", "function Get-StudioHomeOverride")
     assert "$override = if ($env:UNSLOTH_STUDIO_HOME)" not in ps1
     home = _ps1("function Get-StudioHome {", "function Get-LlamaDir")
     assert "$override = Get-StudioHomeOverride" in home
+
+
+def test_a_portable_unsloth_home_resolves_studio_and_its_runtime(tmp_path):
+    """UNSLOTH_HOME puts studio\ under the master root and llama.cpp\ beside it, ahead of a studio home."""
+    body = r"""
+$env:USERPROFILE = Join-Path $Work 'profile'
+foreach ($v in 'LLAMA_SERVER_PATH', 'UNSLOTH_LLAMA_CPP_PATH', 'UNSLOTH_STUDIO_HOME', 'STUDIO_HOME') { Remove-Item "Env:\$v" -ErrorAction SilentlyContinue }
+$env:UNSLOTH_HOME = Join-Path $Work 'portable'
+if ((Get-StudioHome) -ne (Join-Path $env:UNSLOTH_HOME 'studio')) { exit 61 }
+if ((Get-LlamaDir) -ne (Join-Path $env:UNSLOTH_HOME 'llama.cpp')) { exit 62 }
+$env:UNSLOTH_STUDIO_HOME = Join-Path $Work 'custom'
+if ((Get-StudioHome) -ne $env:UNSLOTH_STUDIO_HOME) { exit 63 }
+if ((Get-LlamaDir) -ne (Join-Path $env:UNSLOTH_HOME 'llama.cpp')) { exit 64 }
+Remove-Item Env:\UNSLOTH_HOME
+if ((Get-LlamaDir) -ne (Join-Path $env:UNSLOTH_STUDIO_HOME 'llama.cpp')) { exit 65 }
+exit 0
+"""
+    names = ["Resolve-ConfiguredPath", "Get-StudioHomeOverride", "Get-UnslothMasterRoot", "Get-StudioHome", "Get-LlamaDir"]
+    _drive(tmp_path, names, body, Work = tmp_path)
 
 
 def test_a_prefix_colliding_sibling_is_not_scoped_as_the_selected_runtime():

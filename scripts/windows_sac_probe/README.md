@@ -158,7 +158,7 @@ initial password.
 which is exactly the case the variable is needed for. One name, two
 incompatible consumers.
 
-If Studio runs from a custom home (`UNSLOTH_STUDIO_HOME`) or a custom runtime
+If Studio runs from a custom home (`UNSLOTH_STUDIO_HOME`), a portable root (`UNSLOTH_HOME`) or a custom runtime
 (`UNSLOTH_LLAMA_CPP_PATH`), set the same variables in the shell that runs the
 probe, so it inventories the runtime Studio actually loads and reads the logs
 Studio actually writes.

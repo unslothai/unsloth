@@ -76,9 +76,16 @@ function Get-StudioHomeOverride {
     return $override
 }
 
+# UNSLOTH_HOME, the portable master root: studio\ is its child and llama.cpp\ its sibling
+function Get-UnslothMasterRoot {
+    return (Resolve-ConfiguredPath $env:UNSLOTH_HOME)
+}
+
 function Get-StudioHome {
     $override = Get-StudioHomeOverride
     if ($override) { return $override }
+    $master = Get-UnslothMasterRoot
+    if ($master) { return (Join-Path $master 'studio') }
     return (Join-Path $env:USERPROFILE '.unsloth\studio')
 }
 
@@ -88,6 +95,9 @@ function Get-LlamaDir {
     if ($binary) { return (Split-Path -Parent $binary) }
     $installDir = Resolve-ConfiguredPath $env:UNSLOTH_LLAMA_CPP_PATH
     if ($installDir) { return $installDir }
+    # The master root outranks a studio home here, as in _resolved_studio_root_and_is_legacy
+    $master = Get-UnslothMasterRoot
+    if ($master) { return (Join-Path $master 'llama.cpp') }
     $override = Get-StudioHomeOverride
     if ($override) { return (Join-Path $override 'llama.cpp') }
     return (Join-Path $env:USERPROFILE '.unsloth\llama.cpp')
@@ -1128,6 +1138,8 @@ function Invoke-Run {
         }
         $scenarioArgs = @($scenario, '--model', $Model, '--out', $dir, '--port', "$Port")
         # Neither UNSLOTH_STUDIO_PASSWORD (unsloth_cli claims that name and hard-errors, see $STUDIO_PASSWORD) nor --password on the command line.
+        # Only the password captured from UNSLOTH_STUDIO_PASSWORD, never one inherited under this name.
+        Remove-Item Env:\SAC_PROBE_STUDIO_PASSWORD -ErrorAction SilentlyContinue
         if ($STUDIO_PASSWORD) { $env:SAC_PROBE_STUDIO_PASSWORD = $STUDIO_PASSWORD }
         Write-Host "python $scenario --model $Model --out $dir --port $Port"
         $prev = $ErrorActionPreference

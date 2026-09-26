@@ -251,7 +251,12 @@ def default_studio_home() -> str:
     override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
     if not override:
         override = (os.environ.get("STUDIO_HOME") or "").strip()
-    return override or str(Path.home() / ".unsloth" / "studio")
+    if override:
+        return override
+    master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if master:
+        return str(Path(master).expanduser() / "studio")
+    return str(Path.home() / ".unsloth" / "studio")
 
 
 def resolve_studio_home(value: str) -> Path:
@@ -563,6 +568,11 @@ def main() -> int:
             load_error = (
                 "the model was already resident, so this load started no llama-server and "
                 "loaded no PE; the evidence window contains nothing for it"
+            )
+        elif load_error is None and isinstance(body, dict) and body.get("is_gguf") is not True:
+            load_error = (
+                "the load answered is_gguf false, so no llama-server started and no llama.cpp PE "
+                "was loaded; pass a GGUF model with -Model"
             )
         results["steps"]["load"] = {
             "status": status,
