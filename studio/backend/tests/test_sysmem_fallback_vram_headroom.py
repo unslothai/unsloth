@@ -275,3 +275,53 @@ class TestQwen3VL8BOn16GiBCard:
             _LLAMA_FIT_TARGET_DEFAULT_MIB
             - min(_VRAM_FLOOR_RESERVE_MIB, (1 - _CTX_FIT_VRAM_FRACTION) * self.TOTAL_MIB)
         )
+
+
+def test_fallback_risk_is_cached_per_resolved_binary(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(LlamaCppBackend, "_SYSMEM_FALLBACK_RISK", {})
+    libs = {"/vulkan/llama-server": {"vulkan"}, "/cuda/llama-server": {"cuda"}}
+    selected = ["/vulkan/llama-server"]
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_find_llama_server_binary",
+        staticmethod(lambda include_denied = False: selected[0]),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda binary = None: frozenset(libs[binary or selected[0]])),
+    )
+    assert LlamaCppBackend._sysmem_fallback_risk() is False
+    selected[0] = "/cuda/llama-server"
+    assert LlamaCppBackend._sysmem_fallback_risk() is True
+
+
+def test_fallback_risk_follows_an_in_place_binary_update(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(LlamaCppBackend, "_SYSMEM_FALLBACK_RISK", {})
+    build = ["vulkan"]
+    monkeypatch.setattr(
+        LlamaCppBackend, "_binary_revision", staticmethod(lambda binary: (binary, build[0]))
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda binary = None: frozenset({build[0]})),
+    )
+    assert LlamaCppBackend._sysmem_fallback_risk("/llama-server") is False
+    build[0] = "cuda"
+    assert LlamaCppBackend._sysmem_fallback_risk("/llama-server") is True
+
+
+def test_an_empty_backend_scan_is_not_cached(monkeypatch):
+    """An unreadable lib dir scans empty; that must not pin False for the revision."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(LlamaCppBackend, "_SYSMEM_FALLBACK_RISK", {})
+    monkeypatch.setattr(LlamaCppBackend, "_binary_revision", staticmethod(lambda b: (b, 1)))
+    scans = [frozenset(), frozenset({"cuda"})]
+    monkeypatch.setattr(
+        LlamaCppBackend, "_installed_ggml_backends", staticmethod(lambda b = None: scans.pop(0))
+    )
+    assert LlamaCppBackend._sysmem_fallback_risk("/llama-server") is False
+    assert LlamaCppBackend._sysmem_fallback_risk("/llama-server") is True
