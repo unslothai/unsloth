@@ -125,7 +125,9 @@ CALLS = {name: _calls_within(start, end) for name, (start, end) in FUNCTIONS.ite
 
 def _guarded_within(start: int, end: int) -> set[str]:
     """Helpers this span calls only behind `Get-Command NAME -CommandType Function`."""
-    return set(re.findall(r"Get-Command ([A-Za-z0-9\-]+) -CommandType Function", CODE[start:end])) & set(FUNCTIONS)
+    return set(
+        re.findall(r"Get-Command ([A-Za-z0-9\-]+) -CommandType Function", CODE[start:end])
+    ) & set(FUNCTIONS)
 
 
 GUARDED = {name: _guarded_within(start, end) for name, (start, end) in FUNCTIONS.items()}
@@ -147,7 +149,11 @@ def _top_level_spans() -> list[tuple[int, int]]:
     return spans
 
 
-def _reaches(name: str, at: int = len(CODE), seen: frozenset[str] = frozenset()) -> set[str]:
+def _reaches(
+    name: str,
+    at: int = len(CODE),
+    seen: frozenset[str] = frozenset(),
+) -> set[str]:
     """Every helper that calling `name` from offset `at` can end up in, including itself.
 
     A guarded call runs only once its target is declared, so it is no edge before that.
