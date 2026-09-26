@@ -5215,7 +5215,7 @@ get_torch_index_url() {
             # hint: newer leaves carry nothing inside _TORCH_CEILING, so pinning one fails to resolve.
             _rocm_leaf=${_rocm_index##*/}
             if [ "$_rocm_tag" != "$_rocm_leaf" ]; then
-                echo "[INFO] No validated PyTorch for ROCm ${_rocm_tag#rocm}; using $_rocm_leaf wheels (they bundle their own runtime, so this is expected)." >&2
+                echo "[INFO] No validated PyTorch for ROCm ${_rocm_tag#rocm}; capping to the $_rocm_leaf index (its wheels bundle their own runtime, so this is expected)." >&2
             fi
             echo "$_rocm_index"
             return

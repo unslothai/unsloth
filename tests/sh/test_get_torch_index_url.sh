@@ -659,7 +659,7 @@ assert_eq "url override preserves fragment slash" "https://mirror.example.com/wh
 _dir=$(make_mock_amd_smi "8.0")
 _result=$(run_func_stderr "$_dir")
 assert_contains "ROCm 8.0 cap is explained on stderr" "$_result" "No validated PyTorch for ROCm 8.0;"
-assert_contains "ROCm 8.0 cap names the leaf installed instead" "$_result" "using rocm7.2 wheels"
+assert_contains "ROCm 8.0 cap names the leaf installed instead" "$_result" "capping to the rocm7.2 index"
 assert_contains "ROCm 8.0 cap says the wheels carry their own runtime" "$_result" "bundle their own runtime"
 rm -rf "$_dir"
 
