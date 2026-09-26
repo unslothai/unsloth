@@ -336,3 +336,31 @@ def test_prewrapped_peft_and_quantized_checkpoints_are_covered():
     assert any(
         isinstance(n, ast.Raise) and "_ckpt_quant_method" in ast.unparse(n) for n in ast.walk(load)
     )
+
+
+def test_refuses_falcon_h1():
+    ns, calls = _load()
+    m = _Model()
+    m.config = types.SimpleNamespace(model_type = "falcon_h1")
+    with pytest.raises(ValueError, match = "Falcon-H1"):
+        ns["install_block_swap"](m, 4)
+    assert not calls
+
+
+def test_a_caller_quantization_config_is_refused_before_loading():
+    mod = ast.parse(
+        open(os.path.join(HERE, "unsloth", "models", "llama.py"), encoding = "utf-8").read()
+    )
+    cls = next(n for n in mod.body if isinstance(n, ast.ClassDef) and n.name == "FastLlamaModel")
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
+    raises = [
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Raise) and "quantization_config" in ast.unparse(n)
+    ]
+    trim = [
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "trim_config_for_block_swap"
+    ]
+    assert raises and trim and raises[0] < trim[0]

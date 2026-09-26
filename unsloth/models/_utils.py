@@ -5180,6 +5180,10 @@ def _check_block_swap(model_or_config):
             "has to move across PCIe but only the active ones compute, so the copy "
             "cannot hide behind the work."
         )
+    config = getattr(model_or_config, "config", model_or_config)
+    if getattr(config, "model_type", None) == "falcon_h1":
+        # Its decode loop calls attention / mamba / MLP submodules directly, bypassing the fetch hooks.
+        raise ValueError("Unsloth: block_swap_layers does not support Falcon-H1 yet.")
     if not torch.cuda.is_available():
         # Prefetch runs on CUDA/HIP streams; XPU, NPU and CPU have none.
         raise ValueError("Unsloth: block_swap_layers needs a CUDA or ROCm GPU.")
