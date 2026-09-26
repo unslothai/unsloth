@@ -169,11 +169,10 @@ def _te_prequant_names(repo_id: str) -> set[str]:
     try:
         from core.inference.diffusion_families import _FAMILIES
         from core.inference.diffusion_te_prequant import te_prequant_repo_filenames
+
         pairs = {(c, s) for fam in _FAMILIES for s, c, _r in fam.te_prequant_repos}
         pairs |= {(c, s) for c, _s in pairs for s in ("fp8", "int8")}
-        return {
-            n.lower() for c, s in pairs for n in te_prequant_repo_filenames(repo_id, c, s)
-        }
+        return {n.lower() for c, s in pairs for n in te_prequant_repo_filenames(repo_id, c, s)}
     except Exception as exc:  # noqa: BLE001 -- no table means no exclusions, as before
         logger.debug("te prequant names unavailable: %s", exc)
         return set()
