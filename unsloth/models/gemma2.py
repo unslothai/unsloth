@@ -463,23 +463,20 @@ def Gemma2Model_fast_forward_inference(
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
     if bsz != 1:
-        if HAS_FLASH_ATTENTION_SOFTCAPPING:
-            SWA = True
-            GA = False
-        else:
-            SWA = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (bsz, q_len),
-                hidden_states,
-                seq_len,
-                sliding_window = self.config.sliding_window,
-            )
-            GA = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (bsz, q_len),
-                hidden_states,
-                seq_len,
-            )
+        # Decode uses manual attention even when Flash Attention is available.
+        SWA = _prepare_4d_causal_attention_mask_for_sdpa(
+            attention_mask,
+            (bsz, q_len),
+            hidden_states,
+            seq_len,
+            sliding_window = self.config.sliding_window,
+        )
+        GA = _prepare_4d_causal_attention_mask_for_sdpa(
+            attention_mask,
+            (bsz, q_len),
+            hidden_states,
+            seq_len,
+        )
     else:
         SWA = attention_mask
         GA = attention_mask
