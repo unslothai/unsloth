@@ -1,7 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Flash attention picked for a composite model must stay off a sub-model that does not support it:
-# Transformers applies a plain "flash_attention_2" to every sub-config and raises at init for
-# LFM2-VL's SigLIP2 vision tower ("Siglip2VisionModel does not support Flash Attention 2 yet").
+# A plain "flash_attention_2" reaches every sub-config; LFM2-VL's SigLIP2 tower raises at init on it.
 import pytest
 import unsloth  # noqa: F401
 import transformers
@@ -46,7 +44,6 @@ def test_explicit_flash_request_is_scoped_too(monkeypatch):
 
 
 def test_scoped_mapping_constructs_the_model(monkeypatch):
-    # The mapping is accepted by Transformers where the plain string raises.
     _flash_available(monkeypatch)
     import torch
 

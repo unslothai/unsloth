@@ -728,11 +728,7 @@ def _flex_attn_impl_for(config, other_attn_implementation):
 
 
 def _flash_unsupported_sub_configs(config):
-    """Named sub-configs whose model class cannot run flash_attention_2, with the fallback each gets.
-
-    A plain "flash_attention_2" reaches every sub-config, and Transformers raises at init for a tower
-    that does not support it (LFM2-VL's SigLIP2 vision encoder under Lfm2VlForConditionalGeneration).
-    """
+    """{sub-config: fallback} for towers lacking flash, which Transformers rejects (LFM2-VL SigLIP2)."""
     try:
         from transformers import AutoModel
         mapping = AutoModel._model_mapping
@@ -761,7 +757,6 @@ def _flash_unsupported_sub_configs(config):
 
 
 def _scoped_flash_attention(config, supports_sdpa):
-    """flash_attention_2, kept off the sub-configs whose class does not support it."""
     unsupported = _flash_unsupported_sub_configs(config)
     if not unsupported:
         return "flash_attention_2"
