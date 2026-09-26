@@ -240,3 +240,22 @@ test("an image card in the composer has no border or fill; file cards keep both"
   assert.match(card, /!src && CARD_EDGE,\n\s*!src && CARD_SURFACE,/);
   assert.match(card, /<CardImageOrBody name=\{name\} kind=\{kind\} src=\{src\} \/>/);
 });
+
+test("an attachment's viewer mounts on first open, not with every tile", async () => {
+  const viewer = await readSrcAsync("components/assistant-ui/attachment-document-dialog.tsx");
+  // Each mounted viewer subscribes to, and refetches, the project list for its menu.
+  assert.match(viewer, /const \[mounted, setMounted\] = useState\(open\);\n\s*if \(open && !mounted\) setMounted\(true\);/);
+  assert.match(viewer, /\{mounted && \(\n\s*<MediaViewer/);
+});
+
+test("the viewer's chat and download report a file they could not read", async () => {
+  const viewer = await readSrcAsync("components/assistant-ui/attachment-document-dialog.tsx");
+  assert.match(viewer, /\.catch\(\(\) => toast\.error\(`Could not read \$\{name\}`\)\)/);
+  assert.match(viewer, /\.catch\(\(\) => toast\.error\(t\("library\.toast\.downloadFailed", \{ name \}\)\)\)/);
+});
+
+test("a sent text file downloads whole, not the capped preview", async () => {
+  const preview = await readSrcAsync("components/assistant-ui/attachment-preview.tsx");
+  assert.match(preview, /new Blob\(\[attachmentBodyText\(sentText\)\]/);
+  assert.doesNotMatch(preview, /new Blob\(\[ready\.text\]/);
+});

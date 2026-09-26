@@ -29,6 +29,7 @@ import {
   type AttachmentText,
   ArtifactHtmlFrame,
   attachmentAudioSrc,
+  attachmentBodyText,
   attachmentTextLanguage,
   countAttachmentTextLines,
   parseAttachmentText,
@@ -222,11 +223,15 @@ const AttachmentTextDialog: FC<
     );
   }, [state.status, ready, preview, source, truncated]);
   // The file itself, or a sent text file's whole text. Text pulled out of a PDF is not the file.
-  const file = source.file;
+  // The preview caps a sent body, so the whole one is cut from the stored text on click.
+  const { file, text: sentText } = source;
   const load = file
     ? () => Promise.resolve<Blob>(file)
-    : ready && !ready.label
-      ? () => Promise.resolve(new Blob([ready.text], { type: source.contentType || "text/plain" }))
+    : ready && !ready.label && sentText !== undefined
+      ? () =>
+          Promise.resolve(
+            new Blob([attachmentBodyText(sentText)], { type: source.contentType || "text/plain" }),
+          )
       : undefined;
 
   let body: ReactNode;
@@ -350,10 +355,12 @@ const AttachmentAudioDialog: FC<
       noun="clip"
       redactFromReload={redactFromReload}
       // Built on click, like the player's: a sent clip is only base64 until someone asks for it.
-      load={() =>
+      load={
         file
-          ? Promise.resolve(file)
-          : fetchBlob(src ?? attachmentAudioSrc(audio!, source.contentType, source.name))
+          ? () => Promise.resolve(file)
+          : src || audio
+            ? () => fetchBlob(src ?? attachmentAudioSrc(audio!, source.contentType, source.name))
+            : undefined
       }
     >
       <AttachmentAudioBody source={source} />

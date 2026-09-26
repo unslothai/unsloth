@@ -20,6 +20,7 @@ import { downloadFile } from "@/lib/native-files";
 import { useAuiState } from "@assistant-ui/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Slot } from "radix-ui";
+import { toast } from "sonner";
 import {
   type FC,
   type PropsWithChildren,
@@ -67,12 +68,12 @@ export const AttachmentViewer: FC<{
 }) => {
   const t = useT();
   const navigate = useNavigate();
-  const asFile = async () => {
-    const blob = await load!();
-    return new File([blob], source.name || "attachment", {
-      type: source.contentType || blob.type,
-    });
-  };
+  // Mounted on first open and kept for its close animation. A transcript draws one of these per
+  // attachment, and the viewer's project menu subscribes to and refetches the project list.
+  const [mounted, setMounted] = useState(open);
+  if (open && !mounted) setMounted(true);
+  const name = source.name || "attachment";
+  // A sent original is fetched on click and can fail; say so rather than doing nothing.
   const actions: MediaViewerActions = {
     primary:
       load && !redactFromReload
@@ -80,17 +81,20 @@ export const AttachmentViewer: FC<{
             label: t("library.menu.chatAboutThis"),
             icon: MessageCircleIcon,
             onClick: () =>
-              void asFile().then((file) => {
-                onOpenChange(false);
-                startLibraryChat(navigate, { files: [file] });
-              }),
+              void load()
+                .then((blob) => {
+                  const file = new File([blob], name, { type: source.contentType || blob.type });
+                  onOpenChange(false);
+                  startLibraryChat(navigate, { files: [file] });
+                })
+                .catch(() => toast.error(`Could not read ${name}`)),
           }
         : undefined,
     onDownload: load
       ? () =>
-          void load().then((blob) =>
-            downloadFile(blob, source.name || "attachment", source.contentType || undefined),
-          )
+          void load()
+            .then((blob) => downloadFile(blob, name, source.contentType || undefined))
+            .catch(() => toast.error(t("library.toast.downloadFailed", { name })))
       : undefined,
   };
   return (
@@ -101,20 +105,22 @@ export const AttachmentViewer: FC<{
       >
         {trigger}
       </Slot.Root>
-      <MediaViewer
-        open={open}
-        onOpenChange={onOpenChange}
-        title={source.name}
-        meta={meta}
-        media={media}
-        noun={noun}
-        flush={flush}
-        redactFromReload={redactFromReload}
-        extra={extra}
-        actions={actions}
-      >
-        {open && children}
-      </MediaViewer>
+      {mounted && (
+        <MediaViewer
+          open={open}
+          onOpenChange={onOpenChange}
+          title={source.name}
+          meta={meta}
+          media={media}
+          noun={noun}
+          flush={flush}
+          redactFromReload={redactFromReload}
+          extra={extra}
+          actions={actions}
+        >
+          {open && children}
+        </MediaViewer>
+      )}
     </>
   );
 };
