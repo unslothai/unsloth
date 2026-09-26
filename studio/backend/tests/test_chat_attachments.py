@@ -364,13 +364,15 @@ def test_attachment_file_serves_text_parts(tmp_path, monkeypatch):
         "type": "document",
         "name": "notes.txt",
         "content": [
-            {"type": "text", "text": "first"},
-            {"type": "text", "text": "second"},
+            {"type": "text", "text": "<attachment name=notes.txt>\nfirst\n</attachment>"},
+            {"type": "text", "text": "[PDF: notes.pdf]\nsecond"},
+            {"type": "text", "text": "third"},
         ],
     }
     _seed(tmp_path, monkeypatch, [attachment])
     response = chat_history.get_attachment_file("msg-1", "att-txt", current_subject = "unsloth")
-    assert response.body.decode("utf-8") == "first\nsecond"
+    # Served as the file reads, without the wrappers chat adds for the model.
+    assert response.body.decode("utf-8") == "first\nsecond\nthird"
     assert response.media_type.startswith("text/plain")
 
 

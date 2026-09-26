@@ -81,7 +81,12 @@ function ownName(item: LibraryItem): string {
 function bodyFor(item: LibraryItem): Body {
   if (item.model) return "model";
   if (hasImagePreview(item)) return "image";
-  if (item.textOnly) return MARKDOWN_EXTENSIONS.has(fileExtension(ownName(item))) ? "markdown" : "text";
+  if (item.textOnly) {
+    const extension = fileExtension(ownName(item));
+    if (MARKDOWN_EXTENSIONS.has(extension)) return "markdown";
+    // A CSV sent in chat keeps its whole text, so it opens as a grid like an upload.
+    return ["csv", "tsv"].includes(extension) ? "document" : "text";
+  }
   if (documentKind(ownName(item), item.contentType)) return "document";
   const kind = fileKind(item);
   if (kind === "web") return "web";

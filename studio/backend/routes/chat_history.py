@@ -981,6 +981,20 @@ def _decode_attachment_base64(payload: str) -> bytes:
         raise HTTPException(status_code = 422, detail = "Attachment data is corrupt") from exc
 
 
+# The wrappers chat puts around attachment text for the model (features/chat/attachment-content.ts).
+_ATTACHMENT_TAG_RE = re.compile(r"<attachment name=[^\n]*>\n(.*)\n</attachment>", re.DOTALL)
+_ATTACHMENT_LABEL_RE = re.compile(r"\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX): [^\n]*\]\n")
+
+
+def _attachment_body_text(text: str) -> str:
+    """An attachment's text without its chat wrapper, as the file itself reads."""
+    tagged = _ATTACHMENT_TAG_RE.fullmatch(text)
+    if tagged:
+        return tagged.group(1)
+    labelled = _ATTACHMENT_LABEL_RE.match(text)
+    return text[labelled.end() :] if labelled else text
+
+
 _AUDIO_FORMAT_MEDIA_TYPES = {
     "mp3": "audio/mpeg",
     "wav": "audio/wav",
@@ -1093,7 +1107,7 @@ def get_attachment_file(
             return Response(content = _decode_attachment_base64(file_data), media_type = mime_type)
         text = part.get("text")
         if isinstance(text, str) and text:
-            texts.append(text)
+            texts.append(_attachment_body_text(text))
     if texts:
         return Response(content = "\n".join(texts), media_type = "text/plain; charset=utf-8")
     raise HTTPException(status_code = 404, detail = "Attachment has no stored content")
