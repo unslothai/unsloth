@@ -2401,6 +2401,224 @@ def test_the_purge_is_skipped_for_a_project_recreated_after_the_ownership_check(
 
 
 @requires_sqlite_vec
+def test_a_project_recreated_before_the_purge_keeps_a_usable_rag_scope(rag_home, monkeypatch):
+    """A recreate between the last owner check and the purge must not lock RAG out.
+
+    The project is gone for every look until the purge itself, then it exists and
+    stays that way. A list popped per call would make it vanish again, which no
+    registry does, and would point the scenario at whichever probe happened to
+    be last.
+    """
+    from routes import chat_history
+    from storage import studio_db
+
+    project_id = "p1"
+    scope = store.project_scope(project_id)
+    source = rag_home / "before-delete"
+    source.mkdir()
+    folder_sync.create_folder(scope_type = "project", scope_id = project_id, path = str(source))
+    owner = {"row": None}
+
+    def current_owner(pid):
+        return owner["row"]
+
+    real_purge = folder_sync.delete_retired_scope
+
+    def recreate_then_purge(purged_scope, **kwargs):
+        # the owner exists again before this transaction, not on a particular call index
+        owner["row"] = studio_db.upsert_chat_project(
+            {
+                "id": project_id,
+                "name": "Recreated",
+                "createdAt": 1,
+                "updatedAt": 1,
+            }
+        )
+        return real_purge(purged_scope, **kwargs)
+
+    monkeypatch.setattr(chat_history, "get_chat_project", current_owner)
+    monkeypatch.setattr(folder_sync, "delete_retired_scope", recreate_then_purge)
+
+    chat_history._delete_project_rag_sources(project_id)
+
+    assert owner["row"] is not None, "the project was never recreated, so this proves nothing"
+    assert folder_sync.scope_retired(scope) is False
+    with _connection() as conn:
+        tombstone = conn.execute(
+            "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (scope,)
+        ).fetchone()
+    assert tombstone is None
+    replacement = rag_home / "after-recreate"
+    replacement.mkdir()
+    linked = folder_sync.create_folder(
+        scope_type = "project",
+        scope_id = project_id,
+        path = str(replacement),
+    )
+    assert linked["status"] == "pending"
+
+
+@requires_sqlite_vec
+def test_upsert_still_returns_when_rag_unretire_cannot_write(rag_home, monkeypatch):
+    """A locked rag.db must not fail a project whose Studio row already committed."""
+    from storage import studio_db
+
+    project_id = "p-locked"
+    scope = store.project_scope(project_id)
+    source = rag_home / "locked-rag"
+    source.mkdir()
+    folder_sync.create_folder(scope_type = "project", scope_id = project_id, path = str(source))
+    folder_sync.retire_scope(scope)
+    folder_sync.delete_retired_scope(scope)
+    assert folder_sync.scope_retired(scope) is True
+
+    def boom(purged_scope):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(folder_sync, "unretire_scope", boom)
+    saved = studio_db.upsert_chat_project(
+        {
+            "id": project_id,
+            "name": "Locked RAG",
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    assert saved["id"] == project_id
+    assert studio_db.get_chat_project(project_id) is not None
+
+
+@requires_sqlite_vec
+def test_upsert_clears_a_tombstone_even_when_the_studio_row_already_existed(rag_home):
+    """A leftover tombstone must not depend on the pre-upsert existing snapshot."""
+    from storage import studio_db
+
+    project_id = "p-existing"
+    scope = store.project_scope(project_id)
+    studio_db.upsert_chat_project(
+        {
+            "id": project_id,
+            "name": "First",
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    folder_sync.retire_scope(scope)
+    folder_sync.delete_retired_scope(scope)
+    assert folder_sync.scope_retired(scope) is True
+
+    studio_db.upsert_chat_project(
+        {
+            "id": project_id,
+            "name": "Second",
+            "createdAt": 2,
+            "updatedAt": 2,
+        }
+    )
+    assert folder_sync.scope_retired(scope) is False
+
+
+@requires_sqlite_vec
+def test_late_upload_after_unretire_is_the_live_projects(rag_home, monkeypatch):
+    """A same-id recreate reopens the scope; a tombstone still present still refuses.
+
+    delete_retired_scope's permanent tombstone closes ownerless cross-database
+    upload and link races. Clearing it at upsert is the other half of that
+    tradeoff: the id has an owner again, so a late upload that arrives after
+    unretire is treated as the live project's. Unretire still runs under the
+    scope lock and only if the Studio row exists, so a second delete keeps
+    the ownerless path blocked.
+    """
+    from routes import chat_history, rag as rag_routes
+    from storage import studio_db
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    project_id = "p-late-upload"
+    scope = store.project_scope(project_id)
+    studio_db.upsert_chat_project(
+        {
+            "id": project_id,
+            "name": "Live",
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    source = rag_home / "live-scope"
+    source.mkdir()
+    folder_sync.create_folder(scope_type = "project", scope_id = project_id, path = str(source))
+    assert folder_sync.scope_retired(scope) is False
+
+    studio_db.delete_chat_project(project_id)
+    chat_history._delete_project_rag_sources(project_id)
+    assert folder_sync.scope_retired(scope) is True
+
+    ingested = []
+    saved_path = ensure_dir(rag_uploads_root()) / "late.txt"
+
+    def resolve_upload(*args, **kwargs):
+        saved_path.write_text("saved", encoding = "utf-8")
+        return str(saved_path), "late.txt", "0" * 64
+
+    def capture_ingest(*args, **kwargs):
+        ingested.append(kwargs.get("project_id") or project_id)
+        return "doc-late", "job-late"
+
+    monkeypatch.setattr(rag_routes.rag_db, "rag_available", lambda: True)
+    monkeypatch.setattr(rag_routes, "_resolve_document_upload", resolve_upload)
+    monkeypatch.setattr(rag_routes.ingestion, "start_ingestion", capture_ingest)
+
+    with pytest.raises(Exception) as exc_info:
+        rag_routes.upload_project_document(project_id, subject = "test")
+    assert getattr(exc_info.value, "status_code", None) == 404
+    assert ingested == []
+
+    with monkeypatch.context() as patched:
+        patched.setattr(studio_db, "get_chat_project", lambda value: {"id": value})
+        with pytest.raises(Exception) as retired_exc:
+            rag_routes.upload_project_document(project_id, subject = "test")
+        assert getattr(retired_exc.value, "status_code", None) == 409
+        assert ingested == []
+        assert not saved_path.exists()
+
+    replacement = rag_home / "before-unretire"
+    replacement.mkdir()
+    with pytest.raises(ValueError, match = "no longer exists"):
+        folder_sync.create_folder(scope_type = "project", scope_id = project_id, path = str(replacement))
+
+    studio_db.upsert_chat_project(
+        {
+            "id": project_id,
+            "name": "Recreated",
+            "createdAt": 2,
+            "updatedAt": 2,
+        }
+    )
+    assert folder_sync.scope_retired(scope) is False
+
+    uploaded = rag_routes.upload_project_document(project_id, subject = "test")
+    assert uploaded == {"documentId": "doc-late", "jobId": "job-late", "filename": "late.txt"}
+    assert ingested == [project_id]
+
+    relinked = rag_home / "after-unretire"
+    relinked.mkdir()
+    linked = folder_sync.create_folder(
+        scope_type = "project", scope_id = project_id, path = str(relinked)
+    )
+    assert linked["status"] == "pending"
+
+    studio_db.delete_chat_project(project_id)
+    chat_history._delete_project_rag_sources(project_id)
+    assert folder_sync.scope_retired(scope) is True
+    with pytest.raises(Exception) as second_exc:
+        rag_routes.upload_project_document(project_id, subject = "test")
+    assert getattr(second_exc.value, "status_code", None) == 404
+    assert ingested == [project_id]
+
+    studio_db._unretire_project_rag_scope(project_id)
+    assert folder_sync.scope_retired(scope) is True
+
+
+@requires_sqlite_vec
 def test_reconciliation_restores_a_scope_whose_project_came_back(rag_home):
     scope = store.project_scope("p1")
     source = rag_home / "recreated-project"

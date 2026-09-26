@@ -2728,6 +2728,42 @@ def count_chat_threads() -> int:
         conn.close()
 
 
+def _unretire_project_rag_scope(project_id: str) -> None:
+    """A recreated id must not keep the previous project's RAG tombstone.
+
+    delete_retired_scope only purges while the tombstone is still unpurged, so
+    clearing it here under the scope lock is what SQLite can serialize against
+    that write. The Studio row is already committed, so a delete still sitting
+    on its last owner check will see the project and skip the purge; one that
+    already passed that check races this on the RAG database instead of two.
+
+    The owner re-check happens under that same lock: a pre-upsert snapshot can
+    lose a concurrent delete/recreate, and unretiring from it would either skip
+    a live project or clear a tombstone whose owner is already gone. A locked
+    or missing RAG database must not fail the Studio write that already landed.
+
+    That is the tradeoff delete_retired_scope documents: the permanent
+    tombstone closes ownerless upload and link races; a same-id recreate
+    deliberately gives the scope back. A late upload after this clear is the
+    live project's. A second delete still blocks, because this returns without
+    writing if get_chat_project is None under the lock.
+    """
+    from core.rag import folder_sync, store as rag_store
+
+    scope = rag_store.project_scope(project_id)
+    try:
+        with folder_sync.scope_lock(scope):
+            if get_chat_project(project_id) is None:
+                return
+            folder_sync.unretire_scope(scope)
+    except Exception:
+        logger.warning(
+            "could not clear RAG retirement for project %s after the Studio row committed",
+            project_id,
+            exc_info = True,
+        )
+
+
 def upsert_chat_project(project: dict) -> dict:
     existing = get_chat_project(project["id"])
     root_path = existing.get("rootPath") if existing else None
@@ -2760,9 +2796,11 @@ def upsert_chat_project(project: dict) -> dict:
             ),
         )
         conn.commit()
-        return get_chat_project(project["id"]) or project
+        saved = get_chat_project(project["id"]) or project
     finally:
         conn.close()
+    _unretire_project_rag_scope(project["id"])
+    return saved
 
 
 def update_chat_project(id: str, patch: dict) -> Optional[dict]:
