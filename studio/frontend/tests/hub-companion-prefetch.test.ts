@@ -121,7 +121,6 @@ test("the detail pane offers a plain Download, never Run, for a companion-only r
     const state = modelDownloadState(view);
     assert.equal(state.isDownloaded, false, name);
     assert.equal(state.isPartial, false, name);
-    // The card keeps Delete for these files through this flag.
     assert.equal(
       (view as { companionPrefetch?: boolean } | null)?.companionPrefetch,
       true,

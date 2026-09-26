@@ -66,7 +66,6 @@ export function SafetensorsDownloadCard({
   isPartial?: boolean;
   partialTransport?: string | null;
   partialResumable?: boolean;
-  /** Borrowed companions only: no Partial / Continue, but still deletable. */
   companionPrefetch?: boolean;
   modelFormat?: ModelInventoryFormat | null;
   isActive: boolean;
