@@ -8,13 +8,13 @@
 export const UNSLOTH_THEME_IDS = ["standard", "classic", "minimal"] as const;
 
 export const FLAVOR_THEME_IDS = [
-  "neon-cyberpunk",
   "matcha",
   "blueberry",
   "tangerine",
   "plum",
-  "mint",
+  "neon-cyberpunk",
   "cherry",
+  "mint",
   "honey",
   "taro",
   "espresso",
@@ -64,11 +64,6 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     light: { accent: "#171717", background: "#ffffff", foreground: "#171717" },
     dark: { accent: "#ededed", background: "#181818", foreground: "#dfdfdf" },
   },
-  "neon-cyberpunk": {
-    name: "Neon Cyberpunk",
-    light: { accent: "#0a0a0f", background: "#f6f6f1", foreground: "#0a0a0f" },
-    dark: { accent: "#fcee0a", background: "#070b14", foreground: "#eafcff" },
-  },
   matcha: {
     name: "Matcha",
     light: { accent: "#437a22", background: "#f6f8f1", foreground: "#1d2618" },
@@ -89,15 +84,20 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     light: { accent: "#8b3fd1", background: "#fbf7fd", foreground: "#2a1836" },
     dark: { accent: "#c77dff", background: "#1a1320", foreground: "#eadff2" },
   },
-  mint: {
-    name: "Mint",
-    light: { accent: "#0f9e80", background: "#f3f9f7", foreground: "#12302a" },
-    dark: { accent: "#4fd1b3", background: "#111b1a", foreground: "#dcefeb" },
+  "neon-cyberpunk": {
+    name: "Neon Cyberpunk",
+    light: { accent: "#0a0a0f", background: "#f6f6f1", foreground: "#0a0a0f" },
+    dark: { accent: "#fcee0a", background: "#070b14", foreground: "#eafcff" },
   },
   cherry: {
     name: "Cherry",
     light: { accent: "#c8102e", background: "#fdf6f6", foreground: "#300f12" },
     dark: { accent: "#ff4d5e", background: "#1b1112", foreground: "#f4dfe0" },
+  },
+  mint: {
+    name: "Mint",
+    light: { accent: "#0f9e80", background: "#f3f9f7", foreground: "#12302a" },
+    dark: { accent: "#4fd1b3", background: "#111b1a", foreground: "#dcefeb" },
   },
   honey: {
     name: "Honey",
