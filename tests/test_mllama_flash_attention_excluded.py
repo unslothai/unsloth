@@ -43,7 +43,11 @@ def test_mllama_image_forward_runs_on_the_resolved_implementation(monkeypatch):
     monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
     model_class, config = _tiny_mllama()
     impl = _utils.resolve_attention_implementation(model_class, config, supports_sdpa = True)
-    model = model_class._from_config(config, attn_implementation = impl, dtype = torch.bfloat16).cuda().eval()
+    model = (
+        model_class._from_config(config, attn_implementation = impl, dtype = torch.bfloat16)
+        .cuda()
+        .eval()
+    )
     ids = torch.tensor([[255, 5, 6, 7, 8, 9]], device = "cuda")
     pixels = torch.randn(1, 1, 1, 3, 56, 56, device = "cuda", dtype = torch.bfloat16)
     with torch.no_grad():
