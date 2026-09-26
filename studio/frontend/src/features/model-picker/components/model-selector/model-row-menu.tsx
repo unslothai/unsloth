@@ -11,7 +11,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { usePlatformStore } from "@/config/env";
 import { revealCachedModel } from "@/features/chat";
 import {
   DeleteConfirmDialog,
@@ -21,6 +20,7 @@ import {
   subscribeJobListeners,
   useDeleteImpact,
 } from "@/features/hub";
+import { useRevealLabel } from "@/features/library";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -110,9 +110,8 @@ export function ModelRowMenu({
   update?: ModelRowMenuUpdate;
   del?: ModelRowMenuDelete;
 }) {
-  const deviceType = usePlatformStore((s) => s.deviceType);
-  const revealLabel =
-    deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
+  // Null unless this is the owner on the backend's own machine with a file manager.
+  const revealLabel = useRevealLabel();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const deleteImpact = useDeleteImpact(
@@ -191,7 +190,7 @@ export function ModelRowMenu({
     });
   }, [onReveal, cachePathRepoId, cachePathVariant]);
 
-  const canReveal = Boolean(cachePath || onReveal);
+  const canReveal = Boolean(revealLabel && (cachePath || onReveal));
   if (!pin && !update && !del && !canReveal && !items?.length) return null;
 
   return (
