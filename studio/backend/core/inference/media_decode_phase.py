@@ -8,7 +8,6 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
-# In the order MiniMax-H3's modular workflow runs them.
 DECODE_ATTRS = ("vae", "audio_vae")
 
 
