@@ -5349,3 +5349,54 @@ class TestCopyingTheParentPackageCarriesTheModule:
     )
     def test_the_parent_is_not_over_read(self, code):
         assert _check_code_safety(code) is None, code
+
+
+class TestEgressHostParsingAndTracking:
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                f"import requests\nrequests.get('http://{_H}\\\\@pypi.org/')", id = "backslash_host"
+            ),
+            pytest.param(
+                f"import requests\nrequests.Session().get('http://{_H}\\\\@pypi.org/')",
+                id = "backslash_session",
+            ),
+            pytest.param(
+                "import requests\nrequests.get('https://pypi.org/', "
+                f"proxies = {{'https': 'http://{_H}:8080\\\\@pypi.org'}})",
+                id = "backslash_proxy",
+            ),
+            pytest.param(
+                f"import requests\nrequests.get('http://a@pypi.org@{_H}/')", id = "last_at_wins"
+            ),
+            pytest.param(
+                f"import requests\nclass A:\n    s = requests.Session()\nA.s.get('http://{_H}/')",
+                id = "class_attribute_through_class",
+            ),
+            pytest.param(
+                "import requests\ndef mk():\n    return requests.Session(), 1\n"
+                f"s, _ = mk()\ns.get('http://{_H}/')",
+                id = "tuple_returned_and_unpacked",
+            ),
+        ],
+    )
+    def test_the_hostile_host_is_seen(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param("import requests\nrequests.get('https://u:p@pypi.org/simple/')", id = "userinfo"),
+            pytest.param(
+                "import requests\nclass A:\n    s = requests.Session()\nA.s.get('https://pypi.org/simple/')",
+                id = "class_attribute_allowlisted",
+            ),
+            pytest.param(
+                "def load():\n    return {'a': 1}, [1]\ncfg, xs = load()\nprint(cfg.get('a'))",
+                id = "tuple_without_client",
+            ),
+        ],
+    )
+    def test_an_allowlisted_or_local_call_still_runs(self, code):
+        _ok(code)

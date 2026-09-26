@@ -16590,9 +16590,11 @@ def _check_signal_escape_patterns(code: str):
     def _normalize_host(host: str) -> str:
         if not host:
             return ""
-        h = host.strip().lower().rstrip(".")
+        # urllib3 ends the authority at a backslash and splits userinfo on the LAST `@`:
+        # `http://evil\\@allowed/` connects to `evil`.
+        h = host.strip().lower().split("\\", 1)[0].rstrip(".")
         if "@" in h:
-            h = h.split("@", 1)[1]
+            h = h.rsplit("@", 1)[1]
         if h.startswith("[") and "]" in h:
             h = h[1 : h.index("]")]
         elif h.count(":") == 1:
@@ -17496,6 +17498,8 @@ def _check_signal_escape_patterns(code: str):
 
         def _roots(self, name: str) -> "list[str]":
             roots = [next((f for n, f in reversed(self.self_names) if n == name), name)]
+            if name in self.class_names:
+                roots.append(self.class_names[name])  # `A.s` is the class attribute of `<A>`
             family = self.class_family.get(self.scope_stack[-1])
             if family is not None:
                 roots.append(f"{family}.{name}")
@@ -18023,6 +18027,12 @@ def _check_signal_escape_patterns(code: str):
                 for whole in targets
                 for target, value in _paired(whole, value_node)
             ]
+            if not isinstance(value_node, (ast.Tuple, ast.List)):
+                for whole in targets:
+                    if isinstance(whole, (ast.Tuple, ast.List)):
+                        for elt in whole.elts:  # `s, n = make()`: any element may be the client
+                            elt = elt.value if isinstance(elt, ast.Starred) else elt
+                            self._record_flow(elt, value_node, at, node)
             registered: set[str] = set()
             for target, value, named in pairs:
                 self._record_proxy(target, value)
@@ -18081,9 +18091,11 @@ def _check_signal_escape_patterns(code: str):
             function = self.def_names.get(self.scope_stack[-1])
             if self.collecting and node.value is not None and function is not None:
                 at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
-                self._record_flow(
-                    ast.Name(id = _returns_of(function), ctx = ast.Store()), node.value, at, node
-                )
+                returns = ast.Name(id = _returns_of(function), ctx = ast.Store())
+                self._record_flow(returns, node.value, at, node)
+                if isinstance(node.value, (ast.Tuple, ast.List)):
+                    for elt in node.value.elts:  # `return requests.Session(), 1`
+                        self._record_flow(returns, elt, at, node)
             self.generic_visit(node)
 
         def _carry_loop(self, node) -> None:
@@ -18482,7 +18494,7 @@ def _check_signal_escape_patterns(code: str):
                             # The URL parser drops tab, CR and LF anywhere in the URL.
                             reading = re.sub(r"[\t\r\n]", "", head).lstrip()
                             # aiohttp 3.14.3 treats `//host/x` as absolute and connects to `host`.
-                            m = re.match(r"^(?:\w+:)?//([^/?#]+)", reading)
+                            m = re.match(r"^(?:\w+:)?//([^/\\?#]+)", reading)
                             # The host ends at the first `/?#`, so a literal truncated past that point
                             # still names it in full; one truncated inside it does not
                             # (`"http://evil." + tld`).
