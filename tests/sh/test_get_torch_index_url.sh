@@ -691,6 +691,14 @@ _result=$(run_func_stderr "$_dir")
 assert_contains "ROCm 6.5 clip is explained on stderr" "$_result" "No PyTorch build is validated for ROCm rocm6.5"
 rm -rf "$_dir"
 
+# 56) bash 3.2 (macOS /bin/sh) ends $(...) at a bare `pattern)`, aborting the whole script: every
+# arm of the captured case needs its leading (.
+_bare_arms=$(sed -n '/_rocm_index=\$(case "\$_rocm_tag" in/,/^[[:space:]]*esac)/p' "$INSTALL_SH" \
+    | grep -v '^[[:space:]]*esac)' | grep -E '^[[:space:]]*[^([:space:]#][^[:space:]]*\)' || true)
+_n_arms=$(sed -n '/_rocm_index=\$(case "\$_rocm_tag" in/,/^[[:space:]]*esac)/p' "$INSTALL_SH" | grep -cE '^[[:space:]]*\(' || true)
+assert_eq "captured ROCm case has no bare pattern arms" "" "$_bare_arms"
+assert_eq "captured ROCm case arms found" "yes" "$([ "${_n_arms:-0}" -ge 10 ] && echo yes)"
+
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR"
 rm -rf "$_FAKE_ROCM_DIR"
