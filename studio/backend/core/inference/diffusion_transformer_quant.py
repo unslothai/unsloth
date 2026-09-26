@@ -531,10 +531,7 @@ _SMOKE_CACHE: dict[tuple[str, str], bool] = {}
 
 
 def _smoke_cache_device_key(device: str, ordinal: Optional[int] = None) -> str:
-    """``device`` qualified with the CUDA index, so each card is validated on its own.
-
-    ``ordinal`` is for a caller that must not make the card current (a polled reader); the load
-    path runs scoped and reads the current one. Both spell the key ``cuda:{i}``."""
+    """``device`` qualified with the current CUDA index, or ``ordinal`` when given."""
     if device != "cuda":
         return device
     if ordinal is not None:
@@ -966,8 +963,7 @@ def dense_quant_host_capable(target: Any) -> bool:
     Cheap and non-allocating, so a polled status route can ask it: the arch floors come from
     ``_AUTO_LADDER`` and the probe is only READ from ``_SMOKE_CACHE``, where the load path already
     paid for it. An unprobed scheme counts as usable, like the ``unproven_ok`` path; a probed
-    failure does not. Asked of ``target.ordinal`` when there is one, so a polled caller never
-    makes the card current (on CUDA 12 ``cudaSetDevice`` pins a primary context).
+    failure does not.
 
     ``auto``, not "any scheme": the ladder leaves nvfp4 out, so a host that can only run nvfp4
     honours an explicit request and has nothing automatic to offer."""
@@ -1083,8 +1079,7 @@ def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> 
     Same ladder and deny list, but no probe: ``_scheme_supported`` can spawn the child smoke probe
     or allocate in this process, and neither belongs on a route polled every few seconds. Unprobed
     counts as usable and a probed failure does not, as in ``dense_quant_host_capable``, so the
-    published ladder sharpens as loads record verdicts instead of paying for them here. Read for
-    ``target.ordinal`` without making it current, for the same reason."""
+    published ladder sharpens as loads record verdicts instead of paying for them here."""
     if not dense_transformer_supported(target):
         return ()
     ordinal = getattr(target, "ordinal", None)

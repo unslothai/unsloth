@@ -233,13 +233,8 @@ def test_the_probe_would_catch_a_regression():
     assert mib > 0, "mem_get_info created no context here, so the assertions above prove nothing"
 
 
-# ========== The dense-quant probes, one card at a time ==========
 
-# _probe_dense_quant_supported and _probe_dense_quant_schemes (main.py) ask every visible card,
-# from the post-warm worker and again on each /api/system poll once torch and torchao are up.
-# They used to enter torch.cuda.device(i) per card, and on CUDA 12 that is cudaSetDevice, which
-# pins a primary context on every card of an idle multi-GPU host (a 3090 + 3060 held 256 + 104
-# MiB with no model loaded). Single-GPU hosts skip the loop, so the poll tests above never saw it.
+# Single-GPU hosts skip the per-card loop, so the poll tests above never covered it.
 
 
 def _cuda_device_count() -> int:
@@ -263,8 +258,6 @@ needs_two_nvidia = pytest.mark.skipif(
     reason = "needs two CUDA devices on NVIDIA to observe a per-card primary context",
 )
 
-# Per-card accounting: one nvidia-smi row per (GPU, process), summed per GPU for this PID, plus
-# torch's own primary-context flag as a second signal that needs no nvidia-smi.
 _PROBE_BY_GPU = textwrap.dedent(
     """
     import os, subprocess
@@ -312,8 +305,7 @@ _BY_GPU_CHILD = textwrap.dedent(
     """
 )
 
-# The two probe bodies exec'd straight out of main.py (importing main builds the app), with the
-# readers they call wrapped to record which card each was asked about.
+# Probe bodies exec'd from main.py source: importing main builds the app.
 _DENSE_QUANT_PROBES = textwrap.dedent(
     """
     import ast
@@ -358,8 +350,7 @@ def _run_child_by_gpu(call: str):
 @needs_two_nvidia
 def test_the_dense_quant_probes_pin_no_context_on_any_card():
     held, primary, visited = _run_child_by_gpu(_DENSE_QUANT_PROBES)
-    # The loop must really have run over every card: a swallowed import error also answers
-    # "incapable" and would pass the memory assertions below for the wrong reason.
+    # A swallowed import error also answers "incapable"; prove the loop visited every card.
     assert visited["ladder"] == list(range(_cuda_device_count())), visited
     assert visited["bit"][:1] == [0], visited
     if held is None and primary is None:
@@ -372,8 +363,7 @@ def test_the_dense_quant_probes_pin_no_context_on_any_card():
 
 @needs_two_nvidia
 def test_the_multi_gpu_probe_would_catch_a_regression():
-    # Guards the test above: the exact call the probes used to make, entering card 1's scope,
-    # must show up as a context here, or a green run proves blindness rather than avoidance.
+    # Negative control: the old scoped call must register a context, else the test above is blind.
     held, primary, _ = _run_child_by_gpu("torch.cuda.device(1).__enter__()")
     if held is None and primary is None:
         pytest.skip("no per-PID nvidia-smi accounting and no torch primary-context flag")

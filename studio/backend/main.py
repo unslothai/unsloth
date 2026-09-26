@@ -2290,8 +2290,7 @@ def _probe_dense_quant_supported() -> bool:
         count = torch.cuda.device_count() if torch.cuda.is_available() else 0
         if count <= 1:
             return bool(dense_quant_host_capable(resolve_diffusion_device_target()))
-        # No device scope: entering one is cudaSetDevice, which on CUDA 12 pins a primary context
-        # on every card of an idle multi-GPU host. The readers key off the target's ordinal.
+        # No device scope: cudaSetDevice pins a primary context on every card (CUDA 12).
         for ordinal in range(count):
             if not dense_quant_host_capable(resolve_diffusion_device_target(ordinal = ordinal)):
                 return False
@@ -2318,7 +2317,7 @@ def _probe_dense_quant_schemes() -> list[str]:
         if count <= 1:
             return list(auto_scheme_candidates_cached(resolve_diffusion_device_target()))
         common: Optional[list[str]] = None
-        for ordinal in range(count):  # unscoped, as in _probe_dense_quant_supported
+        for ordinal in range(count):
             schemes = list(
                 auto_scheme_candidates_cached(resolve_diffusion_device_target(ordinal = ordinal))
             )

@@ -23,11 +23,7 @@ def _src(name: str) -> str:
 
 
 def _cuda_namespace(device_count, switched):
-    """A ``torch.cuda`` whose device-switching and context-pinning calls record, then raise.
-
-    The probes swallow the raise and answer conservatively, so a regression fails the result
-    assertion AND leaves its name here. On CUDA 12 ``cudaSetDevice`` (what entering
-    ``torch.cuda.device`` does) pins a primary context, which is why none of these may run."""
+    """A ``torch.cuda`` whose context-pinning calls record, then raise."""
 
     def _forbid(name):
         def _call(*_a, **_k):
@@ -48,11 +44,7 @@ def _cuda_namespace(device_count, switched):
 
 
 def _run(monkeypatch, *, device_count, capable_by_ordinal):
-    """Run an uncached copy of ``_probe_dense_quant_supported`` with mocked dependencies.
-
-    Returns the result, the forbidden ``torch.cuda`` calls made, and the ordinals asked. The fake
-    device module has no ``diffusion_device_scope`` on purpose: a probe that imports it again
-    raises inside its guard and reports incapable."""
+    """Run an uncached copy of ``_probe_dense_quant_supported`` with mocked dependencies."""
     switched: list = []
     asked: list = []
 
@@ -93,7 +85,6 @@ def test_every_visible_card_must_be_capable(monkeypatch):
         monkeypatch, device_count = 2, capable_by_ordinal = {0: True, 1: False}
     )
     assert result is False
-    # Every ordinal is asked by target, none is made current.
     assert asked == [0, 1]
     assert switched == []
 
@@ -132,9 +123,6 @@ def test_the_wiring_stays_in_place(needle):
 
 @pytest.mark.parametrize("name", ["_probe_dense_quant_supported", "_probe_dense_quant_schemes"])
 def test_the_probes_never_switch_the_current_device(name):
-    """Entering ``torch.cuda.device(i)`` is ``cudaSetDevice``, which on CUDA 12 pins a primary
-    context; looped over every card it left an idle two-GPU Studio holding VRAM on both. The
-    probes ask each card by its ordinal on the target instead."""
     assert "diffusion_device_scope" not in _src(name)
 
 
@@ -310,10 +298,6 @@ def test_the_polled_ladder_never_runs_the_allocating_smoke_probe(monkeypatch):
 
 
 def test_the_cached_readers_ask_the_target_card_without_switching(monkeypatch):
-    """``dense_quant_host_capable`` and ``auto_scheme_candidates_cached`` read the card named by
-    ``target.ordinal`` through ``get_device_capability(i)`` and key ``_SMOKE_CACHE`` by it, never
-    by making the card current: on CUDA 12 ``cudaSetDevice`` pins a primary context, and the
-    polled probe asks about every card of the host."""
     from core.inference import diffusion_speed
     from core.inference import diffusion_transformer_quant as tq
 
@@ -342,7 +326,6 @@ def test_the_cached_readers_ask_the_target_card_without_switching(monkeypatch):
     monkeypatch.setattr(diffusion_speed, "compile_eligible", lambda target, **kw: True)
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda _target: True)
     monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", (None,))
-    # fp8 failed on card 1 only; the readers must file card 1's verdict under card 1.
     monkeypatch.setattr(tq, "_SMOKE_CACHE", {("fp8", "cuda:1"): False})
 
     card1 = types.SimpleNamespace(device = "cuda", ordinal = 1)
@@ -352,7 +335,6 @@ def test_the_cached_readers_ask_the_target_card_without_switching(monkeypatch):
     card0 = types.SimpleNamespace(device = "cuda", ordinal = 0)
     assert tq.auto_scheme_candidates_cached(card0) == ("int8", "fp8")
     assert asked == [1, 1, 0]
-    # No ordinal on the target: the current card, still without switching.
     del asked[:]
     bare = types.SimpleNamespace(device = "cuda")
     assert tq.auto_scheme_candidates_cached(bare) == ("int8", "fp8")
