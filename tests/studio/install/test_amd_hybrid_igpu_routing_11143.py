@@ -96,6 +96,15 @@ def test_rocminfo_output_is_not_masked_by_rocr_twice(unmasked):
     assert ILP._pick_rocm_gfx_target(out) == "gfx1036"
 
 
+def test_rocr_over_filtered_output_is_still_an_explicit_choice(unmasked):
+    """ROCR=0,1 leaves the iGPU first; it was chosen, so the discrete repick must not undo it."""
+    out = _rocminfo("gfx1036", "gfx1200")
+    unmasked.setenv("ROCR_VISIBLE_DEVICES", "0,1")
+    assert ILP._pick_rocm_gfx_target(out, rocr_filtered = True) == "gfx1036"
+    unmasked.setenv("ROCR_VISIBLE_DEVICES", "-1")
+    assert ILP._pick_rocm_gfx_target(out, rocr_filtered = True) is None
+
+
 def test_the_rocminfo_probe_says_its_output_is_rocr_filtered():
     import ast
 
