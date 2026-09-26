@@ -320,6 +320,8 @@ class ManagedEngine:
                 child_env["VLLM_CACHE_ROOT"] = str(cache)
                 child_env["TORCHINDUCTOR_CACHE_DIR"] = str(cache / "inductor")
                 child_env["TRITON_CACHE_DIR"] = str(cache / "triton")
+                # FlashInfer's JIT build files name this env's sources; a shared ~/.cache outlives a replaced env.
+                child_env["FLASHINFER_WORKSPACE_BASE"] = info["path"]
                 memory_fraction = gpu_memory_fraction(gpu_ids or [0])
                 child_env.update(self.adapter.environment(len(gpu_ids or [0])))
                 if self.engine == "vllm" and _deep_gemm_unloadable(info["path"]):
