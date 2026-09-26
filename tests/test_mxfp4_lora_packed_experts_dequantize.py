@@ -566,3 +566,32 @@ def test_only_the_file_or_index_from_pretrained_selects_is_sized(zoo, sizes, tmp
         json.dumps({"weight_map": {"a": "model-00001-of-00001.safetensors"}})
     )
     assert _helper()("mxfp4", False, "auto", str(local)) is False
+
+
+def test_index_shards_in_nested_folders_are_sized(zoo, sizes, tmp_path):
+    local = tmp_path / "nested"
+    (local / "weights").mkdir(parents = True)
+    (local / "weights" / "model-00001-of-00001.safetensors").write_bytes(b"0" * 8192)
+    (local / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a": "weights/model-00001-of-00001.safetensors"}})
+    )
+    sizes["free"] = [4096 / 2**30]
+    assert _helper()("mxfp4", False, "auto", str(local)) is False
+
+
+def test_an_explicit_max_memory_budget_is_used_whole(zoo, sizes):
+    # 38 GiB against a 40 GiB budget fits: accelerate places against max_memory as given.
+    sizes["checkpoint"], sizes["free"] = 38, [80]
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b", {0: "40GiB"}) is True
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b", {0: "36GiB"}) is False
+    # Measured free memory keeps its margin.
+    sizes["free"] = [40]
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is False
+
+
+def test_balanced_low_0_does_not_count_the_first_card(zoo, sizes):
+    sizes["checkpoint"], sizes["free"] = 60, [80, 40]
+    assert _helper()("mxfp4", False, "balanced", "openai/gpt-oss-120b") is True
+    assert _helper()("mxfp4", False, "balanced_low_0", "openai/gpt-oss-120b") is False
+    sizes["free"] = [80]
+    assert _helper()("mxfp4", False, "balanced_low_0", "openai/gpt-oss-120b") is True

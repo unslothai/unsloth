@@ -1262,7 +1262,7 @@ def _mxfp4_lora_keeps_experts_packed(
                 parts = name.split(".")
                 return ".".join(parts[:-1] + [variant, parts[-1]])
 
-            def weight_bytes(files, read_index):
+            def weight_bytes(files, read_index, size_of = None):
                 # The files from_pretrained reads, in its order: model.safetensors, else the
                 # shards the safetensors index lists, else the same for pytorch_model.bin
                 # (only the .bin pair with use_safetensors = False), for the selected variant
@@ -1278,7 +1278,12 @@ def _mxfp4_lora_keeps_experts_packed(
                         return files[single]
                     if index in files:
                         shards = set(json.loads(read_index(index))["weight_map"].values())
-                        return sum(files.get(prefix + shard, 0) for shard in shards)
+                        # An index may name shards in nested folders, which a folder listing
+                        # does not reach.
+                        return sum(
+                            files.get(prefix + shard) or (size_of(prefix + shard) if size_of else 0)
+                            for shard in shards
+                        )
                 return 0
 
             def folder_files(folder):
@@ -1291,6 +1296,13 @@ def _mxfp4_lora_keeps_experts_packed(
                     if os.path.isfile(os.path.join(root, name))
                 ]
 
+            def folder_size(folder):
+                def size(name):
+                    path = os.path.join(folder, name)
+                    return os.path.getsize(path) if os.path.isfile(path) else 0
+
+                return size
+
             def folder_index(folder):
                 def read(name):
                     with open(os.path.join(folder, name), encoding = "utf-8") as file:
@@ -1300,7 +1312,9 @@ def _mxfp4_lora_keeps_experts_packed(
 
             if os.path.isdir(str(model_name)):
                 folder = str(model_name)
-                checkpoint_bytes = weight_bytes(folder_files(folder), folder_index(folder))
+                checkpoint_bytes = weight_bytes(
+                        folder_files(folder), folder_index(folder), folder_size(folder)
+                    )
             else:
                 try:
                     from huggingface_hub import HfApi, hf_hub_download
@@ -1339,7 +1353,9 @@ def _mxfp4_lora_keeps_experts_packed(
                         token = token,
                         allow_patterns = ["*.safetensors", "*.bin", "*.index*.json"],
                     )
-                    checkpoint_bytes = weight_bytes(folder_files(folder), folder_index(folder))
+                    checkpoint_bytes = weight_bytes(
+                        folder_files(folder), folder_index(folder), folder_size(folder)
+                    )
             # The backend accelerate fills: CUDA / ROCm, else Intel XPU.
             backend = torch.cuda
             if not torch.cuda.is_available() and getattr(torch, "xpu", None) is not None:
@@ -1361,6 +1377,9 @@ def _mxfp4_lora_keeps_experts_packed(
                 )
             else:
                 devices = list(range(backend.device_count())) if probed else []
+            # balanced_low_0 keeps the first card nearly empty for generate(), so it adds no room.
+            if device_map == "balanced_low_0" and len(devices) > 1:
+                devices = devices[1:]
             free_bytes = 0
             for index in devices:
                 try:
@@ -1376,7 +1395,10 @@ def _mxfp4_lora_keeps_experts_packed(
                     free = min(free, budget)
                 free_bytes += free
             # Zero measured capacity (every card excluded or capped at 0) spills everything.
-            if checkpoint_bytes and probed and checkpoint_bytes > 0.9 * free_bytes:
+            # A caller's max_memory is the budget accelerate places against as given; measured
+            # free memory keeps a margin for activations and the CUDA context.
+            limit = free_bytes if max_memory else 0.9 * free_bytes
+            if checkpoint_bytes and probed and checkpoint_bytes > limit:
                 return False
         except Exception:
             pass
