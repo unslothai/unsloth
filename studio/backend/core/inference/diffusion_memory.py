@@ -241,12 +241,22 @@ def _host_empty_cache() -> None:
         pass
 
 
+def _pinnable_layout(data: Any) -> bool:
+    """Dense layouts a strided pinned copy reproduces: contiguous, or the channels_last(_3d) of VAE conv weights."""
+    if data.is_contiguous():
+        return True
+    import torch
+
+    fmt = {4: torch.channels_last, 5: torch.channels_last_3d}.get(data.dim())
+    return fmt is not None and data.is_contiguous(memory_format = fmt)
+
+
 def _pin_host_weights(
     module: Any,
     host: dict,
     logger: Any = None,
 ) -> int:
-    """Pack kept host weights into page-locked chunks; returns bytes pinned. Contiguous only, so channels_last survives."""
+    """Pack kept host weights into page-locked chunks; returns bytes pinned. Each copy keeps its source strides."""
     import torch
 
     mode = _pin_mode()
@@ -258,7 +268,7 @@ def _pin_host_weights(
         if host.get(name) is not None
         and p.device.type == "cpu"
         and _keepable(p)
-        and p.data.is_contiguous()
+        and _pinnable_layout(p.data)
         and not p.data.is_pinned()
     ]
     sizes = [-(-p.data.nbytes // _PIN_ALIGN) * _PIN_ALIGN for _, p in params]
@@ -307,7 +317,12 @@ def _pin_host_weights(
         for (name, p), (index, start) in zip(params, slots):
             if index == len(bufs):
                 bufs.append(torch.empty(chunks[index], dtype = torch.uint8, pin_memory = True))
-            view = bufs[index][start : start + p.data.nbytes].view(p.dtype).view(p.shape)
+            view = bufs[index][start : start + p.data.nbytes].view(p.dtype)
+            view = (
+                view.view(p.shape)
+                if p.data.is_contiguous()
+                else view.as_strided(p.shape, p.data.stride())
+            )
             view.copy_(p.data)
             placed.append((name, p, view))
     except Exception as exc:  # noqa: BLE001 - e.g. a WSL pinned-memory cap: keep the pageable weights
@@ -904,6 +919,60 @@ def estimate_video_runtime_mib(
     return max(3072, int(4096 + 3.0 * decoded_mib))
 
 
+@dataclass(frozen = True)
+class CalibratedImageActivation:
+    """Measured peaks above the resident weights for one image, safety margin included (MiB).
+
+    The first four are at the 1024x1024 default: text encoding, denoising, an untiled and a tiled VAE decode.
+    ``max_canvas_mib`` is the larger of the denoise and the tiled decode at the largest canvas the Images page offers
+    (2048x2048). Above one megapixel the generate-time guard tiles the decode, but nothing can shrink the denoise, so a
+    tier that keeps the whole transformer on the device must hold this too."""
+
+    text_encoder_mib: int
+    denoise_mib: int
+    decode_mib: int
+    tiled_decode_mib: int
+    max_canvas_mib: int
+
+    def headroom(self, tiled: bool) -> int:
+        return max(
+            self.text_encoder_mib,
+            self.denoise_mib,
+            self.tiled_decode_mib if tiled else self.decode_mib,
+        )
+
+
+# Worst case over every measured build of the family (bf16, fp8, int8, GGUF), CFG on and off, and the first call at a
+# new size (cuDNN autotuning workspaces), one image at a time, on NVIDIA with a sub-quadratic attention kernel. The first
+# tuple covers the off / eager / default speed tiers (compile and CUDA graphs included); the second the max tier, whose
+# max-autotune compile holds far more for the denoise. Families not listed keep the flat estimate.
+_ACTIVATION_MARGIN = 1.2
+_MEASURED_IMAGE_ACTIVATION_MIB: dict[
+    str, tuple[tuple[int, int, int, int, int], tuple[int, int, int, int, int]]
+] = {
+    # text encoder, denoise, untiled decode, tiled decode (all at 1024x1024), max(denoise, tiled decode) at 2048x2048
+    "qwen-image-2.1": ((1_812, 662, 7_644, 440, 2_467), (1_812, 2_489, 7_644, 440, 9_602)),
+    "qwen-image": ((1_103, 584, 4_334, 311, 1_715), (1_103, 584, 4_334, 311, 1_715)),
+    "flux.1": ((264, 503, 2_597, 1_797, 1_822), (264, 857, 2_601, 1_797, 2_673)),
+    "flux.2-klein": ((288, 739, 2_604, 1_803, 2_205), (288, 976, 2_677, 1_803, 2_993)),
+    "z-image": ((268, 1_199, 2_666, 1_833, 4_327), (268, 1_271, 2_669, 1_833, 4_327)),
+    "sdxl": ((8, 355, 2_561, 1_793, 3_050), (8, 444, 2_561, 1_793, 3_050)),
+}
+
+
+def calibrated_image_activation(
+    family: Optional[str], *, max_speed: bool = True
+) -> Optional[CalibratedImageActivation]:
+    """Planning activation for a measured family (exact family name), or None to keep the flat estimate.
+    ``max_speed`` picks the max speed tier's figures, the safe answer when the tier is unknown."""
+    measured = _MEASURED_IMAGE_ACTIVATION_MIB.get(str(family or ""))
+    if measured is None:
+        return None
+    return CalibratedImageActivation(
+        *(int(v * _ACTIVATION_MARGIN) for v in measured[1 if max_speed else 0])
+    )
+
+
 def _reserve_mib(memory_kind: str, base: int) -> int:
     if memory_kind == "unified_memory":
         return max(2048, int(base * 0.20))  # OS + CPU share this pool
@@ -1080,6 +1149,7 @@ def plan_diffusion_memory(
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
     requested_mode: Optional[str] = None,
     explicit_offload: bool = False,
+    calibrated_activation: Optional[CalibratedImageActivation] = None,
 ) -> MemoryPlan:
     """Pick an offload policy plus VAE memory savers for the current load.
 
@@ -1261,6 +1331,29 @@ def plan_diffusion_memory(
     # keeps the VAE resident.
     any_offload = policy != OFFLOAD_NONE or device_memory.backend in ("mps", "cpu")
     tile = policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL) or device_memory.backend in ("mps", "cpu")
+    if (
+        calibrated_activation is not None
+        and mode == MEMORY_MODE_AUTO
+        and not explicit_offload
+        and can_offload
+        and not device_memory.is_unified
+    ):
+        faster = _calibrated_faster_tier(
+            calibrated_activation,
+            budget = budget,
+            model_dense_mib = model_dense_mib,
+            companion_dense_mib = companion_dense_mib,
+            text_encoder_dense_mib = text_encoder_dense_mib,
+            base_overhead_mib = base_overhead_mib,
+            free_mib = device_memory.free_mib,
+            policy = policy,
+            stream_transformer = stream_transformer,
+        )
+        if faster is not None:
+            policy, stream_text_encoders, stream_transformer, tile, reason = faster
+            any_offload = policy != OFFLOAD_NONE
+            reasons.append(reason)
+            estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
     return MemoryPlan(
         requested_mode = mode,
         offload_policy = policy,
@@ -1273,6 +1366,107 @@ def plan_diffusion_memory(
         stream_text_encoders = stream_text_encoders and policy == OFFLOAD_GROUP,
         stream_transformer = stream_transformer or policy != OFFLOAD_GROUP,
     )
+
+
+def _calibrated_faster_tier(
+    act: CalibratedImageActivation,
+    *,
+    budget: Optional[int],
+    model_dense_mib: Optional[int],
+    companion_dense_mib: Optional[int],
+    text_encoder_dense_mib: Optional[int],
+    base_overhead_mib: int,
+    free_mib: Optional[int],
+    policy: str,
+    stream_transformer: bool,
+) -> Optional[tuple[str, bool, bool, bool, str]]:
+    """A strictly faster auto tier than the flat estimate picked, sized on measured activations, else None.
+
+    Fastest first: all resident; transformer resident with the text encoders streamed, untiled then tiled (tiling a
+    1024 decode costs less than whole-module offload's per-call transformer upload); whole-module offload untiled then
+    tiled; then the streamed transformer tiers, which re-upload the transformer every step, not once per call.
+    Whole-module offload is viable exactly when the flat planner would keep it (every component fits the budget on its
+    own, else refine_memory_plan_for_components streams); only its untiled decode needs the measured check, since the
+    flat planner already runs whole-module offload on smaller cards. The resident tiers hold more than the transformer
+    while it denoises, and above one megapixel only the decode can be tiled, so they must also fit the largest canvas's
+    denoise in the free memory (the reserve is for fragmentation; the base overhead still applies). Tiers are only
+    tried above the flat pick, and every check grows with the budget, so more VRAM is never slower."""
+    if budget is None or free_mib is None or model_dense_mib is None or companion_dense_mib is None:
+        return None
+    te = max(0, int(text_encoder_dense_mib or 0))
+    transformer = max(0, int(model_dense_mib) - int(companion_dense_mib))
+    others = max(0, int(companion_dense_mib) - te)
+    overhead = max(0, int(base_overhead_mib))
+    budget = int(budget)
+    room = int(free_mib) - overhead - act.max_canvas_mib
+    if policy == OFFLOAD_NONE:
+        flat_rank = 0
+    elif policy == OFFLOAD_GROUP and not stream_transformer:
+        flat_rank = 1
+    elif policy == OFFLOAD_MODEL:
+        flat_rank = 4
+    elif policy == OFFLOAD_GROUP:
+        flat_rank = 5
+    else:
+        return None
+    model_viable = max(transformer, te, others) <= budget
+    resident_streamed_te = te > 0 and transformer + others <= room
+    candidates = (
+        (
+            transformer + te + others + act.headroom(False) + overhead <= int(budget * 0.85)
+            and transformer + te + others <= room,
+            (OFFLOAD_NONE, False, True, False, "measured activations fit resident with headroom"),
+        ),
+        (
+            resident_streamed_te
+            and transformer + others + act.headroom(False) + overhead <= budget,
+            (
+                OFFLOAD_GROUP,
+                True,
+                False,
+                False,
+                "measured activations keep the transformer resident with the text encoders streamed",
+            ),
+        ),
+        (
+            resident_streamed_te and transformer + others + act.headroom(True) + overhead <= budget,
+            (
+                OFFLOAD_GROUP,
+                True,
+                False,
+                True,
+                "measured activations keep the transformer resident with the text encoders "
+                "streamed and the VAE decode tiled",
+            ),
+        ),
+        (
+            model_viable and others + act.decode_mib + overhead <= budget,
+            (
+                OFFLOAD_MODEL,
+                False,
+                True,
+                False,
+                "whole-module offload uploads the transformer once per call, and the measured "
+                "VAE decode fits untiled",
+            ),
+        ),
+        (
+            model_viable,
+            (
+                OFFLOAD_MODEL,
+                False,
+                True,
+                True,
+                "whole-module offload uploads the transformer once per call instead of every step",
+            ),
+        ),
+    )
+    for rank, (fits, tier) in enumerate(candidates):
+        if rank >= flat_rank:
+            return None
+        if fits:
+            return tier
+    return None
 
 
 def _streamable_components(pipe: Any, torch: Any) -> dict[str, tuple[Any, str]]:

@@ -261,6 +261,53 @@ def test_a_non_contiguous_weight_keeps_its_layout(monkeypatch):
 
 
 @cuda
+@pytest.mark.parametrize(
+    "conv, fmt, shape",
+    [
+        (torch.nn.Conv2d, torch.channels_last, (1, 4, 6, 6)),
+        (torch.nn.Conv3d, torch.channels_last_3d, (1, 4, 3, 6, 6)),
+    ],
+)
+def test_a_channels_last_conv_weight_is_pinned_in_its_layout(monkeypatch, conv, fmt, shape):
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "1")
+    x = torch.randn(*shape)
+    seen = []
+
+    def build():
+        torch.manual_seed(0)
+        module = conv(4, 4, 3, padding = 1).to(memory_format = fmt)
+        module.register_forward_pre_hook(
+            lambda mod, args: seen.append(mod.weight.is_contiguous(memory_format = fmt))
+        )
+        pipe = types.SimpleNamespace(components = {"vae": module}, vae = module)
+
+        def enable_model_cpu_offload(device = "cuda"):
+            hooks.remove_hook_from_module(module)
+            module.to("cpu")
+            hooks.add_hook_to_module(module, hooks.CpuOffload(execution_device = device))
+
+        pipe.enable_model_cpu_offload = enable_model_cpu_offload
+        pipe.enable_model_cpu_offload()
+        return pipe
+
+    def render(pipe):
+        out = pipe.vae(x).detach().cpu()
+        pipe.vae._hf_hook.init_hook(pipe.vae)
+        pipe.enable_model_cpu_offload()
+        return out
+
+    ref = render(build())
+    pipe = build()
+    dm.keep_cpu_weights_on_offload(pipe)
+    for _ in range(2):
+        assert torch.equal(render(pipe), ref)
+    weight = pipe.vae.weight
+    assert weight.device.type == "cpu" and weight.is_pinned()
+    assert weight.is_contiguous(memory_format = fmt)
+    assert all(seen)
+
+
+@cuda
 def test_a_parameter_replaced_on_the_device_is_copied_back():
     pipe = _pipe("cuda", "transformer")
     pipe.enable_model_cpu_offload()
