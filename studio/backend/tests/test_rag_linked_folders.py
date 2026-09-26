@@ -2547,3 +2547,230 @@ def test_the_ownership_snapshot_survives_an_unloadable_vector_extension(rag_home
 
     assert owned == [folder["id"]]
     assert folder_sync.get_folder(folder["id"])["status"] == "retired"
+
+
+def _spy_on_encode(monkeypatch) -> list[list[str]]:
+    """Wrap the already-stubbed ``embeddings.encode`` to record every batch it sees,
+    so a test can prove content-identical files were embedded once, not once per copy."""
+    from core.rag import embeddings
+
+    calls: list[list[str]] = []
+    original = embeddings.encode
+
+    def spy(texts, **kwargs):
+        calls.append(list(texts))
+        return original(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode", spy)
+    return calls
+
+
+def _chunk_texts(document_id: str) -> list[str]:
+    with _connection() as conn:
+        rows = conn.execute(
+            "SELECT text FROM chunks WHERE document_id=? ORDER BY chunk_index", (document_id,)
+        ).fetchall()
+    return [r["text"] for r in rows]
+
+
+def _vectors(document_id: str) -> dict[str, bytes]:
+    with _connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_id, embedding FROM chunks_vec WHERE chunk_id LIKE ?",
+            (f"{document_id}:%",),
+        ).fetchall()
+    return {row["chunk_id"].rsplit(":", 1)[1]: bytes(row["embedding"]) for row in rows}
+
+
+@requires_sqlite_vec
+def test_identical_linked_files_copy_one_embedding_instead_of_reembedding(
+    rag_home, stub_embeddings, monkeypatch
+):
+    """Three copies of one file plus one distinct file: the embedder must see each
+    distinct body once, and the two copies must end up with the donor's own chunk
+    texts and vectors, not a re-derived index of their own."""
+    calls = _spy_on_encode(monkeypatch)
+    source, folder = _folder(rag_home)
+    (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "b.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "c.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "d.txt").write_text("a distinct different body", encoding = "utf-8")
+
+    result = _run(folder["id"])
+    assert result["status"] == "completed"
+    assert result["added"] == 4
+
+    embedded_texts = [text for call in calls for text in call]
+    assert embedded_texts.count("shared duplicate content") == 1
+    assert embedded_texts.count("a distinct different body") == 1
+
+    with _connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+        ).fetchall()
+        assert len(rows) == 4
+        by_rel = {row["relative_path"]: dict(row) for row in rows}
+        documents = {
+            rel: store.get_document(conn, row["document_id"]) for rel, row in by_rel.items()
+        }
+        assert len({d["id"] for d in documents.values()}) == 4
+        for rel, doc in documents.items():
+            assert doc["linked_relative_path"] == rel
+        assert len({d["stored_path"] for d in documents.values()}) == 4
+
+        donor = documents["a.txt"]
+        assert donor["num_chunks"] > 0
+        for rel in ("b.txt", "c.txt"):
+            copy = documents[rel]
+            assert copy["num_chunks"] == donor["num_chunks"]
+            assert _chunk_texts(copy["id"]) == _chunk_texts(donor["id"])
+            assert _vectors(copy["id"]) == _vectors(donor["id"])
+
+        hits = store.search_lexical(conn, folder["scope"], "shared", 10)
+        hit_doc_ids = {chunk_id.rsplit(":", 1)[0] for chunk_id, _ in hits}
+        assert hit_doc_ids == {
+            documents["a.txt"]["id"],
+            documents["b.txt"]["id"],
+            documents["c.txt"]["id"],
+        }
+
+
+@requires_sqlite_vec
+def test_deleting_a_reused_copy_leaves_its_siblings_intact(rag_home, stub_embeddings):
+    source, folder = _folder(rag_home)
+    (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "b.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "c.txt").write_text("shared duplicate content", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    with _connection() as conn:
+        before = {
+            row["relative_path"]: row["document_id"]
+            for row in conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchall()
+        }
+    survivors = {"a.txt": before["a.txt"], "c.txt": before["c.txt"]}
+    deleted_id = before["b.txt"]
+
+    (source / "b.txt").unlink()
+    result = _run(folder["id"])
+    assert result["status"] == "completed"
+    assert result["deleted"] == 1
+
+    with _connection() as conn:
+        remaining = {
+            row["relative_path"]
+            for row in conn.execute(
+                "SELECT relative_path FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchall()
+        }
+        assert remaining == {"a.txt", "c.txt"}
+        assert store.get_document(conn, deleted_id) is None
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) AS n FROM chunks WHERE document_id=?", (deleted_id,)
+            ).fetchone()["n"]
+            == 0
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) AS n FROM chunks_vec WHERE chunk_id LIKE ?", (f"{deleted_id}:%",)
+            ).fetchone()["n"]
+            == 0
+        )
+        for doc_id in survivors.values():
+            doc = store.get_document(conn, doc_id)
+            assert doc is not None and doc["num_chunks"] > 0
+            assert _chunk_texts(doc_id)
+            assert _vectors(doc_id)
+        assert store.search_lexical(conn, folder["scope"], "shared", 10)
+
+
+@requires_sqlite_vec
+def test_rebuild_reembeds_every_file_even_content_identical_ones(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "b.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "c.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "d.txt").write_text("a distinct different body", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    calls = _spy_on_encode(monkeypatch)
+    result = _run(folder["id"], rebuild = True)
+    assert result["status"] == "completed"
+
+    embedded_texts = [text for call in calls for text in call]
+    assert embedded_texts.count("shared duplicate content") == 3
+    assert embedded_texts.count("a distinct different body") == 1
+
+
+@requires_sqlite_vec
+def test_reuse_skips_a_donor_whose_embedding_model_no_longer_matches(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    with _connection() as conn:
+        donor_row = _mapping(folder)
+        donor = store.get_document(conn, donor_row["document_id"])
+        stale_identity = donor["embedding_model"] + "-stale"
+        conn.execute(
+            "UPDATE documents SET embedding_model=? WHERE id=?", (stale_identity, donor["id"])
+        )
+        conn.commit()
+
+    calls = _spy_on_encode(monkeypatch)
+    (source / "b.txt").write_text("shared duplicate content", encoding = "utf-8")
+    result = _run(folder["id"])
+    assert result["status"] == "completed"
+    assert result["added"] == 1
+
+    embedded_texts = [text for call in calls for text in call]
+    assert "shared duplicate content" in embedded_texts
+
+    with _connection() as conn:
+        new_row = conn.execute(
+            "SELECT document_id FROM linked_folder_files WHERE folder_id=? AND relative_path='b.txt'",
+            (folder["id"],),
+        ).fetchone()
+        new_doc = store.get_document(conn, new_row["document_id"])
+        assert new_doc["id"] != donor["id"]
+        assert new_doc["embedding_model"] == donor["embedding_model"]
+        assert _vectors(new_doc["id"])
+
+
+@requires_sqlite_vec
+def test_reuse_falls_back_to_a_normal_ingest_when_the_donor_lost_its_vectors(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    with _connection() as conn:
+        donor_id = _mapping(folder)["document_id"]
+        conn.execute("DELETE FROM chunks_vec WHERE chunk_id LIKE ?", (f"{donor_id}:%",))
+        conn.commit()
+
+    calls = _spy_on_encode(monkeypatch)
+    (source / "b.txt").write_text("shared duplicate content", encoding = "utf-8")
+    result = _run(folder["id"])
+    assert result["status"] == "completed"
+    assert result["added"] == 1
+
+    embedded_texts = [text for call in calls for text in call]
+    assert "shared duplicate content" in embedded_texts
+
+    with _connection() as conn:
+        new_row = conn.execute(
+            "SELECT document_id FROM linked_folder_files WHERE folder_id=? AND relative_path='b.txt'",
+            (folder["id"],),
+        ).fetchone()
+        new_doc = store.get_document(conn, new_row["document_id"])
+        vecs = _vectors(new_doc["id"])
+        assert len(vecs) == new_doc["num_chunks"] > 0
