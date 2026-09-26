@@ -15,6 +15,8 @@ export interface EngineStatus {
   restored?: boolean;
   can_rollback: boolean;
   unsupported_reason: string | null;
+  /** "wsl": on Windows the engine runs inside Studio's own WSL2 distro. */
+  host?: "local" | "wsl";
   job: {
     state: string;
     phase: string | null;

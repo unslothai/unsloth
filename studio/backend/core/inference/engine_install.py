@@ -305,6 +305,8 @@ def link_cuda_home(env: Path, shared: bool) -> None:
 
 def cuda_environment(info: dict) -> dict[str, str]:
     """CUDA_HOME for the engine's JIT compiles; CPATH covers headers split across a shared environment."""
+    if info.get("host") == "wsl":
+        return dict(info.get("cuda_environment") or {})
     env = Path(info["path"])
     if not (env / "cuda" / "bin" / "nvcc").exists():
         return {}
@@ -435,11 +437,19 @@ def support_reason(
     *,
     wait: bool = True,
 ) -> str | None:
-    if platform.system() != "Linux" or platform.machine() != "x86_64":
-        return "Managed engines currently require Linux x86_64."
-    glibc = profile(engine).get("glibc", (2, 34))
-    if tuple(int(x) for x in (platform.libc_ver()[1] or "0.0").split(".")[:2]) < glibc:
-        return f"{engine} requires glibc {glibc[0]}.{glibc[1]} or newer."
+    from . import wsl_host
+
+    if wsl_host.active():
+        # WSL itself is not a prerequisite: installing the engine sets it up.
+        reason = wsl_host.support_reason()
+        if reason:
+            return reason
+    elif platform.system() != "Linux" or platform.machine() != "x86_64":
+        return "Managed engines currently require Linux x86_64 or Windows x64."
+    else:
+        glibc = profile(engine).get("glibc", (2, 34))
+        if tuple(int(x) for x in (platform.libc_ver()[1] or "0.0").split(".")[:2]) < glibc:
+            return f"{engine} requires glibc {glibc[0]}.{glibc[1]} or newer."
     rows = _driver_rows(gpu_id, wait = wait)
     if rows is _PENDING:
         return "Checking for a supported NVIDIA GPU."
@@ -473,7 +483,7 @@ def engine_lease(
 ):
     """``wait=0`` for status probes: real takers retry so a probe's instant hold never fails them."""
     profile(engine)
-    import fcntl
+    lock, unlock = _file_lock()
 
     root = engine_root()
     root.mkdir(parents = True, exist_ok = True)
@@ -481,7 +491,7 @@ def engine_lease(
         deadline = time.monotonic() + wait
         while True:
             try:
-                fcntl.flock(handle, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+                lock(handle, exclusive)
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
@@ -492,7 +502,59 @@ def engine_lease(
         try:
             yield
         finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            unlock(handle)
+
+
+def _file_lock():
+    """(lock, unlock) raising BlockingIOError when held: flock, or LockFileEx on Windows, which
+    also has shared and exclusive modes (msvcrt.locking is exclusive only)."""
+    if os.name != "nt":
+        import fcntl
+        return (
+            lambda handle, exclusive: fcntl.flock(
+                handle, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB
+            ),
+            lambda handle: fcntl.flock(handle, fcntl.LOCK_UN),
+        )
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class Overlapped(ctypes.Structure):
+        _fields_ = [
+            ("Internal", ctypes.c_void_p),
+            ("InternalHigh", ctypes.c_void_p),
+            ("Offset", wintypes.DWORD),
+            ("OffsetHigh", wintypes.DWORD),
+            ("hEvent", wintypes.HANDLE),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+
+    def lock(handle, exclusive):
+        flags = 0x1 | (
+            0x2 if exclusive else 0
+        )  # LOCKFILE_FAIL_IMMEDIATELY | LOCKFILE_EXCLUSIVE_LOCK
+        if not kernel32.LockFileEx(
+            wintypes.HANDLE(msvcrt.get_osfhandle(handle.fileno())),
+            flags,
+            0,
+            1,
+            0,
+            ctypes.byref(Overlapped()),
+        ):
+            raise BlockingIOError(ctypes.get_last_error(), "lock held")
+
+    def unlock(handle):
+        kernel32.UnlockFileEx(
+            wintypes.HANDLE(msvcrt.get_osfhandle(handle.fileno())),
+            0,
+            1,
+            0,
+            ctypes.byref(Overlapped()),
+        )
+
+    return lock, unlock
 
 
 def installed(engine: str) -> dict | None:
@@ -509,6 +571,10 @@ def installed(engine: str) -> dict | None:
             or Path(directory).name != directory
         ):
             return None
+        if info.get("host") == "wsl":
+            # Lives in the distro; checking it would boot WSL on every status poll, so the load checks.
+            from .wsl_host import GUEST_ROOT
+            return {**info, "path": f"{GUEST_ROOT}/engines/{engine}/{directory}"}
         path = root / directory
         if path.is_symlink() or not (path / "bin" / "python").is_file():
             return None
@@ -561,7 +627,13 @@ def status(engine: str) -> dict:
         "download_bytes": None,
         "additional_disk_bytes": None,
         "job": job,
+        **_host_status(),
     }
+
+
+def _host_status() -> dict:
+    from . import wsl_host
+    return {"host": "wsl", "wsl": wsl_host.summary()} if wsl_host.active() else {"host": "local"}
 
 
 def _update(engine: str, **values) -> None:
@@ -638,7 +710,12 @@ def package_link_mode(destination: Path) -> str:
         return "copy"
 
 
-def _run(engine: str, argv: list[str], cancel: threading.Event) -> None:
+def _run(
+    engine: str,
+    argv: list[str],
+    cancel: threading.Event,
+    env: dict | None = None,
+) -> None:
     from utils.process_lifetime import (
         adopt_pid,
         child_popen_kwargs,
@@ -654,7 +731,7 @@ def _run(engine: str, argv: list[str], cancel: threading.Event) -> None:
     proc = spawn_on_lifetime_thread(
         lambda: subprocess.Popen(
             argv,
-            env = install_environment(),
+            env = install_environment() if env is None else env,
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
@@ -737,6 +814,11 @@ def _install(
             reason = support_reason(engine)
             if reason:
                 raise RuntimeError(reason)
+            from . import wsl_host
+
+            if wsl_host.active():
+                _install_wsl(engine, cancel)
+                return
             uv = shutil.which("uv")
             if uv is None:
                 raise RuntimeError("uv is unavailable. Repair the Studio installation and retry.")
@@ -859,14 +941,185 @@ def _install(
             _record_manifest(engine)
             _update(engine, state = "success", phase = "ready", message = "Engine installed")
     except Exception as exc:
+        from .wsl_host import Waiting
         _update(
-            engine, state = "cancelled" if cancel.is_set() else "error", phase = None, message = str(exc)
+            engine,
+            state = "waiting"
+            if isinstance(exc, Waiting)
+            else "cancelled"
+            if cancel.is_set()
+            else "error",
+            phase = None,
+            message = str(exc),
         )
     finally:
         if destination is not None:
             shutil.rmtree(destination, ignore_errors = True)
         if lease is not None:
             lease.__exit__(None, None, None)
+
+
+# Runs in the engine's interpreter inside WSL: the non-shared half of link_cuda_home and
+# managed_engine._deep_gemm_unloadable, whose paths Windows cannot inspect.
+_GUEST_FINALIZE = r"""
+import json, sys
+from pathlib import Path
+
+env = Path(sys.argv[1])
+site = next(env.glob("lib/python3.*/site-packages"))
+tree = site / "nvidia" / "cu13"
+home = env / "cuda"
+(home / "lib64").mkdir(parents = True, exist_ok = True)
+for name in ("bin", "nvvm", "include"):
+    if (tree / name).exists() and not (home / name).is_symlink():
+        (home / name).symlink_to(tree / name)
+cudart = tree / "lib" / "libcudart.so.13"
+if cudart.exists() and not (home / "lib64" / "libcudart.so").is_symlink():
+    (home / "lib64" / "libcudart.so").symlink_to(cudart)
+vendored = site / "vllm" / "third_party" / "deep_gemm"
+tag = "cpython-3" + site.parent.name.removeprefix("python3.")
+print(json.dumps({
+    "cuda_environment": {"CUDA_HOME": str(home), "CPATH": str(tree / "include")}
+    if (home / "bin" / "nvcc").exists() else {},
+    "deep_gemm_unloadable": not (site / "deep_gemm").is_dir() and vendored.is_dir()
+    and not any(vendored.glob(f"_C.{tag}-*.so")) and not any(vendored.glob("_C.abi3*.so")),
+}))
+"""
+_PROXIES = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy")
+
+
+def _install_wsl(engine: str, cancel: threading.Event) -> None:
+    """The same hash-pinned lock and checks as on Linux, run inside Studio's WSL distro. Always
+    isolated: Studio's Windows packages cannot serve a Linux interpreter."""
+    from . import wsl_host
+
+    guest_root = wsl_host.GUEST_ROOT
+    _update(engine, phase = "preparing_wsl", message = "Setting up the Unsloth WSL environment")
+    wsl_host.prepare(lambda text: _update(engine, activity = text))
+    if cancel.is_set():
+        raise RuntimeError("Installation cancelled.")
+    root = engine_root() / engine
+    root.mkdir(parents = True, exist_ok = True)
+    digest = profile_digest(engine)
+    directory = "env-" + uuid.uuid4().hex
+    base = f"{guest_root}/engines/{engine}"
+    destination = f"{base}/{directory}"
+    python = f"{destination}/bin/python"
+    uv = f"{guest_root}/bin/uv"
+    env = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "PYTHONNOUSERSITE": "1",
+        "UV_CACHE_DIR": f"{guest_root}/uv-cache",
+        "UV_PYTHON_INSTALL_DIR": f"{guest_root}/python",
+        "UV_NO_CONFIG": "1",
+        "UV_CONCURRENT_DOWNLOADS": "4",
+        "UV_HTTP_RETRIES": "5",
+        # Cache and environments share the distro's ext4 disk.
+        "UV_LINK_MODE": "hardlink",
+    }
+    secrets = {key: os.environ[key] for key in _PROXIES if os.environ.get(key)}
+
+    def guest_run(argv):
+        command, windows_env = wsl_host.guest_command(argv, env = env, secrets = secrets)
+        _run(engine, command, cancel, env = windows_env)
+
+    try:
+        _update(engine, phase = "creating", message = "Preparing an isolated Python environment")
+        guest_run([uv, "venv", "--python", "{}.{}".format(*PYTHON), destination])
+        _update(engine, phase = "installing", message = "Downloading and installing engine packages")
+        lock = wsl_host.to_guest_path(requirements(engine))
+        guest_run(
+            [
+                uv,
+                "pip",
+                "sync",
+                "--python",
+                python,
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "--index-url",
+                "https://pypi.org/simple",
+                lock,
+            ]
+        )
+        _update(engine, phase = "checking", message = "Checking the installed engine")
+        from .engine_adapters import ADAPTERS
+
+        torch_version = _pins(engine)["torch"][0]
+        scripts = {
+            "check.py": _CHECK,
+            "finalize.py": _GUEST_FINALIZE,
+            "smoke.py": f"import {profile(engine)['module']}; import torch; import bitsandbytes; import torchao\n"
+            f"assert torch.__version__.split('+')[0] == {torch_version!r}\n"
+            "assert torch.version.cuda == '13.0'\n",
+        }
+        for name, source in scripts.items():
+            wsl_host.put(f"{destination}/{name}", source)
+        guest_run(
+            [
+                python,
+                "-I",
+                f"{destination}/check.py",
+                lock,
+                ",".join(profile(engine).get("omit", ())),
+                profile(engine)["cuda"],
+                "{}",
+            ]
+        )
+        guest_run([python, "-I", f"{destination}/smoke.py"])
+        guest_run([python, "-I", "-m", ADAPTERS[engine].module, "--help"])
+        facts = json.loads(
+            wsl_host.guest([python, "-I", f"{destination}/finalize.py", destination])
+            .strip()
+            .splitlines()[-1]
+        )
+        if (engine_root() / f"{engine}.cancel").exists():
+            cancel.set()
+        if cancel.is_set():
+            raise RuntimeError("Installation cancelled.")
+        if profile_digest(engine) != digest:
+            raise RuntimeError(
+                "Studio's engine profile changed during installation. Retry to use the updated profile."
+            )
+        prior = installed(engine)
+        _atomic_json(
+            root / "active.json",
+            {
+                "directory": directory,
+                "version": profile(engine)["version"],
+                "profile_digest": digest,
+                "shared": False,
+                "python": "{}.{}".format(*PYTHON),
+                "provided": {},
+                "host": "wsl",
+                "distro": wsl_host.distro_name(),
+                **facts,
+                "previous_directory": prior["directory"] if prior else None,
+                "previous": {
+                    k: v
+                    for k, v in prior.items()
+                    if k not in ("path", "previous", "previous_directory")
+                }
+                if prior
+                else None,
+            },
+        )
+        keep = [directory, *([prior["directory"]] if prior else [])]
+        wsl_host.guest(
+            ["find", base, "-mindepth", "1", "-maxdepth", "1", "-name", "env-*"]
+            + [arg for name in keep for arg in ("!", "-name", name)]
+            + ["-exec", "rm", "-rf", "{}", "+"]
+        )
+        destination = None
+    finally:
+        if destination is not None:
+            try:
+                wsl_host.guest(["rm", "-rf", destination])
+            except (OSError, RuntimeError, subprocess.TimeoutExpired):
+                pass
+    _record_manifest(engine)
+    _update(engine, state = "success", phase = "ready", message = "Engine installed")
 
 
 def start_install(engine: str) -> dict:
@@ -911,6 +1164,10 @@ def remove(engine: str) -> dict:
         root = engine_root() / engine
         if root.is_symlink():
             raise RuntimeError("Engine directory must not be a symbolic link.")
+        from . import wsl_host
+
+        if wsl_host.active() and wsl_host.distro_ready():
+            wsl_host.guest(["rm", "-rf", f"{wsl_host.GUEST_ROOT}/engines/{engine}"])
         shutil.rmtree(root, ignore_errors = False) if root.exists() else None
         with _lock:
             _jobs.pop(engine, None)
@@ -918,6 +1175,29 @@ def remove(engine: str) -> dict:
         (engine_root() / f"{engine}.cancel").unlink(missing_ok = True)
     _record_manifest(engine)
     return status(engine)
+
+
+def remove_wsl_environment() -> list[dict]:
+    """Unregister the private distro. Every engine lives in it, so all must be idle."""
+    from contextlib import ExitStack
+    from . import wsl_host
+
+    if not wsl_host.active():
+        raise RuntimeError("Studio only creates a WSL environment on Windows.")
+    with ExitStack() as stack:
+        for engine in PROFILES:
+            stack.enter_context(engine_lease(engine, exclusive = True))
+        wsl_host.unregister()
+        for engine in PROFILES:
+            root = engine_root() / engine
+            if root.exists() and not root.is_symlink():
+                shutil.rmtree(root)
+            (engine_root() / f"{engine}.job.json").unlink(missing_ok = True)
+            with _lock:
+                _jobs.pop(engine, None)
+    for engine in PROFILES:
+        _record_manifest(engine)
+    return [status(engine) for engine in PROFILES]
 
 
 def rollback(engine: str) -> dict:
@@ -933,7 +1213,18 @@ def rollback(engine: str) -> dict:
             raise RuntimeError("No previous engine installation is available.")
         root = engine_root() / engine
         path = root / directory
-        if path.is_symlink() or not (path / "bin" / "python").is_file():
+        if previous.get("host") == "wsl":
+            from . import wsl_host
+            try:
+                wsl_host.guest(
+                    ["test", "-f", f"{wsl_host.GUEST_ROOT}/engines/{engine}/{directory}/bin/python"]
+                )
+                present = True
+            except (OSError, RuntimeError, subprocess.TimeoutExpired):
+                present = False
+        else:
+            present = not path.is_symlink() and (path / "bin" / "python").is_file()
+        if not present:
             raise RuntimeError(
                 "The previous engine installation is unavailable. Repair the engine instead."
             )
