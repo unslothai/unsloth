@@ -1197,14 +1197,38 @@ function ModelRow({
   const nameRef = useRef<HTMLSpanElement>(null);
   const nameHoverTimer = useRef<number | undefined>(undefined);
   const [tooltipOpen, setTooltipOpen] = useState(false);
+  // Touch has no hover, so a tap on the name toggles it and a tap elsewhere closes it.
+  const [tappedOpen, setTappedOpen] = useState(false);
   useEffect(() => () => window.clearTimeout(nameHoverTimer.current), []);
-  const onNameEnter = () => {
+  useEffect(() => {
+    if (!tappedOpen) return;
+    const release = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (nameRef.current?.contains(target)) return;
+      if (target?.closest?.('[data-slot="tooltip-content"]')) return;
+      setTappedOpen(false);
+      setTooltipOpen(false);
+    };
+    document.addEventListener("pointerdown", release, true);
+    return () => document.removeEventListener("pointerdown", release, true);
+  }, [tappedOpen]);
+  const onNameEnter = (event: React.PointerEvent) => {
+    if (event.pointerType === "touch") return;
     window.clearTimeout(nameHoverTimer.current);
     nameHoverTimer.current = window.setTimeout(() => setTooltipOpen(true), 700);
   };
   const onNameLeave = () => {
     window.clearTimeout(nameHoverTimer.current);
+    setTappedOpen(false);
     setTooltipOpen(false);
+  };
+  const onNameClick = (event: React.MouseEvent) => {
+    if ((event.nativeEvent as Partial<PointerEvent>).pointerType !== "touch") return;
+    // Keeps the tooltip's own close-on-click from undoing the tap. The row click still runs.
+    event.preventDefault();
+    const next = !tooltipOpen;
+    setTappedOpen(next);
+    setTooltipOpen(next);
   };
   const onTooltipOpenChange = (next: boolean) => {
     if (!next) {
@@ -1277,7 +1301,10 @@ function ModelRow({
             <span
               ref={nameRef}
               onPointerEnter={onNameEnter}
-              onPointerLeave={onNameLeave}
+              onPointerLeave={(event) => {
+                if (event.pointerType !== "touch") onNameLeave();
+              }}
+              onClick={onNameClick}
             >
               {name}
             </span>
