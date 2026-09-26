@@ -1089,7 +1089,6 @@ class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
         assert shared > discrete, "the shared pool must not be credited the host share"
 
 
-
 _GEMMA4_31B_SWA = [(i + 1) % 6 != 0 for i in range(60)]
 _GEMMA4_31B = {
     "context_length": 262144,
@@ -1215,7 +1214,6 @@ def test_both_estimates_price_the_count_the_launcher_emits(gemma4_gguf, monkeypa
     )
     assert hub["kv_checkpoint_bytes"] == expected
     assert set(sized_with) == {flash_attn is None}
-
 
 
 _GRANITE_H_SMALL = {
