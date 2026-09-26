@@ -3,6 +3,7 @@
 
 import copy
 import importlib.util
+import inspect
 from pathlib import Path
 
 import pytest
@@ -153,6 +154,11 @@ def test_ineligible_features_use_reference_loss(case):
 
 
 def test_distributed_gather_option_keeps_stock_forward():
+    if (
+        "gather_across_devices"
+        not in inspect.signature(MODULE.MultipleNegativesRankingLoss).parameters
+    ):
+        pytest.skip("this SentenceTransformers MNRL has no gather_across_devices option")
     candidate = MODULE.FastMultipleNegativesRankingLoss(TinyEncoder(), gather_across_devices = True)
     loss = candidate(list(pair_features()), None)
     assert torch.isfinite(loss)
