@@ -331,6 +331,23 @@ $script:FakeSmiTimeouts = 0
 $script:FakeSmiStdout = "| CUDA Version: 12.6 |"
 Check "a readable banner is still authoritative" ((Get-TorchIndexUrl) -eq "https://download.pytorch.org/whl/cu126")
 
+# The promotion runs as written in each file: a driver below CUDA 11 must not claim the host from Intel/AMD.
+function Get-PromotionBlock([string]$Text) {
+    $at = $Text.IndexOf('if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {')
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($Text.Substring($at), [ref]$null, [ref]$null)
+    return $ast.EndBlock.Statements[0].Extent.Text
+}
+foreach ($file in @($installPs1, $setupPs1)) {
+    $block = Get-PromotionBlock (Get-Content -LiteralPath $file -Raw)
+    foreach ($case in @(@{ Major = 10; Want = $false }, @{ Major = 11; Want = $true }, @{ Major = 12; Want = $true })) {
+        $script:FakeInventory = @{ Source = "nvml"; CudaMajor = $case.Major; CudaMinor = 2; ComputeCaps = @("6.1"); Count = 1 }
+        function Get-NvidiaLibraryInventory { param([int]$TimeoutSec = 10) return $script:FakeInventory }
+        $HasNvidiaSmi = $false
+        Invoke-Expression $block
+        Check "$(Split-Path -Leaf $file): a CUDA $($case.Major) driver library $(if ($case.Want) { 'promotes' } else { 'does not promote' }) NVIDIA" ($HasNvidiaSmi -eq $case.Want)
+    }
+}
+
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed"
