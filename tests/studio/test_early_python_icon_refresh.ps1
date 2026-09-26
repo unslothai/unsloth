@@ -28,6 +28,8 @@ foreach ($name in @(
     Invoke-Expression $fn[0].Extent.Text
 }
 
+# The kill switch would make discovery decline; its own cases below set it explicitly.
+Remove-Item Env:UNSLOTH_EARLY_PYTHON_PROBE -ErrorAction SilentlyContinue
 $script:StudioEarlyPythonProbed = $false
 $script:StudioEarlyPython = $null
 if (-not (Get-StudioEarlyPython)) {
