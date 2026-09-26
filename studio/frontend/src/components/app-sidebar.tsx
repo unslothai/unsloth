@@ -5011,6 +5011,7 @@ export function AppSidebar() {
                 <DropdownMenuSubContent
                   sideOffset={8}
                   alignOffset={-4}
+                  alignEnd={true}
                   className="unsloth-plus-menu sidebar-row-menu w-56"
                 >
                   {HELP_GROUPS.map((group, index) => (
