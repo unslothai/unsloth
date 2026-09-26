@@ -128,6 +128,7 @@ def _expected_kinds(*, arm64_venv: bool, nvidia: bool, rocm: bool, opt_out: bool
             "function Test-WoaPersistableIndex { param($i) return ($i -like '*nvidia*') }",
             f"$env:UNSLOTH_LLAMA_ARM64_CUDA = '{'0' if opt_out else '1'}'",
             f"$HasNvidiaSmi = ${str(nvidia).lower()}",
+            f"$HasNvidiaDriverEvidence = ${str(nvidia).lower()}",
             f"$HasROCm = ${str(rocm).lower()}",
             "$script:ROCmGfxArch = " + ("'gfx1201'" if rocm else "$null"),
             block,

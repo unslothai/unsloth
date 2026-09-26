@@ -162,7 +162,7 @@ function Get-NvidiaLibraryInventory { param([int]$TimeoutSec = 10) return $scrip
 Write-Host ""
 Write-Host "=== studio/setup.ps1 ==="
 foreach ($src in (Get-HelperSources $setupPs1 @("Get-NvidiaCu126Verdict", "Get-CudaFamilyCappedForPreTuring",
-        "Get-PytorchCudaTag", "Get-CudaComputeCapability", "Get-LlamaUpdateFailReason",
+        "Get-CudaFamilyForVersion", "Get-PytorchCudaTag", "Get-CudaComputeCapability", "Get-LlamaUpdateFailReason",
         "Get-PrebuiltMarkerBackend", "Get-GpuPrebuiltToKeepOverSourceBuild"))) {
     Invoke-Expression $src
 }
@@ -215,6 +215,7 @@ Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Valu
 function python { $global:LASTEXITCODE = $script:FakePythonRc }
 $script:FakePythonRc = 0
 $HasNvidiaSmi = $true
+$HasNvidiaDriverEvidence = $true
 $HasROCm = $false
 $script:ROCmGfxArch = $null
 $script:IsIntelXpu = $false
@@ -241,7 +242,13 @@ $script:FakePythonRc = 1
 Check "an install that no longer runs is not kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
 $script:FakePythonRc = 0
 $HasNvidiaSmi = $false
+$HasNvidiaDriverEvidence = $false
 Check "a CUDA prebuilt with the GPU gone is not kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
+# Presence-only is not a CUDA host for llama.cpp.
+$HasNvidiaSmi = $true
+$HasNvidiaDriverEvidence = $false
+Check "a CUDA prebuilt on a presence-only NVIDIA host is not kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
+$HasNvidiaSmi = $false
 Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"backend": "vulkan"}'
 $HasROCm = $true
 Check "a Vulkan prebuilt is kept for any GPU vendor" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "vulkan")
@@ -254,6 +261,7 @@ Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Valu
 Check "a CPU prebuilt has nothing to keep" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
 # Markers from before the backend field, read as setup.sh reads them.
 $HasNvidiaSmi = $true
+$HasNvidiaDriverEvidence = $true
 Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"llama_backend": "cuda"}'
 Check "a legacy marker naming the request is kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "cuda")
 Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"asset": "app-b8508-mix-windows-x64-cuda13-newer.zip"}'

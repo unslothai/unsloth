@@ -8502,6 +8502,11 @@ exit 0
     # so the banner below can skip a second query: detection already waited out the full
     # bound on this binary, and asking a hung nvidia-smi again only doubles the stall.
     $script:NvidiaSmiWedged = $false
+    # Reset per run: under `irm | iex` the script scope IS the caller's session.
+    $script:NvidiaPresenceOnly = $false
+    $script:NvidiaPresenceCudaFloor = $null
+    $script:NvidiaPresenceDriverRelease = $null
+    $script:VideoControllerScanResult = $null
 
     function Test-NvidiaSmiHasGpu {
         param([Parameter(Mandatory = $true)][string]$Exe)
@@ -8742,10 +8747,316 @@ exit 0
             $script:NvidiaSmiWedged = $firstListingWedged
         }
     }
+    # Must stay above its callers: PowerShell does not hoist. WMI can hang and -OperationTimeoutSec
+    # is not enforced for local COM, so the query runs out of process with a wall-clock kill.
+    function Invoke-BoundedVideoControllerScan {
+        param([int]$TimeoutSec = 15)
+        # Cached even when Ok = $false: that is the hang case, and a retry would hang again.
+        if ($null -ne $script:VideoControllerScanResult) { return $script:VideoControllerScanResult }
+        $result = [pscustomobject]@{ Ok = $false; Names = @(); Adapters = @() }
+        $job = $null
+        try {
+            $job = Start-Job -ScriptBlock {
+                Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                    Select-Object -Property Name, PNPDeviceID, ConfigManagerErrorCode, DriverVersion
+            }
+            if (Wait-Job -Job $job -Timeout $TimeoutSec) {
+                $rows = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
+                $result.Adapters = @($rows | Where-Object { $_ })
+                $names = @($rows | ForEach-Object { $_.Name })
+                $result.Names = @($names | Where-Object { $_ })
+                $result.Ok = ($result.Names.Count -gt 0)
+            } else {
+                Stop-Job -Job $job -ErrorAction SilentlyContinue
+            }
+        } catch {
+        } finally {
+            # -ErrorAction does not stop a terminating error, which would abort the run.
+            if ($job) { try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue } catch {} }
+        }
+        $script:VideoControllerScanResult = $result
+        return $result
+    }
+
+    # Mirrors install_llama_prebuilt.py's windows_intel_gpu_in_registry(), but as the fallback, not
+    # registry-first: stale keys here would install XPU torch on a host with no Arc.
+    function Get-IntelRegistryAdapterNames {
+        $names = @()
+        $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        try {
+            $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
+        } catch { return @() }
+        foreach ($sub in $subs) {
+            # Guarded per subkey, not around the loop: one unreadable entry must not discard the
+            # adapters found after it. Matches windows_intel_gpu_in_registry()'s per-key skip.
+            try {
+                # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
+                if ("$($sub.PSChildName)" -match '^\d+$') {
+                    $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+                    if ($props) {
+                        $desc = "$($props.DriverDesc)"
+                        # Callers re-filter on "Intel", so a vendor-ID hit with a localized or
+                        # OEM-branded DriverDesc would be found here and dropped there. Tag it
+                        # instead; still only XPU-capable if the name says Arc / Data Center GPU.
+                        if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086') {
+                            $names += if ($desc -match '(?i)intel') { $desc }
+                                      elseif ($desc) { "Intel $desc" }
+                                      else { "Intel Graphics" }
+                        } elseif ($desc -match '(?i)intel') {
+                            $names += $desc
+                        }
+                    }
+                }
+            } catch { }
+        }
+        return $names
+    }
+
+    # Returns the entry, not a bool: the version ladder needs its DriverVersion.
+    function Get-NvidiaRegistryAdapter {
+        $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        try {
+            $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
+        } catch { return $null }
+        # These keys outlive hardware, so only a UNANIMOUS release is used; disagreement reads as unknown.
+        $present = $false
+        $versions = @()
+        foreach ($sub in $subs) {
+            try {
+                if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
+                $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+                if (-not $props) { continue }
+                if ("$($props.MatchingDeviceId)" -notmatch '(?i)ven_10de') { continue }
+                $present = $true
+                $version = "$($props.DriverVersion)"
+                if ([string]::IsNullOrWhiteSpace($version)) { continue }
+                $release = Get-NvidiaDriverRelease -DriverVersion $version
+                if ($null -eq $release) { continue }
+                if ($versions -notcontains $release) { $versions += $release }
+            } catch {}
+        }
+        if (-not $present) { return $null }
+        if ($versions.Count -ne 1) { return [pscustomobject]@{ Release = $null } }
+        return [pscustomobject]@{ Release = $versions[0] }
+    }
+
+    # True when no healthy NVIDIA adapter reports an NVIDIA-shaped driver version (e.g. Microsoft Basic
+    # Display): no CUDA driver, so the host must keep CPU wheels and AMD / Intel detection.
+    function Test-NvidiaAdapterWithoutNvidiaDriver {
+        param($Scan = $null)
+        if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        $foreign = $false
+        foreach ($adapter in @($Scan.Adapters)) {
+            if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_10de') { continue }
+            if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+            if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+            $version = "$($adapter.DriverVersion)"
+            if ([string]::IsNullOrWhiteSpace($version)) { $foreign = $true; continue }
+            if ($null -ne (Get-NvidiaDriverRelease -DriverVersion $version)) { return $false }
+            $foreign = $true
+        }
+        return $foreign
+    }
+
+    # VEN_10DE and ConfigManagerErrorCode 0 only, never names: a false yes sets $HasNvidiaSmi and
+    # switches off AMD and Intel detection.
+ 
+    function Test-NvidiaAdapterPresent {
+        param($Scan = $null)
+        if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        foreach ($adapter in @($Scan.Adapters)) {
+            if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_10de') { continue }
+            # $null is not evidence of health.
+            if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+            if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+            return $true
+        }
+        # No registry fallback: stale class keys would promote a GPU that is gone.
+        return $false
+    }
+
+    # Keeps the promotion additive: a hybrid host already gets AMD or Intel wheels.
+    # Must match the Intel route's pattern exactly (asserted by test_nvidia_adapter_presence.ps1); a
+    # function, not a $script: variable, since an unset $null pattern matches every string.
+    function Get-XpuCapableNameRegex { return "(?i)Intel.*(Arc|Data Center GPU)" }
+
+    function Test-IntelXpuRuntimeProven {
+        param($Scan = $null, [string]$PythonExe = "")
+        # The Intel route also serves non-Arc Intel GPUs once the existing torch proves XPU works, with no
+        # WMI precondition, so this asks the same thing. Any failure reads as not proven.
+        if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $false }
+        try {
+            $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code 'import torch; print(torch.xpu.is_available())'
+            return [bool]($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
+        } catch {
+            return $false
+        }
+    }
+
+    function Test-OtherVendorAdapterPresent {
+        param($Scan = $null)
+        if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        # AMD evidence the AMD route finds without WMI (override, HIP SDK, opted-in amd-smi) vetoes too.
+        if ("$env:UNSLOTH_ROCM_GFX_ARCH".Trim()) { return $true }
+        try {
+            if (Get-Command hipinfo -CommandType Application -ErrorAction SilentlyContinue) { return $true }
+            foreach ($hipEnv in @($env:HIP_PATH, $env:HIP_PATH_57, $env:ROCM_PATH)) {
+                if ($hipEnv -and (Test-Path -LiteralPath (Join-Path $hipEnv "bin\hipinfo.exe"))) { return $true }
+            }
+            if ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$' -and
+                (Get-Command amd-smi -ErrorAction SilentlyContinue)) { return $true }
+        } catch {}
+        # Same classification as the Intel route, which ignores PNP ID and status.
+        if ($Scan.Ok) {
+            $scanNames = @($Scan.Names | Where-Object { $_ } | ForEach-Object { "$_" })
+            if (@($scanNames | Where-Object { $_ -match (Get-XpuCapableNameRegex) }).Count -gt 0) { return $true }
+            try {
+                foreach ($regName in @(Get-IntelRegistryAdapterNames)) {
+                    if ("$regName" -notmatch (Get-XpuCapableNameRegex)) { continue }
+                    foreach ($wmiName in $scanNames) {
+                        if ("$regName".Contains($wmiName)) { return $true }
+                    }
+                }
+            } catch {}
+        }
+        foreach ($adapter in @($Scan.Adapters)) {
+            # AMD vetoes on the AMD route's own test (name or 1002, any status: it keeps parked and
+            # PNP-less cards). Intel was answered above; UHD/Iris do not block.
+            if ("$($adapter.Name)" -match "AMD|Radeon" -or "$($adapter.PNPDeviceID)" -match '(?i)ven_1002') { return $true }
+        }
+        # Registry fallback here is deliberate: staleness only DECLINES a promotion. Without it, broken WMI
+        # hid the Arc on a hybrid host and cost it its XPU wheels.
+        if ($Scan.Ok) { return $false }
+        # Same normalized names as the Intel route (it prefixes "Intel" to a VEN_8086 DriverDesc).
+        try {
+            if (@(Get-IntelRegistryAdapterNames | Where-Object { "$_" -match (Get-XpuCapableNameRegex) }).Count -gt 0) { return $true }
+        } catch {}
+        $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        try {
+            $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
+        } catch { return $false }
+        foreach ($sub in $subs) {
+            try {
+                if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
+                $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+                if (-not $props) { continue }
+                $match = "$($props.MatchingDeviceId)"
+                if ($match -match '(?i)ven_1002') { return $true }
+            } catch {}
+        }
+        return $false
+    }
+
+    # Ported from studio/nvidia_probe.py's cuda_version_for_driver; the parity test generates the table.
+    # Kept apart from the floor so "no version" differs from "too old for every row".
+    function Get-NvidiaDriverRelease {
+        param([string]$DriverVersion)
+        if ([string]::IsNullOrWhiteSpace($DriverVersion)) { return $null }
+        # NVIDIA's scheme only (32.0.15.6094 is 560.94). Basic Display versions like 10.0.19041.3636 must
+        # not read as releases, or a working CUDA venv gets replaced with CPU wheels.
+        $m = [regex]::Match($DriverVersion, '^\s*\d+\.\d+\.(1\d)\.(\d{4})\s*$')
+        if ($m.Success) {
+            $digits = ($m.Groups[1].Value + $m.Groups[2].Value)
+            if ($digits.Length -ge 5) {
+                $tail = $digits.Substring($digits.Length - 5)
+                return [int]$tail.Substring(0, 3)
+            }
+            return $null
+        }
+        # At least three digits: "1.2.3" is malformed, and a low release now selects CPU wheels.
+        $m2 = [regex]::Match($DriverVersion, '^\s*(\d+)\.')
+        if ($m2.Success) {
+            $parsed = [int]$m2.Groups[1].Value
+            if ($parsed -ge 100) { return $parsed }
+        }
+        return $null
+    }
+
+    function Get-NvidiaCudaFloorForRelease {
+        param($Release)
+        if ($null -eq $Release) { return $null }
+        # Same order and values as _DRIVER_MAJOR_CUDA.
+        foreach ($row in @(
+            @(580, 13, 0), @(570, 12, 8), @(560, 12, 6), @(555, 12, 5), @(550, 12, 4),
+            @(545, 12, 3), @(535, 12, 2), @(525, 12, 0), @(450, 11, 0)
+        )) {
+            if ([int]$Release -ge $row[0]) { return @($row[1], $row[2]) }
+        }
+        return $null
+    }
+
+    function Get-NvidiaDriverCudaFloor {
+        param([string]$DriverVersion)
+        return (Get-NvidiaCudaFloorForRelease -Release (Get-NvidiaDriverRelease -DriverVersion $DriverVersion))
+    }
+
+    function Get-NvidiaAdapterDriverRelease {
+        param($Scan = $null)
+        if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        foreach ($adapter in @($Scan.Adapters)) {
+            if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_10de') { continue }
+            if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+            if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+            $release = Get-NvidiaDriverRelease -DriverVersion "$($adapter.DriverVersion)"
+            if ($null -ne $release) { return $release }
+        }
+        if (-not $Scan.Ok) {
+            $registryAdapter = Get-NvidiaRegistryAdapter
+            if ($registryAdapter) { return $registryAdapter.Release }
+        }
+        return $null
+    }
+
+    function Get-NvidiaAdapterCudaFloor {
+        param($Scan = $null)
+        if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        foreach ($adapter in @($Scan.Adapters)) {
+            if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_10de') { continue }
+            if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+            if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+            $floor = Get-NvidiaDriverCudaFloor -DriverVersion "$($adapter.DriverVersion)"
+            if ($floor) { return $floor }
+        }
+        if (-not $Scan.Ok) {
+            $registryAdapter = Get-NvidiaRegistryAdapter
+            if ($registryAdapter) { return (Get-NvidiaCudaFloorForRelease -Release $registryAdapter.Release) }
+        }
+        return $null
+    }
+
     if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
         # Same promotion as setup.ps1: the gates below read $HasNvidiaSmi as "NVIDIA GPU present".
         $HasNvidiaSmi = $true
         Write-StudioLine "   NVIDIA GPU found through the driver library; nvidia-smi is unavailable" -ForegroundColor Gray
+    }
+    # Last resort for #9255: presence only, gated on no healthy AMD or Intel adapter. The CUDA
+    # version is decided separately by the version ladder.
+    if (-not $HasNvidiaSmi) {
+        $presenceScan = Invoke-BoundedVideoControllerScan
+        $_presenceXpuPy = $VenvPython
+        if ($script:StudioVenvRollbackDir) {
+            $_presenceRollbackPy = Join-Path $script:StudioVenvRollbackDir "Scripts\python.exe"
+            if (Test-Path -LiteralPath $_presenceRollbackPy) { $_presenceXpuPy = $_presenceRollbackPy }
+        }
+        # Any throw declines the promotion; flags are set only once every answer is in hand.
+        try {
+            if ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
+                (Test-NvidiaAdapterWithoutNvidiaDriver -Scan $presenceScan)) {
+                Write-StudioLine "   NVIDIA GPU found without the NVIDIA driver; install the NVIDIA driver and re-run for GPU support" -ForegroundColor Yellow
+            } elseif ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
+                -not (Test-OtherVendorAdapterPresent -Scan $presenceScan) -and
+                -not $script:StudioPreservedXpuVerdict -and
+                -not (Test-IntelXpuRuntimeProven -Scan $presenceScan -PythonExe $_presenceXpuPy)) {
+                $_presenceFloor = Get-NvidiaAdapterCudaFloor -Scan $presenceScan
+                # The floor is $null both for too-old and unreadable, which want opposite answers.
+                $_presenceRelease = Get-NvidiaAdapterDriverRelease -Scan $presenceScan
+                $HasNvidiaSmi = $true
+                $script:NvidiaPresenceOnly = $true
+                $script:NvidiaPresenceCudaFloor = $_presenceFloor
+                $script:NvidiaPresenceDriverRelease = $_presenceRelease
+                Write-StudioLine "   NVIDIA GPU found on the PCI bus; nvidia-smi and the driver library are both unavailable" -ForegroundColor Gray
+            }
+        } catch {}
     }
     # nvidia-smi was already resolved above and never asked which card it found, so the
     # banner said "NVIDIA GPU detected" on every NVIDIA host alike. compute_cap is the
@@ -9244,71 +9555,6 @@ exit 0
     # true on unmapped arches too, and those install CPU torch.
     $AmdHasGpuWheels = [bool]($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch))
 
-    # Bounded Win32_VideoController scan: the query can block forever on a degraded WMI
-    # repository, -ErrorAction only suppresses reported errors, and -OperationTimeoutSec is not
-    # enforced for the local COM session this uses, so out of process with a wall-clock kill is
-    # the only bound that holds. Ok = $false on an empty answer too, since a Windows host always
-    # has an adapter. Mirrors setup.ps1's copy.
-    function Invoke-BoundedVideoControllerScan {
-        param([int]$TimeoutSec = 15)
-        $result = [pscustomobject]@{ Ok = $false; Names = @() }
-        $job = $null
-        try {
-            $job = Start-Job -ScriptBlock {
-                Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
-                    Select-Object -ExpandProperty Name
-            }
-            if (Wait-Job -Job $job -Timeout $TimeoutSec) {
-                $names = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
-                $result.Names = @($names | Where-Object { $_ })
-                $result.Ok = ($result.Names.Count -gt 0)
-            } else {
-                Stop-Job -Job $job -ErrorAction SilentlyContinue
-            }
-        } catch {
-        } finally {
-            if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
-        }
-        return $result
-    }
-
-    # Registry fallback for the scan above, mirroring install_llama_prebuilt.py's
-    # windows_intel_gpu_in_registry(): the display-adapter class key, one NNNN subkey per driver
-    # config. Weaker than WMI (a config can outlive removed hardware), so it is the fallback here
-    # while that function is registry-first -- there a false positive only picks a different
-    # llama.cpp bundle, here it would install XPU torch on a host with no Arc. Mirrors setup.ps1.
-    function Get-IntelRegistryAdapterNames {
-        $names = @()
-        $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
-        try {
-            $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
-        } catch { return @() }
-        foreach ($sub in $subs) {
-            # Guarded per subkey, not around the loop: one unreadable entry must not discard the
-            # adapters found after it. Matches windows_intel_gpu_in_registry()'s per-key skip.
-            try {
-                # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
-                if ("$($sub.PSChildName)" -match '^\d+$') {
-                    $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
-                    if ($props) {
-                        $desc = "$($props.DriverDesc)"
-                        # Callers re-filter on "Intel", so a vendor-ID hit with a localized or
-                        # OEM-branded DriverDesc would be found here and dropped there. Tag it
-                        # instead; still only XPU-capable if the name says Arc / Data Center GPU.
-                        if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086') {
-                            $names += if ($desc -match '(?i)intel') { $desc }
-                                      elseif ($desc) { "Intel $desc" }
-                                      else { "Intel Graphics" }
-                        } elseif ($desc -match '(?i)intel') {
-                            $names += $desc
-                        }
-                    }
-                }
-            } catch { }
-        }
-        return $names
-    }
-
     # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
     # Runs BEFORE the report chain, not inside its final else: a WMI-named-only AMD adapter
     # would take that chain and hide a discrete Arc card. $HasIntelGpu is "an Intel adapter is
@@ -9579,6 +9825,26 @@ exit 0
             $inventory = Get-NvidiaLibraryInventory
             if ($inventory) {
                 $major = $inventory.CudaMajor; $minor = $inventory.CudaMinor; $caps = $inventory.ComputeCaps
+            } elseif ($script:NvidiaPresenceOnly) {
+                # Reached only after the bus promotion, so warning here cannot reach a host with no NVIDIA GPU.
+                if ($script:NvidiaPresenceCudaFloor) {
+                    $major = [int]$script:NvidiaPresenceCudaFloor[0]
+                    $minor = [int]$script:NvidiaPresenceCudaFloor[1]
+                    substep "nvidia-smi and the NVIDIA driver library are both unavailable; the display driver supports at least CUDA $major.$minor, selecting wheels for it" "Yellow"
+                    # Unknown compute capability: cap at cu126, the widest family still built for sm_70 (pre-Turing).
+                    if ($major -gt 12 -or ($major -eq 12 -and $minor -gt 6)) {
+                        $major = 12; $minor = 6
+                        substep "no source could name the GPU's compute capability, so the family stops at cu126; set UNSLOTH_TORCH_INDEX_FAMILY to override" "Yellow"
+                    }
+                } elseif ($null -ne $script:NvidiaPresenceDriverRelease -and
+                          $script:NvidiaPresenceDriverRelease -lt 450) {
+                    # Pre-R450: no offered CUDA wheel can run.
+                    substep "an NVIDIA GPU is present but its driver ($script:NvidiaPresenceDriverRelease series) predates R450 and carries no usable CUDA runtime; installing CPU wheels. Update the NVIDIA driver and re-run to get CUDA" "Yellow"
+                    return "$baseUrl/cpu"
+                } else {
+                    $major = 12; $minor = 6
+                    substep "an NVIDIA GPU is present but no source could name its CUDA version; defaulting to cu126. Set UNSLOTH_TORCH_INDEX_FAMILY to override" "Yellow"
+                }
             } elseif (-not $NvidiaSmiExe) {
                 return "$baseUrl/cpu"
             } else {

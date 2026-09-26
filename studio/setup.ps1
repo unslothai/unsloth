@@ -1184,7 +1184,7 @@ function Get-GpuPrebuiltToKeepOverSourceBuild {
     if ("$($env:UNSLOTH_LLAMA_TAG)".Trim() -notin @("", "latest")) { return "" }
     $backend = Get-PrebuiltMarkerBackend -Marker (Join-Path $InstallDir "UNSLOTH_PREBUILT_INFO.json")
     if (-not $backend) { return "" }
-    $nvidia = $HasNvidiaSmi
+    $nvidia = $HasNvidiaDriverEvidence
     $amd = $HasROCm -or [bool]$script:ROCmGfxArch
     $present = switch ($backend) {
         "cuda"   { $nvidia }
@@ -1626,6 +1626,18 @@ function Get-NvidiaLibraryInventory {
 # ── END SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
 
 # Detect driver's max CUDA version from nvidia-smi and return the highest
+# Must match install.ps1's Get-TorchIndexUrl ladder character for character (asserted by a test).
+# PyTorch 2.10 offers: cu124, cu126, cu128, cu130. Anything below CUDA 11 gets "cpu".
+function Get-CudaFamilyForVersion {
+    param([int]$Major, [int]$Minor)
+    if ($Major -ge 13)                        { return "cu130" }
+    elseif ($Major -eq 12 -and $Minor -ge 8)  { return "cu128" }
+    elseif ($Major -eq 12 -and $Minor -ge 6)  { return "cu126" }
+    elseif ($Major -ge 12) { return "cu124" }
+    elseif ($Major -ge 11) { return "cu118" }
+    return "cpu"
+}
+
 # compatible PyTorch CUDA index tag (e.g. "cu128").
 # PyTorch on Windows ships CPU-only by default from PyPI; CUDA wheels live at
 # https://download.pytorch.org/whl/<tag>. The tag must not exceed the driver's
@@ -1657,13 +1669,8 @@ function Get-PytorchCudaTag {
         $minor = $inventory.CudaMinor
         $caps = $inventory.ComputeCaps
     }
-    # PyTorch 2.10 offers: cu124, cu126, cu128, cu130
-    if ($major -ge 13)                        { $family = "cu130" }
-    elseif ($major -eq 12 -and $minor -ge 8)  { $family = "cu128" }
-    elseif ($major -eq 12 -and $minor -ge 6)  { $family = "cu126" }
-    elseif ($major -ge 12) { $family = "cu124" }
-    elseif ($major -ge 11) { $family = "cu118" }
-    else { return "cpu" }
+    $family = Get-CudaFamilyForVersion -Major $major -Minor $minor
+    if ($family -eq "cpu") { return "cpu" }
     return (Get-CudaFamilyCappedForPreTuring $family $smiExe $caps)
 }
 
@@ -1860,6 +1867,19 @@ function Test-TorchXpuAvailable {
     return ($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
 }
 
+# Stale only when the installed +rocm / +xpu wheel ANSWERED it sees no device; doubt keeps the venv.
+function Test-NvidiaPresenceStaleGpuWheel {
+    param([string]$InstalledTag, [string]$PythonExe)
+    if (-not $script:NvidiaPresenceOnly) { return $false }
+    if ($InstalledTag -ne "rocm" -and $InstalledTag -ne "xpu") { return $false }
+    if ($null -ne $script:NvidiaPresenceStaleGpuWheel) { return $script:NvidiaPresenceStaleGpuWheel }
+    $code = "import torch; x = getattr(torch, 'xpu', None); " +
+        "print('DEV=' + str(bool(torch.cuda.is_available() or (x is not None and x.is_available()))))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code $code
+    $script:NvidiaPresenceStaleGpuWheel = [bool]($probe.Ok -and $probe.Output -match '(?m)^DEV=False\s*$')
+    return $script:NvidiaPresenceStaleGpuWheel
+}
+
 # Post-install XPU runtime check. A WMI name match says the part is XPU-capable, not that the
 # compute runtime works: on an old Intel driver the wheel installs fine, never initializes, and
 # unsloth/device_type.py raises NotImplementedError at import -- a hard crash, not a chat-only
@@ -1882,15 +1902,19 @@ function Assert-XpuRuntimeReady {
 # Mirrors install.ps1's copy.
 function Invoke-BoundedVideoControllerScan {
     param([int]$TimeoutSec = 15)
-    $result = [pscustomobject]@{ Ok = $false; Names = @() }
+    # Cached even when Ok = $false: that is the hang case, and a retry would hang again.
+    if ($null -ne $script:VideoControllerScanResult) { return $script:VideoControllerScanResult }
+    $result = [pscustomobject]@{ Ok = $false; Names = @(); Adapters = @() }
     $job = $null
     try {
         $job = Start-Job -ScriptBlock {
             Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
-                Select-Object -ExpandProperty Name
+                Select-Object -Property Name, PNPDeviceID, ConfigManagerErrorCode, DriverVersion
         }
         if (Wait-Job -Job $job -Timeout $TimeoutSec) {
-            $names = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
+            $rows = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
+            $result.Adapters = @($rows | Where-Object { $_ })
+            $names = @($rows | ForEach-Object { $_.Name })
             $result.Names = @($names | Where-Object { $_ })
             $result.Ok = ($result.Names.Count -gt 0)
         } else {
@@ -1898,8 +1922,10 @@ function Invoke-BoundedVideoControllerScan {
         }
     } catch {
     } finally {
-        if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+        # -ErrorAction does not stop a terminating error, which would abort the run.
+        if ($job) { try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue } catch {} }
     }
+    $script:VideoControllerScanResult = $result
     return $result
 }
 
@@ -3390,6 +3416,13 @@ function Get-NvidiaSmiCandidatePaths {
 # the banner below can skip a second query: detection already waited out the full bound on
 # this binary, and asking a hung nvidia-smi again only doubles the stall.
 $script:NvidiaSmiWedged = $false
+# Reset per run: under `irm | iex` the script scope IS the caller's session.
+$script:NvidiaPresenceOnly = $false
+$script:NvidiaPresenceCudaFloor = $null
+$script:NvidiaPresenceDriverRelease = $null
+$script:VideoControllerScanResult = $null
+$script:NvidiaPreR450CpuFallback = $false
+$script:NvidiaPresenceStaleGpuWheel = $null
 
 function Test-NvidiaSmiHasGpu {
     param([Parameter(Mandatory = $true)][string]$Exe)
@@ -3489,6 +3522,218 @@ if (-not $HasNvidiaSmi) {
         Write-StudioLine "   Found nvidia-smi at $(Split-Path $firstListing -Parent)" -ForegroundColor Gray
     }
 }
+# Returns the entry, not a bool: the version ladder needs its DriverVersion.
+function Get-NvidiaRegistryAdapter {
+    $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+    try {
+        $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
+    } catch { return $null }
+    # These keys outlive hardware, so only a UNANIMOUS release is used; disagreement reads as unknown.
+    $present = $false
+    $versions = @()
+    foreach ($sub in $subs) {
+        try {
+            if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
+            $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+            if (-not $props) { continue }
+            if ("$($props.MatchingDeviceId)" -notmatch '(?i)ven_10de') { continue }
+            $present = $true
+            $version = "$($props.DriverVersion)"
+            if ([string]::IsNullOrWhiteSpace($version)) { continue }
+            $release = Get-NvidiaDriverRelease -DriverVersion $version
+            if ($null -eq $release) { continue }
+            if ($versions -notcontains $release) { $versions += $release }
+        } catch {}
+    }
+    if (-not $present) { return $null }
+    if ($versions.Count -ne 1) { return [pscustomobject]@{ Release = $null } }
+    return [pscustomobject]@{ Release = $versions[0] }
+}
+
+# True when no healthy NVIDIA adapter reports an NVIDIA-shaped driver version (e.g. Microsoft Basic
+# Display): no CUDA driver, so the host must keep CPU wheels and AMD / Intel detection.
+function Test-NvidiaAdapterWithoutNvidiaDriver {
+    param($Scan = $null)
+    if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+    $foreign = $false
+    foreach ($adapter in @($Scan.Adapters)) {
+        if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_10de') { continue }
+        if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+        if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+        $version = "$($adapter.DriverVersion)"
+        if ([string]::IsNullOrWhiteSpace($version)) { $foreign = $true; continue }
+        if ($null -ne (Get-NvidiaDriverRelease -DriverVersion $version)) { return $false }
+        $foreign = $true
+    }
+    return $foreign
+}
+
+# VEN_10DE and ConfigManagerErrorCode 0 only, never names: a false yes sets $HasNvidiaSmi and
+# switches off AMD and Intel detection.
+
+function Test-NvidiaAdapterPresent {
+    param($Scan = $null)
+    if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+    foreach ($adapter in @($Scan.Adapters)) {
+        if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_10de') { continue }
+        # $null is not evidence of health.
+        if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+        if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+        return $true
+    }
+    # No registry fallback: stale class keys would promote a GPU that is gone.
+    return $false
+}
+
+# Keeps the promotion additive: a hybrid host already gets AMD or Intel wheels.
+# Must match the Intel route's pattern exactly (asserted by test_nvidia_adapter_presence.ps1); a
+# function, not a $script: variable, since an unset $null pattern matches every string.
+function Get-XpuCapableNameRegex { return "(?i)Intel.*(Arc|Data Center GPU)" }
+
+function Test-IntelXpuRuntimeProven {
+    param($Scan = $null, [string]$PythonExe = "")
+    # The Intel route also serves non-Arc Intel GPUs once the existing torch proves XPU works, with no
+    # WMI precondition, so this asks the same thing. Any failure reads as not proven.
+    if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $false }
+    try {
+        $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code 'import torch; print(torch.xpu.is_available())'
+        return [bool]($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
+    } catch {
+        return $false
+    }
+}
+
+function Test-OtherVendorAdapterPresent {
+    param($Scan = $null)
+    if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+    # AMD evidence the AMD route finds without WMI (override, HIP SDK, opted-in amd-smi) vetoes too.
+    if ("$env:UNSLOTH_ROCM_GFX_ARCH".Trim()) { return $true }
+    try {
+        if (Get-Command hipinfo -CommandType Application -ErrorAction SilentlyContinue) { return $true }
+        foreach ($hipEnv in @($env:HIP_PATH, $env:HIP_PATH_57, $env:ROCM_PATH)) {
+            if ($hipEnv -and (Test-Path -LiteralPath (Join-Path $hipEnv "bin\hipinfo.exe"))) { return $true }
+        }
+        if ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$' -and
+            (Get-Command amd-smi -ErrorAction SilentlyContinue)) { return $true }
+    } catch {}
+    # Same classification as the Intel route, which ignores PNP ID and status.
+    if ($Scan.Ok) {
+        $scanNames = @($Scan.Names | Where-Object { $_ } | ForEach-Object { "$_" })
+        if (@($scanNames | Where-Object { $_ -match (Get-XpuCapableNameRegex) }).Count -gt 0) { return $true }
+        try {
+            foreach ($regName in @(Get-IntelRegistryAdapterNames)) {
+                if ("$regName" -notmatch (Get-XpuCapableNameRegex)) { continue }
+                foreach ($wmiName in $scanNames) {
+                    if ("$regName".Contains($wmiName)) { return $true }
+                }
+            }
+        } catch {}
+    }
+    foreach ($adapter in @($Scan.Adapters)) {
+        # AMD vetoes on the AMD route's own test (name or 1002, any status: it keeps parked and
+        # PNP-less cards). Intel was answered above; UHD/Iris do not block.
+        if ("$($adapter.Name)" -match "AMD|Radeon" -or "$($adapter.PNPDeviceID)" -match '(?i)ven_1002') { return $true }
+    }
+    # Registry fallback here is deliberate: staleness only DECLINES a promotion. Without it, broken WMI
+    # hid the Arc on a hybrid host and cost it its XPU wheels.
+    if ($Scan.Ok) { return $false }
+    # Same normalized names as the Intel route (it prefixes "Intel" to a VEN_8086 DriverDesc).
+    try {
+        if (@(Get-IntelRegistryAdapterNames | Where-Object { "$_" -match (Get-XpuCapableNameRegex) }).Count -gt 0) { return $true }
+    } catch {}
+    $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+    try {
+        $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
+    } catch { return $false }
+    foreach ($sub in $subs) {
+        try {
+            if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
+            $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+            if (-not $props) { continue }
+            $match = "$($props.MatchingDeviceId)"
+            if ($match -match '(?i)ven_1002') { return $true }
+        } catch {}
+    }
+    return $false
+}
+
+# Ported from studio/nvidia_probe.py's cuda_version_for_driver; the parity test generates the table.
+# Kept apart from the floor so "no version" differs from "too old for every row".
+function Get-NvidiaDriverRelease {
+    param([string]$DriverVersion)
+    if ([string]::IsNullOrWhiteSpace($DriverVersion)) { return $null }
+    # NVIDIA's scheme only (32.0.15.6094 is 560.94). Basic Display versions like 10.0.19041.3636 must
+    # not read as releases, or a working CUDA venv gets replaced with CPU wheels.
+    $m = [regex]::Match($DriverVersion, '^\s*\d+\.\d+\.(1\d)\.(\d{4})\s*$')
+    if ($m.Success) {
+        $digits = ($m.Groups[1].Value + $m.Groups[2].Value)
+        if ($digits.Length -ge 5) {
+            $tail = $digits.Substring($digits.Length - 5)
+            return [int]$tail.Substring(0, 3)
+        }
+        return $null
+    }
+    # At least three digits: "1.2.3" is malformed, and a low release now selects CPU wheels.
+    $m2 = [regex]::Match($DriverVersion, '^\s*(\d+)\.')
+    if ($m2.Success) {
+        $parsed = [int]$m2.Groups[1].Value
+        if ($parsed -ge 100) { return $parsed }
+    }
+    return $null
+}
+
+function Get-NvidiaCudaFloorForRelease {
+    param($Release)
+    if ($null -eq $Release) { return $null }
+    # Same order and values as _DRIVER_MAJOR_CUDA.
+    foreach ($row in @(
+        @(580, 13, 0), @(570, 12, 8), @(560, 12, 6), @(555, 12, 5), @(550, 12, 4),
+        @(545, 12, 3), @(535, 12, 2), @(525, 12, 0), @(450, 11, 0)
+    )) {
+        if ([int]$Release -ge $row[0]) { return @($row[1], $row[2]) }
+    }
+    return $null
+}
+
+function Get-NvidiaDriverCudaFloor {
+    param([string]$DriverVersion)
+    return (Get-NvidiaCudaFloorForRelease -Release (Get-NvidiaDriverRelease -DriverVersion $DriverVersion))
+}
+
+function Get-NvidiaAdapterDriverRelease {
+    param($Scan = $null)
+    if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+    foreach ($adapter in @($Scan.Adapters)) {
+        if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_10de') { continue }
+        if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+        if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+        $release = Get-NvidiaDriverRelease -DriverVersion "$($adapter.DriverVersion)"
+        if ($null -ne $release) { return $release }
+    }
+    if (-not $Scan.Ok) {
+        $registryAdapter = Get-NvidiaRegistryAdapter
+        if ($registryAdapter) { return $registryAdapter.Release }
+    }
+    return $null
+}
+
+function Get-NvidiaAdapterCudaFloor {
+    param($Scan = $null)
+    if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+    foreach ($adapter in @($Scan.Adapters)) {
+        if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_10de') { continue }
+        if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+        if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+        $floor = Get-NvidiaDriverCudaFloor -DriverVersion "$($adapter.DriverVersion)"
+        if ($floor) { return $floor }
+    }
+    if (-not $Scan.Ok) {
+        $registryAdapter = Get-NvidiaRegistryAdapter
+        if ($registryAdapter) { return (Get-NvidiaCudaFloorForRelease -Release $registryAdapter.Release) }
+    }
+    return $null
+}
+
 if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
     # The driver lists a GPU nvidia-smi cannot: the gates below read this as "GPU present",
     # and the consumers stop asking nvidia-smi, absent or rejected, for the rest of the run.
@@ -3496,6 +3741,37 @@ if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
     $script:NvidiaSmiRejected = $true
     Write-StudioLine "   NVIDIA GPU found through the driver library; nvidia-smi is unavailable" -ForegroundColor Gray
 }
+# Last resort for #9255: presence only, gated on no healthy AMD or Intel adapter. The CUDA
+# version is decided separately by the version ladder.
+if (-not $HasNvidiaSmi) {
+    $presenceScan = Invoke-BoundedVideoControllerScan
+    # Any throw declines the promotion; flags are set only once every answer is in hand.
+    try {
+        $_presenceXpuVenvs = @(@($VenvDir, (Get-ProbableStudioVenvDir)) | Where-Object { $_ } | Select-Object -Unique)
+        if ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
+            (Test-NvidiaAdapterWithoutNvidiaDriver -Scan $presenceScan)) {
+            Write-StudioLine "   NVIDIA GPU found without the NVIDIA driver; install the NVIDIA driver and re-run for GPU support" -ForegroundColor Yellow
+        } elseif ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
+            -not (Test-OtherVendorAdapterPresent -Scan $presenceScan) -and
+            -not (@($_presenceXpuVenvs | Where-Object {
+                (Test-VenvTorchIsXpu $_) -and
+                (Test-IntelXpuRuntimeProven -Scan $presenceScan -PythonExe (Join-Path $_ "Scripts\python.exe")) }).Count -gt 0)) {
+            $_presenceFloor = Get-NvidiaAdapterCudaFloor -Scan $presenceScan
+            # The floor is $null both for too-old and unreadable, which want opposite answers.
+            $_presenceRelease = Get-NvidiaAdapterDriverRelease -Scan $presenceScan
+            $HasNvidiaSmi = $true
+            $script:NvidiaPresenceOnly = $true
+            # Stops Get-CudaComputeCapability / Get-PytorchCudaTag rediscovering an already rejected nvidia-smi.
+            $script:NvidiaSmiRejected = $true
+            $script:NvidiaPresenceCudaFloor = $_presenceFloor
+            $script:NvidiaPresenceDriverRelease = $_presenceRelease
+            Write-StudioLine "   NVIDIA GPU found on the PCI bus; nvidia-smi and the driver library are both unavailable" -ForegroundColor Gray
+        }
+    } catch {}
+}
+# The promotion widens TORCH selection only; llama.cpp prebuilts and source builds need a real
+# driver stack, and install_llama_prebuilt.py never sees the PCI bus.
+$HasNvidiaDriverEvidence = $HasNvidiaSmi -and -not $script:NvidiaPresenceOnly
 # nvidia-smi was already resolved above and never asked which card it found, so the banner
 # said "NVIDIA GPU detected" on every NVIDIA host alike. compute_cap is the counterpart of the
 # gfx arch shown for AMD, the driver version the counterpart of the HIP SDK line, and one
@@ -7541,6 +7817,22 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
             $SkipPythonDeps = $false
         }
     }
+    # The promotion runs after the fast path, so clear $SkipPythonDeps here or CPU torch is kept
+    # forever. Only when a CUDA family is reachable (not pinned, no-torch, or pre-R450).
+    $_nvidiaIsReachable = (-not $NoTorchMode) -and
+        ((-not $_pinLeafNow) -or (Test-CudaFamilyLeaf $_pinLeafNow))
+    $_nvidiaPreR450 = ($null -ne $script:NvidiaPresenceDriverRelease -and
+        $script:NvidiaPresenceDriverRelease -lt 450)
+    if ($SkipPythonDeps -and $script:NvidiaPresenceOnly -and $_nvidiaIsReachable -and
+        (-not $_nvidiaPreR450) -and $installedTorchTag -eq "cpu") {
+        substep "NVIDIA GPU found on the PCI bus but the installed PyTorch is a CPU build -- reinstalling CUDA PyTorch" "Cyan"
+        $SkipPythonDeps = $false
+    }
+    if ($SkipPythonDeps -and $script:NvidiaPresenceOnly -and $_nvidiaIsReachable -and
+        (Test-NvidiaPresenceStaleGpuWheel -InstalledTag $installedTorchTag -PythonExe (Join-Path $VenvDir "Scripts\python.exe"))) {
+        substep "NVIDIA GPU found on the PCI bus but the installed PyTorch is a $installedTorchTag build that sees no GPU -- running the dependency pass" "Cyan"
+        $SkipPythonDeps = $false
+    }
     # The installed wheel as well as the scan: an explicit xpu pin on a mixed NVIDIA + Intel box
     # ends up on XPU with $script:IsIntelXpu false, fast-pathing past the bitsandbytes floor and
     # the Triton replacement forever.
@@ -7859,6 +8151,30 @@ if ($PinnedTorchIndexUrl) {
     $CuTag = if (Test-CudaFamilyLeaf $script:PreservedInstallerTorchTag) { $script:PreservedInstallerTorchTag } else { "cpu" }
 } elseif ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
+    if (-not $CuTag -and $null -ne $script:NvidiaPresenceDriverRelease -and
+        $script:NvidiaPresenceDriverRelease -lt 450) {
+        # Pre-R450: CPU, matching install.ps1; cu126 would not load.
+        $CuTag = "cpu"
+        # An installed +cu wheel satisfies the bare CPU range, so force the reinstall.
+        if (Test-CudaFamilyLeaf $installedTorchTag) { $script:NvidiaPreR450CpuFallback = $true }
+        if (Test-NvidiaPresenceStaleGpuWheel -InstalledTag $installedTorchTag -PythonExe (Join-Path $VenvDir "Scripts\python.exe")) {
+            $script:NvidiaPreR450CpuFallback = $true
+        }
+        substep "an NVIDIA GPU is present but its driver ($script:NvidiaPresenceDriverRelease series) predates R450 and carries no usable CUDA runtime; installing CPU wheels. Update the NVIDIA driver and re-run to get CUDA" "Yellow"
+    }
+    if (-not $CuTag -and -not (Test-CudaFamilyLeaf $installedTorchTag) -and
+        $script:NvidiaPresenceCudaFloor) {
+        # Only for a fresh install: the floor is a FLOOR, and an existing cu* venv must not be pulled back (#9255).
+        $floorMajor = [int]$script:NvidiaPresenceCudaFloor[0]
+        $floorMinor = [int]$script:NvidiaPresenceCudaFloor[1]
+        # Same pre-Turing cap as install.ps1: unknown capability stops at cu126.
+        if ($floorMajor -gt 12 -or ($floorMajor -eq 12 -and $floorMinor -gt 6)) {
+            $floorMajor = 12; $floorMinor = 6
+        }
+        # Never "cu$major$minor": CUDA 11.0 is served by cu118; cu110 does not exist.
+        $CuTag = Get-CudaFamilyForVersion -Major $floorMajor -Minor $floorMinor
+        substep "nvidia-smi and the NVIDIA driver library are both unavailable; the display driver supports at least CUDA $floorMajor.$floorMinor, installing torch $CuTag" "Yellow"
+    }
     if (-not $CuTag) {
         # Unknown driver version: the installed family, else the widest wheel.
         $CuTag = if (Test-CudaFamilyLeaf $installedTorchTag) { $installedTorchTag } else { "cu126" }
@@ -8225,6 +8541,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # Same for a wheel that no longer imports. Nothing else here distinguishes it: the tag is
     # rescued from disk and still reads "cpu", so the range is satisfied and it is kept.
     if ($script:TorchImportDefinitivelyFailed) { $cpuForce = @("--force-reinstall") }
+    if ($script:NvidiaPreR450CpuFallback) { $cpuForce = @("--force-reinstall") }
     # A PINNED cpu index installs the bounded trio (parity with _CPU_TORCH_PKG_SPEC): the /cpu
     # index serves newer torch and _ensure_cpu_torch keeps any CPU build. Unpinned keeps the bare trio.
     $cpuTorchSpec = "torch"; $cpuVisionSpec = "torchvision"; $cpuAudioSpec = "torchaudio"
@@ -8277,6 +8594,13 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # PEP 440 ignores +cuXXX, so a cu126 -> cu128 change never applies without --force-reinstall.
     $cudaForce = @()
     if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) {
+        $cudaForce = @("--force-reinstall")
+    }
+    # The installed CPU wheel satisfies bare torch and the stale check reads unknown here, so force it.
+    if ($script:NvidiaPresenceOnly -and $installedTorchTag -eq "cpu") {
+        $cudaForce = @("--force-reinstall")
+    }
+    if (Test-NvidiaPresenceStaleGpuWheel -InstalledTag $installedTorchTag -PythonExe (Join-Path $VenvDir "Scripts\python.exe")) {
         $cudaForce = @("--force-reinstall")
     }
     # An unknown-leaf custom pin (/simple, /current) routes here with $CuTag as that leaf. Bound
@@ -9258,7 +9582,7 @@ if ($LocalLlamaCppLinked) {
                             if ($_m) { $_m } else { Get-WoaTorchIndexMarker }
                         }
                     }
-                $_nvidiaEvidence = $HasNvidiaSmi -or ((Test-WinArm64Venv) -and $_woaEvidenceIndex -and
+                $_nvidiaEvidence = $HasNvidiaDriverEvidence -or ((Test-WinArm64Venv) -and $_woaEvidenceIndex -and
                     (Test-WoaPersistableIndex $_woaEvidenceIndex))
                 # No ROCm bundle exists for Windows ARM64 (upstream's is hip-radeon-x64), so the selector falls through to the ARM64 CPU bundle; without that kind here the gate refetches it every update.
                 $_rocmKinds = if (Test-WinArm64Venv) {
@@ -9598,10 +9922,10 @@ if ($llamaBinState -eq "Present") {
             if (-not (Test-AccessDeniedError $_)) { throw }
             Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install" -OwnershipUnverified:$RuntimeRootIsCustom
         }
-        if ($HasNvidiaSmi -and -not $cachedCuda) {
+        if ($HasNvidiaDriverEvidence -and -not $cachedCuda) {
             Write-StudioLine "   Existing llama-server is CPU-only but GPU is available -- rebuilding" -ForegroundColor Yellow
             $NeedRebuild = $true
-        } elseif (-not $HasNvidiaSmi -and $cachedCuda) {
+        } elseif (-not $HasNvidiaDriverEvidence -and $cachedCuda) {
             Write-StudioLine "   Existing llama-server was built with CUDA but no GPU detected -- rebuilding" -ForegroundColor Yellow
             $NeedRebuild = $true
         }
@@ -9673,7 +9997,7 @@ if ($LocalLlamaCppLinked) {
     $script:LlamaCppDegraded = $true
 } elseif (-not $HasCmakeForBuild) {
     Write-StudioLine ""
-    if (-not $HasNvidiaSmi) {
+    if (-not $HasNvidiaDriverEvidence) {
         substep "CMake is required to build llama-server for GGUF chat mode." "Yellow"
         substep "Continuing setup without llama.cpp build." "Yellow"
         substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
@@ -9723,10 +10047,10 @@ if ($LocalLlamaCppLinked) {
     }
 
     # After the final VS generator, so the CUDA .targets land in the toolset cmake uses.
-    if ($HasNvidiaSmi) { Resolve-CudaToolkit -RequireOrExit }
+    if ($HasNvidiaDriverEvidence) { Resolve-CudaToolkit -RequireOrExit }
 
     Write-StudioLine ""
-    if ($HasNvidiaSmi) {
+    if ($HasNvidiaDriverEvidence) {
         substep "building llama.cpp with CUDA support..."
     } elseif ($HasROCm -or $script:ROCmGfxArch) {
         # A HIP source build needs the full HIP SDK; the per-gfx ROCm prebuilt already failed here.
@@ -9753,7 +10077,7 @@ if ($LocalLlamaCppLinked) {
     $FailedStep = ""
 
     # Refresh-Environment may have repopulated conflicting CUDA_PATH_V* from the registry.
-    if ($HasNvidiaSmi -and $CudaToolkitRoot) {
+    if ($HasNvidiaDriverEvidence -and $CudaToolkitRoot) {
         $cudaPathVars2 = @([Environment]::GetEnvironmentVariables('Process').Keys | Where-Object { $_ -match '^CUDA_PATH_V' })
         foreach ($v2 in $cudaPathVars2) {
             [Environment]::SetEnvironmentVariable($v2, $null, 'Process')
@@ -10024,7 +10348,7 @@ if ($LocalLlamaCppLinked) {
         }
         $CmakeArgs += '-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:LIBCMT'
         # CUDA flags -- only if GPU available, otherwise explicitly disable
-        if ($HasNvidiaSmi -and $NvccPath) {
+        if ($HasNvidiaDriverEvidence -and $NvccPath) {
             # UNSLOTH_LLAMA_CUDA_ARCHS ("120" or "89;86") forces the build arch, as setup.sh does.
             $CudaArchOverride = if ($env:UNSLOTH_LLAMA_CUDA_ARCHS) { ($env:UNSLOTH_LLAMA_CUDA_ARCHS -replace '\s', '') } else { '' }
             if ((-not $CudaArch) -and (-not $CudaArchOverride)) {

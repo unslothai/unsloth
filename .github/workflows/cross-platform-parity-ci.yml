@@ -106,6 +106,7 @@ on:
       - 'tests/studio/test_nvidia_library_inventory.ps1'
       - 'tests/studio/test_nvidia_smi_discovery.ps1'
       - 'tests/studio/test_install_lock_excludes_aliases.ps1'
+      - 'tests/studio/test_nvidia_adapter_presence.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
@@ -218,6 +219,7 @@ on:
       - 'tests/studio/test_nvidia_library_inventory.ps1'
       - 'tests/studio/test_nvidia_smi_discovery.ps1'
       - 'tests/studio/test_install_lock_excludes_aliases.ps1'
+      - 'tests/studio/test_nvidia_adapter_presence.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
@@ -394,6 +396,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -File tests\studio\test_install_lock_excludes_aliases.ps1
+      - name: NVIDIA adapter presence tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_nvidia_adapter_presence.ps1
+      - name: NVIDIA adapter presence tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_nvidia_adapter_presence.ps1
       # AST-extracted helpers plus a real .cmd written to a temp dir, so no venv and no
       # Windows needed. The 1260 classification is exercised against crafted exceptions:
       # a hosted runner has no Application Control policy to be denied by. The enforced
