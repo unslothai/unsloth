@@ -53,7 +53,7 @@ test("desktop branding clears the titlebar actions", async () => {
 
 test("desktop branding keeps an 11px gap above New chat", async () => {
   const source = APP_SIDEBAR;
-  assert.match(source, /usesDesktopTitlebar \? "pt-\[11px\]" : "pt-\[9px\]"/);
+  assert.match(source, /usesDesktopTitlebar \? "pt-\[11px\]" : "pt-\[7px\]"/);
 });
 
 test("footer profile sits 11px above the sidebar edge", async () => {
