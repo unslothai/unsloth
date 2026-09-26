@@ -290,3 +290,33 @@ def test_info_reports_a_rejected_key(monkeypatch):
     assert asyncio.run(linked_instances.fetch_info(instance)) == {
         "online": False, "error": "The API key was rejected."
     }
+
+
+@pytest.mark.parametrize("caller_asked", [False, True])
+def test_stream_usage_is_requested_counted_and_hidden_unless_asked(monkeypatch, caller_asked):
+    linked_instances_db.create_instance("wsl", "http://remote", REMOTE_KEY)
+    monitor = _Monitor()
+    monkeypatch.setattr(linked_instances, "api_monitor", monitor)
+    usage = b'data: {"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 7}}\n\n'
+    sse = b'data: {"choices": [{"delta": {"content": "hi \xc3\xa9"}}]}\n\n' + usage + b"data: [DONE]\n\n"
+    sent = {}
+
+    def handler(request: httpx.Request):
+        sent.update(json.loads(request.content))
+        return httpx.Response(200, content = sse, headers = {"content-type": "text/event-stream"})
+
+    _remote(handler, monkeypatch)
+    body = {"model": "@wsl/a", "stream": True, "messages": []}
+    if caller_asked:
+        body["stream_options"] = {"include_usage": True}
+    request = _request(body)
+
+    async def run():
+        response = await linked_instances.forward(request, "chat/completions", await linked_instances.resolve(request, body["model"]))
+        return b"".join([chunk async for chunk in response.body_iterator])
+
+    content = asyncio.run(run())
+    assert sent["stream_options"] == {"include_usage": True}
+    assert content == (sse if caller_asked else sse.replace(usage, b"\n"))
+    assert ("set_usage", ("entry-1",), {"prompt_tokens": 5, "completion_tokens": 7}) in monitor.calls
+    assert ("append_reply", ("entry-1", "hi é"), {}) in monitor.calls

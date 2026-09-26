@@ -164,15 +164,16 @@ def _record_json(entry_id: str, payload: object) -> None:
     _record_usage(entry_id, payload.get("usage"))
 
 
-def _record_sse_line(entry_id: str, line: str) -> None:
+def _record_sse_line(entry_id: str, line: str) -> Optional[dict]:
+    """Record one SSE line; returns the parsed event, if any."""
     if not line.startswith("data:"):
-        return
+        return None
     try:
         event = json.loads(line[5:].strip())
     except ValueError:
-        return
+        return None
     if not isinstance(event, dict):
-        return
+        return None
     text = ""
     choices = event.get("choices")
     if isinstance(choices, list) and choices and isinstance(choices[0], dict):
@@ -182,6 +183,11 @@ def _record_sse_line(entry_id: str, line: str) -> None:
     if isinstance(text, str):
         api_monitor.append_reply(entry_id, text)
     _record_usage(entry_id, event.get("usage") or (event.get("message") or {}).get("usage"))
+    return event
+
+
+def _is_usage_only(event: Optional[dict]) -> bool:
+    return bool(event) and event.get("choices") == [] and isinstance(event.get("usage"), dict)
 
 
 async def forward(
@@ -208,6 +214,15 @@ async def forward(
     )
     body["model"] = remote_model
     stream = bool(body.get("stream"))
+    # OpenAI streams carry usage only on request. Ask for it so the monitor has token
+    # counts, and drop that extra chunk again unless the caller asked too.
+    strip_usage = False
+    if stream and path in ("chat/completions", "completions"):
+        options = body.get("stream_options")
+        options = options if isinstance(options, dict) else {}
+        if not options.get("include_usage"):
+            body["stream_options"] = {**options, "include_usage": True}
+            strip_usage = True
     headers = await asyncio.to_thread(_auth_headers, instance)
     for name in _FORWARDED_HEADERS:
         if value := request.headers.get(name):
@@ -251,14 +266,21 @@ async def forward(
         return Response(content, status_code = upstream.status_code, media_type = media_type)
 
     async def relay():
-        pending = ""
+        # Split on bytes: "\n" never occurs inside a multi-byte UTF-8 character.
+        pending = b""
         try:
             async for chunk in upstream.aiter_bytes():
-                yield chunk
-                pending += chunk.decode("utf-8", errors = "replace")
-                *lines, pending = pending.split("\n")
+                *lines, pending = (pending + chunk).split(b"\n")
+                out = []
                 for line in lines:
-                    _record_sse_line(entry_id, line.strip())
+                    event = _record_sse_line(entry_id, line.decode("utf-8", errors = "replace").strip())
+                    if not (strip_usage and _is_usage_only(event)):
+                        out.append(line + b"\n")
+                if out:
+                    yield b"".join(out)
+            if pending:
+                _record_sse_line(entry_id, pending.decode("utf-8", errors = "replace").strip())
+                yield pending
             api_monitor.finish(entry_id)
         except asyncio.CancelledError:
             api_monitor.finish(entry_id, "cancelled")
