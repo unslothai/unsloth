@@ -2766,6 +2766,9 @@ class FastLlamaModel:
             model_config = _copy.deepcopy(model_config)
         # Swapped tail is built in host RAM afterwards so models larger than the card load.
         _block_swap_saved = trim_config_for_block_swap(model_config, block_swap_layers)
+        _undo_block_swap_keys = skip_swapped_checkpoint_keys(
+            _block_swap_saved, model_config.num_hidden_layers
+        )
 
         raise_handler = RaiseUninitialized()
         try:
@@ -2951,6 +2954,7 @@ class FastLlamaModel:
                 model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
         finally:
             raise_handler.remove()
+            _undo_block_swap_keys()
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
         if _modelopt_rewritten:
             keep_fp8_scale_names_on_save(model)

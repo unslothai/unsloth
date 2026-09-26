@@ -201,3 +201,72 @@ def test_fast_decode_loops_fetch_swapped_layers(path):
     # Decode loops read layer weights without calling the layer, so the swap hooks never fire.
     src = open(os.path.join(HERE, "unsloth", "models", path), encoding = "utf-8").read()
     assert "block_swap.enter(idx)" in src and "block_swap.leave(idx)" in src
+
+
+def _load_key_filter(monkeypatch, has_method = True):
+    import re, sys, types
+
+    mod = ast.parse(open(UTILS, encoding = "utf-8").read())
+    keep = [
+        n
+        for n in mod.body
+        if (isinstance(n, ast.FunctionDef) and n.name == "skip_swapped_checkpoint_keys")
+        or (
+            isinstance(n, ast.Assign)
+            and any(getattr(t, "id", None) == "_SWAPPED_LAYER_KEY" for t in n.targets)
+        )
+    ]
+    assert len(keep) == 2
+    seen = []
+
+    class PreTrainedModel:
+        pass
+
+    if has_method:
+
+        def _get_key_renaming_mapping(
+            self,
+            checkpoint_keys,
+            key_mapping = None,
+        ):
+            seen.append(list(checkpoint_keys))
+            return {k: k for k in checkpoint_keys}
+
+        PreTrainedModel._get_key_renaming_mapping = _get_key_renaming_mapping
+    fake = types.ModuleType("transformers.modeling_utils")
+    fake.PreTrainedModel = PreTrainedModel
+    monkeypatch.setitem(sys.modules, "transformers.modeling_utils", fake)
+    ns = {"re": re}
+    exec(compile(ast.Module(body = keep, type_ignores = []), UTILS, "exec"), ns)
+    return ns["skip_swapped_checkpoint_keys"], PreTrainedModel, seen
+
+
+def test_swapped_tail_keys_are_hidden_from_a_4x_load_then_restored(monkeypatch):
+    skip, cls, seen = _load_key_filter(monkeypatch)
+    original = cls.__dict__["_get_key_renaming_mapping"]
+    undo = skip({"num_hidden_layers": 4}, 2)
+    keys = [
+        "model.embed_tokens.weight",
+        "model.layers.1.mlp.down_proj.weight",
+        "model.layers.2.mlp.down_proj.weight",
+        "model.layers.3.self_attn.q_proj.weight.absmax",
+        "lm_head.weight",
+    ]
+    cls()._get_key_renaming_mapping(keys, key_mapping = None)
+    assert seen[-1] == [
+        "model.embed_tokens.weight",
+        "model.layers.1.mlp.down_proj.weight",
+        "lm_head.weight",
+    ]
+    undo()
+    assert cls.__dict__["_get_key_renaming_mapping"] is original
+
+
+def test_key_filter_is_inert_when_off_or_on_5x(monkeypatch):
+    skip, cls, _ = _load_key_filter(monkeypatch)
+    original = cls.__dict__["_get_key_renaming_mapping"]
+    skip(None, 2)()
+    assert cls.__dict__["_get_key_renaming_mapping"] is original
+    skip, cls, _ = _load_key_filter(monkeypatch, has_method = False)
+    skip({"num_hidden_layers": 4}, 2)()
+    assert "_get_key_renaming_mapping" not in cls.__dict__

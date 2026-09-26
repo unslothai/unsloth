@@ -87,6 +87,7 @@ __all__ = [
     "install_block_swap",
     "trim_config_for_block_swap",
     "attach_block_swap_layers",
+    "skip_swapped_checkpoint_keys",
     "get_moe_target_parameters",
     "get_moe_target_modules",
     "get_moe_expert_submodule_leaves",
@@ -5218,8 +5219,14 @@ def install_block_swap(
     return swapper
 
 
-def _checkpoint_tensors(model_name, token = None, revision = None, cache_dir = None,
-                        local_files_only = False, subfolder = None):
+def _checkpoint_tensors(
+    model_name,
+    token = None,
+    revision = None,
+    cache_dir = None,
+    local_files_only = False,
+    subfolder = None,
+):
     from safetensors import safe_open
     import json
 
@@ -5229,9 +5236,15 @@ def _checkpoint_tensors(model_name, token = None, revision = None, cache_dir = N
             return path if os.path.exists(path) else None
         from huggingface_hub import hf_hub_download
         try:
-            return hf_hub_download(model_name, filename, subfolder = subfolder, revision = revision,
-                                   token = token, cache_dir = cache_dir,
-                                   local_files_only = local_files_only)
+            return hf_hub_download(
+                model_name,
+                filename,
+                subfolder = subfolder,
+                revision = revision,
+                token = token,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+            )
         except Exception:
             return None
 
@@ -5245,11 +5258,13 @@ def _checkpoint_tensors(model_name, token = None, revision = None, cache_dir = N
     for shard in shards:
         path = _get(shard)
         if path is None:
-            raise RuntimeError(f"Unsloth: block_swap_layers could not find {shard} for {model_name}.")
+            raise RuntimeError(
+                f"Unsloth: block_swap_layers could not find {shard} for {model_name}."
+            )
         h = safe_open(path, framework = "pt", device = "cpu")
         handles.append(h)
         for key in h.keys():
-            tensors[key] = (lambda h = h, key = key: h.get_tensor(key))
+            tensors[key] = lambda h = h, key = key: h.get_tensor(key)
     return tensors, handles
 
 
@@ -5274,8 +5289,46 @@ def trim_config_for_block_swap(config, block_swap_layers):
     return saved
 
 
-def attach_block_swap_layers(model, saved, model_name, dtype, load_in_4bit, skip_modules = (),
-                             **hub_kwargs):
+_SWAPPED_LAYER_KEY = re.compile(r"(?:^|\.)layers\.(\d+)\.")
+
+
+def skip_swapped_checkpoint_keys(saved, kept):
+    """Hide the swapped tail's checkpoint keys from the standard load; returns an undo callable.
+
+    transformers 4.x still loads every key its renaming mapping keeps: the tail's bnb stats reach the
+    quantizer (ModuleList has no attribute `N`) and plain weights log "were not used", which
+    RaiseUninitialized turns into an error. 5.x has no such method and already drops them."""
+    from transformers.modeling_utils import PreTrainedModel
+
+    original = PreTrainedModel.__dict__.get("_get_key_renaming_mapping")
+    if saved is None or original is None:
+        return lambda: None
+
+    def _get_key_renaming_mapping(self, checkpoint_keys, *args, **kwargs):
+        keep = []
+        for key in checkpoint_keys:
+            m = _SWAPPED_LAYER_KEY.search(key)
+            if m is None or int(m.group(1)) < kept:
+                keep.append(key)
+        return original(self, keep, *args, **kwargs)
+
+    PreTrainedModel._get_key_renaming_mapping = _get_key_renaming_mapping
+
+    def undo():
+        PreTrainedModel._get_key_renaming_mapping = original
+
+    return undo
+
+
+def attach_block_swap_layers(
+    model,
+    saved,
+    model_name,
+    dtype,
+    load_in_4bit,
+    skip_modules = (),
+    **hub_kwargs,
+):
     if saved is None:
         return None
     layers = find_decoder_layers(model)
@@ -5288,9 +5341,14 @@ def attach_block_swap_layers(model, saved, model_name, dtype, load_in_4bit, skip
     tensors, handles = _checkpoint_tensors(model_name, **hub_kwargs)
     try:
         new = build_host_layers(
-            lambda idx: layer_cls(config, idx), first, count, tensors,
+            lambda idx: layer_cls(config, idx),
+            first,
+            count,
+            tensors,
             device = torch.device("cuda", torch.cuda.current_device()),
-            compute_dtype = dtype, quantize_4bit = load_in_4bit, skip_modules = skip_modules,
+            compute_dtype = dtype,
+            quantize_4bit = load_in_4bit,
+            skip_modules = skip_modules,
         )
     finally:
         del handles
