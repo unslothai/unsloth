@@ -1249,48 +1249,61 @@ def _mxfp4_lora_keeps_experts_packed(
         # transformers resolves these with infer_auto_device_map, which spills to CPU / disk
         # once the accelerators are full. Unknown sizes keep the packed path, as before.
         try:
+            import json
             import os
-            import re
             import torch
 
             prefix = subfolder.strip("/") + "/" if subfolder else ""
-            tag = re.escape("." + variant) if variant else ""
-            formats = [
-                re.compile("model" + tag + r"(-\d+-of-\d+)?\.safetensors"),
-                re.compile("pytorch_model" + tag + r"(-\d+-of-\d+)?\.bin"),
-            ]
 
-            def weight_bytes(files):
-                # What from_pretrained reads: model.safetensors or its model-0000N-of-0000M
-                # shards, of the selected variant (model.<variant>...) in the selected
-                # subfolder, else pytorch_model.bin and its shards. Never gpt-oss's
-                # original/, consolidated.safetensors or adapters.
-                totals = [0, 0]
-                for name, size in files:
-                    name = name.replace(os.sep, "/")
-                    if not name.startswith(prefix):
-                        continue
-                    for i, pattern in enumerate(formats):
-                        if pattern.fullmatch(name[len(prefix) :]):
-                            totals[i] += size or 0
-                # use_safetensors = False loads the .bin files even when both formats exist.
-                return totals[1] if use_safetensors is False else totals[0] or totals[1]
+            def with_variant(name):
+                # transformers' _add_variant: the variant goes before the last suffix.
+                if not variant:
+                    return name
+                parts = name.split(".")
+                return ".".join(parts[:-1] + [variant, parts[-1]])
+
+            def weight_bytes(files, read_index):
+                # The files from_pretrained reads, in its order: model.safetensors, else the
+                # shards the safetensors index lists, else the same for pytorch_model.bin
+                # (only the .bin pair with use_safetensors = False), for the selected variant
+                # and subfolder. Stale shards, gpt-oss's original/ and adapters never count.
+                files = {name.replace(os.sep, "/"): size or 0 for name, size in files}
+                formats = [
+                    ("model.safetensors", "model.safetensors.index.json"),
+                    ("pytorch_model.bin", "pytorch_model.bin.index.json"),
+                ]
+                for single, index in formats[1:] if use_safetensors is False else formats:
+                    single, index = prefix + with_variant(single), prefix + with_variant(index)
+                    if single in files:
+                        return files[single]
+                    if index in files:
+                        shards = set(json.loads(read_index(index))["weight_map"].values())
+                        return sum(files.get(prefix + shard, 0) for shard in shards)
+                return 0
 
             def folder_files(folder):
-                folder = os.path.join(folder, prefix) if prefix else folder
-                if not os.path.isdir(folder):
+                root = os.path.join(folder, prefix) if prefix else folder
+                if not os.path.isdir(root):
                     return []
                 return [
-                    (prefix + name, os.path.getsize(os.path.join(folder, name)))
-                    for name in os.listdir(folder)
-                    if os.path.isfile(os.path.join(folder, name))
+                    (prefix + name, os.path.getsize(os.path.join(root, name)))
+                    for name in os.listdir(root)
+                    if os.path.isfile(os.path.join(root, name))
                 ]
 
+            def folder_index(folder):
+                def read(name):
+                    with open(os.path.join(folder, name), encoding = "utf-8") as file:
+                        return file.read()
+
+                return read
+
             if os.path.isdir(str(model_name)):
-                checkpoint_bytes = weight_bytes(folder_files(str(model_name)))
+                folder = str(model_name)
+                checkpoint_bytes = weight_bytes(folder_files(folder), folder_index(folder))
             else:
                 try:
-                    from huggingface_hub import HfApi
+                    from huggingface_hub import HfApi, hf_hub_download
 
                     if local_files_only:
                         raise OSError("local_files_only: no Hub lookup")
@@ -1298,8 +1311,21 @@ def _mxfp4_lora_keeps_experts_packed(
                     info = HfApi().model_info(
                         str(model_name), revision = revision, files_metadata = True, token = token
                     )
+
+                    def hub_index(name):
+                        path = hf_hub_download(
+                            str(model_name),
+                            name,
+                            revision = revision,
+                            cache_dir = cache_dir,
+                            token = token,
+                        )
+                        with open(path, encoding = "utf-8") as file:
+                            return file.read()
+
                     checkpoint_bytes = weight_bytes(
-                        (sibling.rfilename, sibling.size) for sibling in (info.siblings or ())
+                        [(sibling.rfilename, sibling.size) for sibling in (info.siblings or ())],
+                        hub_index,
                     )
                 except Exception:
                     # Offline (local_files_only / HF_HUB_OFFLINE) or unreachable: size the
@@ -1311,9 +1337,9 @@ def _mxfp4_lora_keeps_experts_packed(
                         cache_dir = cache_dir,
                         local_files_only = True,
                         token = token,
-                        allow_patterns = ["*.safetensors", "*.bin"],
+                        allow_patterns = ["*.safetensors", "*.bin", "*.index*.json"],
                     )
-                    checkpoint_bytes = weight_bytes(folder_files(folder))
+                    checkpoint_bytes = weight_bytes(folder_files(folder), folder_index(folder))
             # The backend accelerate fills: CUDA / ROCm, else Intel XPU.
             backend = torch.cuda
             if not torch.cuda.is_available() and getattr(torch, "xpu", None) is not None:

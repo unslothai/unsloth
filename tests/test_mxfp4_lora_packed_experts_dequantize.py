@@ -16,6 +16,8 @@ Source-level, because reaching the branch needs a real checkpoint download. No G
 
 import ast
 import inspect
+import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -70,9 +72,27 @@ class _OtherConfig:
         pass
 
 
+SHARD = re.compile(
+    r"(?P<dir>.*/)?(?P<stem>model|pytorch_model)(?P<variant>\.[^.-]+)?-\d+-of-\d+\.(?P<ext>safetensors|bin)"
+)
+
+
+def _index_name(shard):
+    # The index a sharded save writes next to its shards (transformers' _add_variant naming).
+    m = SHARD.fullmatch(shard)
+    if m is None:
+        return None
+    variant = m["variant"] or ""
+    return f"{m['dir'] or ''}{m['stem']}.{m['ext']}.index{variant}.json"
+
+
 @pytest.fixture
-def sizes(monkeypatch):
-    """Hermetic checkpoint size (Hub file metadata) and free accelerator memory, in GiB."""
+def sizes(monkeypatch, tmp_path):
+    """Hermetic checkpoint size (Hub file metadata) and free accelerator memory, in GiB.
+
+    Every sharded group gets the index a real save writes, listing all its shards, unless
+    state["index"] pins that index's shard list.
+    """
     import huggingface_hub
     import torch
 
@@ -86,6 +106,7 @@ def sizes(monkeypatch):
         "snapshot": None,
         "snapshot_calls": [],
         "tokens": [],
+        "index": {},
     }
     GiB = 2**30
 
@@ -106,14 +127,29 @@ def sizes(monkeypatch):
             if state["hub_raises"]:
                 raise OSError("offline")
             half = int(state["checkpoint"] * GiB / 2)
-            return types.SimpleNamespace(
-                siblings = [
-                    _Sibling("model-00001-of-00002.safetensors", half),
-                    _Sibling("model-00002-of-00002.safetensors", half),
-                    _Sibling("config.json", 1000),
+            files = [("config.json", 1000)]
+            if state["checkpoint"]:
+                files += [
+                    ("model-00001-of-00002.safetensors", half),
+                    ("model-00002-of-00002.safetensors", half),
                 ]
-                + [_Sibling(name, int(gib * GiB)) for name, gib in state["extra"]]
-            )
+            files += [(name, int(gib * GiB)) for name, gib in state["extra"]]
+            indexes = {_index_name(name) for name, _ in files} - {None}
+            files += [(name, 100) for name in sorted(indexes)]
+            state["files"] = [name for name, _ in files]
+            return types.SimpleNamespace(siblings = [_Sibling(name, size) for name, size in files])
+
+    def _hf_hub_download(repo_id, filename, **kwargs):
+        if filename in state["index"]:
+            shards = state["index"][filename]
+        else:
+            shards = [
+                name.rsplit("/", 1)[-1] for name in state["files"] if _index_name(name) == filename
+            ]
+        path = tmp_path / "_hub" / filename
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(json.dumps({"weight_map": {f"w{i}": s for i, s in enumerate(shards)}}))
+        return str(path)
 
     def _snapshot_download(repo_id, **kwargs):
         state["snapshot_calls"].append((repo_id, kwargs))
@@ -123,6 +159,7 @@ def sizes(monkeypatch):
 
     monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
     monkeypatch.setattr(huggingface_hub, "snapshot_download", _snapshot_download)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _hf_hub_download)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: len(state["free"]))
 
@@ -313,25 +350,16 @@ def test_only_the_loaded_weight_files_are_counted(zoo, sizes):
     sizes["extra"] = [("original/model--00001-of-00007.safetensors", 61)]
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b") is True
     # Another variant in the same repo is not counted unless selected.
-    sizes["extra"] = [
-        ("model.fp16-00001-of-00002.safetensors", 30),
-        ("model.fp16-00002-of-00002.safetensors", 30),
-    ]
+    sizes["extra"] = [("model.fp16-00001-of-00002.safetensors", 30), ("model.fp16-00002-of-00002.safetensors", 30)]
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b") is True
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b", None, None, "fp16") is True
-    sizes["extra"] = [
-        ("model.fp16-00001-of-00002.safetensors", 45),
-        ("model.fp16-00002-of-00002.safetensors", 45),
-    ]
+    sizes["extra"] = [("model.fp16-00001-of-00002.safetensors", 45), ("model.fp16-00002-of-00002.safetensors", 45)]
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b", None, None, "fp16") is False
 
 
 def test_max_memory_probes_only_the_allowed_cards(zoo, sizes):
     sizes["checkpoint"], sizes["free"] = 13, [80, 80, 80]
-    assert (
-        _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b", {1: "40GiB", "cpu": "100GiB"})
-        is True
-    )
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b", {1: "40GiB", "cpu": "100GiB"}) is True
     assert sizes["probes"] == [1]
 
 
@@ -339,10 +367,7 @@ def test_offline_load_sizes_the_cached_snapshot(zoo, sizes, tmp_path):
     sizes["hub_raises"], sizes["free"] = True, [4096 / 2**30]
     (tmp_path / "model.safetensors").write_bytes(b"0" * 8192)
     sizes["snapshot"] = str(tmp_path)
-    assert (
-        _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b", None, "main", None, "/cache")
-        is False
-    )
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b", None, "main", None, "/cache") is False
     repo, kwargs = sizes["snapshot_calls"][-1]
     assert repo == "openai/gpt-oss-20b" and kwargs["local_files_only"] is True
     assert kwargs["revision"] == "main" and kwargs["cache_dir"] == "/cache"
@@ -353,6 +378,9 @@ def test_offline_load_sizes_the_cached_snapshot(zoo, sizes, tmp_path):
 
 def test_quantization_method_enum_is_recognized(zoo):
     from transformers.utils.quantization_config import QuantizationMethod
+
+    if not hasattr(QuantizationMethod, "MXFP4"):
+        pytest.skip("this transformers predates MXFP4")
     assert _helper()(QuantizationMethod.MXFP4, False, "cuda:0") is True
 
 
@@ -366,10 +394,7 @@ def test_torch_device_cpu_map_keeps_native_load(zoo, sizes):
 
 def test_subfolder_weights_are_sized(zoo, sizes, tmp_path):
     sizes["checkpoint"], sizes["free"] = 0, [80]
-    sizes["extra"] = [
-        ("hf/model-00001-of-00002.safetensors", 45),
-        ("hf/model-00002-of-00002.safetensors", 45),
-    ]
+    sizes["extra"] = [("hf/model-00001-of-00002.safetensors", 45), ("hf/model-00002-of-00002.safetensors", 45)]
     assert _helper()("mxfp4", False, "auto", "org/repo") is True
     assert _helper()("mxfp4", False, "auto", "org/repo", None, None, None, None, "hf") is False
     (tmp_path / "hf").mkdir()
@@ -399,9 +424,7 @@ def test_xpu_capacity_is_probed(zoo, sizes, monkeypatch):
         probes.append(i)
         return (8 * GiB, 0)
 
-    xpu = types.SimpleNamespace(
-        is_available = lambda: True, device_count = lambda: 1, mem_get_info = _xpu_mem
-    )
+    xpu = types.SimpleNamespace(is_available = lambda: True, device_count = lambda: 1, mem_get_info = _xpu_mem)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch, "xpu", xpu, raising = False)
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is False
@@ -438,6 +461,7 @@ def test_unset_device_map_follows_the_default_device(zoo, sizes, monkeypatch):
 
 def test_indexed_cpu_in_an_explicit_map_keeps_native_load(zoo, sizes):
     import torch
+
     for cpu in ("cpu:0", torch.device("cpu", 0)):
         assert _helper()("mxfp4", False, {"model.layers.0": 0, "model.layers.1": cpu}) is False
     assert sizes["calls"] == [] and sizes["probes"] == []
@@ -445,10 +469,7 @@ def test_indexed_cpu_in_an_explicit_map_keeps_native_load(zoo, sizes):
 
 def test_pytorch_bin_checkpoints_are_sized(zoo, sizes, tmp_path):
     sizes["checkpoint"], sizes["free"] = 0, [80]
-    sizes["extra"] = [
-        ("pytorch_model-00001-of-00002.bin", 45),
-        ("pytorch_model-00002-of-00002.bin", 45),
-    ]
+    sizes["extra"] = [("pytorch_model-00001-of-00002.bin", 45), ("pytorch_model-00002-of-00002.bin", 45)]
     assert _helper()("mxfp4", False, "auto", "org/repo") is False
     # With safetensors present those are what is loaded, not the .bin copy as well.
     sizes["checkpoint"] = 40
@@ -463,20 +484,14 @@ def test_local_files_only_skips_the_hub_lookup(zoo, sizes, tmp_path):
     (tmp_path / "model.safetensors").write_bytes(b"0" * 8192)
     sizes["snapshot"] = str(tmp_path)
     helper = _helper()
-    assert (
-        helper("mxfp4", False, "auto", "openai/gpt-oss-20b", None, None, None, None, None, True)
-        is False
-    )
+    assert helper("mxfp4", False, "auto", "openai/gpt-oss-20b", None, None, None, None, None, True) is False
     assert sizes["calls"] == []
     assert sizes["snapshot_calls"][-1][1]["local_files_only"] is True
 
 
 def test_the_caller_token_reaches_the_size_lookup(zoo, sizes):
     helper = _helper()
-    assert (
-        helper("mxfp4", False, "auto", "org/gated", None, None, None, None, None, False, "hf_x")
-        is True
-    )
+    assert helper("mxfp4", False, "auto", "org/gated", None, None, None, None, None, False, "hf_x") is True
     assert sizes["tokens"][-1] == "hf_x"
     sizes["hub_raises"] = True
     helper("mxfp4", False, "auto", "org/gated", None, None, None, None, None, False, "hf_x")
@@ -485,13 +500,36 @@ def test_the_caller_token_reaches_the_size_lookup(zoo, sizes):
 
 def test_use_safetensors_false_sizes_the_bin_files(zoo, sizes):
     sizes["checkpoint"], sizes["free"] = 40, [80]
-    sizes["extra"] = [
-        ("pytorch_model-00001-of-00002.bin", 45),
-        ("pytorch_model-00002-of-00002.bin", 45),
-    ]
+    sizes["extra"] = [("pytorch_model-00001-of-00002.bin", 45), ("pytorch_model-00002-of-00002.bin", 45)]
     helper = _helper()
     assert helper("mxfp4", False, "auto", "org/repo") is True
-    assert (
-        helper("mxfp4", False, "auto", "org/repo", None, None, None, None, None, False, None, False)
-        is False
+    assert helper("mxfp4", False, "auto", "org/repo", None, None, None, None, None, False, None, False) is False
+
+
+def test_only_the_file_or_index_from_pretrained_selects_is_sized(zoo, sizes, tmp_path):
+    # Stale shards from an earlier save: only the ones the index lists are loaded.
+    sizes["checkpoint"], sizes["free"] = 13, [80]
+    sizes["extra"] = [(f"model-0000{i}-of-00003.safetensors", 30) for i in (1, 2, 3)]
+    sizes["index"] = {
+        "model.safetensors.index.json": ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+    }
+    assert _helper()("mxfp4", False, "auto", "org/repo") is True
+    sizes["index"] = {}
+    assert _helper()("mxfp4", False, "auto", "org/repo") is False
+    # A single model.safetensors wins over shards next to it.
+    sizes["extra"] = [("model.safetensors", 13)] + sizes["extra"]
+    assert _helper()("mxfp4", False, "auto", "org/repo") is True
+    # The same order in a local folder.
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "model-00001-of-00001.safetensors").write_bytes(b"0" * 8192)
+    (local / "model-00001-of-00002.safetensors").write_bytes(b"0" * 64)
+    (local / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a": "model-00001-of-00002.safetensors"}})
     )
+    sizes["free"] = [4096 / 2**30]
+    assert _helper()("mxfp4", False, "auto", str(local)) is True
+    (local / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a": "model-00001-of-00001.safetensors"}})
+    )
+    assert _helper()("mxfp4", False, "auto", str(local)) is False
