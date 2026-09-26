@@ -2,8 +2,8 @@
 
 `FastSentenceTransformer.from_pretrained(..., use_unpadding="auto")` skips padded
 tokens inside supported BERT/RoBERTa encoders during eager CUDA training. The
-feature is opt-in: the default `False` keeps the ordinary padded path without
-wrapper overhead on short batches. `"auto"` requires at least 8,192 padded token
+default is `"auto"`; set `use_unpadding=False` to keep the ordinary padded path
+without wrapper overhead on short batches. `"auto"` requires at least 8,192 padded token
 slots per encoder call (`batch_size * padded_sequence_length`) and at least one
 padding token. `True` also packs smaller eligible batches.
 
@@ -13,7 +13,7 @@ packing saved activation memory but could reduce throughput. Long sequences and
 larger batches benefited, including a measured case with only 1% padding. Use
 `True` when the smaller-batch memory saving matters more than latency, and measure
 on your own hardware. Even `"auto"` has small-batch wrapper overhead when enabled,
-so the default remains off. The PR reports every final case, including regressions.
+so use `False` to avoid that overhead. The PR reports every final case, including regressions.
 These comparisons measure compaction plus shared FlashAttention against upstream
 SDPA; they do not isolate padding removal from the attention backend change.
 

@@ -1435,12 +1435,12 @@ class FastSentenceTransformer(FastModel):
         unsloth_tiled_mlp = False,
         pooling_mode = "mean",
         for_inference = False,
-        use_unpadding = False,
+        use_unpadding = "auto",
         **kwargs,
     ):
         """Load a sentence model with optional training-only encoder unpadding.
 
-        ``False`` preserves ordinary execution. ``"auto"`` packs eligible batches
+        ``False`` preserves ordinary execution. The default ``"auto"`` packs eligible batches
         with at least 8,192 padded token slots; ``True`` also packs smaller batches
         to save activation memory, which can cost throughput. Unsupported
         architectures/backends and compiled execution remain padded.
