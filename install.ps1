@@ -2893,6 +2893,36 @@ exit 1
         return $answer
     }
 
+    # Shortcut icon refresh via a child interpreter when the type cannot be defined. Cosmetic: never throws.
+    function Invoke-StudioPythonShellIconRefresh {
+        param([string[]]$Paths = @(), [string]$Exe = "")
+        if (-not ($env:OS -eq "Windows_NT")) { return $false }
+        # Kill switch before $Exe too: it forbids any child on this host, however the path was found.
+        if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $false }
+        $exe = $Exe
+        if ([string]::IsNullOrWhiteSpace($exe)) {
+            try {
+                $exe = Get-StudioEarlyPython
+            } catch { return $false }
+        }
+        if (-not $exe) { return $false }
+        # Per-item SHCNE_UPDATEITEM is required: the global broadcast misses in-place .lnk rewrites.
+        # SHCNF_FLUSH (0x1000) because the child exits at once and a queued notification is lost.
+        $script = "import ctypes,sys" + [char]10 +
+            "from ctypes import wintypes" + [char]10 +
+            "s32=ctypes.WinDLL('shell32',use_last_error=True)" + [char]10 +
+            "s32.SHChangeNotify.restype=None" + [char]10 +
+            "s32.SHChangeNotify.argtypes=[wintypes.LONG,wintypes.UINT,wintypes.LPCWSTR,wintypes.LPCWSTR]" + [char]10 +
+            "for p in sys.argv[1:]:" + [char]10 +
+            "    s32.SHChangeNotify(0x00002000,0x1005,p,None)" + [char]10 +
+            "s32.SHChangeNotify(0x08000000,0x1000,None,None)" + [char]10 +
+            "sys.stdout.write('ok')"
+        try {
+            $answer = Invoke-StudioEarlyPythonScript -Exe $exe -Script $script -ScriptArgs $Paths -TimeoutMs 10000
+        } catch { return $false }
+        return ("$answer".Trim() -eq "ok")
+    }
+
     # Exact = $true means the native resolver answered, so the string is what it
     # always was. Callers keying a lock on it use that to judge an inequality.
     function Resolve-StudioFinalPathInfo {
@@ -5411,7 +5441,13 @@ exit 0
                         }
                         # SHCNE_ASSOCCHANGED (0x08000000) global refresh (belt-and-suspenders)
                         [UnslothShellIconRefresh]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
-                    } catch {}
+                    } catch {
+                        # WDAC Dynamic Code Security refused the type: same notifications via a child.
+                        try {
+                            $null = Invoke-StudioPythonShellIconRefresh `
+                                -Paths $createdShortcutPaths -Exe $ManagedPythonPath
+                        } catch {}
+                    }
                     if ($firstInstall -or $iconChanged) {
                         try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
                         try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}

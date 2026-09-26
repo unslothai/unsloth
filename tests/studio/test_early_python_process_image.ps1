@@ -43,10 +43,33 @@ function Reset-RungState {
 
 # ---------------------------------------------------------------- the generic runner, for real
 
+# The kill switch would make discovery decline; its own cases below set it explicitly.
+Remove-Item Env:UNSLOTH_EARLY_PYTHON_PROBE -ErrorAction SilentlyContinue
 $script:StudioEarlyPythonProbed = $false
 $script:StudioEarlyPython = $null
 $exe = Get-StudioEarlyPython
 if (-not $exe) {
+    # A runnable python on PATH means a broken extraction, not a host without Python.
+    $onPath = $null
+    foreach ($n in @("python3", "python")) {
+        foreach ($cmd in @(Get-Command $n -All -CommandType Application -ErrorAction SilentlyContinue)) {
+            if ($onPath -or -not $cmd.Source) { continue }
+            $job = Start-Job -ArgumentList $cmd.Source -ScriptBlock {
+                param($exe)
+                $o = & $exe -I -S -c "import os,sys;sys.stdout.write(os.path.realpath('.') if sys.version_info >= (3, 8) else '')" 2>$null
+                [pscustomobject]@{ Out = "$o"; Code = $LASTEXITCODE }
+            }
+            $ran = $null
+            if (Wait-Job $job -Timeout 30) { $ran = Receive-Job $job -ErrorAction SilentlyContinue } else { Stop-Job $job }
+            Remove-Job $job -Force
+            if ($ran -and $ran.Code -eq 0 -and -not [string]::IsNullOrWhiteSpace($ran.Out)) { $onPath = $cmd }
+        }
+    }
+    if ($onPath) {
+        Write-Host "  FAIL  Get-StudioEarlyPython found nothing, yet $($onPath.Source) is on PATH." -ForegroundColor Red
+        Write-Host "        That is a broken extraction in this file, not a host without Python." -ForegroundColor Red
+        exit 1
+    }
     Write-Host "  SKIP  no Python on this host, which is the fallback case and not a failure" -ForegroundColor Yellow
     exit 0
 }
@@ -179,6 +202,21 @@ Check "the probe declares CloseHandle's argument type" (
     $probeText -match "CloseHandle\.argtypes")
 # 0x400 is refused by protected and cross-session processes; 0x1000 is not.
 Check "the probe asks for the limited-information right only" ($probeText -match "OpenProcess\(0x1000,")
+# Both rungs must return the same string or Test-StudioProtectedPathMatch sees false differences.
+$nativeInit = ($ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $n.Name -eq "Get-StudioNativeProcessImagePath" }, $true)[0]).Extent.Text
+$nativeRight = if ($nativeInit -match '\$queryLimitedInformation\s*=\s*\[uint32\](0x[0-9a-fA-F]+)') { $Matches[1] } else { "" }
+Check "the native rung asks for the same access right the probe does" (
+    $nativeRight -eq "0x1000" -and
+    $nativeInit -match "OpenProcess\(\s*\r?\n?\s*\`$queryLimitedInformation," -and
+    $probeText -match "OpenProcess\(0x1000,")
+Check "both pass flags 0, so both get the Win32 path form and not the device form" (
+    $nativeInit -match "QueryFullProcessImageNameW\(\s*\`$handle,\s*\[uint32\]0," -and
+    $probeText -match "QueryFullProcessImageNameW\(h,0,")
+Check "both size the buffer the same" (
+    $nativeInit -match "32768" -and $probeText -match "create_unicode_buffer\(32768\)")
+
 # EnumProcesses filling the buffer exactly may mean truncation; only a smaller count is complete.
 Check "the probe grows its buffer until the enumeration is provably complete" (
     $probeText -match "b\.value\s*<\s*ctypes\.sizeof\(a\)")

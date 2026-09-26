@@ -108,6 +108,7 @@ on:
       - 'tests/studio/test_install_lock_excludes_aliases.ps1'
       - 'tests/studio/test_early_python_path_resolver.ps1'
       - 'tests/studio/test_early_python_process_image.ps1'
+      - 'tests/studio/test_early_python_icon_refresh.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
@@ -198,6 +199,7 @@ on:
       - 'tests/studio/test_install_lock_excludes_aliases.ps1'
       - 'tests/studio/test_early_python_path_resolver.ps1'
       - 'tests/studio/test_early_python_process_image.ps1'
+      - 'tests/studio/test_early_python_icon_refresh.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
@@ -362,6 +364,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -File tests\studio\test_early_python_process_image.ps1
+      - name: Early Python icon refresh tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_early_python_icon_refresh.ps1
+      - name: Early Python icon refresh tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_early_python_icon_refresh.ps1
       - name: Install lock alias-exclusion tests (Windows PowerShell 5.1)
         if: runner.os == 'Windows'
         shell: powershell

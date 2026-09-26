@@ -38,10 +38,33 @@ function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("earlypy-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 try {
+    # The kill switch would make discovery decline; its own cases below set it explicitly.
+    Remove-Item Env:UNSLOTH_EARLY_PYTHON_PROBE -ErrorAction SilentlyContinue
     $script:StudioEarlyPythonProbed = $false
     $script:StudioEarlyPython = $null
     $exe = Get-StudioEarlyPython
     if (-not $exe) {
+        # A runnable python on PATH means a broken extraction, not a host without Python.
+        $onPath = $null
+        foreach ($n in @("python3", "python")) {
+            foreach ($cmd in @(Get-Command $n -All -CommandType Application -ErrorAction SilentlyContinue)) {
+                if ($onPath -or -not $cmd.Source) { continue }
+                $job = Start-Job -ArgumentList $cmd.Source -ScriptBlock {
+                    param($exe)
+                    $o = & $exe -I -S -c "import os,sys;sys.stdout.write(os.path.realpath('.') if sys.version_info >= (3, 8) else '')" 2>$null
+                    [pscustomobject]@{ Out = "$o"; Code = $LASTEXITCODE }
+                }
+                $ran = $null
+                if (Wait-Job $job -Timeout 30) { $ran = Receive-Job $job -ErrorAction SilentlyContinue } else { Stop-Job $job }
+                Remove-Job $job -Force
+                if ($ran -and $ran.Code -eq 0 -and -not [string]::IsNullOrWhiteSpace($ran.Out)) { $onPath = $cmd }
+            }
+        }
+        if ($onPath) {
+            Write-Host "  FAIL  Get-StudioEarlyPython found nothing, yet $($onPath.Source) is on PATH." -ForegroundColor Red
+            Write-Host "        That is a broken extraction in this file, not a host without Python." -ForegroundColor Red
+            exit 1
+        }
         Write-Host "  SKIP  no Python on this host, which is the fallback case and not a failure" -ForegroundColor Yellow
         exit 0
     }
