@@ -2431,7 +2431,8 @@ class TestGfx1102Rocm64Floor:
                     "sys.modules['torch.version'] = v\n"
                     "import importlib.metadata as md\n"
                     f"fam = '{venv_family}'\n"
-                    "if fam: md.requires = lambda n: ['rocm-sdk-libraries-' + fam + '==7.13.0'] if n == 'rocm' else []\n"
+                    # Always stubbed: an AMD host's own rocm package must not leak in.
+                    "md.requires = lambda n: ['rocm-sdk-libraries-' + fam + '==7.13.0'] if fam and n == 'rocm' else []\n"
                     "exec(sys.argv[1])\n"
                     '" "$2"\n'
                 )
