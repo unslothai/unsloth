@@ -33,6 +33,8 @@ from utils.native_tls import activate_native_tls
 
 activate_native_tls()
 
+from utils.hardware import apply_gpu_ids
+
 
 # Gate controlling whether captured stdout/stderr lines are forwarded to the
 # parent's resp_queue (and on to the export-dialog SSE stream). Closed by default
@@ -557,6 +559,8 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
         quiet_progress_bars = False,
     )
+
+    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
     checkpoint_path = config["checkpoint_path"]
 
