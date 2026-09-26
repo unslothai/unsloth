@@ -40,6 +40,27 @@ function unpack(bytes: Uint8Array, wanted: (name: string) => boolean): Unzipped 
   });
 }
 
+// The parts each reader inflates: a workbook's XML, a deck's XML (and its media, for the viewer).
+const XLSX_PARTS = (name: string) => name.endsWith(".xml") || name.endsWith(".rels");
+const PPTX_TEXT_PARTS = (name: string) =>
+  (name.startsWith("ppt/") && /\.(xml|rels)$/.test(name)) || name.startsWith("_rels/");
+
+/** Throws unless the reader can open the file: a ZIP (an encrypted Office file is not) with its
+ *  main part, and the text parts within the unpacked limit. Only the main part is inflated. */
+export function assertOfficeArchive(bytes: Uint8Array, kind: "xlsx" | "pptx"): void {
+  const main = kind === "xlsx" ? "xl/workbook.xml" : "ppt/presentation.xml";
+  const wanted = kind === "xlsx" ? XLSX_PARTS : PPTX_TEXT_PARTS;
+  let total = 0;
+  const files = unzipSync(bytes, {
+    filter: (entry) => {
+      if (wanted(entry.name)) total += entry.originalSize;
+      if (total > MAX_UNPACKED_BYTES) throw new Error("File is too large to preview.");
+      return entry.name === main;
+    },
+  });
+  if (!xml(files, main)) throw new Error(`Not a valid ${kind.toUpperCase()} file.`);
+}
+
 function xml(files: Unzipped, path: string): Document | null {
   const bytes = files[path];
   if (!bytes) return null;
@@ -233,51 +254,102 @@ function formatElapsed(value: number, code: string): string {
   return value < 0 ? `-${out}` : out;
 }
 
-/** The common shapes of an Excel number format: decimals, grouping, percent, currency, dates.
- *  `date1904`: the workbook counts dates from 1904, 1,462 days after the 1900 system. */
-export function formatNumber(value: number, rawCode: string | undefined, date1904 = false): string {
-  if (!rawCode || rawCode === "General" || rawCode === "@") {
-    // 15 significant digits, as Excel stores: drops binary noise such as 0.30000000000000004.
-    return String(Number.isInteger(value) ? value : Number(value.toPrecision(15)));
+function generalText(value: number): string {
+  // 15 significant digits, as Excel stores: drops binary noise such as 0.30000000000000004.
+  return String(Number.isInteger(value) ? value : Number(value.toPrecision(15)));
+}
+
+const isPlaceholder = (token: string) => token === "0" || token === "#" || token === "?";
+// What an unused placeholder shows: 0 a zero, ? a space, # nothing.
+const emptyPlaceholder = (token: string) => (token === "0" ? "0" : token === "?" ? " " : "");
+
+function literalText(token: string): string {
+  if (token.startsWith('"')) return token.slice(1, -1);
+  if (token.startsWith("\\")) return token.slice(1);
+  return token === "," ? "" : token;
+}
+
+/** A non-negative number set into a format's digit placeholders, literals kept in place:
+ *  00000 pads a ZIP code, 0.## drops trailing zeros, 000-00-0000 reads as a mask. */
+function placeDigits(number: number, format: string): string {
+  const tokens: string[] = format.match(/"[^"]*"|\\.|[0#?.,]|[^"\\0#?.,]+/g) ?? [];
+  const dot = tokens.indexOf(".");
+  const whole = dot === -1 ? tokens : tokens.slice(0, dot);
+  const part = dot === -1 ? [] : tokens.slice(dot + 1);
+  const [intDigits = "", fracDigits = ""] = number.toFixed(part.filter(isPlaceholder).length).split(".");
+  if (/e/i.test(intDigits)) return generalText(number);
+  const first = whole.findIndex(isPlaceholder);
+  const last = whole.length - 1 - [...whole].reverse().findIndex(isPlaceholder);
+  // No leading zero of its own: 0.5 in #.## shows .5.
+  const significant = intDigits === "0" ? "" : intDigits;
+  let integer: string;
+  if (whole.some((token, i) => token === "," && i > first && i < last)) {
+    // Grouped (#,##0): the digits as one run, padded to the zeros the format asks for.
+    const zeros = whole.filter((token) => token === "0").length;
+    const run = significant.padStart(zeros, "0").replace(/\B(?=(\d{3})+$)/g, ",");
+    integer = [...whole.slice(0, first).map(literalText), run, ...whole.slice(last + 1).map(literalText)].join("");
+  } else {
+    // Right to left, one digit a placeholder; the first takes whatever is left over.
+    let left = significant;
+    const out = whole.map(() => "");
+    for (let i = whole.length - 1; i >= 0; i--) {
+      const token = whole[i]!;
+      if (!isPlaceholder(token)) out[i] = literalText(token);
+      else if (i === first) out[i] = left || emptyPlaceholder(token);
+      else out[i] = left.slice(-1) || emptyPlaceholder(token);
+      if (isPlaceholder(token)) left = i === first ? "" : left.slice(0, -1);
+    }
+    integer = out.join("");
   }
-  const section = rawCode.split(";")[value < 0 && rawCode.includes(";") ? 1 : 0] ?? rawCode;
+  if (dot === -1) return integer;
+  const places = part.filter(isPlaceholder);
+  const digits = fracDigits.split("");
+  // Trailing zeros: a # drops its own, a ? leaves a space.
+  for (let i = places.length - 1; i >= 0 && digits[i] === "0" && places[i] !== "0"; i--) {
+    digits[i] = emptyPlaceholder(places[i]!);
+  }
+  let next = 0;
+  return `${integer}.${part.map((token) => (isPlaceholder(token) ? digits[next++] : literalText(token))).join("")}`;
+}
+
+/** The common shapes of an Excel number format: digit placeholders, grouping, percent, currency,
+ *  fractions, dates. `date1904`: the workbook counts dates from 1904, 1,462 days after the 1900 system. */
+export function formatNumber(value: number, rawCode: string | undefined, date1904 = false): string {
+  if (!rawCode || rawCode === "General" || rawCode === "@") return generalText(value);
+  // Sections: positive;negative;zero. A negative section writes its own sign, if any.
+  const sections = rawCode.split(";");
+  const index = value < 0 && sections.length > 1 ? 1 : value === 0 && sections.length > 2 ? 2 : 0;
+  const section = sections[index] ?? rawCode;
+  const sign = value < 0 && index === 0 ? "-" : "";
   // [$€-407]-style currency tags keep their symbol; [Red] and the like go, but not the
   // elapsed-time units [h], [m] and [s]. Padding (_x) and fill (*x) go too.
   const tagged = section
     .replace(/\[\$([^\]-]*)[^\]]*\]/g, "$1")
     .replace(/\[(?![hms]+\])[^\]]*\]/gi, "")
     .replace(/_.|\*./g, "");
-  // Quoted text and escapes are literal.
+  // Quoted text and escapes are literal: kept in `code`, left out of `bare`, which says what the format is.
   const code = tagged.replace(/"([^"]*)"/g, "$1").replace(/\\(.)/g, "$1");
+  const bare = tagged.replace(/"[^"]*"|\\./g, "");
   // Fractional seconds (ss.0) are a time, not a number.
-  const dateLike = !/[0#?]/.test(code.replace(/s\.0+/gi, "s"));
-  if (dateLike && /\[[hms]+\]/i.test(code)) return formatElapsed(value, code.toLowerCase());
-  if (dateLike && /[dmyhs]/i.test(code)) return formatDate(date1904 ? value + 1462 : value, tagged);
-  if (/E\+/i.test(code)) {
+  const dateLike = !/[0#?]/.test(bare.replace(/s\.0+/gi, "s"));
+  if (dateLike && /\[[hms]+\]/i.test(bare)) return formatElapsed(value, code.toLowerCase());
+  if (dateLike && /[dmyhs]/i.test(bare.replace(/general/gi, ""))) {
+    return formatDate(date1904 ? value + 1462 : value, tagged);
+  }
+  // No digit placeholders: literal text, with the value wherever "General" stands.
+  if (!/[0#?]/.test(bare)) return `${sign}${code.replace(/general/i, generalText(Math.abs(value)))}`.trim();
+  if (/E\+/i.test(bare)) {
     // Excel's form: 1.23E+03, a two-digit exponent and an upper-case E.
     const digits = (code.split(/E/i)[0]!.split(".")[1]?.match(/0/g) ?? []).length;
     return value.toExponential(digits).toUpperCase().replace(/E([+-])(\d)$/, "E$10$2");
   }
   const fraction = formatFraction(value, code);
   if (fraction !== null) return fraction;
-  const percent = code.includes("%");
+  const percent = bare.includes("%");
   // Commas after the last digit placeholder scale by a thousand each: #,##0,, shows millions.
-  const scale = 1000 ** (code.match(/[0#?](,+)(?:\.|[^0#?]*$)/)?.[1]?.length ?? 0);
+  const scale = 1000 ** (bare.match(/[0#?](,+)(?:\.|[^0#?]*$)/)?.[1]?.length ?? 0);
   const number = Math.abs(percent ? value * 100 : value) / scale;
-  const decimals = (code.split(".")[1]?.match(/[0#]/g) ?? []).length;
-  const digits = number.toLocaleString("en-US", {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-    useGrouping: /[0#?],[0#?]/.test(code),
-  });
-  const firstDigit = code.search(/[0#?]/);
-  const lastDigit = Math.max(code.lastIndexOf("0"), code.lastIndexOf("#"), code.lastIndexOf("?"));
-  const prefix = firstDigit > 0 ? code.slice(0, firstDigit).replace(/[,.]/g, "") : "";
-  const suffix = lastDigit >= 0 ? code.slice(lastDigit + 1).replace(/[,.]/g, "") : "";
-  const parenthesised = /\(.*\)/.test(section);
-  const sign = value < 0 && !rawCode.includes(";") ? "-" : "";
-  const body = `${prefix}${digits}${suffix}`.trim();
-  return parenthesised && value < 0 ? body : `${sign}${body}`;
+  return `${sign}${placeDigits(number, tagged).trim()}`;
 }
 
 function columnIndex(ref: string): number {
@@ -405,7 +477,7 @@ function readSheet(
 }
 
 export function readXlsx(bytes: Uint8Array): Sheet[] {
-  const files = unpack(bytes, (name) => name.endsWith(".xml") || name.endsWith(".rels"));
+  const files = unpack(bytes, XLSX_PARTS);
   const workbook = xml(files, "xl/workbook.xml");
   if (!workbook) throw new Error("Not a valid XLSX workbook.");
   const rels = relationships(files, "xl/workbook.xml");
@@ -481,8 +553,10 @@ export interface SlideBox {
   placeholder?: string;
   paragraphs?: { text: string; size?: number; bold?: boolean; align?: string; bullet?: boolean }[];
   image?: string;
-  /** A table's cell text, by row. */
+  /** A table's cell text, by row. A chart's cached data comes as one too. */
   table?: string[][];
+  /** A chart's title, shown above its data. */
+  caption?: string;
 }
 
 export interface Slide {
@@ -516,6 +590,34 @@ function dataUrl(bytes: Uint8Array, type: string): string {
   return `data:${type};base64,${btoa(binary)}`;
 }
 
+/** A chart's cached data as a table: a header of series names, then one row a category. */
+function readChart(doc: Document): { caption?: string; table: string[][] } | null {
+  const cache = (node: Element | undefined) => {
+    const out: string[] = [];
+    for (const pt of node ? all(node, "pt") : []) {
+      const idx = Number(pt.getAttribute("idx") ?? out.length);
+      if (idx >= 0 && idx < MAX_SHEET_ROWS) out[idx] = first(pt, "v")?.textContent ?? "";
+    }
+    return out;
+  };
+  const series = all(doc, "ser").map((ser) => {
+    const tx = children(ser, "tx")[0];
+    return {
+      name: (tx && (cache(tx)[0] ?? first(tx, "v")?.textContent)) ?? "",
+      categories: cache(children(ser, "cat")[0] ?? children(ser, "xVal")[0]),
+      values: cache(children(ser, "val")[0] ?? children(ser, "yVal")[0]),
+    };
+  });
+  if (!series.length) return null;
+  const categories = series.find((s) => s.categories.length)?.categories ?? [];
+  const count = series.reduce((n, s) => Math.max(n, s.values.length), categories.length);
+  const table = [["", ...series.map((s) => s.name)]];
+  for (let i = 0; i < count; i++) table.push([categories[i] ?? String(i + 1), ...series.map((s) => s.values[i] ?? "")]);
+  const title = first(doc, "title");
+  const caption = title ? all(title, "t").map((t) => t.textContent ?? "").join("") : "";
+  return { caption: caption || undefined, table };
+}
+
 function readFrame(shape: Element, cx: number, cy: number): SlideBox["frame"] {
   const xfrm = first(shape, "xfrm");
   const off = xfrm && first(xfrm, "off");
@@ -531,11 +633,7 @@ function readFrame(shape: Element, cx: number, cy: number): SlideBox["frame"] {
 
 /** `images: false` reads text only, leaving slide media unpacked. */
 export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
-  const files = unpack(
-    bytes,
-    (name) =>
-      (name.startsWith("ppt/") && (images || /\.(xml|rels)$/.test(name))) || name.startsWith("_rels/"),
-  );
+  const files = unpack(bytes, (name) => (images && name.startsWith("ppt/")) || PPTX_TEXT_PARTS(name));
   const presentation = xml(files, "ppt/presentation.xml");
   if (!presentation) throw new Error("Not a valid PPTX presentation.");
   const size = first(presentation, "sldSz");
@@ -575,9 +673,14 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
         paragraphs,
       });
     }
-    // Tables sit in a graphicFrame, not a shape.
+    // Tables and charts sit in a graphicFrame, not a shape. A chart shows the data it caches.
     for (const frame of all(doc, "graphicFrame")) {
       const tbl = first(frame, "tbl");
+      const chartRef = first(frame, "chart");
+      const chartPath = chartRef && slideRels.get(relId(chartRef, "id") ?? "");
+      const chartDoc = chartPath ? xml(files, chartPath) : null;
+      const chart = chartDoc && readChart(chartDoc);
+      if (chart) boxes.push({ frame: readFrame(frame, cx, cy) ?? { x: 0.05, y: 0.25, w: 0.9, h: 0.65 }, ...chart });
       if (!tbl) continue;
       const table = children(tbl, "tr").map((tr) =>
         children(tr, "tc").map((tc) =>

@@ -723,6 +723,28 @@ export async function getDocxAttachmentError(
   return null;
 }
 
+/** As getDocxAttachmentError, for a workbook or deck: a corrupt or password-protected file is
+ *  refused at add(), before the composer lets go of the typed message. */
+export async function getOfficeAttachmentError(
+  file: File,
+  label: "XLSX" | "PPTX",
+): Promise<string | null> {
+  const sizeError = getDocumentAttachmentSizeError(file, label);
+  if (sizeError) return sizeError;
+  try {
+    const [{ assertOfficeArchive }, buffer] = await Promise.all([
+      import("@/components/file-viewer/office"),
+      file.arrayBuffer(),
+    ]);
+    assertOfficeArchive(new Uint8Array(buffer), label === "XLSX" ? "xlsx" : "pptx");
+  } catch (error) {
+    return (error as Error | undefined)?.message === "File is too large to preview."
+      ? `${label} file is too large: ${file.name}`
+      : `${label} file could not be read: ${file.name}`;
+  }
+  return null;
+}
+
 export async function extractPdfAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "PDF");
   const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
@@ -779,7 +801,10 @@ export async function extractOfficeAttachmentText(
       const lines = slide.boxes.flatMap(
         (box) =>
           box.paragraphs?.map((p) => budget.take(p.text)) ??
-          box.table?.map((row) => row.map((cell) => budget.take(cell)).join("\t")) ??
+          (box.table && [
+            ...(box.caption ? [budget.take(box.caption)] : []),
+            ...box.table.map((row) => row.map((cell) => budget.take(cell)).join("\t")),
+          ]) ??
           [],
       );
       parts.push([`Slide ${index + 1}`, ...lines].join("\n"));

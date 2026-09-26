@@ -291,9 +291,10 @@ function SlideText({ box, widthPt }: { box: SlideBox; widthPt: number }) {
   );
 }
 
-function SlideTable({ rows, widthPt }: { rows: string[][]; widthPt: number }) {
+function SlideTable({ rows, caption, widthPt }: { rows: string[][]; caption?: string; widthPt: number }) {
   return (
     <table className="size-full table-fixed border-collapse" style={{ fontSize: `${(14 / widthPt) * 100}cqw` }}>
+      {caption && <caption className="pb-[0.4em] text-left font-semibold">{caption}</caption>}
       <tbody>
         {rows.map((row, r) => (
           <tr key={r} className={cn(r === 0 && "font-semibold")}>
@@ -337,7 +338,7 @@ function SlidesView({ deck, scale }: { deck: Deck; scale: number }) {
                       {box.image ? (
                         <img src={box.image} alt="" className="size-full object-contain" />
                       ) : box.table ? (
-                        <SlideTable rows={box.table} widthPt={deck.widthPt} />
+                        <SlideTable rows={box.table} caption={box.caption} widthPt={deck.widthPt} />
                       ) : (
                         <SlideText box={box} widthPt={deck.widthPt} />
                       )}

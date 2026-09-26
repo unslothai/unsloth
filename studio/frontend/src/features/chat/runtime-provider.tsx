@@ -64,6 +64,7 @@ import {
   extractPdfAttachmentText,
   getDocumentAttachmentSizeError,
   getDocxAttachmentError,
+  getOfficeAttachmentError,
 } from "./attachment-content";
 import { withAttachmentOriginal } from "./attachment-originals";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
@@ -595,21 +596,22 @@ class OfficeAttachmentAdapter implements AttachmentAdapter {
     return byName ?? (type.includes("presentationml") ? "PPTX" : "XLSX");
   }
 
-  // Refused at add, as the PDF adapter does, so a file past the ceiling never empties the composer.
-  add({ file }: { file: File }): Promise<PendingAttachment> {
-    const sizeError = getDocumentAttachmentSizeError(file, this.label(file.name, file.type));
-    if (sizeError) {
-      toast.error(sizeError);
-      throw new Error(sizeError);
+  // Refused at add, as the DOCX adapter does, so a file past the ceiling, corrupt or encrypted,
+  // never empties the composer.
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    const error = await getOfficeAttachmentError(file, this.label(file.name, file.type));
+    if (error) {
+      toast.error(error);
+      throw new Error(error);
     }
-    return Promise.resolve({
+    return {
       id: crypto.randomUUID(),
       type: "document",
       name: file.name,
       contentType: file.type,
       file,
       status: { type: "requires-action", reason: "composer-send" },
-    });
+    };
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {

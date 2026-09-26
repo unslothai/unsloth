@@ -555,8 +555,10 @@ _EXPORT_SUFFIX_RE = re.compile(r"[-_](gguf|adapter|merged|finetune)$", re.IGNORE
 
 
 def _training_runs_by_dir() -> dict[str, str]:
-    """Output folder name to the id of the newest training run that wrote it."""
+    """Folder name under outputs/ to the id of the newest training run that wrote it. A run that wrote
+    anywhere else is left out, so an external folder of the same name never claims a managed model."""
     from storage.studio_db import get_connection
+    from utils.paths.storage_roots import outputs_root, resolve_output_dir
 
     conn = get_connection()
     try:
@@ -569,7 +571,16 @@ def _training_runs_by_dir() -> dict[str, str]:
         return {}
     finally:
         conn.close()
-    return {Path(row["output_dir"]).name: row["id"] for row in rows if row["output_dir"]}
+    root = Path(outputs_root()).resolve()
+    runs: dict[str, str] = {}
+    for row in rows:
+        try:
+            path = Path(resolve_output_dir(row["output_dir"])).resolve()
+        except (ValueError, OSError):
+            continue
+        if path.parent == root:
+            runs[path.name] = row["id"]
+    return runs
 
 
 def _model_run_id(path: str, origin: str, runs: dict[str, str]) -> Optional[str]:

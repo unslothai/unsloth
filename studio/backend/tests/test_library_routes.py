@@ -544,6 +544,28 @@ def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
         shutil.rmtree(gguf, ignore_errors = True)
 
 
+def test_training_runs_map_only_folders_directly_under_outputs(monkeypatch):
+    """A newer run in an external folder of the same name must not claim the managed model."""
+    import sqlite3
+
+    from storage import studio_db
+    from utils.paths.storage_roots import outputs_root
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE training_runs (id TEXT, output_dir TEXT, started_at TEXT)")
+    conn.executemany(
+        "INSERT INTO training_runs VALUES (?, ?, ?)",
+        [
+            ("managed", str(outputs_root() / "my-run"), "2026-01-01"),
+            ("external", "/tmp/elsewhere/my-run", "2026-02-01"),
+            ("nested", str(outputs_root() / "group" / "other"), "2026-03-01"),
+        ],
+    )
+    monkeypatch.setattr(studio_db, "get_connection", lambda: conn)
+    assert library._training_runs_by_dir() == {"my-run": "managed"}
+
+
 def test_an_api_key_lists_fine_tunes_by_reference_and_can_still_act_on_them(client, monkeypatch):
     import shutil
 
