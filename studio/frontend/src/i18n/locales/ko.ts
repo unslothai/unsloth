@@ -3087,7 +3087,7 @@ export const ko = {
       viewInAudio: "오디오에서 보기",
       viewOriginalProject: "원본 프로젝트 보기",
       viewTrainingRun: "학습 실행 보기",
-      sheetTruncated: "처음 5,000개 행 표시 중",
+      sheetTruncated: "이 시트의 일부만 표시 중",
       emptyDocument: "이 파일은 비어 있습니다.",
       cannotPreview: "이 파일은 여기에서 미리 볼 수 없습니다. 다운로드해서 여세요.",
       noPreview: "이 파일 형식은 미리보기를 지원하지 않습니다.",

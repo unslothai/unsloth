@@ -31,7 +31,8 @@ async function parse(file: Blob, kind: DocumentKind, name: string): Promise<Pars
   const extension = name.split(".").pop()?.toLowerCase();
   if (kind === "docx") {
     const { default: mammoth } = await import("mammoth");
-    const repacked = repackDocxAttachmentArchive(name, bytes);
+    // Large parts kept: an image past the XML ceiling still shows.
+    const repacked = repackDocxAttachmentArchive(name, bytes, { keepLarge: true });
     const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.buffer as ArrayBuffer });
     return { kind, html: sanitizeDocxHtml(value) };
   }

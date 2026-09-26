@@ -3162,7 +3162,7 @@ export const de = {
       viewInAudio: "In Audio anzeigen",
       viewOriginalProject: "Ursprüngliches Projekt anzeigen",
       viewTrainingRun: "Trainingslauf anzeigen",
-      sheetTruncated: "Die ersten 5.000 Zeilen werden angezeigt",
+      sheetTruncated: "Nur ein Teil dieses Tabellenblatts wird angezeigt",
       emptyDocument: "Diese Datei ist leer.",
       cannotPreview: "Für diese Datei ist hier keine Vorschau möglich. Laden Sie sie herunter, um sie zu öffnen.",
       noPreview: "Keine Vorschau für diesen Dateityp.",

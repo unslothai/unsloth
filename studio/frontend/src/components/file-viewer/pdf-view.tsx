@@ -3,7 +3,8 @@
 
 import { Spinner } from "@/components/ui/spinner";
 import { useT } from "@/i18n";
-import { useEffect, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/TextLayer.css";
 import { useWidth } from "./use-width";
@@ -14,45 +15,50 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 const MAX_PAGE_WIDTH = 880;
+const PAGE_GAP = 16;
+const EDGE = 24;
 
-/** A page renders once it comes near the viewport; until then it holds its space. */
-function LazyPage({
-  pageNumber,
+/** Only the pages near the viewport are mounted, so a document of many thousands opens as fast as a short one. */
+function PdfPages({
+  pages,
   width,
   aspect,
-  root,
+  scrollElement,
 }: {
-  pageNumber: number;
+  pages: number;
   width: number;
   aspect: number;
-  root: HTMLElement | null;
+  scrollElement: HTMLElement | null;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [seen, setSeen] = useState(pageNumber === 1);
-  useEffect(() => {
-    const element = ref.current;
-    if (!element || seen) return;
-    const observer = new IntersectionObserver(
-      (entries) => entries.some((entry) => entry.isIntersecting) && setSeen(true),
-      { root, rootMargin: "1200px 0px" },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [root, seen]);
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: pages,
+    getScrollElement: () => scrollElement,
+    estimateSize: () => width * aspect + PAGE_GAP,
+    paddingStart: EDGE,
+    paddingEnd: EDGE - PAGE_GAP,
+    overscan: 2,
+  });
   return (
-    <div
-      ref={ref}
-      className="relative mx-auto bg-white shadow-sm ring-1 ring-black/5"
-      style={{ width, minHeight: seen ? undefined : width * aspect }}
-    >
-      {seen && (
-        <Page
-          pageNumber={pageNumber}
-          width={width}
-          renderAnnotationLayer={false}
-          loading={<div style={{ height: width * aspect }} />}
-        />
-      )}
+    <div className="relative mx-auto" style={{ width, height: virtualizer.getTotalSize() }}>
+      {virtualizer.getVirtualItems().map((item) => (
+        <div
+          key={item.key}
+          data-index={item.index}
+          ref={virtualizer.measureElement}
+          className="absolute top-0 left-0 w-full"
+          style={{ transform: `translateY(${item.start}px)`, paddingBottom: PAGE_GAP }}
+        >
+          <div className="bg-white shadow-sm ring-1 ring-black/5" style={{ minHeight: width * aspect }}>
+            <Page
+              pageNumber={item.index + 1}
+              width={width}
+              renderAnnotationLayer={false}
+              loading={<div style={{ height: width * aspect }} />}
+            />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -70,7 +76,7 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
   }
   return (
-    <div ref={setContainer} className="size-full overflow-auto bg-muted/60 py-6">
+    <div ref={setContainer} className="size-full overflow-auto bg-muted/60">
       <Document
         file={file}
         onLoadSuccess={(pdf) => {
@@ -82,18 +88,11 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
         }}
         onLoadError={(err) => setError(err.message)}
         loading={<Spinner className="mx-auto mt-24 size-6" />}
-        className="flex min-w-fit flex-col gap-4"
       >
-        {available > 0 &&
-          Array.from({ length: pages }, (_, index) => (
-            <LazyPage
-              key={index}
-              pageNumber={index + 1}
-              width={width}
-              aspect={aspect}
-              root={container}
-            />
-          ))}
+        {/* Keyed on the size, so the virtualizer measures afresh. */}
+        {available > 0 && (
+          <PdfPages key={`${width}:${aspect}`} pages={pages} width={width} aspect={aspect} scrollElement={container} />
+        )}
       </Document>
     </div>
   );

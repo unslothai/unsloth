@@ -3160,7 +3160,7 @@ export const it = {
       viewInAudio: "Vedi in Audio",
       viewOriginalProject: "Vai al progetto originale",
       viewTrainingRun: "Vedi l'addestramento",
-      sheetTruncated: "Visualizzate le prime 5.000 righe",
+      sheetTruncated: "Visualizzata solo una parte del foglio",
       emptyDocument: "Questo file è vuoto.",
       cannotPreview: "Impossibile visualizzare l'anteprima di questo file qui. Scaricalo per aprirlo.",
       noPreview: "Nessuna anteprima per questo tipo di file.",

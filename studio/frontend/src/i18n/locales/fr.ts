@@ -3173,7 +3173,7 @@ export const fr = {
       viewInAudio: "Voir dans Audio",
       viewOriginalProject: "Voir le projet d'origine",
       viewTrainingRun: "Voir l'entraînement",
-      sheetTruncated: "Affichage des 5 000 premières lignes",
+      sheetTruncated: "Affichage d'une partie de cette feuille",
       emptyDocument: "Ce fichier est vide.",
       cannotPreview: "Impossible d'afficher un aperçu de ce fichier ici. Téléchargez-le pour l'ouvrir.",
       noPreview: "Aucun aperçu pour ce type de fichier.",

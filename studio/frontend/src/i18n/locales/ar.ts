@@ -3093,7 +3093,7 @@ export const ar = {
       viewInAudio: "العرض في الصوت",
       viewOriginalProject: "عرض المشروع الأصلي",
       viewTrainingRun: "عرض جولة التدريب",
-      sheetTruncated: "عرض أول 5000 صف",
+      sheetTruncated: "عرض جزء من هذه الورقة",
       emptyDocument: "هذا الملف فارغ.",
       cannotPreview: "تتعذّر معاينة هذا الملف هنا. نزّله لفتحه.",
       noPreview: "لا تتوفر معاينة لهذا النوع من الملفات.",

@@ -3097,7 +3097,7 @@ export const en = {
       viewInAudio: "View in Audio",
       viewOriginalProject: "View original project",
       viewTrainingRun: "View training run",
-      sheetTruncated: "Showing the first 5,000 rows",
+      sheetTruncated: "Showing part of this sheet",
       emptyDocument: "This file is empty.",
       cannotPreview: "This file can't be previewed here. Download it to open it.",
       noPreview: "No preview for this file type.",

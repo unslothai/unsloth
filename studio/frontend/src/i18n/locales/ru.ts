@@ -3120,7 +3120,7 @@ export const ru = {
       viewInAudio: "Открыть в «Аудио»",
       viewOriginalProject: "Открыть исходный проект",
       viewTrainingRun: "Открыть запуск обучения",
-      sheetTruncated: "Показаны первые 5 000 строк",
+      sheetTruncated: "Показана только часть листа",
       emptyDocument: "Файл пуст.",
       cannotPreview: "Этот файл нельзя просмотреть здесь. Скачайте его, чтобы открыть.",
       noPreview: "Для этого типа файлов просмотр недоступен.",

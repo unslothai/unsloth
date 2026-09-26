@@ -3041,7 +3041,7 @@ export const ja = {
       viewInAudio: "音声ページで表示",
       viewOriginalProject: "元のプロジェクトを表示",
       viewTrainingRun: "トレーニング実行を表示",
-      sheetTruncated: "最初の 5,000 行を表示中",
+      sheetTruncated: "このシートの一部のみを表示中",
       emptyDocument: "このファイルは空です。",
       cannotPreview: "このファイルはここではプレビューできません。ダウンロードして開いてください。",
       noPreview: "この種類のファイルはプレビューできません。",

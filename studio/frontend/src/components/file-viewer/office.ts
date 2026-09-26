@@ -8,6 +8,8 @@ import { type Unzipped, strFromU8, unzipSync } from "fflate";
 const MAX_UNPACKED_BYTES = 200 * 1024 * 1024;
 export const MAX_SHEET_ROWS = 5000;
 export const MAX_SHEET_COLUMNS = 200;
+// Across every sheet, so a workbook of many sheets reads no more than one full one.
+const MAX_WORKBOOK_CELLS = MAX_SHEET_ROWS * MAX_SHEET_COLUMNS;
 
 export interface SheetCell {
   text: string;
@@ -129,7 +131,10 @@ const DATE_TOKEN = /"[^"]*"|\\.|y+|m+|d+|h+|s+|am\/pm|a\/p|\.0+|./gi;
 function formatDate(serial: number, code: string): string {
   const fraction = /s\.(0+)/i.exec(code)?.[1]?.length ?? 0;
   const unit = 1000 / 10 ** fraction;
-  const date = new Date(Math.round(((serial - 25569) * 86400000) / unit) * unit);
+  // The 1900 system counts a 29 February 1900 that never was (serial 60), so earlier serials run a day ahead.
+  const whole = Math.floor(serial);
+  const shifted = serial < 60 ? serial + 1 : serial;
+  const date = new Date(Math.round(((shifted - 25569) * 86400000) / unit) * unit);
   const tokens = code.match(DATE_TOKEN) ?? [];
   const kinds = tokens.map((token) => /^[ymdhs]/i.test(token) && !token.startsWith("\\") ? token[0]!.toLowerCase() : "");
   const twelve = tokens.some((token) => /^(am\/pm|a\/p)$/i.test(token));
@@ -141,10 +146,14 @@ function formatDate(serial: number, code: string): string {
       switch (kinds[index]) {
         case "y":
           return n <= 2 ? pad(date.getUTCFullYear() % 100) : String(date.getUTCFullYear());
-        case "d":
-          if (n >= 4) return DAYS[date.getUTCDay()]!;
-          if (n === 3) return DAYS[date.getUTCDay()]!.slice(0, 3);
-          return n === 2 ? pad(date.getUTCDate()) : String(date.getUTCDate());
+        case "d": {
+          // Weekdays by serial, as Excel counts them: serial 1 is a Sunday.
+          const weekday = DAYS[(((whole + 6) % 7) + 7) % 7]!;
+          const day = whole === 60 ? 29 : date.getUTCDate();
+          if (n >= 4) return weekday;
+          if (n === 3) return weekday.slice(0, 3);
+          return n === 2 ? pad(day) : String(day);
+        }
         case "h": {
           const h = twelve ? hours % 12 || 12 : hours;
           return n >= 2 ? pad(h) : String(h);
@@ -171,6 +180,44 @@ function formatDate(serial: number, code: string): string {
       return token.startsWith("\\") ? token.slice(1) : token;
     })
     .join("");
+}
+
+/** A fraction format: # ?/? (whole part and fraction), ?/? (improper), or a fixed denominator (# ?/8).
+ *  The denominator is the closest one its placeholders allow. Null when the format has none. */
+function formatFraction(value: number, code: string): string | null {
+  const match = /(?:([0#?]+)\s+)?[0#?]+\s*\/\s*([1-9]\d*|[0#?]+)/.exec(code);
+  if (!match) return null;
+  const text = match[0];
+  const wholeCode = match[1];
+  const denominatorCode = match[2] ?? "";
+  const abs = Math.abs(value);
+  let whole = wholeCode ? Math.floor(abs) : 0;
+  const rest = abs - whole;
+  let numerator = Math.round(rest);
+  let denominator = 1;
+  if (/^[1-9]/.test(denominatorCode)) {
+    denominator = Number(denominatorCode);
+    numerator = Math.round(rest * denominator);
+  } else {
+    let best = Math.abs(rest - numerator);
+    for (let d = 2; d < 10 ** denominatorCode.length; d++) {
+      const n = Math.round(rest * d);
+      if (Math.abs(rest - n / d) < best - 1e-12) {
+        best = Math.abs(rest - n / d);
+        numerator = n;
+        denominator = d;
+      }
+    }
+  }
+  if (wholeCode && numerator === denominator) {
+    whole += 1;
+    numerator = 0;
+  }
+  const fraction = numerator ? `${numerator}/${denominator}` : "";
+  let body = `${numerator}/${denominator}`;
+  if (wholeCode) body = whole || fraction ? [whole ? String(whole) : "", fraction].filter(Boolean).join(" ") : "0";
+  const at = code.indexOf(text);
+  return `${value < 0 ? "-" : ""}${code.slice(0, at)}${body}${code.slice(at + text.length)}`.trim();
 }
 
 /** An elapsed-time format ([h]:mm:ss, [mm]:ss, [ss]): the bracketed unit counts past its usual range. */
@@ -211,6 +258,8 @@ export function formatNumber(value: number, rawCode: string | undefined, date190
     const digits = (code.split(/E/i)[0]!.split(".")[1]?.match(/0/g) ?? []).length;
     return value.toExponential(digits).toUpperCase().replace(/E([+-])(\d)$/, "E$10$2");
   }
+  const fraction = formatFraction(value, code);
+  if (fraction !== null) return fraction;
   const percent = code.includes("%");
   // Commas after the last digit placeholder scale by a thousand each: #,##0,, shows millions.
   const scale = 1000 ** (code.match(/[0#?](,+)(?:\.|[^0#?]*$)/)?.[1]?.length ?? 0);
@@ -290,6 +339,7 @@ function readSheet(
   strings: string[],
   styles: CellStyle[],
   date1904: boolean,
+  budget: { cells: number },
 ): Sheet {
   const rows: (SheetCell | undefined)[][] = [];
   const widths: (number | undefined)[] = [];
@@ -309,10 +359,11 @@ function readSheet(
   for (const row of all(doc, "row")) {
     const r = Number(row.getAttribute("r") ?? nextRow + 1) - 1;
     nextRow = r + 1;
-    if (r >= MAX_SHEET_ROWS) {
+    if (r >= MAX_SHEET_ROWS || budget.cells <= 0) {
       truncated = true;
       break;
     }
+    budget.cells--;
     // Hidden, as Excel shows it: neither in the grid nor in the text sent to the model.
     if (isHidden(row)) {
       hidden.rows.add(r);
@@ -346,6 +397,7 @@ function readSheet(
       }
       if (text === "" && !style.bold) continue;
       cells[col] = { text, numeric, bold: style.bold, italic: style.italic };
+      budget.cells--;
     }
     rows[r] = cells;
   }
@@ -362,11 +414,18 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
   const styles = readStyles(xml(files, "xl/styles.xml"));
   const date1904 = ["1", "true"].includes(first(workbook, "workbookPr")?.getAttribute("date1904") ?? "");
   const sheets: Sheet[] = [];
+  const budget = { cells: MAX_WORKBOOK_CELLS };
   for (const sheet of all(workbook, "sheet")) {
     if (sheet.getAttribute("state") === "hidden" || sheet.getAttribute("state") === "veryHidden") continue;
+    if (budget.cells <= 0) {
+      // The sheets after this one are left out.
+      const last = sheets.at(-1);
+      if (last) last.truncated = true;
+      break;
+    }
     const path = rels.get(relId(sheet, "id") ?? "");
     const doc = path ? xml(files, path) : null;
-    if (doc) sheets.push(readSheet(doc, sheet.getAttribute("name") ?? "Sheet", strings, styles, date1904));
+    if (doc) sheets.push(readSheet(doc, sheet.getAttribute("name") ?? "Sheet", strings, styles, date1904, budget));
   }
   return sheets;
 }

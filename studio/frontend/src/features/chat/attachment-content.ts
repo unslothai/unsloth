@@ -601,8 +601,9 @@ type DocxArchive = {
 /** Inflates the archive under fflate's declared-size allocation. An entry past the XML ceiling
  *  is left out rather than refused: mammoth opens the package parts and whatever the
  *  relationships point at, so a large unreferenced part must still preview.
- *  `assertDocxPartSizes` refuses the ones mammoth would have parsed. */
-function unpackDocxEntries(filename: string, bytes: Uint8Array): DocxArchive {
+ *  `assertDocxPartSizes` refuses the ones mammoth would have parsed. `keepLarge` keeps them
+ *  (still marked oversized) for the viewer, which needs large images as well as text. */
+function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = false): DocxArchive {
   const names = new Set<string>();
   const oversized = new Set<string>();
   let unpacked = 0;
@@ -612,7 +613,7 @@ function unpackDocxEntries(filename: string, bytes: Uint8Array): DocxArchive {
       names.add(entry.name);
       if (entry.originalSize > MAX_OPEN_DOCUMENT_XML_BYTES) {
         oversized.add(entry.name);
-        return false;
+        if (!keepLarge) return false;
       }
       unpacked += entry.originalSize;
       if (unpacked > MAX_DOCX_UNPACKED_BYTES) {
@@ -673,8 +674,9 @@ function assertDocxPartSizes(filename: string, archive: DocxArchive): void {
 export function repackDocxAttachmentArchive(
   filename: string,
   bytes: Uint8Array,
+  { keepLarge = false } = {},
 ): Uint8Array {
-  const archive = unpackDocxEntries(filename, bytes);
+  const archive = unpackDocxEntries(filename, bytes, keepLarge);
   assertDocxPartSizes(filename, archive);
   return zipSync(archive.entries, { level: 0 });
 }
@@ -797,7 +799,7 @@ export async function extractOfficeAttachmentText(
       // Said outright, so the model does not answer as if it read the whole sheet.
       if (sheet.truncated) {
         lines.push(
-          `[Truncated: only the first ${MAX_SHEET_ROWS} rows and ${MAX_SHEET_COLUMNS} columns are included.]`,
+          `[Truncated: only part of the workbook is included, at most ${MAX_SHEET_ROWS} rows and ${MAX_SHEET_COLUMNS} columns per sheet.]`,
         );
       }
       parts.push(lines.join("\n"));

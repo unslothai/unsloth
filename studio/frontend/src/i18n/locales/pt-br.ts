@@ -3121,7 +3121,7 @@ export const ptBR = {
       viewInAudio: "Ver em Áudio",
       viewOriginalProject: "Ver projeto original",
       viewTrainingRun: "Ver execução de treinamento",
-      sheetTruncated: "Mostrando as primeiras 5.000 linhas",
+      sheetTruncated: "Mostrando parte desta planilha",
       emptyDocument: "Este arquivo está vazio.",
       cannotPreview: "Não é possível visualizar este arquivo aqui. Baixe-o para abri-lo.",
       noPreview: "Não há prévia para este tipo de arquivo.",
