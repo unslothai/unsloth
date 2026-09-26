@@ -2672,8 +2672,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         RLTrainer_post += vllm_chat_template_sync
 
-    # TRL >= 1.7 writes its router_aux_loss_coef to the config after the MoE CausalLM cached the checkpoint's
-    # value at init. Unsloth's nll loss goes through that forward, so without a sync the SFTConfig value is ignored.
+    # TRL >= 1.7 writes router_aux_loss_coef to the config after MoE CausalLMs cached it at init; nll loss reads the stale copy.
     if trainer_file == "sft_trainer":
         RLTrainer_post += (
             "if hasattr(self, 'aux_loss_enabled') and hasattr(getattr(self, 'model', None), 'modules'):\n"

@@ -451,8 +451,7 @@ def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
 
 
 def test_sft_applies_trl_router_aux_loss_coef(tmp_path):
-    """TRL >= 1.7 writes SFTConfig.router_aux_loss_coef to the config after the MoE CausalLM cached the
-    checkpoint's value at init; Unsloth's nll loss goes through that forward, so it must use TRL's value."""
+    """The MoE forward must apply SFTConfig.router_aux_loss_coef, not the checkpoint value cached at init."""
     import inspect
     from datasets import Dataset
     from trl import SFTConfig, SFTTrainer
