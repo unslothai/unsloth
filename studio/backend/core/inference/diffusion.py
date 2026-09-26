@@ -4342,7 +4342,7 @@ class DiffusionBackend:
 
         ``load_dtype`` (the float dtype the pipeline loads in) prices what ``from_pretrained``
         holds instead: default-variant component files, selectable safetensors over ``.bin``, and
-        floats at the load dtype."""
+        floats at the load dtype (a surviving ``.bin`` too)."""
         load_itemsize = _float_load_itemsize(load_dtype)
         sizes: dict[str, int] = {}
         for f in path.rglob("*"):
@@ -4377,13 +4377,18 @@ class DiffusionBackend:
         for rel in list(sizes):
             if rel.endswith(".bin") and rel.rsplit("/", 1)[0] in st_dirs:
                 del sizes[rel]
-            elif rel.endswith(".safetensors"):
+            elif rel.endswith((".safetensors", ".bin")):
                 pinned = (
                     _component_pins_fp32((path / rel).parent, load_dtype)
                     if load_itemsize < 4
                     else ()
                 )
-                cast = DiffusionBackend._safetensors_cast_bytes(path / rel, load_itemsize, pinned)
+                reader = (
+                    DiffusionBackend._safetensors_cast_bytes
+                    if rel.endswith(".safetensors")
+                    else DiffusionBackend._bin_cast_bytes
+                )
+                cast = reader(path / rel, load_itemsize, pinned)
                 if cast is not None:
                     sizes[rel] = cast
         return sizes
@@ -4418,29 +4423,65 @@ class DiffusionBackend:
                 tensors.append(
                     (name, _SAFETENSORS_FLOAT_WIDTH.get(dtype), numel, int(end) - int(begin))
                 )
-            widths = [width for _, width, _, _ in tensors if width is not None]
-            if not widths:
-                return None
-            narrows = min(widths) > itemsize
-            # The loaders' own match: a pin names whole dot-separated segments, dotted pins included.
-            pin_match = (
-                re.compile("|".join(rf"(^|\.){re.escape(pin)}($|\.)" for pin in pinned)).search
-                if pinned
-                else None
-            )
-            total = 0
-            for name, width, numel, stored in tensors:
-                if width is None:
-                    total += stored
-                elif itemsize >= 4 or (pin_match is not None and pin_match(name)):
-                    total += numel * 4
-                elif narrows:
-                    total += numel * itemsize
-                else:
-                    total += stored
-            return total
+            return DiffusionBackend._cast_tensor_bytes(tensors, itemsize, pinned)
         except Exception:  # noqa: BLE001 - corrupt/crafted header keeps the on-disk size
             return None
+
+    @staticmethod
+    def _bin_cast_bytes(
+        path: Path,
+        itemsize: int,
+        pinned: tuple[str, ...] = (),
+    ) -> Optional[int]:
+        """``_safetensors_cast_bytes`` for a pickled ``.bin``: a memory-mapped weights-only load reads
+        dtypes and shapes without touching the tensor data. None (keep the stored size) for a legacy
+        non-zip file or anything that is not a flat tensor dict."""
+        try:
+            import torch
+
+            state = torch.load(path, map_location = "cpu", mmap = True, weights_only = True)
+            if not isinstance(state, dict):
+                return None
+            tensors = []
+            for name, tensor in state.items():
+                if not isinstance(tensor, torch.Tensor):
+                    return None
+                width = int(tensor.element_size()) if tensor.is_floating_point() else None
+                numel = int(tensor.numel())
+                tensors.append((str(name), width, numel, numel * int(tensor.element_size())))
+            del state
+            return DiffusionBackend._cast_tensor_bytes(tensors, itemsize, pinned)
+        except Exception:  # noqa: BLE001 - unreadable pickle keeps the on-disk size
+            return None
+
+    @staticmethod
+    def _cast_tensor_bytes(
+        tensors: list[tuple[str, Optional[int], int, int]],
+        itemsize: int,
+        pinned: tuple[str, ...] = (),
+    ) -> Optional[int]:
+        """Price ``(name, float width or None, numel, stored bytes)`` rows at an ``itemsize``-byte load."""
+        widths = [width for _, width, _, _ in tensors if width is not None]
+        if not widths:
+            return None
+        narrows = min(widths) > itemsize
+        # The loaders' own match: a pin names whole dot-separated segments, dotted pins included.
+        pin_match = (
+            re.compile("|".join(rf"(^|\.){re.escape(pin)}($|\.)" for pin in pinned)).search
+            if pinned
+            else None
+        )
+        total = 0
+        for name, width, numel, stored in tensors:
+            if width is None:
+                total += stored
+            elif itemsize >= 4 or (pin_match is not None and pin_match(name)):
+                total += numel * 4
+            elif narrows:
+                total += numel * itemsize
+            else:
+                total += stored
+        return total
 
     @staticmethod
     def _local_dir_weight_bytes(
