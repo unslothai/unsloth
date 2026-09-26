@@ -7009,6 +7009,8 @@ def _openvino_transformers_mismatch(model_type, task):
             [sys.executable, "-c", _OPENVINO_BOUNDS_PROBE, model_type, task],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 300,
         )
         low, high = json.loads(probe.stdout.strip().splitlines()[-1])
@@ -7054,10 +7056,15 @@ def _unsloth_save_openvino(
     if not is_main_process:
         return None
 
-    # Everything that can reject the request runs before the merge, which writes a full 16bit checkpoint. Remote code is trusted only when the model or tokenizer was already loaded through it.
+    # Everything that can reject the request runs before the merge, which writes a full 16bit checkpoint. optimum-cli takes one --trust-remote-code for the model and tokenizer loads together, so it follows the model's approved load decision, as the GGUF-LoRA converter does: a custom tokenizer alone must not let the reload run a built-in-loaded model's unvetted auto_map code.
     export_kwargs = dict(export_kwargs)
-    if _loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer):
+    if _loaded_via_remote_code(model):
         export_kwargs.setdefault("trust_remote_code", True)
+    elif _loaded_via_remote_code(tokenizer) and "trust_remote_code" not in export_kwargs:
+        logger.warning_once(
+            "Unsloth: the tokenizer was loaded through remote code but the model was not, so the "
+            "OpenVINO export runs without trust_remote_code and may skip converting the tokenizer."
+        )
     export_kwargs.setdefault("library", "transformers")
     # optimum-cli cannot infer the task from a local directory. Same VLM test as the torchao and compressed exports: a bare *ForConditionalGeneration also matches text seq2seq.
     config = getattr(model, "config", None)
