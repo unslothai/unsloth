@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Run each backend's denoise on one persistent thread per card: cuDNN caches conv benchmarks and SDPA plans
-per thread (ATen Conv_v8.cpp / MHA.cpp), and ``asyncio.to_thread`` rotates workers. CUDA only.
-"""
+"""One persistent denoise thread per backend per card: cuDNN caches conv/SDPA plans thread_local (ATen Conv_v8.cpp, MHA.cpp)."""
 
 from __future__ import annotations
 
