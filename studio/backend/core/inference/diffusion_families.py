@@ -399,7 +399,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # the Hub for a file that is not there and silently fall back to the dense bf16 download.
         prequant_filenames = (
             ("fp8", "Qwen-Image-2.1-FP8.safetensors"),
-            ("int8", "Qwen-Image-2.1-INT8-ConvRot.safetensors"),
+            ("int8", "Qwen-Image-2.1-INT8.safetensors"),
         ),
         # Qwen3-VL 8B, pre-cast. Independent of the DiT scheme, as on every other family.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-2.1-FP8"),),

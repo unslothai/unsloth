@@ -124,18 +124,13 @@ def upload_destination(
     if not rotated and not safetensors:
         return prequant_filename(scheme)
     from core.inference.diffusion_families import family_prequant_filename
-    from core.inference.diffusion_transformer_quant import convrot_spec_for_scheme
+    from core.inference.diffusion_transformer_quant import convrot_prequant_filename
 
-    if (
-        not rotated
-        and safetensors
-        and upload_repo
-        and convrot_spec_for_scheme(scheme, getattr(fam, "name", None))[0]
-    ):
-        # declared name is the ROTATED artifact; a plain build must not overwrite it
-        from core.inference.diffusion_prequant import prequant_repo_filename
-        return prequant_repo_filename(upload_repo, scheme, ".safetensors")
-    preferred = family_prequant_filename(fam, scheme)
+    # the opt-in rotated artifact has its own name, so it never overwrites the plain one
+    rotated_name = (
+        convrot_prequant_filename(scheme, getattr(fam, "name", None)) if rotated else None
+    )
+    preferred = rotated_name or family_prequant_filename(fam, scheme)
     why = "a rotated checkpoint" if rotated else "a safetensors checkpoint"
     if not preferred:
         # A PLAIN safetensors build now has a derived name, and only because
@@ -216,10 +211,11 @@ def main(argv = None) -> int:
     p.add_argument(
         "--convrot-groupsize",
         type = int,
-        default = None,
+        default = 0,
         help = "bake a ConvRot block-Hadamard activation rotation at this group size (a power of "
-        "4; 0 = off; unset = the family's runtime ConvRot spec, which rotates only the Linears it "
-        "names, so the artifact matches the runtime quantize path). Every quantized Linear whose in_features the group divides has its "
+        "4; 0 = off). A family with an int8 ConvRot spec at this group (Qwen-Image-2.1: "
+        "256) rotates exactly the Linears that spec names, so the artifact matches the opt-in "
+        "runtime path (UNSLOTH_DIFFUSION_INT8_CONVROT=1); otherwise every quantized Linear whose in_features the group divides has its "
         "weight rotated before quantize_ so the quantizer sees a flatter distribution; the "
         "exact fqn list is recorded in the checkpoint and the loader rotates the "
         "activations of that list and nothing else. Writes the v2 format tag.",
@@ -266,11 +262,9 @@ def main(argv = None) -> int:
     if fam is None:
         print(f"error: unknown family '{args.family}'", flush = True)
         return 2
-    convrot_suffixes: tuple = ()
-    if args.convrot_groupsize is None:
-        convrot_group, convrot_suffixes = convrot_spec_for_scheme(scheme, fam.name)
-    else:
-        convrot_group = int(args.convrot_groupsize)
+    convrot_group = int(args.convrot_groupsize)
+    spec_group, spec_suffixes = convrot_spec_for_scheme(scheme, fam.name)
+    convrot_suffixes: tuple = spec_suffixes if convrot_group and convrot_group == spec_group else ()
     # What the artifact RECORDS as its base, which is not always what this build READ. Weights staged into a local
     # directory keep that directory's name, and the loader's ``_same_base_model`` compares final path segments: a
     # checkpoint built from ./temp/qwen_image_21 records a base whose tail is "qwen_image_21", the load asks for

@@ -221,12 +221,31 @@ _INT8_FAMILY_CONVROT: dict[str, tuple[int, tuple[str, ...]]] = {
 }
 
 
+_INT8_FAMILY_CONVROT_FILENAME: dict[str, str] = {
+    "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
+}
+
+# Opt-in: unset keeps the plain int8 runtime path and hosted artifact.
+INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
+
+
+def int8_convrot_enabled() -> bool:
+    return (_os.environ.get(INT8_CONVROT_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+
+
 def convrot_spec_for_scheme(
     scheme: str, family: Optional[str] = None
 ) -> tuple[int, tuple[str, ...]]:
+    """The family's int8 ConvRot table entry, regardless of the opt-in flag."""
     if scheme != TQ_INT8:
         return 0, ()
     return _INT8_FAMILY_CONVROT.get(str(family or "").strip().lower(), (0, ()))
+
+
+def convrot_prequant_filename(scheme: str, family: Optional[str] = None) -> Optional[str]:
+    if scheme != TQ_INT8:
+        return None
+    return _INT8_FAMILY_CONVROT_FILENAME.get(str(family or "").strip().lower())
 
 
 def convrot_fqns(
@@ -251,7 +270,7 @@ def apply_runtime_convrot(
 ) -> tuple[str, ...]:
     """Rotate BEFORE quantize_; a later failure leaves an exact dense model, so fallback stays correct."""
     group, suffixes = convrot_spec_for_scheme(scheme, family)
-    if not group:
+    if not group or not int8_convrot_enabled():
         return ()
     from .diffusion_convrot import CONVROT_ATTR, CONVROT_KIND, rotate_linears_, warm_rotation_cache
 

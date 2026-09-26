@@ -558,8 +558,15 @@ def resolve_prequant_source(
         # Family-declared name first when there is one, then the derived chain, which puts the
         # safetensors spelling ahead of the pickle. Order-preserving dedup so a family that declares
         # exactly what the chain would derive does not make the downloader ask twice for it.
+        declared = (preferred,) if preferred else ()
+        # opt-in rotated artifact goes first; the plain chain stays behind it (not yet hosted, or offline)
+        from .diffusion_transformer_quant import convrot_prequant_filename, int8_convrot_enabled
+
+        rotated = convrot_prequant_filename(scheme, getattr(fam, "name", None))
+        if rotated and int8_convrot_enabled():
+            declared = (rotated,) + declared
         names: list[str] = []
-        for name in ((preferred,) if preferred else ()) + derived:
+        for name in declared + derived:
             if name and name not in names:
                 names.append(name)
         return PrequantSource(
@@ -567,7 +574,7 @@ def resolve_prequant_source(
             location = repo_id,
             filename = names[0],
             fallback_filenames = tuple(names[1:]),
-            declared_filenames = (preferred,) if preferred else (),
+            declared_filenames = declared,
         )
     return None
 

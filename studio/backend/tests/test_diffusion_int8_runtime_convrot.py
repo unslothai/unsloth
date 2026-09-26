@@ -14,6 +14,11 @@ import core.inference.diffusion_transformer_quant as tq
 from core.inference.diffusion_convrot import CONVROT_ATTR, is_rotated_linear
 
 
+@pytest.fixture(autouse = True)
+def _convrot_opted_in(monkeypatch):
+    monkeypatch.setenv(tq.INT8_CONVROT_ENV, "1")
+
+
 class _Attn(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -41,9 +46,7 @@ class _Block(nn.Module):
         super().__init__()
         self.attn = _Attn(dim)
         self.img_mlp = _Mlp(dim)
-        self.extra = nn.Linear(
-            dim, dim, bias = False
-        )
+        self.extra = nn.Linear(dim, dim, bias = False)
 
     def forward(self, x):
         x = x + self.attn(x)
@@ -117,6 +120,41 @@ def test_int8_artifact_names_the_rotated_build_first_and_keeps_the_plain_one():
         candidate_filenames_of(resolve_prequant_source(fam, "fp8"))[0]
         == "Qwen-Image-2.1-FP8.safetensors"
     )
+
+
+def test_without_the_opt_in_int8_is_plain_everywhere(monkeypatch):
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
+
+    fam = detect_family("Qwen/Qwen-Image-2.1", override = "qwen-image-2.1")
+    names = candidate_filenames_of(resolve_prequant_source(fam, "int8"))
+    assert names[0] == "Qwen-Image-2.1-INT8.safetensors"
+    assert "Qwen-Image-2.1-INT8-ConvRot.safetensors" not in names
+    model = _Tiny()
+    assert (
+        tq.apply_runtime_convrot(model, tq.TQ_INT8, "qwen-image-2.1", _filter("qwen-image-2.1"))
+        == ()
+    )
+    assert not any(is_rotated_linear(m) for m in model.modules())
+    assert not hasattr(model, CONVROT_ATTR)
+    for off in ("0", "", "off", "false"):
+        monkeypatch.setenv(tq.INT8_CONVROT_ENV, off)
+        assert not tq.int8_convrot_enabled()
+
+
+def test_quantize_transformer_without_the_opt_in_rotates_nothing(monkeypatch):
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    seen = []
+    _stub_torchao(monkeypatch, seen)
+    monkeypatch.setattr(
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None, **_: tq.TQ_INT8
+    )
+    pipe = types.SimpleNamespace(transformer = _Tiny())
+    assert (
+        tq.quantize_transformer(pipe, object(), mode = "int8", family = "qwen-image-2.1") == tq.TQ_INT8
+    )
+    assert seen == [[]]
 
 
 def test_convrot_does_not_touch_the_exclusion_set():
@@ -270,9 +308,7 @@ def test_unreachable_hub_still_loads_the_plain_artifact_already_cached(monkeypat
     assert pq._resolve_checkpoint_path(source, None, None) == str(plain)
     assert asked == ["Qwen-Image-2.1-INT8-ConvRot.safetensors"]
     plain.unlink()
-    with pytest.raises(
-        LocalEntryNotFoundError
-    ):
+    with pytest.raises(LocalEntryNotFoundError):
         pq._resolve_checkpoint_path(source, None, None)
 
 
@@ -300,7 +336,6 @@ def test_builder_publishes_rotated_and_plain_int8_under_different_names():
 
 
 class _LoraLike(nn.Module):
-
     def __init__(self, base):
         super().__init__()
         self.base_layer = base
