@@ -8889,6 +8889,20 @@ def disable_openai_auto_switch_for_request(scope) -> None:
         scope[_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY] = True
 
 
+async def _keyless_caller_held_back(fastapi_request) -> bool:
+    """A keyless caller that may not POST /api/inference/load itself, so it gets only the serving model or the idle-unloaded one it names.
+
+    The load-route probe reads the scope and the transport the way admission does, off
+    the loop and through the retrying settings accessor. Only a keyless caller pays it.
+    """
+    from auth.authentication import request_admitted_without_credential
+    from utils.keyless_api_access import keyless_request_may_load_models
+
+    if not request_admitted_without_credential(fastapi_request):
+        return False
+    return not await keyless_request_may_load_models(fastapi_request)
+
+
 def _automatic_model_load_may_run() -> bool:
     """True when a request can trigger an automatic load: either resolver-based
     auto-switch is on, or a standalone idle TTL can reload an idle-freed model. The
@@ -9052,9 +9066,10 @@ async def _no_model_loaded_error(
 ):
     """``(status, detail)`` for the /v1 sites that fail because nothing is loaded.
 
-    Changes only the case the generic text gets wrong (auto-switch on, a model
-    named, that name resolving to nothing local, so the switch silently did
-    nothing) into a 404 model_not_found. Everything else keeps ``status`` and the
+    Changes only the cases the generic text gets wrong, both with auto-switch on and a
+    model named: a name resolving to nothing local (the switch silently did nothing)
+    becomes a 404 model_not_found, and a downloaded one a held-back keyless caller may
+    not load keeps ``status`` but says so. Everything else keeps ``status`` and the
     :func:`_no_model_loaded_detail` text verbatim.
     """
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
@@ -9082,6 +9097,11 @@ async def _no_model_loaded_error(
             # Resident but on a backend this endpoint can't use, so "not downloaded" is false.
             return status, _no_model_loaded_detail(base)
         if await asyncio.to_thread(resolve_local_gguf, named) is not None:
+            if fastapi_request is not None and await _keyless_caller_held_back(fastapi_request):
+                return status, (
+                    f"No model is loaded, and keyless API access cannot load '{named}' by "
+                    "request. Load it in Unsloth Studio, or send an Unsloth API key."
+                )
             # Resolvable but unloaded: the switch failed, which the generic text covers.
             return status, _no_model_loaded_detail(base)
         message = await _unavailable_model_message(named)
@@ -9717,7 +9737,19 @@ async def _reject_unservable_model(
         gguf_hub_repo = await asyncio.to_thread(_resident_id_is_namespaced)
     if not (quantified or here or gguf_hub_repo):
         return
-    if switchable:
+    if (
+        switchable
+        and fastapi_request is not None
+        and await _keyless_caller_held_back(fastapi_request)
+    ):
+        # Switching is on but not for this caller, so a retry can never succeed.
+        status_code, code = 404, "model_not_found"
+        message = (
+            f"The model '{requested_model}' is downloaded but not loaded, and keyless API "
+            "access can only use the loaded model. Send an Unsloth API key to switch "
+            "models by request, or load it in Unsloth Studio."
+        )
+    elif switchable:
         # On disk and switching allowed, so the swap failed: the resident model is wrong weights.
         status_code, code = 503, "model_switch_failed"
         message = (
@@ -9983,11 +10015,8 @@ async def _maybe_auto_switch_model(
             _claim_slot_for_non_preview(fastapi_request)
         return
 
-    from auth.authentication import request_admitted_without_credential
-
-    keyless_caller = request_admitted_without_credential(fastapi_request)
-    # the keyless dialog offers the loaded model, so a stranger swaps or fetches nothing
-    if auto_switch_on and keyless_caller:
+    keyless_held_back = await _keyless_caller_held_back(fastapi_request)
+    if auto_switch_on and keyless_held_back:
         auto_switch_on = False
         if not idle_unload_is_configured():
             await _reject_unservable_model(requested_model, fastapi_request)
@@ -10057,11 +10086,11 @@ async def _maybe_auto_switch_model(
             else:  # pre-3-tuple stash: fall back to the path as the override key
                 target_id, variant = last
                 override_id = target_id
-            # A credential-less caller may restore only the model it explicitly
+            # A held-back keyless caller may restore only the model it explicitly
             # named (or the reload-only sentinel used when the model is omitted).
             # Check before loading so an unrelated name cannot trigger an expensive
             # stash restore and only then receive the normal mismatch response.
-            if keyless_caller and not reload_only:
+            if keyless_held_back and not reload_only:
                 requested_base, requested_variant = split_model_ref(requested_model)
                 if not _matches_any(
                     requested_base, (target_id, override_id, public_model_id(target_id))

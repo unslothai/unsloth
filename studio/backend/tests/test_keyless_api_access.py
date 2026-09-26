@@ -1026,8 +1026,9 @@ def test_protected_side_effect_guards_remain_wired():
     assert "_require_a_credential_of_its_own" in inspect.getsource(auth.change_password)
     assert all(
         "request_admitted_without_credential" in inspect.getsource(handler)
-        for handler in (inference._maybe_auto_switch_model, inference.openai_chat_completions)
+        for handler in (inference._keyless_caller_held_back, inference.openai_chat_completions)
     )
+    assert "_keyless_caller_held_back" in inspect.getsource(inference._maybe_auto_switch_model)
     assert all(
         "authenticated_without_credential" in inspect.getsource(handler)
         and "not no_credential" in inspect.getsource(handler)
@@ -1054,14 +1055,102 @@ def test_protected_side_effect_guards_remain_wired():
     assert security.scheme_name == "HTTPBearer"
 
 
-def test_keyless_idle_restore_requires_the_requested_model(monkeypatch):
-    from core.inference import llama_keepwarm as kw; import auth.authentication as authentication
+def _keyless_switch_hook(scope):
+    from studio.backend.tests import test_openai_auto_switch as auto
+    seed_user(); set_keyless_api_access(scope)
+    request = request_for(headers = {"Host": "localhost:8888", "Authorization": "Bearer no-key-required"})
+    assert admitted_without_session(request)
+    return lambda model: asyncio.run(auto.inference_route._maybe_auto_switch_model(model, request, "unsloth"))
+
+
+@pytest.mark.parametrize("scope", ["inference", "full"])
+def test_keyless_idle_restore_requires_the_requested_model_unless_the_scope_could_load(monkeypatch, scope):
+    from core.inference import llama_keepwarm as kw
     from studio.backend.tests import test_openai_auto_switch as auto
     backend = auto._FakeBackend(None); rec = auto._LoadRecorder(backend)
     auto._wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(auto.settings, "idle_unload_is_configured", lambda: True)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
-    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
-    auto._run_hook("org/B-GGUF"); assert rec.calls == []
-    auto._run_hook("org/A-GGUF:Q4_K_M"); assert len(rec.calls) == 1
+    hook = _keyless_switch_hook(scope)
+    hook("gpt-4o-mini")
+    if scope == "full":
+        assert len(rec.calls) == 1; return
+    assert rec.calls == []
+    hook("org/A-GGUF:Q4_K_M"); assert len(rec.calls) == 1
+
+
+@pytest.mark.parametrize(("scope", "loads"), [("full", 1), ("inference", 0)])
+def test_keyless_auto_switch_loads_under_the_full_scope_only(monkeypatch, scope, loads):
+    from studio.backend.tests import test_openai_auto_switch as auto
+    backend, rec = auto._wired(monkeypatch, auto._FakeBackend(None), ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(auto.settings, "idle_unload_is_configured", lambda: False)
+    _keyless_switch_hook(scope)("org/A-GGUF")
+    assert len(rec.calls) == loads
+
+
+@pytest.mark.parametrize(("loaded", "status"), [(None, 400), ("org/Other-GGUF", 404)])
+def test_a_held_back_keyless_caller_is_told_it_cannot_switch(monkeypatch, loaded, status):
+    from studio.backend.tests import test_openai_auto_switch as auto
+    backend, rec = auto._wired(monkeypatch, auto._FakeBackend(loaded), ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(auto.settings, "idle_unload_is_configured", lambda: False)
+    monkeypatch.setattr(auto.inference_route, "get_inference_backend", lambda: SimpleNamespace(active_model_name = None, models = {}))
+    seed_user(); set_keyless_api_access("inference")
+    request = request_for(headers = {"Host": "localhost:8888"})
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(auto.inference_route.openai_chat_completions(auto._chat_request(model = "org/A-GGUF"), request, "unsloth"))
+    assert (excinfo.value.status_code, rec.calls) == (status, [])
+    assert "keyless api access" in str(excinfo.value.detail).lower() and not excinfo.value.headers
+    set_keyless_api_access("full")
+    assert asyncio.run(auto.inference_route._no_model_loaded_error("No model loaded.", "org/A-GGUF", request, status = 400)) == (400, "No model loaded.")
+
+
+def test_the_keyless_load_probe_runs_off_the_event_loop(monkeypatch):
+    """The probe reads settings and resolves the bind host, so it must not run on the loop:
+    a slow resolver would stall every in-flight generation, not just this request. Same
+    invariant as test_auth_lookup_off_event_loop.py."""
+    from routes import inference
+    from utils import keyless_api_access as keyless
+    seed_user(); set_keyless_api_access("full")
+    request = request_for(headers = {"Host": "localhost:8888"})
+    assert admitted_without_session(request)
+    # As the middleware leaves it, so the admission fallback does not run the predicate too.
+    keyless.mark_keyless_admission(request, True)
+    threads: list[int] = []
+    real = keyless._keyless_request_allowed_for_scope
+    def _spy(*args, **kwargs):
+        threads.append(threading.get_ident()); return real(*args, **kwargs)
+    monkeypatch.setattr(keyless, "_keyless_request_allowed_for_scope", _spy)
+    async def _drive():
+        return await inference._keyless_caller_held_back(request), threading.get_ident()
+    held_back, loop_thread = asyncio.run(_drive())
+    assert held_back is False
+    assert threads and all(thread != loop_thread for thread in threads)
+
+
+def test_the_keyless_load_probe_waits_out_a_settings_refresh(monkeypatch):
+    """The sync settings read fails a follower closed to "off" for the length of one SQLite
+    read while another caller refreshes the 1s cache. Answering from it told a full-scope
+    caller admission had already admitted that it may not load, which silently dropped the
+    auto-switch this PR exists to deliver. The probe must read the way admission reads."""
+    from routes import inference
+    from utils import keyless_api_access as keyless
+    seed_user(); set_keyless_api_access("full")
+    request = request_for(headers = {"Host": "localhost:8888"})
+    assert admitted_without_session(request)
+    keyless.mark_keyless_admission(request, True)
+    real = keyless._read_settings_from_db
+    started = threading.Event()
+    def _slow():
+        started.set(); time.sleep(0.05); return real()
+    monkeypatch.setattr(keyless, "_read_settings_from_db", _slow)
+    with keyless._cache_lock:
+        keyless._cached_settings = None
+    # A second caller holds the refresh while this one asks.
+    refresher = threading.Thread(target = keyless.get_keyless_api_access_scope)
+    refresher.start(); assert started.wait(2)
+    try:
+        held_back = asyncio.run(inference._keyless_caller_held_back(request))
+    finally:
+        refresher.join()
+    assert held_back is False
 # fmt: on
