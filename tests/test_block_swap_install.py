@@ -386,3 +386,27 @@ def test_a_caller_quantization_config_is_refused_before_loading():
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "trim_config_for_block_swap"
     ]
     assert raises and trim and raises[0] < trim[0]
+
+
+def test_every_unsupported_load_mode_is_refused_before_trimming():
+    mod = ast.parse(
+        open(os.path.join(HERE, "unsloth", "models", "llama.py"), encoding = "utf-8").read()
+    )
+    cls = next(n for n in mod.body if isinstance(n, ast.ClassDef) and n.name == "FastLlamaModel")
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
+    trim = min(
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "trim_config_for_block_swap"
+    )
+    for needle in (
+        "load_in_8bit",
+        "quantization_config",
+        "state_dict",
+        "_ckpt_quant_method",
+        "safetensors",
+    ):
+        hits = [
+            n.lineno for n in ast.walk(fn) if isinstance(n, ast.Raise) and needle in ast.unparse(n)
+        ]
+        assert hits and min(hits) < trim, needle

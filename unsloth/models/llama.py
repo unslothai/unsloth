@@ -2640,6 +2640,10 @@ class FastLlamaModel:
                 "local_files_only": kwargs.get("local_files_only", False),
             },
         )
+        if block_swap_layers and load_in_8bit:
+            raise ValueError(
+                "Unsloth: block_swap_layers supports 16-bit and 4-bit loads, not load_in_8bit."
+            )
         if block_swap_layers and _ckpt_quant_method not in (None, "bitsandbytes"):
             # The host tail is rebuilt as dense or bnb 4-bit layers; packed formats would not survive it.
             raise ValueError(
