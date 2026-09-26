@@ -1054,7 +1054,13 @@ Remove-Item Env:\UNSLOTH_HOME
 if ((Get-LlamaDir) -ne (Join-Path $env:UNSLOTH_STUDIO_HOME 'llama.cpp')) { exit 65 }
 exit 0
 """
-    names = ["Resolve-ConfiguredPath", "Get-StudioHomeOverride", "Get-UnslothMasterRoot", "Get-StudioHome", "Get-LlamaDir"]
+    names = [
+        "Resolve-ConfiguredPath",
+        "Get-StudioHomeOverride",
+        "Get-UnslothMasterRoot",
+        "Get-StudioHome",
+        "Get-LlamaDir",
+    ]
     _drive(tmp_path, names, body, Work = tmp_path)
 
 
