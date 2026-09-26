@@ -14004,7 +14004,11 @@ def _native_audio_post_handoff_free_gb() -> Optional[_NativeAudioAvailability]:
     reclaimable: dict[int, float] = {}
 
     def _read_live() -> bool:
-        utilization = hardware.get_visible_gpu_utilization()
+        from utils.hardware import gpu_query
+
+        # Paired with the owners' reclaimable bytes: must be a reading from now, not a cached one.
+        with gpu_query.fresh_reads():
+            utilization = hardware.get_visible_gpu_utilization()
         live.clear()
         for device in utilization.get("devices", []):
             try:
@@ -14170,7 +14174,11 @@ def _wait_for_native_audio_gpu_free_gb(
     deadline = time.monotonic() + max(max_wait, 0.0)
     while True:
         try:
-            devices = get_visible_gpu_utilization().get("devices", [])
+            from utils.hardware import gpu_query
+
+            # Polls for memory to come free: every sample must be a new reading.
+            with gpu_query.fresh_reads():
+                devices = get_visible_gpu_utilization().get("devices", [])
             for device in devices:
                 if int(device["index"]) != int(gpu_index):
                     continue

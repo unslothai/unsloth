@@ -9,6 +9,8 @@ from typing import Any, Optional
 
 from loggers import get_logger
 
+from . import gpu_query
+
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
@@ -75,7 +77,7 @@ def _uuid_visible_ordinal_map(
 def get_physical_gpu_count() -> Optional[int]:
     """Return physical GPU count via nvidia-smi, or None on failure."""
     try:
-        result = subprocess.run(
+        result = gpu_query.run_nvidia_smi(
             ["nvidia-smi", "-L"],
             capture_output = True,
             text = True,
@@ -98,7 +100,7 @@ def get_physical_gpu_count() -> Optional[int]:
 
 def get_primary_gpu_utilization() -> dict[str, Any]:
     try:
-        result = subprocess.run(
+        result = gpu_query.run_nvidia_smi(
             [
                 "nvidia-smi",
                 "--query-gpu=utilization.gpu,temperature.gpu,"
@@ -147,7 +149,7 @@ def get_visible_gpu_utilization(
         "utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,power.limit"
     )
     try:
-        result = subprocess.run(
+        result = gpu_query.run_nvidia_smi(
             [
                 "nvidia-smi",
                 f"--query-gpu={query_fields}",
@@ -269,7 +271,7 @@ def _query_gpu_inventory(caller: str) -> Any:
     Split out of get_backend_visible_gpu_info so the same rows can be read WITHOUT a ``DeviceType.CUDA`` precondition: get_physical_gpu_inventory below is reached on exactly the host where torch reports no CUDA device, and that host still has its GPUs. Rows a caller cannot make sense of are dropped rather than raised on: a name holding commas is rejoined, and a malformed index or memory column skips the row.
     """
     try:
-        result = subprocess.run(
+        result = gpu_query.run_nvidia_smi(
             [
                 _nvidia_smi_executable(),
                 "--query-gpu=index,name,memory.total",
