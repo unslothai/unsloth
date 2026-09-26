@@ -599,6 +599,26 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
         Check "live: a declined private directory still yields the inventory" ($got -eq "nvml;12;8;8.9")
         Check "live: the program came through the environment, not a file" (($seen -join ",") -eq "argv4=-c src=present")
         Check "live: the program variable does not outlive the child" ($null -eq $env:UNSLOTH_NVIDIA_PROBE_SOURCE)
+
+        # TEMP and TMP beneath a regular file, as on a host whose temp directory is broken.
+        $blocker = Join-Path $fakeDir "not-a-dir"
+        Set-Content -LiteralPath $blocker -Value ""
+        $altRoot = Join-Path $fakeDir "localappdata"
+        New-Item -ItemType Directory -Force -Path $altRoot | Out-Null
+        $savedRoots = @{}
+        foreach ($v in @("TEMP", "TMP", "LOCALAPPDATA", "TMPDIR")) { $savedRoots[$v] = [Environment]::GetEnvironmentVariable($v) }
+        $savedDirFn = ${function:New-StudioChildScriptDirectory}
+        function New-StudioChildScriptDirectory { return "" }
+        try {
+            $env:TEMP = Join-Path $blocker "t"; $env:TMP = Join-Path $blocker "t"; $env:LOCALAPPDATA = $altRoot
+            Remove-Item Env:TMPDIR -ErrorAction SilentlyContinue
+            $got = Read-NvidiaLibraryRawViaPython -TimeoutMs 5000
+        } finally {
+            ${function:New-StudioChildScriptDirectory} = $savedDirFn
+            foreach ($v in $savedRoots.Keys) { [Environment]::SetEnvironmentVariable($v, $savedRoots[$v]) }
+        }
+        Check "live: an unusable TEMP falls through to the next root" ($got -eq "nvml;12;8;8.9")
+        Check "live: and leaves nothing behind there" (@(Get-ChildItem -LiteralPath $altRoot).Count -eq 0)
     } finally {
         $script:PythonExe = $savedPy
         if ($null -eq $savedSkipEnv) { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -ErrorAction SilentlyContinue }

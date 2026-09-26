@@ -8489,8 +8489,14 @@ main()
         $probeDir = New-StudioChildScriptDirectory
         $inline = (-not $probeDir)
         if ($inline) {
-            $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
-            $stem = Join-Path $tempRoot ("unsloth-nvprobe-" + [guid]::NewGuid().ToString("N"))
+            # The first root that takes a file: a TEMP that declined the directory may refuse this too.
+            $stem = $null
+            foreach ($root in @($env:TEMP, $env:TMP, $env:LOCALAPPDATA, $env:TMPDIR, "/tmp")) {
+                if (-not $root) { continue }
+                $candidateStem = Join-Path $root ("unsloth-nvprobe-" + [guid]::NewGuid().ToString("N"))
+                try { $null = New-Item -ItemType File -Path "$candidateStem.out" -ErrorAction Stop; $stem = $candidateStem; break } catch {}
+            }
+            if (-not $stem) { return "" }
         } else {
             $stem = Join-Path $probeDir "nvprobe"
         }
