@@ -57,6 +57,7 @@ import contextlib
 import copy
 import contextvars
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -288,6 +289,15 @@ def _mark_slow() -> None:
         _slow_until = time.monotonic() + _SLOW_BACKOFF_S
 
 
+def _resolved(exe: str) -> str:
+    """Where ``exe`` resolves on PATH now; the name itself when that cannot be told. Never
+    raises: a cache key must not add a failure the direct call did not have."""
+    try:
+        return shutil.which(exe) or exe
+    except Exception:
+        return exe
+
+
 def _copy(result: Any) -> Any:
     """A shallow copy, so one caller rewriting ``stdout`` cannot change what the next one
     reads. Type-agnostic: whatever ``subprocess.run`` returned comes back unchanged."""
@@ -430,7 +440,8 @@ def run_nvidia_smi(
     # The runner itself (not its id, which a collected object can hand to the next one) is
     # part of the key: constant in production, and a test that swaps in a different fake
     # CLI mid-test must not be answered by the previous fake.
-    key = (subprocess.run, tuple(argv), text_mode)
+    # The binary argv[0] resolves to is too: a PATH change must not be answered by another one.
+    key = (subprocess.run, _resolved(argv[0]), tuple(argv), text_mode)
 
     if not cache or kind == CRITICAL or (_fresh_mode.get() and kind != STATIC):
         flight = _Flight(

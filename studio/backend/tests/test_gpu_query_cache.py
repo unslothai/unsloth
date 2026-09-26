@@ -204,6 +204,53 @@ def test_concurrent_fit_checks_each_run_the_cli(smi, llama_probe):
     assert smi.calls("memory.free") == 4
 
 
+def test_concurrent_fit_checks_never_answer_from_before_they_started(smi, llama_probe):
+    """Memory keeps changing under 16 threads of fit checks; each answer must be a reading
+    taken after its own call began (free memory here only grows, so it is at least the value
+    current at the call)."""
+    lock = threading.Lock()
+    current = [1000]
+    stop = threading.Event()
+
+    def writer():
+        while not stop.is_set():
+            with lock:
+                current[0] += 1
+                for gpu in smi.state["gpus"]:
+                    gpu["free"] = current[0]
+                tmp = smi.state_path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(smi.state))
+                os.replace(tmp, smi.state_path)
+            time.sleep(0.01)
+
+    violations, errors = [], []
+
+    def reader():
+        for _ in range(5):
+            with lock:
+                floor = current[0]
+            try:
+                rows = llama_probe()
+            except Exception as e:  # pragma: no cover - surfaced below
+                errors.append(e)
+                continue
+            if not rows or rows[0][1] < floor:
+                violations.append((floor, rows))
+
+    w = threading.Thread(target = writer)
+    w.start()
+    readers = [threading.Thread(target = reader) for _ in range(16)]
+    for t in readers:
+        t.start()
+    for t in readers:
+        t.join(60)
+    stop.set()
+    w.join(5)
+    assert not errors
+    assert violations == []
+    assert smi.calls("memory.free") == 80
+
+
 def test_different_queries_are_not_merged(smi):
     nvidia.get_visible_gpu_utilization([0, 1])
     nvidia.get_primary_gpu_utilization()
@@ -502,6 +549,10 @@ def test_a_hung_cli_leaves_llama_cpp_its_own_mig_aware_fallback(smi, llama_probe
     monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 4.0)
     slice_rows = [(0, 5000, 10240)]
     monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory_nvml", staticmethod(lambda: slice_rows))
+    # A generic whole-GPU NVML answer (what a stand-in in the helper would give) must not win.
+    monkeypatch.setenv("UNSLOTH_NVIDIA_LIBRARY_PROBE", "1")
+    whole_gpu = [{"index": 0, "memory_total_mib": 81920, "memory_free_mib": 70000}]
+    monkeypatch.setattr(gpu_query, "_nvml_rows", lambda timeout: whole_gpu, raising = False)
     smi.set(delay = 12.0)
     monkeypatch.setattr(gpu_query, "run_nvidia_smi", _with_timeout(gpu_query.run_nvidia_smi, 0.5))
     assert llama_probe() == slice_rows
