@@ -308,6 +308,21 @@ def test_safetensors_cast_bytes(tmp_path, tensors, itemsize, expected):
     assert DiffusionBackend._safetensors_cast_bytes(path, itemsize) == expected
 
 
+def test_a_dotted_pin_matches_the_parameter_path_the_way_the_loader_does(tmp_path):
+    # Transformers matches a pin as whole dot-separated segments of the parameter name, so a
+    # multi-segment pin holds its tensor in fp32 while a name that only shares a prefix does not.
+    path = _safetensors(
+        tmp_path / "x.safetensors",
+        {
+            "model.layers.0.mlp.gate.weight": ("F32", 10),
+            "model.layers.0.mlp.gate_proj.weight": ("F32", 10),
+            "model.layers.0.gate": ("F32", 10),
+        },
+    )
+    assert DiffusionBackend._safetensors_cast_bytes(path, 2, ("gate.weight",)) == 40 + 20 + 20
+    assert DiffusionBackend._safetensors_cast_bytes(path, 2, ("gate",)) == 40 + 20 + 40
+
+
 def test_an_unreadable_header_keeps_the_stored_size(tmp_path):
     path = tmp_path / "x.safetensors"
     with open(path, "wb") as fh:

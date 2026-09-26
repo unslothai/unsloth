@@ -1149,7 +1149,8 @@ def _class_pins_fp32(class_name: str, load_dtype: Any) -> tuple[str, ...]:
         pinned = list(getattr(cls, "_keep_in_fp32_modules_strict", None) or ())
         if lib == "diffusers" or str(load_dtype) == "torch.float16":
             pinned += list(getattr(cls, "_keep_in_fp32_modules", None) or ())
-        return tuple(str(name) for name in pinned)
+        # Diffusers tests each pin against single name segments, so a dotted pin never matches there.
+        return tuple(str(name) for name in pinned if lib != "diffusers" or "." not in str(name))
     return ()
 
 
@@ -4421,11 +4422,17 @@ class DiffusionBackend:
             if not widths:
                 return None
             narrows = min(widths) > itemsize
+            # The loaders' own match: a pin names whole dot-separated segments, dotted pins included.
+            pin_match = (
+                re.compile("|".join(rf"(^|\.){re.escape(pin)}($|\.)" for pin in pinned)).search
+                if pinned
+                else None
+            )
             total = 0
             for name, width, numel, stored in tensors:
                 if width is None:
                     total += stored
-                elif itemsize >= 4 or (pinned and set(name.split(".")) & set(pinned)):
+                elif itemsize >= 4 or (pin_match is not None and pin_match(name)):
                     total += numel * 4
                 elif narrows:
                     total += numel * itemsize
