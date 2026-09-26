@@ -59,6 +59,8 @@ from .diffusion_families import (
     detect_family_for_pick,
     excluded_model_reason,
     prefer_ungated_mirror,
+    prequant_only_repo_ids,
+    prequant_repo_role,
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
@@ -2568,6 +2570,24 @@ class DiffusionBackend:
                 f"{', '.join(supported_family_names())}. If this is a variant of one of them, "
                 f"pass family_override with that family name. (Video models and image models "
                 f"whose diffusers transformer has no single-file loader are not supported.)"
+            )
+        # Prequant repos have no model_index.json (a pipeline pick staged GBs, then 404d); a same-named local dir is a real pipeline.
+        if (
+            kind == "pipeline"
+            and repo_id.strip().lower() in prequant_only_repo_ids()
+            and not _is_local_path(repo_id)
+        ):
+            bases, schemes, te_schemes = prequant_repo_role(fam, repo_id)
+            shown = " or ".join(bases) or fam.base_repo
+            knobs = []
+            if schemes:
+                knobs.append(f"the transformer precision to {' or '.join(schemes)}")
+            if te_schemes:
+                knobs.append(f"the text encoder precision to {' or '.join(te_schemes)}")
+            raise ValueError(
+                f"'{repo_id}' hosts pre-quantised checkpoints for {shown} and is not a diffusers pipeline "
+                f"(it has no model_index.json). Pick {shown} and set {' and '.join(knobs) or 'a precision'} "
+                f"instead."
             )
         # Refuse a too-old diffusers here, not deep in the load, but only when this load builds the diffusers
         # pipeline: a GGUF this host routes to native sd.cpp never instantiates the class. The picker gate reads the

@@ -2073,6 +2073,20 @@ def test_load_pipeline_rejects_non_unsloth_repo(fake_runtime):
         backend.load_pipeline("randomorg/Z-Image-bnb-4bit", family_override = "z-image")
 
 
+def test_validate_refuses_a_pipeline_pick_of_a_hosted_prequant_repo(fake_runtime):
+    from core.inference.diffusion_families import _FAMILIES, prequant_only_repo_ids
+
+    backend = DiffusionBackend()
+    with pytest.raises(ValueError, match = "Qwen/Qwen-Image-2.1") as excinfo:
+        backend.validate_load_request("unsloth/Qwen-Image-2.1-FP8")
+    message = str(excinfo.value)
+    assert "transformer precision to fp8 or int8" in message
+    assert "text encoder precision to fp8" in message
+    ids = prequant_only_repo_ids()
+    assert "unsloth/qwen-image-2.1-fp8" in ids
+    assert not any(fam.base_repo.lower() in ids for fam in _FAMILIES)
+
+
 def test_load_sdxl_rejects_untrusted_repo(fake_runtime):
     """A random non-allowlisted, non-unsloth repo is still rejected for a full pipeline
     load even when it detects as SDXL -- the allowlist is exact-match only."""
