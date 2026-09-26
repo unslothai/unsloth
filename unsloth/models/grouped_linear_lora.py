@@ -19,7 +19,6 @@ __all__ = [
 
 
 def is_grouped_linear(module):
-    """An `nn.Linear` whose forward is block diagonal over `n_groups`."""
     return (
         isinstance(module, torch.nn.Linear)
         and isinstance(getattr(module, "n_groups", None), int)
@@ -42,7 +41,7 @@ def _grouped_lora_layer():
 
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            # PEFT's nn.Linear dispatcher resets this; the custom mapping bypasses it, and merge would transpose B @ A.
+            # PEFT's nn.Linear dispatcher resets this; the custom mapping skips it.
             self.fan_in_fan_out = False
 
         def merge(self, *args, **kwargs):

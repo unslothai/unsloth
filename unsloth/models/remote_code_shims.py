@@ -51,7 +51,6 @@ def _vocab_sizes(module):
 
 
 def find_embedding_module(module):
-    """The token embedding of `module` without going through its accessor."""
     for name in _EMBEDDING_ATTRIBUTES:
         child = getattr(module, name, None)
         if isinstance(child, torch.nn.Embedding):
