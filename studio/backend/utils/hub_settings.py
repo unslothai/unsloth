@@ -228,8 +228,7 @@ def _bypass_proxy_for(url: str) -> None:
     http = sys.modules.get("huggingface_hub.utils._http")
     lock = getattr(http, "_CLIENT_LOCK", None)
     if changed and lock is not None and hasattr(http, "_GLOBAL_CLIENT"):
-        # huggingface_hub 1.x reads proxies once per shared client: drop it, never close it
-        # (closing aborts downloads streaming on it). 0.x requests sessions read env per request.
+        # The 1.x shared client read proxies once: drop it, never close it (aborts live downloads).
         with lock:
             http._GLOBAL_CLIENT = None
 
