@@ -15,6 +15,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
@@ -296,6 +297,7 @@ export function SettingsDialog() {
   const t = useT();
   const isOwner = useIsAccountOwner();
   const stacked = useStackedLayout();
+  const { attach: attachRail, onScroll: onRailScroll, className: railFadeClass } = useScrollFades();
   const visibleTabs = useMemo(() => TABS.filter((tab) => settingsTabVisible(tab.id, isOwner)), [isOwner]);
   const open = useSettingsDialogStore((s) => s.open);
   const requestedTab = useSettingsDialogStore((s) => s.activeTab);
@@ -591,11 +593,14 @@ export function SettingsDialog() {
                 {t("settings.dialog.title")}
               </p>
               <nav
+                ref={attachRail}
+                onScroll={onRailScroll}
                 className={cn(
                   // The tab list is the sidebar's flexible row: a short window
                   // leaves it taller than the sidebar, and the dialog clips its
                   // overflow, so scroll it rather than losing the last tabs.
-                  "hover-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1",
+                  "hover-scrollbar settings-rail-fade flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1",
+                  railFadeClass,
                   "group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:py-0",
                   results !== null && "group-data-stacked/settings:flex hidden",
                 )}
