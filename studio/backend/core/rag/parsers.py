@@ -646,10 +646,12 @@ def parse(path: str, *, want_images: bool = False):
         pages = _docx(path)
         return (pages, []) if want_images else pages
 
-    if ext in (".html", ".htm", ".txt", ".md", ".markdown"):
+    if ext in config.TEXT_EXTS:
         is_html = ext in (".html", ".htm")
         with open(path, "rb") as f:
             raw = _decode_text(f.read(), html = is_html)
+        if "\x00" in raw:
+            raise ValueError(f"unsupported binary content in text file: {os.path.basename(path)}")
         # Universal newlines, as text-mode open() gave: the chunker splits on "\n\n".
         raw = raw.replace("\r\n", "\n").replace("\r", "\n")
         pages = _html(raw) if is_html else [_page(raw, None)]
