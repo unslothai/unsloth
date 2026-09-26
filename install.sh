@@ -235,7 +235,6 @@ _mirror_retry_install() {
     _mri_host=$(_mirror_failed_host "${_ric_log:-}" "$_mri_ran") || _mri_host=""
     rm -f "${_ric_log:-}"
     case "$_mri_host $* " in
-        # A pinned command drops the index vars, so only a torch URL can move to a mirror.
         "pypi "*" --index-url "*|"pypi "*" --default-index "*) return "$_mri_rc" ;;
         "unsynced "*" --index-url "*|"unsynced "*" --default-index "*|"unsynced "*" --no-index "*) return "$_mri_rc" ;;
         "torch "*https://download.pytorch.org/whl*|"pypi "*|"python "*|"unsynced "*) ;;
@@ -265,7 +264,6 @@ _ric_run() {
     printf '%s' "$_cmd_rc" > "$_rcf"
 }
 
-# No tee (minimal images) only loses the mirror retry.
 _ric_tee() {
     if command -v tee >/dev/null 2>&1; then tee "$1"; else cat; fi
 }
@@ -293,7 +291,6 @@ _run_install_cmd_once() {
         # Stream through the redactor; the rc file carries the exit code (no pipefail in sh).
         _rcf=$(mktemp)
         tauri_stream_log stdout "OUTPUT_CLEAR" "$_label"
-        # A copy of the output is kept only for an armed mirror retry to read.
         _log=""
         if [ -n "${_UNSLOTH_MIRROR_SPARE:-}" ]; then
             _log=$(mktemp)
@@ -361,7 +358,6 @@ run_install_cmd_retry() {
         _run_install_cmd_once "$@" && return 0
         _ricr_rc=$?
         if [ "$_ricr_attempt" -ge "$_ricr_max" ]; then
-            # Mirror only after every default attempt, so transient failures recover on the default.
             _mirror_retry_install "$_ricr_rc" "$@" && return 0
             return $?
         fi
@@ -3232,7 +3228,6 @@ _mirror_probe() {
     echo "$_mp_code $_mp_bps"
 }
 
-# Probe artifacts must stay published and byte-identical on the mirror; each mirror tree is timed (CERNET redirects per tree).
 _mirror_url() {
     case "$1" in
         pypi) echo "https://files.pythonhosted.org/packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
@@ -3311,7 +3306,6 @@ _mirror_configured() {
     else
         set -- "${UV_CONFIG_FILE:-}" "$(_mirror_uv_project_config)" "${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml" /etc/xdg/uv/uv.toml /etc/uv/uv.toml
     fi
-    # pip and uv both read every directory in XDG_CONFIG_DIRS.
     _mic_xdg=${XDG_CONFIG_DIRS:-}
     while [ -n "$_mic_xdg" ]; do
         set -- "$@" "${_mic_xdg%%:*}/$_mic_suffix"
@@ -3376,7 +3370,6 @@ _mirror_use() {
     done
     step "mirror" "$(_mirror_name "$1") is $2 ($(($3 / 1024)) KB/s, mirror $(($4 / 1024)) KB/s); using $_mu_to" "$C_WARN"
     _mf_switched="$_mf_switched $1"
-    # A pypi.org that still answers can serve what the mirror has not synced.
     [ "$1 $2" != "pypi slow" ] || _mf_unsynced=true
 }
 
@@ -3401,7 +3394,6 @@ _mirror_switch() {
     for _ms_pair in $_MT_PAIRS; do export "$_ms_pair"; done
 }
 
-# Prints the host whose transport failed in output $1 ($2 when no URL is named), unsynced for not-found resolutions, else nothing.
 _mirror_failed_host() {
     if ! grep -Eqi 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up' "$1" 2>/dev/null; then
         grep -Eqi 'only [^ ]+ (.* )?(is|are) available|no versions? of|not found in the package registry|could not find a version that satisfies|no matching distribution found' "$1" 2>/dev/null || return 1
@@ -3417,7 +3409,7 @@ _mirror_failed_host() {
     fi
 }
 
-# No network call: a mainland China time zone, or a resolver from a mainland public DNS or cloud (Alibaba 100.100.2.136/138, Tencent 183.60.83.19/82.98). Everyone else keeps the installer as it was before the fallback.
+# No network call: mainland China time zone or resolver (Alibaba 100.100.2.136/138, Tencent 183.60.83.19/82.98).
 _mirror_in_china() {
     _mcn_tz=${TZ:-}
     [ -n "$_mcn_tz" ] || _mcn_tz=$(cat /etc/timezone 2>/dev/null) || true
@@ -3470,7 +3462,6 @@ _mirror_fallback() {
         _mirror_probe "$(_mirror_url "$_mf_name")" 1.5 1048575 > "$_mf_dir/$_mf_name"
     done
     _mirror_index_wait
-    # A redirect that led nowhere counts as no answer; a default that answers an HTTP error is kept: that is a moved probe artifact, not a blocked host.
     _mf_slow=""
     for _mf_host in $_mf_hosts; do
         read -r _mf_code _mf_bps < "$_mf_dir/$(_mirror_default "$_mf_host")"
@@ -3481,7 +3472,6 @@ _mirror_fallback() {
         esac
     done
     if [ -n "$_mf_slow" ]; then
-        # The default runs again beside the mirror so both share the link the same way.
         _mirror_index_probe $_mf_slow $(for _mf_host in $_mf_slow; do echo "cernet-$_mf_host"; done)
         _mirror_probe_all "$_mf_dir" 4 $(for _mf_host in $_mf_slow; do _mirror_default "$_mf_host"; _mirror_source "$_mf_host"; done | sort -u)
         _mirror_index_wait
@@ -3632,7 +3622,7 @@ _uv_version_ok() {  # uv command, floor (defaults to UV_MIN_VERSION)
 }
 
 # ── uv from a pinned release ──
-# Same archive, destination and PATH treatment as astral's installer, but it fetches a data file with a pinned SHA-256 instead of a script it runs and deletes. Mirrors Install-UvFromRelease in install.ps1. Bumping the version means bumping every hash, from https://github.com/astral-sh/uv/releases/download/<ver>/<asset>.sha256, and every _uv_pinned_wheel entry. Only the four mainstream targets are pinned; musl, armv7 and the rest fall through to the caller's existing path rather than risk a wrong triple.
+# Mirrors Install-UvFromRelease in install.ps1; bumping the version means bumping every hash (<asset>.sha256) and every _uv_pinned_wheel entry.
 UV_PINNED_VERSION="0.12.1"
 
 # Echoes the glibc minor version (the N in 2.N), or nothing when this is not a glibc host or the version cannot be read. "not musl" is not the same as "a glibc new enough to run the GNU build": astral's installer checks a minimum and drops to its musl-static archive below it, so a host we cannot positively confirm has to reach the fallback rather than take a binary that will not exec.
@@ -3862,7 +3852,6 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
             fi
             continue
         fi
-        # The POSIX archives hold uv and uvx under a uv-<triple>/ directory, the wheel under uv-<ver>.data/scripts/.
         case "$_uip_asset" in
             *.whl) _uv_unzip "$_uip_work/$_uip_asset" "$_uip_work" || continue ;;
             *) tar -xzf "$_uip_work/$_uip_asset" -C "$_uip_work" 2>/dev/null || continue ;;

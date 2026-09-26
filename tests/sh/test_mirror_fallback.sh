@@ -1,8 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Mirror fallback in install.sh / studio/setup.sh: the env vars each probe outcome exports, under
-# dash (install.sh's sh) and bash with setup.sh's strict flags, against a curl stub.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,7 +18,6 @@ if [ "$(_block "$SETUP_SH")" = "$(cat "$_WORK/block.sh")" ]; then
 else
     bad "setup.sh mirror fallback block drifted from install.sh"
 fi
-# Inside a heredoc the block is written to a file instead of defining _mirror_fallback.
 _heredoc_block_lines() { awk '
     tag != "" { if ($0 == tag || (dash && $0 ~ "^\t*" tag "$")) tag = ""; else if (/^[ \t]*# ── BEGIN mirror fallback/) print NR; next }
     !/^[ \t]*#/ && match($0, /(^|[^<])<<-?[ \t]*["\047]?[A-Za-z_][A-Za-z_0-9]*["\047]?([ \t|;&)>]|$)/) {

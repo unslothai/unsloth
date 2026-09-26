@@ -9420,7 +9420,6 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
     only when it worked. None when there is no such host.
     """
     global _PYTORCH_WHL_BASE
-    # Nothing armed (outside mainland China): skip scanning what may be megabytes of output.
     if not os.environ.get("_UNSLOTH_MIRROR_SPARE", "").strip():
         return None
     text = output.decode("utf-8", "replace")
@@ -9436,7 +9435,6 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
         host = next((name for name, pattern in _MIRROR_HOST_NAMES if pattern.search(text)), None)
         if host is None and not re.search(r"https?://", text):
             host = "torch" if torch else "pypi"
-        # A pinned command drops the index vars, so only a torch URL can move to a mirror.
         if host is None or (host == "torch" and not torch) or (host == "pypi" and pinned):
             return None
     spare = os.environ.get("_UNSLOTH_MIRROR_SPARE", "").split()

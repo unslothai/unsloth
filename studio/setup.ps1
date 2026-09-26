@@ -890,7 +890,6 @@ function Invoke-ManagedLlamaCppPreflight {
     return "$reason Nothing was installed."
 }
 
-# Mirror fallback, as _mirror_fallback in install.sh: mainland China only unless UNSLOTH_MIRROR_FALLBACK=1; =0 disables.
 function Test-MirrorConfigured {
     param([ValidateSet('uv', 'pip')][string]$Tool)
     if ($Tool -eq 'uv') {
@@ -949,7 +948,6 @@ function Wait-MirrorProbe {
                     $failure = $Probe.Heads[$url].Exception.InnerException -as [System.Net.WebException]
                     $results[$url] = @($(if ($failure -and $failure.Response) { [int]$failure.Response.StatusCode } else { 0 }), [long]0)
                 } elseif (-not $Probe.Bodies.ContainsKey($url)) {
-                    # Fixed size, one 64 KiB copy past the range: a middlebox that drops Range cannot make the probe buffer a whole wheel.
                     $Probe.Buffers[$url] = [System.IO.MemoryStream]::new([byte[]]::new($Probe.LastByte + 65537))
                     $Probe.Bodies[$url] = $Probe.Heads[$url].Result.GetResponseStream().CopyToAsync($Probe.Buffers[$url], 65536)
                 } elseif ($Probe.Bodies[$url].IsCompleted) {
@@ -974,7 +972,6 @@ function Wait-MirrorProbe {
     return $results
 }
 
-# Resolvers from .NET, not Get-DnsClientServerAddress, which loads a module and a CIM session on every run.
 function Get-MirrorDnsServers {
     try {
         [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object { $_.OperationalStatus -eq 'Up' } |
@@ -1062,13 +1059,11 @@ function Invoke-MirrorFallback {
         $timed = @{}
         foreach ($name in $defaults) { $timed[$name] = (Wait-MirrorProbe (Start-MirrorProbe -Urls $artifact[$name] -Seconds 1.5 -LastByte 1048575))[$artifact[$name]] }
         $answered = Wait-MirrorProbe $indexes
-        # A redirect that led nowhere counts as no answer; a default that answers an HTTP error is kept: that is a moved probe artifact, not a blocked host.
         $slow = @($hosts.Keys | Where-Object {
             $code = & $codeOf $hosts[$_][3] $timed[$hosts[$_][0]]
             $code -eq 0 -or ($code -ge 300 -and $code -lt 400) -or ($code -ge 200 -and $code -lt 300 -and $timed[$hosts[$_][0]][1] -lt $minBps)
         })
         if ($slow.Count -eq 0) { return }
-        # The default runs again beside the mirror so both share the link the same way.
         $sources = @($slow | ForEach-Object { $hosts[$_][1] } | Select-Object -Unique)
         $indexes = Start-MirrorProbe -Urls @($slow | ForEach-Object { $hosts[$_][3]; $hosts[$_][4] } | Where-Object { $_ }) -Seconds 4 -LastByte 1023
         $race = Wait-MirrorProbe (Start-MirrorProbe -Urls @($slow | ForEach-Object { $artifact[$hosts[$_][0]] }; $sources | ForEach-Object { $artifact[$_] }) -Seconds 4 -LastByte 1048575)
@@ -1087,7 +1082,6 @@ function Invoke-MirrorFallback {
         if ("$(& $codeOf $hosts[$name][4] $mirror)" -notmatch '^2\d\d$' -or $defaultBps -ge $minBps -or $mirror[1] -le $defaultBps) { continue }
         Set-MirrorEnv @(& $varsOf $name)
         $env:_UNSLOTH_MIRROR_SPARE = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -notlike "$name|*" }) -join ' '
-        # A pypi.org that still answers can serve what the mirror has not synced.
         if ($name -eq 'pypi' -and $how -eq 'slow') { $env:_UNSLOTH_MIRROR_SPARE = (@(-split $env:_UNSLOTH_MIRROR_SPARE) + ((@('unsynced') + @(& $varsOf 'unsynced')) -join '|')) -join ' ' }
         step "mirror" "$(Get-MirrorName $name) is $how ($($defaultBps -shr 10) KB/s, mirror $($mirror[1] -shr 10) KB/s); using $($hosts[$name][2])" "Yellow"
         $used = $true
@@ -1122,7 +1116,6 @@ function Use-MirrorSpare {
     return $pairs.Count -gt 0
 }
 
-# Host whose transport failed per the output ($Ran when no URL is named), unsynced for not-found resolutions, else none.
 function Get-MirrorFailedHost {
     param([string]$Output, [string]$Ran)
     if ($Output -notmatch 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up') {
@@ -2746,7 +2739,6 @@ function Invoke-SetupCommand {
         if ($script:UnslothVerbose -and -not $AlwaysQuiet) {
             # PS 5.1 turns stderr records into $? = $false even on exit 0; redact per record.
             if ($env:_UNSLOTH_MIRROR_SPARE) {
-                # Kept only for an armed mirror retry to read.
                 $lines = @()
                 & $Command 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable lines | ForEach-Object { Redact-InstallOutput $_ } | Out-Host
                 $script:SetupCommandOutput = $lines -join "`n"
@@ -7080,7 +7072,6 @@ function Install-UvFromPinnedRelease {
         }
         if (-not $downloaded) { return $false }
 
-        # The archives are flat, the wheel nests them in $wheelDir; both keep a .zip name for 5.1's Expand-Archive.
         Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
         [System.IO.Directory]::CreateDirectory($destDir) | Out-Null
         $srcRoot = if ($wheelDir) { Join-Path $work $wheelDir } else { $work }

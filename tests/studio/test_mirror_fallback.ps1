@@ -1,6 +1,4 @@
 #!/usr/bin/env pwsh
-# install.ps1's mirror fallback (synced into setup.ps1): the probe against a local server, and the
-# env vars each probe outcome exports. Run: pwsh -NoProfile -File tests/studio/test_mirror_fallback.ps1
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest  # setup.ps1 runs under its caller's strict mode.
@@ -92,7 +90,6 @@ function Wait-MirrorProbe($Probe) {
     }
     return $out
 }
-# The real location check, against stand-ins for the time zone and resolver cmdlets.
 $real = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-MirrorInChina' }, $true)[0].Extent.Text
 Invoke-Expression $real
 function Get-TimeZone { [pscustomobject]@{ Id = $script:tz } }
@@ -234,7 +231,6 @@ try {
     $script:fail = $torchDown; $script:calls = @()
     $rc = Invoke-InstallCommand -Label t -Command { uv pip install torch --default-index https://download.pytorch.org/whl/cu128 }
     Check "torch transport: a failed mirror rerun leaves later torch commands on the default" ($rc -eq 1 -and $script:calls.Count -eq 2 -and -not $env:_UNSLOTH_MIRROR_SPARE -and -not $script:InstallTorchMirror -and -not $env:UNSLOTH_PYTORCH_MIRROR)
-    # Under `irm | iex` the script scope is the user's session, so a torch switch must not carry into the next run.
     Check "each run starts with no torch mirror from an earlier run" (@($ast.EndBlock.Statements | Where-Object { $_.Extent.Text -eq '$script:InstallTorchMirror = $null' }).Count -eq 1)
     function npm { $script:calls += , "$args"; if ("$args" -match $script:npmOk) { $global:LASTEXITCODE = 0 } else { Write-Error $npmDown; $global:LASTEXITCODE = 1 } }
     foreach ($npmOk in 'npmmirror', 'never') { foreach ($verbose in $false, $true) {
