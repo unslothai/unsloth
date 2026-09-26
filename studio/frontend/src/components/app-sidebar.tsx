@@ -106,6 +106,7 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   Image03Icon,
+  InformationCircleIcon,
   LibrariesIcon,
   Logout05Icon,
   MoreHorizontalIcon,
@@ -5839,7 +5840,7 @@ export function AppSidebar() {
                   <DropdownMenuItem
                     onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
                   >
-                    <HugeiconsIcon icon={BadgeInfoIcon} strokeWidth={1.75} className="size-icon" />
+                    <HugeiconsIcon icon={InformationCircleIcon} strokeWidth={1.75} className="size-icon" />
                     <span>{t("shell.helpMenu.about")}</span>
                   </DropdownMenuItem>
                 </DropdownMenuSubContent>

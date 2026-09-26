@@ -324,3 +324,9 @@ test("Help items reuse the icon of the Settings tab they open", () => {
   assert.equal(helpIcon("help-troubleshooting"), tabIcon("debugging"));
   assert.equal(helpIcon("help-system-status"), tabIcon("resources"));
 });
+
+test("About Unsloth uses the info icon Studio uses everywhere else", () => {
+  const sidebar = readSrc("components/app-sidebar.tsx");
+  const about = sidebar.slice(0, sidebar.indexOf('{t("shell.helpMenu.about")}'));
+  assert.match(about.slice(about.lastIndexOf("<HugeiconsIcon")), /^<HugeiconsIcon icon=\{InformationCircleIcon\}/);
+});
