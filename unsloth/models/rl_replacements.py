@@ -2284,6 +2284,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         # Per-row completion start after left-packing, matching create_completion_attention_mask.
                         _pk_cstart = (_pk_L - logits_to_keep) - left_pad_tokens_per_prompt  # [rows]
                         _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
+                        # Keep a mutation counter so decoder layers can reuse packed metadata and masks.
+                        with torch.inference_mode(False):
+                            _pk_lengths = torch.tensor(
+                                _pk_nz_cpu, dtype = torch.int32, device = input_ids.device
+                            )
                         with _get_inference_mode_context_manager(model):
                             with torch.amp.autocast(
                                 device_type = DEVICE_TYPE_TORCH,
@@ -2294,9 +2299,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 _pk_hidden = unwrapped_model(
                                     input_ids = _pk_flat,
                                     position_ids = _pk_pos,
-                                    packed_seq_lengths = torch.tensor(
-                                        _pk_nz_cpu, dtype = torch.int32, device = input_ids.device
-                                    ),
+                                    packed_seq_lengths = _pk_lengths,
                                     use_cache = False,
                                 ).logits
                                 _pk_out = _pk_hidden[0, :-1, :][_pk_ctgt].unsqueeze(0)
