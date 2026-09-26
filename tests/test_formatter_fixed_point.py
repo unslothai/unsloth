@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -335,6 +336,35 @@ def test_the_formatter_invocation_fits_in_a_windows_command_line():
     )
 
 
+# Each batch is run_ruff_format.py, which itself runs ruff and the spacing pass as children, so
+# stopping a batch has to stop its whole tree: killing the wrapper alone would leave the child it
+# was waiting on running, still using the runner and still writing to the copies.
+_OWN_GROUP = (
+    {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    if os.name == "nt"
+    else {"start_new_session": True}
+)
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill `proc` and everything it started, then reap it."""
+    if proc.poll() is None:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+            )
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait()
+
+
 def _run_side_by_side(argvs: list[list[str]], log_dir: Path) -> list[tuple[int, str]]:
     """Run `argvs` at most `os.cpu_count()` at a time; (returncode, output) for each, in order.
 
@@ -356,7 +386,7 @@ def _run_side_by_side(argvs: list[list[str]], log_dir: Path) -> list[tuple[int, 
                 log = log_dir / f"{index}.log"
                 with open(log, "wb") as sink:
                     running[index] = (
-                        subprocess.Popen(argv, stdout = sink, stderr = subprocess.STDOUT),
+                        subprocess.Popen(argv, stdout = sink, stderr = subprocess.STDOUT, **_OWN_GROUP),
                         log,
                     )
             for index, (proc, log) in list(running.items()):
@@ -370,8 +400,7 @@ def _run_side_by_side(argvs: list[list[str]], log_dir: Path) -> list[tuple[int, 
                 time.sleep(0.05)
     finally:
         for proc, _ in running.values():
-            proc.kill()
-            proc.wait()
+            _kill_tree(proc)
     return [result for result in results if result is not None]
 
 
@@ -432,16 +461,53 @@ def test_a_timeout_in_the_polling_loop_kills_the_running_formatters(tmp_path, mo
         started.append(real_popen(*args, **kwargs))
         return started[-1]
 
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    # Like run_ruff_format.py waiting on ruff: the batch starts a child and blocks on it.
+    pid_file = tmp_path / "grandchild.pid"
+    wrapper = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+        "child.wait()\n"
+    )
+
     def timeout(_seconds):
+        # Let the wrapper start its child first, the way a real timeout lands mid-format.
+        deadline = real_monotonic() + 30
+        while not pid_file.exists() and real_monotonic() < deadline:
+            real_sleep(0.05)
         raise RuntimeError("stand-in for pytest-timeout")
 
-    monkeypatch.setattr(subprocess, "Popen", popen)
+    real_sleep, real_monotonic = time.sleep, time.monotonic
     monkeypatch.setattr(time, "sleep", timeout)
-    stall = [sys.executable, "-c", "import time; time.sleep(120)"]
     with pytest.raises(RuntimeError, match = "stand-in"):
-        _run_side_by_side([stall, stall], tmp_path)
+        _run_side_by_side([[sys.executable, "-c", wrapper]], tmp_path / "logs")
     assert started, "nothing was launched, so this proves nothing"
     assert all(proc.poll() is not None for proc in started), "a formatter outlived the timeout"
+    grandchild = int(pid_file.read_text())
+    for _ in range(100):
+        if not _alive(grandchild):
+            break
+        real_sleep(0.05)
+    assert not _alive(grandchild), "the formatter's own child outlived the timeout"
+
+
+def _alive(pid: int) -> bool:
+    if os.name == "nt":
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output = True, text = True
+        ).stdout
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    # A killed child of an exited wrapper is reparented and reaped; until then it is a zombie.
+    try:
+        with open(f"/proc/{pid}/stat", encoding = "utf-8") as stat:
+            return stat.read().split(") ", 1)[1][0] != "Z"
+    except OSError:
+        return True
 
 
 def test_side_by_side_results_come_back_in_order(tmp_path):
