@@ -674,6 +674,17 @@ def test_eager_vae_decode_keeps_contiguous_weights(monkeypatch, tier):
     assert applied["channels_last"] is False and pipe.vae.mem_format == torch.contiguous_format
 
 
+@pytest.mark.parametrize("backend, device", [("rocm", "cuda"), ("mps", "mps"), ("xpu", "xpu"), ("cpu", "cpu")])
+def test_eager_vae_decode_layout_unchanged_off_nvidia(monkeypatch, backend, device):
+    # Only NVIDIA was measured; every other backend keeps the channels_last weights it had before.
+    torch = _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    target = _target(device = device)
+    target.backend = backend
+    applied = apply_speed_optims(pipe, target, is_gguf = False, family = _family(), speed_mode = SPEED_EAGER)
+    assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
+
+
 def test_compiled_vae_decode_keeps_channels_last(monkeypatch):
     torch = _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)

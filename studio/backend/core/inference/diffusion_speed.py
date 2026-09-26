@@ -445,7 +445,7 @@ def apply_speed_optims(
         )
 
     if applied["channels_last"] and not _channels_last_decode_wins(
-        pipe, applied["compiled_vae_decode"]
+        pipe, target, applied["compiled_vae_decode"]
     ):
         applied["channels_last"] = not _vae_contiguous(pipe, logger)
 
@@ -982,12 +982,14 @@ def _vae_contiguous(pipe: Any, logger: Any) -> bool:
         return False
 
 
-def _channels_last_decode_wins(pipe: Any, compiled_decode: bool) -> bool:
-    """channels_last only pays off in a compiled 16-bit decode.
+def _channels_last_decode_wins(pipe: Any, target: Any, compiled_decode: bool) -> bool:
+    """On NVIDIA, channels_last only pays off in a compiled 16-bit decode.
 
     Eager CUDA GroupNorm has no NHWC kernel, so each norm copies NHWC -> NCHW and back: an eager channels_last decode
     measured 0.56-0.78x (T4, A100, RTX PRO 6000, B200). Compiled, Inductor owns the layout and channels_last weights
-    measured 1.04-1.33x in bf16, 1.0x in fp16 and 0.89x in fp32 (T4)."""
+    measured 1.04-1.33x in bf16, 1.0x in fp16 and 0.89x in fp32 (T4). Other backends were not measured: unchanged."""
+    if getattr(target, "backend", "cuda") != "cuda" or getattr(target, "device", None) != "cuda":
+        return True
     if not compiled_decode:
         return False
     vae = getattr(pipe, "vae", None)
