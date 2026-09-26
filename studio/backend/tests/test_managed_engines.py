@@ -141,6 +141,24 @@ def test_shared_environment_installs_only_what_studio_lacks(isolated, monkeypatc
         managed_engine.validate_load(engine, request)
 
 
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_pytorch_index_build_of_the_locked_torch_is_shared(isolated, monkeypatch, engine):
+    pins = {name: version for name, (version, _) in install._pins(engine).items()}
+    labelled = {"torch": pins["torch"] + "+cu130", "torchvision": pins["torchvision"] + "+cu130"}
+    studio = studio_with_engine_torch(monkeypatch, engine, **labelled)
+    plan = install.install_plan(engine)
+    assert plan["shared"] is True
+    assert plan["provided"]["torch"] == studio["torch"]
+    assert plan["provided"]["torchvision"] == studio["torchvision"]
+    assert not any(
+        line.startswith(("torch==", "torchvision==", "triton==", "nvidia-cublas=="))
+        for line in plan["requirements"].splitlines()
+    )
+
+    studio_with_engine_torch(monkeypatch, engine, torch = pins["torch"] + "+cu128")
+    assert install.install_plan(engine)["shared"] is False
+
+
 def test_changed_studio_torch_uses_an_isolated_environment(isolated, monkeypatch):
     studio_with_engine_torch(monkeypatch, "vllm", torch = "2.99.0")
     monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
@@ -191,7 +209,7 @@ def test_engine_check_sees_every_locked_version_and_requirement(tmp_path):
     def check(pins, omitted = ""):
         lock.write_text(pins)
         return subprocess.run(
-            [sys.executable, "-c", install._CHECK, str(lock), omitted],
+            [sys.executable, "-c", install._CHECK, str(lock), omitted, "cu130"],
             capture_output = True,
             text = True,
             env = env,
@@ -203,6 +221,10 @@ def test_engine_check_sees_every_locked_version_and_requirement(tmp_path):
     )
     assert "demo requires absent-dependency>=1, found None" in check("demo==1.0\n").stderr
     assert check("demo==1.0\n", "absent-dependency").returncode == 0
+    (site / "demo-1.0.dist-info" / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: demo\nVersion: 1.0+cu130\n"
+    )
+    assert check("demo==1.0\n").returncode == 0
 
 
 def test_cancel_before_activation_keeps_previous(isolated, monkeypatch):
@@ -843,7 +865,7 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
             "class Handler(BaseHTTPRequestHandler):\n"
             " def do_GET(self):\n"
             "  self.send_response(200); self.end_headers()\n"
-            "  self.wfile.write((os.environ['CUDA_VISIBLE_DEVICES'] + '|' + os.environ['TRITON_CACHE_DIR']).encode())\n"
+            "  self.wfile.write('|'.join(os.environ[k] for k in ('CUDA_VISIBLE_DEVICES', 'TRITON_CACHE_DIR', 'FLASHINFER_WORKSPACE_BASE')).encode())\n"
             " def log_message(self, *args): pass\n"
             f"HTTPServer(('127.0.0.1', {port}), Handler).serve_forever()\n"
         )
@@ -856,7 +878,14 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
 
     def start():
         try:
-            engine.start("model", 2048, gpu_ids, dict(os.environ, TRITON_CACHE_DIR = "/shared-cache"))
+            engine.start(
+                "model",
+                2048,
+                gpu_ids,
+                dict(
+                    os.environ, TRITON_CACHE_DIR = "/shared-cache", FLASHINFER_WORKSPACE_BASE = "/home"
+                ),
+            )
         except Exception as exc:
             errors.append(exc)
 
@@ -869,7 +898,10 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
         assert engine.alive()
         import httpx
 
-        visible, cache_path = httpx.get(engine.base_url, trust_env = False).text.split("|")
+        visible, cache_path, flashinfer_base = httpx.get(
+            engine.base_url, trust_env = False
+        ).text.split("|")
+        assert flashinfer_base == install.installed("vllm")["path"]
         assert visible == ",".join(map(str, gpu_ids))
         assert Path(cache_path).parent.parent == isolated / "vllm" / "cache"
         assert Path(cache_path).name == "triton"

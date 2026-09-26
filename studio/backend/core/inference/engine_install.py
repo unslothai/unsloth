@@ -130,20 +130,29 @@ def _torch_runtime() -> set[str]:
     return names
 
 
+def _same_build(installed: str | None, locked: str | None, cuda: str) -> bool:
+    """PyTorch's index labels its wheels (2.11.0+cu130); the PyPI lock names the same build unlabelled."""
+    return installed is not None and installed in (locked, f"{locked}+{cuda}")
+
+
 def install_plan(engine: str) -> dict:
     """Split the lock into packages Studio already provides and the ones to install."""
     lock = _pins(engine)
     studio = _studio_packages()
+    cuda = profile(engine)["cuda"]
     shared = (
         sys.implementation.name == "cpython"
         and sys.version_info[:2] == PYTHON
         and "torch" in studio
-        and all(studio.get(name) == lock.get(name, (None,))[0] for name in _torch_runtime())
+        and all(
+            _same_build(studio.get(name), lock.get(name, (None,))[0], cuda)
+            for name in _torch_runtime()
+        )
     )
     provided = {
-        name: version
+        name: studio[name]
         for name, (version, _) in lock.items()
-        if shared and studio.get(name) == version
+        if shared and _same_build(studio.get(name), version, cuda)
     }
     return {
         "shared": shared,
@@ -171,6 +180,7 @@ def normalize(name):
     return re.sub(r"[-_.]+", "-", name).lower()
 
 omitted = set(sys.argv[2].split(",")) - {""}
+cuda = sys.argv[3]
 problems = []
 for line in open(sys.argv[1], encoding = "utf-8"):
     match = re.match(r"([A-Za-z0-9][A-Za-z0-9_.\-]*)==([^\s;\\]+)", line)
@@ -181,7 +191,7 @@ for line in open(sys.argv[1], encoding = "utf-8"):
         found = metadata.version(name)
     except metadata.PackageNotFoundError:
         found = None
-    if found != version:
+    if found not in (version, f"{version}+{cuda}"):
         problems.append(f"{name}=={version} is required, found {found}")
         continue
     for raw in metadata.requires(name) or []:
@@ -633,6 +643,7 @@ def _install(
                     _CHECK,
                     str(requirements(engine)),
                     ",".join(profile(engine).get("omit", ())),
+                    profile(engine)["cuda"],
                 ],
                 cancel,
             )
