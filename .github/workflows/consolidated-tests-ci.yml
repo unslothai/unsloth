@@ -53,7 +53,18 @@ on:
     paths:
       - 'unsloth/**'
       - 'unsloth_cli/**'
+      # studio/** minus the frontend and the Tauri shell. Nothing these jobs run reads a
+      # non-Python file under either: the named tests, the inline scripts,
+      # core-cpu-setup and the editable install were checked against the import and
+      # literal-reference graph of every file there, and the only readers found are
+      # install.sh and install.ps1 (icons), which no Core step runs. Python files come
+      # back in on the last line because test_python39_compatibility.py scans every
+      # studio/**/*.py and test_callback_signature_drift.py every .py outside frontend/.
+      # Order matters: the last matching pattern wins.
       - 'studio/**'
+      - '!studio/frontend/**'
+      - '!studio/src-tauri/**'
+      - 'studio/**/*.py'
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
@@ -77,7 +88,18 @@ on:
     paths:
       - 'unsloth/**'
       - 'unsloth_cli/**'
+      # studio/** minus the frontend and the Tauri shell. Nothing these jobs run reads a
+      # non-Python file under either: the named tests, the inline scripts,
+      # core-cpu-setup and the editable install were checked against the import and
+      # literal-reference graph of every file there, and the only readers found are
+      # install.sh and install.ps1 (icons), which no Core step runs. Python files come
+      # back in on the last line because test_python39_compatibility.py scans every
+      # studio/**/*.py and test_callback_signature_drift.py every .py outside frontend/.
+      # Order matters: the last matching pattern wins.
       - 'studio/**'
+      - '!studio/frontend/**'
+      - '!studio/src-tauri/**'
+      - 'studio/**/*.py'
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
