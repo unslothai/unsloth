@@ -85,11 +85,30 @@ test("menu surfaces keep whole-pixel padding, margin and width, so the hover pil
     ["context-menu", 2],
     ["menubar", 2],
     ["select", 1],
+    ["popover", 1],
+    ["combobox", 1],
   ] as const) {
     const source = readSrc(`components/ui/${file}.tsx`);
-    const snapped = (source.match(/ref=\{snappedRef\}/g)?.length ?? 0) + (source.match(/snapInlinePadding\(element\);/g)?.length ?? 0);
+    const snapped = (source.match(/ref=\{snappedRef\}/g)?.length ?? 0) + (source.match(/snapRowInsets\(element\);/g)?.length ?? 0);
     assert.equal(snapped, surfaces, `${file} surfaces rounded as they mount`);
   }
+  // Rows nested in lists are balanced by their measured inset, corrected at the surface, and a
+  // list still loading is waited for, briefly.
+  const helper = readSrc("lib/snap-padding.ts");
+  // Insets meant to match land on the same whole pixel, whatever the surface's rounding did.
+  assert.match(helper, /const even = Math\.abs\(left - right\) < 1;/);
+  assert.match(helper, /let targetLeft = even \? Math\.round\(\(left \+ right\) \/ 2\) : Math\.round\(left\);/);
+  // A bare surface around a padded list can only widen, so it rounds up.
+  assert.match(helper, /targetLeft = even \? Math\.ceil\(Math\.max\(left, right\)\) : Math\.ceil\(left\);/);
+  assert.match(helper, /new MutationObserver/);
+  assert.match(helper, /window\.setTimeout\(\(\) => observer\.disconnect\(\), ROW_WAIT_MS\)/);
+  // The model picker's panel is padded 16px left, 8px right (16px with external providers) so
+  // its scroller can run near the edge; the list's own right inset evens the rows out.
+  assert.match(
+    readSrc("features/model-picker/components/model-selector/pickers.tsx"),
+    /model-list-scroll [^"]*pl-0\.5 pr-1\.5 mr-1 in-data-\[external=true\]:pr-0\.5 in-data-\[external=true\]:mr-0/,
+  );
+  assert.match(readSrc("features/model-picker/components/model-selector.tsx"), /data-external=\{hasExternal \|\| undefined\}/);
   assert.match(
     readSrc("components/ui/dropdown-menu.tsx"),
     /w-\[round\(calc\(var\(--radix-dropdown-menu-trigger-width\)_\+_6px\*var\(--ui-space-scale,1\)\),1px\)\]/,

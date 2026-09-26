@@ -7,7 +7,7 @@ import * as React from "react";
 import { MenuTickIcon } from "@/lib/tick-icon";
 import { MenuChevronRightIcon } from "@/lib/chevron-icons";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { snapInlinePadding, useSnappedPaddingRef } from "@/lib/snap-padding";
+import { snapRowInsets, useSnappedPaddingRef } from "@/lib/snap-padding";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -286,7 +286,7 @@ function DropdownMenuSubContent({
       resizeObserverRef.current = null;
       assignRef(ref, element);
       if (!element) return;
-      snapInlinePadding(element);
+      snapRowInsets(element);
 
       const updateContentWidth = () => {
         setContentWidth(element.offsetWidth);

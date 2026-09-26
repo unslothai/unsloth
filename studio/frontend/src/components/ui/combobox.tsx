@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/input-group";
 import { MenuTickIcon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { useSnappedPaddingRef } from "@/lib/snap-padding";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -156,6 +157,7 @@ function ComboboxContent({
     container?: HTMLElement | null;
   }): React.ReactElement {
   const dialogContainer = useDialogPortalContainer();
+  const snappedRef = useSnappedPaddingRef<HTMLDivElement>(undefined);
   return (
     <ComboboxPrimitive.Portal container={container ?? dialogContainer ?? undefined}>
       <ComboboxPrimitive.Positioner
@@ -167,6 +169,7 @@ function ComboboxContent({
         className="isolate z-[120] pointer-events-auto"
       >
         <ComboboxPrimitive.Popup
+          ref={snappedRef}
           data-slot="combobox-content"
           data-chips={!!anchor}
           onWheel={(event) => {
