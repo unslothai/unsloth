@@ -6,15 +6,18 @@ name: Composer compatibility
 on:
   pull_request:
     paths:
-      - 'studio/frontend/src/components/assistant-ui/**'
-      - 'studio/frontend/src/features/chat/**'
-      - 'studio/frontend/src/features/settings/components/composer-settings.tsx'
-      - 'studio/frontend/src/index.css'
-      # playwright_queue_localization.py drives the queue surface in ja and asserts the
-      # shipped Japanese, so a translation-only edit is exactly the change that can break
-      # it, and this workflow is its only invocation. index.ts is in scope with the
-      # catalogs because the driver calls setLocale through it.
-      - 'studio/frontend/src/i18n/**'
+      # The smoke pages (smoke-composer-settings, smoke-prompt-queue-actions) are served
+      # by vite from this ref, and their static import graph reaches about 855 files
+      # across studio/frontend/src, 483 of them outside the directories this list used
+      # to name (features/settings, lib, components, hooks and more). An edit to any of
+      # them changes what the pages load and assert, so the whole source tree is listed.
+      # npm ci reads .npmrc and the build reads the tsconfig files. src/** keeps
+      # src/i18n: playwright_queue_localization.py drives the queue surface in ja and
+      # asserts the shipped Japanese, so a translation-only edit is exactly the change
+      # that can break it, and this workflow is its only invocation.
+      - 'studio/frontend/src/**'
+      - 'studio/frontend/.npmrc'
+      - 'studio/frontend/tsconfig*.json'
       - 'studio/frontend/smoke-*'
       - 'studio/frontend/tests/**'
       - 'studio/frontend/package*.json'
@@ -29,6 +32,9 @@ on:
       # Both drivers find their controls through this reader, so a change to it is a change to them.
       - 'tests/studio/_en_catalog.py'
       - '.github/workflows/studio-composer-compatibility.yml'
+      # The first gating step runs this auditor, so an edit to it changes what this
+      # workflow runs.
+      - 'scripts/lockfile_supply_chain_audit.py'
       - '.github/scripts/retry-with-apt-lock.sh'
   workflow_dispatch:
 
@@ -37,7 +43,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   composer:

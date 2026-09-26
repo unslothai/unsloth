@@ -62,6 +62,29 @@ on:
       - '.github/workflows/docker-publish.yml'
       - '.pre-commit-config.yaml'
       - '.github/workflows/studio-backend-ci.yml'
+      # Tests this workflow collects read these directly (the kaggle harness tests, the
+      # prebuilt-wheel, signing, docker, installer-evidence and WoA tests, the
+      # studiobench parity selftests and others). workflow-trigger-lint.yml runs only
+      # the tests/studio guard modules and tests/security, so without these a change to
+      # one of the files below runs none of the tests that check it.
+      - '.github/scripts/**'
+      - '.github/ci/**'
+      - '.github/ci-preempt.json'
+      - '.github/workflows/consolidated-tests-ci.yml'
+      - '.github/workflows/cross-platform-parity-ci.yml'
+      - '.github/workflows/docker-credential-probe.yml'
+      - '.github/workflows/docker-publish-rocm.yml'
+      - '.github/workflows/kaggle-collect.yml'
+      - '.github/workflows/kaggle-t4-notebook-ci.yml'
+      - '.github/workflows/kaggle-t4-studio-gpu-ci.yml'
+      - '.github/workflows/notebooks-ci.yml'
+      - '.github/workflows/prebuilt-cuda-wheels.yml'
+      - '.github/workflows/release-desktop.yml'
+      - '.github/workflows/startup-profile-ci.yml'
+      - '.github/workflows/studiobench-ui-parity.yml'
+      - '.github/workflows/windows-arm64-ci.yml'
+      - '.github/workflows/windows-installer-differential-ci.yml'
+      - '.github/workflows/woa-wheelhouse.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
       # tests/python/test_amd_extras_contract.py asserts against this file.
       - '.github/workflows/security-audit.yml'
@@ -81,6 +104,29 @@ on:
       - '.github/workflows/docker-publish.yml'
       - '.pre-commit-config.yaml'
       - '.github/workflows/studio-backend-ci.yml'
+      # Tests this workflow collects read these directly (the kaggle harness tests, the
+      # prebuilt-wheel, signing, docker, installer-evidence and WoA tests, the
+      # studiobench parity selftests and others). workflow-trigger-lint.yml runs only
+      # the tests/studio guard modules and tests/security, so without these a change to
+      # one of the files below runs none of the tests that check it.
+      - '.github/scripts/**'
+      - '.github/ci/**'
+      - '.github/ci-preempt.json'
+      - '.github/workflows/consolidated-tests-ci.yml'
+      - '.github/workflows/cross-platform-parity-ci.yml'
+      - '.github/workflows/docker-credential-probe.yml'
+      - '.github/workflows/docker-publish-rocm.yml'
+      - '.github/workflows/kaggle-collect.yml'
+      - '.github/workflows/kaggle-t4-notebook-ci.yml'
+      - '.github/workflows/kaggle-t4-studio-gpu-ci.yml'
+      - '.github/workflows/notebooks-ci.yml'
+      - '.github/workflows/prebuilt-cuda-wheels.yml'
+      - '.github/workflows/release-desktop.yml'
+      - '.github/workflows/startup-profile-ci.yml'
+      - '.github/workflows/studiobench-ui-parity.yml'
+      - '.github/workflows/windows-arm64-ci.yml'
+      - '.github/workflows/windows-installer-differential-ci.yml'
+      - '.github/workflows/woa-wheelhouse.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
       - '.github/workflows/security-audit.yml'
 
