@@ -308,3 +308,14 @@ def test_only_nvidia_with_a_confirmed_subquadratic_kernel_is_calibrated(monkeypa
 
     monkeypatch.setattr(d, "sdpa_subquadratic_confirmed", boom)
     assert d._calibrated_activation(fam, nvidia) is None
+
+
+def test_an_explicit_auto_mode_ignores_the_legacy_offload_flag():
+    # a supplied memory mode wins over cpu_offload, so auto + cpu_offload plans exactly like auto
+    for gib in (12, 16, 20):
+        assert _plan(gib, QWEN21_GGUF, QWEN21_ACT, "auto", True) == _plan(
+            gib, QWEN21_GGUF, QWEN21_ACT, "auto"
+        )
+    assert _plan(16, QWEN21_GGUF, QWEN21_ACT, "auto", True) != _plan(
+        16, QWEN21_GGUF, None, "auto", True
+    )

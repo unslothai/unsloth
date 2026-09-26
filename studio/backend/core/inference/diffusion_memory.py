@@ -1324,7 +1324,8 @@ def plan_diffusion_memory(
     if (
         calibrated_activation is not None
         and mode == MEMORY_MODE_AUTO
-        and not explicit_offload
+        # the legacy flag only counts when no memory mode was supplied, as above
+        and not (explicit_offload and normalize_memory_mode(requested_mode) is None)
         and can_offload
         and not device_memory.is_unified
     ):
