@@ -74,8 +74,6 @@ export function ScaleMenu({
 }) {
   const t = useT();
   const locale = useLocale();
-  const options = scales.map((scale) => ({ value: String(scale), label: percent(scale, locale) }));
-  if (fitScale !== undefined) options.unshift({ value: "fit", label: t("library.viewer.fit") });
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild={true}>
@@ -93,11 +91,18 @@ export function ScaleMenu({
           value={String(value)}
           onValueChange={(next) => onChange(next === "fit" ? "fit" : Number(next))}
         >
-          {options.map((option) => (
-            <DropdownMenuRadioItem key={option.value} value={option.value}>
-              {option.label}
+          {scales.map((scale) => (
+            <DropdownMenuRadioItem key={scale} value={String(scale)}>
+              {percent(scale, locale)}
             </DropdownMenuRadioItem>
           ))}
+          {/* Fit, the one a preview opens at, sits apart below the fixed sizes, as ChatGPT has it. */}
+          {fitScale !== undefined && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuRadioItem value="fit">{t("library.viewer.fit")}</DropdownMenuRadioItem>
+            </>
+          )}
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>

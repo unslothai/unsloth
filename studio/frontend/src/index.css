@@ -2100,7 +2100,8 @@ html[data-chat-font] .aui-root {
 
 	.dark .chat-composer-surface {
 		background-color: var(--card);
-		box-shadow: none;
+		/* Page-coloured shadow, like the + menu: sets the composer off the messages behind it. */
+		box-shadow: 0 4px 20px 4px var(--background);
 	}
 
 	.composer-pill-btn {
@@ -2259,7 +2260,8 @@ html[data-chat-font] .aui-root {
 
 	.dark .unsloth-composer-surface {
 		background-color: var(--card);
-		box-shadow: none;
+		/* Page-coloured shadow, like the + menu: sets the composer off the messages behind it. */
+		box-shadow: 0 4px 20px 4px var(--background);
 	}
 
 	/* Keep the expand/collapse width swap instant. A transition on width (e.g.
