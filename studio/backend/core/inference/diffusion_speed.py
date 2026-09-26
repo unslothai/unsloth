@@ -1046,12 +1046,15 @@ def _guard_compiled_decode(
     eager: Any,
     logger: Any,
     eager_when_tiled: bool = False,
+    owner: Any = None,
 ) -> Any:
     """``compiled`` behind an eager fallback: torch.compile is lazy, so lowering fails on the first call; OOMs still raise.
 
     ``eager_when_tiled``: a tiled decode unrolls its tile loop into one graph (minutes of compile on low-VRAM loads),
-    and tiling is only settled by the memory plan after the compile, so it is read per call."""
-    had_own = "decode" in getattr(vae, "__dict__", {})
+    and tiling is only settled by the memory plan after the compile, so it is read per call. ``owner`` (the VAE or an
+    outer wrapper's slot) is what the fallback restores."""
+    owner = vae if owner is None else owner
+    had_own = "decode" in getattr(owner, "__dict__", {})
     failed: list = []
 
     def guarded(*args: Any, **kwargs: Any) -> Any:
@@ -1071,9 +1074,9 @@ def _guard_compiled_decode(
                     vae._unsloth_compile_decode_error = error
                     vae._unsloth_compiled_decode = False
                     if had_own:
-                        vae.decode = eager
+                        owner.decode = eager
                     else:
-                        del vae.decode
+                        del owner.decode
                 except Exception:  # noqa: BLE001 - `failed` still routes this wrapper to eager
                     pass
                 if logger is not None:
@@ -1096,7 +1099,10 @@ def _compile_vae_decode(
 ) -> bool:
     """torch.compile the VAE ``decode`` in place; no cudagraphs, whose capture would pin decode activations."""
     vae = getattr(pipe, "vae", None)
-    decode = getattr(vae, "decode", None) if vae is not None else None
+    # An outer wrapper that must stay eager (the fp16 decode's non-finite check) exposes the slot it calls through.
+    outer = getattr(vae, "__dict__", {}).get("decode") if vae is not None else None
+    owner = getattr(outer, "_unsloth_decode_slot", None) or vae
+    decode = getattr(owner, "decode", None) if vae is not None else None
     if not callable(decode):
         return False
     # A dual-DiT family calls apply_speed_optims twice over the same pipe.
@@ -1111,8 +1117,8 @@ def _compile_vae_decode(
         if max_autotune:
             kwargs["mode"] = "max-autotune-no-cudagraphs"
         compiled = torch.compile(decode, **kwargs)
-        vae.decode = _guard_compiled_decode(
-            vae, compiled, decode, logger, eager_when_tiled = eager_when_tiled
+        owner.decode = _guard_compiled_decode(
+            vae, compiled, decode, logger, eager_when_tiled = eager_when_tiled, owner = owner
         )
         vae._unsloth_compiled_decode = True
         return True
