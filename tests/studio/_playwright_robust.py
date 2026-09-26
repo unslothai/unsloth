@@ -1020,12 +1020,13 @@ def wait_until(
             time.sleep(interval_s)
 
 
-# True once the element has kept the same box, with none of its (or its subtree's) Web
-# Animations / CSS transitions running, for `frames` animation frames in a row. The nonce
+# "settled" once the element has kept the same box, with none of its (or its subtree's) Web
+# Animations / CSS transitions running, for `frames` animation frames in a row; "detached" once
+# the node is gone (a re-render replaced it), so the caller can look it up again. The nonce
 # keeps one call's count from carrying into the next.
 _SETTLED_JS = """
 ([el, frames, nonce]) => {
-    if (!el || !el.isConnected) return false;
+    if (!el || !el.isConnected) return "detached";
     const r = el.getBoundingClientRect();
     const sig = [r.left, r.top, r.width, r.height].map((v) => Math.round(v * 10)).join(",");
     const running = typeof el.getAnimations === "function"
@@ -1034,7 +1035,7 @@ _SETTLED_JS = """
     const prev = window.__pwSettled.get(el);
     const count = !running && prev && prev.nonce === nonce && prev.sig === sig ? prev.count + 1 : 0;
     window.__pwSettled.set(el, { nonce, sig, count });
-    return count >= frames;
+    return count >= frames ? "settled" : false;
 }
 """
 _settle_nonce = [0]
@@ -1050,24 +1051,35 @@ def wait_for_settled(
 
     The condition behind "wait N ms for the transition / reflow to finish": a resize, an
     expand, a slide-in. It returns as soon as the element is still, and on a runner slow
-    enough that N was not enough it keeps waiting instead of measuring mid-flight. Raises
-    Playwright's TimeoutError if the element never settles within `timeout_ms`.
+    enough that N was not enough it keeps waiting instead of measuring mid-flight. If a
+    re-render replaces the node mid-wait, the locator is resolved again and the count
+    restarts on the new node. Raises Playwright's TimeoutError if nothing settles within
+    `timeout_ms`.
     """
-    _settle_nonce[0] += 1
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
     target = locator.first
-    handle = target.element_handle(timeout = timeout_ms)
-    try:
-        target.page.wait_for_function(
-            _SETTLED_JS,
-            arg = [handle, int(frames), _settle_nonce[0]],
-            polling = "raf",
-            timeout = timeout_ms,
-        )
-    finally:
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while True:
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms <= 0:
+            raise PlaywrightTimeoutError(f"wait_for_settled: not settled within {timeout_ms}ms")
+        _settle_nonce[0] += 1
+        handle = target.element_handle(timeout = remaining_ms)
         try:
-            handle.dispose()
-        except Exception:
-            pass
+            outcome = target.page.wait_for_function(
+                _SETTLED_JS,
+                arg = [handle, int(frames), _settle_nonce[0]],
+                polling = "raf",
+                timeout = max(1, remaining_ms),
+            ).json_value()
+        finally:
+            try:
+                handle.dispose()
+            except Exception:
+                pass
+        if outcome == "settled":
+            return
 
 
 def click_forced(
