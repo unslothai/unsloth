@@ -87,8 +87,13 @@ def _stub_torch(monkeypatch):
     )
     # Said explicitly so the CUDA-graph arm refuses deterministically, whatever the host has.
     torch.cuda = types.SimpleNamespace(is_available = lambda: False)
-    # The VAE-decode compile wraps a bound method; identity wrap is enough for tests.
-    torch.compile = lambda fn, **kwargs: fn
+    torch.compile_calls = []
+
+    def _compile(fn, **kwargs):
+        torch.compile_calls.append(kwargs)
+        return fn
+
+    torch.compile = _compile
     monkeypatch.setitem(sys.modules, "torch", torch)
     return torch
 
@@ -357,6 +362,14 @@ def test_restore_is_independent_per_flag(monkeypatch):
 # ── applier ───────────────────────────────────────────────────────────────────
 
 
+class AutoencoderKL(types.SimpleNamespace):
+    """The class NAME matters: ``auto`` keys the allow list off it."""
+
+
+class AutoencoderKLWan(types.SimpleNamespace):
+    """A video VAE."""
+
+
 class _Pipe:
     def __init__(
         self,
@@ -364,8 +377,9 @@ class _Pipe:
         with_compile = False,
         with_fuse = False,
         with_second_dit = False,
+        vae_cls = AutoencoderKL,
     ) -> None:
-        self.vae = types.SimpleNamespace(mem_format = None, to = self._vae_to)
+        self.vae = vae_cls(mem_format = None, to = self._vae_to, decode = lambda z: z)
         self.transformer = types.SimpleNamespace()
         if with_compile:
             self.transformer.compile_repeated_blocks = self._compile
@@ -619,16 +633,157 @@ def test_unet_whole_compile_default_tier(monkeypatch):
     assert applied["compiled_vae_decode"] is True
 
 
-def test_dit_default_tier_keeps_fuse_and_vae_decode_off(monkeypatch):
-    # The DiT default tier is unchanged: fused QKV measured exactly neutral so it stays max-only, and the VAE decode stays eager.
-    _stub_torch(monkeypatch)
+@pytest.mark.parametrize("tier", [SPEED_DEFAULT, SPEED_MAX])
+def test_a_unet_keeps_its_decode_recipe_and_bundle_key_on_every_tier(monkeypatch, tier):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _UNetPipe()
+    applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = tier)
+    assert applied["compiled_vae_decode"] is True
+    assert {"fullgraph": False, "dynamic": True} in torch.compile_calls
+    assert not any(call.get("mode") for call in torch.compile_calls)
+    assert ds_mod.vae_decode_compile_allowed(pipe, tier) is False
+
+
+def test_dit_default_tier_keeps_fuse_off_and_leaves_the_vae_decode_eager(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     pipe = _Pipe(with_compile = True, with_fuse = True)
+    assert type(pipe.vae).__name__ in ds_mod._VAE_COMPILE_ALLOW
     applied = apply_speed_optims(
         pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
     )
     assert applied["compiled"] is True
     assert applied["fused_qkv"] is False and pipe.fused is False
     assert applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+    assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_DEFAULT) is False
+    assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_MAX) is True
+
+
+def test_dit_default_tier_vae_decode_compile_forced_on_by_env(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is True
+    assert torch.compile_calls == [{"fullgraph": False, "dynamic": True}]
+    assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_DEFAULT) is True
+
+
+def test_dit_vae_decode_compile_opts_out_by_env(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "0")
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+    assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_MAX) is False
+
+
+def test_dit_vae_decode_compile_deny_set_and_force(monkeypatch):
+    assert "AutoencoderKLQwenImage" in ds_mod._VAE_COMPILE_DENY
+    _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True)
+    monkeypatch.setattr(
+        ds_mod,
+        "_VAE_COMPILE_DENY",
+        frozenset({type(pipe.vae).__name__}),
+    )
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled_vae_decode"] is False
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert applied["compiled_vae_decode"] is True
+
+
+def test_video_vae_stays_eager_under_auto_and_compiles_once_per_pipe(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True, vae_cls = AutoencoderKLWan)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    for _ in range(2):
+        applied = apply_speed_optims(
+            pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        )
+        assert applied["compiled_vae_decode"] is True
+    assert torch.compile_calls == [{"fullgraph": False, "dynamic": True}]
+
+
+def test_dit_vae_decode_compile_max_tier_autotunes(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True, with_fuse = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled_vae_decode"] is True
+    assert torch.compile_calls == [
+        {"fullgraph": False, "dynamic": True, "mode": "max-autotune-no-cudagraphs"}
+    ]
+
+
+def test_unet_vae_decode_compile_ignores_the_env(monkeypatch):
+    _stub_torch(monkeypatch)
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "0")
+    pipe = _UNetPipe()
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled_vae_decode"] is True
+
+
+def test_video_wan_vae_decode_is_denied_on_measurement(monkeypatch):
+    # Denied, not just unlisted: stays off even if added to the allow set.
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    assert "AutoencoderKLWan" in ds_mod._VAE_COMPILE_DENY
+    monkeypatch.setattr(
+        ds_mod, "_VAE_COMPILE_ALLOW", ds_mod._VAE_COMPILE_ALLOW | {"AutoencoderKLWan"}
+    )
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True, vae_cls = AutoencoderKLWan),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+        cuda_graph_default = False,
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+
+
+def test_video_wan_vae_decode_stays_denied_on_max(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True, vae_cls = AutoencoderKLWan),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_MAX,
+        cuda_graph_default = False,
+    )
+    assert applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
 
 
 def test_unet_whole_compile_offload_drops_fullgraph(monkeypatch):
@@ -1322,6 +1477,145 @@ def test_cuda_graph_install_failure_leaves_the_load_usable(monkeypatch):
     assert applied["compiled"] is True  # the rest of the tier still engaged
 
 
+class _StreamBlock:
+    """A repeated block whose ``forward`` source is what the detector reads."""
+
+    def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover - never run
+        return hidden_states, encoder_hidden_states
+
+
+class FluxSingleTransformerBlock(_StreamBlock):
+    """Named on ``_STREAM_MERGING_BLOCKS``, so it is recognised without reading source."""
+
+
+class _MergingByArgOrderA(_StreamBlock):
+    def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover
+        import torch  # source fixture: only the text is read
+        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim = 1)
+        return hidden_states, encoder_hidden_states
+
+
+class _MergingByArgOrderB(_StreamBlock):
+    def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover
+        import torch  # source fixture: only the text is read
+        hidden_states = torch.cat([hidden_states, encoder_hidden_states], dim = 1)
+        return hidden_states, encoder_hidden_states
+
+
+class _DualStreamBlock(_StreamBlock):
+    """Takes BOTH streams but keeps them separate (Qwen-Image / SD3 shape), so it stays dynamic."""
+
+    def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover
+        return hidden_states + 1, encoder_hidden_states + 1
+
+
+def _dit(*block_classes):
+    blocks = [cls() for cls in block_classes]
+    dit = types.SimpleNamespace(
+        _repeated_blocks = [cls.__name__ for cls in block_classes],
+        named_modules = lambda: [("", None)] + [(f"blocks.{i}", b) for i, b in enumerate(blocks)],
+    )
+    return dit
+
+
+def test_class_merges_streams_is_crash_confirmed_names_only_by_default():
+    assert ds_mod._class_merges_streams(FluxSingleTransformerBlock) is True
+    assert ds_mod._class_merges_streams(_MergingByArgOrderA) is False
+    assert ds_mod._class_merges_streams(_MergingByArgOrderB) is False
+    assert ds_mod._class_merges_streams(_DualStreamBlock) is False
+
+
+def test_class_merges_streams_broad_sweep_is_opt_in():
+    assert ds_mod._class_merges_streams(_MergingByArgOrderA, True) is True
+    assert ds_mod._class_merges_streams(_MergingByArgOrderB, True) is True
+    assert ds_mod._class_merges_streams(_DualStreamBlock, True) is False
+
+
+def test_class_merges_streams_without_source_falls_back_to_the_name_list(monkeypatch):
+    import inspect
+
+    monkeypatch.setattr(
+        inspect, "getsource", lambda _obj: (_ for _ in ()).throw(OSError("no source"))
+    )
+    ds_mod._class_merges_streams.cache_clear()
+    assert ds_mod._class_merges_streams(_MergingByArgOrderA, True) is False
+    assert ds_mod._class_merges_streams(FluxSingleTransformerBlock, True) is True
+    ds_mod._class_merges_streams.cache_clear()
+
+
+def test_dits_merge_streams_honours_the_opt_in_env(monkeypatch):
+    monkeypatch.delenv(ds_mod._STREAM_MERGE_DETECT_ENV, raising = False)
+    assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is False
+    monkeypatch.setenv(ds_mod._STREAM_MERGE_DETECT_ENV, "1")
+    assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is True
+    monkeypatch.delenv(ds_mod._STREAM_MERGE_DETECT_ENV, raising = False)
+    assert ds_mod._dits_merge_streams([_dit(FluxSingleTransformerBlock)]) is True
+
+
+def test_dits_merge_streams_scans_every_denoiser():
+    assert ds_mod._dits_merge_streams([]) is False
+    assert ds_mod._dits_merge_streams([types.SimpleNamespace()]) is False
+    assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock)]) is False
+    assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is False
+    assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock, FluxSingleTransformerBlock)]) is True
+    assert (
+        ds_mod._dits_merge_streams([_dit(_DualStreamBlock), _dit(FluxSingleTransformerBlock)])
+        is True
+    )
+
+
+def test_speed_default_compiles_stream_merging_dit_with_static_shapes(monkeypatch):
+    """FLUX.1 regression: dynamic=True cannot be codegen'd for a stream-merging block."""
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    pipe.transformer._repeated_blocks = ["FluxSingleTransformerBlock"]
+    block = FluxSingleTransformerBlock()
+    pipe.transformer.named_modules = lambda: [("blocks.0", block)]
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True
+    assert pipe.compile_kwargs == {"fullgraph": True, "dynamic": False}
+    assert pipe.compile_kwargs["dynamic"] is not None
+
+
+def test_compiled_shapes_are_static_reports_the_stream_merging_downgrade(monkeypatch):
+    _stub_torch(monkeypatch)
+    merging = types.SimpleNamespace(transformer = _dit(FluxSingleTransformerBlock))
+    plain = types.SimpleNamespace(transformer = _dit(_DualStreamBlock))
+    assert ds_mod.compiled_shapes_are_static(merging, SPEED_DEFAULT) is True
+    assert ds_mod.compiled_shapes_are_static(plain, SPEED_DEFAULT) is False
+    assert ds_mod.compiled_shapes_are_static(plain, SPEED_MAX) is True
+    assert ds_mod.compiled_shapes_are_static(merging, SPEED_OFF) is False
+    assert ds_mod.compiled_shapes_are_static(merging, SPEED_EAGER) is False
+
+
+def test_the_loader_keys_the_compile_bundle_on_the_vae_decode_decision():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    assert src.count('"vae_decode": vae_decode_compile_allowed(') == 2
+    assert '"vae_decode": vae_decode_compile_allowed(pipe, effective_speed)' in src
+    assert '"vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT)' in src
+    assert ds_mod.vae_decode_compile_allowed is not None
+
+
+def test_speed_max_keeps_automatic_dynamic_for_a_stream_merging_dit(monkeypatch):
+    """The static exception is the default tier's alone: max compiles every DiT with automatic dynamic."""
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    pipe.transformer._repeated_blocks = ["FluxSingleTransformerBlock"]
+    block = FluxSingleTransformerBlock()
+    pipe.transformer.named_modules = lambda: [("blocks.0", block)]
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
+    assert pipe.compile_kwargs["dynamic"] is None
+    assert ds_mod.auto_dynamic_active(pipe) is True
+
+
 # ── runtime compile failure falls back to eager ──────────────────────────────
 # compile_repeated_blocks is lazy: inductor runs on the first forward, inside generate(). A lowering bug there
 # (Qwen-Image-2.1 int8 / fp8: inductor CantSplit) used to fail every render; the guard drops that DiT to eager.
@@ -1517,6 +1811,132 @@ def test_non_compile_errors_are_not_swallowed(monkeypatch, kind):
     assert ds_mod.compile_fallback_error(types.SimpleNamespace(transformer = dit)) is None
 
 
+class _Vae:
+    """A VAE whose ``decode`` is a class method, as on a diffusers AutoencoderKL."""
+
+    def __init__(self) -> None:
+        self.eager_calls = 0
+
+    def decode(self, z):
+        self.eager_calls += 1
+        return z + 1
+
+
+def _stub_lazy_compile(monkeypatch, failure):
+    """torch.compile that returns fine and fails only on the first call, like dynamo / inductor lowering."""
+    torch = _stub_torch_compile_errors(monkeypatch)
+    calls = {"compiled": 0}
+
+    def _compile(fn, **kwargs):
+        torch.compile_calls.append(kwargs)
+
+        def compiled(*args, **kw):
+            calls["compiled"] += 1
+            raise failure()
+
+        return compiled
+
+    torch.compile = _compile
+    return calls
+
+
+def test_vae_decode_compile_failure_at_first_decode_falls_back_to_eager(monkeypatch):
+    calls = _stub_lazy_compile(
+        monkeypatch, lambda: _BackendCompilerFailed("LoweringException: no lowering for aten.foo")
+    )
+    vae = _Vae()
+    pipe = types.SimpleNamespace(vae = vae)
+    assert ds_mod._compile_vae_decode(pipe, None, max_autotune = True) is True
+    assert "decode" in vae.__dict__
+    assert vae.decode(1) == 2
+    assert vae.eager_calls == 1
+    assert "decode" not in vae.__dict__
+    assert vae.decode(5) == 6
+    assert calls["compiled"] == 1
+    assert "LoweringException" in vae._unsloth_compile_decode_error
+
+
+def test_vae_decode_fallback_is_settled_into_status_and_not_recompiled(monkeypatch):
+    # Dual-DiT loads run apply_speed_optims twice: a fallen-back decode must not read as a live compile.
+    calls = _stub_lazy_compile(monkeypatch, lambda: _BackendCompilerFailed("LoweringException"))
+    vae = _Vae()
+    pipe = types.SimpleNamespace(vae = vae)
+    state = types.SimpleNamespace(speed_optims = ("compiled", "compiled_vae_decode"))
+    assert ds_mod.settle_compile_fallback(state, pipe) is None
+    assert ds_mod._compile_vae_decode(pipe, None) is True
+    assert vae.decode(1) == 2
+    assert vae._unsloth_compiled_decode is False
+    assert "LoweringException" in ds_mod.settle_compile_fallback(state, pipe)
+    assert state.speed_optims == ("compiled", "compile_fallback_eager")
+    assert ds_mod._compile_vae_decode(pipe, None) is False
+    assert "decode" not in vae.__dict__
+    assert vae.decode(5) == 6
+    assert calls["compiled"] == 1
+
+
+def test_vae_decode_compile_fallback_restores_an_instance_decode(monkeypatch):
+    _stub_torch_compile_errors(monkeypatch)
+    original = lambda z: z * 3  # noqa: E731 - an instance attribute, as on the SimpleNamespace fakes
+    vae = types.SimpleNamespace(decode = original)
+
+    def broken(z):
+        raise _BackendCompilerFailed("CantSplit")
+
+    vae.decode = ds_mod._guard_compiled_decode(vae, broken, original, None)
+    assert vae.decode(2) == 6
+    assert vae.decode is original
+
+
+@pytest.mark.parametrize("forced", [False, True])
+def test_a_tiled_dit_decode_stays_eager_unless_the_compile_is_forced(monkeypatch, forced):
+    # Tiled decode unrolls its tile loop into one graph: minutes of first-render compile for a low-VRAM load.
+    if forced:
+        monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    else:
+        monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    calls = {"compiled": 0, "eager": 0}
+
+    def compiled(z):
+        calls["compiled"] += 1
+        return z
+
+    def eager(z):
+        calls["eager"] += 1
+        return z
+
+    vae = types.SimpleNamespace(decode = eager, use_tiling = True)
+    vae.decode = ds_mod._guard_compiled_decode(
+        vae, compiled, eager, None, eager_when_tiled = ds_mod._vae_eager_when_tiled(None)
+    )
+    vae.decode(1)
+    assert calls == ({"compiled": 1, "eager": 0} if forced else {"compiled": 0, "eager": 1})
+    vae.use_tiling = False
+    vae.decode(1)
+    assert calls["compiled"] == (2 if forced else 1)
+
+
+@pytest.mark.parametrize("kind", ["runtime", "oom"])
+def test_vae_decode_non_compile_errors_are_not_swallowed(monkeypatch, kind):
+    def failure():
+        if kind == "runtime":
+            return RuntimeError("CUDA error: an illegal memory access was encountered")
+        try:
+            raise _OutOfMemory("CUDA out of memory")
+        except _OutOfMemory as oom:
+            try:
+                raise _BackendCompilerFailed("autotune ran out") from oom
+            except _BackendCompilerFailed as outer:
+                return outer
+
+    _stub_lazy_compile(monkeypatch, failure)
+    vae = _Vae()
+    assert ds_mod._compile_vae_decode(types.SimpleNamespace(vae = vae), None) is True
+    with pytest.raises((RuntimeError, _BackendCompilerFailed)):
+        vae.decode(1)
+    assert vae.eager_calls == 0
+    assert "decode" in vae.__dict__
+
+
 class _TorchaoWeight:
     pass
 
@@ -1584,6 +2004,22 @@ def test_auto_dynamic_active_follows_the_torchao_marker():
     dit._unsloth_auto_dynamic = True
     assert ds_mod.auto_dynamic_active(pipe) is True
     assert isinstance(ds_mod.dynamo_graph_count(), int)
+
+
+def test_speed_max_compiles_a_quantised_stream_merging_dit_static(monkeypatch):
+    """A torchao FLUX block under automatic dynamic hits CantSplit on the first new resolution and drops to eager;
+    max compiles it static instead, and reports its artifacts as per-shape."""
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    monkeypatch.setattr(ds_mod, "_carries_torchao_weights", lambda module: True)
+    pipe = _Pipe(with_compile = True)
+    pipe.transformer._repeated_blocks = ["FluxSingleTransformerBlock"]
+    block = FluxSingleTransformerBlock()
+    pipe.transformer.named_modules = lambda: [("blocks.0", block)]
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
+    assert pipe.compile_kwargs["dynamic"] is False
+    assert ds_mod.auto_dynamic_active(pipe) is False
+    assert ds_mod.compiled_shapes_are_static(pipe, SPEED_MAX) is True
 
 
 def test_real_rope_installed_before_the_qwen_image_21_block_compile_only(monkeypatch):

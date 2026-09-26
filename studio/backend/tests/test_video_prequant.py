@@ -1338,9 +1338,23 @@ def _video_auto(
     """``_video_auto_denoiser_scheme`` with the device selector stubbed to ``scheme``."""
     from core.inference import video as vid
 
-    monkeypatch.setattr(
-        vid, "select_transformer_quant_scheme", lambda target, requested, family = None: scheme
-    )
+    def _select(
+        target,
+        requested,
+        family = None,
+        base_repo = None,
+        **kw,
+    ):
+        _video_auto.calls.append(
+            dict(requested = requested, family = family, base_repo = base_repo, **kw)
+        )
+        probe = kw.get("has_prequant")
+        if scheme is not None and requested == "auto" and probe is not None and not probe(scheme):
+            return None
+        return scheme
+
+    _video_auto.calls = []
+    monkeypatch.setattr(vid, "select_transformer_quant_scheme", _select)
     kw = dict(
         target = None,
         requested = "auto",
@@ -1361,6 +1375,17 @@ def test_the_conventional_auto_scheme_needs_an_artifact_for_every_expert(monkeyp
         is None
     )
     assert _video_auto(monkeypatch, scheme = None) is None
+
+
+def test_auto_is_handed_the_probe_that_lets_it_reach_a_prequant_only_scheme(monkeypatch):
+    """AUTO offers nvfp4 only where a hosted checkpoint provably covers THIS load."""
+    assert _video_auto(monkeypatch, scheme = "nvfp4") == "nvfp4"
+    probe = _video_auto.calls[-1]["has_prequant"]
+    assert probe("nvfp4") is True
+    assert probe("int8") is False
+    half = _fam(is_moe = True, prequant_repos = (("nvfp4", "org/x"),))
+    assert _video_auto(monkeypatch, scheme = "nvfp4", fam = half) is None
+    assert _video_auto.calls[-1]["has_prequant"]("nvfp4") is False
 
 
 def test_speed_off_and_the_modular_workflow_are_never_seeded_here(monkeypatch):
@@ -1399,8 +1424,85 @@ def test_the_conventional_coverage_probe_reads_every_component():
     assert not VideoBackend._denoiser_prequant_covered(half, "nvfp4", "org/test-video")
 
 
+def _a14b_auto(
+    monkeypatch,
+    *,
+    backend,
+    fam = None,
+    allowed = None,
+):
+    import types
+
+    import core.inference.diffusion_nvfp4_ops as ops
+    import core.inference.diffusion_prequant as pq
+    import core.inference.diffusion_transformer_quant as tq
+    from core.inference import video as vid
+    from core.inference.video_denoiser_prequant import denoiser_prequant_sources
+    from core.inference.video_families import detect_video_family
+
+    allowed = allowed or {"nvfp4", "fp8", "mxfp8", "int8"}
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
+    monkeypatch.setattr(tq, "_is_consumer_gpu", lambda device: False)
+    monkeypatch.setattr(tq, "_scheme_supported", lambda scheme, device, **kw: scheme in allowed)
+    monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: backend)
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+    fam = fam if fam is not None else detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
+    base = fam.base_repo
+    return (
+        vid._video_auto_denoiser_scheme(
+            fam,
+            target = types.SimpleNamespace(device = "cuda:0", dtype = "bfloat16"),
+            requested = "auto",
+            base_repo = base,
+            speed_mode = None,
+        ),
+        tq.select_transformer_quant_scheme(
+            types.SimpleNamespace(device = "cuda:0", dtype = "bfloat16"),
+            "auto",
+            family = fam.name,
+            base_repo = base,
+            has_prequant = lambda scheme: (denoiser_prequant_sources(fam, scheme, base) is not None),
+        ),
+    )
+
+
+def test_the_a14b_auto_plan_seeds_nvfp4_where_flashinfer_serves_the_device(monkeypatch):
+    seeded, chosen = _a14b_auto(monkeypatch, backend = "flashinfer")
+    assert seeded == "nvfp4"
+    assert chosen == "nvfp4"
+
+
+def test_the_a14b_auto_plan_stays_on_the_ladder_on_the_torchao_backend(monkeypatch):
+    seeded, chosen = _a14b_auto(monkeypatch, backend = "torchao")
+    assert chosen == "int8"
+    assert seeded is None
+
+
+def test_the_a14b_auto_plan_stays_on_the_ladder_with_only_one_expert_hosted(monkeypatch):
+    """One expert hosted is uncovered, not partly covered."""
+    import dataclasses
+
+    from core.inference.video_families import detect_video_family
+
+    full = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
+    half = dataclasses.replace(
+        full,
+        prequant_filenames = tuple(row for row in full.prequant_filenames if len(row) == 2),
+    )
+    seeded, chosen = _a14b_auto(monkeypatch, backend = "flashinfer", fam = half)
+    assert seeded is None
+    assert chosen == "int8"
+
+
+def test_the_a14b_auto_plan_falls_through_when_the_fp4_kernel_is_missing(monkeypatch):
+    seeded, chosen = _a14b_auto(monkeypatch, backend = "flashinfer", allowed = {"fp8", "mxfp8", "int8"})
+    assert seeded is None
+    assert chosen == "int8"
+
+
 def _planned_denoiser_request(monkeypatch, fam, **load_kwargs):
-    """The scheme the planner hands ``_denoiser_prequant_verified`` (stubbed, as is the build)."""
+    """The scheme the download planner hands ``_denoiser_prequant_verified``; only the Hub probe is stubbed."""
     from core.inference import video as vid
 
     backend = vid.VideoBackend()
@@ -1430,7 +1532,6 @@ def _planned_denoiser_request(monkeypatch, fam, **load_kwargs):
 
 
 def test_a_conventional_plan_drops_no_shard_the_load_will_not_seed(monkeypatch):
-    """Only the planned seed drops shards: a conventional load never forwards the raw request."""
     from core.inference.video_families import detect_video_family
 
     wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
@@ -1450,7 +1551,7 @@ def test_a_conventional_plan_drops_no_shard_the_load_will_not_seed(monkeypatch):
 
 
 def test_a_seed_the_plan_declined_is_pinned_into_the_load(monkeypatch):
-    """The plan's decline travels as its own value: the load cannot re-decide on a roomier card."""
+    """The plan runs with the PREVIOUS pipeline resident, so its decline travels as its own value, not None."""
     from core.inference import video as vid
     from core.inference.video_families import detect_video_family
 
@@ -1488,7 +1589,6 @@ def test_a_seed_the_plan_declined_is_pinned_into_the_load(monkeypatch):
 
 
 def test_the_seeded_denoiser_repo_is_claimed_against_a_concurrent_delete(monkeypatch):
-    """The seeded denoiser's repo (neither repo_id nor base_repo) joins the in-flight claim."""
     from core.inference import video as vid
     from core.inference.video_families import detect_video_family
 
@@ -1530,7 +1630,6 @@ def test_both_experts_of_an_moe_resolve_to_one_claimed_repo():
 
 
 def test_the_seeded_denoiser_artifact_is_fetched_under_the_load_cancel_event(monkeypatch):
-    """The seeded artifact is prefetched under the load's cancel event, not by the injection."""
     import threading
 
     from core.inference import video as vid

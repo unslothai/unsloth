@@ -346,11 +346,25 @@ class _Bytes:
 
 
 class Float8Tensor:
-    """A quantized weight as far as the fingerprint is concerned: the class NAME is the key."""
+    """A quantized fp8 weight; the class NAME is what the fingerprint and activation-floor checks key on."""
 
-    def __init__(self, qdata):
+    def __init__(
+        self,
+        qdata = b"",
+        hp_value_lb = 1e-12,
+    ):
         self.qdata = _Bytes(qdata)
         self.scale = _Bytes(b"scale")
+        self.act_quant_kwargs = types.SimpleNamespace(hp_value_lb = hp_value_lb)
+
+
+class NVFP4Tensor:
+    """The 4-bit half of a per-layer policy checkpoint."""
+
+    def __init__(self, qdata = b""):
+        self.qdata = _Bytes(qdata)
+        self.scale = _Bytes(b"scale")
+        self.act_quant_kwargs = types.SimpleNamespace(scale_dtype = "float8_e4m3fn")
 
 
 class _Recorder:
@@ -813,6 +827,35 @@ def test_load_require_bf16_int8_true_is_none(monkeypatch, tmp_path):
 
 def test_load_require_bf16_nvfp4_false_ok(monkeypatch, tmp_path):
     # nvfp4 quantises fp32 fine, so the runtime filter leaves the bf16 gate off and a checkpoint built the same way matches.
+    ckpt = _good_ckpt(scheme = "nvfp4")
+    ckpt["metadata"]["require_bf16"] = False
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "nvfp4") is not None
+
+
+def test_an_nvfp4_checkpoint_is_prewarmed_by_the_shared_loader(monkeypatch, tmp_path):
+    from core.inference import diffusion_nvfp4_linear as nl
+
+    seen: list = []
+    monkeypatch.setattr(
+        nl, "nvfp4_prewarm", lambda module, shapes, **_k: seen.append(tuple(shapes)) or 0
+    )
+    ckpt = _good_ckpt(scheme = "nvfp4")
+    ckpt["metadata"]["require_bf16"] = False
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "nvfp4") is not None
+    assert seen == [(1,)]
+
+    seen.clear()
+    assert _load(monkeypatch, tmp_path, _good_ckpt(scheme = "fp8"), scheme = "fp8") is not None
+    assert seen == []
+
+
+def test_a_failed_prewarm_keeps_the_loaded_checkpoint(monkeypatch, tmp_path):
+    from core.inference import diffusion_nvfp4_linear as nl
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("autotune failed")
+
+    monkeypatch.setattr(nl, "nvfp4_prewarm", _boom)
     ckpt = _good_ckpt(scheme = "nvfp4")
     ckpt["metadata"]["require_bf16"] = False
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "nvfp4") is not None
@@ -2127,25 +2170,18 @@ def test_load_is_dropped_when_the_padding_cannot_be_proven(monkeypatch, tmp_path
 # ── fp8 activation scale floor ──────────────────────────────────────────────────
 
 
-class _FakeFp8Tensor:
-    """Stands in for a torchao Float8Tensor: only act_quant_kwargs.hp_value_lb is read."""
-
-    def __init__(self, hp_value_lb):
-        self.act_quant_kwargs = types.SimpleNamespace(hp_value_lb = hp_value_lb)
-
-
 def test_an_fp8_checkpoint_without_the_activation_floor_is_rejected():
     # A checkpoint built before activation_value_lb bakes hp_value_lb=None into every quantised
     # tensor, and stays broken however it is loaded: torchao's per-row activation quantiser divides
     # by the row amax, so qwen's all-zero text rows give scale 0 and NaN. The metadata checks around
     # this one all accept an absent field for back-compat, which is exactly wrong here, so the floor
     # is read off the TENSORS instead. Measured: 412 of 512 rows non-finite without it, 0 with it.
-    floored = {"blocks.0.attn.to_q.weight": _FakeFp8Tensor(1e-12)}
-    unfloored = {"blocks.0.attn.to_q.weight": _FakeFp8Tensor(None)}
+    floored = {"blocks.0.attn.to_q.weight": Float8Tensor(hp_value_lb = 1e-12)}
+    unfloored = {"blocks.0.attn.to_q.weight": Float8Tensor(hp_value_lb = None)}
     assert pq._fp8_activation_floor_present(floored, None) is True
     assert pq._fp8_activation_floor_present(unfloored, None) is False
     # Zero is not a floor either: it is what an unclamped amax divide produces.
-    assert pq._fp8_activation_floor_present({"w": _FakeFp8Tensor(0.0)}, None) is False
+    assert pq._fp8_activation_floor_present({"w": Float8Tensor(hp_value_lb = 0.0)}, None) is False
 
 
 def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
@@ -2157,8 +2193,142 @@ def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
     assert pq._fp8_activation_floor_present({}, None) is True
 
 
+def _policy_meta(
+    policy = None,
+    *,
+    base = "Tongyi-MAI/Z-Image-Turbo",
+    family = "z-image",
+    **overrides,
+):
+    from core.inference.diffusion_nvfp4_policy import (
+        NVFP4_POLICY_KEY,
+        ZIMG_RG76,
+        policy_metadata,
+    )
+
+    policy = policy or ZIMG_RG76
+    assignment = {f"layers.{i}.attention.to_q": "nvfp4" for i in range(76)}
+    assignment.update({f"layers.{i}.feed_forward.w1": "fp8" for i in range(195)})
+    assignment.update({f"t_embedder.mlp.{i}": "bf16" for i in range(5)})
+    block = dict(policy_metadata(policy, assignment)[NVFP4_POLICY_KEY])
+    block.update(overrides)
+    return {
+        "scheme": "nvfp4",
+        "base_model_id": base,
+        "family": family,
+        "fp8_granularity": "per_row",
+        NVFP4_POLICY_KEY: block,
+    }
+
+
+def test_the_format_tag_follows_the_policy_and_refuses_to_carry_two_claims():
+    from core.inference.diffusion_convrot import rotation_metadata
+
+    assert pq.prequant_format_for({"scheme": "nvfp4"}) == pq.PREQUANT_FORMAT
+    assert pq.prequant_format_for(_policy_meta()) == pq.PREQUANT_FORMAT_POLICY
+    assert pq.PREQUANT_FORMAT_POLICY not in (pq.PREQUANT_FORMAT, pq.PREQUANT_FORMAT_ROTATED)
+    both = {**_policy_meta(), **rotation_metadata(128, ["layers.0.attention.to_q"])}
+    with pytest.raises(ValueError, match = "both"):
+        pq.prequant_format_for(both)
+
+
+@pytest.mark.parametrize(
+    ("fmt", "declared", "ok"),
+    [
+        (pq.PREQUANT_FORMAT_POLICY, True, True),
+        (pq.PREQUANT_FORMAT, False, True),
+        (pq.PREQUANT_FORMAT, True, False),
+        (pq.PREQUANT_FORMAT_ROTATED, True, False),
+        (pq.PREQUANT_FORMAT_POLICY, False, False),
+    ],
+)
+def test_the_validator_enforces_the_format_policy_biconditional(fmt, declared, ok):
+    meta = _policy_meta() if declared else {"scheme": "nvfp4"}
+    assert pq._validate_policy(fmt, meta, "nvfp4", None) is ok
+
+
+def test_a_policy_declaration_this_build_cannot_reproduce_is_refused():
+    from core.inference.diffusion_nvfp4_policy import NVFP4_POLICY_KEY
+
+    fmt = pq.PREQUANT_FORMAT_POLICY
+    assert pq._validate_policy(fmt, _policy_meta(), "nvfp4", None) is True
+    assert pq._validate_policy(fmt, _policy_meta(kind = "v2"), "nvfp4", None) is False
+    assert pq._validate_policy(fmt, _policy_meta(nvfp4_fqns = []), "nvfp4", None) is False
+    assert pq._validate_policy(fmt, _policy_meta(), "fp8", None) is False
+    assert pq._validate_policy(fmt, _policy_meta(base = "some/other-dit"), "nvfp4", None) is False
+    assert pq._validate_policy(fmt, _policy_meta(family = "flux.1"), "nvfp4", None) is False
+    assert pq._validate_policy(fmt, _policy_meta(policy_version = 2), "nvfp4", None) is False
+    assert pq._validate_policy(fmt, _policy_meta(policy_id = "qwen_p02_v1"), "nvfp4", None) is False
+    drifted = _policy_meta()
+    drifted[NVFP4_POLICY_KEY]["counts"] = {"nvfp4": 34, "fp8": 236, "bf16": 6}
+    assert pq._validate_policy(fmt, drifted, "nvfp4", None) is False
+
+
+def test_a_policy_checkpoint_is_validated_end_to_end():
+    logger = _Recorder()
+    ckpt = {
+        "format": pq.PREQUANT_FORMAT_POLICY,
+        "metadata": _policy_meta(),
+        "state_dict": {"weight": object()},
+    }
+    assert pq._validate_checkpoint(ckpt, "nvfp4", "Tongyi-MAI/Z-Image-Turbo", logger) is True
+    ckpt["format"] = pq.PREQUANT_FORMAT
+    assert pq._validate_checkpoint(ckpt, "nvfp4", "Tongyi-MAI/Z-Image-Turbo", logger) is False
+    assert "v3" in logger.text
+
+
+def test_the_fp8_invariants_cover_the_fp8_half_of_a_policy_checkpoint():
+    # A policy artifact is declared nvfp4 but mostly Float8Tensor; gating on scheme == fp8 skipped it.
+    logger = _Recorder()
+    ckpt = {
+        "format": pq.PREQUANT_FORMAT_POLICY,
+        "metadata": _policy_meta(),
+        "state_dict": {
+            "layers.0.attention.to_q.weight": NVFP4Tensor(b"q4"),
+            "layers.0.feed_forward.w1.weight": Float8Tensor(hp_value_lb = 1e-12),
+        },
+    }
+    base = "Tongyi-MAI/Z-Image-Turbo"
+    assert pq._validate_checkpoint(ckpt, "nvfp4", base, logger) is True
+    unfloored = dict(ckpt)
+    unfloored["state_dict"] = dict(ckpt["state_dict"])
+    unfloored["state_dict"]["layers.0.feed_forward.w1.weight"] = Float8Tensor(hp_value_lb = None)
+    assert pq._validate_checkpoint(unfloored, "nvfp4", base, logger) is False
+    per_tensor = dict(ckpt)
+    per_tensor["metadata"] = _policy_meta()
+    per_tensor["metadata"]["fp8_granularity"] = "per_tensor"
+    assert pq._validate_checkpoint(per_tensor, "nvfp4", base, logger) is False
+
+
+def test_the_floor_check_skips_the_4_bit_weights_beside_the_fp8_ones():
+    mixed = {
+        "layers.0.attention.to_q.weight": NVFP4Tensor(b"q4"),
+        "layers.0.feed_forward.w1.weight": Float8Tensor(hp_value_lb = 1e-12),
+    }
+    assert pq._fp8_activation_floor_present(mixed, None) is True
+    mixed["layers.0.feed_forward.w1.weight"] = Float8Tensor(hp_value_lb = None)
+    assert pq._fp8_activation_floor_present(mixed, None) is False
+    assert pq._fp8_activation_floor_present({"w": NVFP4Tensor()}, None) is True
+
+
+def test_pinning_the_fp8_kernel_leaves_the_4_bit_weights_alone(monkeypatch):
+    _stub_kernel_preference(monkeypatch)
+    sd = {
+        "layers.0.attention.to_q.weight": NVFP4Tensor(b"q4"),
+        "layers.0.feed_forward.w1.weight": _FakeFp8Weight(_FakeKernelPreference.AUTO),
+    }
+    assert pq._pin_kernel_preference(sd, logger = None) == 1
+    assert not hasattr(sd["layers.0.attention.to_q.weight"], "kernel_preference")
+
+
+def test_an_nvfp4_install_must_be_able_to_open_the_fp8_weights_too():
+    required = pq._SCHEME_REQUIRED_GLOBALS["nvfp4"]
+    assert pq._SCHEME_REQUIRED_GLOBALS["fp8"] <= required
+    assert "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor" in required
+
+
 def test_the_checkpoint_is_released_before_the_device_copy(monkeypatch, tmp_path):
-    """assign=True shares the checkpoint's tensors: unreference them before ``.to(device)``."""
+    """The CPU checkpoint must be unreferenced by the time ``.to(device)`` allocates (unified memory peak)."""
     import weakref
 
     seen: dict = {}
@@ -2414,3 +2584,223 @@ def test_a_cached_name_this_install_cannot_open_is_not_a_cache_hit(monkeypatch, 
 
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", _boom)
     assert pq.cached_checkpoint_path(source) == str(tmp_path / "st")
+
+
+def _refused(cls, status):
+    message = f"{status} Client Error: unsloth/Z-Image-Turbo-NVFP4"
+    try:
+        return cls(message, response = None)
+    except (TypeError, AttributeError):  # huggingface_hub >= 1.0 reads an httpx response
+        import httpx
+        request = httpx.Request(
+            "GET", "https://huggingface.co/api/models/unsloth/Z-Image-Turbo-NVFP4"
+        )
+        return cls(message, response = httpx.Response(status, request = request))
+
+
+def _nvfp4_repo_source():
+    return PrequantSource(
+        kind = "repo",
+        location = "unsloth/Z-Image-Turbo-NVFP4",
+        filename = "Z-Image-Turbo-NVFP4.pt",
+    )
+
+
+@pytest.mark.parametrize(
+    "error_name,status",
+    [("RepositoryNotFoundError", 401), ("RepositoryNotFoundError", 404), ("GatedRepoError", 403)],
+)
+def test_a_refused_prequant_repo_is_no_checkpoint_not_a_plan_failure(
+    monkeypatch, error_name, status
+):
+    import huggingface_hub
+    from huggingface_hub import errors as hub_errors
+
+    from core.inference.diffusion import DiffusionBackend
+
+    def _refuse(self, *a, **k):
+        raise _refused(getattr(hub_errors, error_name), status)
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "model_info", _refuse)
+    failures: list = []
+    entry = DiffusionBackend._prequant_source_hub_entry(
+        _nvfp4_repo_source(), None, failures, scheme = "nvfp4"
+    )
+    assert entry is None
+    assert failures == [], "a repo this user cannot see must not mark the download plan failed"
+
+
+def test_a_transient_hub_error_still_fails_the_plan(monkeypatch):
+    """Only the repo-level refusal is "no checkpoint". A network error says nothing about the repo,
+    so it still propagates and the planner records it."""
+    import huggingface_hub
+
+    from core.inference.diffusion import DiffusionBackend
+
+    def _boom(self, *a, **k):
+        raise ConnectionError("no route to host")
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "model_info", _boom)
+    with pytest.raises(ConnectionError):
+        DiffusionBackend._prequant_source_hub_entry(_nvfp4_repo_source(), None, [], scheme = "nvfp4")
+
+
+def _prefetch_backend(monkeypatch, *, cached, model_info):
+    """A backend whose dense-quant candidate is the hosted NVFP4 prequant, with the Hub answering
+    ``model_info``. Explicit nvfp4, so the auto-only cache gates do not decide it first."""
+    import types
+
+    import huggingface_hub
+
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_memory as dmem
+    from core.inference.diffusion import DiffusionBackend
+
+    tokens: list = []
+
+    class _Api:
+        def __init__(
+            self,
+            token = None,
+            **k,
+        ):
+            tokens.append(token)
+
+        def model_info(self, repo_id, **k):
+            return model_info(repo_id)
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(prequant = True, scheme = "nvfp4", steady_total_mib = 1),
+    )
+    monkeypatch.setattr(
+        dmod, "usable_prequant_source", lambda fam, scheme, **kw: _nvfp4_repo_source()
+    )
+    monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: cached)
+    monkeypatch.setattr(
+        dmem,
+        "snapshot_device_memory",
+        lambda target: types.SimpleNamespace(total_mib = None, memory_kind = "discrete_vram"),
+    )
+    monkeypatch.setattr(
+        pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
+    backend = DiffusionBackend()
+    monkeypatch.setattr(backend, "_target_for_ordinal", lambda fam, ordinal: object())
+    return backend, tokens
+
+
+_NVFP4_PREFETCH_KWARGS = {"transformer_quant": "nvfp4", "hf_token": "hf_user_token"}
+
+
+def test_an_unreachable_prequant_does_not_suppress_the_dense_shards(monkeypatch):
+    """The candidate is PREQUANT because the family table names a checkpoint, whether or not this user
+    can read it. Private, the load falls back to the dense build, so the plan must stage the dense
+    shards rather than let the load pull ~25 GB inline after the phase switched to finalizing."""
+    from huggingface_hub import errors as hub_errors
+
+    def _refuse(repo_id):
+        raise _refused(hub_errors.RepositoryNotFoundError, 401)
+
+    backend, tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _refuse)
+    fam = _fam()
+    assert backend._dense_quant_prefetch_needed(fam, dict(_NVFP4_PREFETCH_KWARGS)) is True
+    assert tokens == [
+        "hf_user_token"
+    ], "the probe must ask as the user, else a granted token reads as refused"
+
+
+def test_an_unreachable_prequant_is_carried_into_the_load(monkeypatch):
+    """begin_load hands these kwargs to load_pipeline, so the load sizes the scheme as the dense build
+    it will fall back to rather than as a checkpoint that will never arrive."""
+    from huggingface_hub import errors as hub_errors
+
+    def _refuse(repo_id):
+        raise _refused(hub_errors.RepositoryNotFoundError, 401)
+
+    backend, _tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _refuse)
+    kwargs = dict(_NVFP4_PREFETCH_KWARGS)
+    assert backend._dense_quant_prefetch_needed(_fam(), kwargs) is True
+    assert kwargs["_prequant_unreachable"] == ("nvfp4",)
+    backend._dense_quant_prefetch_needed(_fam(), kwargs)
+    assert kwargs["_prequant_unreachable"] == ("nvfp4",)
+
+
+def test_a_readable_prequant_is_not_marked_unreachable(monkeypatch):
+    import types
+
+    def _listing(repo_id):
+        return types.SimpleNamespace(
+            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.pt", size = 4096)]
+        )
+
+    backend, _tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _listing)
+    kwargs = dict(_NVFP4_PREFETCH_KWARGS)
+    assert backend._dense_quant_prefetch_needed(_fam(), kwargs) is False
+    assert "_prequant_unreachable" not in kwargs
+
+
+def test_local_only_treats_an_uncached_prequant_as_unreachable(monkeypatch):
+    """local_files_only forbids the loader from fetching the checkpoint, so a Hub listing that
+    names it must not keep the load sizing a packed artifact that will never arrive."""
+    import types
+
+    def _listing(repo_id):
+        return types.SimpleNamespace(
+            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.pt", size = 4096)]
+        )
+
+    backend, tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _listing)
+    kwargs = {**_NVFP4_PREFETCH_KWARGS, "local_files_only": True}
+    assert backend._dense_quant_prefetch_needed(_fam(), kwargs) is True
+    assert kwargs["_prequant_unreachable"] == ("nvfp4",)
+    assert tokens == [], "local-only mode must not ask the Hub"
+    backend, _tokens = _prefetch_backend(monkeypatch, cached = True, model_info = _listing)
+    kwargs = {**_NVFP4_PREFETCH_KWARGS, "local_files_only": True}
+    assert backend._dense_quant_prefetch_needed(_fam(), kwargs) is False
+    assert "_prequant_unreachable" not in kwargs
+
+
+def test_a_readable_prequant_still_drops_the_dense_shards(monkeypatch):
+    """Positive control: a repo that lists the checkpoint keeps the small download."""
+    import types
+
+    def _listing(repo_id):
+        return types.SimpleNamespace(
+            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.pt", size = 4096)]
+        )
+
+    backend, _tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _listing)
+    assert backend._dense_quant_prefetch_needed(_fam(), dict(_NVFP4_PREFETCH_KWARGS)) is False
+
+
+def test_a_cached_prequant_drops_the_dense_shards_without_asking_the_hub(monkeypatch):
+    def _no_hub(repo_id):
+        raise AssertionError("a cached checkpoint must not cost a Hub round trip")
+
+    backend, tokens = _prefetch_backend(monkeypatch, cached = True, model_info = _no_hub)
+    assert backend._dense_quant_prefetch_needed(_fam(), dict(_NVFP4_PREFETCH_KWARGS)) is False
+    assert tokens == []
+
+
+def test_an_unanswerable_reachability_probe_keeps_the_prequant_verdict(monkeypatch):
+    """Offline or a Hub hiccup says nothing about access, so it must not widen a multi-GB pull."""
+
+    def _offline(repo_id):
+        raise ConnectionError("offline")
+
+    backend, _tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _offline)
+    assert backend._dense_quant_prefetch_needed(_fam(), dict(_NVFP4_PREFETCH_KWARGS)) is False
+
+
+def test_the_download_plan_probes_with_the_user_token():
+    """download_plan builds its own kwargs for the prefetch decision; without the token threaded in,
+    a user granted access to a private prequant reads as refused and stages the dense shards."""
+    import inspect
+
+    from core.inference.diffusion import DiffusionBackend
+
+    src = inspect.getsource(DiffusionBackend.download_plan)
+    assert '{**load_kwargs, "base_repo": base, "hf_token": hf_token}' in src
