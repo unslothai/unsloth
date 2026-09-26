@@ -21,8 +21,8 @@ import os
 import re
 import shutil
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -335,6 +335,46 @@ def test_the_formatter_invocation_fits_in_a_windows_command_line():
     )
 
 
+def _run_side_by_side(argvs: list[list[str]], log_dir: Path) -> list[tuple[int, str]]:
+    """Run `argvs` at most `os.cpu_count()` at a time; (returncode, output) for each, in order.
+
+    Driven from the calling thread rather than a thread pool: pytest-timeout raises in this
+    thread, and a pool's shutdown would wait on worker threads blocked in subprocess.run, so a
+    stalled formatter would outlive the per-test timeout and hold the job to its own. Here the
+    exception lands in the polling loop and the finally kills whatever is still running.
+    Output goes to files so a chatty child can never block on a full pipe.
+    """
+    log_dir.mkdir(parents = True, exist_ok = True)
+    limit = max(1, min(len(argvs), os.cpu_count() or 1))
+    results: list[tuple[int, str] | None] = [None] * len(argvs)
+    running: dict[int, tuple[subprocess.Popen, Path]] = {}
+    queued = list(enumerate(argvs))
+    try:
+        while queued or running:
+            while queued and len(running) < limit:
+                index, argv = queued.pop(0)
+                log = log_dir / f"{index}.log"
+                with open(log, "wb") as sink:
+                    running[index] = (
+                        subprocess.Popen(argv, stdout = sink, stderr = subprocess.STDOUT),
+                        log,
+                    )
+            for index, (proc, log) in list(running.items()):
+                if proc.poll() is not None:
+                    results[index] = (
+                        proc.returncode,
+                        log.read_text(encoding = "utf-8", errors = "replace"),
+                    )
+                    del running[index]
+            if running:
+                time.sleep(0.05)
+    finally:
+        for proc, _ in running.values():
+            proc.kill()
+            proc.wait()
+    return [result for result in results if result is not None]
+
+
 @pytest.mark.skipif(_VERDICT == "skip", reason = _RUFF_REASON or "")
 def test_every_tracked_python_file_is_already_formatted(tmp_path):
     """Run the hook over copies of the whole tracked set and expect no rewrite."""
@@ -369,13 +409,8 @@ def test_every_tracked_python_file_is_already_formatted(tmp_path):
     # The batches touch disjoint files, so they run side by side: nearly all of the time is the
     # hook's single-threaded Python passes (ruff itself is a fraction of a second), and run one
     # after another on a loaded CI runner they went past pytest-timeout's 330 s.
-    argvs = formatter_argvs(copies)
-    with ThreadPoolExecutor(max_workers = max(1, min(len(argvs), os.cpu_count() or 1))) as pool:
-        runs = list(
-            pool.map(lambda argv: subprocess.run(argv, capture_output = True, text = True), argvs)
-        )
-    for run in runs:
-        assert run.returncode == 0, f"the formatter itself failed:\n{run.stdout}\n{run.stderr}"
+    for code, output in _run_side_by_side(formatter_argvs(copies), tmp_path / "formatter-logs"):
+        assert code == 0, f"the formatter itself failed:\n{output}"
 
     drifted = [name for name in names if (tmp_path / name).read_bytes() != originals[name]]
     assert not drifted, (
@@ -385,3 +420,32 @@ def test_every_tracked_python_file_is_already_formatted(tmp_path):
         + "\n  Fix: python scripts/run_ruff_format.py "
         + " ".join(drifted)
     )
+
+
+def test_a_timeout_in_the_polling_loop_kills_the_running_formatters(tmp_path, monkeypatch):
+    """pytest-timeout raises in the thread that polls, so whatever it interrupts must not leave
+    a formatter running (the job would then wait on it until its own, much longer, timeout)."""
+    started = []
+    real_popen = subprocess.Popen
+
+    def popen(*args, **kwargs):
+        started.append(real_popen(*args, **kwargs))
+        return started[-1]
+
+    def timeout(_seconds):
+        raise RuntimeError("stand-in for pytest-timeout")
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(time, "sleep", timeout)
+    stall = [sys.executable, "-c", "import time; time.sleep(120)"]
+    with pytest.raises(RuntimeError, match = "stand-in"):
+        _run_side_by_side([stall, stall], tmp_path)
+    assert started, "nothing was launched, so this proves nothing"
+    assert all(proc.poll() is not None for proc in started), "a formatter outlived the timeout"
+
+
+def test_side_by_side_results_come_back_in_order(tmp_path):
+    argvs = [[sys.executable, "-c", f"import sys; print({i}); sys.exit({i % 2})"] for i in range(5)]
+    results = _run_side_by_side(argvs, tmp_path)
+    assert [code for code, _ in results] == [0, 1, 0, 1, 0]
+    assert [output.strip() for _, output in results] == ["0", "1", "2", "3", "4"]
