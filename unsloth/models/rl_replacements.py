@@ -434,9 +434,7 @@ RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
 
-# Unsloth's training forward drops the 2D mask (right pads are invisible under causal attention), so
-# Online DPO's [left-padded prompt | completion] rows let real tokens attend pads. Right-align rows as
-# GRPO's left_pack_padding does, then read each row's completion logits from its shifted start.
+# Unsloth's training forward drops the 2D mask, so right-align Online DPO rows (GRPO's left_pack_padding) before scoring.
 _ONLINE_DPO_MODEL_CALL = re.compile(
     r"^(?P<indent>[ \t]*)output = model\(prompt_completion_ids, "
     r"(?P<kwargs>attention_mask=prompt_completion_mask|\*\*model_kwargs)\)[ \t]*$",
@@ -484,8 +482,7 @@ def online_dpo_trainer__forward(function_name, function):
         f"{j}        completion_ids.size(1), device = completion_ids.device\n"
         f"{j}    ).unsqueeze(0)\n"
         f"{j}    _unsloth_index = _unsloth_index.clamp(0, output.logits.size(1) - 1)\n"
-        # index_select of whole rows: a contiguous copy with a row-wise index_add backward. Advanced
-        # indexing was ~40% slower (fwd+bwd), take_along_dim keeps a [B, C, V] int64 index for backward.
+        # index_select: advanced indexing is ~40% slower, take_along_dim keeps a [B, C, V] int64 index.
         f"{j}    _unsloth_rows, _unsloth_len = output.logits.shape[:2]\n"
         f"{j}    _unsloth_index = _unsloth_index + _unsloth_len * torch.arange(\n"
         f"{j}        _unsloth_rows, device = _unsloth_index.device\n"
@@ -493,7 +490,7 @@ def online_dpo_trainer__forward(function_name, function):
         f"{j}    logits = output.logits.reshape(_unsloth_rows * _unsloth_len, -1).index_select(\n"
         f"{j}        0, _unsloth_index.reshape(-1)\n"
         f"{j}    ).view(_unsloth_rows, -1, output.logits.size(-1))\n"
-        # The indexing copies; drop [B, L, V] before log_softmax so peak memory stays at TRL's level.
+        # Drop [B, L, V] before log_softmax, else the copy above raises peak memory.
         f"{j}    output = None\n"
         f"{j}else:\n"
         f"{j}    {logits_slice.group('line')}"

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Online DPO's _forward scores [left-padded prompt | completion] rows in train mode, where
-Unsloth's forward drops the 2D mask. The patch right-aligns rows first; these tests run the
-patched TRL source on a tiny model that drops its mask the same way. CPU only, no unsloth import.
-"""
+"""Patched Online DPO _forward on a tiny model that drops its mask in training like Unsloth's; CPU only."""
 
 import ast
 import importlib.util
@@ -136,7 +133,7 @@ def test_patched_forward_matches_unpadded_rows(version):
     source = _trl_sources()[version]
     patched_source = _patcher()("_forward", source)
     assert "_unsloth_left_pad" in patched_source
-    assert _patcher()("_forward", patched_source) == patched_source  # idempotent
+    assert _patcher()("_forward", patched_source) == patched_source
     original, patched = _compile(source), _compile(patched_source)
     trainer = types.SimpleNamespace(max_length = 64)
     model = _DropsMaskInTraining().train()
@@ -150,10 +147,10 @@ def test_patched_forward_matches_unpadded_rows(version):
 
     for r, ref in enumerate(reference):
         torch.testing.assert_close(got[r, : len(ref)], ref, atol = 1e-5, rtol = 1e-5)
-    # The patched call (first) never shows the model a pad before a real token; stock TRL does.
+    # Patched call first: no pad before a real token. Stock TRL second: left-padded.
     assert not bool((model.seen[0][:, 1:] > model.seen[0][:, :-1]).any())
     assert bool((model.seen[1][:, 1:] > model.seen[1][:, :-1]).any())
-    # Guard the guard: stock TRL on the same model is wrong for the left-padded rows.
+    # Stock TRL on the same model is wrong, so the check can fail.
     assert not torch.allclose(stock[1, : len(reference[1])], reference[1], atol = 1e-3)
 
 
