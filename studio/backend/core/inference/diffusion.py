@@ -8740,7 +8740,7 @@ class DiffusionBackend:
                         result,
                         engine = "diffusers",
                         steps = steps,
-                        strength = strength,
+                        strength = strength_applied,
                         upscale = upscale,
                     ),
                 )

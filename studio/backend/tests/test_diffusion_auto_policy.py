@@ -641,3 +641,9 @@ def test_generation_log_line_reads_the_recipe_fields():
         "strength=0.6 loras=[['style', 0.8]]"
     )
     assert "size" not in ap.format_generation_for_log({"images": []}, engine = "sd_cpp")
+
+
+def test_generation_log_line_prefers_the_engine_supplied_loras():
+    result = {"images": [], "seeds": [3], "workflow": "txt2img"}
+    line = ap.format_generation_for_log(result, engine = "sd_cpp", loras = [("style", 0.8)])
+    assert line == "engine=sd_cpp workflow=txt2img images=0 seeds=[3] loras=[('style', 0.8)]"

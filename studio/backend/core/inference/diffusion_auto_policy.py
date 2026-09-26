@@ -552,6 +552,7 @@ def format_generation_for_log(
     steps: Any = None,
     strength: Any = None,
     upscale: Any = None,
+    loras: Any = None,
 ) -> str:
     """One-line log summary of a generate() result."""
     images = result.get("images") or ()
@@ -565,7 +566,7 @@ def format_generation_for_log(
         "steps": steps,
         "strength": strength,
         "upscale": upscale,
-        "loras": result.get("active_loras") or None,
+        "loras": loras or result.get("active_loras") or None,
         "reference_resolution": result.get("reference_resolution"),
         "localized_edit": result.get("localized_edit"),
     }

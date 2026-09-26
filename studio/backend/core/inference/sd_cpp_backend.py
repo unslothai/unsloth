@@ -3628,7 +3628,11 @@ class SdCppDiffusionBackend:
                 logger.info(
                     "diffusion.generated: %s",
                     format_generation_for_log(
-                        result, engine = "sd_cpp", steps = steps, strength = strength
+                        result,
+                        engine = "sd_cpp",
+                        steps = steps,
+                        strength = strength,
+                        loras = active_loras,
                     ),
                 )
                 return result
