@@ -53,7 +53,7 @@ import {
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { useIsMobile } from "@/hooks/use-mobile";
+import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { holdSidebarPinned, releaseSidebarPinned } from "@/hooks/use-sidebar-pin";
 import {
   DOWNLOAD_KIND,
@@ -2271,6 +2271,10 @@ export function ChatPage({
       projectId: search.project,
     }),
   );
+  const isCompact = useIsCompact();
+  // Mirrors ChatSettingsPanel's own open and docked conditions.
+  const settingsDocked =
+    active && modelConfigRequest === null && settingsOpen && !isCompact;
   const handleModelConfigRequestAdopted = useCallback(
     (requestId: string) => {
       setSettingsOpen(false);
@@ -4112,6 +4116,12 @@ export function ChatPage({
           />
         )}
         <div
+          // A docked Run settings panel owns the right edge, and the window controls with it.
+          style={
+            settingsDocked
+              ? ({ "--studio-chat-header-right-inset": "0px" } as CSSProperties)
+              : undefined
+          }
           className={cn(
             "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[calc(10px*var(--ui-space-scale,1))] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile
@@ -4249,7 +4259,8 @@ export function ChatPage({
               </div>
             ) : null}
           </div>
-          <div className="pointer-events-auto ml-auto flex items-center gap-1">
+          {/* Control height, so the 30px icons centre on the model selector's line. */}
+          <div className="pointer-events-auto ml-auto flex h-[var(--studio-chat-control-height,34px)] items-center gap-1">
             {showContextWindowUsage &&
             view.mode === "single" &&
             (contextUsage || contextWindowKnown) ? (

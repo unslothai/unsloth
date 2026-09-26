@@ -606,43 +606,29 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
     assert "requestedSize," in bounds_call
 
 
-def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
+def test_titlebar_navigation_slot_holds_its_buttons_and_leaves_the_band_to_pages():
     source = _ui_source(TITLEBAR)
 
-    # Read raw, and matched across whitespace because prettier wrapped the ternary over three
-    # lines. #11458 made the slot `max(7rem, calc(7rem * var(--ui-space-scale, 1)))` so it
-    # grows with the UI font and never drops under the three 30px buttons. A bare `7rem` is
-    # not the same guarantee: the buttons' own padding and gaps still scale, so at a larger
-    # setting a fixed slot is overrun and the drag region starts inside the navigation. Both
-    # terms are pinned, since either one drifting is a slot that no longer says 7rem.
+    # Collapsed, the slot is the three fixed 30px buttons plus their scaled pl-4 and gaps, so it
+    # never drops under the buttons and never reaches the page header beside it. Pinned, it spans
+    # the sidebar. Matched across whitespace because the formatter wraps the ternary.
     assert re.search(
         r"showSidebarSurface && !pinned\s*\?\s*"
-        r'"max\(\s*7rem\s*,\s*calc\(\s*7rem\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)\s*\)"'
+        r'"calc\(90px \+ 20px \* var\(--ui-space-scale, 1\)\)"'
         r"\s*:\s*sidebarWidth",
         TITLEBAR.read_text(encoding = "utf-8"),
-    ), "the unpinned sidebar surface no longer sizes the titlebar navigation slot from 7rem"
+    ), "the collapsed titlebar navigation slot is no longer its buttons' width"
     assert "style={{ width: titlebarNavigationWidth }}" in source
-    assert "left: titlebarNavigationWidth" in source
+    assert "left: showSidebarSurface ? titlebarNavigationWidth : 0" in source
     assert "<DesktopTitlebarNavigation" in source
-    assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
 
-    # Keep the decoration below z-50 modals and outside the z-[70] header.
-    assert 'data-slot="window-titlebar-decoration"' in source
-    decoration = source.split('data-slot="window-titlebar-decoration"', 1)[1].split("<header", 1)[0]
-    assert (
-        'className="pointer-events-none absolute inset-x-0 '
-        'top-[var(--studio-custom-titlebar-height)] z-[45] h-3"' in decoration
-    )
-    # The border is always visible.
-    assert 'className="absolute top-0 h-px bg-sidebar-border"' in decoration
-    # The backing and corner only appear when pinned.
-    assert decoration.count("{pinned && (") == 2
-    assert 'className="absolute top-0 size-3 -translate-x-px bg-sidebar"' in decoration
-    assert (
-        'className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
-        in decoration
-    )
+    # The band belongs to the page row: no strip background and no card corner under it, and the
+    # titlebar's own drag strip only where no chat-like header shares the band.
+    assert 'data-slot="window-titlebar-decoration"' not in source
+    assert "bg-sidebar text-sidebar-foreground" not in source
+    assert "const unifiedRow = showSidebarSurface && !isMobile && pageHeaderInBand;" in source
+    assert "{!unifiedRow && (" in source
 
 
 def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
@@ -2355,10 +2341,9 @@ def test_media_pages_clear_the_custom_titlebar():
     """The chat-style layout gives the media pages no outer inset, so each applies its own."""
     root = _ui_source(ROOT_ROUTE)
 
-    assert re.search(
-        r"const isChatLike =\s*isChatRoute \|\| isImagesRoute \|\| isVideoRoute \|\| isAudioRoute;",
-        root,
-    )
+    assert "const isChatLike = isChatLikeRoute(pathname);" in root
+    routes = _ui_source(FRONTEND / "lib/chat-like-routes.ts")
+    assert 'new Set(["/chat", "/images", "/video", "/audio"])' in routes
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         shell = _ui_source(page).split('"diffusion-surface', 1)[1].split(">", 1)[0]
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name

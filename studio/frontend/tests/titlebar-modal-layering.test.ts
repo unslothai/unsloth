@@ -7,15 +7,15 @@ import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
 const Z_INDEX_PATTERN = /z-\[(\d+)\]|\bz-(\d+)\b/;
-const DECORATION_PATTERN =
-  /data-slot="window-titlebar-decoration"[\s\S]*?className="([^"]+)"/;
-const TITLEBAR_PATTERN = /<header\s+className=\{cn\(\s*"([^"]+)"/;
-const DIALOG_OVERLAY_PATTERN =
-  /data-slot="dialog-overlay"[\s\S]*?"([^"]*\bz-50\b[^"]*)"/;
-const ALERT_DIALOG_OVERLAY_PATTERN =
-  /data-slot="alert-dialog-overlay"[\s\S]*?"([^"]*\bz-50\b[^"]*)"/;
-const TOP_FULL_PATTERN = /top-full/;
-const CLOSED_DECORATION_PATTERN = /<\/div>\s*\)\}\s*$/;
+const TITLEBAR_PATTERN =
+  /<header\s+data-slot="window-titlebar"\s+className="([^"]+)"/;
+const OVERLAY_SLOTS = [
+  "dialog-overlay",
+  "alert-dialog-overlay",
+  "sheet-overlay",
+];
+const MODAL_BAND_RULE =
+  /:root:has\(([\s\S]*?)\)\s*\[data-slot="window-titlebar"\]\s*\{\s*background-color:/;
 
 function zIndex(block: string): number {
   const match = block.match(Z_INDEX_PATTERN);
@@ -23,49 +23,35 @@ function zIndex(block: string): number {
   return Number(match[1] ?? match[2]);
 }
 
-test("titlebar decoration stays below modal backdrops and window controls", async () => {
-  const [titlebar, dialog, alertDialog] = await Promise.all([
-    readSrc("components/tauri/window-titlebar.tsx"),
-    readSrc("components/ui/dialog.tsx"),
-    readSrc("components/ui/alert-dialog.tsx"),
-  ]);
-
-  const decoration = titlebar.match(DECORATION_PATTERN);
-  const titlebarHeader = titlebar.match(TITLEBAR_PATTERN);
-  const dialogOverlay = dialog.match(DIALOG_OVERLAY_PATTERN);
-  const alertDialogOverlay = alertDialog.match(ALERT_DIALOG_OVERLAY_PATTERN);
-
-  assert.ok(decoration);
-  assert.ok(titlebarHeader);
-  assert.ok(dialogOverlay);
-  assert.ok(alertDialogOverlay);
-
-  const decorationLayer = zIndex(decoration[1]);
-  const titlebarLayer = zIndex(titlebarHeader[1]);
-  for (const overlay of [dialogOverlay[1], alertDialogOverlay[1]]) {
-    const overlayLayer = zIndex(overlay);
-    assert.ok(decorationLayer < overlayLayer);
-    assert.ok(overlayLayer < titlebarLayer);
+test("window controls stay above every modal backdrop", () => {
+  const titlebar = readSrc("components/tauri/window-titlebar.tsx").match(
+    TITLEBAR_PATTERN,
+  );
+  assert.ok(titlebar);
+  const titlebarLayer = zIndex(titlebar[1]);
+  for (const [file, slot] of [
+    ["components/ui/dialog.tsx", "dialog-overlay"],
+    ["components/ui/alert-dialog.tsx", "alert-dialog-overlay"],
+    ["components/ui/sheet.tsx", "sheet-overlay"],
+  ]) {
+    const overlay = readSrc(file).match(
+      new RegExp(`data-slot="${slot}"[\\s\\S]*?"([^"]*\\bz-50\\b[^"]*)"`),
+    );
+    assert.ok(overlay, slot);
+    assert.ok(zIndex(overlay[1]) < titlebarLayer, slot);
   }
 });
 
-test("below-titlebar decoration is not trapped in the titlebar stacking context", async () => {
-  const titlebar = await readSrc("components/tauri/window-titlebar.tsx");
-  const decorationIndex = titlebar.indexOf(
-    'data-slot="window-titlebar-decoration"',
-  );
-  const headerIndex = titlebar.indexOf("<header", decorationIndex);
-
-  assert.notEqual(decorationIndex, -1);
-  assert.notEqual(headerIndex, -1);
-  assert.ok(decorationIndex < headerIndex);
-  assert.match(
-    titlebar.slice(decorationIndex, headerIndex),
-    CLOSED_DECORATION_PATTERN,
-  );
-
-  const headerEnd = titlebar.indexOf("</header>", headerIndex);
-  assert.notEqual(headerEnd, -1);
-  const header = titlebar.slice(headerIndex, headerEnd);
-  assert.doesNotMatch(header, TOP_FULL_PATTERN);
+// Page headers share the band, so a backdrop dims it; without the painted band the
+// controls above the backdrop sit on grey and read as disabled. A clear backdrop (Ctrl+K)
+// dims nothing, so painting there would only hide the header.
+test("the titlebar band is painted while a dimming modal backdrop is up", () => {
+  const rule = readSrc("index.css").match(MODAL_BAND_RULE);
+  assert.ok(rule);
+  for (const slot of OVERLAY_SLOTS) {
+    assert.ok(
+      rule[1].includes(`[data-slot="${slot}"]:not(.bg-transparent)`),
+      slot,
+    );
+  }
 });

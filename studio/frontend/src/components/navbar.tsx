@@ -3,6 +3,7 @@
 
 import {
   DesktopTitlebarNavigation,
+  WindowDragRegion,
   shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
@@ -10,7 +11,12 @@ import { SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 
-export function Navbar() {
+export function Navbar({
+  pageHeaderInBand = false,
+}: {
+  /** The route's own header sits in the titlebar band, so the window drags from under it. */
+  pageHeaderInBand?: boolean;
+}) {
   const { isMobile, pinned, peeking, togglePinned } = useSidebar();
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
   const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
@@ -25,6 +31,11 @@ export function Navbar() {
               aria-hidden="true"
               className="pointer-events-auto absolute inset-x-0 top-0 h-[var(--studio-mac-titlebar-height,34px)] select-none"
             />
+          )}
+          {/* Under the page header, so its controls take their clicks. Other routes scroll
+              below the band, where the titlebar's own strip drags. */}
+          {usesCustomTitlebar && pageHeaderInBand && (
+            <WindowDragRegion className="pointer-events-auto absolute inset-x-0 top-0 h-[var(--studio-custom-titlebar-height,34px)] select-none" />
           )}
         </header>
 

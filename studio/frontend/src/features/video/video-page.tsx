@@ -3680,7 +3680,7 @@ function VideoGenerator({
           progress shows in a toast. */}
       <div
         className={cn(
-          "@container pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start justify-between pr-2 pt-[var(--studio-chat-header-padding-top,11px)]",
+          "@container pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start justify-between pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))] pt-[var(--studio-chat-header-padding-top,11px)]",
           isMobileShell
             ? "pl-12"
             : // Collapsed in the desktop app, start where Chat and Images do, clear of the titlebar buttons.

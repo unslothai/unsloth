@@ -75,6 +75,36 @@ async function getAppWindow(): Promise<TauriWindow> {
   return getCurrentWindow();
 }
 
+/** Drags the window on press and maximizes on double click, like a native titlebar. */
+export function WindowDragRegion({
+  className,
+}: {
+  className?: string;
+}): ReactElement {
+  return (
+    <div
+      aria-hidden="true"
+      className={className}
+      onMouseDown={(event) => {
+        if (event.button !== 0 || event.detail > 1) {
+          return;
+        }
+        getAppWindow()
+          .then((appWindow) => appWindow.startDragging())
+          .catch(() => undefined);
+      }}
+      onDoubleClick={(event) => {
+        if (event.button !== 0) {
+          return;
+        }
+        getAppWindow()
+          .then((appWindow) => appWindow.toggleMaximize())
+          .catch(() => undefined);
+      }}
+    />
+  );
+}
+
 function WindowControlButton({
   label,
   className,
@@ -197,8 +227,11 @@ export function DesktopTitlebarNavigation({
 
 export function WindowTitlebar({
   showSidebarSurface = false,
+  pageHeaderInBand = false,
 }: {
   showSidebarSurface?: boolean;
+  /** A chat-like route, whose header shares the band and drags from under it. */
+  pageHeaderInBand?: boolean;
 }): ReactElement | null {
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
@@ -218,14 +251,13 @@ export function WindowTitlebar({
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
 
-  // The buttons in this slot are fixed but their padding and gaps scale, so
-  // the slot grows with them and never shrinks under the three 30px buttons.
-  // The drag region starts where it ends.
+  // Collapsed, the slot is exactly the three 30px buttons with their scaled pl-4 and gaps,
+  // so it never covers the page header that starts beside it.
   const titlebarNavigationWidth =
     showSidebarSurface && !pinned
-      ? "max(7rem, calc(7rem * var(--ui-space-scale, 1)))"
+      ? "calc(90px + 20px * var(--ui-space-scale, 1))"
       : sidebarWidth;
-  const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
+  const unifiedRow = showSidebarSurface && !isMobile && pageHeaderInBand;
 
   const refreshMaximized = useCallback(async () => {
     if (!enabled) {
@@ -357,48 +389,17 @@ export function WindowTitlebar({
 
   return (
     <>
-      {showSidebarSurface && (
-        <div
-          data-slot="window-titlebar-decoration"
-          // Marks a consumer of --studio-sidebar-live-width. Only this and the header below read
-          // it, so PANEL_RESIZE_SCOPED_VARS_ENABLED writes the live width here instead of on the
-          // document element, where it would restyle the whole document once per drag frame.
-          data-titlebar-live-width-scope=""
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-3"
-        >
-          {pinned && (
-            <div
-              className="absolute top-0 size-3 -translate-x-px bg-sidebar"
-              style={{ left: sidebarWidth }}
-            />
-          )}
-          <div
-            className="absolute top-0 h-px bg-sidebar-border"
-            style={{ left: contentBorderLeft, right: 0 }}
-          />
-          {pinned && (
-            <div
-              className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"
-              style={{ left: sidebarWidth }}
-            />
-          )}
-        </div>
-      )}
       <header
-        className={cn(
-          "pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
-          showSidebarSurface && "bg-sidebar text-sidebar-foreground",
-        )}
+        data-slot="window-titlebar"
+        className="pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground"
+        // Marks a consumer of --studio-sidebar-live-width, so PANEL_RESIZE_SCOPED_VARS_ENABLED
+        // writes the live width here instead of restyling the whole document per drag frame.
         data-titlebar-live-width-scope=""
         aria-label="Window titlebar"
       >
         {showSidebarSurface && (
           <div
-            className={cn(
-              "pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center",
-              "pl-4",
-            )}
+            className="pointer-events-auto absolute left-0 top-0 h-full min-w-0"
             style={{ width: titlebarNavigationWidth }}
             onMouseDown={handleDragMouseDown}
             onDoubleClick={handleDragDoubleClick}
@@ -407,21 +408,26 @@ export function WindowTitlebar({
               expanded={pinned}
               onToggleSidebar={togglePinned}
               showSidebarToggle={!isMobile}
+              className="absolute left-4 top-[var(--studio-titlebar-row-center)] -translate-y-1/2"
             />
           </div>
         )}
+        {/* A chat-like page's header shares the band and Navbar drags from under it; every
+            other screen leaves the band empty and drags from here. */}
+        {!unifiedRow && (
+          <div
+            className="pointer-events-auto absolute top-0 h-full"
+            style={{
+              left: showSidebarSurface ? titlebarNavigationWidth : 0,
+              right: "var(--studio-window-control-inset,86px)",
+            }}
+            onMouseDown={handleDragMouseDown}
+            onDoubleClick={handleDragDoubleClick}
+            aria-hidden="true"
+          />
+        )}
         <div
-          className="pointer-events-auto absolute top-0 h-full"
-          style={{
-            left: titlebarNavigationWidth,
-            right: "var(--studio-window-control-inset,112px)",
-          }}
-          onMouseDown={handleDragMouseDown}
-          onDoubleClick={handleDragDoubleClick}
-          aria-hidden="true"
-        />
-        <div
-          className="pointer-events-auto absolute right-1 top-0 flex h-full items-center gap-0.5"
+          className="pointer-events-auto absolute right-1 top-[var(--studio-titlebar-row-center)] flex -translate-y-1/2 items-center gap-0.5"
           role="toolbar"
           aria-label="Window controls"
         >
