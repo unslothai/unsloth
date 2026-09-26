@@ -82,6 +82,13 @@ def capability_snapshot(
     )
     if dacl:
         limitations += ("mxc_tier3_dacl_host_permission_changes",)
+    shell_incompatible = reason == mxc_probe.MSYS_NAMESPACE_REASON
+    if shell_incompatible:
+        remediation = (
+            "Set tool isolation to auto to run Terminal commands with software safeguards, or use "
+            "the Python tool, which is sandboxed separately."
+        )
+    elif dacl:
         remediation = (
             "Install the pinned Microsoft WXC runtime and prepare this host once as an "
             "administrator; the null device step repeats after every reboot."
@@ -92,13 +99,6 @@ def capability_snapshot(
             f"builds without it, set {mxc_policy.DACL_FALLBACK_ENV}=1 to use the AppContainer "
             "tier: it adds temporary permission entries to the granted host folders, removed "
             "on exit, and needs a one-time administrator host preparation plus one per reboot."
-        )
-    shell_incompatible = reason == mxc_probe.MSYS_NAMESPACE_REASON
-    if shell_incompatible:
-        # Install and host prep are done or irrelevant here: repeating them cannot help this shell start.
-        remediation = (
-            "Python tools are still isolated. Terminal commands run with software safeguards in Auto "
-            "and are refused when isolation is Required, because Git Bash cannot run in the Windows sandbox."
         )
     # Only in DACL mode: a bare --probe allows the fallback, so it warns on hosts Studio never uses it on.
     host_prep = (

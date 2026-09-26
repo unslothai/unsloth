@@ -22,12 +22,11 @@ _cache: dict[tuple, tuple[float, bool, str]] = {}
 _inflight: dict[tuple, threading.Event] = {}
 POSITIVE_TTL = 300.0
 NEGATIVE_TTL = 30.0
-# A shell that cannot start in any container stays that way until the runtime, the shell or the opt-in changes,
-# all of which are in the cache key; re-probing it every NEGATIVE_TTL costs ~15s of DACL-tier launches each time.
+# Re-probing a shell that cannot start costs ~15s of DACL-tier launches; the key changes with the runtime or the shell.
 INCOMPATIBLE_TTL = 6 * 3600.0
 MSYS_NAMESPACE_REASON = (
-    "Git Bash (the MSYS2 runtime) cannot start inside the MXC container: it creates a global "
-    "named-object directory the container denies (microsoft/mxc#1061)"
+    "Git Bash (MSYS2) cannot start in the MXC container, which denies the global named-object "
+    "directory it creates (microsoft/mxc#1061)."
 )
 
 
@@ -121,8 +120,7 @@ def _terminal_probe(selected_executable: str, workdir: Path, canary: Path, outsi
 
 
 def _is_msys_namespace_failure(selected_executable: str, execution_kind: str, output) -> bool:
-    """msys-2.0.dll dies in DLL init on NtCreateDirectoryObject(\\BaseNamedObjects\\msys-...) = ACCESS_DENIED, before
-    it reads its command; AppContainer redirects only the Win32 named-object APIs, not that absolute NT path."""
+    """msys-2.0.dll dies in DLL init when AppContainer denies its absolute \\BaseNamedObjects path."""
     name = Path(selected_executable).name.casefold()
     if execution_kind != "terminal" or name not in {"bash", "bash.exe"}:
         return False
@@ -132,6 +130,23 @@ def _is_msys_namespace_failure(selected_executable: str, execution_kind: str, ou
         and "\\BaseNamedObjects\\" in text
         and "0xc0000022" in text.casefold()
     )
+
+
+def _executable_signature(selected_executable: str) -> tuple:
+    """An in-place update (a Git for Windows upgrade) keeps the path, so a verdict also keys on the files."""
+    paths = [selected_executable]
+    if Path(selected_executable).name.casefold() in {"bash", "bash.exe"}:
+        bin_dir = Path(selected_executable).parent
+        paths += [bin_dir / "msys-2.0.dll", bin_dir.parent / "usr" / "bin" / "msys-2.0.dll"]
+    signature = []
+    for path in paths:
+        try:
+            stat = os.stat(path)
+        except OSError:
+            signature.append(None)
+        else:
+            signature.append((stat.st_mtime_ns, stat.st_size))
+    return tuple(signature)
 
 
 def _probe(
@@ -311,6 +326,7 @@ def probe(
         mxc_runtime.PROFILE_ID,
         execution_kind,
         os.path.abspath(selected_executable),
+        _executable_signature(selected_executable),
         mxc_policy.dacl_fallback_enabled(),
     )
     while True:
@@ -331,12 +347,9 @@ def probe(
         result = _probe(selected_executable, execution_kind, cancel_event)
         with _lock:
             if cancel_event is None or not cancel_event.is_set():
-                if result[0]:
-                    ttl = POSITIVE_TTL
-                elif result[1] == MSYS_NAMESPACE_REASON:
+                ttl = POSITIVE_TTL if result[0] else NEGATIVE_TTL
+                if result[1] == MSYS_NAMESPACE_REASON:
                     ttl = INCOMPATIBLE_TTL
-                else:
-                    ttl = NEGATIVE_TTL
                 _cache[key] = (time.monotonic() + ttl, *result)
         return result
     finally:

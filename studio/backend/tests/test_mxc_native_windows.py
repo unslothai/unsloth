@@ -558,7 +558,7 @@ def test_native_mxc_session_packages_import_inside_the_container():
 
 
 @pytest.mark.native_mxc
-def test_native_git_bash_is_named_and_not_reprobed():
+def test_native_git_bash_is_named_and_not_reprobed(monkeypatch):
     """Git Bash cannot start in the container (microsoft/mxc#1061); say so, and answer from cache after that."""
     _require_native_mxc()
     bash = tools._windows_bash()
@@ -571,9 +571,12 @@ def test_native_git_bash_is_named_and_not_reprobed():
         pytest.skip("this MXC tier starts Git Bash, so there is no incompatibility to report")
     assert first.reason == mxc_probe.MSYS_NAMESPACE_REASON, first.reason
     assert "Install the pinned" not in first.remediation
-    started = time.monotonic()
+    probed = []
+    monkeypatch.setattr(
+        mxc_probe, "_probe", lambda *args, **_kwargs: probed.append(args) or (True, "")
+    )
     again = sandbox_windows_mxc.capability_snapshot(
         execution_kind = "terminal", selected_executable = bash
     )
-    assert time.monotonic() - started < 1, "the incompatible shell was probed again"
+    assert probed == [], "the incompatible shell was probed again"
     assert again.reason == mxc_probe.MSYS_NAMESPACE_REASON

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from core.inference import mxc_probe, mxc_runtime, os_sandbox, sandbox_windows_mxc
+from core.inference import mxc_probe, os_sandbox, sandbox_windows_mxc
 
 # What Git for Windows' bash prints under an AppContainer before it reads its command (microsoft/mxc#1061).
 MSYS_STARTUP_FAILURE = (
@@ -146,7 +144,7 @@ def test_a_new_runtime_or_opt_in_probes_the_shell_again(monkeypatch, tmp_path):
     assert len(calls) == 3
 
 
-def _incompatible_snapshot(monkeypatch, tmp_path):
+def _incompatible_snapshot(monkeypatch):
     monkeypatch.setattr(sandbox_windows_mxc.sys, "platform", "win32")
     monkeypatch.setenv("UNSLOTH_MXC_ALLOW_DACL_FALLBACK", "1")
     monkeypatch.setattr(
@@ -163,7 +161,7 @@ def _incompatible_snapshot(monkeypatch, tmp_path):
 
 
 def test_the_remediation_names_the_shell_not_setup(monkeypatch, tmp_path):
-    _incompatible_snapshot(monkeypatch, tmp_path)
+    _incompatible_snapshot(monkeypatch)
     capability = sandbox_windows_mxc.capability_snapshot(
         execution_kind = "terminal", selected_executable = str(tmp_path / "bash.exe")
     )
@@ -171,8 +169,7 @@ def test_the_remediation_names_the_shell_not_setup(monkeypatch, tmp_path):
     assert capability.reason == mxc_probe.MSYS_NAMESPACE_REASON
     assert "Install the pinned" not in capability.remediation
     assert "prepare" not in capability.remediation
-    assert "Python tools are still isolated" in capability.remediation
-    assert "Git Bash" in capability.remediation
+    assert "Python tool" in capability.remediation
 
 
 def _terminal_plan(tmp_path, mode):
@@ -187,7 +184,7 @@ def _terminal_plan(tmp_path, mode):
 
 
 def test_auto_runs_the_terminal_with_software_safeguards(monkeypatch, tmp_path):
-    _incompatible_snapshot(monkeypatch, tmp_path)
+    _incompatible_snapshot(monkeypatch)
     prepared = os_sandbox.prepare_tool_launch(_terminal_plan(tmp_path, "auto"))
     assert prepared.backend == "software-safeguards"
     assert prepared.execution_record.effective_mode == "software_safeguards"
@@ -195,8 +192,25 @@ def test_auto_runs_the_terminal_with_software_safeguards(monkeypatch, tmp_path):
 
 
 def test_required_refuses_with_the_real_cause(monkeypatch, tmp_path):
-    _incompatible_snapshot(monkeypatch, tmp_path)
+    _incompatible_snapshot(monkeypatch)
     with pytest.raises(os_sandbox.SandboxUnavailableError) as raised:
         os_sandbox.prepare_tool_launch(_terminal_plan(tmp_path, "required"))
     assert "Git Bash" in str(raised.value)
     assert "Install the pinned" not in raised.value.remediation
+
+
+def test_an_in_place_git_update_probes_the_shell_again(monkeypatch, tmp_path):
+    _clock, calls = _count_live_probes(monkeypatch, mxc_probe.MSYS_NAMESPACE_REASON)
+    bin_dir = tmp_path / "Git" / "usr" / "bin"
+    bin_dir.mkdir(parents = True)
+    bash = bin_dir / "bash.exe"
+    bash.write_bytes(b"bash")
+    runtime = bin_dir / "msys-2.0.dll"
+    runtime.write_bytes(b"msys-old")
+    mxc_probe.probe(str(bash), execution_kind = "terminal")
+    mxc_probe.probe(str(bash), execution_kind = "terminal")
+    assert len(calls) == 1
+    # Same path, new runtime: an upgrade that may have fixed the namespace call.
+    runtime.write_bytes(b"msys-new-and-longer")
+    mxc_probe.probe(str(bash), execution_kind = "terminal")
+    assert len(calls) == 2
