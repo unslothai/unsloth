@@ -2378,3 +2378,12 @@ def test_the_policy_removal_step_never_reports_an_unverified_removal(tmp_path):
         assert proc.returncode == 0, name + proc.stdout + proc.stderr
         assert "::warning::" in proc.stdout and "could not be verified" in proc.stdout, name + proc.stdout
         assert "removed and no longer active" not in proc.stdout, name + proc.stdout
+
+
+def test_the_audit_loads_every_shipped_entry_point():
+    import yaml
+
+    job = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]["code-integrity"]
+    body = next(s for s in job["steps"] if s.get("id") == "exercise")["run"]
+    assert "& $server.FullName --version" in body
+    assert "& $quantize.FullName --help" in body, "llama-quantize loads its own impl DLL"

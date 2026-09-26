@@ -326,6 +326,14 @@ jobs:
           $code = $LASTEXITCODE
           Add-Content -Path $env:GITHUB_ENV -Value "EXERCISE_EXIT=$code"
           Write-Host "llama-server --version exited $code"
+          # Studio also runs llama-quantize, which loads its own llama-quantize-impl.dll.
+          $quantize = Get-ChildItem -LiteralPath $server.Directory.FullName -Filter 'llama-quantize.exe' | Select-Object -First 1
+          if ($quantize) {
+            & $quantize.FullName --help 2>&1 | Out-Null
+            Write-Host "llama-quantize --help exited $LASTEXITCODE (only its load matters)"
+          } else {
+            Write-Host '::warning::llama-quantize.exe is not in the bundle, so only llama-server was loaded'
+          }
 
       - name: Verdict
         if: always() && steps.control.outputs.control_fired == 'true'
