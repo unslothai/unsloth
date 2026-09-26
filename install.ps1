@@ -2814,8 +2814,7 @@ exit 1
         $script = "import pathlib,sys" + [char]10 +
                   "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
                   "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
-        # $null on anything but a clean answer, validation included: an access error from the
-        # final Test-Path declines to the lexical rung like any other miss.
+        # Any error, incl. from Test-Path, returns $null (lexical rung).
         try {
             # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
             $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)"
@@ -2828,7 +2827,6 @@ exit 1
         }
     }
 
-    # A script's stdout from a bounded child, or $null on anything but a clean exit.
     function Invoke-StudioEarlyPythonScript {
         param(
             [Parameter(Mandatory = $true)][string]$Exe,
@@ -6058,8 +6056,7 @@ exit 0
 
     $script:StudioProcessImageTable = $null
     $script:StudioProcessImageWarned = $false
-    # PID -> image path for every visible process, via ctypes in one child, so no type is defined
-    # in this script. $null leaves the WMI rung exactly as it was.
+    # PID -> image path via ctypes in a child, so no type is defined in this script.
     $script:StudioPythonProcessImageTable = $null
     $script:StudioPythonProcessImageProbed = $false
 
@@ -6130,11 +6127,10 @@ exit 0
                 if (-not [string]::IsNullOrWhiteSpace($process.Path)) { return $process.Path }
             } catch {}
         }
-        # PROCESS_QUERY_LIMITED_INFORMATION is granted where MainModule's PROCESS_VM_READ is not,
-        # and needs no WMI. One child per run: this is called once per process on the machine.
+        # PROCESS_QUERY_LIMITED_INFORMATION works where PROCESS_VM_READ does not; one child per run.
         if (-not $script:StudioPythonProcessImageProbed) {
             $script:StudioPythonProcessImageProbed = $true
-            # Optional: a failure here falls through to the WMI rung below, never past it.
+            # A failure falls through to the WMI rung, never past it.
             try { $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable } catch {
                 $script:StudioPythonProcessImageTable = $null
             }
@@ -6143,8 +6139,7 @@ exit 0
             $script:StudioPythonProcessImageTable.ContainsKey($ProcessId)) {
             return $script:StudioPythonProcessImageTable[$ProcessId]
         }
-        # Both table rungs are per-run PID snapshots, so a reused PID reads stale; accepted, since
-        # the caller asks about PIDs it enumerated moments earlier.
+        # Per-run PID snapshots: a reused PID reads stale; accepted.
         # Queried once per run, not once per process: this is the slow rung.
         if ($null -eq $script:StudioProcessImageTable) {
             $script:StudioProcessImageTable = @{}
