@@ -172,6 +172,11 @@ def _fill_missing_loss(cls):
         )
         if logits is None:
             return None
+        if logits.ndim != 3 or tuple(logits.shape[:2]) != tuple(labels.shape):
+            raise RuntimeError(
+                f"Unsloth: `{cls.__name__}.forward` returned no loss and its logits {tuple(logits.shape)} are not "
+                f"token-level logits for labels {tuple(labels.shape)}, so no causal LM loss can stand in for it."
+            )
         from transformers.loss.loss_utils import ForCausalLMLoss
 
         return ForCausalLMLoss(
@@ -233,11 +238,6 @@ def _fill_missing_loss(cls):
                     return output
             except (AttributeError, TypeError, KeyError):
                 output = None
-            self.__dict__[state_key] = False
-            print(
-                f"Unsloth: `{cls.__name__}.forward` accepts `labels` but returns no loss, "
-                "so the causal LM loss is computed from its logits."
-            )
         kwargs = dict(kwargs)
         kwargs.pop("labels")
         # Reuse the probe's logits: a second forward would hold two graphs at once.
@@ -249,6 +249,13 @@ def _fill_missing_loss(cls):
         if loss is None:
             raise RuntimeError(
                 f"Unsloth: `{cls.__name__}.forward` returned neither a loss nor logits, so no loss can be trained on."
+            )
+        if returns_loss is None:
+            # Cached only once a no-label forward worked: a first call failing for another reason must not pin it.
+            self.__dict__[state_key] = False
+            print(
+                f"Unsloth: `{cls.__name__}.forward` accepts `labels` but returns no loss, "
+                "so the causal LM loss is computed from its logits."
             )
         if isinstance(output, dict):
             # `loss` must come first: positional readers take output[0] as the loss.

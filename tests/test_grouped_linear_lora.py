@@ -209,3 +209,26 @@ def test_a_saved_adapter_reloads_onto_the_grouped_forward(tmp_path):
     torch.testing.assert_close(got, want)
     # A model with no grouped linear reloads exactly as before.
     assert register_grouped_linear_lora_for_adapter(torch.nn.Linear(4, 4), str(tmp_path)) is None
+
+
+def test_fan_in_fan_out_is_reset_like_peft_does_for_nn_linear():
+    """PEFT resets fan_in_fan_out for nn.Linear; the custom mapping skips that dispatcher."""
+    from peft import LoraConfig, get_peft_model
+    from unsloth.models.grouped_linear_lora import register_grouped_linear_lora
+
+    torch.manual_seed(0)
+    model = Block()
+    config = LoraConfig(
+        r = 4,
+        lora_alpha = 8,
+        target_modules = ["o_a_proj"],
+        init_lora_weights = False,
+        fan_in_fan_out = True,
+    )
+    register_grouped_linear_lora(config, model)
+    model = get_peft_model(model, config)
+    x = torch.randn(2, 5, 4, 16)
+    with torch.no_grad():
+        out = model(x)
+        merged = model.merge_and_unload()(x)
+    torch.testing.assert_close(merged, out, atol = 1e-5, rtol = 1e-5)

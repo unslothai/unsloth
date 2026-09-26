@@ -315,3 +315,50 @@ def test_a_forward_without_a_loss_runs_once_on_the_probing_call():
     torch.testing.assert_close(out.loss, ForCausalLMLoss(out.logits, ids, 32))
     model(input_ids = ids, labels = ids)
     assert calls == [True, False]
+
+
+def test_non_token_logits_never_get_a_causal_loss():
+    """A classification head's (batch, n_labels) logits must not be shifted across examples."""
+    from unsloth.models.remote_code_shims import apply_remote_code_shims
+
+    class Classifier(Outer):
+        def forward(
+            self,
+            input_ids = None,
+            labels = None,
+            **kwargs,
+        ):
+            return CausalLMOutputWithPast(logits = self.lm_head(self.model(input_ids)).mean(1))
+
+    Classifier.__module__ = "transformers_modules.tiny_remote.modeling_tiny"
+    model = Classifier(TinyConfig())
+    apply_remote_code_shims(model)
+    ids = torch.randint(0, 32, (4, 6))
+    with pytest.raises(RuntimeError, match = "token-level"):
+        model(input_ids = ids, labels = torch.tensor([0, 1, 2, 3]))
+
+
+def test_an_unrelated_first_call_error_does_not_switch_the_objective():
+    """A failing first call must not pin the fallback: the model's own loss wins once calls work."""
+    from unsloth.models.remote_code_shims import apply_remote_code_shims
+
+    class Picky(Outer):
+        def forward(
+            self,
+            input_ids = None,
+            labels = None,
+            bad = False,
+            **kwargs,
+        ):
+            if bad:
+                raise TypeError("bad batch")
+            logits = self.lm_head(self.model(input_ids))
+            return CausalLMOutputWithPast(loss = torch.tensor(7.0), logits = logits)
+
+    Picky.__module__ = "transformers_modules.tiny_remote.modeling_tiny"
+    model = Picky(TinyConfig())
+    apply_remote_code_shims(model)
+    ids = torch.randint(0, 32, (1, 4))
+    with pytest.raises(TypeError, match = "bad batch"):
+        model(input_ids = ids, labels = ids, bad = True)
+    assert float(model(input_ids = ids, labels = ids).loss) == 7.0

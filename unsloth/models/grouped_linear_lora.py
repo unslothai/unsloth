@@ -40,6 +40,11 @@ def _grouped_lora_layer():
     class GroupedLinearLoRA(LoraLinear):
         _unsloth_grouped_lora = True
 
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            # PEFT's nn.Linear dispatcher resets this; the custom mapping bypasses it, and merge would transpose B @ A.
+            self.fan_in_fan_out = False
+
         def merge(self, *args, **kwargs):
             _refuse_fp8_grouped_merge([self])
             return super().merge(*args, **kwargs)
