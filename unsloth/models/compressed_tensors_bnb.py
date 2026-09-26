@@ -495,6 +495,9 @@ def _decompress_one_triton(scheme, packed, scale, shape, zero_point, g_idx, dtyp
     strategy = str(getattr(weights.strategy, "value", weights.strategy)).lower()
     if bits not in (2, 4, 8) or strategy not in ("group", "channel") or scale.dim() != 2:
         return None
+    # MXFP4 is 4-bit group too, but e2m1 values with e8m0 scales, not integers.
+    if str(getattr(weights.type, "value", weights.type)).lower() != "int":
+        return None
     if getattr(torch.version, "hip", None):
         return None
     try:
