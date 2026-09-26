@@ -150,6 +150,25 @@ Check "an empty probe is no inventory" ($null -eq (Probe-Raw ""))
 Check "a zero driver version is no inventory" ($null -eq (Probe-Raw "nvml;0;0;8.9"))
 Check "no capabilities is no inventory" ($null -eq (Probe-Raw "nvml;13;0;"))
 Check "an unreadable capability voids the inventory" ($null -eq (Probe-Raw "nvml;13;0;N/A,8.9"))
+$script:Notices = @()
+function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") $script:Notices += $Line }
+$null = Probe-Raw ""
+Check "an empty probe without an opt-out prints nothing" ($script:Notices.Count -eq 0)
+foreach ($optOut in @("UNSLOTH_NVIDIA_PYTHON_PROBE", "UNSLOTH_EARLY_PYTHON_PROBE")) {
+    $saved = [Environment]::GetEnvironmentVariable($optOut)
+    try {
+        [Environment]::SetEnvironmentVariable($optOut, "0")
+        $script:Notices = @()
+        $null = Probe-Raw ""
+        Check "$optOut=0 says the libraries were not read and how to choose a wheel" (
+            $script:Notices.Count -eq 1 -and $script:Notices[0] -match 'UNSLOTH_TORCH_INDEX_FAMILY')
+        $script:Notices = @()
+        $null = Probe-Raw "nvml;13;1;8.9"
+        Check "$optOut=0 with an answer prints nothing" ($script:Notices.Count -eq 0)
+    } finally { [Environment]::SetEnvironmentVariable($optOut, $saved) }
+}
+function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
+$null = Probe-Raw ""
 Check "one unreadable GPU voids the reader's source too" ($readBlock -notmatch '\bcontinue\b')
 Check "the CUDA driver API is read with the mask lifted" (
     $probeBody -match 'os\.environ\.pop\("CUDA_VISIBLE_DEVICES", None\)' -and

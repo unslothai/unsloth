@@ -8586,6 +8586,10 @@ main()
         $script:NvidiaLibraryInventory = $null
         if ("$($env:UNSLOTH_NVIDIA_LIBRARY_PROBE)".Trim() -eq "0") { return $null }
         try { $raw = Read-NvidiaLibraryRaw -TimeoutMs ($TimeoutSec * 1000) } catch { return $null }
+        # The Python probe is the only library reader, so its opt-outs leave nvidia-smi as the only source.
+        if (-not "$raw" -and ("$($env:UNSLOTH_NVIDIA_PYTHON_PROBE)".Trim() -eq "0" -or "$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0")) {
+            Write-StudioLine "   NVIDIA driver libraries not read (Python probe disabled): a GPU without a working nvidia-smi is not detected. Set UNSLOTH_TORCH_INDEX_FAMILY=cu128 (or your CUDA wheel) to choose one." -ForegroundColor Yellow
+        }
         $parts = "$raw".Split(";")
         if ($parts.Count -ne 4 -or -not $parts[3] -or [int]$parts[1] -lt 1) { return $null }
         $caps = @($parts[3].Split(","))

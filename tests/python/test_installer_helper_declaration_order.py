@@ -123,6 +123,14 @@ def _calls_within(start: int, end: int) -> set[str]:
 CALLS = {name: _calls_within(start, end) for name, (start, end) in FUNCTIONS.items()}
 
 
+def _guarded_within(start: int, end: int) -> set[str]:
+    """Helpers this span calls only behind `Get-Command NAME -CommandType Function`."""
+    return set(re.findall(r"Get-Command ([A-Za-z0-9\-]+) -CommandType Function", CODE[start:end])) & set(FUNCTIONS)
+
+
+GUARDED = {name: _guarded_within(start, end) for name, (start, end) in FUNCTIONS.items()}
+
+
 def _top_level_spans() -> list[tuple[int, int]]:
     """Everything in the file that is not inside one of those nested declarations.
 
@@ -139,13 +147,18 @@ def _top_level_spans() -> list[tuple[int, int]]:
     return spans
 
 
-def _reaches(name: str, seen: frozenset[str] = frozenset()) -> set[str]:
-    """Every helper that calling `name` can end up in, including itself."""
+def _reaches(name: str, at: int = len(CODE), seen: frozenset[str] = frozenset()) -> set[str]:
+    """Every helper that calling `name` from offset `at` can end up in, including itself.
+
+    A guarded call runs only once its target is declared, so it is no edge before that.
+    """
     if name in seen:
         return set()
     out = {name}
     for callee in CALLS.get(name, ()):  # noqa: SIM118 - CALLS may not carry every name
-        out |= _reaches(callee, seen | {name})
+        if callee in GUARDED.get(name, ()) and FUNCTIONS[callee][0] > at:
+            continue
+        out |= _reaches(callee, at, seen | {name})
     return out
 
 
@@ -154,10 +167,13 @@ def test_the_helper_is_declared_before_anything_that_reaches_it(name: str):
     assert name in FUNCTIONS, f"{name} is not declared inside install.ps1"
     declared = FUNCTIONS[name][0]
     for start, end in _top_level_spans():
-        if end <= declared:
+        if start > declared:
             continue
+        guarded = _guarded_within(start, end)
         for called in sorted(_calls_within(start, end)):
-            if name in _reaches(called):
+            if called in guarded and FUNCTIONS[called][0] > start:
+                continue
+            if name in _reaches(called, start):
                 line = CODE[:start].count("\n") + 1
                 assert declared < start, (
                     f"{name} is declared at line {CODE[:declared].count(chr(10)) + 1}, but the "
