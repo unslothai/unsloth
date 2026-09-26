@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowExpand01Icon,
+  ArrowReloadHorizontalIcon,
   Cancel01Icon,
   Delete02Icon,
   Download01Icon,
@@ -3576,21 +3577,6 @@ function VideoGenerator({
         ]}
       />
       <LoadedBuildSummary status={status} />
-      {status?.loaded && canReapply && (
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy !== null}
-              onClick={handleReapply}
-            >
-              Reapply to loaded model
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Reload the current model with these advanced options</TooltipContent>
-        </Tooltip>
-      )}
     </>
   );
 
@@ -4286,7 +4272,7 @@ function VideoGenerator({
 
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
-          <div className="relative z-10 flex shrink-0 justify-center pt-0.5 pb-4 pl-8 pr-7">
+          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 pt-0.5 pb-4 pl-4 pr-3">
             {busy === "generating" ? (
               <Button
                 // Kept in step with the Images Stop control, which uses the same fill.
@@ -4298,13 +4284,31 @@ function VideoGenerator({
                 Cancel
               </Button>
             ) : (
-              <Button
-                className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                onClick={handleGenerate}
-                disabled={busy !== null || !status?.loaded}
-              >
-                Generate
-              </Button>
+              <>
+                <Button
+                  className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  onClick={handleGenerate}
+                  disabled={busy !== null || !status?.loaded}
+                >
+                  Generate
+                </Button>
+                {status?.loaded && canReapply && (
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <Button
+                        className="relative z-10 h-11 px-5"
+                        variant="secondary"
+                        disabled={busy !== null}
+                        onClick={handleReapply}
+                      >
+                        <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="mr-2 size-4" />
+                        Reapply
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Reload the current model with the advanced options</TooltipContent>
+                  </Tooltip>
+                )}
+              </>
             )}
           </div>
         </div>
