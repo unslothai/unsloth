@@ -1727,3 +1727,114 @@ def test_qwen_image_2_1_takes_the_dynamic_4bit_text_encoder():
         # The vision projector native editing needs, pinned by name for the same reason.
         ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision"),
     )
+
+
+# ── Qwen-Image vs Qwen-Image-2.1 img_in preflight (#11890) ─────────────────────
+
+QWEN_1X_BASE = "Qwen/Qwen-Image"
+QWEN_21_BASE = "Qwen/Qwen-Image-2.1"
+QWEN_21_GGUF = "unsloth/Qwen-Image-2.1-GGUF"
+QWEN_21_FILE = "Qwen-Image-2.1-Q8_0.gguf"
+
+QWEN_1X_FAMILY = types.SimpleNamespace(name = "qwen-image", single_file_is_pipeline = False)
+QWEN_21_FAMILY = types.SimpleNamespace(name = "qwen-image-2.1", single_file_is_pipeline = False)
+
+
+def _qwen_img_in_header(
+    hidden: int,
+    tmp_path,
+    *,
+    siblings = 4,
+):
+    """Header-only GGUF with ``img_in.weight`` sized like a Qwen-Image Linear(64, hidden).
+
+    Torch stores [hidden, 64]; ``GGUFWriter`` reverses for on-disk order, matching production
+    checkpoints and the FLUX.2 fixture helper above."""
+    import numpy as np
+    from gguf import GGMLQuantizationType, GGUFWriter
+
+    path = tmp_path / f"qwen-img-in-{hidden}.gguf"
+    writer = GGUFWriter(str(path), "qwen_image")
+    writer.add_tensor_info(
+        "img_in.weight",
+        [hidden, 64],
+        np.dtype(np.float16),
+        hidden * 64 * 2,
+        raw_dtype = GGMLQuantizationType.F16,
+    )
+    for i in range(siblings):
+        writer.add_tensor_info(
+            f"blk.{i}.weight",
+            [64, 64],
+            np.dtype(np.float16),
+            64 * 64 * 2,
+            raw_dtype = GGMLQuantizationType.F16,
+        )
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_ti_data_to_file()
+    writer.close()
+    return path.read_bytes()
+
+
+@pytest.mark.parametrize("hidden", [3072, 4096])
+def test_qwen_img_in_hidden_is_read_from_a_header_with_no_tensor_data(hidden, tmp_path):
+    from core.inference.diffusion_families import gguf_qwen_image_hidden_dim_from_header
+    assert gguf_qwen_image_hidden_dim_from_header(_qwen_img_in_header(hidden, tmp_path)) == hidden
+
+
+def test_qwen_2_1_gguf_against_1x_base_is_refused_from_the_header(monkeypatch, tmp_path):
+    # #11890: Studio built QwenImageTransformer2DModel (3072) against a 2.1 GGUF (4096).
+    requests = _stub_range_reads(monkeypatch, {QWEN_21_FILE: _qwen_img_in_header(4096, tmp_path)})
+
+    with pytest.raises(ValueError) as excinfo:
+        diffusion_compat.assert_qwen_image_pick_compatible(
+            QWEN_1X_FAMILY, QWEN_21_GGUF, QWEN_21_FILE, QWEN_1X_BASE
+        )
+
+    detail = str(excinfo.value)
+    assert QWEN_21_FILE in detail and QWEN_1X_BASE in detail
+    assert "2.1" in detail and "3072" in detail
+    assert len(requests) == 1
+
+
+def test_qwen_2_1_gguf_against_2_1_base_passes(monkeypatch, tmp_path):
+    _stub_range_reads(monkeypatch, {QWEN_21_FILE: _qwen_img_in_header(4096, tmp_path)})
+
+    assert (
+        diffusion_compat.qwen_image_pick_mismatch(
+            QWEN_21_FAMILY, QWEN_21_GGUF, QWEN_21_FILE, QWEN_21_BASE
+        )
+        is None
+    )
+
+
+def test_qwen_unreadable_header_fails_open(monkeypatch):
+    _stub_range_reads(monkeypatch, {QWEN_21_FILE: b"not a gguf"})
+
+    assert (
+        diffusion_compat.qwen_image_pick_mismatch(
+            QWEN_1X_FAMILY, QWEN_21_GGUF, QWEN_21_FILE, QWEN_1X_BASE
+        )
+        is None
+    )
+
+
+def test_qwen_mirror_base_is_checked_like_upstream(monkeypatch, tmp_path):
+    # unsloth/Qwen-Image maps back via canonical_base; a 2.1 GGUF must still refuse.
+    _stub_range_reads(monkeypatch, {QWEN_21_FILE: _qwen_img_in_header(4096, tmp_path)})
+
+    reason = diffusion_compat.qwen_image_pick_mismatch(
+        QWEN_1X_FAMILY, QWEN_21_GGUF, QWEN_21_FILE, "unsloth/Qwen-Image"
+    )
+    assert reason is not None
+    assert "4096" in reason
+
+
+def test_qwen_mismatch_reason_names_both_sides():
+    from core.inference.diffusion_families import qwen_image_mismatch_reason
+
+    reason = qwen_image_mismatch_reason(QWEN_21_FILE, QWEN_1X_BASE, 4096, 3072)
+    assert reason is not None
+    assert QWEN_21_FILE in reason and QWEN_1X_BASE in reason
+    assert "qwen-image-2.1" in reason or "2.1" in reason

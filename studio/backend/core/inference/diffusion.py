@@ -51,6 +51,7 @@ from .diffusion_families import (
     LoadIdentity,
     load_identity,
     assert_flux2_gguf_matches_base,
+    assert_qwen_image_gguf_matches_base,
     assert_pipeline_class_available,
     _is_local_path,
     canonical_base,
@@ -66,7 +67,9 @@ from .diffusion_families import (
 from .diffusion_compat import (
     assert_flux2_pick_compatible,
     assert_pick_is_not_speech,
+    assert_qwen_image_pick_compatible,
     flux2_pick_mismatch,
+    qwen_image_pick_mismatch,
     speech_pick_refusal,
 )
 from .diffusion_device import (
@@ -2676,8 +2679,10 @@ class DiffusionBackend:
         # Same reasoning for the FLUX.2 size pairing, and this is the only place it can be caught before a teardown:
         # the loader's own guard opens the downloaded checkpoint, so it fires after ~19 GB of base shards AND after
         # the resident pipeline was freed. Metadata only, and fails open on anything it cannot read. The UPSTREAM
-        # base, not the mirror: the size tables key on vendor ids.
+        # base, not the mirror: the size tables key on vendor ids. Qwen-Image vs 2.1 uses the same path for
+        # ``img_in`` hidden size (3072 vs 4096).
         assert_flux2_pick_compatible(fam, repo_id, gguf_filename, base, hf_token)
+        assert_qwen_image_pick_compatible(fam, repo_id, gguf_filename, base, hf_token)
         # No media backend decodes a speech GGUF, and detect_family_for_pick answers from the folder name, so a csm
         # file beside a denoiser reaches this loader as one of its own. Cache-only for a load nobody asked for: this
         # probe would otherwise spend a revision HEAD, or a range request, on the one path that promised to stay off
@@ -2956,6 +2961,9 @@ class DiffusionBackend:
             # saved config, the deploy path) reaches neither. Still metadata only, so it lands before _prefetch_files
             # stages the base and before load_pipeline unloads the resident pipeline.
             assert_flux2_pick_compatible(
+                fam, kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token")
+            )
+            assert_qwen_image_pick_compatible(
                 fam, kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token")
             )
             # Same verdict here, so a direct begin_load is covered too.
@@ -3848,9 +3856,11 @@ class DiffusionBackend:
         # SELECTION time. Metadata only, and None whenever nothing is known to be wrong. The speech verdict belongs
         # here too, not only on the load preflight: the Images page stages and downloads before it calls load, so a
         # later refusal arrives after the bytes.
-        incompatible = flux2_pick_mismatch(
-            fam, repo_id, gguf_filename, base, hf_token
-        ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)
+        incompatible = (
+            flux2_pick_mismatch(fam, repo_id, gguf_filename, base, hf_token)
+            or qwen_image_pick_mismatch(fam, repo_id, gguf_filename, base, hf_token)
+            or speech_pick_refusal(repo_id, gguf_filename, hf_token)
+        )
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards
         # Resolved through the same tri-state the loader uses, so the size the picker SHOWS is the size the load will
         # actually move on a family whose unset request takes a hosted encoder.
@@ -4881,8 +4891,9 @@ class DiffusionBackend:
                 )
                 # A renamed or hand-picked FLUX.2 GGUF can still land on a different-size base, and no name-based rule
                 # catches that. Say so here, naming the file and the repo, rather than letting the GGUF quantizer
-                # raise a bare shape mismatch.
+                # raise a bare shape mismatch. Same for Qwen-Image vs 2.1 on ``img_in``.
                 assert_flux2_gguf_matches_base(fam, base, single_file_path)
+                assert_qwen_image_gguf_matches_base(fam, base, single_file_path)
                 transformer_cls = getattr(diffusers, fam.transformer_class)
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
 
