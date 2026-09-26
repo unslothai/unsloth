@@ -845,7 +845,9 @@ def run_ensure_rocm_torch(
     pip_try = MagicMock(return_value = True)
     result = MagicMock(returncode = 0, stdout = (_MARK + probe + "\n") if probe else "\n")
     with contextlib.ExitStack() as stack:
-        for name, value in {"IS_WINDOWS": False, **(attrs or {})}.items():
+        # Pin Linux x86_64: on macOS or aarch64 the repair is a no-op.
+        stack.enter_context(patch("platform.machine", return_value = "x86_64"))
+        for name, value in {"IS_WINDOWS": False, "IS_MACOS": False, **(attrs or {})}.items():
             stack.enter_context(patch.object(stack_mod, name, value))
         stack.enter_context(patch.object(stack_mod, "pip_install", pip))
         stack.enter_context(patch.object(stack_mod, "pip_install_try", pip_try))
