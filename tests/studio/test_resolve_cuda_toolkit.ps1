@@ -24,6 +24,14 @@ $fn = $ast.FindAll({ param($n)
 if ($fn.Count -ne 1) { throw "expected exactly one Resolve-CudaToolkit, found $($fn.Count)" }
 $fnText = $fn[0].Extent.Text
 
+# Resolve-CudaToolkit publishes CudaToolkitDir through the formatter, so keep
+# the extracted child harness on the same production dependency boundary.
+$formatFn = $ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "Format-CudaToolkitDir"
+}, $true)
+if ($formatFn.Count -ne 1) { throw "expected exactly one Format-CudaToolkitDir, found $($formatFn.Count)" }
+$formatText = $formatFn[0].Extent.Text
+
 # Resolve-CudaToolkit calls Write-CudaDriverToolkitMismatch, so extract it too.
 $mismatchFn = $ast.FindAll({ param($n)
     $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "Write-CudaDriverToolkitMismatch"
@@ -98,6 +106,8 @@ function Find-Nvcc {
 $exitText
 
 $mismatchText
+
+$formatText
 
 $fnText
 
