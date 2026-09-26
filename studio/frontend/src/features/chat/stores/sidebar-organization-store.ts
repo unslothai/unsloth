@@ -8,6 +8,8 @@ import { persist } from "zustand/middleware";
 export type SidebarOrganizeBy = "project" | "list";
 /** How chat rows are ordered inside whichever list they land in. */
 export type SidebarChatSort = "priority" | "updated" | "manual";
+/** How project folders are ordered in the Projects section. */
+export type SidebarProjectSort = "updated" | "name" | "created" | "manual";
 
 // Defined in a leaf module and re-exported here so existing importers are unchanged: this
 // store is in an import cycle, so a binding defined here would be readable too late. See
@@ -34,11 +36,14 @@ export interface SidebarOrganizationState {
   // Pinned sorts on its own. Pin order already is a manual order, so it defaults to "manual" and
   // stays put while the lists below re-sort.
   pinnedSort: SidebarChatSort;
+  // Manual by default: the drag order, falling back to last activity.
+  projectSort: SidebarProjectSort;
   /** Scope key -> row ids, in the order the user dragged them into. */
   manualOrder: Record<string, string[]>;
   setOrganizeBy: (value: SidebarOrganizeBy) => void;
   setChatSort: (value: SidebarChatSort) => void;
   setPinnedSort: (value: SidebarChatSort) => void;
+  setProjectSort: (value: SidebarProjectSort) => void;
   setManualOrder: (scope: string, ids: string[]) => void;
 }
 
@@ -160,10 +165,12 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
       organizeBy: "project",
       chatSort: "priority",
       pinnedSort: "manual",
+      projectSort: "manual",
       manualOrder: {},
       setOrganizeBy: (value) => set({ organizeBy: value }),
       setChatSort: (value) => set({ chatSort: value }),
       setPinnedSort: (value) => set({ pinnedSort: value }),
+      setProjectSort: (value) => set({ projectSort: value }),
       setManualOrder: (scope, ids) =>
         set((state) => ({
           manualOrder: { ...state.manualOrder, [scope]: ids },
@@ -187,6 +194,12 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
             : fallback;
         const chatSort = readSort(saved?.chatSort, "priority");
         const pinnedSort = readSort(saved?.pinnedSort, "manual");
+        const projectSort: SidebarProjectSort =
+          saved?.projectSort === "updated" ||
+          saved?.projectSort === "name" ||
+          saved?.projectSort === "created"
+            ? saved.projectSort
+            : "manual";
         const manualOrder: Record<string, string[]> = {};
         if (saved?.manualOrder && typeof saved.manualOrder === "object") {
           for (const [scope, ids] of Object.entries(saved.manualOrder)) {
@@ -202,6 +215,7 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
           organizeBy,
           chatSort,
           pinnedSort,
+          projectSort,
           manualOrder,
         };
       },
