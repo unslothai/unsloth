@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import re
 import secrets
 import threading
 import weakref
@@ -108,6 +109,12 @@ def _rebase_link(link: str, upstream: str, base: str) -> str:
 
 
 ANONYMOUS_ASSET_LIMIT = 20 * 1024 * 1024
+_ASSET_PATH = re.compile(r"^/(?:(?:datasets|spaces)/)?[^/]+/[^/]+/(?:resolve|raw)/[^/]+/.")
+# Served under Studio's origin, so only inert raster images, never markup or scripts.
+_ASSET_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; sandbox",
+}
 
 
 async def _capped(chunks, limit: int):
@@ -159,6 +166,8 @@ def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: b
             # A Location would name an endpoint only the owner may read: relay the asset instead.
             if not (_saved_only(endpoint) and not is_loopback_host(client_ip(request))):
                 return RedirectResponse(target, status_code = 302)
+            if not _ASSET_PATH.match(rest):
+                return _refuse(401, "Sign in again to browse the Hub.")
 
         headers = {"Accept": request.headers.get("accept", "*/*")}
         if not anonymous and (token := request.headers.get(TOKEN_HEADER)):
@@ -172,6 +181,10 @@ def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: b
             return _refuse(502, f"The Hub endpoint could not be reached ({type(exc).__name__}).")
         body = answer.aiter_bytes()
         if anonymous:
+            kind = answer.headers.get("content-type", "").split(";")[0].strip().lower()
+            if answer.is_success and (not kind.startswith("image/") or kind == "image/svg+xml"):
+                await answer.aclose()
+                return _refuse(401, "Sign in again to browse the Hub.")
             if int(answer.headers.get("content-length") or 0) > ANONYMOUS_ASSET_LIMIT:
                 await answer.aclose()
                 return _refuse(413, "Sign in to download files this large.")
@@ -183,6 +196,8 @@ def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: b
                 link, endpoint, str(request.url.replace(path = path, query = ""))
             )
         passed[UPSTREAM_HEADER] = "1"
+        if anonymous:
+            passed.update(_ASSET_HEADERS)
         return StreamingResponse(
             body,
             status_code = answer.status_code,
