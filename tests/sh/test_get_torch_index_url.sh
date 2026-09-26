@@ -201,8 +201,7 @@ run_func() {
     fi
 }
 
-# stderr only, for the assertions on the newer-than-validated note: run_func discards it.
-# `2>&1 >/dev/null` in that order, so stderr reaches the capture and stdout does not.
+# Captures stderr only (run_func discards it).
 run_func_stderr() {
     _mock_dir="$1"
     if [ "$_mock_dir" = "none" ]; then
@@ -656,9 +655,7 @@ assert_eq "url override path slash trimmed, query kept" "https://mirror.example.
 _result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128#anchor/" run_func "none")
 assert_eq "url override preserves fragment slash" "https://mirror.example.com/whl/cu128#anchor/" "$_result"
 
-# 51) A host newer than the newest published leaf is TOLD it was capped, naming both versions.
-# Silence here is what #7264 / #10657 were filed over: the installer prints the host's real
-# version, then installs an older-looking index, and says nothing in between.
+# 51) A host newer than the newest leaf is told it was capped (#7264, #10657).
 _dir=$(make_mock_amd_smi "8.0")
 _result=$(run_func_stderr "$_dir")
 assert_contains "ROCm 8.0 cap is explained on stderr" "$_result" "No PyTorch build is validated for ROCm rocm8.0"
@@ -666,8 +663,7 @@ assert_contains "ROCm 8.0 cap names the leaf installed instead" "$_result" "inst
 assert_contains "ROCm 8.0 cap says the wheels carry their own runtime" "$_result" "carry their own ROCm runtime"
 rm -rf "$_dir"
 
-# 52) The reported case: a two-digit minor is a minor, so 7.14 is capped (not read as 7.1) and
-# the note quotes 7.14 back, which is the number the reporter is looking at.
+# 52) Two-digit minor: 7.14 is capped, not read as 7.1.
 _dir=$(make_mock_amd_smi "7.14")
 _result=$(run_func "$_dir")
 assert_eq "ROCm 7.14 -> rocm7.2 (capped)" "https://download.pytorch.org/whl/rocm7.2" "$_result"
@@ -675,20 +671,19 @@ _result=$(run_func_stderr "$_dir")
 assert_contains "ROCm 7.14 cap is explained on stderr" "$_result" "No PyTorch build is validated for ROCm rocm7.14"
 rm -rf "$_dir"
 
-# 53) A validated version is not a cap, so it stays silent: the note must not fire on the
-# common healthy host, which is how the existing sources-disagree WARN became noise.
+# 53) A validated version stays silent.
 _dir=$(make_mock_amd_smi "7.2")
 _result=$(run_func_stderr "$_dir")
 assert_not_contains "ROCm 7.2 prints no cap note" "$_result" "No PyTorch build is validated"
 rm -rf "$_dir"
 
-# 54) Same for a version BELOW the newest leaf: rocm6.3 is served as itself, not capped.
+# 54) Below the newest leaf: rocm6.3 is served as itself.
 _dir=$(make_mock_amd_smi "6.3")
 _result=$(run_func_stderr "$_dir")
 assert_not_contains "ROCm 6.3 prints no cap note" "$_result" "No PyTorch build is validated"
 rm -rf "$_dir"
 
-# 55) The 6.x clip is the same defect on the other branch: 6.5+ lands on rocm6.4.
+# 55) 6.5+ clips to rocm6.4.
 _dir=$(make_mock_amd_smi "6.5")
 _result=$(run_func "$_dir")
 assert_eq "ROCm 6.5 -> rocm6.4 (clipped)" "https://download.pytorch.org/whl/rocm6.4" "$_result"

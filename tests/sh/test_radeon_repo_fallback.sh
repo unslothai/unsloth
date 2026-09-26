@@ -2,11 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# _radeon_fetch_listing tells its caller WHY it came back empty, so the fallback to the
-# pytorch.org index can say "AMD publishes no wheels for this release" instead of implying the
-# repo is down. AMD only ever published some releases on repo.radeon.com (nothing past
-# rocm-rel-7.2.4 as of 2026-09), so on a newer host the miss is the normal case, and calling it
-# "unavailable" is what sent the reporters of #7264 and #10657 looking for a broken host.
+# _radeon_fetch_listing separates "no such release" (HTTP error) from "host unreachable" (#7264, #10657).
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -17,7 +13,6 @@ _FUNC_FILE=$(mktemp)
 sed -n '/^_radeon_fetch_listing()/,/^}/p' "$INSTALL_SH" > "$_FUNC_FILE"
 [ -s "$_FUNC_FILE" ] || { echo "  FAIL: could not extract _radeon_fetch_listing"; exit 1; }
 
-# A fake interpreter, so the python tag does not depend on the runner's python.
 _STUB_DIR=$(mktemp -d)
 cat > "$_STUB_DIR/fakepy" <<'STUB'
 #!/bin/sh
@@ -25,7 +20,7 @@ echo cp312
 STUB
 chmod +x "$_STUB_DIR/fakepy"
 
-# $1 is the exit code the stub curl reports; it writes nothing, as a failed fetch does not.
+# $1 = stub curl exit code.
 run_fetch() {
     _curl_dir=$(mktemp -d)
     cat > "$_curl_dir/curl" <<STUB
@@ -50,19 +45,19 @@ STUB
 
 echo "=== test_radeon_repo_fallback ==="
 
-# 1) curl -f exits 22 on any HTTP >= 400: the host answered, it just has no such release.
+# 1) curl -f exits 22 on HTTP >= 400.
 assert_eq "HTTP 404 -> fetch fails, host recorded as answering" \
     "fail answered=true" "$(run_fetch 22)"
 
-# 2) Connection refused (7). Nothing answered, so the caller must keep saying "unreachable".
+# 2) Connection refused (7).
 assert_eq "connection refused -> fetch fails, host not recorded as answering" \
     "fail answered=false" "$(run_fetch 7)"
 
-# 3) Timeout (28), the other common transport failure, is likewise not an answer.
+# 3) Timeout (28).
 assert_eq "timeout -> fetch fails, host not recorded as answering" \
     "fail answered=false" "$(run_fetch 28)"
 
-# 4) A listing that comes back is still a plain success, with the flag untouched.
+# 4) Served listing.
 _curl_dir=$(mktemp -d)
 cat > "$_curl_dir/curl" <<'STUB'
 #!/bin/sh
@@ -83,9 +78,7 @@ _result=$(PATH="$_curl_dir:$PATH" bash -c "
 assert_eq "a served listing -> fetch succeeds" "ok answered=false pytag=cp312" "$_result"
 rm -rf "$_curl_dir"
 
-# 5) The flag is sticky across the caller's second attempt on the shorter X.Y path: a 404 on
-# X.Y.Z followed by a transport failure on X.Y still means the host is up. Two real calls in
-# one shell, as install.sh makes them, with a stub that answers differently each time.
+# 5) Sticky: 404 on X.Y.Z then a transport failure on X.Y still means the host is up.
 _curl_dir=$(mktemp -d)
 cat > "$_curl_dir/curl" <<STUB
 #!/bin/sh
@@ -108,8 +101,7 @@ _result=$(PATH="$_curl_dir:$PATH" bash -c "
 assert_eq "one answer across two attempts is enough" "true calls=2" "$_result"
 rm -rf "$_curl_dir"
 
-# 6) The wget half. curl is checked first, so this arm is only reachable on a host without
-# it: PATH holds the stub wget and nothing else. wget's 8 is its "server error response".
+# 6) wget (only reached without curl): 8 = server error response.
 run_fetch_wget() {
     _wget_dir=$(mktemp -d)
     cat > "$_wget_dir/wget" <<STUB
@@ -117,7 +109,6 @@ run_fetch_wget() {
 exit $1
 STUB
     chmod +x "$_wget_dir/wget"
-    # bash by absolute path: PATH holds only the stub, so the name would not resolve.
     PATH="$_wget_dir" "$(command -v bash)" -c "
         . '$_FUNC_FILE'
         _VENV_PY='$_STUB_DIR/fakepy'
@@ -137,8 +128,7 @@ assert_eq "no curl, wget HTTP error -> host recorded as answering" \
 assert_eq "no curl, wget network failure -> host not recorded as answering" \
     "fail answered=false" "$(run_fetch_wget 4)"
 
-# 7) Structure at the call site: the not-published arm is gated on the flag and comes before
-# the unreachable arm, so a reachable host never reads as down.
+# 7) The not-published arm precedes the unreachable arm.
 _answered_line=$(grep -n 'elif \[ "\$_RADEON_HOST_ANSWERED" = true \]; then' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _unreachable_line=$(grep -n 'Radeon repo unreachable' "$INSTALL_SH" | head -1 | cut -d: -f1)
 assert_eq "not-published arm precedes the unreachable arm" "yes" \

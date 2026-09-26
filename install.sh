@@ -5195,9 +5195,7 @@ get_torch_index_url() {
                     echo "$_base/cpu"; return ;;
             esac
             # Normalise to major.minor; 6.5+ clips to rocm6.4, 7.3+ caps to rocm7.2.
-            # Captured rather than echoed straight out so the cap can be NAMED below. Every arm
-            # is untouched on purpose: test_rocm_bad_arch_gate.sh and test_rocm_support.py both
-            # pin these lines verbatim.
+            # Captured so the cap can be named below; test_rocm_bad_arch_gate.sh and test_rocm_support.py pin the arms verbatim.
             _rocm_index=$(case "$_rocm_tag" in
                 rocm6.0|rocm6.0.*) echo "$_base/rocm6.0" ;;
                 rocm6.1|rocm6.1.*) echo "$_base/rocm6.1" ;;
@@ -5212,17 +5210,10 @@ get_torch_index_url() {
                 *)
                     echo "$_base/rocm7.2" ;;
             esac)
-            # Say so when the table moved the host off its own version, which reads as a failed
-            # version detection otherwise: every report of it so far (#7264, #9932, #10657)
-            # opens by quoting the version we printed one line earlier. A plain string compare
-            # is enough because _highest_rocm_tag emits rocm%d.%d, so no patch component
-            # reaches here and the rocmX.Y.* arms above are belt and braces. Deliberately NOT
-            # offering UNSLOTH_TORCH_INDEX_FAMILY as a way out: a newer leaf carries nothing
-            # inside _TORCH_CEILING, so pinning one fails to resolve rather than upgrading.
+            # A silent cap reads as failed detection (#7264, #9932, #10657). No UNSLOTH_TORCH_INDEX_FAMILY
+            # hint: newer leaves carry nothing inside _TORCH_CEILING, so pinning one fails to resolve.
             _rocm_leaf=${_rocm_index##*/}
             if [ "$_rocm_tag" != "$_rocm_leaf" ]; then
-                # Phrased on what is validated rather than on what is newer: the 6.x arm clips
-                # rocm6.5 to rocm6.4, and rocm6.5 is not newer than the rocm7.2 ceiling.
                 echo "[INFO] No PyTorch build is validated for ROCm $_rocm_tag; installing the closest validated build, $_rocm_leaf." >&2
                 echo "[INFO] Those wheels carry their own ROCm runtime and run on a newer host ROCm, so this is expected and needs no fix." >&2
             fi
@@ -5568,9 +5559,7 @@ get_radeon_wheel_url() {
 _RADEON_LISTING=""
 _RADEON_PYTAG=""
 _RADEON_BASE_URL=""
-# Whether repo.radeon.com answered at all, however it answered. Sticky on purpose: the caller
-# retries on a shorter X.Y path, and one answer from either attempt is enough to know the host
-# is up and simply has no directory for this release.
+# Sticky across the X.Y.Z and X.Y attempts: one HTTP answer proves the host is up.
 _RADEON_HOST_ANSWERED=false
 
 _radeon_fetch_listing() {
@@ -5579,17 +5568,13 @@ _radeon_fetch_listing() {
 import sys
 print('cp{}{}'.format(sys.version_info.major, sys.version_info.minor))
 " 2>/dev/null) || return 1
-    # Captured rather than left bare: the rc separates "AMD never published this release" from
-    # "the repo is down", which the caller reports differently, and an explicit `||` keeps a
-    # future caller outside an `if` condition from aborting the install under set -e.
     _radeon_fetch_rc=0
     if command -v curl >/dev/null 2>&1; then
         _RADEON_LISTING=$(curl -fsSL --max-time 20 "$_RADEON_BASE_URL" 2>/dev/null) || _radeon_fetch_rc=$?
     elif command -v wget >/dev/null 2>&1; then
         _RADEON_LISTING=$(wget -qO- --timeout=20 "$_RADEON_BASE_URL" 2>/dev/null) || _radeon_fetch_rc=$?
     fi
-    # curl 22 (-f, HTTP >= 400) and wget 8 (server error response) both mean the host answered
-    # and refused. Nothing else does: a DNS, TLS or timeout failure exits elsewhere.
+    # curl 22 (-f, HTTP >= 400) / wget 8: the host answered. DNS, TLS and timeouts exit otherwise.
     case "$_radeon_fetch_rc" in
         22|8) _RADEON_HOST_ANSWERED=true ;;
     esac
@@ -7242,9 +7227,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                     fi
                 fi
             elif [ "$_RADEON_HOST_ANSWERED" = true ]; then
-                # Not a warning: AMD publishes only some releases here (nothing past
-                # rocm-rel-7.2.4 as of 2026-09), and "Radeon repo unavailable" sent every
-                # reporter of #7264 / #10657 hunting for a broken host instead.
+                # Not a WARN: AMD publishes only some releases here (#7264, #10657).
                 _radeon_rel=${_radeon_url%/}
                 _radeon_rel=${_radeon_rel##*/}
                 substep "repo.radeon.com publishes no $_radeon_rel wheels; installing from $(_strip_index_url_credentials "$TORCH_INDEX_URL") instead..."
