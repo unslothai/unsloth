@@ -1,16 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+
 """Repairs for remote modeling code (vLLM ports such as Step-3.7-Flash) that breaks training:
 
 * `get_input_embeddings(self, input_ids)` returns embedded tokens, not the embedding module.
@@ -115,7 +105,6 @@ _OUTPUT_HEAD_ATTRIBUTES = ("lm_head", "output", "embed_out", "output_layer")
 
 
 def find_output_head(module):
-    """The output projection of `module` without going through its accessor."""
     for name in _OUTPUT_HEAD_ATTRIBUTES:
         child = getattr(module, name, None)
         if isinstance(child, torch.nn.Module) and hasattr(child, "weight"):
@@ -289,7 +278,6 @@ def _rebind_accelerate_hook(model):
 
 
 def apply_remote_code_shims(model):
-    """Repair the checkpoint-defined classes in `model`. Returns the repaired class names."""
     from transformers import PreTrainedModel
 
     repaired = []

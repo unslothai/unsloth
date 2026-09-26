@@ -1,16 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+
 """LoRA for block-diagonal grouped linears (DeepSeek-V4 `o_a_proj`, `FP8GroupedLinear`).
 
 PEFT's dense LoRA sum has the wrong shape for them; only the forward changes (group g uses
@@ -48,7 +38,6 @@ def grouped_linear_classes(model):
 def _grouped_lora_layer():
     from peft.tuners.lora.layer import Linear as LoraLinear
     class GroupedLinearLoRA(LoraLinear):
-        """PEFT's dense LoRA layer with a block-diagonal LoRA forward."""
 
         _unsloth_grouped_lora = True
 
@@ -155,7 +144,6 @@ def _targets_module(lora_config, name):
 
 
 def targeted_grouped_linear_classes(lora_config, model):
-    """The grouped-linear classes `lora_config.target_modules` actually selects in `model`."""
     classes = []
     for name, module in model.named_modules():
         if (
