@@ -37,6 +37,30 @@ _QUANT_STEADY_FACTOR: dict[str, float] = {
     "nvfp4": 0.33,
 }
 
+# Measured policy residency over bf16 + ~0.04 slack; 0.33 would keep a non-fitting model resident.
+_POLICY_STEADY_FACTOR: dict[str, float] = {
+    "zimg_rg76_v1": 0.50,
+    "flux_r420_v1": 0.45,
+    "qwen21_r020_v1": 0.50,
+    "qwen2512_m120_attn8_v1": 0.42,
+    "qwen_p02_v1": 0.47,
+}
+
+
+def policy_steady_factor(family: Any, base_repo: Optional[str] = None) -> Optional[float]:
+    """The NVFP4 POLICY steady factor for ``(family, base_repo)``, or None. Never raises."""
+    from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+
+    if not nvfp4_diffusion_enabled():
+        return None
+    try:
+        from .diffusion_nvfp4_policy import resolve_policy
+        policy = resolve_policy(getattr(family, "name", family), base_repo)
+    except Exception:  # noqa: BLE001 -- an unresolvable policy just means the plain factor
+        return None
+    return None if policy is None else _POLICY_STEADY_FACTOR.get(policy.policy_id)
+
+
 # bf16-RESIDENT component sizes in decimal GB: (transformer, text encoders, VAE). What they occupy on device after the
 # dtype cast, NOT the download size (Z-Image-Turbo ships fp32: 24.6 GB of shards -> 12.3 GB bf16). From HF sibling
 # metadata.
@@ -231,8 +255,14 @@ def estimate_dense_quant(
 ) -> Optional[DenseQuantEstimate]:
     """Estimate the candidate's footprint from the family table, or None when the
     family (or scheme factor) is unknown."""
+    from .diffusion_nvfp4_flag import nvfp4_blocked
+
+    if nvfp4_blocked(scheme):
+        return None
     components = family_bf16_components_gb(fam, base_repo)
     factor = _QUANT_STEADY_FACTOR.get(scheme)
+    if scheme == "nvfp4":
+        factor = policy_steady_factor(fam, base_repo) or factor
     if components is None or factor is None:
         return None
     transformer_gb, text_encoders_gb, vae_gb = components
@@ -273,6 +303,20 @@ def _hf_cache_free_mib() -> Optional[int]:
         return None
 
 
+def _has_usable_prequant(
+    fam: Any, scheme: str, prequant_path: Optional[str], base_repo: Optional[str]
+) -> bool:
+    """Whether a hosted or operator-supplied prequant checkpoint for ``scheme`` is usable; False on failure."""
+    try:
+        from .diffusion_prequant import usable_prequant_source
+        return (
+            usable_prequant_source(fam, scheme, path_override = prequant_path, base_repo = base_repo)
+            is not None
+        )
+    except Exception:  # noqa: BLE001 -- prequant probing must never sink the candidate
+        return False
+
+
 def resolve_dense_quant_candidate(
     *,
     fam: Any,
@@ -297,7 +341,15 @@ def resolve_dense_quant_candidate(
         return None
     if not dense_transformer_supported(target):
         return None
-    scheme = select_transformer_quant_scheme(target, requested, family = getattr(fam, "name", None))
+    scheme = select_transformer_quant_scheme(
+        target,
+        requested,
+        family = getattr(fam, "name", None),
+        base_repo = base_repo,
+        has_prequant = lambda candidate: _has_usable_prequant(
+            fam, candidate, prequant_path, base_repo
+        ),
+    )
     if scheme is None:
         return None
     prequant_available = False

@@ -92,6 +92,7 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   // Model hub leads: picking a model comes before the work that uses one.
   "hub",
   "projects",
+  "library",
   "images",
   // Video and Audio sit directly under Images: the media tabs read as one group.
   "video",
@@ -140,9 +141,9 @@ export function sidebarNavAutoAfterChoice(
 export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   hub: true,
   projects: true,
+  library: true,
   images: true,
-  video: true,
-  // Under "More" until a user pins it.
+  video: false,
   audio: false,
   train: true,
   recipes: false,
@@ -153,7 +154,7 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
 /** Every previously shipped layout, so a migration can tell an untouched install from one the
  *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects;
  *  v5 put Video back under "More" and later added API before Audio shipped; v6 added Audio;
- *  v7 pins Video under Images again. */
+ *  v7 pins Video under Images again; v8 adds Library under Projects and moves Video to "More". */
 const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
   [
     { id: "projects", pinned: true },
@@ -197,6 +198,17 @@ const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
     { id: "projects", pinned: true },
     { id: "images", pinned: true },
     { id: "video", pinned: false },
+    { id: "audio", pinned: false },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+    { id: "api", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
     { id: "audio", pinned: false },
     { id: "train", pinned: true },
     { id: "recipes", pinned: false },
@@ -589,14 +601,14 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 7,
+      version: 8,
       storage: createJSONStorage(() => guardedLocalStorage),
       migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
         const customization = migrateShippedSidebarNavDefault(
           sanitizeCustomization(state.customization),
           version,
-          7,
+          8,
         );
         return { customization } as AppearanceCustomState;
       },

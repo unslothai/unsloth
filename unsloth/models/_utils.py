@@ -86,6 +86,9 @@ __all__ = [
     "is_moe_model",
     "get_moe_target_parameters",
     "get_moe_target_modules",
+    "get_moe_expert_submodule_leaves",
+    "moe_expert_submodule_regex",
+    "widen_target_regex_to_expert_submodules",
     "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
     "EMBEDDING_MODULES",
@@ -112,6 +115,7 @@ from platform import system as platform_system
 
 platform_system = platform_system()
 import numpy as np
+import ast
 import contextlib
 import copy
 import re
@@ -773,6 +777,43 @@ def _declares_flex_support(model_class):
     return None
 
 
+def _model_class_supports_flash_attention(model_class):
+    """Whether installed transformers lets this class dispatch flash attention."""
+    if model_class is None:
+        return False
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        PreTrainedModel = None
+    new_flag_dispatched = PreTrainedModel is not None and hasattr(
+        PreTrainedModel, "_supports_flash_attn"
+    )
+    if new_flag_dispatched and not _flash_dispatch_reads_legacy_flag(PreTrainedModel):
+        return bool(getattr(model_class, "_supports_flash_attn", False))
+    return bool(
+        getattr(model_class, "_supports_flash_attn_2", False)
+        or getattr(model_class, "_supports_flash_attn", False)
+    )
+
+
+def _flash_dispatch_reads_legacy_flag(PreTrainedModel) -> bool:
+    # Read from source: later versions keep the legacy name only in the error message.
+    import inspect
+    for name in ("_flash_attn_can_dispatch", "_flash_attn_2_can_dispatch"):
+        check = getattr(PreTrainedModel, name, None)
+        if check is None:
+            continue
+        try:
+            source = inspect.getsource(check)
+        except (OSError, TypeError):
+            return False
+        return any(
+            "_supports_flash_attn_2" in line and line.lstrip().startswith("if not")
+            for line in source.splitlines()
+        )
+    return False
+
+
 def _enable_flex_attention_support(model_class, model_type = ""):
     """Set `_supports_flex_attn` on an interface-based architecture that leaves it unset (qwen3_5,
     qwen3_5_moe). Returns True when flex is now permitted."""
@@ -1087,7 +1128,73 @@ def _set_attn_impl(config, impl):
     return impl
 
 
-def resolve_model_class(auto_model, config):
+_REMOTE_CODE_HUB_KWARGS = (
+    "revision",
+    "code_revision",
+    "token",
+    "cache_dir",
+    "local_files_only",
+    "force_download",
+    "proxies",
+)
+
+
+def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
+    """Remote-code class `auto_model` would build for `config`, or None when native.
+    Auto mapping keys on config class name, so a remote `NemotronHConfig` would resolve native."""
+    if hub_kwargs.get("trust_remote_code", None) is False:
+        return None
+    auto_name = getattr(auto_model, "__name__", None)
+    auto_map = getattr(config, "auto_map", None)
+    if not auto_name or not isinstance(auto_map, dict) or auto_name not in auto_map:
+        return None
+    if not str(getattr(type(config), "__module__", "")).startswith("transformers_modules"):
+        return None
+    class_ref = auto_map[auto_name]
+    if not isinstance(class_ref, str) or "." not in class_ref:
+        return None
+    repo_id = getattr(config, "_name_or_path", None) or getattr(config, "name_or_path", None)
+    full_ref = class_ref
+    cross_repo = "--" in class_ref
+    if cross_repo:
+        _, class_ref = class_ref.split("--", 1)
+    module_name, class_name = class_ref.rsplit(".", 1)
+    # These may replace an already imported sibling module (revision = code revision same-repo).
+    if (
+        not cross_repo
+        and not hub_kwargs.get("force_download", False)
+        and not hub_kwargs.get("code_revision", None)
+        and not hub_kwargs.get("revision", None)
+    ):
+        config_module = str(type(config).__module__)
+        try:
+            import importlib
+
+            sibling = importlib.import_module(f"{config_module.rsplit('.', 1)[0]}.{module_name}")
+            klass = getattr(sibling, class_name, None)
+            if isinstance(klass, type):
+                return klass
+        except Exception:
+            pass
+    if not repo_id or not hub_kwargs.get("trust_remote_code", None):
+        return None
+    try:
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+
+        passed = {
+            k: v for k, v in hub_kwargs.items() if k in _REMOTE_CODE_HUB_KWARGS and v is not None
+        }
+        # Same call as from_pretrained, so `revision` applies only to same-repo code.
+        klass = get_class_from_dynamic_module(full_ref, repo_id, **passed)
+        return klass if isinstance(klass, type) else None
+    except Exception:
+        return None
+
+
+def resolve_model_class(auto_model, config, **hub_kwargs):
+    remote_class = _resolve_remote_model_class(auto_model, config, **hub_kwargs)
+    if remote_class is not None:
+        return remote_class
     mapping = getattr(auto_model, "_model_mapping", {})
     try:
         result = mapping[config.__class__]
@@ -1415,14 +1522,9 @@ def resolve_attention_implementation(
         supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
     if _is_sdpa_excluded(model_type):
         supports_sdpa = False
-    supports_flash_attention = (
-        model_class is not None
-        and (
-            getattr(model_class, "_supports_flash_attn_2", False)
-            or getattr(model_class, "_supports_flash_attn", False)
-        )
-        and not _is_flash_excluded(model_type)
-    )
+    supports_flash_attention = _model_class_supports_flash_attention(
+        model_class
+    ) and not _is_flash_excluded(model_type)
     supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
     # Before the ladder, since every branch below reads supports_flex_attention.
     prefers_flex_for_head_dim = _prefers_flex_for_head_dim(config)
@@ -1526,8 +1628,9 @@ def resolve_encoder_attention_implementation(
     config,
     model_type = "",
     disable_sdpa_model_names = (),
+    **hub_kwargs,
 ):
-    model_class = resolve_model_class(auto_model, config)
+    model_class = resolve_model_class(auto_model, config, **hub_kwargs)
     supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
     if any(name in model_type.lower() for name in disable_sdpa_model_names):
         return "eager"
@@ -4147,8 +4250,16 @@ def _find_concrete_accepts_loss_kwargs(model):
     return None, "no explicit accepts_loss_kwargs on any wrapper level"
 
 
-def _shadow_accepts_loss_kwargs(model, value):
+_GUESSED_LOSS_KWARGS = "_unsloth_guessed_accepts_loss_kwargs"
+
+
+def _shadow_accepts_loss_kwargs(
+    model,
+    value,
+    guessed = False,
+):
     # Set the attribute at every wrapper level so HF's hasattr check resolves wherever accelerator or peft unwrap lands.
+    # guessed marks values the source heuristic wrote, so a later call re-checks them instead of trusting them.
     seen = set()
     m = model
     for _ in range(8):
@@ -4157,6 +4268,10 @@ def _shadow_accepts_loss_kwargs(model, value):
         seen.add(id(m))
         try:
             setattr(m, "accepts_loss_kwargs", value)
+            if guessed:
+                m.__dict__[_GUESSED_LOSS_KWARGS] = value
+            else:
+                m.__dict__.pop(_GUESSED_LOSS_KWARGS, None)
         except Exception:
             pass
         nxt = getattr(m, "base_model", None)
@@ -4175,9 +4290,234 @@ def apply_accepts_loss_kwargs_fix(model):
 
     value, reason = _find_concrete_accepts_loss_kwargs(model)
     if value is None:
+        declared = _instance_accepts_loss_kwargs(model)
+        if declared is not None:
+            # Set by the model itself: keep it, and carry it onto any wrapper added since.
+            _shadow_accepts_loss_kwargs(model, declared)
+            return f"{declared} (instance accepts_loss_kwargs)"
+        # Re-check an earlier guess: forward may have been replaced since.
+        _clear_guessed_accepts_loss_kwargs(model)
+        causal_lm = _forward_ignores_num_items_in_batch(model)
+        if causal_lm is not None:
+            _shadow_accepts_loss_kwargs(model, False, guessed = True)
+            # transformers 5 reads the flag off get_base_model(), which the walk above can skip under PEFT.
+            _shadow_accepts_loss_kwargs(causal_lm, False, guessed = True)
+            return "False (forward takes **kwargs but computes its own mean loss)"
         return f"default (signature inspection, {reason})"
     _shadow_accepts_loss_kwargs(model, value)
     return f"{value} ({reason})"
+
+
+def _loss_kwargs_chain(model):
+    seen = set()
+    m = model
+    for _ in range(8):
+        if m is None or id(m) in seen:
+            return
+        seen.add(id(m))
+        yield m
+        nxt = getattr(m, "base_model", None)
+        if nxt is None or nxt is m:
+            nxt = getattr(m, "model", None)
+        m = nxt
+
+
+def _is_guess(d):
+    # Still the heuristic's value; an assignment made since (e.g. by the user) is a declaration.
+    return _GUESSED_LOSS_KWARGS in d and d.get("accepts_loss_kwargs") == d[_GUESSED_LOSS_KWARGS]
+
+
+def _clear_guessed_accepts_loss_kwargs(model):
+    chain = list(_loss_kwargs_chain(model))
+    # Under PEFT the walk skips the causal head that get_base_model() returns (and transformers 5 reads).
+    try:
+        head = model.get_base_model() if hasattr(model, "get_base_model") else None
+    except Exception:
+        head = None
+    if head is not None and all(head is not m for m in chain):
+        chain.append(head)
+    for m in chain:
+        d = getattr(m, "__dict__", {})
+        if _is_guess(d):
+            d.pop("accepts_loss_kwargs", None)
+        d.pop(_GUESSED_LOSS_KWARGS, None)
+
+
+def _instance_accepts_loss_kwargs(model):
+    seen = set()
+    m = model
+    for _ in range(8):
+        if m is None or id(m) in seen:
+            return None
+        seen.add(id(m))
+        d = getattr(m, "__dict__", {})
+        value = None if _is_guess(d) else d.get("accepts_loss_kwargs", None)
+        if value is not None:
+            return value
+        nxt = getattr(m, "base_model", None)
+        if nxt is None or nxt is m:
+            nxt = getattr(m, "model", None)
+        m = nxt
+    return None
+
+
+_CE_PARAMS = {
+    "CrossEntropyLoss": (
+        "weight",
+        "size_average",
+        "ignore_index",
+        "reduce",
+        "reduction",
+        "label_smoothing",
+    ),
+    "cross_entropy": (
+        "input",
+        "target",
+        "weight",
+        "size_average",
+        "ignore_index",
+        "reduce",
+        "reduction",
+        "label_smoothing",
+    ),
+}
+
+
+def _dotted_name(node):
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _is_const(node, allowed):
+    return isinstance(node, ast.Constant) and node.value in allowed
+
+
+def _ce_calls_all_mean(source, namespace = None):
+    all_mean, found = _scan_ce_calls(
+        source, _DEFAULT_CE_NAMESPACE if namespace is None else namespace
+    )
+    # A mention in a comment or docstring is not a call.
+    return all_mean and found
+
+
+_TORCH_CE = {
+    "CrossEntropyLoss": torch.nn.CrossEntropyLoss,
+    "cross_entropy": torch.nn.functional.cross_entropy,
+}
+
+
+# The usual imports, for callers that have source but no module to resolve it in.
+_DEFAULT_CE_NAMESPACE = {
+    "torch": torch,
+    "nn": torch.nn,
+    "F": torch.nn.functional,
+    "functional": torch.nn.functional,
+    **_TORCH_CE,
+}
+
+
+def _resolve_ce_callee(func, namespace):
+    dotted = _dotted_name(func)
+    if dotted is None or not namespace:
+        return None
+    head, *rest = dotted.split(".")
+    obj = namespace.get(head)
+    for attr in rest:
+        obj = getattr(obj, attr, None)
+    for name, target in _TORCH_CE.items():
+        if obj is target:
+            return name
+    return None
+
+
+def _scan_ce_calls(source, namespace = None):
+    # A sum / "none" reduction (modern or legacy, keyword or positional) is the model's own objective, not a micro-batch mean.
+    # Returns (every call is a mean, at least one call was seen).
+    try:
+        tree = ast.parse(textwrap.dedent(source))
+    except SyntaxError:
+        return False, False
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        # Only callees the forward's module binds to the PyTorch op; a model's own helper may reduce however it likes.
+        name = _resolve_ce_callee(node.func, namespace)
+        params = _CE_PARAMS.get(name)
+        if params is None:
+            continue
+        if len(node.args) > len(params) or any(isinstance(x, ast.Starred) for x in node.args):
+            return False, found
+        if any(kw.arg is None for kw in node.keywords):
+            return False, found
+        bound = dict(zip(params, node.args))
+        bound.update((kw.arg, kw.value) for kw in node.keywords)
+        if "reduction" in bound and not _is_const(bound["reduction"], ("mean",)):
+            return False, found
+        for legacy in ("size_average", "reduce"):
+            if legacy in bound and not _is_const(bound[legacy], (None, True)):
+                return False, found
+        found = True
+    return True, found
+
+
+def _forward_ignores_num_items_in_batch(model):
+    # HF treats **kwargs as consuming num_items_in_batch and skips 1/GA; remote code (NemotronH) keeps **kwargs for generate yet returns a CrossEntropyLoss mean, so loss + grads come out GA x too large.
+    m = model
+    try:
+        # PeftModelForCausalLM itself matches "CausalLM".
+        if hasattr(m, "get_base_model"):
+            m = m.get_base_model()
+    except Exception:
+        m = model
+    seen = set()
+    for _ in range(6):
+        if m is None or id(m) in seen:
+            return None
+        seen.add(id(m))
+        name = type(m).__name__
+        if "CausalLM" in name or "ForConditionalGeneration" in name or "LMHeadModel" in name:
+            break
+        nxt = getattr(m, "base_model", None)
+        if nxt is None or nxt is m:
+            nxt = getattr(m, "model", None)
+        m = nxt
+    else:
+        return None
+    # The instance forward is what Trainer inspects and calls (accelerate hooks and loaders replace it).
+    forward = getattr(m, "forward", None)
+    try:
+        forward = inspect.unwrap(forward) if forward is not None else None
+    except ValueError:
+        return None
+    try:
+        params = inspect.signature(forward).parameters.values()
+        source = inspect.getsource(forward)
+    except Exception:
+        return None
+    if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+        return None
+    if "num_items_in_batch" in source or "loss_function" in source:
+        return None
+    used = [
+        sub
+        for name, sub in m.named_children()
+        if isinstance(sub, torch.nn.CrossEntropyLoss)
+        and re.search(rf"\bself\.{re.escape(name)}\s*\(", source)
+    ]
+    if any(sub.reduction != "mean" for sub in used):
+        return None
+    namespace = getattr(getattr(forward, "__func__", forward), "__globals__", None) or {}
+    all_mean, found = _scan_ce_calls(source, namespace)
+    if not all_mean or not (found or used):
+        return None
+    return m
 
 
 def patch_tokenizer(model, tokenizer):
@@ -5098,7 +5438,9 @@ def get_moe_target_modules(model, target_modules = None) -> List[str]:
         return []
 
     # Scope the suffixes to the requested leaves, matching get_moe_target_parameters: gate/up/gate_up map to the fused gate_up ModuleList and down_proj to the down one, so a down-only request must not pull in the other projection.
-    want_gate_up = bool(target_set & {"gate_proj", "up_proj", "gate_up_proj"})
+    # gate_proj alone must not collect up_proj leaves; only gate_up_proj asks for both.
+    want_gate = bool(target_set & {"gate_proj", "gate_up_proj"})
+    want_up = bool(target_set & {"up_proj", "gate_up_proj"})
     want_down = "down_proj" in target_set
 
     targets = set()
@@ -5117,16 +5459,130 @@ def get_moe_target_modules(model, target_modules = None) -> List[str]:
             continue
         leaf_lower = leaf.lower()
         is_down = "down" in leaf_lower
-        is_gate_up = (not is_down) and ("gate" in leaf_lower or "up" in leaf_lower)
+        is_gate = (not is_down) and "gate" in leaf_lower
+        is_up = (not is_down) and "up" in leaf_lower
+        is_gate_up = is_gate or is_up
         if is_down and not want_down:
             continue
-        if is_gate_up and not want_gate_up:
+        if is_gate and is_up:  # a fused gate_up leaf: either request reaches it
+            if not (want_gate or want_up):
+                continue
+        elif is_gate and not want_gate:
+            continue
+        elif is_up and not want_up:
             continue
         # One entry per expert index; leaf.<i> matches expert i in every layer.
         for expert_index in range(len(module)):
             targets.add(f"{leaf}.{expert_index}")
 
     return sorted(targets)
+
+
+_EXPERT_SUBMODULE_PATTERN = re.compile(r"(?:^|\.)(?:experts\.\d+|shared_experts?)\.([A-Za-z_]\w*)$")
+_EXPERT_BLOCK_PATTERN = re.compile(r"(?:^|\.)(?:experts\.\d+|shared_experts?)$")
+
+
+def get_moe_expert_submodule_leaves(model, target_modules = None) -> List[str]:
+    """Requested MLP leaves inside expert submodules, unreached by the text-only regex."""
+    if not is_moe_model(model):
+        return []
+    if target_modules is None or not hasattr(model, "named_modules"):
+        return []
+    if isinstance(target_modules, str):
+        target_set = _moe_target_set_from_string(target_modules)
+    else:
+        target_set = {
+            target
+            for target in target_modules or ()
+            if (isinstance(target, str) and "." not in target and target in _MOE_BROAD_MLP_TARGETS)
+        }
+    if not (target_set & _MOE_BROAD_MLP_TARGETS):
+        return []
+    # gate_proj alone must not collect up_proj leaves; only gate_up_proj asks for both.
+    want_gate = bool(target_set & {"gate_proj", "gate_up_proj"})
+    want_up = bool(target_set & {"up_proj", "gate_up_proj"})
+    want_down = "down_proj" in target_set
+
+    leaves = set()
+    for name, module in model.named_modules():
+        matched = _EXPERT_SUBMODULE_PATTERN.search(name)
+        if matched is None:
+            continue
+        if not (
+            isinstance(module, torch.nn.Linear)
+            or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+        ):
+            continue
+        leaf = matched.group(1)
+        leaf_lower = leaf.lower()
+        is_down = "down" in leaf_lower
+        is_gate = (not is_down) and "gate" in leaf_lower
+        is_up = (not is_down) and "up" in leaf_lower
+        is_gate_up = is_gate or is_up
+        if is_down and not want_down:
+            continue
+        if is_gate and is_up:  # a fused gate_up leaf: either request reaches it
+            if not (want_gate or want_up):
+                continue
+        elif is_gate and not want_gate:
+            continue
+        elif is_up and not want_up:
+            continue
+        if not (is_down or is_gate_up):
+            continue
+        leaves.add(leaf)
+    return sorted(leaves)
+
+
+def moe_expert_submodule_regex(leaves, prefixes = None) -> str:
+    parent = r".*" if not prefixes else "(?:" + "|".join(sorted(prefixes)) + ")"
+    return (
+        parent
+        + r"\.(?:experts\.\d+|shared_experts?)\.(?:"
+        + "|".join(re.escape(leaf) for leaf in leaves)
+        + r")"
+    )
+
+
+def _remote_expert_parents(model):
+    parents = set()
+    for name, module in model.named_modules():
+        matched = _EXPERT_BLOCK_PATTERN.search(name)
+        if matched is None:
+            continue
+        if "transformers_modules" not in (getattr(type(module), "__module__", "") or ""):
+            continue
+        parent = name[: matched.start()]
+        parents.add(
+            r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in parent.split("."))
+        )
+    return parents
+
+
+def widen_target_regex_to_expert_submodules(
+    model, target_modules, detect_targets, auto_regex: bool
+):
+    """Widen a generated regex to ``experts.<i>.<leaf>``; a user-written regex is never widened."""
+    if not auto_regex or not isinstance(target_modules, str):
+        return target_modules, detect_targets, []
+    # Remote expert blocks only: widening native ones (Qwen3-MoE on 4.x) LoRAs every routed expert.
+    parents = _remote_expert_parents(model)
+    if not parents:
+        return target_modules, detect_targets, []
+    leaves = get_moe_expert_submodule_leaves(model, detect_targets)
+    if not leaves:
+        return target_modules, detect_targets, []
+    if any(
+        re.fullmatch(target_modules, name)
+        for name, _ in model.named_modules()
+        if ".experts." in name
+    ):
+        return target_modules, detect_targets, []
+    detect_was_the_regex = detect_targets is target_modules
+    target_modules = f"(?:{target_modules})|(?:{moe_expert_submodule_regex(leaves, parents)})"
+    if detect_was_the_regex:
+        detect_targets = target_modules
+    return target_modules, detect_targets, leaves
 
 
 def warn_if_zoo_cannot_merge_moe_experts():

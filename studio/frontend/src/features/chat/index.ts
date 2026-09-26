@@ -27,6 +27,7 @@ export {
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
+  revealFineTunedModel,
   validateModel,
   type BrowseFoldersResponse,
   type CachedGgufRepo,
@@ -162,6 +163,7 @@ export {
 } from "./stores/sidebar-organization-store";
 export type {
   SidebarChatSort,
+  SidebarProjectSort,
   SidebarOrganizeBy,
 } from "./stores/sidebar-organization-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
@@ -362,6 +364,7 @@ export {
   resolveOpen,
 } from "./utils/display-visibility";
 export { ArtifactCard } from "./artifacts/artifact-card";
+export { ArtifactHtmlFrame } from "./artifacts/html-frame";
 export { ResearchMessage } from "./components/research-message";
 export {
   ResearchActivityPanel,

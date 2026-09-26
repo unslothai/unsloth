@@ -603,13 +603,14 @@ export function GgufDownloadCard({
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const partialsResumable = useHttpPartialsResumable();
-  const localVariantPath = cachePath?.trim() || null;
+  const localVariantPath = showMemoryBar ? null : cachePath?.trim() || null;
   const { variants, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
       repoId,
       hfToken,
       preferLocalCache,
       localPath: localVariantPath,
+      includeCacheLocations: showMemoryBar,
     });
   const [selectedQuantState, setSelectedQuantState] = useState<{
     repoId: string;
@@ -843,7 +844,13 @@ export function GgufDownloadCard({
   const deleteTargetLabel = deleteTargetVariant
     ? ggufVariantDisplayLabel(deleteTargetVariant)
     : deleteTarget;
-  const deleteImpact = useDeleteImpact(deleteTarget !== null, repoId, deleteTarget);
+  // The same identity the delete below sends, so the preview measures the copy that goes.
+  const deleteImpact = useDeleteImpact(
+    deleteTarget !== null,
+    repoId,
+    deleteTarget,
+    deleteTargetVariant?.cache_ref ?? deleteTargetVariant?.cache_path ?? cachePath ?? undefined,
+  );
   const { deleting, runDelete } = useDeleteConfirmAction({
     action: async () => {
       if (!deleteTarget) return;
@@ -851,7 +858,12 @@ export function GgufDownloadCard({
         repoId,
         deleteTarget,
         hfToken || undefined,
-        cachePath ?? undefined,
+        // Redaction clears the path and leaves the reference: forwarding it keeps the
+        // delete on this row instead of whichever duplicate the server ranks first.
+        deleteTargetVariant?.cache_ref ??
+          deleteTargetVariant?.cache_path ??
+          cachePath ??
+          undefined,
       );
     },
     successMessage: () =>
