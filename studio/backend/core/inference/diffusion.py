@@ -8636,12 +8636,15 @@ class DiffusionBackend:
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                         try:
                             # torchao aten.to fails torch's aliasing check under inference_mode; model offload moves weights.
-                            grad_mode = (
-                                torch.no_grad
-                                if state.transformer_quant and state.offload_policy == OFFLOAD_MODEL
-                                else torch.inference_mode
-                            )
-                            with grad_mode(), protect_ctx:
+                            with (
+                                (
+                                    torch.no_grad()
+                                    if state.transformer_quant
+                                    and state.offload_policy == OFFLOAD_MODEL
+                                    else torch.inference_mode()
+                                ),
+                                protect_ctx,
+                            ):
                                 out = render_thread.run(
                                     "diffusion", lambda: pipe(**chunk_kwargs).images
                                 )
