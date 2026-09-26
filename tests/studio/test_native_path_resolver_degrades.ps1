@@ -100,6 +100,7 @@ $fns = @(
     "Test-StudioCanDefineNativeTypes", "Test-StudioEmitInChildProcess", "New-StudioDynamicAssembly",
     "New-StudioEmittedNativeType",
     "Initialize-StudioFinalPathNativeType", "Get-StudioNativeFinalPath",
+    "Get-StudioEarlyPython", "Invoke-StudioEarlyPython", "Get-StudioPythonFinalPath",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo",
     "Initialize-StudioProcessImageNativeType", "Get-StudioNativeProcessImagePath",
@@ -192,6 +193,13 @@ Write-Host "REDEFINE_TYPE_INTACT: `$(`$null -ne (("UnslothEmitterOutParamProbe" 
 # 7. The other rung. Resolve-StudioFinalPathInfo is what every caller actually
 #    uses, and the point of the change is that it still answers when the native
 #    side cannot: a lexical path, and Exact false so the runtime lock fails closed.
+#    The Python rung sits between the two and would answer EXACTLY on any host with
+#    an interpreter, which is the opposite of the state being exercised here, so it
+#    is switched off for this probe. It has its own coverage in
+#    tests/studio/test_early_python_path_resolver.ps1.
+`$env:UNSLOTH_EARLY_PYTHON_PROBE = "0"
+`$script:StudioEarlyPythonProbed = `$false
+`$script:StudioEarlyPython = `$null
 `$info = `$null
 `$ladderThrew = `$false
 try { `$info = Resolve-StudioFinalPathInfo -Path `$temp } catch { `$ladderThrew = `$true; Write-Host "LADDER_ERROR: `$(`$_.Exception.Message)" }

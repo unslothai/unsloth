@@ -74,7 +74,9 @@ SABOTAGE = (
 # What a host that cannot emit looks like. Constrained Language Mode and App Control's
 # Dynamic Code Security both come through Test-StudioCanDefineNativeTypes, so overriding
 # that gate is the whole of "no native side".
-NO_NATIVE = """function Test-StudioCanDefineNativeTypes { return $false }"""
+# The Python rung is off too: it would answer exactly on any host with an interpreter.
+NO_NATIVE = """$env:UNSLOTH_EARLY_PYTHON_PROBE = "0"
+function Test-StudioCanDefineNativeTypes { return $false }"""
 
 
 def _extract(pattern: str, source: str) -> str:
@@ -106,6 +108,9 @@ LOCK_CHAIN = (
     "Get-StudioNativeFinalPath",
     "Resolve-StudioLinkTarget",
     "Get-StudioSubstTarget",
+    "Get-StudioEarlyPython",
+    "Invoke-StudioEarlyPython",
+    "Get-StudioPythonFinalPath",
     "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo",
     "Get-StudioFinalPath",
@@ -1128,6 +1133,11 @@ def test_a_native_resolver_that_throws_says_so_once(tmp_path: Path):
     result = _run_powershell(
         _script(
             f"""
+# The subject here is the warning, not the answer, so the Python rung is switched off: it
+# would resolve exactly on any host with an interpreter and the assertion below is about the
+# degraded identity. That the rung rescues a throwing native resolver is covered in
+# tests/studio/test_early_python_path_resolver.ps1.
+$env:UNSLOTH_EARLY_PYTHON_PROBE = "0"
 # The helper is "available" and throws anyway, which is what a rename between
 # the Test-Path walk and CreateFileW looks like. The stub has to be the type the
 # resolver actually calls, and it has to count its calls: a stub the resolver

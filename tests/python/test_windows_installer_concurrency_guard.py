@@ -96,6 +96,9 @@ _FINAL_PATH_CHAIN = (
     "Get-StudioNativeFinalPath",
     "Resolve-StudioLinkTarget",
     "Get-StudioSubstTarget",
+    "Get-StudioEarlyPython",
+    "Invoke-StudioEarlyPython",
+    "Get-StudioPythonFinalPath",
     "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo",
     "Get-StudioFinalPath",
@@ -131,6 +134,9 @@ def _mutex_helpers(source: str) -> str:
             "Get-StudioNativeFinalPath",
             "Resolve-StudioLinkTarget",
             "Get-StudioSubstTarget",
+            "Get-StudioEarlyPython",
+            "Invoke-StudioEarlyPython",
+            "Get-StudioPythonFinalPath",
             "Get-StudioLexicalPath",
             "Resolve-StudioFinalPathInfo",
             "Get-StudioFinalPath",
@@ -168,6 +174,9 @@ def _process_helpers(source: str) -> str:
             "Get-StudioNativeFinalPath",
             "Resolve-StudioLinkTarget",
             "Get-StudioSubstTarget",
+            "Get-StudioEarlyPython",
+            "Invoke-StudioEarlyPython",
+            "Get-StudioPythonFinalPath",
             "Get-StudioLexicalPath",
             "Resolve-StudioFinalPathInfo",
             "Get-StudioFinalPath",
@@ -1118,7 +1127,9 @@ def test_the_extracted_helpers_can_call_everything_they_call(helpers):
     provided = set(re.findall(r"^    function ([\w-]+) \{", extracted, flags = re.M))
     assert provided, "the helper extraction produced nothing"
 
-    called = set(re.findall(r"(?<![\w-])([A-Z][\w]*-[\w-]+)", extracted))
+    # Whole-line comments dropped: a function named in prose is not a call.
+    code = "\n".join(line for line in extracted.splitlines() if not line.lstrip().startswith("#"))
+    called = set(re.findall(r"(?<![\w-])([A-Z][\w]*-[\w-]+)", code))
     missing = sorted((called & installer_functions) - provided)
     assert not missing, (
         f"{helpers.__name__} extracts functions that call {missing}, which the "
