@@ -3638,16 +3638,24 @@ if [ "$_setup_nvidia_usable" = true ]; then
     # behind on the common path where there is no driver string to print.
     if [ -n "$_setup_nv_driver" ]; then substep "Driver: $_setup_nv_driver"; fi
 elif [ "$_setup_amd_detected" = true ]; then
-    # rocminfo output is already ROCr-filtered and reordered, so only the HIP-layer masks index it:
-    # the first SET of HIP, then its CUDA alias, as install.sh (an empty HIP mask shadows CUDA).
-    if [ "$_setup_amd_probe" = rocminfo ]; then
-        if [ -n "${HIP_VISIBLE_DEVICES+x}" ]; then
-            _setup_vis="$HIP_VISIBLE_DEVICES"
-        else
-            _setup_vis="${CUDA_VISIBLE_DEVICES:-}"
-        fi
+    # As install.sh: ROCr decides which devices exist, then the first SET HIP-layer mask (HIP, then
+    # its CUDA alias; an empty one still shadows) indexes the survivors. rocminfo output is already
+    # ROCr-filtered; the amd-smi lists are not, so keep ROCr's ordinals there, in mask order.
+    if [ "$_setup_amd_probe" != rocminfo ] && [ -n "${ROCR_VISIBLE_DEVICES:-}" ] && [ "$ROCR_VISIBLE_DEVICES" != "-1" ]; then
+        _setup_rocr_keep() {
+            _setup_kept=$(printf '%s\n' "$1" | awk -v m="$ROCR_VISIBLE_DEVICES" '
+                NF { v[n++] = $0 }
+                END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] ~ /^[0-9]+$/ && t[i] + 0 < n) print v[t[i] + 0] } }')
+            # None in range keeps the whole list, as install.sh does.
+            if [ -n "$_setup_kept" ]; then printf '%s\n' "$_setup_kept"; else printf '%s\n' "$1"; fi
+        }
+        [ -n "$_setup_amd_records" ] && _setup_amd_records=$(_setup_rocr_keep "$_setup_amd_records")
+        [ -n "$_setup_gfx_all" ] && _setup_gfx_all=$(_setup_rocr_keep "$_setup_gfx_all")
+    fi
+    if [ -n "${HIP_VISIBLE_DEVICES+x}" ]; then
+        _setup_vis="$HIP_VISIBLE_DEVICES"
     else
-        _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+        _setup_vis="${CUDA_VISIBLE_DEVICES:-}"
     fi
     _setup_vis_idx=0
     if [ -n "$_setup_vis" ] && [ "$_setup_vis" != "-1" ]; then

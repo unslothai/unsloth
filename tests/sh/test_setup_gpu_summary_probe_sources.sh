@@ -507,6 +507,16 @@ assert_eq "a set-but-empty HIP mask shadows CUDA, as install.sh" \
 assert_eq "amd-smi is not ROCr-filtered, so its list is still indexed by the ROCr ordinal" \
     "gfx1100|AMD Radeon RX 7900 XTX" \
     "$(STUB_ROCR=1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"
+# amd-smi is not ROCr-filtered: ROCr picks the survivors, then the HIP-layer mask indexes them.
+assert_eq "amd-smi: HIP=1 under ROCR=2,0 selects survivor 1 (card 0)" \
+    "gfx90a|AMD Instinct MI210" \
+    "$(STUB_ROCR=2,0 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 1)"
+assert_eq "amd-smi: CUDA_VISIBLE_DEVICES, HIP's alias, indexes the list" \
+    "gfx1201|AMD Radeon AI PRO R9700" \
+    "$(STUB_CUDA=2 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"
+assert_eq "amd-smi: an empty HIP mask still leaves ROCR=1's survivor" \
+    "gfx1100|AMD Radeon RX 7900 XTX" \
+    "$(STUB_ROCR=1 STUB_HIP_EMPTY=1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"
 
 echo "=== detected, but no arm produced a record ==="
 # Under `set -euo pipefail` an unassigned variable is not an empty string, it is a fatal
@@ -514,7 +524,7 @@ echo "=== detected, but no arm produced a record ==="
 assert_eq "the KFD-shaped path reaches the end instead of aborting on set -u" \
     "|" "$(kfd_shape_summary)"
 assert_eq "every variable the selection block reads is initialised up front" \
-    "" "$(grep -oE '\$\{?_setup_(gfx|gfx_all|mkt|amd_records|amd_detected|nvidia_usable)\b' \
+    "" "$(grep -oE '\$\{?_setup_(gfx|gfx_all|mkt|amd_records|amd_detected|amd_probe|nvidia_usable)\b' \
               "$WORK/select.sh" | tr -d '${' | sort -u \
           | while read -r _v; do grep -q "^$_v=" "$WORK/init.sh" || echo "$_v"; done | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "amd-smi answers list but not static --asic" \

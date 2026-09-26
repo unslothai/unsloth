@@ -84,6 +84,29 @@ def test_gfx906_is_never_the_repick(unmasked):
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1036", "gfx906")) == "gfx1036"
 
 
+def test_rocminfo_output_is_not_masked_by_rocr_twice(unmasked):
+    """rocminfo already applied ROCR_VISIBLE_DEVICES=1,0: its survivors are R9700, iGPU."""
+    out = _rocminfo("gfx1201", "gfx1036")
+    unmasked.setenv("ROCR_VISIBLE_DEVICES", "1,0")
+    assert ILP._pick_rocm_gfx_target(out, rocr_filtered = True) == "gfx1201"
+    unmasked.setenv("HIP_VISIBLE_DEVICES", "1")
+    assert ILP._pick_rocm_gfx_target(out, rocr_filtered = True) == "gfx1036"
+    # An unfiltered list (amd-smi) is still indexed by the ROCr ordinal.
+    unmasked.delenv("HIP_VISIBLE_DEVICES")
+    assert ILP._pick_rocm_gfx_target(out) == "gfx1036"
+
+
+def test_the_rocminfo_probe_says_its_output_is_rocr_filtered():
+    import ast
+    tree = ast.parse(Path(ILP.__file__).read_text(encoding = "utf-8"))
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "detect_host")
+    calls = [
+        c for c in ast.walk(fn)
+        if isinstance(c, ast.Call) and getattr(c.func, "id", "") == "_pick_rocm_gfx_target"
+    ]
+    assert any(k.arg == "rocr_filtered" for c in calls for k in c.keywords)
+
+
 @pytest.mark.parametrize("env", _VISIBILITY_ENV)
 def test_an_explicit_visibility_mask_still_wins(monkeypatch, env):
     """HIP_VISIBLE_DEVICES=0 on the hybrid host selects the iGPU on purpose -- it is the
