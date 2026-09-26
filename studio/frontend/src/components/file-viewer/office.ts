@@ -8,8 +8,9 @@ import { type Unzipped, strFromU8, unzipSync } from "fflate";
 const MAX_UNPACKED_BYTES = 200 * 1024 * 1024;
 export const MAX_SHEET_ROWS = 5000;
 export const MAX_SHEET_COLUMNS = 200;
-// Across every sheet, so a workbook of many sheets reads no more than one full one.
-const MAX_WORKBOOK_CELLS = MAX_SHEET_ROWS * MAX_SHEET_COLUMNS;
+// Across every sheet, so a workbook of many sheets reads no more than one full one. Each row also
+// costs one, so a full sheet fits.
+const MAX_WORKBOOK_CELLS = MAX_SHEET_ROWS * (MAX_SHEET_COLUMNS + 1);
 
 export interface SheetCell {
   text: string;
