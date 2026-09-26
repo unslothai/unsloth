@@ -1262,7 +1262,11 @@ def _mxfp4_lora_keeps_experts_packed(
                 parts = name.split(".")
                 return ".".join(parts[:-1] + [variant, parts[-1]])
 
-            def weight_bytes(files, read_index, size_of = None):
+            def weight_bytes(
+                files,
+                read_index,
+                size_of = None,
+            ):
                 # The files from_pretrained reads, in its order: model.safetensors, else the
                 # shards the safetensors index lists, else the same for pytorch_model.bin
                 # (only the .bin pair with use_safetensors = False), for the selected variant
@@ -1313,8 +1317,8 @@ def _mxfp4_lora_keeps_experts_packed(
             if os.path.isdir(str(model_name)):
                 folder = str(model_name)
                 checkpoint_bytes = weight_bytes(
-                        folder_files(folder), folder_index(folder), folder_size(folder)
-                    )
+                    folder_files(folder), folder_index(folder), folder_size(folder)
+                )
             else:
                 try:
                     from huggingface_hub import HfApi, hf_hub_download
