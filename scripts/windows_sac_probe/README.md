@@ -204,6 +204,12 @@ new one, so a `revert` after it restores the machine as it is now rather than as
 it was before a run that has already been undone. `collect` refuses a label that
 was never prepared rather than exporting unrelated events.
 
+`prepare` refuses a new label while another label has not been reverted: revert
+that label first. A `prepare` that fails after applying the audit policy removes
+it again. If `revert` finds the policy still active after removing it (Windows 11
+before 24H2 needs a restart for that), it leaves the baseline pending: restart and
+run `revert` again.
+
 ### On a machine with no Unsloth on it
 
 Nothing extra to do. `prepare` detects that Studio is absent and installs it with

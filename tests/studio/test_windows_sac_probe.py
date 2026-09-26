@@ -334,8 +334,8 @@ def test_the_new_guard_runs_in_the_unfiltered_lint_job():
 
 def test_the_powershell_probe_restores_what_prepare_changed_and_unmounts_efi():
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
-    # EFI mounted only by the probe is unmounted by the probe, on both stages.
-    assert ps1.count("Dismount-Efi $mounted") == 2 and "mountvol.exe S: /D" in ps1
+    # EFI mounted only by the probe is unmounted by the probe, on both stages and on prepare's rollback.
+    assert ps1.count("Dismount-Efi $mounted") == 3 and "mountvol.exe S: /D" in ps1
     assert "Invoke-Native 'CiTool.exe' @('-r')" in ps1 and "Invoke-Native 'mountvol.exe'" in ps1
     assert "Test-PolicyActive $NOISG_GUID" in ps1
     assert "AuditPolicyPreexisting" in ps1 and "preexisting-policy.cip" in ps1
@@ -2218,3 +2218,163 @@ exit 0
     )
     proc = run_pwsh([pwsh, "-NoProfile", "-File", str(script)], capture_output = True, text = True)
     assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]
+
+
+_PROBE_MOCKS = r"""
+$WorkDir = $Work; $SkipUpdates = $true; $UpgradePackages = $false; $SendSamples = $false
+$NOISG_GUID = '{AAAA}'; $NOISG_DEST = Join-Path $Work 'efi/active/test.cip'
+$AuditPolicy = Join-Path $Work 'source.bin'; 'probe policy' | Set-Content -LiteralPath $AuditPolicy
+$script:EfiStillMounted = $false
+function Assert-Elevated { }
+function Write-Section { }
+function Clear-EfiOwnership { }
+function Mount-Efi { $true }
+function Dismount-Efi { }
+function Invoke-Native { }
+function Set-MpPreference { }
+function Get-MpPreference { [pscustomobject]@{ DisableRealtimeMonitoring = $false } }
+function Get-MpPreferenceType { [string] }
+function Test-MpPreferenceMatch { $true }
+function Get-CiLogSettings { [pscustomobject]@{ Enabled = $true; MaxSize = 67108864 } }
+function Initialize-Studio { }
+function Stop-ProbeStudio { $true }
+function Get-StudioHomeOverride { $Work }
+function Get-StudioHome { $Work }
+function Get-LlamaDir { Join-Path $Work 'runtime' }
+function Save-Baseline([string] $dir) {
+  $b = [pscustomobject]@{ CapturedAt = (Get-Date).ToString('o'); Sac = [pscustomobject]@{ Mode = 'off'; RegistryState = 0; Policies = @() }
+    AuditPolicyApplied = $false; AuditPolicyPreexisting = $false; AuditPolicyControlFired = $null; RevertCompletedAt = $null }
+  Save-ProbeBaseline $b (Join-Path $dir 'baseline.json'); $b }
+function Read-Baseline([string] $label) { Get-Content -LiteralPath (Join-Path (Join-Path $Work $label) 'baseline.json') -Raw | ConvertFrom-Json }
+"""
+
+_PROBE_FUNCTIONS = [
+    "Get-RunDir",
+    "Get-RollbackPolicyPath",
+    "Save-ProbeBaseline",
+    "Test-PolicyActive",
+    "Get-UnrevertedLabel",
+    "Invoke-Prepare",
+    "Invoke-Revert",
+]
+
+
+def test_prepare_refuses_while_another_label_is_unreverted(tmp_path):
+    """prepare B while A was unreverted saved A's policy as B's pre-existing one, so reverting A then B put the probe policy back."""
+    body = (
+        _PROBE_MOCKS
+        + r"""
+function Get-RollbackPolicyPath { throw 'PAST-GUARD' }
+New-Item -ItemType Directory -Force -Path (Join-Path $Work 'A') | Out-Null
+Save-ProbeBaseline ([pscustomobject]@{ AuditPolicyApplied = $true; RevertCompletedAt = $null }) (Join-Path $Work 'A/baseline.json')
+$Label = 'B'
+try { Invoke-Prepare; exit 71 } catch { if ("$_" -notlike "*label 'A' has not been reverted*revert -Label A*") { Write-Host "$_"; exit 72 } }
+# A retry of the same label, and a label whose revert completed, are not refused.
+$Label = 'A'
+try { Invoke-Prepare; exit 73 } catch { if ("$_" -ne 'PAST-GUARD') { Write-Host "$_"; exit 74 } }
+Save-ProbeBaseline ([pscustomobject]@{ AuditPolicyApplied = $false; RevertCompletedAt = 'done' }) (Join-Path $Work 'A/baseline.json')
+$Label = 'B'
+try { Invoke-Prepare; exit 75 } catch { if ("$_" -ne 'PAST-GUARD') { Write-Host "$_"; exit 76 } }
+exit 0
+"""
+    )
+    _drive_probe(tmp_path, body, _PROBE_FUNCTIONS)
+
+
+def test_revert_keeps_the_baseline_pending_while_the_policy_is_still_active(tmp_path):
+    """Before Windows 11 24H2 a removed policy stays active until a restart, and revert spent the baseline anyway."""
+    body = (
+        _PROBE_MOCKS
+        + r"""
+$global:listed = $true
+function Get-SacState { [pscustomobject]@{ Policies = @(if ($global:listed) { [pscustomobject]@{ PolicyID = '{aaaa}'; FriendlyName = 'AuditNoISG' } }) } }
+$Label = 'r'
+New-Item -ItemType Directory -Force -Path (Split-Path $NOISG_DEST) | Out-Null
+'probe policy' | Set-Content -LiteralPath $NOISG_DEST
+New-Item -ItemType Directory -Force -Path (Join-Path $Work 'r') | Out-Null
+Save-ProbeBaseline ([pscustomobject]@{ AuditPolicyApplied = $true; AuditPolicyPreexisting = $false; RevertCompletedAt = $null }) (Join-Path $Work 'r/baseline.json')
+try { Invoke-Revert; exit 51 } catch { if ("$_" -notlike '*still active*restart*revert -Label r again*') { Write-Host "$_"; exit 52 } }
+$b = Read-Baseline 'r'
+if ($b.RevertCompletedAt -or $true -ne $b.AuditPolicyApplied) { exit 53 }
+# After the restart the policy is gone and the same baseline completes.
+$global:listed = $false
+Invoke-Revert
+$b = Read-Baseline 'r'
+if (-not $b.RevertCompletedAt -or $false -ne $b.AuditPolicyApplied) { exit 54 }
+exit 0
+"""
+    )
+    _drive_probe(tmp_path, body, _PROBE_FUNCTIONS)
+
+
+def test_a_prepare_that_fails_after_applying_the_policy_rolls_it_back(tmp_path):
+    """A failed positive control threw with the probe policy still installed and nothing but a later revert to remove it."""
+    body = (
+        _PROBE_MOCKS
+        + r"""
+function Get-SacState { [pscustomobject]@{ Policies = @([pscustomobject]@{ PolicyID = 'other' }; if (Test-Path -LiteralPath $NOISG_DEST) { [pscustomobject]@{ PolicyID = '{aaaa}'; FriendlyName = 'AuditNoISG' } }) } }
+function Test-AuditPolicyEvaluating { $false }
+$Label = 'fresh'
+try { Invoke-Prepare; exit 41 } catch { if ("$_" -notlike '*raised no 3076 or 3077*') { Write-Host "$_"; exit 42 } }
+if (Test-Path -LiteralPath $NOISG_DEST) { exit 43 }
+if ($false -ne (Read-Baseline 'fresh').AuditPolicyApplied) { exit 44 }
+Save-ProbeBaseline ([pscustomobject]@{ RevertCompletedAt = 'done' }) (Join-Path $Work 'fresh/baseline.json')
+# An administrator's policy under the same GUID is put back, not deleted.
+New-Item -ItemType Directory -Force -Path (Split-Path $NOISG_DEST) | Out-Null
+'admin policy' | Set-Content -LiteralPath $NOISG_DEST
+$Label = 'admin'
+try { Invoke-Prepare; exit 45 } catch { }
+if ((Get-Content -LiteralPath $NOISG_DEST -Raw).Trim() -ne 'admin policy') { exit 46 }
+Save-ProbeBaseline ([pscustomobject]@{ RevertCompletedAt = 'done' }) (Join-Path $Work 'admin/baseline.json')
+Remove-Item -LiteralPath $NOISG_DEST
+# A prepare that succeeds keeps the policy for the stages after it.
+function Test-AuditPolicyEvaluating { $true }
+$Label = 'ok'
+Invoke-Prepare
+if (-not (Test-Path -LiteralPath $NOISG_DEST) -or $true -ne (Read-Baseline 'ok').AuditPolicyApplied) { exit 47 }
+exit 0
+"""
+    )
+    _drive_probe(tmp_path, body, _PROBE_FUNCTIONS)
+
+
+def test_the_policy_removal_step_never_reports_an_unverified_removal(tmp_path):
+    """A failed refresh or policy listing, or a listing that is not JSON, read as an empty list and reached 'removed and no longer active'."""
+    import shutil
+
+    import yaml
+
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh not installed")
+    job = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]["code-integrity"]
+    body = next(s for s in job["steps"] if s.get("name") == "Remove the policy")["run"]
+
+    def run(name, refresh_exit, list_exit, listing):
+        stub = (
+            "function CiTool.exe {\n"
+            "  if ($args -contains '--remove-policy') { $global:LASTEXITCODE = 0; return 'remove' }\n"
+            f"  if ($args -contains '--refresh') {{ $global:LASTEXITCODE = {refresh_exit}; return 'refresh' }}\n"
+            f"  if ($args -contains '-json') {{ $global:LASTEXITCODE = {list_exit}; return '{listing}' }}\n"
+            "  $global:LASTEXITCODE = 0; return 'Friendly Name: none'\n"
+            "}\n"
+            "$env:SAC_POLICY_ID = '{AAAA}'\n"
+        )
+        script = tmp_path / f"unverified_{name}.ps1"
+        script.write_text(stub + body, encoding = "utf-8")
+        return run_pwsh(
+            [pwsh, "-NoProfile", "-File", str(script)],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+
+    for name, refresh_exit, list_exit, listing in (
+        ("refresh", 5, 0, '{"Policies":[]}'),
+        ("listing", 0, 7, '{"Policies":[]}'),
+        ("malformed", 0, 0, "INVALID JSON"),
+    ):
+        proc = run(name, refresh_exit, list_exit, listing)
+        assert proc.returncode == 0, name + proc.stdout + proc.stderr
+        assert "::warning::" in proc.stdout and "could not be verified" in proc.stdout, name + proc.stdout
+        assert "removed and no longer active" not in proc.stdout, name + proc.stdout

@@ -668,9 +668,26 @@ function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077), [string]
     }
 }
 
+# A label whose baseline is not spent still has its changes on this machine.
+function Get-UnrevertedLabel([string] $dir) {
+    foreach ($other in @(Get-ChildItem -LiteralPath (Split-Path -Parent $dir) -Directory -ErrorAction SilentlyContinue)) {
+        if ($other.Name -eq (Split-Path -Leaf $dir)) { continue }
+        $path = Join-Path $other.FullName 'baseline.json'
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $b = $null
+        try { $b = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json } catch { }
+        if ($b -and -not $b.RevertCompletedAt) { return $other.Name }
+    }
+    return $null
+}
+
 function Invoke-Prepare {
     Assert-Elevated
     $dir = Get-RunDir
+    $unreverted = Get-UnrevertedLabel $dir
+    if ($unreverted) {
+        throw "label '$unreverted' has not been reverted, so this machine still carries its changes (and its audit policy would be taken for a pre-existing one). Run .\sac-probe.ps1 -Stage revert -Label $unreverted first, then prepare label '$Label'."
+    }
     $ROLLBACK_POLICY = Get-RollbackPolicyPath $dir
     Write-Section 'Baseline'
     $baselinePath = Join-Path $dir 'baseline.json'
@@ -784,6 +801,8 @@ function Invoke-Prepare {
             throw "audit policy not found: $AuditPolicy"
         }
         # The NoISG policy checks signatures only and skips the cloud reputation lookup, which is why it works even with Smart App Control off.
+        $policyCopied = $false
+      try {
         $mounted = Mount-Efi
         try {
             # A file already there is somebody's policy only if this label did not put it there
@@ -798,6 +817,7 @@ function Invoke-Prepare {
             $baseline.AuditPolicyApplied = $true
             Save-ProbeBaseline $baseline $baselinePath
             New-Item -ItemType Directory -Force -Path (Split-Path $NOISG_DEST) | Out-Null
+            $policyCopied = $true
             Copy-Item -LiteralPath $AuditPolicy -Destination $NOISG_DEST -Force
             Invoke-Native 'CiTool.exe' @('-r')
         } finally {
@@ -815,11 +835,11 @@ function Invoke-Prepare {
         }
         # Printing whatever is listed is not verification.
         if ($after.Policies.Count -gt 0 -and -not (Test-PolicyActive $NOISG_GUID)) {
-            throw "the audit policy $NOISG_GUID is not in the active policy set after refresh; the machine is left as prepare found it apart from the copied file, run revert"
+            throw "the audit policy $NOISG_GUID is not in the active policy set after refresh"
         }
         if ($after.Policies.Count -eq 0) {
             # No policy list means no evidence the policy is active, and a run with no 3076 events would then read as an allow verdict.
-            throw "CiTool listed no policies, so the audit policy cannot be verified as active; the copied file is left in place, run revert"
+            throw "CiTool listed no policies, so the audit policy cannot be verified as active"
         }
 
         Write-Section 'Positive control'
@@ -829,6 +849,36 @@ function Invoke-Prepare {
         }
         $baseline.AuditPolicyControlFired = $controlFired
         Save-ProbeBaseline $baseline $baselinePath
+      } catch {
+        $failure = $_
+        # A failed prepare must not leave the policy it applied behind.
+        if ($policyCopied) {
+            Write-Warning 'prepare failed after applying the audit policy; rolling the policy back'
+            try {
+                $mounted = Mount-Efi
+                try {
+                    if ($baseline.AuditPolicyPreexisting) {
+                        Copy-Item -LiteralPath $ROLLBACK_POLICY -Destination $NOISG_DEST -Force
+                    } elseif (Test-Path -LiteralPath $NOISG_DEST) {
+                        Remove-Item -LiteralPath $NOISG_DEST -Force
+                    }
+                    Invoke-Native 'CiTool.exe' @('-r')
+                } finally {
+                    Dismount-Efi $mounted
+                }
+                if (-not $baseline.AuditPolicyPreexisting -and (Test-PolicyActive $NOISG_GUID)) {
+                    Write-Warning "the audit policy $NOISG_GUID was removed but is still active until Windows restarts; restart, then run .\sac-probe.ps1 -Stage revert -Label $Label"
+                } else {
+                    $baseline.AuditPolicyApplied = $false
+                    Save-ProbeBaseline $baseline $baselinePath
+                    Write-Host 'audit policy rolled back'
+                }
+            } catch {
+                Write-Warning "could not roll back the audit policy: $_ (run .\sac-probe.ps1 -Stage revert -Label $Label)"
+            }
+        }
+        throw $failure
+      }
     } else {
         Write-Host ''
         Write-Host 'No -AuditPolicy given. Download the sample policies from https://aka.ms/sacauditpolicies'
@@ -1457,7 +1507,11 @@ function Invoke-Revert {
         } finally {
             Dismount-Efi $mounted
         }
-        # Only once the refresh succeeded
+        # Before Windows 11 24H2 a removed policy can stay active until a restart.
+        if (-not $baseline.AuditPolicyPreexisting -and (Test-PolicyActive $NOISG_GUID)) {
+            throw "the audit policy $NOISG_GUID was removed and refreshed but is still active; restart Windows, then run .\sac-probe.ps1 -Stage revert -Label $Label again"
+        }
+        # Only once the refresh succeeded and the policy is gone
         $baseline.AuditPolicyApplied = $false
         Save-ProbeBaseline $baseline (Join-Path $dir 'baseline.json')
       } catch {

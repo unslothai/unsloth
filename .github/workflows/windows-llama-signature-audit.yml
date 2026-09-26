@@ -471,14 +471,21 @@ jobs:
             & CiTool.exe --remove-policy $id 2>&1 | Out-String | Write-Host
             $removeExit = $LASTEXITCODE
             & CiTool.exe --refresh 2>&1 | Out-String | Write-Host
-            $bare = "$id".Trim('{', '}').ToLowerInvariant()
-            $still = @((& CiTool.exe -lp -json 2>$null | ConvertFrom-Json).Policies |
-              Where-Object { "$($_.PolicyID)".Trim('{', '}').ToLowerInvariant() -eq $bare -and $_.IsEnforced })
+            $refreshExit = $LASTEXITCODE
+            $raw = & CiTool.exe -lp -json 2>$null
+            $listExit = $LASTEXITCODE
+            $listing = $null
+            try { $listing = $raw | Out-String | ConvertFrom-Json -ErrorAction Stop } catch { }
             if ($removeExit -ne 0) {
               Write-Host "::error::CiTool --remove-policy $id exited $removeExit, so the audit policy was not removed"
               exit 1
             }
-            if ($still.Count -gt 0) {
+            $bare = "$id".Trim('{', '}').ToLowerInvariant()
+            $still = @($listing.Policies |
+              Where-Object { "$($_.PolicyID)".Trim('{', '}').ToLowerInvariant() -eq $bare -and $_.IsEnforced })
+            if ($refreshExit -ne 0 -or $listExit -ne 0 -or $null -eq $listing -or $null -eq $listing.PSObject.Properties['Policies']) {
+              Write-Host "::warning::the audit policy $id was removed but its removal could not be verified (refresh exited $refreshExit, policy listing exited $listExit or was unreadable); it may stay active until this machine reboots"
+            } elseif ($still.Count -gt 0) {
               Write-Host "::warning::the audit policy $id was removed but is still listed as enforced after refresh; it stays active until this machine reboots"
             } else {
               Write-Host "audit policy $id removed and no longer active"
