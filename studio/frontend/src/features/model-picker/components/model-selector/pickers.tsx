@@ -13,6 +13,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { isTouchClick } from "@/components/ui/touch-click";
 import { usePlatformStore } from "@/config/env";
 import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import { ApiProviderLogo } from "@/features/chat";
@@ -1193,6 +1194,84 @@ function ModelRow({
   const memorySegments = useModelMemory(selected ? memory : undefined, gpuGb);
   const showMemoryBar = memorySegments.status !== "unknown";
 
+  // Tooltip opens from the name or keyboard focus only, not the whole row.
+  const nameRef = useRef<HTMLSpanElement>(null);
+  const nameHoverTimer = useRef<number | undefined>(undefined);
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+  // Touch has no hover, so a tap on the name opens it and a tap elsewhere closes it.
+  const [tappedOpen, setTappedOpen] = useState(false);
+  useEffect(() => () => window.clearTimeout(nameHoverTimer.current), []);
+  useEffect(() => {
+    if (!tappedOpen) return;
+    const release = (event: Event) => {
+      const target = event.target as Element | null;
+      if (nameRef.current?.contains(target)) return;
+      if (target?.closest?.('[data-slot="tooltip-content"]')) return;
+      setTappedOpen(false);
+      setTooltipOpen(false);
+    };
+    // touchstart covers WebViews without pointer events.
+    document.addEventListener("pointerdown", release, true);
+    document.addEventListener("touchstart", release, { capture: true, passive: true });
+    return () => {
+      document.removeEventListener("pointerdown", release, true);
+      document.removeEventListener("touchstart", release, true);
+    };
+  }, [tappedOpen]);
+  const onNameEnter = (event: React.PointerEvent) => {
+    if (event.pointerType === "touch") return;
+    window.clearTimeout(nameHoverTimer.current);
+    nameHoverTimer.current = window.setTimeout(() => setTooltipOpen(true), 700);
+  };
+  const onNameLeave = () => {
+    window.clearTimeout(nameHoverTimer.current);
+    setTappedOpen(false);
+    setTooltipOpen(false);
+  };
+  // Keyboard focus opened it, so the pointer leaving the name does not close it.
+  const onNamePointerLeave = (event: React.PointerEvent) => {
+    if (event.pointerType === "touch") return;
+    if (nameRef.current?.closest("button")?.matches(":focus-visible")) {
+      window.clearTimeout(nameHoverTimer.current);
+      return;
+    }
+    onNameLeave();
+  };
+  // Read at pointerdown: the trigger closes an open tooltip before the click lands.
+  // Null without pointer events, where nothing closes it first.
+  const openAtTap = useRef<boolean | null>(null);
+  const onNameDown = (event: React.PointerEvent) => {
+    if (event.pointerType === "touch") openAtTap.current = tooltipOpen;
+  };
+  const hasTooltip = Boolean(vramTooltipText || tooltipText || hubUrl || formatDot);
+  // Like hover on iOS: the first tap shows the details, the next one picks the row.
+  const onNameClick = (event: React.MouseEvent) => {
+    const wasOpen = openAtTap.current ?? tooltipOpen;
+    openAtTap.current = null;
+    if (!hasTooltip || !isTouchClick(event)) return;
+    if (wasOpen) {
+      onNameLeave();
+      return;
+    }
+    event.stopPropagation();
+    setTappedOpen(true);
+    setTooltipOpen(true);
+  };
+  const onTooltipOpenChange = (next: boolean) => {
+    if (!next) {
+      onNameLeave();
+      return;
+    }
+    const focused = document.activeElement;
+    if (
+      focused?.matches(":focus-visible") &&
+      nameRef.current &&
+      focused.contains(nameRef.current)
+    ) {
+      setTooltipOpen(true);
+    }
+  };
+
   const content = (
     <button
       type="button"
@@ -1245,7 +1324,17 @@ function ModelRow({
               <span className="shrink-0 text-muted-foreground/80">/</span>
             </span>
           ) : null}
-          <span className="min-w-0 flex-1 truncate">{name}</span>
+          <span className="min-w-0 flex-1 truncate">
+            <span
+              ref={nameRef}
+              onPointerEnter={onNameEnter}
+              onPointerDown={onNameDown}
+              onPointerLeave={onNamePointerLeave}
+              onClick={onNameClick}
+            >
+              {name}
+            </span>
+          </span>
           {/* Here it eats name width instead of moving the meta columns. self-center: on the
               baseline the empty dot sat the tag low. */}
           {aligned && loaded && (
@@ -1424,7 +1513,7 @@ function ModelRow({
 
   if (tooltipBody) {
     return (
-      <Tooltip delayDuration={700}>
+      <Tooltip open={tooltipOpen} onOpenChange={onTooltipOpenChange}>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
         {/* Right, not left: this panel is docked to the model button at the window's left edge,
             so a row's own left edge is ~30px in and a tooltip opening that way ran off screen.
