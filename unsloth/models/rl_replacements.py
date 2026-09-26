@@ -157,6 +157,22 @@ def grpo_config_fix_vllm_top_k(old_RLTrainer_source, old_RLConfig_source):
 RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_config_fix_vllm_top_k)
 
 
+def gkd_trainer_mask_prompt(function_name, function):
+    if function_name != "generate_on_policy_outputs":
+        return function
+    prompt_mask = 'new_labels[:, : inputs["prompts"].shape[1]] = -100'
+    if prompt_mask in function or "new_labels[:, :prompt_length] = -100" in function:
+        return function
+    for line in function.splitlines():
+        if line.strip() == "new_labels = generated_tokens.clone()":
+            indent = line.partition("new_labels")[0]
+            return function.replace(line, f"{line}\n{indent}{prompt_mask}", 1)
+    return function
+
+
+RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_mask_prompt)
+
+
 def dpo_trainer_fix_columns(call_args, extra_args):
     if "model" in call_args and "train_dataset" in call_args:
         fix_dpo = (
