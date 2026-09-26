@@ -32,10 +32,35 @@ def _tiny_mllama():
 def test_mllama_resolves_off_flash_even_when_flash_is_available(monkeypatch):
     monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
     model_class, config = _tiny_mllama()
-    assert model_class._supports_flash_attn
+    assert _utils._model_class_supports_flash_attention(model_class)
     impl = _utils.resolve_attention_implementation(model_class, config, supports_sdpa = True)
     assert impl in ("sdpa", "eager")
     assert _utils._get_flash_attention_disable_reason(config) is not None
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [{"": "eager"}, {"": "sdpa", "vision_config": "eager"}],
+)
+def test_explicit_non_flash_mappings_are_kept(monkeypatch, requested):
+    monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
+    model_class, config = _tiny_mllama()
+    impl = _utils.resolve_attention_implementation(
+        model_class, config, requested_attn_implementation = dict(requested), supports_sdpa = True
+    )
+    assert impl == requested
+
+
+def test_flash_entries_of_a_mapping_fall_back(monkeypatch):
+    monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
+    model_class, config = _tiny_mllama()
+    impl = _utils.resolve_attention_implementation(
+        model_class,
+        config,
+        requested_attn_implementation = {"": "flash_attention_2", "vision_config": "eager"},
+        supports_sdpa = True,
+    )
+    assert impl == {"": "sdpa", "vision_config": "eager"}
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
@@ -43,13 +68,11 @@ def test_mllama_image_forward_runs_on_the_resolved_implementation(monkeypatch):
     monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
     model_class, config = _tiny_mllama()
     impl = _utils.resolve_attention_implementation(model_class, config, supports_sdpa = True)
-    model = (
-        model_class._from_config(config, attn_implementation = impl, dtype = torch.bfloat16)
-        .cuda()
-        .eval()
-    )
+    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    # No dtype keyword: Transformers 4.x names it torch_dtype, 5.x dtype.
+    model = model_class._from_config(config, attn_implementation = impl).to("cuda", dtype).eval()
     ids = torch.tensor([[255, 5, 6, 7, 8, 9]], device = "cuda")
-    pixels = torch.randn(1, 1, 1, 3, 56, 56, device = "cuda", dtype = torch.bfloat16)
+    pixels = torch.randn(1, 1, 1, 3, 56, 56, device = "cuda", dtype = dtype)
     with torch.no_grad():
         out = model(
             input_ids = ids,
