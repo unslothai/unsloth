@@ -204,6 +204,8 @@ new one, so a `revert` after it restores the machine as it is now rather than as
 it was before a run that has already been undone. `collect` refuses a label that
 was never prepared rather than exporting unrelated events.
 
+`collect` after `revert` keeps only the events from before the revert completed.
+
 `prepare` refuses a new label while another label has not been reverted, including
 one kept under a different `-WorkDir` (tracked under
 `%ProgramData%\unsloth-sac-probe\pending`): revert that label first. A `prepare` that fails after applying the audit policy removes

@@ -2040,6 +2040,54 @@ exit 0
     )
 
 
+def test_collect_keeps_a_reverted_run_to_its_own_window(tmp_path):
+    """collect after revert filed later blocks against the undone run; a window older than the baseline was an earlier run's."""
+    names = [
+        "Get-RunDir",
+        "Save-ProbeBaseline",
+        "Get-ScopeTail",
+        "Get-EventDataMap",
+        "Test-EventDataFromPolicy",
+        "Read-SettledCiEvents",
+        "Invoke-Collect",
+    ]
+    body = r"""
+$WorkDir = $Work; $Label = 'cell'; $CI_EVENT_IDS = @(3076, 3077); $NOISG_GUID = '{AAAA}'
+$env:USERPROFILE = $Work; $env:COMPUTERNAME = 'MOCK'; $script:EfiStillMounted = $false
+function Assert-Elevated { }
+function Write-Section { }
+function Resolve-LlamaDir { 'C:\selected\llama.cpp' }
+function Resolve-VenvDir { 'C:\selected\venv' }
+function Resolve-StudioHomeFor { Join-Path $Work 'studio' }
+function Get-SacState { [pscustomobject]@{ Mode = 'enforcement'; Policies = @() } }
+function Get-MpThreatDetection { }
+function New-CiEvent([datetime] $At, [string] $Id) {
+  $e = [pscustomobject]@{ TimeCreated = $At; Id = 3077; ActivityId = $Id; Message = 'blocked: C:\selected\llama.cpp\ggml.dll' }
+  $e | Add-Member ScriptMethod ToXml { '<Event><EventData><Data Name="File Name">C:\selected\llama.cpp\ggml.dll</Data></EventData></Event>' }
+  $e
+}
+$reverted = (Get-Date).AddMinutes(-5)
+function Get-WinEvent { [CmdletBinding()] param([hashtable] $FilterHashtable)
+  New-CiEvent $reverted.AddMinutes(-1) 'during-run'; New-CiEvent (Get-Date) 'after-revert' }
+$dir = Get-RunDir
+$b = [pscustomobject]@{ CapturedAt = (Get-Date).AddMinutes(-20).ToString('o'); Sac = [pscustomobject]@{ Mode = 'enforcement' }
+  AuditPolicyApplied = $false; SacControlFired = $true; StudioInstalledByProbe = $false; RevertCompletedAt = $reverted.ToString('o') }
+Save-ProbeBaseline $b (Join-Path $dir 'baseline.json')
+(Get-Date).AddMinutes(-15).ToString('o') | Set-Content (Join-Path $dir 'window-start.txt')
+'{"Ran":true,"ExitCode":0,"Reason":"ok"}' | Set-Content (Join-Path $dir 'scenario-status.json')
+'{"steps":{"load":{"ok":true,"status":200}}}' | Set-Content (Join-Path $dir 'scenario-results.json')
+Invoke-Collect 3> $null
+$ids = @((Get-Content (Join-Path $dir 'code-integrity-events.json') -Raw | ConvertFrom-Json) | ForEach-Object { $_.ActivityId })
+if ($ids -notcontains 'during-run') { exit 101 }
+if ($ids -contains 'after-revert') { exit 102 }
+$b.RevertCompletedAt = $null; $b.CapturedAt = (Get-Date).ToString('o')
+Save-ProbeBaseline $b (Join-Path $dir 'baseline.json')
+try { Invoke-Collect; exit 103 } catch { if ("$_" -notlike '*before this label*baseline was captured*') { Write-Host "$_"; exit 104 } }
+exit 0
+"""
+    _drive(tmp_path, names, body, Work = tmp_path)
+
+
 def test_revert_keeps_the_baseline_pending_while_the_policy_is_still_active(tmp_path):
     """Before Windows 11 24H2 a removed policy stays active until a restart, and revert spent the baseline anyway."""
     _drive_stages(
