@@ -327,6 +327,16 @@ def chat(
         chat_backend = load_chat_backend(model, model_config = model_config, **load_opts)
 
     name = model_config.display_name or model
+    # The server kept its resident quant, not the one the local resolve picked (a local directory's
+    # display name is that file's stem, with no variant recorded).
+    kept = getattr(chat_backend, "gguf_variant", None) if server_mode else None
+    picked = getattr(model_config, "gguf_variant", None)
+    if kept and kept != picked:
+        if picked:
+            base = name.removesuffix(f" ({picked})")
+        else:
+            base = model.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        name = f"{base} ({kept})"
     show_thinking = think
     compare_mode = compare
     messages = []

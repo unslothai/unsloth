@@ -870,6 +870,7 @@ class HttpChatBackend:
         self._base = base_url
         self._token = token
         self.reply_hit_token_limit = False
+        self.gguf_variant: Optional[str] = None
 
     def _request(
         self,
@@ -921,6 +922,10 @@ class HttpChatBackend:
             payload["speculative_type"] = speculative_type
         if spec_draft_n_max is not None:
             payload["spec_draft_n_max"] = spec_draft_n_max
+        resident_variant = self._resident_gguf_variant(model)
+        if resident_variant:
+            payload["gguf_variant"] = resident_variant
+        self.gguf_variant = resident_variant
         try:
             # Read the body, don't close at the headers: a slow load commits its 200 early and pads until
             # done, so closing here would generate mid-load and discard the only report of a late failure.
@@ -931,6 +936,33 @@ class HttpChatBackend:
         except Exception as exc:
             typer.echo(f"Model load failed: {exc}", err = True)
             raise typer.Exit(code = 1)
+
+    def _resident_gguf_variant(self, model: str) -> Optional[str]:
+        if model.lower().endswith(".gguf"):
+            return None
+        try:
+            with self._request("GET", "/api/inference/status", timeout = 30) as response:
+                status = json.loads(response.read())
+        except Exception:
+            return None
+        if not isinstance(status, dict) or not status.get("is_gguf"):
+            return None
+        # Same identity the server keys the resident on: a local load's active_model is only its basename.
+        loaded = status.get("model_identifier") or status.get("active_model")
+        if not loaded:
+            return None
+        loaded = str(loaded)
+        if model == status.get("model_identifier"):
+            # The exact string the server loaded, however the resolver normalizes it.
+            same = True
+        elif os.path.exists(model):
+            # Filesystem-aware, as the server's _same_loaded_identifier compares local paths.
+            same = os.path.normcase(model) == os.path.normcase(loaded)
+        else:
+            # The server loads an ownerless id as unsloth/<id> (ModelConfig.from_identifier).
+            requested = model if "/" in model else f"unsloth/{model}"
+            same = requested.casefold() == loaded.casefold()
+        return status.get("gguf_variant") if same else None
 
     def stream(
         self,
