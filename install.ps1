@@ -8733,6 +8733,8 @@ main()
             if ($waitError) {
                 $script:NvidiaPythonProbeTimedOut = $true
                 try { Stop-Process -InputObject $proc -Force -ErrorAction SilentlyContinue } catch { }
+                # Let the killed child release its redirected files before the finally deletes them.
+                Wait-Process -InputObject $proc -Timeout 2 -ErrorAction SilentlyContinue
                 return ""
             }
             $raw = "$(Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)"

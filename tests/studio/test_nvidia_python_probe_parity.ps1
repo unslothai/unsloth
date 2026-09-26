@@ -174,6 +174,8 @@ foreach ($blocked in @("\.Id\b", "\.HasExited\b", "\.ExitCode\b", "\.FullName\b"
 }
 Check "the launcher waits by object, not by pid" ($pyCode -match 'Wait-Process -InputObject \$proc')
 Check "the launcher kills by object too" ($pyCode -match 'Stop-Process -InputObject \$proc')
+Check "a killed child is waited for before its files are deleted" (
+    $pyCode -match 'Stop-Process -InputObject \$proc[^\n]*\n(\s*#[^\n]*\n)?\s*Wait-Process -InputObject \$proc -Timeout \d+')
 Check "the timeout is detected through an error variable" ($pyCode -match '-ErrorVariable waitError')
 # "[ref] - Casting an object to type [ref] ... is not permitted."
 Check "the launcher casts nothing to [ref]" ($pyCode -notmatch '\[ref\]\s*\$')
