@@ -153,7 +153,9 @@ def test_ci_actually_runs_this_file():
     # longer triggers on all of tests/studio, so the file has to be listed to trigger it.
     # Matched as a paths: list item without yaml, which this job does not install.
     entry = re.compile(rf"^\s*-\s*'tests/studio/{re.escape(Path(__file__).name)}'\s*$", re.M)
-    assert len(entry.findall(workflow)) >= 2, "the pull_request and push filters must list this file"
+    assert (
+        len(entry.findall(workflow)) >= 2
+    ), "the pull_request and push filters must list this file"
 
 
 def test_the_english_copy_is_still_free_to_change():
