@@ -16,7 +16,7 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
-from tests.studio._js_source import assert_guard_holds
+from tests.studio._js_source import assert_guard_holds, split_operands
 
 WORKDIR = Path(__file__).resolve().parents[2]
 FRONTEND = WORKDIR / "studio" / "frontend" / "src"
@@ -846,7 +846,25 @@ def test_partial_safetensors_download_keeps_delete_menu():
     affordance) like the GGUF card does, or partial downloads can only be cleaned up by
     finishing or leaving them."""
     src = _read("features/hub/catalog/safetensors-download-card.tsx")
-    assert "(isDownloaded || (isPartial && !downloading))" in src
+    # The JSX guard in front of the menu, read by operator rather than pinned verbatim:
+    # #11644 widened `isPartial` to `(isPartial || companionPrefetch)` without changing what
+    # this checks, and the literal broke on that.
+    before_menu = src.split("<QuantOptionsMenu", 1)[0]
+    guard = before_menu[before_menu.rindex("{(") + 1 :].rstrip()
+    assert guard.endswith("&& ("), guard
+    guard = guard[: -len("&& (")]
+
+    def stopped_partial(operand):
+        # `isPartial && !downloading`, with isPartial possibly one of several OR'd sources.
+        parts = split_operands(operand, "&&")
+        return "!downloading" in parts and any(
+            "isPartial" in split_operands(part, "||") for part in parts
+        )
+
+    assert any(
+        "isDownloaded" in alternatives and any(stopped_partial(alt) for alt in alternatives)
+        for alternatives in (split_operands(part, "||") for part in split_operands(guard, "&&"))
+    ), guard
 
 
 def test_pinned_validation_uses_cached_local_variant_listing():
