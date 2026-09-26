@@ -161,6 +161,7 @@ if ($script:UnslothVerbose) {
 $script:LlamaCppDegraded = $false
 $script:LlamaKeptGpuPrebuilt = $null
 $script:NvidiaSmiRejected = $false
+$script:NvidiaDriverLibraryOnly = $false
 $script:NvidiaLibraryInventoryProbed = $false
 $script:NvidiaLibraryInventory = $null
 # Set by the offline keep, read unconditionally by the sidecar and legacy-migration blocks:

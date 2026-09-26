@@ -283,6 +283,9 @@ Check "a Vulkan prebuilt with no GPU at all is not kept" ((Get-GpuPrebuiltToKeep
 $script:NvidiaDriverLibraryOnly = $true
 Check "a Vulkan prebuilt is kept for an NVIDIA GPU only the driver library found" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "vulkan")
 $script:NvidiaDriverLibraryOnly = $false
+# Read on every keep, so each run resets it: Set-StrictMode, and a rerun in the same session.
+Check "setup.ps1 resets the driver-library-only flag with the other per-run state" (
+    (Get-Content -LiteralPath $setupPs1 -Raw) -match '(?m)^\$script:NvidiaSmiRejected = \$false\r?\n\$script:NvidiaDriverLibraryOnly = \$false')
 $script:FakeIntelAdapters = @("Intel(R) UHD Graphics 770")
 Check "a Vulkan prebuilt is kept for an Intel adapter that is not an XPU part" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "vulkan")
 $script:FakeIntelAdapters = @()
