@@ -189,7 +189,10 @@ def GemmaModel_fast_forward_inference(
     rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
 
     next_decoder_cache = []
+    block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
     for idx, decoder_layer in enumerate(self.model.layers):
+        if block_swap is not None:
+            block_swap.enter(idx)
         layer_device, device_index = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
 
@@ -217,6 +220,8 @@ def GemmaModel_fast_forward_inference(
         hidden_states = fast_geglu_inference(decoder_layer.mlp, hidden_states)
         hidden_states += residual
 
+        if block_swap is not None:
+            block_swap.leave(idx)
         next_decoder_cache.append(present_key_value)
     hidden_states = fast_rms_layernorm_inference_gemma(
         self.model.norm, hidden_states, out_weights[device_index]

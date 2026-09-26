@@ -1762,6 +1762,12 @@ class FastBaseModel:
         user_config = kwargs.pop("config", None)
         if auto_config is None and user_config is not None:
             auto_config = user_config
+        if kwargs.pop("block_swap_layers", 0):
+            raise NotImplementedError(
+                "Unsloth: loading straight to host RAM with from_pretrained(block_swap_layers = ...) "
+                "covers the Llama, Mistral and Qwen2/Qwen3 text paths. For this model, pass "
+                "block_swap_layers to get_peft_model instead; the model must then fit on the card to load."
+            )
 
         # Offline snapshot for the loads below; not popped, so the weight load still reads local_files_only from **kwargs. See _get_effective_local_files_only.
         local_files_only = _get_effective_local_files_only(kwargs)
@@ -2907,6 +2913,7 @@ class FastBaseModel:
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         finetune_audio_layers = False,  # placed last to preserve existing positional argument order
+        block_swap_layers = 0,
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
@@ -3218,6 +3225,9 @@ class FastBaseModel:
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
             trust_remote_code = trust_remote_code,
+        )
+        install_block_swap(
+            model, block_swap_layers, use_gradient_checkpointing = use_gradient_checkpointing
         )
         model.max_seq_length = max_seq_length
         for module in model.modules():

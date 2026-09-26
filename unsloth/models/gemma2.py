@@ -484,7 +484,10 @@ def Gemma2Model_fast_forward_inference(
         SWA = attention_mask
         GA = attention_mask
     next_decoder_cache = []
+    block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
     for idx, decoder_layer in enumerate(self.model.layers):
+        if block_swap is not None:
+            block_swap.enter(idx)
         # For pipeline parallelism every tensor must be on the same device; this movement happens once per GPU in PP.
         layer_device, device_index = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
@@ -525,6 +528,8 @@ def Gemma2Model_fast_forward_inference(
         )
         hidden_states += residual
 
+        if block_swap is not None:
+            block_swap.leave(idx)
         next_decoder_cache.append(present_key_value)
     hidden_states = fast_rms_layernorm_inference_gemma(
         self.model.norm, hidden_states, out_weights[device_index]
