@@ -1002,8 +1002,7 @@ def _safe_image_media_type(media_type: str) -> str:
 
 @router.post("/attachment-originals")
 def upload_attachment_original(
-    file: UploadFile = File(...),
-    current_subject: str = Depends(get_current_subject),
+    file: UploadFile = File(...), current_subject: str = Depends(get_current_subject)
 ) -> dict:
     """Store a chat document's original file; the message records the returned hash. Sync, so
     disk writes run in the threadpool."""
