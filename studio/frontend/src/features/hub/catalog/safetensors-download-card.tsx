@@ -51,6 +51,7 @@ export function SafetensorsDownloadCard({
   isPartial = false,
   partialTransport = null,
   partialResumable = false,
+  companionPrefetch = false,
   modelFormat,
   isActive,
   isLoadingThisModel,
@@ -65,6 +66,7 @@ export function SafetensorsDownloadCard({
   isPartial?: boolean;
   partialTransport?: string | null;
   partialResumable?: boolean;
+  companionPrefetch?: boolean;
   modelFormat?: ModelInventoryFormat | null;
   isActive: boolean;
   isLoadingThisModel: boolean;
@@ -165,8 +167,9 @@ export function SafetensorsDownloadCard({
     !cancelling &&
     !downloadAction.starting &&
     !isLoadingThisModel;
+  const hasCachedFiles = isDownloaded || isPartial || companionPrefetch;
   const canDelete =
-    (isDownloaded || isPartial) &&
+    hasCachedFiles &&
     !downloading &&
     !repoPeerActive &&
     !isActive &&
@@ -243,7 +246,8 @@ export function SafetensorsDownloadCard({
           <div className="ml-auto flex items-center gap-0.5">
             {/* Same 3-dots menu as GGUF, at repo level (no quant); pinning is
                 omitted here. Managed HF-cache repos only. */}
-            {(isDownloaded || (isPartial && !downloading)) &&
+            {(isDownloaded ||
+              ((isPartial || companionPrefetch) && !downloading)) &&
               !/^([/\\~.]|[A-Za-z]:)/.test(repoId) && (
               <QuantOptionsMenu
                 repoId={repoId}
