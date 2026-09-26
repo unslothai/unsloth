@@ -4651,15 +4651,7 @@ def install_block_swap(
     prefetch_depth = 2,
     use_gradient_checkpointing = "unsloth",
 ):
-    """Stream the last `block_swap_layers` frozen decoder blocks from pinned host RAM.
-
-    Off at 0. Refused where it cannot help or would break: MoE moves every
-    expert but computes with a few, so the fetch never hides; a unified-memory
-    GPU has no separate RAM to swap to; vLLM would sync evicted weights as
-    empty tensors; without gradient checkpointing every block stays live until
-    backward, so the pool runs dry mid-forward. A model loaded with
-    `from_pretrained(block_swap_layers = N)` already carries its swapper.
-    """
+    """Stream the last `block_swap_layers` frozen decoder blocks from pinned host RAM; off at 0."""
     existing = getattr(model, "_unsloth_block_swap", None)
     if existing is None and (not block_swap_layers or block_swap_layers <= 0):
         return None
@@ -4687,7 +4679,6 @@ def install_block_swap(
 
 def _checkpoint_tensors(model_name, token = None, revision = None, cache_dir = None,
                         local_files_only = False, subfolder = None):
-    """Map every safetensors key in the checkpoint to a lazy loader."""
     from safetensors import safe_open
     import json
 
@@ -4722,8 +4713,7 @@ def _checkpoint_tensors(model_name, token = None, revision = None, cache_dir = N
 
 
 def trim_config_for_block_swap(config, block_swap_layers):
-    """Shorten the config so the standard load stops before the swapped tail.
-    Returns the per-layer attributes to put back, or None when off."""
+    """Trim the swapped tail off the config; returns the originals to restore, or None."""
     if not block_swap_layers or block_swap_layers <= 0:
         return None
     if build_host_layers is None:
@@ -4745,7 +4735,6 @@ def trim_config_for_block_swap(config, block_swap_layers):
 
 def attach_block_swap_layers(model, saved, model_name, dtype, load_in_4bit, skip_modules = (),
                              **hub_kwargs):
-    """Put back the trimmed config, build the tail layers in host RAM, install the swap."""
     if saved is None:
         return None
     layers = find_decoder_layers(model)

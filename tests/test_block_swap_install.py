@@ -1,9 +1,4 @@
-"""Tests install_block_swap and trim_config_for_block_swap in _utils.py: off at 0,
-the refusals name their reason, a missing unsloth_zoo module is an ImportError,
-the happy path hands the decoder layers to BlockSwap and records the swapper, a
-swapper installed at load is reused, and the config trim for loading straight to
-host shortens every per-layer list. Extracted with ast so nothing has to import
-torch's CUDA stack."""
+"""Block swap helpers from _utils.py, extracted with ast to avoid importing torch's CUDA stack."""
 
 import ast, os
 import pytest
@@ -67,7 +62,6 @@ def test_happy_path_installs_and_records():
     sw = ns["install_block_swap"](m, 2, prefetch_depth = 3)
     assert calls == [(m.layers, 2, 3)]
     assert m._unsloth_block_swap is sw
-    # The fast decode loop finds it on the layer list.
     assert m.layers._unsloth_block_swap is sw
 
 
@@ -108,8 +102,6 @@ def test_old_zoo_is_an_import_error():
 
 
 def test_refusal_order_checks_cheap_things_first():
-    # vLLM is checked before MoE so a fast_inference user gets that reason,
-    # not a MoE one, when both apply.
     ns, _ = _load(moe = True)
     with pytest.raises(ValueError, match = "fast_inference"):
         ns["install_block_swap"](_Model(vllm = object()), 2)
@@ -119,7 +111,6 @@ def test_swapper_from_load_is_reused():
     ns, calls = _load()
     m = _Model()
     m._unsloth_block_swap = existing = object()
-    # get_peft_model passes its own default of 0; the load-time swapper stands.
     assert ns["install_block_swap"](m, 0) is existing
     assert ns["install_block_swap"](m, 8) is existing
     assert calls == []

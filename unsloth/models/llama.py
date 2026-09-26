@@ -2725,8 +2725,7 @@ class FastLlamaModel:
                 "Unsloth: from_pretrained(block_swap_layers = ...) does not support "
                 "fast_inference or classification heads."
             )
-        # The swapped tail skips the standard load and is built straight in host
-        # RAM afterwards, so a model larger than the card can load at all.
+        # Swapped tail is built in host RAM afterwards so models larger than the card load.
         _block_swap_saved = trim_config_for_block_swap(model_config, block_swap_layers)
 
         raise_handler = RaiseUninitialized()
