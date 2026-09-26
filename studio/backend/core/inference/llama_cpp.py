@@ -24,6 +24,7 @@ from loggers import get_logger
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -3049,6 +3050,20 @@ def _resolve_repo_id_casing(hf_repo: str) -> str:
         return hf_repo
 
 
+def _cached_gguf_snapshots(repo_id: str):
+    """Retain the existing active-cache lookup; add remembered chat copies once."""
+    from utils.models.model_config import _iter_hf_cache_snapshots
+    from hub.utils.gguf_sources import gguf_cache_snapshots
+
+    seen = set()
+    for snapshots in (_iter_hf_cache_snapshots(repo_id), gguf_cache_snapshots(repo_id)):
+        for snapshot in snapshots:
+            key = str(snapshot.resolve())
+            if key not in seen:
+                seen.add(key)
+                yield snapshot
+
+
 def _cached_colocated_split_main(
     repo_id: str, main_filename: str, shards: Iterable[str], expected_sizes: dict[str, int]
 ) -> Optional[str]:
@@ -3064,8 +3079,7 @@ def _cached_colocated_split_main(
     if not main_parts or any(part in (".", "..") for part in main_parts):
         return None
     try:
-        from utils.models.model_config import _iter_hf_cache_snapshots
-        for snap in _iter_hf_cache_snapshots(repo_id):
+        for snap in _cached_gguf_snapshots(repo_id):
             main_path = snap.joinpath(*main_parts)
             if not main_path.is_file():
                 continue
@@ -3099,8 +3113,13 @@ def _cached_variant_candidates(
 ) -> Generator[tuple[str, str, list[str], Path], None, None]:
     """Yield complete cached variant copies in snapshot preference order."""
     try:
-        from utils.models.model_config import _iter_hf_cache_snapshots
-        for snap in _iter_hf_cache_snapshots(repo_id):
+        from hub.utils.gguf_sources import (
+            cached_gguf_manifest_complete,
+            cached_gguf_source_partial,
+        )
+
+        pending_downloads = []
+        for snap in _cached_gguf_snapshots(repo_id):
             cached_files = _gguf_snapshot_files(snap)
             matches = _gguf_files_for_variant(cached_files, hf_variant)
             if not matches:
@@ -3123,7 +3142,15 @@ def _cached_variant_candidates(
                 continue
             if require_mmproj and not _pick_mmproj(cached_files):
                 continue
-            yield str(main_path), main, shards, snap
+            candidate = (str(main_path), main, shards, snap)
+            if not cached_gguf_manifest_complete(
+                repo_id, hf_variant, snap
+            ) or cached_gguf_source_partial(repo_id, hf_variant, snap):
+                pending_downloads.append(candidate)
+                continue
+            yield candidate
+        # Keep existing reuse semantics when no completed duplicate is available.
+        yield from pending_downloads
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")
 
@@ -4885,6 +4912,12 @@ def _child_spec_env(
 _TARGET_ROLLBACK_SPEC_TYPES = frozenset(
     {"mtp", "draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark"}
 )
+
+
+# Mirrors llama.cpp is_recr_impl for SSM headers with no full_attention_interval.
+_SSM_EVERY_LAYER_ARCHS = frozenset({"mamba", "mamba2", "falcon-h1"})
+# Nemotron-H also zeroes head_count_kv on its MLP/MoE layers; its SSM layers have no FFN.
+_SSM_FFN_FREE_LAYER_ARCHS = frozenset({"nemotron_h", "nemotron_h_moe"})
 
 
 # Architectures whose TARGET context leaves the embedded MTP/NextN blocks out of
@@ -6998,6 +7031,12 @@ def _extra_args_have_tensor_split(
     return bool(str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT", "")).strip())
 
 
+@functools.lru_cache(maxsize = 1)
+def _count_ssl_context() -> ssl.SSLContext:
+    # httpx loads the CA bundle per Client (~15 ms); admission counts once per chat request.
+    return ssl.create_default_context()
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -7228,6 +7267,7 @@ class LlamaCppBackend:
         # For the compute-graph buffer estimate; vocab from the tokens array len.
         # feed_forward_length is the widest layer when the GGUF stores one per layer.
         self._feed_forward_length: Optional[int] = None
+        self._feed_forward_length_by_layer: Optional[list[int]] = None
         self._expert_used_count: Optional[int] = None
         self._expert_feed_forward_length: Optional[int] = None
         self._expert_shared_feed_forward_length: Optional[int] = None
@@ -15446,9 +15486,17 @@ class LlamaCppBackend:
             ]:
                 if os.path.isdir(cuda_lib):
                     lib_dirs.append(cuda_lib)
+
+            # Vendored dirs go last: rescue only, never displace a runtime already found.
+            from utils.llama_cpp_freshness import read_install_marker
+            from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
+
+            marker_binary = str(_resolve_llama_binary(binary))
+            vendored_cuda_dirs = vendored_cuda_runtime_dirs(read_install_marker(marker_binary))
             existing_ld = env.get("LD_LIBRARY_PATH", "")
-            new_ld = ":".join(lib_dirs)
-            env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+            env["LD_LIBRARY_PATH"] = ":".join(
+                path for path in [*lib_dirs, existing_ld, *vendored_cuda_dirs] if path
+            )
 
         return env
 
@@ -15810,14 +15858,41 @@ class LlamaCppBackend:
             n_parallel
         )
 
+    def _ctx_checkpoint_bytes(
+        self,
+        cache_type_kv: Optional[str] = None,
+        *,
+        swa_full: bool = False,
+        flash_attn: bool = True,
+    ) -> int:
+        """Host bytes of one slot's context checkpoint: the recurrent state, else the SWA window."""
+        recurrent = self._rollback_state_bytes(1)
+        if recurrent > 0:
+            return recurrent
+
+        def kv(checkpoints: int) -> int:
+            return self._estimate_kv_cache_bytes(
+                1,
+                cache_type_kv,
+                swa_full = swa_full,
+                ctx_checkpoints = checkpoints,
+                flash_attn = flash_attn,
+            )
+
+        return max(0, kv(1) - kv(0))
+
     def _bounded_ctx_checkpoints(
         self,
         n_parallel: int,
         server_caps: Mapping[str, object],
         extra_args: Optional[Iterable[str]] = None,
         env: Optional[Mapping[str, str]] = None,
+        *,
+        cache_type_kv: Optional[str] = None,
+        swa_full: bool = False,
+        flash_attn: bool = True,
     ) -> Optional[int]:
-        """Return an automatic recurrent-checkpoint cap, or None to preserve the argv."""
+        """Return an automatic context-checkpoint cap, or None to preserve the argv."""
         flag = server_caps.get("ctx_checkpoints_flag")
         if not flag:
             return None
@@ -15826,7 +15901,9 @@ class LlamaCppBackend:
             return None
         if _env_ctx_checkpoints_override(env) is not None:
             return None
-        per_checkpoint = self._rollback_state_bytes(1)
+        per_checkpoint = self._ctx_checkpoint_bytes(
+            cache_type_kv, swa_full = swa_full, flash_attn = flash_attn
+        )
         if per_checkpoint <= 0:
             return None
         total_ram_mib = self._host_memory_capacity_mib()
@@ -15842,7 +15919,7 @@ class LlamaCppBackend:
             return None
         logger.info(
             "Capping llama-server context checkpoints at %d per slot (this build's default %d): "
-            "each one snapshots this model's whole recurrent state (%.1f MiB), so the default "
+            "each one snapshots %.1f MiB of this model's state, so the default "
             "would hold %.1f GiB of host RAM across %d slot(s).",
             bounded,
             upstream_default,
@@ -15874,6 +15951,25 @@ class LlamaCppBackend:
         arch = getattr(self, "_architecture", None)
         return bool(arch) and str(arch).strip().lower() in _TARGET_KV_EXCLUDES_NEXTN_ARCHS
 
+    def _ssm_recurrent_layer_count(self, n_layers: int) -> int:
+        """SSM layers of a header with no attention interval, by llama.cpp's is_recr rules."""
+        arch = getattr(self, "_architecture", None)
+        if arch in _SSM_EVERY_LAYER_ARCHS:
+            return n_layers
+        heads = getattr(self, "_n_kv_heads_by_layer", None)
+        if not heads or getattr(self, "_kda_head_dim", None):
+            return 0
+        ffn = (
+            getattr(self, "_feed_forward_length_by_layer", None)
+            if arch in _SSM_FFN_FREE_LAYER_ARCHS
+            else None
+        ) or []
+        return sum(
+            1
+            for i, n_kv in enumerate(heads[:n_layers])
+            if n_kv == 0 and not (i < len(ffn) and ffn[i] > 0)
+        )
+
     def _mamba_recurrent_state_bytes(
         self,
         n_parallel: int = 1,
@@ -15892,17 +15988,16 @@ class LlamaCppBackend:
         n_group_raw = getattr(self, "_ssm_group_count", None)
         d_conv_raw = getattr(self, "_ssm_conv_kernel", None)
         fai_raw = getattr(self, "_full_attention_interval", None)
+        # Mamba1 (Jamba, Mamba) writes no group count; llama.cpp reads it as 0.
         if not all(
             value is not None
             for value in (
                 n_layers_raw,
                 d_inner_raw,
                 d_state_raw,
-                n_group_raw,
                 d_conv_raw,
-                fai_raw,
             )
-        ):
+        ) or (fai_raw is not None and n_group_raw is None):
             return 0
         # Excludes the embedded MTP blocks, as _estimate_kv_cache_bytes does and
         # for the same reason: llama.cpp keeps them out of the target's n_layer.
@@ -15910,9 +16005,12 @@ class LlamaCppBackend:
             0,
             int(n_layers_raw or 0) - int(getattr(self, "_nextn_predict_layers", None) or 0),
         )
-        fai = int(fai_raw or 0)
-        n_attn = -(-n_layers // fai) if fai > 0 else n_layers
-        n_recurrent = max(0, n_layers - n_attn)
+        if fai_raw is not None:
+            fai = int(fai_raw or 0)
+            n_attn = -(-n_layers // fai) if fai > 0 else n_layers
+            n_recurrent = max(0, n_layers - n_attn)
+        else:
+            n_recurrent = self._ssm_recurrent_layer_count(n_layers)
         if n_recurrent == 0:
             return 0
         d_inner = int(d_inner_raw or 0)
@@ -16139,6 +16237,8 @@ class LlamaCppBackend:
             )
             return int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot)
 
+        ssm_state = self._mamba_recurrent_state_bytes(n_parallel) + recurrent_checkpoints
+
         # Path 4: Standard GQA with explicit key/value dimensions
         if key_len is not None and val_len is not None:
             padded_v_width = None if flash_attn else self._max_kv_value_width(val_len)
@@ -16147,11 +16247,16 @@ class LlamaCppBackend:
                 layer_n_kv = self._kv_heads_for_layer(layer_idx, n_kv)
                 v_width = layer_n_kv * val_len if padded_v_width is None else padded_v_width
                 bytes_per_cell += layer_n_kv * key_len * bpe_k + v_width * bpe_v
-            return int(total_cells * bytes_per_cell)
+            return int(total_cells * bytes_per_cell) + ssm_state
 
         # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
         head_dim = self._legacy_head_dim()
-        return int(2 * n_kv * head_dim * n_layers_kv * total_cells * bpe_k)
+        # llama.cpp defaults head_count_kv to head_count, so a pure SSM (head_count 0) has no KV.
+        layer_default = self._n_kv_heads if self._n_kv_heads is not None else (self._n_heads or 0)
+        heads = [self._kv_heads_for_layer(i, layer_default) for i in range(n_layers_kv)]
+        # Without flash attention V is padded to the widest layer, as on Path 4.
+        v_heads = sum(heads) if flash_attn else len(heads) * max(heads)
+        return int((sum(heads) * bpe_k + v_heads * bpe_v) * head_dim * total_cells) + ssm_state
 
     def _draft_backend_for(self, drafter_path: str) -> Optional["LlamaCppBackend"]:
         """Lightweight backend with a drafter GGUF's metadata, to size its own KV
@@ -17500,6 +17605,7 @@ class LlamaCppBackend:
         self._pooling_type = None
         self._gguf_path = gguf_path
         self._feed_forward_length = None
+        self._feed_forward_length_by_layer = None
         self._expert_used_count = None
         self._expert_feed_forward_length = None
         self._expert_shared_feed_forward_length = None
@@ -17693,7 +17799,10 @@ class LlamaCppBackend:
                                     self._sliding_window_pattern = [bool(x) for x in val_a]
                                     sliding_window_pattern_period = None
                                 elif attr == "feed_forward_length" and val_a:
-                                    self._feed_forward_length = max(int(x) for x in val_a)
+                                    self._feed_forward_length_by_layer = [int(x) for x in val_a]
+                                    self._feed_forward_length = max(
+                                        self._feed_forward_length_by_layer
+                                    )
                             else:
                                 self._gguf_skip_value(f, vtype)
                         else:
@@ -23337,7 +23446,9 @@ class LlamaCppBackend:
                         server_caps,
                         extra_args,
                         ctx_checkpoints,
-                        per_checkpoint_bytes = self._rollback_state_bytes(1),
+                        per_checkpoint_bytes = self._ctx_checkpoint_bytes(
+                            cache_type_kv, swa_full = swa_full, flash_attn = planned_flash_attn
+                        ),
                         n_parallel = n_parallel,
                         total_host_bytes = ((self._host_memory_capacity_mib() or 0) * 1024 * 1024)
                         or None,
@@ -27293,7 +27404,14 @@ class LlamaCppBackend:
                 def _decide_auto_ctx_checkpoints() -> Optional[int]:
                     """The cap for the slots n_parallel currently names, or None to stand down."""
                     return (
-                        self._bounded_ctx_checkpoints(n_parallel, server_caps, extra_args)
+                        self._bounded_ctx_checkpoints(
+                            n_parallel,
+                            server_caps,
+                            extra_args,
+                            cache_type_kv = cache_type_kv,
+                            swa_full = swa_full,
+                            flash_attn = planned_flash_attn,
+                        )
                         if ctx_checkpoints is None
                         else None
                     )
@@ -37320,7 +37438,14 @@ class LlamaCppBackend:
                         # outlives the closure.
                         _last_result_budget: list = ["<not passed>"]
 
-                        def _invoke_tool(_output_callback, _decision = decision):
+                        # Only a call the user answered: the executor lets it reach the host paths it names.
+                        _host_access_approved = _decision not in (None, "deny")
+
+                        def _invoke_tool(
+                            _output_callback,
+                            _decision = decision,
+                            _approved = _host_access_approved,
+                        ):
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
                             kwargs = dict(
@@ -37336,6 +37461,8 @@ class LlamaCppBackend:
                             # forced recall correctly refused.
                             if accepts_kwarg(execute_tool, "conversation_branch"):
                                 kwargs["conversation_branch"] = _extend_live_branch(conversation)
+                            if _approved and accepts_kwarg(execute_tool, "host_access_approved"):
+                                kwargs["host_access_approved"] = True
                             # And the room actually left: the model picks its own top_k and
                             # the result lands in the current tool exchange, which rolling
                             # truncation protects, so a top_k the window cannot hold ends
@@ -38839,6 +38966,7 @@ class LlamaCppBackend:
         chat_template_kwargs = None,
         continue_final_message: bool = False,
         should_abort = None,
+        prefer_native: bool = False,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
@@ -38852,6 +38980,8 @@ class LlamaCppBackend:
         ``should_abort`` is polled between the two llama-server calls. Admission is the
         caller's job; this only stops a count that was admitted while idle from spending its
         second round trip once the answer stopped mattering. Raises when it fires.
+
+        ``prefer_native`` tries /v1/chat/completions/input_tokens first (one round trip).
         """
         if not self.is_loaded:
             if strict:
@@ -38900,7 +39030,12 @@ class LlamaCppBackend:
         tools = neutralize_tool_descriptions(tools, None, _profile)
 
         try:
-            with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
+            with httpx.Client(
+                timeout = 10,
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _count_ssl_context(),
+            ) as client:
 
                 def _tokenize(text: str) -> int:
                     r = client.post(
@@ -38947,6 +39082,22 @@ class LlamaCppBackend:
                     if continue_final_message:
                         template_body["continue_final_message"] = True
                         template_body["add_generation_prompt"] = False
+                    if prefer_native:
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
+                        try:
+                            native = client.post(
+                                f"{self.base_url}/v1/chat/completions/input_tokens",
+                                json = template_body,
+                            )
+                            if native.status_code == 200:
+                                count = native.json().get("input_tokens")
+                                if type(count) is int and count > 0:
+                                    return count
+                        except Exception:
+                            pass
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
                     resp = client.post(
                         f"{self.base_url}/apply-template",
                         json = template_body,

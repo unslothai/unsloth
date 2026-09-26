@@ -1440,11 +1440,12 @@ html[data-chat-font] .aui-root {
 		color: #fff;
 	}
 
-	/* pr-3, not pr-4: header actions end where a hovered row's "…" does (right-0
+	/* pl: the list's px-1.5 plus a row's pl-3 = 18px, so labels start where row content does.
+	   pr-3, not pr-4: header actions end where a hovered row's "…" does (right-0
 	   + pr-1.5 inside a pill the list inset by px-1.5 = 12px). The desktop
 	   titlebar insets by 5px, so those headers override this in app-sidebar.tsx. */
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[calc(8px*var(--ui-space-scale,1))] pl-[calc(16px*var(--ui-space-scale,1))] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[calc(8px*var(--ui-space-scale,1))] pl-[calc(18px*var(--ui-space-scale,1))] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. Follows the contrast slider. */
@@ -1455,10 +1456,8 @@ html[data-chat-font] .aui-root {
 	   Tailwind emits utility classes before this components block, so putting
 	   pr-[calc(11px*var(--ui-space-scale,1))]/pr-[calc(13px*var(--ui-space-scale,1))] on the element would lose the cascade. */
 	.sidebar-sticky-label.sidebar-sticky-label-desktop {
+		padding-left: calc(17px * var(--ui-space-scale, 1));
 		padding-right: calc(11px * var(--ui-space-scale, 1));
-	}
-	.sidebar-sticky-label.sidebar-sticky-label-desktop-recents {
-		padding-right: calc(13px * var(--ui-space-scale, 1));
 	}
 	.sidebar-sticky-label-following {
 		@apply pt-[calc(21px*var(--ui-space-scale,1))];
@@ -2053,6 +2052,13 @@ html[data-chat-font] .aui-root {
 	.dark [data-slot="combobox-content"],
 	.dark [data-slot="popover-content"] {
 		box-shadow: 0 8px 28px -6px var(--background) !important;
+	}
+
+	/* Library card menus: match the card menu button so they stand off the cards. */
+	.dark [data-slot="dropdown-menu-content"].library-actions-menu,
+	.dark [data-slot="dropdown-menu-sub-content"].library-actions-menu {
+		--accent: var(--color-neutral-600);
+		background-color: var(--color-neutral-700);
 	}
 
 	/* Model selector: tighter than the menus above so it lifts off the
@@ -3639,36 +3645,42 @@ body.sidebar-row-dragging * {
    the area is hovered, so the rail never sits visible over content. */
 .sidebar-scroll-fade,
 .run-settings-scroll,
+.aui-thread-viewport,
 .hover-scrollbar {
 	scrollbar-color: transparent transparent;
 }
 
 .sidebar-scroll-fade::-webkit-scrollbar-thumb,
 .run-settings-scroll::-webkit-scrollbar-thumb,
+.aui-thread-viewport::-webkit-scrollbar-thumb,
 .hover-scrollbar::-webkit-scrollbar-thumb {
 	background: transparent;
 }
 
 .sidebar-scroll-fade:hover,
 .run-settings-scroll:hover,
+.aui-thread-viewport:hover,
 .hover-scrollbar:hover {
 	scrollbar-color: oklch(0.5 0 0 / 0.4) transparent;
 }
 
 .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
 .run-settings-scroll:hover::-webkit-scrollbar-thumb,
+.aui-thread-viewport:hover::-webkit-scrollbar-thumb,
 .hover-scrollbar:hover::-webkit-scrollbar-thumb {
 	background: oklch(0.5 0 0 / 0.4);
 }
 
 .dark .sidebar-scroll-fade:hover,
 .dark .run-settings-scroll:hover,
+.dark .aui-thread-viewport:hover,
 .dark .hover-scrollbar:hover {
 	scrollbar-color: oklch(0.72 0 0 / 0.4) transparent;
 }
 
 .dark .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
 .dark .run-settings-scroll:hover::-webkit-scrollbar-thumb,
+.dark .aui-thread-viewport:hover::-webkit-scrollbar-thumb,
 .dark .hover-scrollbar:hover::-webkit-scrollbar-thumb {
 	background: oklch(0.72 0 0 / 0.4);
 }
@@ -3680,6 +3692,8 @@ body.sidebar-row-dragging * {
 	:root.client-windows .sidebar-scroll-fade:hover,
 	:root.client-windows .run-settings-scroll,
 	:root.client-windows .run-settings-scroll:hover,
+	:root.client-windows .aui-thread-viewport,
+	:root.client-windows .aui-thread-viewport:hover,
 	:root.client-windows .hover-scrollbar,
 	:root.client-windows .hover-scrollbar:hover {
 		scrollbar-width: auto;
@@ -3698,10 +3712,8 @@ body.sidebar-row-dragging * {
 	padding-right: var(--overlay-scrollbar-gutter, 0px);
 }
 
-/* Chat viewport: solid track matching sidebar so the scrollbar reads as a
-   full-height rail flush to the right edge, without a separate decorative strip. */
+/* Chat viewport: scrollbar styled with Run settings above, so no track to clip at the corner. */
 .aui-thread-viewport {
-	scrollbar-color: oklch(0.5 0 0 / 0.54) var(--sidebar);
 	/* Reserve scrollbar space always so absolute-positioned overlays (topbar)
 	   can stop flush with the gutter edge without covering the scrollbar.
 	   both-edges: a one-sided gutter pushes the centred column off-centre by
@@ -3752,21 +3764,6 @@ body.sidebar-row-dragging * {
 	padding-bottom: var(--aui-scroll-stabilizer, 0px);
 }
 
-.dark .aui-thread-viewport {
-	scrollbar-color: oklch(0.72 0 0 / 0.25) #23252a;
-}
-
-.dark .aui-thread-viewport::-webkit-scrollbar-thumb {
-	background: oklch(0.72 0 0 / 0.25);
-}
-
-.aui-thread-viewport::-webkit-scrollbar-track {
-	background: var(--sidebar);
-}
-
-.dark .aui-thread-viewport::-webkit-scrollbar-track {
-	background: #23252a;
-}
 
 
 /* Search list: re-enable the native scrollbar (CommandList defaults to no-scrollbar). */

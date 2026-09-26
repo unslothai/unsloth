@@ -9,7 +9,9 @@ import test from "node:test";
 
 import {
   dropEdgeAt,
+  equivalentDrop,
   folderRingKey,
+  litRingKey,
   planKey,
   planSidebarDrop,
   rowKey,
@@ -62,6 +64,7 @@ function context(
     organizeBy: "project",
     chatSort: "priority",
     pinnedSort: "manual",
+    projectSort: "manual",
     pinnedChatIds: new Set(["p1"]),
     pinnedProjectIds: new Set(["work"]),
     orders: {
@@ -167,6 +170,58 @@ test("a reorder in a sorted list switches it to Manual order", () => {
   );
   assert.equal(manual.action.kind, "reorder");
   assert.equal(manual.effects.switchSort, undefined);
+});
+
+// A folder drop switches a sorted Projects list to Manual.
+test("a folder reorder or unpin switches a sorted Projects list to Manual", () => {
+  // Alt + arrow takes the same switch.
+  assert.ok(APP_SIDEBAR.includes("sort: { value: projectSort, set: setProjectSort }"));
+  const home = folder("home", "projects", PROJECT_ORDER_SCOPE);
+  const miscRow = folderRow("projects", PROJECT_ORDER_SCOPE, "misc");
+  const reorder = plannedDrop(
+    planSidebarDrop(home, miscRow, "bottom", context({ projectSort: "name" })),
+  );
+  assert.equal(reorder.action.kind, "reorder");
+  assert.equal(reorder.effects.switchSort, "projects");
+  const unpin = plannedDrop(
+    planSidebarDrop(
+      folder("work", "pinned", PINNED_ORDER_SCOPE),
+      miscRow,
+      "bottom",
+      context({ projectSort: "created" }),
+    ),
+  );
+  assert.equal(unpin.action.kind, "unpin");
+  assert.equal(unpin.effects.switchSort, "projects");
+  const manual = plannedDrop(planSidebarDrop(home, miscRow, "bottom", context()));
+  assert.equal(manual.effects.switchSort, undefined);
+});
+
+// A pinned project chat shows in Pinned only; its own folder unpins it.
+test("a pinned chat is listed once and drops back into its folder unpinned", () => {
+  assert.ok(
+    APP_SIDEBAR.includes("items.filter((item) => !pinnedIdSet.has(item.id))"),
+    "a folder still lists its pinned chats",
+  );
+  const ctx = context({
+    pinnedChatIds: new Set(["p1", "c1"]),
+    orders: {
+      ...context().orders,
+      pinned: ["work", "c1", "p1"],
+      projectChats: (projectId) =>
+        ({ work: ["c2"], home: ["c3"], misc: [] })[projectId] ?? [],
+    },
+  });
+  const drag = chat("c1", "pinned", PINNED_ORDER_SCOPE, "work");
+  for (const zone of [
+    folderRow("pinned", PINNED_ORDER_SCOPE, "work"),
+    chatRow("pinned", projectOrderScope("work"), "c2", "work"),
+  ]) {
+    const plan = plannedDrop(planSidebarDrop(drag, zone, "bottom", ctx));
+    assert.equal(plan.action.kind, "unpin");
+    assert.equal(plan.effects.unpinChat, "c1");
+    assert.equal(plan.effects.moveChat, undefined);
+  }
 });
 
 // An edge the row is already on is not a move, and a line there would promise one. The spot
@@ -837,7 +892,7 @@ test("the gesture is pointer events, not the HTML5 drag API", () => {
   assert.match(HOOK, /window\.addEventListener\("pointerup", onUp\);/);
   // A press is only a drag once it travels, or a click on a row would never open the chat.
   assert.match(HOOK, /export const DRAG_THRESHOLD_PX = \d+;/);
-  // Touch scrolls the list; its rows keep Move up and Move down.
+  // Touch scrolls the list rather than lifting a row.
   assert.match(HOOK, /event\.pointerType === "touch"\) return;/);
 });
 
@@ -847,7 +902,8 @@ test("the gesture is pointer events, not the HTML5 drag API", () => {
 test("a cue over nothing is cleared without trusting dragleave", () => {
   assert.match(HOOK, /for \(const element of document\.elementsFromPoint\(x, y\)\)/);
   // No answer here lets the zone around it answer instead.
-  assert.match(HOOK, /if \(outcome\) return \{ hit, outcome \};\n\s*\}\n\s*return null;/);
+  assert.match(HOOK, /if \(!outcome\) continue;/);
+  assert.match(HOOK, /return \{ hit, outcome \};\n\s*\}\n\s*return null;/);
   assert.match(
     HOOK,
     /if \(!aimed \|\| aimed\.outcome === STAY\) \{\n\s*\/\/[^\n]*\n\s*cancelSpring\(\);\n\s*showPlan\(null\);\n\s*return;\n\s*\}/,
@@ -903,10 +959,12 @@ test("rows cover the gap between them, so the section never answers for it", () 
 test("every drop cue is drawn inside its row", () => {
   for (const cue of [
     "${DROP_CUE_BASE} before:top-0",
-    "${DROP_CUE_BASE} before:bottom-0",
+    // A pixel up: the last row's extra hit pixel is clipped by the list.
+    "${DROP_CUE_BASE} before:bottom-px",
     "before:inset-x-1 before:inset-y-0 ",
-    // A ring is drawn outside its box unless inset, and the first row's box ends at the clip.
-    "before:ring-1 before:ring-inset",
+    // Borders, which snap to whole device pixels, so every cue keeps one thickness.
+    "before:h-0 before:border-t-[1.5px] before:border-primary",
+    "before:border-[1.5px] before:border-primary",
   ]) {
     assert.ok(APP_SIDEBAR.includes(cue), `no cue is drawn at ${cue}`);
   }
@@ -917,7 +975,7 @@ test("every drop cue is drawn inside its row", () => {
 });
 
 // Alt + arrow is the keyboard's reorder.
-test("alt and an arrow reorder a row without a pointer", async () => {
+test("alt and an arrow reorder a row without a pointer", () => {
   assert.match(
     APP_SIDEBAR,
     /onKeyDown: \(event: React\.KeyboardEvent\) => \{\n\s*if \(\n\s*!event\.altKey \|\|\n\s*\(event\.key !== "ArrowUp" && event\.key !== "ArrowDown"\)\n\s*\)/,
@@ -928,34 +986,18 @@ test("alt and an arrow reorder a row without a pointer", async () => {
   );
   // Same rule as a drop: a sorted list switches to Manual.
   assert.match(APP_SIDEBAR, /if \(resorts\) \{\n\s*sort\.set\("manual"\);/);
-  // A touch browser starts no drag, so its row menus keep Move up and Move down.
-  assert.match(APP_SIDEBAR, /function renderMoveRowItems\(/);
-  // A pinned folder moves under Pinned's sort rule, from the keyboard and the touch menu alike:
+  // No Move up / Move down in row menus: drag and alt + arrow reorder.
+  assert.ok(!APP_SIDEBAR.includes("renderMoveRowItems"));
+  assert.ok(!EN.includes("moveUp:") && !EN.includes("moveDown:"));
+  // A pinned folder moves under Pinned's sort rule from the keyboard:
   // a sorted list switches to Manual, or refuses, exactly as a drop does.
   assert.match(
     APP_SIDEBAR,
     /orderedIds: order\.orderedIds,\n\s*sort: order\.sort,\n\s*\}\)\}/,
   );
-  assert.match(APP_SIDEBAR, /order\.orderedIds,\n\s*order\.sort,\n\s*P,\n\s*\)\}/);
   assert.match(
     APP_SIDEBAR,
     /selectionIds: pinnedProjectRowIds,\n\s*section: "pinned",\n\s*sort: \{ value: pinnedSort, set: setPinnedSort \},/,
-  );
-  assert.match(APP_SIDEBAR, /if \(!coarsePointer\) return null;/);
-  assert.match(APP_SIDEBAR, /const coarsePointer = useIsCoarsePointer\(\);/);
-  // Any touch pointer counts: a laptop with a touchscreen keeps the items too.
-  const MOBILE = await readSrcAsync("hooks/use-mobile.ts");
-  assert.match(
-    MOBILE,
-    /const COARSE_POINTER_QUERY = "\(any-pointer: coarse\)";/,
-  );
-  for (const key of ["moveUp", "moveDown"]) {
-    assert.ok(EN.includes(`${key}:`), `${key} is missing from the en locale`);
-  }
-  // Both paths share the reorder, so both honour the sort rule.
-  assert.equal(
-    (APP_SIDEBAR.match(/reorderRowBy\(item, orderedIds, sort, /g) ?? []).length,
-    3,
   );
 });
 
@@ -1089,6 +1131,14 @@ test("a sort picked while a move is in flight is not overwritten", () => {
 
 // A folder last in Pinned runs its block to the bottom of the section, so every pixel below its
 // title is inside it and a chat aimed past the folder was filed into it. There was no "after".
+test("the Pinned tail strip adds no space under the section", () => {
+  // The next section rides up over it while Pinned is open.
+  assert.match(
+    APP_SIDEBAR,
+    /<SidebarGroup className="[^"]*data-\[state=open\]:-mb-\[calc\(8px\*var\(--ui-space-scale,1\)\)\]"/,
+  );
+});
+
 test("a chat can be dropped after a folder that ends the Pinned list", () => {
   const workScope = projectOrderScope("work");
   const ctx = context({
@@ -1170,7 +1220,7 @@ test("a chat can be dropped after a folder that ends the Pinned list", () => {
   assert.ok(pinnedMenu.length > 0, "the Pinned section moved");
   assert.match(
     pinnedMenu,
-    /<SidebarMenuItem\n\s*aria-hidden\n\s*className=\{cn\(\n\s*"relative h-\[calc\(8px\*var\(--ui-space-scale,1\)\)\]",\n\s*dropCueClass\(SIDEBAR_TAIL_SCOPE, "pinned"\),/,
+    /<SidebarMenuItem\n\s*aria-hidden\n\s*className=\{cn\(\n\s*\/\/[^\n]*\n\s*"relative z-\[1\] h-\[calc\(8px\*var\(--ui-space-scale,1\)\)\]",\n\s*dropCueClass\(SIDEBAR_TAIL_SCOPE, "pinned"\),/,
   );
   assert.ok(
     !/draggingRow && /.test(pinnedMenu),
@@ -1310,4 +1360,91 @@ test("a chat can be dropped at the bottom of a pinned project", () => {
     ),
     STAY,
   );
+});
+
+test("the two edges of one gap are one drop, and draw one line", () => {
+  const ctx = context({
+    orders: { ...context().orders, recents: ["r1", "r2", "r3"] },
+  });
+  const drag = chat("r3", "recents", RECENTS_ORDER_SCOPE, null);
+  const underR1 = plannedDrop(
+    planSidebarDrop(drag, chatRow("recents", RECENTS_ORDER_SCOPE, "r1"), "bottom", ctx),
+  );
+  const overR2 = plannedDrop(
+    planSidebarDrop(drag, chatRow("recents", RECENTS_ORDER_SCOPE, "r2"), "top", ctx),
+  );
+  // Two cues, one landing.
+  assert.notDeepEqual(underR1.cue, overR2.cue);
+  assert.ok(equivalentDrop(underR1, overR2));
+
+  // A folder's last chat and the next folder are different drops.
+  const homeScope = projectOrderScope("home");
+  const intoHome = plannedDrop(
+    planSidebarDrop(
+      drag,
+      {
+        ...chatRow("projects", homeScope, "c3", "home", { index: 0, count: 1 }),
+        blockEnd: { scope: homeScope, id: "c3" },
+      },
+      "bottom",
+      ctx,
+    ),
+  );
+  const overMisc = plannedDrop(
+    planSidebarDrop(drag, folderRow("projects", PROJECT_ORDER_SCOPE, "misc"), "top", ctx),
+  );
+  assert.ok(!equivalentDrop(intoHome, overMisc));
+
+  // Pinned's tail and its last chat's bottom edge both land last: one drop.
+  const pinnedCtx = context({
+    pinnedChatIds: new Set(["p1", "p2", "p3"]),
+    orders: { ...context().orders, pinned: ["p1", "p2", "p3"] },
+  });
+  const pinnedDrag = chat("p1", "pinned", PINNED_ORDER_SCOPE, null);
+  const tail = plannedDrop(
+    planSidebarDrop(
+      pinnedDrag,
+      { section: "pinned", blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "pinned" } },
+      "bottom",
+      pinnedCtx,
+    ),
+  );
+  const underLast = plannedDrop(
+    planSidebarDrop(pinnedDrag, chatRow("pinned", PINNED_ORDER_SCOPE, "p3"), "bottom", pinnedCtx),
+  );
+  assert.notDeepEqual(tail.cue, underLast.cue);
+  assert.ok(equivalentDrop(tail, underLast));
+
+  // The hook only swaps lines for equivalent drops.
+  assert.match(
+    HOOK,
+    /planSidebarDrop\(dragged, next\.zone, tail \? "bottom" : "top", context\)/,
+  );
+  assert.match(HOOK, /equivalentDrop\(alt, outcome\)/);
+  // Only the cue is swapped: the original effects keep the `place` a slow move re-aims by.
+  assert.match(HOOK, /outcome: \{ \.\.\.outcome, cue: alt\.cue \}/);
+  // Neighbours are found by key and a point probe, not by scanning every zone per frame.
+  assert.match(HOOK, /document\.querySelector\(`\[\$\{ROW_KEY_ATTR\}="\$\{CSS\.escape\(key\)\}"\]`\)/);
+  assert.doesNotMatch(HOOK, /querySelectorAll\(`\[\$\{DROP_ZONE_ATTR\}\]`\)/);
+});
+
+test("a drop into a folder lights the folder, even while a line shows the slot", () => {
+  const ctx = context();
+  const drag = chat("r1", "recents", RECENTS_ORDER_SCOPE, null);
+  const homeScope = projectOrderScope("home");
+  const slotted = plannedDrop(
+    planSidebarDrop(drag, chatRow("projects", homeScope, "c3", "home", { index: 0, count: 1 }), "top", ctx),
+  );
+  assert.deepEqual(slotted.action, { kind: "move", projectId: "home" });
+  assert.ok("line" in slotted.cue);
+  assert.equal(litRingKey(slotted), folderRingKey("home"));
+
+  // A reorder within Recents files nothing, so nothing is lit.
+  const ctxRecents = context({ orders: { ...context().orders, recents: ["r1", "r2", "r3"] } });
+  const reorder = plannedDrop(
+    planSidebarDrop(chat("r3", "recents", RECENTS_ORDER_SCOPE, null), chatRow("recents", RECENTS_ORDER_SCOPE, "r1"), "top", ctxRecents),
+  );
+  assert.equal(litRingKey(reorder), null);
+  assert.equal(litRingKey(null), null);
+  assert.match(HOOK, /\(key: string\): boolean => litRingKey\(plan\) === key/);
 });

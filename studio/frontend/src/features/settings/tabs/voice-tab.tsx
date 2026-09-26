@@ -49,8 +49,8 @@ import { toast } from "@/lib/toast";
 import {
   AudioWave01Icon,
   Search01Icon,
-  VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
+import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { SquareIcon } from "lucide-react";
@@ -1520,7 +1520,7 @@ export function VoiceTab() {
                 ) : (
                   <>
                     <HugeiconsIcon
-                      icon={VolumeHighIcon}
+                      icon={Volume02Icon}
                       className="mr-1.5 size-3.5"
                     />
                     {t("settings.voice.readAloud.previewAction")}

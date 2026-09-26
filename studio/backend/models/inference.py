@@ -943,6 +943,11 @@ class EstimateMemoryResponse(BaseModel):
     )
     weights_bytes: int = Field(0, description = "Resident model files: weights, projector, drafter")
     kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
+    kv_checkpoint_bytes: int = Field(
+        0,
+        description = "Context checkpoints in host RAM: included in kv_bytes and total_bytes, "
+        "excluded from gpu_bytes.",
+    )
     compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
     drafter_runtime_bytes: int = Field(
         0,
@@ -1047,6 +1052,9 @@ class MemoryEstimate(BaseModel):
     )
 
     kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
+    kv_checkpoint_bytes: int = Field(
+        0, description = "The host-RAM part of kv_bytes: per-slot context checkpoints"
+    )
     compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
     drafter_runtime_bytes: int = Field(
         0, description = "A separate drafter's own KV cache and rollback state"
@@ -1269,6 +1277,10 @@ class _InferenceRuntimeFields(BaseModel):
         ),
     )
     is_mlx: bool = Field(False, description = "Whether the active model is served by the MLX backend")
+    is_npu: bool = Field(
+        False,
+        description = "Whether the active model runs on the AMD Ryzen AI NPU (FastFlowLM through Lemonade)",
+    )
     mlx_kv_bits: Optional[int] = Field(
         None, description = "MLX KV quantization bit width actually applied, if any"
     )
@@ -3874,14 +3886,17 @@ class DiffusionLoadRequest(BaseModel):
         "friendly); xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
         "unavailable kernel falls back to the default.",
     )
-    transformer_cache: Optional[Literal["off", "fbcache"]] = Field(
+    transformer_cache: Optional[Literal["off", "fbcache", "static"]] = Field(
         None,
-        description = "Opt-in step caching (off by default). fbcache = First-Block-Cache: "
-        "reuse the transformer tail across denoise steps when the first block's residual "
-        "barely changes (~1.4x on Flux 28-step at LPIPS ~0.08). For MANY-step models "
-        "(Flux / Qwen-Image); leave off for few-step distilled models (e.g. Z-Image-Turbo), "
-        "which have no caching headroom. Composes with compile (drops fullgraph "
-        "automatically); incompatible models run uncached.",
+        description = "Step caching. fbcache = First-Block-Cache: reuse the transformer tail "
+        "across denoise steps when the first block's residual barely changes (~1.4x on Flux "
+        "28-step at LPIPS ~0.08). Unset = auto: engages only on speed_mode=max with a 20+ step "
+        "schedule, otherwise uncached. An explicit fbcache engages on every speed tier; off "
+        "never caches. Composes with compile (drops fullgraph automatically); incompatible "
+        "models run uncached. static = skip denoiser calls on a fixed schedule (first 20% and "
+        "last 10% of the steps always run, every other middle step is extrapolated from the "
+        "last two outputs; 12+ steps only), which keeps compile fullgraph and the CUDA graph. "
+        "Never picked automatically.",
     )
     transformer_cache_threshold: Optional[float] = Field(
         None,
@@ -3889,7 +3904,7 @@ class DiffusionLoadRequest(BaseModel):
         le = 1.0,
         description = "FBCache residual threshold (higher = skips more steps = faster, lower "
         "quality). null auto-picks 0.08 (0.12 when the transformer is quantised, which "
-        "shifts the residual distribution).",
+        "shifts the residual distribution). Ignored by static.",
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -4106,6 +4121,14 @@ class DiffusionGenerateRequest(BaseModel):
         description = "Upscale (hires fix) factor for an init_image: enlarges the source "
         "by this multiple and re-denoises at low strength. Requires init_image; "
         "ignored for txt2img/inpaint/edit.",
+    )
+    allow_oversized: bool = Field(
+        False,
+        description = "Run even when the generate-time memory check estimates this size will not "
+        "fit the free GPU memory. Sizes that fit once the VAE decodes tile by tile already run "
+        "without it; this is for the rest. An oversized run can fail with an out-of-memory error, "
+        "or on Windows spill into system RAM and run very slowly. Same effect as the server's "
+        "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE=1, per request.",
     )
     reference_images: Optional[list[str]] = Field(
         None,
@@ -4489,12 +4512,32 @@ class DiffusionStatusResponse(BaseModel):
         description = "Transformer quant engaged on the dense fast path: int8 | fp8 | "
         "nvfp4 | mxfp8 | null (null = the GGUF transformer was loaded)",
     )
+    transformer_quant_backend: Optional[str] = Field(
+        None,
+        description = "Which NVFP4 kernel path the loaded DiT actually runs: flashinfer | "
+        "torchao | null (null for every scheme but nvfp4). The scheme alone does not say: "
+        "flashinfer is selected per device and falls back to torchao on a preflight failure, so "
+        "this is the only place a render's speed can be attributed to the backend that served it.",
+    )
+    transformer_quant_backend_reason: Optional[str] = Field(
+        None,
+        description = "Why flashinfer is not serving an NVFP4 load that runs torchao: the on-demand "
+        "install was refused (offline, opt-out, ineligible host) or failed and was rolled back. "
+        "null when the backend is flashinfer, the scheme is not nvfp4, or no reason was recorded.",
+    )
     attention_backend: Optional[str] = Field(
         None,
         description = "Attention backend engaged via the diffusers dispatcher (e.g. "
         "_native_cudnn), or null for the default SDPA",
     )
-    transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
+    transformer_cache: Optional[str] = Field(
+        None, description = "Step cache engaged: fbcache | static | null"
+    )
+    transformer_cache_stats: Optional[dict] = Field(
+        None,
+        description = "Static step skip only: mode, schedule and the last generation's "
+        "calls / computed / skipped transformer calls; null for any other cache",
+    )
     workflows: list[str] = Field(
         default_factory = list,
         description = "Image workflows the loaded family supports (drives UI tab gating): "
@@ -4841,19 +4884,25 @@ class VideoLoadRequest(BaseModel):
         "attention; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
         "kernel falls back to the default.",
     )
-    transformer_cache: Optional[Literal["off", "fbcache"]] = Field(
+    transformer_cache: Optional[Literal["off", "fbcache", "static"]] = Field(
         None,
-        description = "Opt-in step caching (off by default). fbcache = First-Block-Cache: "
-        "reuse the transformer tail across denoise steps when the first block's residual "
-        "barely changes. Engages on many-step schedules only; incompatible models run "
-        "uncached.",
+        description = "Step caching. fbcache = First-Block-Cache: reuse the transformer tail "
+        "across denoise steps when the first block's residual barely changes. Unset = auto: "
+        "engages only on speed_mode=max with a 20+ step schedule, otherwise uncached. An "
+        "explicit fbcache engages on every speed tier; incompatible models run uncached. "
+        "static = skip denoiser calls on a fixed schedule (first 20% and last 10% of the steps "
+        "always run, every other middle step is extrapolated from the last two computed "
+        "outputs; 12+ steps only), which keeps compile fullgraph and the CUDA graph. "
+        "Single-denoiser video-only families: a two-expert MoE (Wan2.2 A14B), a joint "
+        "audio + video denoiser (LTX-2) and the MiniMax-H3 modular workflow run uncached. "
+        "Never picked automatically.",
     )
     transformer_cache_threshold: Optional[float] = Field(
         None,
         ge = 0.0,
         le = 1.0,
         description = "FBCache residual threshold (higher = skips more steps = faster, lower "
-        "quality). null auto-picks the family default.",
+        "quality). null auto-picks the family default. Ignored by static.",
     )
     transformer_quant: Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]] = (
         Field(
@@ -5299,12 +5348,31 @@ class VideoStatusResponse(BaseModel):
         description = "Attention backend engaged via the diffusers dispatcher (e.g. "
         "_native_cudnn), or null for the default SDPA",
     )
-    transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
+    transformer_cache: Optional[str] = Field(
+        None, description = "Step cache engaged: fbcache | static | null"
+    )
+    transformer_cache_stats: Optional[dict] = Field(
+        None,
+        description = "Static step skip only: the schedule (mode, head, tail, every, "
+        "planned_skips) and the denoiser call counts (calls, computed, skipped) of the clip in "
+        "flight, else of the last one. null for any other step cache.",
+    )
     transformer_quant: Optional[str] = Field(
         None,
         description = "Dense transformer quant engaged on a pipeline load: int8 | fp8 | nvfp4 | "
         "mxfp8 | null (null = the DiT(s) run at their loaded bf16 precision). For a dual-expert "
         "MoE family both experts share the reported scheme.",
+    )
+    transformer_quant_backend: Optional[str] = Field(
+        None,
+        description = "Which NVFP4 kernel path the loaded DiT(s) run: flashinfer | torchao | null "
+        "(null for every scheme but nvfp4).",
+    )
+    transformer_quant_backend_reason: Optional[str] = Field(
+        None,
+        description = "Why flashinfer is not serving an NVFP4 load that runs torchao: the on-demand "
+        "install was refused (offline, opt-out, ineligible host) or failed and was rolled back. "
+        "null when the backend is flashinfer, the scheme is not nvfp4, or no reason was recorded.",
     )
     text_encoder_quant: Optional[str] = Field(
         None,
