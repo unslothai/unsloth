@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
+import { externalModelLabel } from "../lib/external-model-label";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import { minPSamplingPayload } from "../lib/min-p-policy";
 import {
@@ -5143,6 +5145,19 @@ export function createOpenAIStreamAdapter(
       addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
       addSystemInstruction(outboundMessages, artifactInstruction);
 
+      // Stops this turn before it streams because an attachment cannot go to the loaded model.
+      const blockAttachmentRun = (reason: string): never => {
+        toast.error(reason);
+        // Flip the per-thread running flag on->off so compare-mode waitForRunEnd resolves: this gate
+        // fires before the streaming path's setThreadRunning(true).
+        const gatedThreadKey = resolvedThreadId || "__default";
+        // Own token: siblings share "__default", so an ownerless clear would drop entries that are still generating.
+        const gateOwner = createImageGateRunOwner();
+        runtime.setThreadRunning(gatedThreadKey, true, { owner: gateOwner });
+        runtime.setThreadRunning(gatedThreadKey, false, { owner: gateOwner });
+        clearSelectedImageEditReference();
+        throw new Error(reason);
+      };
       // Block when ANY image is in the outbound payload and the loaded model cannot process images;
       // switching models means starting a new chat.
       if (imageBase64) {
@@ -5164,17 +5179,27 @@ export function createOpenAIStreamAdapter(
           mmprojFallbackReason: runtime.mmprojFallbackReason,
         });
         if (imageGateReason) {
-          toast.error(imageGateReason);
-          // Flip the per-thread running flag on->off so compare-mode waitForRunEnd resolves: this gate
-          // fires before the streaming path's setThreadRunning(true).
-          const gatedThreadKey = resolvedThreadId || "__default";
-          // Own token: siblings share "__default", so an ownerless clear would drop entries that are still generating.
-          const gateOwner = createImageGateRunOwner();
-          runtime.setThreadRunning(gatedThreadKey, true, { owner: gateOwner });
-          runtime.setThreadRunning(gatedThreadKey, false, { owner: gateOwner });
-          clearSelectedImageEditReference();
-          throw new Error(imageGateReason);
+          blockAttachmentRun(imageGateReason);
         }
+      }
+      // Audio and video can be attached before any model is loaded, so the model answering this
+      // turn may not take them. Only files attached to the message count: recorded audio is
+      // offered only to a model that listens.
+      const answeringModel = runtime.models.find(
+        (m) => m.id === params.checkpoint,
+      );
+      const attachedMediaReason = attachedMediaUnavailableReason({
+        activeModel: answeringModel,
+        checkpoint: params.checkpoint,
+        modelLabel:
+          answeringModel?.name ||
+          externalModelLabel(params.checkpoint) ||
+          params.checkpoint,
+        audio: Boolean(findLatestUserAudioBase64(survivingMessages, false)),
+        video: Boolean(videoBase64),
+      });
+      if (attachedMediaReason) {
+        blockAttachmentRun(attachedMediaReason);
       }
       if (audioBase64 && !queuedRunSettings) {
         const audioName = runtime.pendingAudioName;

@@ -2749,7 +2749,12 @@ test("only the gate's own tokens are read as a refusal", () => {
 test("the gate's pulse is tagged where it is fired and read where it matters", () => {
   // Neither end is exercised by a unit test: the adapter's gate is deep inside a run, and
   // the keeper's real signal reads a zustand store. Pinned at both ends instead.
-  const gate = CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("const imageGateReason ="));
+  // One refusal path for every attachment the loaded model cannot take: images, audio, video.
+  const gate = CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("const blockAttachmentRun ="));
+  assert.match(
+    CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("const imageGateReason =")),
+    /if \(imageGateReason\) \{\n\s*blockAttachmentRun\(imageGateReason\);/,
+  );
   assert.match(
     gate,
     /const gateOwner = createImageGateRunOwner\(\)/,

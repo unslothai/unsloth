@@ -1280,6 +1280,21 @@ export const de = {
           wide: "Breit",
           full: "Volle Breite",
         },
+        composerAttachments: {
+          label: "Anhänge im Eingabefeld",
+          description:
+            "Große Karten, die das Eingabefeld vergrößern, oder eine kompakte Reihe von Kacheln.",
+          cards: "Große Karten",
+          compact: "Kompakte Kacheln",
+        },
+        sentAttachments: {
+          label: "Anhänge in gesendeten Nachrichten",
+          description:
+            "Eine Liste mit dem Typ jeder Datei oder kleine Chips. „Automatisch“ wechselt ab sieben Dateien zu Chips.",
+          auto: "Automatisch",
+          list: "Liste",
+          chips: "Chips",
+        },
         reset: "Zurücksetzen",
         resetAll: "Anpassungen zurücksetzen",
         preferencesTitle: "Weitere Optionen",

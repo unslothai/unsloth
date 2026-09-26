@@ -1237,6 +1237,21 @@ export const zhCN = {
           wide: "宽",
           full: "全宽",
         },
+        composerAttachments: {
+          label: "输入框中的附件",
+          description:
+            "使用会撑大输入框的大卡片，或紧凑的一行小图块。",
+          cards: "大卡片",
+          compact: "紧凑图块",
+        },
+        sentAttachments: {
+          label: "已发送消息中的附件",
+          description:
+            "显示各文件类型的列表，或小标签。超过六个文件时，“自动”会切换为小标签。",
+          auto: "自动",
+          list: "列表",
+          chips: "小标签",
+        },
         reset: "重置",
         resetAll: "重置自定义",
         preferencesTitle: "偏好设置",

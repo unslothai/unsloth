@@ -1236,6 +1236,21 @@ export const ja = {
           wide: "広い",
           full: "全幅",
         },
+        composerAttachments: {
+          label: "入力欄の添付ファイル",
+          description:
+            "入力欄を広げる大きなカード、またはコンパクトなタイルの列で表示します。",
+          cards: "大きなカード",
+          compact: "コンパクトなタイル",
+        },
+        sentAttachments: {
+          label: "送信済みメッセージの添付ファイル",
+          description:
+            "各ファイルの種類を示すリスト、または小さなチップで表示します。自動では 7 件以上でチップに切り替わります。",
+          auto: "自動",
+          list: "リスト",
+          chips: "チップ",
+        },
         reset: "リセット",
         resetAll: "カスタマイズをリセット",
         preferencesTitle: "環境設定",

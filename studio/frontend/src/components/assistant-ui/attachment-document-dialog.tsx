@@ -3,21 +3,121 @@
 
 "use client";
 
+import {
+  ATTACHMENT_PAGE_SCALES,
+  attachmentViewerMeta,
+} from "@/components/assistant-ui/attachment-viewer-meta";
 import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
 import { DocumentView, documentKind } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
-import { MediaViewer, ScaleMenu } from "@/components/media-viewer";
+import { type MediaViewerActions, MediaViewer, ScaleMenu } from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import { attachmentBodyText, fetchChatAttachmentBlob, truncateAttachmentPreviewText } from "@/features/chat";
-import { formatBytes } from "@/features/hub";
+import { startLibraryChat } from "@/features/library";
 import { useT } from "@/i18n";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { downloadFile } from "@/lib/native-files";
 import { useAuiState } from "@assistant-ui/react";
+import { useNavigate } from "@tanstack/react-router";
 import { Slot } from "radix-ui";
-import { type FC, type PropsWithChildren, useEffect, useRef, useState } from "react";
+import {
+  type FC,
+  type PropsWithChildren,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
-const SCALES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const MARKDOWN_NAME = /\.(md|markdown|mdx)$/i;
+
+/**
+ * Opens an attachment in the Library's viewer, as a click on its tile, row or chip. The header
+ * matches the Library's: name and subtitle, the page's own controls, "Chat about this" and a
+ * download. Only a sent attachment offers the chat: an unsent one is already in the chat it would
+ * open. `load` is read on click, so nothing is copied until the user asks for it.
+ */
+export const AttachmentViewer: FC<{
+  trigger: ReactNode;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  source: Pick<AttachmentSource, "name" | "contentType">;
+  meta: string;
+  media: boolean;
+  noun: "image" | "clip" | "file";
+  redactFromReload: boolean;
+  /** The attachment's bytes, for the download and the chat. Unset while they are not ready. */
+  load?: () => Promise<Blob>;
+  flush?: boolean;
+  extra?: ReactNode;
+  children: ReactNode;
+}> = ({
+  trigger,
+  open,
+  onOpenChange,
+  source,
+  meta,
+  media,
+  noun,
+  redactFromReload,
+  load,
+  flush = true,
+  extra,
+  children,
+}) => {
+  const t = useT();
+  const navigate = useNavigate();
+  const asFile = async () => {
+    const blob = await load!();
+    return new File([blob], source.name || "attachment", {
+      type: source.contentType || blob.type,
+    });
+  };
+  const actions: MediaViewerActions = {
+    primary:
+      load && !redactFromReload
+        ? {
+            label: t("library.menu.chatAboutThis"),
+            icon: MessageCircleIcon,
+            onClick: () =>
+              void asFile().then((file) => {
+                onOpenChange(false);
+                startLibraryChat(navigate, { files: [file] });
+              }),
+          }
+        : undefined,
+    onDownload: load
+      ? () =>
+          void load().then((blob) =>
+            downloadFile(blob, source.name || "attachment", source.contentType || undefined),
+          )
+      : undefined,
+  };
+  return (
+    <>
+      <Slot.Root
+        onClick={() => onOpenChange(true)}
+        className="aui-attachment-preview-trigger cursor-pointer transition-colors hover:bg-accent/50"
+      >
+        {trigger}
+      </Slot.Root>
+      <MediaViewer
+        open={open}
+        onOpenChange={onOpenChange}
+        title={source.name}
+        meta={meta}
+        media={media}
+        noun={noun}
+        flush={flush}
+        redactFromReload={redactFromReload}
+        extra={extra}
+        actions={actions}
+      >
+        {open && children}
+      </MediaViewer>
+    </>
+  );
+};
 
 /** `plain`: a sent document's stored text, shown when its original file is gone. `text` and `plain`
  *  are capped for rendering (`truncated`); `blob`, which a download saves, is whole. */
@@ -102,50 +202,27 @@ const DocumentDialog: FC<
   }, [open, loaded, markdown, textFallback]);
 
   const blob = loaded?.blob;
-  const meta = [
-    source.name.split(".").pop()?.toUpperCase(),
-    blob ? formatBytes(blob.size) : null,
-    loaded?.truncated ? "preview truncated" : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-
   return (
-    <>
-      <Slot.Root
-        onClick={() => setOpen(true)}
-        className="aui-attachment-preview-trigger cursor-pointer transition-colors hover:bg-accent/50"
-      >
-        {children}
-      </Slot.Root>
-      <MediaViewer
-        open={open}
-        onOpenChange={setOpen}
-        title={source.name}
-        meta={meta}
-        media={false}
-        noun="file"
-        flush={true}
-        redactFromReload={redactFromReload}
-        extra={
-          <ScaleMenu value={scale} scales={SCALES} onChange={(value) => setScale(Number(value))} />
-        }
-        actions={{
-          onDownload: blob
-            ? () => void downloadFile(blob, source.name, source.contentType || undefined)
-            : undefined,
-        }}
-      >
-        {open && (
-          <DocumentBody
-            name={source.name}
-            contentType={source.contentType}
-            loaded={loaded ?? {}}
-            scale={scale}
-          />
-        )}
-      </MediaViewer>
-    </>
+    <AttachmentViewer
+      trigger={children}
+      open={open}
+      onOpenChange={setOpen}
+      source={source}
+      meta={attachmentViewerMeta(source, blob?.size, loaded?.truncated && "preview truncated")}
+      media={false}
+      noun="file"
+      redactFromReload={redactFromReload}
+      load={blob ? () => Promise.resolve(blob) : undefined}
+      extra={
+        <ScaleMenu
+          value={scale}
+          scales={ATTACHMENT_PAGE_SCALES}
+          onChange={(value) => setScale(Number(value))}
+        />
+      }
+    >
+      <DocumentBody name={source.name} contentType={source.contentType} loaded={loaded ?? {}} scale={scale} />
+    </AttachmentViewer>
   );
 };
 

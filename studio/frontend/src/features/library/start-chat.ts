@@ -33,8 +33,13 @@ export function startLibraryChat(
 ): void {
   const nonce = createModelConfigHandoffRequestId();
   resetToNewChat();
-  useLibraryChatHandoffStore.getState().offer(`single:${nonce}`, handoff);
-  void navigate({ to: "/chat", search: { new: nonce } });
+  // Offered once the new chat is on screen: from inside a chat, the composer that is open until
+  // then is the old thread's, and an offer drained early would attach the files there.
+  void navigate({ to: "/chat", search: { new: nonce } }).then(() => {
+    requestAnimationFrame(() =>
+      useLibraryChatHandoffStore.getState().offer(`single:${nonce}`, handoff),
+    );
+  });
 }
 
 export const MAX_IMAGE_OR_TEXT_BYTES = 20 * 1024 * 1024;

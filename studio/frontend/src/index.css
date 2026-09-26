@@ -3593,6 +3593,27 @@ body.sidebar-row-dragging * {
 	background: oklch(0.67 0 0 / 0.5);
 }
 
+/* The composer's attachment strip scrolls sideways with no scrollbar, as the cards read as one
+   row. Unlayered like the rules above, which a utility class could not outrank. */
+.aui-composer-attachment-cards[data-layout="strip"] {
+	scrollbar-width: none;
+}
+
+.aui-composer-attachment-cards[data-layout="strip"]::-webkit-scrollbar {
+	display: none;
+}
+
+/* Collapsed to one row, the strip runs out to the composer's edges, as ChatGPT's does, with its
+   first card still lined up with the text until it is scrolled. The negative margin cancels the
+   surface's p-2.5; the clip keeps the cards inside its rounded top corners. */
+.unsloth-composer-surface .aui-composer-attachment-cards[data-layout="strip"] {
+	margin-inline: -0.625rem;
+	width: calc(100% + 1.25rem);
+	padding-inline: 1rem;
+	scroll-padding-inline: 1rem;
+	clip-path: inset(-0.625rem 0 0 0 round 28px 28px 0 0);
+}
+
 /* Avoid iOS Safari focus zoom. Important in the base layer, because an important
    declaration in an earlier layer beats important utilities such as text-ui-13!. */
 @layer base {

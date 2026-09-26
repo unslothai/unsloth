@@ -3,7 +3,7 @@
 
 export { useLibraryChatHandoffStore } from "./chat-handoff-store";
 export { useLibraryFavorites } from "./favorites-store";
-export { chatAboutMedia } from "./start-chat";
+export { chatAboutMedia, startLibraryChat } from "./start-chat";
 export { revealInFolder, useRevealLabel } from "./reveal";
 export { LIBRARY_TABS, validateLibrarySearch, type LibrarySearch, type LibraryTab } from "./search";
 export {

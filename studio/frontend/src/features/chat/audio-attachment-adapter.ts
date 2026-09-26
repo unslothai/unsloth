@@ -24,8 +24,9 @@ function newAttachmentId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-// Audio shares the "Add photos & files" picker. Like VisionImageAdapter, unsupported models are
-// rejected at add() time with a toast.
+// Audio shares the "Add photos & files" picker. Like VisionImageAdapter, a loaded model that
+// cannot take audio is rejected at add() time with a toast. With no model loaded yet the file
+// waits in the composer, and the send path checks it against whichever model is loaded by then.
 export class AudioAttachmentAdapter implements AttachmentAdapter {
   // MIME is unreliable for some containers (m4a), so also match by extension. No .webm extension:
   // it would claim video/webm files; real audio webm (MediaRecorder) always reports the audio/webm
@@ -40,12 +41,7 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
     const activeModel = state.models.find((m) => m.id === checkpoint);
     const modelLoaded = !!checkpoint && !state.modelLoading;
     let unavailableReason: string | null = null;
-    if (!modelLoaded) {
-      // Mirror the image gate: flag a failed load vs "no model picked".
-      unavailableReason = state.lastModelLoadError
-        ? "The last model failed to load. Check the server logs, then load a model before adding audio files."
-        : "Load a model before adding audio files.";
-    } else if (!activeModel?.hasAudioInput) {
+    if (modelLoaded && !activeModel?.hasAudioInput) {
       // A connected provider's model has no row in `models`, so without the parse this named it by its
       // raw `external::` id (#8405).
       const label =
