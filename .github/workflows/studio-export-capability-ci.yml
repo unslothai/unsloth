@@ -26,6 +26,25 @@ on:
       - '.github/actions/pip-cache-save/action.yml'
       - 'studio/backend/utils/hardware/**'
       - '.github/workflows/studio-export-capability-ci.yml'
+      # The test imports core.export.export under pytest in studio/backend, so
+      # collection loads studio/backend/tests/conftest.py (which execs
+      # tests/_shared/compile_cache_isolation.py and imports loggers) and the pytest
+      # config in pyproject.toml, and export.py imports these packages at module scope.
+      # A new top-level torch import in any of them is what this Windows lane exists to
+      # catch.
+      - 'studio/backend/tests/conftest.py'
+      - 'tests/_shared/compile_cache_isolation.py'
+      - 'studio/backend/loggers/**'
+      - 'pyproject.toml'
+      - 'studio/backend/core/__init__.py'
+      - 'studio/backend/core/export/__init__.py'
+      - 'studio/backend/core/inference/__init__.py'
+      - 'studio/backend/hub/__init__.py'
+      - 'studio/backend/hub/utils/__init__.py'
+      - 'studio/backend/hub/utils/hf_tokens.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/models/**'
+      - 'studio/backend/utils/paths/**'
   push:
     branches: [main]
     paths:
@@ -37,6 +56,25 @@ on:
       - '.github/actions/pip-cache-save/action.yml'
       - 'studio/backend/utils/hardware/**'
       - '.github/workflows/studio-export-capability-ci.yml'
+      # The test imports core.export.export under pytest in studio/backend, so
+      # collection loads studio/backend/tests/conftest.py (which execs
+      # tests/_shared/compile_cache_isolation.py and imports loggers) and the pytest
+      # config in pyproject.toml, and export.py imports these packages at module scope.
+      # A new top-level torch import in any of them is what this Windows lane exists to
+      # catch.
+      - 'studio/backend/tests/conftest.py'
+      - 'tests/_shared/compile_cache_isolation.py'
+      - 'studio/backend/loggers/**'
+      - 'pyproject.toml'
+      - 'studio/backend/core/__init__.py'
+      - 'studio/backend/core/export/__init__.py'
+      - 'studio/backend/core/inference/__init__.py'
+      - 'studio/backend/hub/__init__.py'
+      - 'studio/backend/hub/utils/__init__.py'
+      - 'studio/backend/hub/utils/hf_tokens.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/models/**'
+      - 'studio/backend/utils/paths/**'
   workflow_dispatch:
 
 concurrency:

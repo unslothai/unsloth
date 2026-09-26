@@ -30,6 +30,9 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - '.github/workflows/wheel-smoke.yml'
+      # The first gating step runs this auditor, so an edit to it changes what this
+      # workflow runs.
+      - 'scripts/lockfile_supply_chain_audit.py'
   push:
     branches: [main]
     paths:
@@ -40,6 +43,9 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - '.github/workflows/wheel-smoke.yml'
+      # The first gating step runs this auditor, so an edit to it changes what this
+      # workflow runs.
+      - 'scripts/lockfile_supply_chain_audit.py'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}

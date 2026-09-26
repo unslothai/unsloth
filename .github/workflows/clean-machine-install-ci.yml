@@ -77,6 +77,25 @@ on:
       - '.github/scripts/select_install_matrix.py'
       - '.github/ci/clean-machine-matrix.yml'
       - '.github/workflows/clean-machine-install-ci.yml'
+      # The overlay legs run this ref's setup, which builds the frontend and runs npm
+      # install for the OXC validator on a toolchain-stripped host, so their manifests
+      # and lockfiles can change the no-build and no-toolchain verdicts. setup.sh runs
+      # nvidia_probe.py, and install_llama_prebuilt.py imports
+      # backend.utils.prebuilt.llama_backend and (through prebuilt_core.py)
+      # backend.utils.auth_safe and the vendored truststore, which decide the bundle
+      # assert-llama-loads.sh checks.
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'studio/frontend/.npmrc'
+      - 'studio/backend/core/data_recipe/oxc-validator/package.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/nvidia_probe.py'
+      - 'studio/backend/__init__.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/backend/vendor/truststore/**'
   push:
     branches: [main]
     # Same list as the PR filter: without it a direct push to main touching any of
@@ -102,6 +121,25 @@ on:
       - '.github/scripts/select_install_matrix.py'
       - '.github/ci/clean-machine-matrix.yml'
       - '.github/workflows/clean-machine-install-ci.yml'
+      # The overlay legs run this ref's setup, which builds the frontend and runs npm
+      # install for the OXC validator on a toolchain-stripped host, so their manifests
+      # and lockfiles can change the no-build and no-toolchain verdicts. setup.sh runs
+      # nvidia_probe.py, and install_llama_prebuilt.py imports
+      # backend.utils.prebuilt.llama_backend and (through prebuilt_core.py)
+      # backend.utils.auth_safe and the vendored truststore, which decide the bundle
+      # assert-llama-loads.sh checks.
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'studio/frontend/.npmrc'
+      - 'studio/backend/core/data_recipe/oxc-validator/package.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/nvidia_probe.py'
+      - 'studio/backend/__init__.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/backend/vendor/truststore/**'
   schedule:
     # Nightly, all 20 legs, on this ref's installers: `inputs.installer_source` is empty
     # on schedule exactly as on pull_request and push, so the tree is under test.

@@ -75,6 +75,17 @@ on:
       - 'studio/src-tauri/Cargo.toml'
       - 'scripts/scan_packages.py'
       - 'scripts/scan_packages_baseline.json'
+      # Gating steps run these scripts and read these inputs on a pull request:
+      # advisory-audit runs lockfile_supply_chain_audit.py, which reads every lockfile
+      # in its DEFAULT_NPM_LOCKFILES and DEFAULT_CARGO_LOCKFILES; npm-scan-packages runs
+      # scan_npm_packages.py against its baseline with SCAN_ENFORCE=1; and
+      # npm-provenance-and-install-scripts runs check_new_install_scripts.py.
+      - 'scripts/lockfile_supply_chain_audit.py'
+      - 'studio/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'scripts/scan_npm_packages.py'
+      - 'scripts/scan_npm_packages_baseline.json'
+      - 'scripts/check_new_install_scripts.py'
       - 'tests/security/**'
       # The production code the security suites protect. Without these, a PR touching
       # only `loader_utils.py` skipped this job entirely - the always-running light

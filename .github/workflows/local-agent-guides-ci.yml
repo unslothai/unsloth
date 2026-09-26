@@ -60,6 +60,18 @@ on:
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
+      # Every connection cell installs through install-unsloth-local, and install.sh
+      # --local hands off to studio/setup.sh, which runs the installer modules below.
+      # They pick the llama-server binary that serve-unsloth-run.sh and
+      # assert-prompt-cache.sh measure; pyproject.toml and the backend requirements
+      # decide what is installed.
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'pyproject.toml'
+      - 'studio/backend/requirements/**'
       - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
@@ -90,6 +102,18 @@ on:
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
+      # Every connection cell installs through install-unsloth-local, and install.sh
+      # --local hands off to studio/setup.sh, which runs the installer modules below.
+      # They pick the llama-server binary that serve-unsloth-run.sh and
+      # assert-prompt-cache.sh measure; pyproject.toml and the backend requirements
+      # decide what is installed.
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'pyproject.toml'
+      - 'studio/backend/requirements/**'
       - '.github/scripts/retry-with-apt-lock.sh'
       - '.github/actions/install-unsloth-local/action.yml'
       # Reached through install-unsloth-local, which uses the dist and uv cache pairs.

@@ -49,6 +49,13 @@ on:
       - '.github/scripts/select_install_matrix.py'
       - '.github/ci/interrupted-install-matrix.yml'
       - '.github/workflows/interrupted-install-ci.yml'
+      # interrupted_install_probe.py runs this checkout's CLI (unsloth -h, studio
+      # desktop-capabilities, verify-install, desktop-runtime-check).
+      # unsloth_cli/__init__.py imports every command module, and the ready or stale
+      # verdict is computed in _studio_runtime_gate.py, _studio_stage.py and
+      # _system_dir_guard.py.
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
       - '.github/scripts/retry-with-apt-lock.sh'
   # Every push to main that touches an installer runs the full set, so a merge is
   # covered at merge time and not only by the nightly.
@@ -71,6 +78,13 @@ on:
       - '.github/scripts/select_install_matrix.py'
       - '.github/ci/interrupted-install-matrix.yml'
       - '.github/workflows/interrupted-install-ci.yml'
+      # interrupted_install_probe.py runs this checkout's CLI (unsloth -h, studio
+      # desktop-capabilities, verify-install, desktop-runtime-check).
+      # unsloth_cli/__init__.py imports every command module, and the ready or stale
+      # verdict is computed in _studio_runtime_gate.py, _studio_stage.py and
+      # _system_dir_guard.py.
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
       - '.github/scripts/retry-with-apt-lock.sh'
   schedule:
     # Nightly, all 10 legs. Offset from clean-machine-install-ci.yml's 09:23 so the two

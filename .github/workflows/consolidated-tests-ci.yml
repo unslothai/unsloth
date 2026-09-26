@@ -57,6 +57,17 @@ on:
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
+      # tests/test_callback_signature_drift.py (a hard gate in the consolidated job)
+      # parses every .py file in the repo outside dot-directories and frontend/, so a
+      # Python file anywhere can change its verdict, not only the ones under the source
+      # trees above.
+      - '*.py'
+      - 'scripts/**/*.py'
+      - 'docker/**/*.py'
+      # Every job here `uses:` the pip cache pair, so an edit to either action changes
+      # what it runs.
+      - '.github/actions/pip-cache-restore/**'
+      - '.github/actions/pip-cache-save/**'
       - '.github/scripts/retry-with-apt-lock.sh'
       # Both Core jobs `uses:` this action, so a change to it must run them.
       - '.github/actions/core-cpu-setup/**'
@@ -70,6 +81,17 @@ on:
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
+      # tests/test_callback_signature_drift.py (a hard gate in the consolidated job)
+      # parses every .py file in the repo outside dot-directories and frontend/, so a
+      # Python file anywhere can change its verdict, not only the ones under the source
+      # trees above.
+      - '*.py'
+      - 'scripts/**/*.py'
+      - 'docker/**/*.py'
+      # Every job here `uses:` the pip cache pair, so an edit to either action changes
+      # what it runs.
+      - '.github/actions/pip-cache-restore/**'
+      - '.github/actions/pip-cache-save/**'
       - '.github/scripts/retry-with-apt-lock.sh'
       # Both Core jobs `uses:` this action, so a change to it must run them.
       - '.github/actions/core-cpu-setup/**'

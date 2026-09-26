@@ -47,6 +47,8 @@ on:
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
+      # setup.sh runs nvidia_probe.py on every install, macOS included.
+      - 'studio/nvidia_probe.py'
       - 'scripts/lockfile_supply_chain_audit.py'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
@@ -96,6 +98,8 @@ on:
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
+      # setup.sh runs nvidia_probe.py on every install, macOS included.
+      - 'studio/nvidia_probe.py'
       - 'scripts/lockfile_supply_chain_audit.py'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
