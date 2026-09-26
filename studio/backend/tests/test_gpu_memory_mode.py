@@ -1280,7 +1280,7 @@ def test_zero_offload_flag_false_without_companions():
 
 @pytest.mark.parametrize(
     "companion",
-    ["--mmproj", "--model-draft", "-md", "--spec-draft-model", "-hfd"],
+    ["--mmproj", "-mm", "--model-draft", "-md", "--spec-draft-model", "-hfd"],
 )
 def test_zero_offload_flag_true_with_companion(companion):
     # mmproj / a drafter offload to GPU regardless of --gpu-layers, so the

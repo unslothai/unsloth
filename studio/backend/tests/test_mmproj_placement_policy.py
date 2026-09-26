@@ -16,6 +16,7 @@ import inspect
 import os
 import struct
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1631,3 +1632,129 @@ def test_an_unloadable_drafter_is_not_charged_before_it_is_dropped(tmp_path):
     assert "--model-draft" not in cmd
     assert "--no-mmproj-offload" not in cmd
     assert backend.mtp_draft_suppressed_path == str(tmp_path / "mtp.gguf")
+
+
+@pytest.mark.parametrize("flag", ["--mmproj", "-mm"])
+@pytest.mark.parametrize("vision_off", [False, True])
+def test_custom_projector_replaces_discovery_and_respects_vision_switch(tmp_path, flag, vision_off):
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    backend._resolve_launch_mmproj_path = LlamaCppBackend._resolve_launch_mmproj_path.__get__(
+        backend
+    )
+    gguf = gguf.rename(tmp_path / "Qwen-model.gguf")
+    custom = _write_gguf(tmp_path / "gemma-custom projector.gguf")
+    seen = []
+    backend._mmproj_vram_bytes = lambda path: seen.append(path) or GIB
+    cmd = _launch(
+        backend,
+        gguf,
+        is_vision = False,
+        disable_vision = vision_off,
+        extra_args = [flag, str(custom)],
+    )["cmd"]
+    if vision_off:
+        assert "--mmproj" not in cmd and "-mm" not in cmd
+    else:
+        assert cmd.count("--mmproj") == 1
+        assert cmd[cmd.index("--mmproj") + 1] == str(custom)
+        assert str(custom) in seen
+
+
+def test_vision_off_still_charges_a_custom_audio_only_projector(tmp_path, monkeypatch):
+    model = _write_gguf(tmp_path / "model.gguf")
+    custom = _write_gguf(tmp_path / "custom-audio.gguf")
+    monkeypatch.setattr(_meta, "mmproj_accepts_image", lambda _path: False)
+    config = SimpleNamespace(
+        gguf_file = str(model),
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = None,
+        gguf_variant = None,
+        is_vision = False,
+    )
+    enabled = _estimate_gguf_required_gb(config, llama_extra_args = ["--mmproj", str(custom)])
+    disabled = _estimate_gguf_required_gb(
+        config,
+        llama_extra_args = ["--mmproj", str(custom)],
+        disable_vision = True,
+    )
+    assert enabled == disabled
+
+
+@pytest.mark.parametrize("vision_off", [False, True])
+def test_custom_projector_does_not_hide_remote_model_bytes(tmp_path, monkeypatch, vision_off):
+    import routes.inference as routes
+    import utils.models.model_config as model_config
+
+    custom = _write_gguf(tmp_path / "custom-vision.gguf")
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = "org/vision-GGUF",
+        gguf_variant = "Q4_K_M",
+        is_vision = True,
+    )
+    monkeypatch.setattr(
+        model_config,
+        "list_gguf_variants",
+        lambda *_a, **_kw: (
+            [SimpleNamespace(quant = "Q4_K_M", size_bytes = 4 * GIB)],
+            True,
+        ),
+    )
+    seen = []
+    monkeypatch.setattr(
+        routes, "_remote_gguf_companion_bytes", lambda *_a, **kw: seen.append(kw) or 0
+    )
+    monkeypatch.setattr(routes, "_remote_gguf_compute_reserve_gb", lambda **_kw: 0)
+    result = _estimate_gguf_required_gb(
+        config,
+        llama_extra_args = ["--mmproj", str(custom)],
+        disable_vision = vision_off,
+        speculative_type = "off",
+    )
+    expected = 4 * GIB + (0 if vision_off else custom.stat().st_size)
+    assert result * GIB == expected
+    assert seen[0]["include_mmproj"] is False
+
+
+def test_missing_custom_projector_is_rejected_before_unloading(tmp_path, monkeypatch):
+    backend = LlamaCppBackend()
+    unloaded = []
+    monkeypatch.setattr(backend, "unload_model", lambda: unloaded.append(True))
+    with pytest.raises(ValueError, match = "custom mmproj path"):
+        backend.load_model(
+            GgufLoadIntent(
+                model_identifier = "test",
+                gguf_path = str(tmp_path / "model.gguf"),
+                extra_args = ("--mmproj", str(tmp_path / "missing.gguf")),
+            )
+        )
+    assert unloaded == []
+
+
+@pytest.mark.parametrize("flag", ["--mmproj", "-mm"])
+def test_hub_load_rechecks_custom_projector_replaced_in_place(tmp_path, flag):
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    backend._resolve_launch_mmproj_path = LlamaCppBackend._resolve_launch_mmproj_path.__get__(
+        backend
+    )
+    custom = _write_gguf(tmp_path / "custom-projector.gguf")
+    _launch(backend, gguf, is_vision = False, extra_args = [flag, str(custom)])
+    backend._hf_variant = "Q4_K_M"
+    intent = GgufLoadIntent(
+        model_identifier = "test",
+        hf_repo = "org/model",
+        hf_variant = "Q4_K_M",
+        extra_args = (flag, str(custom)),
+    )
+    assert backend.matches_load_source(intent)
+    assert not backend.matches_load_source(replace(intent, hf_variant = "Q8_0"))
+    replacement = _write_gguf(tmp_path / "replacement.gguf")
+    replacement.replace(custom)
+    assert not backend.matches_load_source(intent)

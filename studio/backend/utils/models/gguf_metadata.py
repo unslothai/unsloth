@@ -1009,6 +1009,30 @@ def _weight_url_looks_like_derivative_of_projector(weight_url: str, projector_ur
     return _slug_extends_base(weight_slug, projector_slug)
 
 
+def mmproj_functional_match(weight_path: str, mmproj_path: str) -> tuple[Optional[bool], str]:
+    """Check Gemma 4 projector architecture and dimensions independently of model branding.
+
+    Other architectures retain identity pairing until their projector layout is known.
+    A matching header is a discovery hint; llama.cpp validates the actual tensors.
+    """
+    if read_gguf_architecture(weight_path) != "gemma4":
+        return None, ""
+    projector_type = read_mmproj_vision_projector_type(mmproj_path)
+    if projector_type != "gemma4v":
+        return None, ""
+    embedding_length = read_gguf_embedding_length(weight_path)
+    dims = _parse_gguf_arch_uints(mmproj_path, frozenset({"vision.projection_dim"})) or {}
+    projection_dim = dims.get("vision.projection_dim")
+    if not embedding_length or not projection_dim:
+        return None, ""
+    if embedding_length != projection_dim:
+        return False, (
+            f"gemma4.embedding_length {embedding_length} != "
+            f"clip.vision.projection_dim {projection_dim}"
+        )
+    return True, ""
+
+
 def pairing_score(
     weight_meta: Optional[Dict[str, str]], mmproj_meta: Optional[Dict[str, str]]
 ) -> int:

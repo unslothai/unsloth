@@ -44,6 +44,7 @@ from utils.models.gguf_metadata import (
     is_mmproj_by_metadata,
     mmproj_accepts_image,
     pairing_score,
+    mmproj_functional_match,
     read_gguf_general_metadata,
     read_gguf_nextn_predict_layers,
 )
@@ -1897,8 +1898,10 @@ def _detect_family_token(filename: str) -> Optional[str]:
 
 
 def mmproj_matches_model_family(model_path: str, mmproj_path: str) -> bool:
-    """Launcher guard: True unless both filenames carry recognised family
-    tokens that disagree."""
+    """Prefer known functional metadata, falling back to filename family hints."""
+    functional_match, _ = mmproj_functional_match(model_path, mmproj_path)
+    if functional_match is not None:
+        return functional_match
     model_fam = _detect_family_token(Path(model_path).name)
     mmproj_fam = _detect_family_token(Path(mmproj_path).name)
     if model_fam is None or mmproj_fam is None:
@@ -2156,8 +2159,24 @@ def detect_mmproj_file(
     for c in candidates:
         cand_meta = read_gguf_general_metadata(str(c))
         meta_score = pairing_score(weight_meta, cand_meta)
+        functional_match, mismatch = mmproj_functional_match(str(p), str(c))
+        if functional_match is False:
+            logger.info(f"detect_mmproj_file: dropped {c.name} ({mismatch})")
+            continue
+        if functional_match is True:
+            meta_score = max(meta_score, 50)
         if meta_score == -1:
-            logger.info(f"detect_mmproj_file: dropped {c.name} (metadata mismatch)")
+            differences = "; ".join(
+                f"{key} {weight_meta.get(key)!r} != {cand_meta.get(key)!r}"
+                for key in (
+                    "general.base_model.0.repo_url",
+                    "general.basename",
+                    "general.base_model.0.organization",
+                    "general.organization",
+                )
+                if weight_meta.get(key) != cand_meta.get(key)
+            )
+            logger.info(f"detect_mmproj_file: dropped {c.name} (metadata mismatch: {differences})")
             continue
         if meta_score == 0 and model_family is not None:
             # Unrecognised candidate family is a wildcard (``mmproj-F16.gguf``).
