@@ -82,6 +82,8 @@ def enable_fp16_vae_decode(
         vae is None
         or getattr(pipe, "unet", None) is None
         or getattr(target, "device", None) != "cuda"
+        # Measured on NVIDIA only; ROCm keeps the fp32 upcast.
+        or getattr(target, "backend", "cuda") != "cuda"
     ):
         return False
     if getattr(vae, "_unsloth_fp16_decode", False):

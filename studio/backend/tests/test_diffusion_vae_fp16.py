@@ -106,6 +106,7 @@ def test_non_finite_decode_reruns_fp32_and_stays_there(monkeypatch, caplog):
     [
         "no_unet",
         "not_cuda",
+        "rocm",
         "bf16",
         "fp32",
         "no_force_upcast",
@@ -122,7 +123,10 @@ def test_declines_and_leaves_the_vae_untouched(case):
     if case == "other_class":
         vae.__class__ = type("AutoencoderKLOther", (type(vae),), {})
     before = {k: v.clone() for k, v in vae.state_dict().items()}
-    target = types.SimpleNamespace(device = "mps") if case == "not_cuda" else CUDA
+    target = {
+        "not_cuda": types.SimpleNamespace(device = "mps"),
+        "rocm": types.SimpleNamespace(device = "cuda", backend = "rocm"),
+    }.get(case, CUDA)
     assert vf.enable_fp16_vae_decode(_pipe(vae, unet = case != "no_unet"), target) is False
     assert all(torch.equal(before[k], v) for k, v in vae.state_dict().items())
     assert vae.config.force_upcast is (case != "no_force_upcast")
