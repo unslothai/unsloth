@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import functools
 import importlib.util
 import json
@@ -1571,7 +1572,7 @@ def test_events_are_scoped_by_the_evaluated_file_not_the_requesting_process():
     _has(
         shaped,
         "foreach ($field in @('File Name', 'FileNameBuffer'))",
-        'if ($subject -like "*$tail*")',
+        'if ($subject -like "*$tail*" -or',
         'elseif ($subject -like "*$venvTail*")',
         "$subject = $msg",
         "EventData   = $data",
@@ -1993,6 +1994,7 @@ def _drive_stages(tmp_path, body):
         "Test-PolicyActive",
         "Get-PendingEntry",
         "Get-UnrevertedLabel",
+        "Assert-BaselineIsThisMachine",
         "Invoke-Prepare",
         "Invoke-Revert",
     ]
@@ -2042,7 +2044,7 @@ exit 0
 
 def test_collect_refuses_a_reverted_label_and_a_window_older_than_its_baseline(tmp_path):
     """After revert the audit-policy flag reads false and the log runs past the run; a window older than the baseline was an earlier run's."""
-    names = ["Get-RunDir", "Save-ProbeBaseline", "Read-SettledCiEvents", "Invoke-Collect"]
+    names = ["Get-RunDir", "Save-ProbeBaseline", "Read-SettledCiEvents", "Assert-BaselineIsThisMachine", "Invoke-Collect"]
     body = r"""
 $WorkDir = $Work; $Label = 'cell'; $CI_EVENT_IDS = @(3076, 3077)
 function Assert-Elevated { }
@@ -2063,6 +2065,40 @@ try { Invoke-Collect; exit 105 } catch { if ("$_" -notlike '*PAST-GUARD*') { Wri
 exit 0
 """
     _drive(tmp_path, names, body, Work = tmp_path)
+
+
+def test_no_stage_uses_a_baseline_prepared_on_another_machine(tmp_path):
+    """A roaming or shared -WorkDir carried machine A's unspent baseline, and revert wrote A's settings onto B."""
+    _drive_stages(
+        tmp_path,
+        r"""
+function Get-RollbackPolicyPath { throw 'PAST-GUARD' }
+$env:COMPUTERNAME = 'HOST-B'
+New-Item -ItemType Directory -Force -Path (Join-Path $Work 'A') | Out-Null
+Save-ProbeBaseline ([pscustomobject]@{ ComputerName = 'HOST-A'; AuditPolicyApplied = $true; RevertCompletedAt = $null }) (Join-Path $Work 'A/baseline.json')
+$Label = 'A'
+try { Invoke-Revert; exit 111 } catch { if ("$_" -notlike "*prepared on HOST-A, not HOST-B*") { Write-Host "$_"; exit 112 } }
+function Get-RollbackPolicyPath { Join-Path $Work 'rollback.cip' }
+try { Invoke-Prepare; exit 113 } catch { if ("$_" -notlike "*prepared on HOST-A, not HOST-B*") { Write-Host "$_"; exit 114 } }
+# Control: the same baseline on its own machine gets past the guard.
+function Get-RollbackPolicyPath { throw 'PAST-GUARD' }
+$env:COMPUTERNAME = 'HOST-A'
+try { Invoke-Revert } catch { if ("$_" -ne 'PAST-GUARD') { Write-Host "$_"; exit 115 } }
+exit 0
+""",
+    )
+
+
+def test_studios_cpu_fallback_runtime_is_scoped_as_llama_cpp():
+    """A crashed Vulkan launch reruns from a staged CPU copy under <studio home>\\runtime\\llama-cpu-*, whose 3076s read as 'other'."""
+    shaped = _cut(_collect(), "$tail = Get-ScopeTail", "$scopeByActivity = @{}")
+    _has(
+        shaped,
+        "$cpuTail = (Get-ScopeTail (Join-Path $cpuHome 'runtime')) + 'llama-cpu-*\\'",
+        'if ($subject -like "*$tail*" -or $subject -like "*$cpuTail*")',
+    )
+    tail = "\\Users\\u\\.unsloth\\studio\\runtime\\" + "llama-cpu-*\\"
+    assert fnmatch.fnmatchcase("C:\\Users\\u\\.unsloth\\studio\\runtime\\llama-cpu-ab12\\ggml-cpu.dll", "*" + tail + "*")
 
 
 def test_revert_keeps_the_baseline_pending_while_the_policy_is_still_active(tmp_path):
@@ -2171,6 +2207,7 @@ def test_revert_keeps_the_baseline_pending_when_the_policy_list_is_unreadable(tm
         "Test-PolicyActive",
         "Get-SacState",
         "Get-PendingEntry",
+        "Assert-BaselineIsThisMachine",
         "Invoke-Revert",
     ]
     body = r"""

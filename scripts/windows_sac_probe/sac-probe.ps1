@@ -625,6 +625,13 @@ function Save-ProbeBaseline($Baseline, [string] $Path) {
     }
 }
 
+# A -WorkDir on roaming or shared storage can carry another machine's baseline; its settings are not this machine's.
+function Assert-BaselineIsThisMachine($Baseline) {
+    if ($Baseline -and $Baseline.ComputerName -and $Baseline.ComputerName -ne $env:COMPUTERNAME) {
+        throw "label '$Label' was prepared on $($Baseline.ComputerName), not $($env:COMPUTERNAME); its baseline describes that machine, so no stage uses it here. Use a -WorkDir local to this machine, or a new -Label."
+    }
+}
+
 function Test-EventFromPolicy($record, [string] $Guid, [string] $NamePattern = '*AuditNoISG*') {
     return (Test-EventDataFromPolicy (Get-EventDataMap $record) $Guid $NamePattern)
 }
@@ -733,6 +740,7 @@ function Invoke-Prepare {
     $previous = $null
     if (Test-Path -LiteralPath $baselinePath) {
         $previous = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+        Assert-BaselineIsThisMachine $previous
     }
     if ($previous -and -not $previous.RevertCompletedAt) {
         # A retry of this label whose changes are still on the machine.
@@ -1019,6 +1027,7 @@ function Invoke-Run {
     $runBaselinePath = Join-Path $dir 'baseline.json'
     if (Test-Path -LiteralPath $runBaselinePath) {
         $runBaseline = Get-Content -LiteralPath $runBaselinePath -Raw | ConvertFrom-Json
+        Assert-BaselineIsThisMachine $runBaseline
         # A label whose revert already completed.
         if ($runBaseline.RevertCompletedAt) {
             throw "label '$Label' was reverted at $($runBaseline.RevertCompletedAt), so its baseline is spent and the event window on disk belongs to the run that was undone. Running now would file events from that window against this run's inventory. Run prepare for this label again (or use a new -Label) first."
@@ -1243,6 +1252,7 @@ function Invoke-Collect {
     $collectBaselinePath = Join-Path $dir 'baseline.json'
     if (Test-Path -LiteralPath $collectBaselinePath) {
         $collectBaseline = Get-Content -LiteralPath $collectBaselinePath -Raw | ConvertFrom-Json
+        Assert-BaselineIsThisMachine $collectBaseline
         if ($collectBaseline.RevertCompletedAt) {
             throw "label '$Label' was reverted at $($collectBaseline.RevertCompletedAt); collect runs before revert, since revert clears the audit-policy state collect attributes events by and the log keeps growing past the run. Run prepare, run and collect for this label again."
         }
@@ -1270,6 +1280,10 @@ function Invoke-Collect {
 
     $tail = Get-ScopeTail (Resolve-LlamaDir $dir)
     $venvTail = Get-ScopeTail (Resolve-VenvDir $dir)
+    # Studio's CPU fallback copy of the runtime (llama_cpp.py: _swa_cache_path().parent\runtime\llama-cpu-*)
+    $cpuHome = Get-StudioHomeOverride
+    if (-not $cpuHome) { $cpuHome = Join-Path $env:USERPROFILE '.unsloth\studio' }
+    $cpuTail = (Get-ScopeTail (Join-Path $cpuHome 'runtime')) + 'llama-cpu-*\'
     $shaped = @($events | ForEach-Object {
         $msg = $_.Message
         $data = Get-EventDataMap $_
@@ -1279,7 +1293,7 @@ function Invoke-Collect {
             if ($data.Contains($field) -and $data[$field]) { $subject = [string]$data[$field]; break }
         }
         $scope =
-            if ($subject -like "*$tail*") { 'llama.cpp' }
+            if ($subject -like "*$tail*" -or $subject -like "*$cpuTail*") { 'llama.cpp' }
             elseif ($subject -like "*$venvTail*") { 'venv' }
             else { 'other' }
         [pscustomobject]@{
@@ -1533,6 +1547,7 @@ function Invoke-Revert {
         throw "no baseline at $baselinePath; nothing to revert to. Was -Label $Label used for prepare?"
     }
     $baseline = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+    Assert-BaselineIsThisMachine $baseline
     $ROLLBACK_POLICY = Get-RollbackPolicyPath $dir
 
     Clear-EfiOwnership
