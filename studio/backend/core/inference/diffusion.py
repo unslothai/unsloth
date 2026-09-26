@@ -6674,7 +6674,7 @@ class DiffusionBackend:
             device,
             effective_policy,
             effective_tiling,
-            format_resolved_for_log(self._state.resolved if self._state is not None else None),
+            format_resolved_for_log(state.resolved),
             "; ".join(plan.reasons),
             plan.estimates,
         )
