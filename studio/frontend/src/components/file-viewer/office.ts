@@ -495,7 +495,7 @@ export function formatNumber(value: number, rawCode: string | undefined, date190
   const sections = splitSections(rawCode);
   const { index, sign } = pickSection(value, sections);
   const { tagged, code, kind, percent, scale } = readSection(sections[index] ?? rawCode);
-  if (kind === "elapsed") return formatElapsed(value, tagged);
+  if (kind === "elapsed") return `${sign}${formatElapsed(Math.abs(value), tagged)}`;
   if (kind === "date") return formatDate(date1904 ? value + 1462 : value, tagged);
   // No digit placeholders: literal text, with the value wherever "General" stands.
   if (kind === "literal") return `${sign}${code.replace(/general/i, generalText(Math.abs(value)))}`.trim();
@@ -942,6 +942,8 @@ export interface Deck {
   /** Slide width in points, so a run's size can be scaled with the slide. */
   widthPt: number;
   slides: Slide[];
+  /** Slides past MAX_SLIDES were left out. */
+  truncated?: boolean;
 }
 
 const IMAGE_TYPES: Record<string, string> = {
@@ -962,6 +964,10 @@ const imageType = (path: string) => {
 // A chart shown as a table, capped so a chart of many long series stays a readable size.
 const MAX_CHART_SERIES = 100;
 const MAX_CHART_CELLS = 5000;
+
+// Slides read: each is kept as boxes once parsed.
+const MAX_SLIDES = 500;
+const HIDDEN_SLIDE = /<(?:[\w.-]+:)?sld\b[^>]*\sshow\s*=\s*["'](?:0|false)["']/;
 
 // Paragraphs, table cells and pictures on one slide, all of which it mounts at once.
 const MAX_SLIDE_ITEMS = 10_000;
@@ -1077,12 +1083,13 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   const slidePaths = all(presentation, "sldId").map((id) => rels.get(relId(id, "id") ?? ""));
   const wanted = new Set(slidePaths.flatMap((path) => (path ? [path, relsPath(path)] : [])));
   const slideFiles = read((name) => wanted.has(name));
-  // A hidden slide is left out of the show, so out of the viewer and the model's text too.
-  const visible = slidePaths.flatMap((path) => {
-    const doc = path ? xml(slideFiles, path) : null;
-    if (!path || !doc || ["0", "false"].includes(doc.documentElement.getAttribute("show") ?? "")) return [];
-    return [{ doc, rels: relationshipList(slideFiles, path) }];
-  });
+  // A hidden slide is left out of the show, so out of the viewer and the model's text too. Read
+  // from the root tag, so each slide is parsed only when its turn comes.
+  const shown = slidePaths.filter(
+    (path): path is string =>
+      Boolean(path && slideFiles[path]) && !HIDDEN_SLIDE.test(strFromU8(slideFiles[path!]!.subarray(0, 16384))),
+  );
+  const visible = shown.slice(0, MAX_SLIDES).map((path) => ({ path, rels: relationshipList(slideFiles, path) }));
   const used = new Set(
     visible.flatMap((slide) =>
       slide.rels
@@ -1094,7 +1101,10 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   const slides: Slide[] = [];
   // One Blob per picture, however many slides use it.
   const pictures = new Map<string, Blob>();
-  for (const { doc, rels: slideRelList } of visible) {
+  for (const { path, rels: slideRelList } of visible) {
+    const doc = xml(slideFiles, path);
+    delete slideFiles[path];
+    if (!doc) continue;
     const slideRels = new Map(slideRelList.map((rel) => [rel.id, rel.path]));
     const boxes: SlideBox[] = [];
     let left = MAX_SLIDE_ITEMS;
@@ -1179,5 +1189,5 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
     if (cut) boxes.push({ paragraphs: [{ text: "…" }] });
     slides.push({ boxes });
   }
-  return { aspect: cy / cx, widthPt: cx / 12700, slides };
+  return { aspect: cy / cx, widthPt: cx / 12700, slides, truncated: shown.length > MAX_SLIDES };
 }

@@ -63,7 +63,8 @@ export const selectAttachmentSource = ({
   };
 }): AttachmentSelection => {
   const parts = attachment.content ?? [];
-  const file = (attachment as { file?: File }).file;
+  const held = (attachment as { file?: unknown }).file;
+  const file = held instanceof File ? held : undefined;
   const contentType =
     file?.type ||
     (attachment as { contentType?: string }).contentType ||

@@ -615,6 +615,29 @@ def test_training_runs_map_only_folders_directly_under_outputs(monkeypatch):
     assert library._training_runs_by_dir() == {"my-run": "managed"}
 
 
+def test_an_export_links_to_its_run_only_through_studio_metadata(tmp_path, monkeypatch):
+    from utils.paths import storage_roots
+
+    outputs, exports = tmp_path / "outputs", tmp_path / "exports"
+    monkeypatch.setattr(storage_roots, "outputs_root", lambda: outputs)
+    monkeypatch.setattr(storage_roots, "exports_root", lambda: exports)
+    runs = {"foo": "run-foo", "bar": "run-bar"}
+    for name, meta in [
+        ("foo-GGUF", None),
+        ("foo-merged", '{"base_model": null}'),
+        ("renamed", f'{{"source_checkpoint": "{outputs}/bar/checkpoint-10"}}'),
+    ]:
+        (exports / name).mkdir(parents = True)
+        (exports / name / "model.gguf").write_bytes(b"x")
+        if meta:
+            (exports / name / "export_metadata.json").write_text(meta)
+    run_id = lambda name: library._model_run_id(str(exports / name / "model.gguf"), "exported", runs)
+    # No metadata: a copied-in folder claims nothing, whatever its name.
+    assert run_id("foo-GGUF") is None
+    # An older Studio export falls back to its name; a newer one names its checkpoint.
+    assert (run_id("foo-merged"), run_id("renamed")) == ("run-foo", "run-bar")
+
+
 def test_an_api_key_lists_fine_tunes_by_reference_and_can_still_act_on_them(client, monkeypatch):
     import shutil
 

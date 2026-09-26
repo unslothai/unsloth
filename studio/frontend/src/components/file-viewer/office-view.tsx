@@ -473,6 +473,9 @@ function SlidesView({ deck, scale }: { deck: Deck; scale: number }) {
     <div ref={setContainer} className="size-full overflow-auto bg-muted/60">
       {/* Keyed on the width, so the virtualizer measures afresh. */}
       <SlideList key={width} deck={deck} width={width} scrollElement={container} />
+      {deck.truncated && (
+        <p className="pb-6 text-center text-ui-12 text-muted-foreground">{t("library.preview.documentTruncated")}</p>
+      )}
     </div>
   );
 }

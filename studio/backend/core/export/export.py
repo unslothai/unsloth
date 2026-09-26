@@ -891,7 +891,12 @@ class ExportBackend:
                 if self.current_checkpoint
                 else None
             )
-            metadata = {"base_model": base_model}
+            # The local checkpoint exported, so Library can link the export to its training run.
+            source = self.current_checkpoint
+            metadata = {
+                "base_model": base_model,
+                "source_checkpoint": str(Path(source).resolve()) if source and Path(source).exists() else None,
+            }
             metadata_path = os.path.join(save_directory, "export_metadata.json")
             with open(metadata_path, "w", encoding = "utf-8") as f:
                 json.dump(metadata, f, indent = 2)
@@ -1707,6 +1712,7 @@ class ExportBackend:
                 else:
                     self.current_model.save_pretrained(save_directory)
                     self.current_tokenizer.save_pretrained(save_directory)
+                self._write_export_metadata(save_directory)
                 logger.info(f"Adapter saved successfully to {save_directory}")
                 output_path = str(Path(save_directory).resolve())
 

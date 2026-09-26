@@ -789,7 +789,8 @@ export async function extractOfficeAttachmentText(
   const budget = textBudget(MAX_OFFICE_TEXT_BYTES);
   const parts: string[] = [];
   if (label === "PPTX") {
-    for (const [index, slide] of readPptx(bytes, { images: false }).slides.entries()) {
+    const deck = readPptx(bytes, { images: false });
+    for (const [index, slide] of deck.slides.entries()) {
       if (budget.cut) break;
       const lines = [budget.take(`Slide ${index + 1}`)];
       for (const box of slide.boxes) {
@@ -798,6 +799,9 @@ export async function extractOfficeAttachmentText(
         for (const row of box.table ?? []) lines.push(row.map((cell) => budget.take(cell)).join("\t"));
       }
       parts.push(lines.join("\n"));
+    }
+    if (deck.truncated && !budget.cut) {
+      parts.push(`[Truncated: only the first ${deck.slides.length} slides are included.]`);
     }
   } else {
     for (const sheet of readXlsx(bytes)) {

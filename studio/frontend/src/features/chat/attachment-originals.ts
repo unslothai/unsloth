@@ -35,7 +35,7 @@ export function attachmentOriginal(attachment: unknown): ChatAttachmentOriginal 
   return typeof sha256 === "string" && typeof sizeBytes === "number" ? { sha256, sizeBytes } : null;
 }
 
-/** Adds the kept original to a sent document. Skipped in temporary chats; `temporary` and `epoch`
+/** Adds the kept original to a sent document. In temporary chats the file stays in memory instead; `temporary` and `epoch`
  *  (the auth session) are as they were when the send began. Upload errors are ignored. */
 export async function withAttachmentOriginal(
   pending: PendingAttachment,
@@ -43,12 +43,36 @@ export async function withAttachmentOriginal(
   temporary: boolean,
   epoch: number,
 ): Promise<CompleteAttachment> {
-  const upload = complete.type === "document" && !temporary ? originalUpload(pending.file) : null;
+  const upload = complete.type === "document" ? originalUpload(pending.file) : null;
   if (!upload) return complete;
+  // Kept in memory only, so it still opens as a document; uploaded if the chat is saved.
+  if (temporary) return { ...complete, file: pending.file } as CompleteAttachment;
   try {
     const original: ChatAttachmentOriginal = await uploadChatAttachmentOriginal(upload, epoch);
     return { ...complete, original } as CompleteAttachment;
   } catch {
     return complete;
   }
+}
+
+/** For a temporary chat being saved: uploads each document's in-memory file as its original, and
+ *  drops the file, which does not serialize. A failed upload only affects viewing. */
+export async function persistAttachmentOriginals(
+  attachments: readonly CompleteAttachment[] | undefined,
+  epoch: number,
+): Promise<CompleteAttachment[]> {
+  return Promise.all(
+    (attachments ?? []).map(async (attachment) => {
+      const { file, ...rest } = attachment as CompleteAttachment & { file?: unknown };
+      if (file === undefined) return attachment;
+      const upload = file instanceof File && !attachmentOriginal(rest) ? originalUpload(file) : null;
+      if (!upload) return rest as CompleteAttachment;
+      try {
+        const original: ChatAttachmentOriginal = await uploadChatAttachmentOriginal(upload, epoch);
+        return { ...rest, original } as CompleteAttachment;
+      } catch {
+        return rest as CompleteAttachment;
+      }
+    }),
+  );
 }

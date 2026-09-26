@@ -65,7 +65,7 @@ import {
   getDocumentAttachmentSizeError,
   getDocxAttachmentError,
 } from "./attachment-content";
-import { withAttachmentOriginal } from "./attachment-originals";
+import { persistAttachmentOriginals, withAttachmentOriginal } from "./attachment-originals";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
   isBinaryPropertyList,
@@ -854,7 +854,8 @@ function cloneAttachments(
   if (!Array.isArray(attachments)) {
     return [];
   }
-  return JSON.parse(JSON.stringify(attachments));
+  // A temporary chat's in-memory File has no JSON form; persistAttachmentOriginals uploads it.
+  return JSON.parse(JSON.stringify(attachments.map((attachment) => ({ ...attachment, file: undefined }))));
 }
 
 function toThreadMessage(m: MessageRecord): ThreadMessage {
@@ -1478,9 +1479,13 @@ export async function persistTemporaryThread({
       createdAt:
         creation?.createdAt ?? (times.length > 0 ? Math.min(...times) : Date.now()),
     });
-    const records: MessageRecord[] = parentsFirst(messages).map(({ parentId, message }) => {
+    const epoch = getAuthSessionEpoch();
+    const records: MessageRecord[] = await Promise.all(parentsFirst(messages).map(async ({ parentId, message }) => {
+      // Documents kept in memory are uploaded now, before the File is lost to JSON.
       const attachments =
-        message.role === "user" ? cloneAttachments(message.attachments) : [];
+        message.role === "user"
+          ? cloneAttachments(await persistAttachmentOriginals(message.attachments, epoch))
+          : [];
       const metadata = message.metadata?.custom as
         | Record<string, unknown>
         | undefined;
@@ -1494,7 +1499,7 @@ export async function persistTemporaryThread({
         ...(metadata && { metadata }),
         createdAt: message.createdAt?.getTime?.() ?? Date.now(),
       };
-    });
+    }));
     await syncStoredChatMessages(threadId, records, { pruneMissing: false });
     temporaryThreadCreation.delete(threadId);
   } catch (error) {

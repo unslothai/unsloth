@@ -29,6 +29,7 @@ import functools
 import hashlib
 import importlib
 import io
+import json
 import mimetypes
 import os
 import platform
@@ -594,14 +595,43 @@ def _training_runs_by_dir() -> dict[str, str]:
     return runs
 
 
+def _export_metadata(path: str, root: Path) -> Optional[dict]:
+    """The export_metadata.json Studio writes beside an export, from the model up to its top folder."""
+    here = Path(path)
+    if not here.is_dir():
+        here = here.parent
+    while True:
+        meta = here / "export_metadata.json"
+        if meta.is_file():
+            try:
+                data = json.loads(meta.read_text(encoding = "utf-8-sig"))
+            except (OSError, ValueError):
+                return None
+            return data if isinstance(data, dict) else None
+        if here.parent == root or here == root or here.parent == here:
+            return None
+        here = here.parent
+
+
 def _model_run_id(path: str, origin: str, runs: dict[str, str]) -> Optional[str]:
     """The training run a model came out of: its own folder under outputs/, or for an export the
-    run folder it was saved under (``{run}/{checkpoint}``, or ``{run}-GGUF`` and the like)."""
+    checkpoint its metadata records. An older Studio export, with metadata but no checkpoint, falls
+    back to its folder name (``{run}/{checkpoint}``, ``{run}-GGUF``); a folder with no metadata
+    has no known origin."""
     from utils.paths.storage_roots import exports_root, outputs_root
 
-    root = outputs_root() if origin == "training" else exports_root()
     try:
-        top = Path(path).resolve().relative_to(Path(root).resolve()).parts[0]
+        outputs = Path(outputs_root()).resolve()
+        if origin == "training":
+            return runs.get(Path(path).resolve().relative_to(outputs).parts[0])
+        root = Path(exports_root()).resolve()
+        top = Path(path).resolve().relative_to(root).parts[0]
+        meta = _export_metadata(path, root)
+        if meta is None:
+            return None
+        source = meta.get("source_checkpoint")
+        if isinstance(source, str) and source:
+            return runs.get(Path(source).resolve().relative_to(outputs).parts[0])
     except (ValueError, IndexError, OSError):
         return None
     while top and top not in runs:
