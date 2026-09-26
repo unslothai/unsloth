@@ -185,7 +185,7 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
 
 
 # In the order they were added, so older positional callers keep their meaning.
-_TOOL_LOOP_HOOKS = ("on_conversation_grew", "on_decode_slot")
+_TOOL_LOOP_HOOKS = ("on_conversation_grew", "on_decode_slot", "thinking_budget_tokens")
 
 
 class TestOldCallers:
