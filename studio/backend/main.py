@@ -9,7 +9,7 @@ from pathlib import Path as _Path
 import asyncio
 from dataclasses import asdict
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 os.environ["PYTHONWARNINGS"] = "ignore"
 
@@ -2798,8 +2798,12 @@ def _is_loopback_ip(host: Optional[str]) -> bool:
 _PROXIED_CLIENT_HEADERS = (
     "cf-connecting-ip",
     "forwarded",
+    "via",
     "x-forwarded-for",
     "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-port",
+    "x-forwarded-server",
     "x-real-ip",
 )
 
@@ -2821,14 +2825,116 @@ def _host_header_is_loopback(host_header: Optional[str]) -> bool:
     return host == "localhost" or _is_loopback_ip(host)
 
 
+def _parse_host_authority(host_header: Optional[str]) -> tuple[Optional[str], Optional[int]]:
+    """Split a Host header into ``(hostname, port)``; ``port`` is ``None`` when omitted."""
+    if not host_header:
+        return None, None
+    host = host_header.strip()
+    port: Optional[int] = None
+    if host.startswith("["):
+        end = host.find("]")
+        if end == -1:
+            return None, None
+        hostname = host[1:end]
+        rest = host[end + 1 :]
+        if rest:
+            if not rest.startswith(":"):
+                return None, None
+            try:
+                port = int(rest[1:])
+            except ValueError:
+                return None, None
+    elif host.count(":") == 1:
+        hostname, port_text = host.split(":", 1)
+        try:
+            port = int(port_text)
+        except ValueError:
+            return None, None
+    else:
+        hostname = host
+    return hostname.lower().rstrip("."), port
+
+
+def _host_authority_matches_listener(
+    host_header: Optional[str], server: Optional[tuple[Any, ...]]
+) -> bool:
+    """Require ``Host`` to name the accepting socket (incl. port on non-default listeners).
+
+    A reverse proxy that strips ``X-Forwarded-*`` / ``Forwarded`` but rewrites ``Host`` to a
+    bare ``127.0.0.1`` (no port) against a desktop listener on e.g. ``127.0.0.1:8888`` does not
+    match and cannot pull the packaged SPA.
+    """
+    if not server or len(server) < 2:
+        return False
+    listen_host = server[0]
+    listen_port = server[1]
+    if not isinstance(listen_port, int):
+        return False
+    hostname, host_port = _parse_host_authority(host_header)
+    if not hostname:
+        return False
+    listen_host_norm = (listen_host or "").lower().rstrip(".")
+    listen_is_loopback = _is_loopback_ip(listen_host_norm)
+    host_ok = hostname == listen_host_norm or (
+        listen_is_loopback and (hostname == "localhost" or _is_loopback_ip(hostname))
+    )
+    if not host_ok:
+        return False
+    if host_port is not None:
+        return host_port == listen_port
+    return listen_port in (80, 443)
+
+
+def _is_loopback_http_peer(client_host: Optional[str]) -> bool:
+    if client_host is None:
+        return False
+    # Starlette TestClient uses a synthetic peer name; server+Host still pin loopback.
+    if client_host == "testclient":
+        return True
+    return _is_loopback_ip(client_host)
+
+
+def _header_from_scope(scope, name: str) -> Optional[str]:
+    """Read one HTTP header from an ASGI scope (case-insensitive)."""
+    target = name.lower().encode("latin-1")
+    for raw_name, raw_value in scope.get("headers") or ():
+        if raw_name.lower() == target:
+            try:
+                return raw_value.decode("latin-1")
+            except UnicodeDecodeError:
+                return None
+    return None
+
+
+def _is_direct_loopback_http_client(
+    client_host: Optional[str],
+    host_header: Optional[str],
+    header_getter: Callable[[str], Optional[str]],
+    *,
+    server: Optional[tuple[Any, ...]] = None,
+) -> bool:
+    """Direct browser on loopback: loopback peer, loopback Host, no proxy/tunnel client headers."""
+    if not _is_loopback_http_peer(client_host):
+        return False
+    if any(header_getter(h) is not None for h in _PROXIED_CLIENT_HEADERS):
+        return False
+    if not _host_header_is_loopback(host_header):
+        return False
+    if server is not None and not _host_authority_matches_listener(host_header, server):
+        return False
+    return True
+
+
 def _is_local_bootstrap_request(request: Request) -> bool:
     """Allow bootstrap injection only through a direct loopback authority."""
-    client = request.client
-    if client is None or not _is_loopback_ip(client.host):
-        return False
-    if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
-        return False
-    return _host_header_is_loopback(request.headers.get("host"))
+    scope = getattr(request, "scope", None)
+    server = scope.get("server") if isinstance(scope, dict) else None
+    return _is_direct_loopback_http_client(
+        request.client.host if request.client else None,
+        request.headers.get("host"),
+        request.headers.get,
+        server = server,
+    )
 
 
 def _is_same_origin_request(request: Request) -> bool:
@@ -2944,12 +3050,38 @@ def _is_live_cloudflare_frontend_request(scope, app_state) -> bool:
     return bool(expected_host) and request_host == expected_host
 
 
+def _request_on_loopback_listener(scope) -> bool:
+    """True for a direct browser on the primary loopback listener (desktop ``-H 127.0.0.1``).
+
+    Requires the accepting socket, client peer, and Host to be loopback, with the same
+    proxy/tunnel header checks as bootstrap injection — a reverse proxy dialing 127.0.0.1
+    must not unlock the packaged SPA.
+    """
+    if scope.get("type") != "http":
+        return False
+    server = scope.get("server")
+    if not server or not _is_loopback_ip(server[0]):
+        return False
+    client = scope.get("client")
+    client_host = client[0] if client else None
+    return _is_direct_loopback_http_client(
+        client_host,
+        _header_from_scope(scope, "host"),
+        lambda name: _header_from_scope(scope, name),
+        server = server,
+    )
+
+
 def _is_remote_frontend_request(scope, app_state) -> bool:
-    """True for a request the desktop backend may answer with its packaged web UI: Cloudflare's own edge, or one
-    of the sockets the runtime LAN listener bound, both identified by the connection itself rather than a
-    client header the caller controls."""
+    """True for a request the desktop backend may answer with its packaged web UI: Cloudflare's own edge, the
+    primary loopback listener, or one of the sockets the runtime LAN listener bound — all identified by the
+    connection itself rather than a client-controlled header."""
     from lan_access import request_on_lan_listener
-    return _is_live_cloudflare_frontend_request(scope, app_state) or request_on_lan_listener(scope)
+    return (
+        _is_live_cloudflare_frontend_request(scope, app_state)
+        or request_on_lan_listener(scope)
+        or _request_on_loopback_listener(scope)
+    )
 
 
 class _TunnelOnlyFrontend:
@@ -2970,8 +3102,8 @@ def setup_frontend(
     *,
     tunnel_only: bool = False,
 ):
-    """Mount frontend static files (optional). ``tunnel_only`` restricts the mount to remote callers:
-    the Cloudflare edge, or a socket the runtime LAN listener bound."""
+    """Mount frontend static files (optional). ``tunnel_only`` restricts the mount to browser callers:
+    the Cloudflare edge, the primary loopback listener, or a socket the runtime LAN listener bound."""
     if not build_path.exists():
         return False
 
