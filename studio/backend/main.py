@@ -663,6 +663,7 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         from core import chat_originals
         from core.training.account_jobs import startup_reconciliation_accounts
         from utils.account_context import run_as
+
         for account in startup_reconciliation_accounts():
             if _post_warm_retired(generation):
                 return
