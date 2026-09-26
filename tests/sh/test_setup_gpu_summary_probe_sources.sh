@@ -453,9 +453,7 @@ assert_eq "one adapter resolves without a map" \
 assert_eq "the rocminfo path is not reordered by a HIP map" "gfx1100|AMD Radeon RX 7900 XTX" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/roc_three_dup" "$WORK/empty" 1)"
 
-# rocminfo output is already filtered and ordered by ROCR_VISIBLE_DEVICES (ROCr renumbers
-# its survivors from 0), so these fixtures are post-mask agent lists. Indexing them by the
-# ROCr ordinal again applies the mask twice.
+# Post-ROCR_VISIBLE_DEVICES rocminfo lists: ROCr already filtered and renumbered them.
 cat > "$WORK/roc_rocr_1_0" <<'EOF'
 Agent 1
 *******
@@ -507,7 +505,6 @@ assert_eq "a set-but-empty HIP mask shadows CUDA, as install.sh" \
 assert_eq "amd-smi is not ROCr-filtered, so its list is still indexed by the ROCr ordinal" \
     "gfx1100|AMD Radeon RX 7900 XTX" \
     "$(STUB_ROCR=1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"
-# amd-smi is not ROCr-filtered: ROCr picks the survivors, then the HIP-layer mask indexes them.
 assert_eq "amd-smi: HIP=1 under ROCR=2,0 selects survivor 1 (card 0)" \
     "gfx90a|AMD Instinct MI210" \
     "$(STUB_ROCR=2,0 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 1)"

@@ -2784,8 +2784,7 @@ def _pick_rocm_gfx_target(out: str, rocr_filtered: bool = False) -> str | None:
         return None
 
     _vis_raw = None
-    # AMD's HIP runtime honours all three env vars with identical semantics. rocminfo output is
-    # already ROCr-filtered and renumbered, so only the HIP-layer masks index it (as install.sh).
+    # rocminfo output is already ROCr-filtered and renumbered: only HIP-layer masks index it.
     _masks = (
         ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
         if rocr_filtered
@@ -2796,7 +2795,7 @@ def _pick_rocm_gfx_target(out: str, rocr_filtered: bool = False) -> str | None:
         if _val is not None:
             _vis_raw = _val
             break
-    # ROCR over filtered output is still an explicit selection: survivor 0, never repicked below.
+    # Still an explicit selection: survivor 0, so the discrete repick below must not override it.
     if _vis_raw is None and rocr_filtered and os.environ.get("ROCR_VISIBLE_DEVICES") is not None:
         _vis_raw = "0" if os.environ["ROCR_VISIBLE_DEVICES"].strip() not in ("", "-1") else ""
     if _vis_raw is not None:

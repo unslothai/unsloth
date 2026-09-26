@@ -91,7 +91,6 @@ def test_rocminfo_output_is_not_masked_by_rocr_twice(unmasked):
     assert ILP._pick_rocm_gfx_target(out, rocr_filtered = True) == "gfx1201"
     unmasked.setenv("HIP_VISIBLE_DEVICES", "1")
     assert ILP._pick_rocm_gfx_target(out, rocr_filtered = True) == "gfx1036"
-    # An unfiltered list (amd-smi) is still indexed by the ROCr ordinal.
     unmasked.delenv("HIP_VISIBLE_DEVICES")
     assert ILP._pick_rocm_gfx_target(out) == "gfx1036"
 

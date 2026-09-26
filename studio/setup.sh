@@ -3639,20 +3639,16 @@ if [ "$_setup_nvidia_usable" = true ]; then
     # behind on the common path where there is no driver string to print.
     if [ -n "$_setup_nv_driver" ]; then substep "Driver: $_setup_nv_driver"; fi
 elif [ "$_setup_amd_detected" = true ]; then
-    # As install.sh: ROCr decides which devices exist, then the first SET HIP-layer mask (HIP, then
-    # its CUDA alias; an empty one still shadows) indexes the survivors. rocminfo output is already
-    # ROCr-filtered; the amd-smi lists are not, so keep ROCr's ordinals there, in mask order.
+    # As install.sh: ROCr picks survivors (rocminfo is already filtered, amd-smi is not), then the
+    # first SET HIP-layer mask (HIP, then CUDA; empty still shadows) indexes them.
     if [ "$_setup_amd_probe" != rocminfo ] && [ -n "${ROCR_VISIBLE_DEVICES:-}" ] && [ "$ROCR_VISIBLE_DEVICES" != "-1" ]; then
         _setup_rocr_keep() {
             _setup_kept=$(printf '%s\n' "$1" | awk -v m="$ROCR_VISIBLE_DEVICES" '
                 NF { v[n++] = $0 }
                 END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] !~ /^[0-9]+$/) continue; x = t[i] + 0; if (x >= n || (x in s)) break; s[x] = 1; print v[x] } }')
-            # Prefix up to the first out-of-range or repeated ordinal, as _rocr_visible_subset;
-            # none keeps the whole list.
             if [ -n "$_setup_kept" ]; then printf '%s\n' "$_setup_kept"; else printf '%s\n' "$1"; fi
         }
-        # A UUID token names a device but no position in amd-smi's list, so with unlike adapters no
-        # survivor is known to be the selected one: decline, as install.sh does.
+        # A UUID has no position in amd-smi's list: with unlike adapters, decline as install.sh does.
         if [ -n "$(printf '%s' "$ROCR_VISIBLE_DEVICES" | tr -d '0-9, \t')" ] && \
            [ "$(printf '%s\n' "${_setup_amd_records:-$_setup_gfx_all}" | awk -F'|' \
                 'NF { k = ($1 != "" ? $1 : "name:" $2); if (!(k in seen)) { seen[k]; n++ } } END { print n + 0 }')" -gt 1 ]; then

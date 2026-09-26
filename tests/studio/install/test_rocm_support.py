@@ -2258,8 +2258,7 @@ class TestGfx1102Rocm64Floor:
 
     @pytest.mark.parametrize("rocr, hip", (("0,0,1", "2"), ("0,99,1", "1")))
     def test_install_sh_ends_rocr_survivors_at_a_repeated_or_missing_ordinal(self, rocr, hip):
-        """ROCr's survivors are a prefix, as _rocr_visible_subset: only card 0 is left, so the
-        HIP index runs off the end and falls back to it rather than reaching the gfx1200."""
+        """Only card 0 survives, so the HIP index falls back to it, never the gfx1200."""
         preamble = (
             "rocminfo() { return 1; }\n"
             + self._amd_smi_stub("gfx1100", "gfx1200")
