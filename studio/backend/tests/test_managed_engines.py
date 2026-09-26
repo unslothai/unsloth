@@ -959,6 +959,8 @@ def test_memory_budget_uses_selected_gpu_and_reserves_headroom(monkeypatch):
     monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.97)
     assert engine_adapters.gpu_memory_fraction([1]) == 0.645
     assert commands[0][commands[0].index("--id") + 1] == "1"
+    # vLLM TorchAO weights overrun the reservation in sampler warmup: 6 GiB more stays free.
+    assert engine_adapters.gpu_memory_fraction([1], 512 + 6144) == 0.395
     monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.5)
     assert engine_adapters.gpu_memory_fraction([1]) == 0.5
     monkeypatch.setattr(
@@ -977,7 +979,7 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
     from core.inference import managed_engine
 
     active(isolated)
-    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda _: 0.8)
+    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.8)
     engine = ManagedEngine("vllm")
 
     def command(python, model, port, key, context, memory, tensor_parallel_size):
@@ -1112,7 +1114,7 @@ def test_shutdown_during_adoption_reaps_child(isolated, monkeypatch, kind):
                 install._run("vllm", command, threading.Event())
             else:
                 active(isolated)
-                monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda _: 0.8)
+                monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.8)
                 engine = ManagedEngine("vllm")
                 engine.adapter = SimpleNamespace(
                     command = lambda *args: command, environment = lambda _: {}
@@ -1476,6 +1478,11 @@ def test_native_precision_arguments(engine, precision):
     assert args[args.index("--load-format") + 1] == (
         "bitsandbytes" if engine == "vllm" and precision == "int4" else "auto"
     )
+    # Only TorchAO weights leave SGLang's Blackwell BF16 GEMM for F.linear.
+    torchao = engine == "sglang" and precision in ("int4", "int8")
+    assert ("--bf16-gemm-backend" in args) is torchao
+    if torchao:
+        assert args[args.index("--bf16-gemm-backend") + 1] == "torch"
 
 
 @pytest.mark.parametrize("encoded", [False, True])
@@ -1785,7 +1792,7 @@ def test_startup_deadline_counts_engine_silence(isolated, monkeypatch, chatty):
     from core.inference import managed_engine
 
     active(isolated)
-    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda _: 0.8)
+    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.8)
     monkeypatch.setattr(managed_engine, "STARTUP_STALL_S", 5.0)
     engine = ManagedEngine("vllm")
 
@@ -1933,3 +1940,20 @@ def test_managed_load_runs_the_worker_security_gates(monkeypatch, trust_remote_c
     assert gates[0][0] == ["org/model"]
     assert gates[0][1]["trust_remote_code"] is trust_remote_code
     assert gates[0][1]["approved_fingerprint"] == "fp" and gates[0][1]["subject"] == "user"
+
+
+@pytest.mark.parametrize(
+    "engine, options, reserve",
+    [
+        ("vllm", {"precision": "int8"}, 512 + 6144),
+        ("vllm", {"precision": "fp8"}, 512 + 6144),
+        ("vllm", {"precision": "int4", "parallelism": "pipeline"}, 512 + 6144),
+        ("vllm", {"precision": "int4"}, 512),
+        ("vllm", {"precision": "bf16"}, 512),
+        ("vllm", None, 512),
+        ("sglang", {"precision": "int8"}, 512),
+    ],
+)
+def test_only_vllm_torchao_loads_keep_extra_headroom(engine, options, reserve):
+    from core.inference.engine_adapters import memory_reserve_mib
+    assert memory_reserve_mib(engine, options) == reserve

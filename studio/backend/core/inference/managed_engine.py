@@ -33,6 +33,7 @@ from .engine_install import (
 from .engine_adapters import (
     ADAPTERS,
     gpu_memory_fraction,
+    memory_reserve_mib,
     launch_arguments,
     tool_parser_for_template,
 )
@@ -326,7 +327,9 @@ class ManagedEngine:
 
                 child_env.pop("CUDA_PATH", None)
                 child_env.update(cuda_environment(info))
-                memory_fraction = gpu_memory_fraction(gpu_ids or [0])
+                memory_fraction = gpu_memory_fraction(
+                    gpu_ids or [0], memory_reserve_mib(self.engine, options)
+                )
                 child_env.update(self.adapter.environment(len(gpu_ids or [0])))
                 if self.engine == "vllm" and _deep_gemm_unloadable(info["path"]):
                     child_env["VLLM_USE_DEEP_GEMM"] = "0"
