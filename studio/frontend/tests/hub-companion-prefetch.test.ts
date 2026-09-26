@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerStoreStubResolver } from "./helpers/kit.ts";
+import { readSrc, registerStoreStubResolver } from "./helpers/kit.ts";
 
 registerStoreStubResolver();
 
@@ -121,6 +121,12 @@ test("the detail pane offers a plain Download, never Run, for a companion-only r
     const state = modelDownloadState(view);
     assert.equal(state.isDownloaded, false, name);
     assert.equal(state.isPartial, false, name);
+    // The card keeps Delete for these files through this flag.
+    assert.equal(
+      (view as { companionPrefetch?: boolean } | null)?.companionPrefetch,
+      true,
+      name,
+    );
     assert.equal(
       downloadActionLabel(state.isPartial, state.partialResumable),
       "Download",
@@ -149,4 +155,15 @@ test("a companion fetch finishing changes the Discover memo key", () => {
     discoveryInventorySignature([cached(false)], []),
     discoveryInventorySignature([cached(true)], []),
   );
+});
+
+test("the download card keeps Delete for a companion-only repo", () => {
+  const card = readSrc("features/hub/catalog/safetensors-download-card.tsx");
+  assert.match(card, /hasCachedFiles = isDownloaded \|\| isPartial \|\| companionPrefetch/);
+  assert.match(card, /canDelete =\s+hasCachedFiles &&/);
+  assert.match(card, /\(isPartial \|\| companionPrefetch\) && !downloading/);
+  const section = readSrc("features/hub/catalog/download-section.tsx");
+  assert.match(section, /companionPrefetch=\{companionPrefetch\}/);
+  const inspector = readSrc("features/hub/catalog/model-inspector.tsx");
+  assert.match(inspector, /companionPrefetch=\{model\.companionPrefetch === true\}/);
 });

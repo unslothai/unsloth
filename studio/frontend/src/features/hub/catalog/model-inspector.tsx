@@ -708,6 +708,7 @@ export const ModelInspector = memo(function ModelInspector({
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
               {...downloadState}
+              companionPrefetch={model.companionPrefetch === true}
               modelFormat={model.modelFormat}
               isActive={isActive}
               activeQuant={isActive ? (activeGgufVariant ?? null) : null}

@@ -89,6 +89,7 @@ export function useSelectedModelView({
           isPartial:
             Boolean(selectedLocalRow.partial) &&
             !selectedLocalRow.companionPrefetch,
+          companionPrefetch: selectedLocalRow.companionPrefetch === true,
           partialTransport: selectedLocalRow.partialTransport ?? null,
           partialResumable: selectedLocalRow.partialResumable === true,
           capabilities: selectedDiscoverRow.capabilities,
@@ -166,6 +167,10 @@ export function useSelectedModelView({
           selectedLocalRow?.capabilities.canChat ??
           false,
         isPartial: isResolvedPartial,
+        companionPrefetch: selectedCachedRow
+          ? selectedCachedRow.companionPrefetch === true
+          : selectedLocalRow?.source === "hf_cache" &&
+            selectedLocalRow.companionPrefetch === true,
         partialTransport:
           selectedCachedRow?.partialTransport ??
           selectedLocalRow?.partialTransport ??
@@ -240,6 +245,7 @@ export function useSelectedModelView({
         isPartial:
           Boolean(selectedCachedRow.partial) &&
           !selectedCachedRow.companionPrefetch,
+        companionPrefetch: selectedCachedRow.companionPrefetch === true,
         partialTransport: selectedCachedRow.partialTransport ?? null,
         partialResumable: selectedCachedRow.partialResumable === true,
         capabilities: detectViewCapabilities(
@@ -319,6 +325,7 @@ export function useSelectedModelView({
           isDownloaded: false,
           runtimeCanChat: selectedLocalRow.capabilities.canChat,
           isPartial: !isCompanionPrefetch,
+          companionPrefetch: isCompanionPrefetch,
           partialTransport: selectedLocalRow.partialTransport ?? null,
           partialResumable: selectedLocalRow.partialResumable === true,
           capabilities: detectViewCapabilities(
