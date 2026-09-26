@@ -1055,6 +1055,10 @@ def _vae_contiguous(pipe: Any, logger: Any) -> bool:
         return False
 
 
+# VAE classes whose decode layout was measured; any other keeps channels_last.
+_VAE_LAYOUT_MEASURED: frozenset[str] = frozenset({"AutoencoderKL", "AutoencoderKLFlux2"})
+
+
 def _channels_last_decode_wins(
     pipe: Any,
     target: Any,
@@ -1065,9 +1069,13 @@ def _channels_last_decode_wins(
 
     Eager CUDA GroupNorm has no NHWC kernel, so an eager 16-bit channels_last decode is slower, but contiguous peaks
     higher, so offloaded loads keep channels_last. Compiled 16-bit wins channels_last; fp32 is faster contiguous."""
-    if getattr(target, "backend", "cuda") != "cuda" or getattr(target, "device", None) != "cuda":
-        return True
     vae = getattr(pipe, "vae", None)
+    if (
+        getattr(target, "backend", "cuda") != "cuda"
+        or getattr(target, "device", None) != "cuda"
+        or type(vae).__name__ not in _VAE_LAYOUT_MEASURED
+    ):
+        return True
     config = getattr(vae, "config", None)
     # SDXL pipelines upcast a force_upcast fp16 VAE to fp32 for the decode.
     fp32_decode = str(getattr(vae, "dtype", "")).endswith("float32") or (

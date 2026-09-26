@@ -613,7 +613,7 @@ class _UNetPipe:
     def __init__(self, unet = None):
         self.mem_format = None
         self.fused = False
-        self.vae = types.SimpleNamespace(to = self._vae_to, decode = lambda z: z)
+        self.vae = AutoencoderKL(to = self._vae_to, decode = lambda z: z)
         self.unet = UNet2DConditionModel() if unet is None else unet
 
     def _vae_to(self, *, memory_format):
@@ -713,6 +713,15 @@ def test_offloaded_eager_decode_keeps_channels_last_unless_fp32(
     assert pipe.vae.mem_format == (
         torch.channels_last if expect_channels_last else torch.contiguous_format
     )
+
+
+def test_unmeasured_vae_class_keeps_channels_last(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True, vae_cls = type("HYVAE2D", (types.SimpleNamespace,), {}))
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_EAGER
+    )
+    assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
 
 
 def test_compiled_vae_decode_keeps_channels_last(monkeypatch):
