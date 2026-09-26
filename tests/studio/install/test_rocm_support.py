@@ -1127,8 +1127,17 @@ class TestEnsureRocmTorch:
         assert mock_pip_try.call_args.kwargs["force_pip"] is True
 
     def test_rocm_63_selects_correct_tag(self):
-        """Automatic generic ROCm 6.3 installs use the bitsandbytes-compatible floor."""
-        mock_pip, _ = run_ensure_rocm_torch(_has_rocm_gpu = True, _detect_rocm_version = (6, 3))
+        """Automatic generic ROCm 6.3 installs use the bitsandbytes-compatible floor.
+
+        The floor needs a target known not to be gfx906, so the arch is declared; an
+        unreadable arch keeps the literal tag (test_unreadable_arch_keeps_the_literal_generic_tag).
+        """
+        mock_pip, _ = run_ensure_rocm_torch(
+            _has_rocm_gpu = True,
+            _detect_rocm_version = (6, 3),
+            _detect_amd_gfx_codes = ["gfx1100"],
+            _infer_linux_amd_gfx_arch = None,
+        )
         torch_call = mock_pip.call_args_list[0]
         assert "rocm6.4" in str(torch_call)
 
@@ -1994,6 +2003,7 @@ class TestGfx1102Rocm64Floor:
         rocm_ver: tuple = (6, 1),
         probe_stdout: str = "\n",  # CPU torch -> repair
         wheel_family = None,
+        kfd = None,
     ):
         m = stack_mod
         for name in (
@@ -2029,7 +2039,13 @@ class TestGfx1102Rocm64Floor:
             patch.object(m, "_installed_rocm_wheel_family", return_value = wheel_family),
             patch.object(m, "_infer_linux_amd_gfx_arch", return_value = None),
             patch.object(m, "_detect_rocm_version", return_value = rocm_ver),
-            patch.object(m, "_detect_amd_gfx_codes", return_value = [gfx]),
+            patch.object(m, "_detect_amd_gfx_codes", return_value = [gfx] if gfx else []),
+            # None leaves KFD sysfs unpatched, as before; a list stands in for the topology.
+            (
+                contextlib.nullcontext()
+                if kfd is None
+                else patch.object(m, "_kfd_gfx_targets", return_value = kfd)
+            ),
             patch("platform.machine", return_value = "x86_64"),
             patch("subprocess.run", return_value = probe),
         ):
@@ -2175,6 +2191,30 @@ class TestGfx1102Rocm64Floor:
         torch_call = str(pip.call_args_list[0])
         assert "whl/rocm6.4" in torch_call
         assert "repo.amd.com" not in torch_call
+
+    def test_kfd_only_gfx906_keeps_the_literal_generic_tag(self, monkeypatch):
+        """A runtime-only ROCm host (no rocminfo/amd-smi) names its MI50 only through KFD.
+
+        _runtime_target_is_gfx906 reads the userland probes alone, so it answers False
+        here; the floor must still see gfx906 through the selected runtime target, or the
+        MI50 is moved to rocm6.4, which ships no gfx906 BLAS kernels.
+        """
+        torch_call = str(
+            self._ensure_for_gfx("", monkeypatch, kfd = ["gfx906"]).call_args_list[0]
+        )
+        assert "whl/rocm6.1" in torch_call
+        assert "whl/rocm6.4" not in torch_call
+
+    def test_unreadable_arch_keeps_the_literal_generic_tag(self, monkeypatch):
+        """No probe, KFD reading or inference names the arch: it might be gfx906.
+
+        The BNB floor applies only to a target known not to be gfx906, so this host keeps
+        the literal rocm6.0-6.3 selection it had before the floor existed. install.sh
+        never reaches its floor for an unreadable arch either (it returns the cpu index).
+        """
+        pip = self._ensure_for_gfx("", monkeypatch, kfd = [])
+        for call in pip.call_args_list:
+            assert "whl/rocm6.4" not in str(call)
 
     def test_install_sh_floors_resolved_rocm61_by_runtime_gfx(self):
         """Exercise install.sh's generic-routing block with a resolved leaf.

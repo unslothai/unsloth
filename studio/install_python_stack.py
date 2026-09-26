@@ -6357,12 +6357,20 @@ def _ensure_rocm_torch() -> None:
             tag = _torch_index_leaf(index_url)
         else:
             # Automatic generic installs must use the ABI floor required by the
-            # generic bitsandbytes wheel. gfx906 is intentionally exempt: its
-            # legacy path remains on the literal rocm6.0-6.3 resolver.
+            # generic bitsandbytes wheel, but only for a target known NOT to be gfx906:
+            # gfx906 keeps its legacy rocm6.0-6.3 path (rocm6.4 has no gfx906 BLAS
+            # kernels), and an unreadable arch might be one, so it keeps the literal
+            # resolver as before. _runtime_gfx also carries a KFD-only reading that
+            # _runtime_is_gfx906 does not see. Same predicate as the repair above.
+            _bnb_floor_target = (
+                bool(_runtime_gfx)
+                and _runtime_gfx.lower() != "gfx906"
+                and not _runtime_is_gfx906
+            )
             tag = (
-                _generic_pytorch_rocm_tag(ver)
-                if _runtime_is_gfx906
-                else _automatic_generic_pytorch_rocm_tag(ver)
+                _automatic_generic_pytorch_rocm_tag(ver)
+                if _bnb_floor_target
+                else _generic_pytorch_rocm_tag(ver)
             )
         if tag is None:
             _safe_print(
