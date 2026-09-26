@@ -3351,9 +3351,7 @@ class TestInstallShStructure:
 
             def run(**extra):
                 env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""), **extra)
-                return _run_bash_script(
-                    shell, script, env = env, capture_output = True, text = True
-                )
+                return _run_bash_script(shell, script, env = env, capture_output = True, text = True)
 
             r = run(UNSLOTH_ROCM_GFX_ARCH = "GFX1151")
             assert r.returncode == 0, f"override probe aborted: {r.stderr}"
@@ -3393,9 +3391,7 @@ class TestInstallShStructure:
 
             def run(**extra):
                 env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""), **extra)
-                return _run_bash_script(
-                    shell, script, env = env, capture_output = True, text = True
-                )
+                return _run_bash_script(shell, script, env = env, capture_output = True, text = True)
 
             r = run(ROCR_VISIBLE_DEVICES = "-1")
             assert r.returncode == 0, f"masked probe aborted: {r.stderr}"
@@ -6910,9 +6906,7 @@ class TestStrixRocm71Override:
                 for name in _visibility_mask_names(source):
                     env.pop(name, None)
                 env.update(extra)
-                return _run_bash_script(
-                    shell, script, env = env, capture_output = True, text = True
-                )
+                return _run_bash_script(shell, script, env = env, capture_output = True, text = True)
 
             # Mask hides everything: re-probe must recover the first GPU (Strix).
             r = run(ROCR_VISIBLE_DEVICES = "-1")
