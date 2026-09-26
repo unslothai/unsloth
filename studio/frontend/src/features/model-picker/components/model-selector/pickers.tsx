@@ -24,6 +24,7 @@ import {
   listGgufVariants,
   listRecommendedFolders,
   listScanFolders,
+  listLoras,
   removeScanFolder,
   revealFineTunedModel,
 } from "@/features/chat";
@@ -5130,15 +5131,11 @@ export function HubModelPicker({
       return keys;
     }
 
-    // Pinned rows sit above the Unsloth heading on the On Device tab.
-    if (
-      section === "downloaded" &&
-      cachedReady &&
-      !pinnedCollapsed &&
-      pinnedRows.length > 0
-    ) {
+    // Pinned rows sit above the Unsloth heading on the On Device tab. Fine-tunes do not wait
+    // for the cache scan, since they render before it settles.
+    if (section === "downloaded" && !pinnedCollapsed && pinnedRows.length > 0) {
       keys.push(
-        ...pinnedRows.map((row) =>
+        ...pinnedRows.filter((row) => cachedReady || row.fineTuned).map((row) =>
           row.entry
             ? pinnedSoleQuantRows.has(row.key)
               ? makeModelOptionKey("downloaded-gguf", row.entry.repoId)
@@ -8037,6 +8034,21 @@ function FineTunedRows({
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
   const unpinRepo = usePinnedModelsStore((s) => s.unpinRepo);
+  const replacePinned = usePinnedModelsStore((s) => s.replacePinned);
+  // A GGUF export's id is its first file, so deleting a variant can change or end it.
+  const repinExportedGguf = async (oldId: string) => {
+    const folder = oldId.slice(0, Math.max(oldId.lastIndexOf("/"), oldId.lastIndexOf("\\")));
+    const { loras } = await listLoras();
+    const next = loras.find(
+      (lora) =>
+        lora.source === "exported" &&
+        lora.export_type === "gguf" &&
+        (lora.adapter_path.startsWith(`${folder}/`) ||
+          lora.adapter_path.startsWith(`${folder}\\`)),
+    );
+    if (!next) unpinRepo(oldId);
+    else replacePinned(pinKey(oldId), pinKey(next.adapter_path));
+  };
   return (
     <>
       {adapters.map((adapter) => {
@@ -8236,6 +8248,9 @@ function FineTunedRows({
                           exportType: "gguf",
                           ggufVariant: quant,
                         });
+                        if (pinnedKeys.includes(pinKey(adapter.id))) {
+                          await repinExportedGguf(adapter.id).catch(() => undefined);
+                        }
                         onModelsChange?.({
                           id: adapter.id,
                           ggufVariant: quant,
