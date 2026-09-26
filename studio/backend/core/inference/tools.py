@@ -14088,6 +14088,18 @@ _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
 
 _META_CHARSET_SCAN_BYTES = 2048
+_META_REFRESH_SCAN_BYTES = 4096
+_META_REFRESH_MAX_DELAY = 5
+_META_REFRESH_CONTENT_RE = re.compile(
+    r"\s*(\d+|(?=\.))(?:\.[\d.]*)?(?:(?=[\s;,])\s*[;,]?\s*(?:url\s*=\s*)?(.*))?\Z",
+    re.ASCII | re.IGNORECASE | re.DOTALL,
+)
+# Browsers leave an unterminated named reference in an attribute alone, so "&section=" stays literal instead of "§ion=".
+_ATTR_CHAR_REF_RE = re.compile(r"&(?:#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[A-Za-z][A-Za-z0-9]*;)")
+# Their contents are raw text or inert, so a <meta> or <base> inside one never takes effect in a browser.
+_META_REFRESH_INERT_TAGS = frozenset(
+    (b"noscript", b"script", b"style", b"template", b"textarea", b"title", b"xmp")
+)
 # A comment or whole tag, quoted attribute values included, so markup inside them is never read as <meta>. As in the
 # browser prescan, an unterminated tag ends the scan.
 _HTML_TAG_RE = re.compile(
@@ -14240,6 +14252,59 @@ def _sniff_meta_charset(head: bytes, content_type: str) -> str | None:
     elif not is_xml:
         return None
     return prolog and _whatwg_codec(prolog.group(1))
+
+
+def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
+    from html import unescape
+    from urllib.parse import urldefrag, urljoin, urlparse
+
+    def attr_text(value: bytes) -> str:
+        return _ATTR_CHAR_REF_RE.sub(
+            lambda ref: unescape(ref.group(0)), value.decode("utf-8", "replace")
+        )
+
+    base_url, seen_base, inert = page_url, False, None
+    for tag in _HTML_TAG_RE.finditer(body[:_META_REFRESH_SCAN_BYTES]):
+        name = (tag.group(1) or b"").lower()
+        if inert is not None:
+            if tag.group(0)[: len(inert) + 2].lower() == b"</" + inert:
+                inert = None
+        elif name in _META_REFRESH_INERT_TAGS:
+            inert = name
+        elif name in (b"base", b"meta"):
+            attrs = {}
+            for attr, *values in _META_ATTR_RE.findall(tag.group(2)):
+                attrs.setdefault(attr.lower(), b"".join(values))
+            if name == b"base":
+                # Only the first <base href> counts, and only for a refresh that comes after it.
+                if b"href" in attrs and not seen_base:
+                    seen_base = True
+                    try:
+                        href = urljoin(page_url, attr_text(attrs[b"href"]).strip())
+                        if urlparse(href).scheme in ("http", "https"):
+                            base_url = href
+                    except ValueError:
+                        pass
+                continue
+            if attrs.get(b"http-equiv", b"").strip().lower() != b"refresh":
+                continue
+            match = _META_REFRESH_CONTENT_RE.match(attr_text(attrs.get(b"content", b"")))
+            if match is None:
+                continue
+            location = (match.group(2) or "").strip()
+            if location[:1] in ("'", '"'):
+                location = location[1:].split(location[0], 1)[0].strip()
+            if not location or int(match.group(1) or 0) > _META_REFRESH_MAX_DELAY:
+                return None
+            try:
+                target = urljoin(base_url, location)
+                scheme = urlparse(target).scheme
+            except ValueError:
+                return None
+            if scheme not in ("http", "https") or urldefrag(target)[0] == urldefrag(page_url)[0]:
+                return None
+            return target
+    return None
 
 
 def _extract_pdf_text(data: bytes) -> str:
@@ -14751,6 +14816,21 @@ def _pinned_netloc(ip: str, port: int | None) -> str:
     return f"{host}:{port}" if port else host
 
 
+def _redirect_hop(url: str, website_policy, deadline, cancel_event) -> tuple[str | None, str, list]:
+    from urllib.parse import urlparse
+    from .web_access_policy import check_url_access
+
+    allowed, reason, host = check_url_access(url, website_policy)
+    if not allowed:
+        return reason, "", []
+    parsed = urlparse(url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    ok, reason, pinned_ips = _resolve_with_budget(host, port, deadline, cancel_event)
+    if not ok:
+        return reason, "", []
+    return None, host, pinned_ips
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
@@ -14861,25 +14941,14 @@ def _fetch_url_raw(
                 if not location:
                     return "Failed to fetch URL: redirect missing Location header.", "", ""
                 current_url = urljoin(current_url, location)
-                # Server-controlled, so never scheme-upgraded; the gate below reads .port first, so the parse after it
-                # cannot raise.
-                allowed, policy_reason, redirect_host = check_url_access(
+                hop_error, current_host, pinned_ips = _redirect_hop(
                     current_url,
                     website_policy,
-                )
-                if not allowed:
-                    return policy_reason, "", ""
-                rp = urlparse(current_url)
-                rp_port = rp.port or (443 if rp.scheme == "https" else 80)
-                ok2, reason2, pinned_ips = _resolve_with_budget(
-                    redirect_host,
-                    rp_port,
                     deadline,
                     cancel_event,
                 )
-                if not ok2:
-                    return reason2, "", ""
-                current_host = redirect_host
+                if hop_error is not None:
+                    return hop_error, "", ""
                 continue
 
             # get_content_type() defaults to "text/plain" when the header is absent (RFC 2045); report "" instead so
@@ -14925,7 +14994,20 @@ def _fetch_url_raw(
                 if tail_error is not None:
                     return tail_error, "", ""
                 raw_bytes += tail
-            break
+            refresh_url = content_type == "text/html" and _meta_refresh_target(
+                raw_bytes, current_url
+            )
+            if not refresh_url:
+                break
+            current_url = refresh_url
+            hop_error, current_host, pinned_ips = _redirect_hop(
+                current_url,
+                website_policy,
+                deadline,
+                cancel_event,
+            )
+            if hop_error is not None:
+                return hop_error, "", ""
         else:
             return "Failed to fetch URL: too many redirects.", "", ""
 
