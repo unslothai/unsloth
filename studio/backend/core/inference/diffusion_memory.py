@@ -921,12 +921,7 @@ def estimate_video_runtime_mib(
 
 @dataclass(frozen = True)
 class CalibratedImageActivation:
-    """Measured peaks above the resident weights for one image, safety margin included (MiB).
-
-    The first four are at the 1024x1024 default: text encoding, denoising, an untiled and a tiled VAE decode.
-    ``max_canvas_mib`` is the larger of the denoise and the tiled decode at the largest canvas the Images page offers
-    (2048x2048). Above one megapixel the generate-time guard tiles the decode, but nothing can shrink the denoise, so a
-    tier that keeps the whole transformer on the device must hold this too."""
+    """MiB above the resident weights, margin included: each phase at 1024x1024, then the 2048x2048 worst case."""
 
     text_encoder_mib: int
     denoise_mib: int
@@ -942,12 +937,8 @@ class CalibratedImageActivation:
         )
 
 
-# Worst case over every measured build of the family (bf16, fp8, int8, GGUF; FLUX.2 klein 4B and 9B), CFG on and off,
-# the first call at a new size (cuDNN autotuning workspaces) and a load that streams the text encoders, one image at a
-# time, on NVIDIA with a sub-quadratic attention kernel. The first tuple covers the off / eager / default speed tiers
-# (compile and CUDA graphs included); the second the max tier, whose max-autotune compile can hold far more for the
-# denoise. Families not listed keep the flat estimate: Qwen-Image's streamed text encoder is unmeasured, and a U-Net
-# pipeline cannot keep its denoiser resident while streaming the encoders.
+# Worst case over every build, speed tier and CFG setting measured on NVIDIA (streamed encoders, first calls included);
+# (off / eager / default, max). Unlisted families keep the flat estimate: a U-Net cannot stream its encoders beside it.
 _ACTIVATION_MARGIN = 1.2
 _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     str, tuple[tuple[int, int, int, int, int], tuple[int, int, int, int, int]]
@@ -963,8 +954,7 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
 def calibrated_image_activation(
     family: Optional[str], *, max_speed: bool = True
 ) -> Optional[CalibratedImageActivation]:
-    """Planning activation for a measured family (exact family name), or None to keep the flat estimate.
-    ``max_speed`` picks the max speed tier's figures, the safe answer when the tier is unknown."""
+    """Planning activation for a measured family, else None (flat estimate); ``max_speed`` is the safe default."""
     measured = _MEASURED_IMAGE_ACTIVATION_MIB.get(str(family or ""))
     if measured is None:
         return None
@@ -1380,17 +1370,9 @@ def _calibrated_faster_tier(
     policy: str,
     stream_transformer: bool,
 ) -> Optional[tuple[str, bool, bool, bool, str]]:
-    """A strictly faster auto tier than the flat estimate picked, sized on measured activations, else None.
-
-    Fastest first: all resident; transformer resident with the text encoders streamed, untiled then tiled (tiling a
-    1024 decode costs less than whole-module offload's per-call transformer upload); whole-module offload untiled then
-    tiled; then the streamed transformer tiers, which re-upload the transformer every step, not once per call.
-    Whole-module offload is viable exactly when the flat planner would keep it (every component fits the budget on its
-    own, else refine_memory_plan_for_components streams); only its untiled decode needs the measured check, since the
-    flat planner already runs whole-module offload on smaller cards. The resident tiers hold more than the transformer
-    while it denoises, and above one megapixel only the decode can be tiled, so they must also fit the largest canvas's
-    denoise in the free memory (the reserve is for fragmentation; the base overhead still applies). Tiers are only
-    tried above the flat pick, and every check grows with the budget, so more VRAM is never slower."""
+    """A strictly faster auto tier than the flat pick, sized on measured activations, else None. Only tiers above
+    the flat pick are tried and every check grows with the budget, so more VRAM is never slower. Resident tiers must
+    also fit the 2048 denoise in free memory: above one megapixel the guard can tile the decode, never the denoise."""
     if budget is None or free_mib is None or model_dense_mib is None or companion_dense_mib is None:
         return None
     te = max(0, int(text_encoder_dense_mib or 0))

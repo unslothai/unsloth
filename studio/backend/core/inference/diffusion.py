@@ -1568,7 +1568,7 @@ def _dense_candidate_is_prequant(
         return False
 
 
-# The speed tier the load being planned asked for; unset outside a load, which plans at the max tier's activations.
+# The speed tier of the load being planned; unset outside a load, which plans at the max tier's activations.
 _PLANNED_SPEED_MODE: contextvars.ContextVar[Any] = contextvars.ContextVar("_PLANNED_SPEED_MODE")
 _SPEED_UNKNOWN = object()
 
@@ -1588,7 +1588,7 @@ def _plans_at_requested_speed(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def _calibrated_activation(fam: Any, target: Any) -> Any:
-    """Measured planning activations where they were measured: NVIDIA CUDA running a sub-quadratic attention kernel."""
+    """Measured planning activations, only where they were measured: NVIDIA with a sub-quadratic attention kernel."""
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
         return None
     requested = _PLANNED_SPEED_MODE.get(_SPEED_UNKNOWN)
