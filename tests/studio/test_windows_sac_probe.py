@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from unsloth_pwsh_runner import run_pwsh
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROBE_DIR = REPO_ROOT / "scripts" / "windows_sac_probe"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "windows-llama-signature-audit.yml"
@@ -1897,7 +1899,7 @@ exit 0
     )
     run = tmp_path / "run"
     run.mkdir()
-    proc = subprocess.run(
+    proc = run_pwsh(
         [
             pwsh,
             "-NoProfile",
@@ -2032,7 +2034,7 @@ $events = @($e1, $e2, $e3, $e4)
 """,
         encoding = "utf-8",
     )
-    proc = subprocess.run(
+    proc = run_pwsh(
         [pwsh, "-NoProfile", "-File", str(driver), "-Snippet", snippet],
         capture_output = True,
         text = True,
@@ -2074,7 +2076,7 @@ exit 0
 """,
         encoding = "utf-8",
     )
-    proc = subprocess.run(
+    proc = run_pwsh(
         [
             pwsh,
             "-NoProfile",
@@ -2115,7 +2117,7 @@ function Start-Sleep { }
         + body,
         encoding = "utf-8",
     )
-    proc = subprocess.run(
+    proc = run_pwsh(
         [
             pwsh,
             "-NoProfile",
@@ -2496,7 +2498,7 @@ exit 0
 """,
         encoding = "utf-8",
     )
-    proc = subprocess.run(
+    proc = run_pwsh(
         [pwsh, "-NoProfile", "-File", str(script)], capture_output = True, text = True
     )
     assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]
