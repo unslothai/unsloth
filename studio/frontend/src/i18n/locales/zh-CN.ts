@@ -2957,6 +2957,11 @@ export const zhCN = {
       gridView: "网格视图",
       listView: "列表视图",
       settings: "资料库设置",
+      sort: "排序",
+      sortDefault: "默认顺序",
+      sortName: "名称",
+      sortModified: "修改时间",
+      sortSize: "大小",
     },
     create: {
       note: "笔记",

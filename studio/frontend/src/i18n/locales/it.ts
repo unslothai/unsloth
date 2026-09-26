@@ -3117,6 +3117,11 @@ export const it = {
       gridView: "Vista a griglia",
       listView: "Vista a elenco",
       settings: "Impostazioni della Libreria",
+      sort: "Ordina",
+      sortDefault: "Ordine predefinito",
+      sortName: "Nome",
+      sortModified: "Modificato",
+      sortSize: "Dimensione",
     },
     create: {
       note: "Nota",
