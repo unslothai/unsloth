@@ -16590,9 +16590,11 @@ def _check_signal_escape_patterns(code: str):
     def _normalize_host(host: str) -> str:
         if not host:
             return ""
-        # urllib3 ends the authority at a backslash and splits userinfo on the LAST `@`:
-        # `http://evil\\@allowed/` connects to `evil`.
-        h = host.strip().lower().split("\\", 1)[0].rstrip(".")
+        h = host.strip().lower().rstrip(".")
+        if "\\" in h:
+            # Clients disagree on a backslash: urllib3 ends the host at it, httpx reads it as
+            # userinfo. Kept unmatched so neither reading can be allowlisted.
+            return h
         if "@" in h:
             h = h.rsplit("@", 1)[1]
         if h.startswith("[") and "]" in h:
@@ -17960,6 +17962,7 @@ def _check_signal_escape_patterns(code: str):
                 self.env_proxies.append(_UNREADABLE)
 
         def _is_environ(self, node) -> bool:
+            node = _constant_getattr(node) or node  # `getattr(os, "environ")`
             if isinstance(node, ast.Name):
                 return node.id in self.environ_names
             return (
@@ -18422,13 +18425,15 @@ def _check_signal_escape_patterns(code: str):
                                 destinations.append((_UNREADABLE, True, "host"))
                     if kw.arg == "connect_kwargs" and any(c.startswith("fabric.") for c in recognised):
                         # Fabric passes these to `SSHClient.connect`, so a `sock` routes the session.
-                        dicts = [kw.value] if isinstance(kw.value, ast.Dict) else []
+                        keys = list(kw.value.keys) if isinstance(kw.value, ast.Dict) else []
+                        known = isinstance(kw.value, ast.Dict)
                         if isinstance(kw.value, ast.Name):
-                            dicts = self.dict_literals.get(kw.value.id, [])
-                        if not dicts or any(
-                            not isinstance(k, ast.Constant) or k.value == "sock"
-                            for d in dicts
-                            for k in d.keys
+                            name = kw.value.id
+                            known = name in self.dict_literals and name not in self.dict_mutated
+                            keys = [k for d in self.dict_literals.get(name, ()) for k in d.keys]
+                            keys += [k for k, _v in self.dict_entries.get(name, ())]
+                        if not known or any(
+                            not isinstance(k, ast.Constant) or k.value == "sock" for k in keys
                         ):
                             destinations.append((_UNREADABLE, True, "host"))
                 proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
@@ -18507,7 +18512,7 @@ def _check_signal_escape_patterns(code: str):
                             # The URL parser drops tab, CR and LF anywhere in the URL.
                             reading = re.sub(r"[\t\r\n]", "", head).lstrip()
                             # aiohttp 3.14.3 treats `//host/x` as absolute and connects to `host`.
-                            m = re.match(r"^(?:\w+:)?//([^/\\?#]+)", reading)
+                            m = re.match(r"^(?:\w+:)?//([^/?#]+)", reading)
                             # The host ends at the first `/?#`, so a literal truncated past that point
                             # still names it in full; one truncated inside it does not
                             # (`"http://evil." + tld`).
