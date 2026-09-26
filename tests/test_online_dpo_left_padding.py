@@ -34,7 +34,7 @@ TRL_0_22_FORWARD = """
 
 
 def _patcher():
-    tree = ast.parse(SOURCE.read_text())
+    tree = ast.parse(SOURCE.read_text(encoding = "utf-8"))
     wanted = [
         node
         for node in tree.body
@@ -67,7 +67,7 @@ def _trl_sources():
         path = root / relative
         if not path.exists():
             continue
-        text = path.read_text()
+        text = path.read_text(encoding = "utf-8")
         for node in ast.walk(ast.parse(text)):
             if isinstance(node, ast.FunctionDef) and node.name == "_forward":
                 sources["installed"] = "    " + ast.get_source_segment(text, node)
