@@ -338,13 +338,35 @@ def test_prewrapped_peft_and_quantized_checkpoints_are_covered():
     )
 
 
-def test_refuses_falcon_h1():
+@pytest.mark.parametrize("model_type", ["falcon_h1", "granite", "cohere"])
+def test_refuses_models_whose_decode_loop_bypasses_the_swapper(model_type):
     ns, calls = _load()
     m = _Model()
-    m.config = types.SimpleNamespace(model_type = "falcon_h1")
-    with pytest.raises(ValueError, match = "Falcon-H1"):
+    m.config = types.SimpleNamespace(model_type = model_type)
+    with pytest.raises(ValueError, match = model_type):
         ns["install_block_swap"](m, 4)
     assert not calls
+
+
+def test_every_custom_decode_loop_is_served_or_refused():
+    # A FastXModel with its own model-level decode loop must call block_swap.enter/leave or be refused.
+    models = os.path.join(HERE, "unsloth", "models")
+    refused = {"falcon_h1", "granite", "cohere"}
+    for name in sorted(os.listdir(models)):
+        if not name.endswith(".py"):
+            continue
+        src = open(os.path.join(models, name), encoding = "utf-8").read()
+        loops = [
+            n
+            for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.FunctionDef)
+            and n.name.endswith("fast_forward_inference")
+            and "Attention" not in n.name
+        ]
+        if loops and name[:-3] not in refused:
+            assert (
+                "block_swap" in src
+            ), f"{name} has a decode loop that never fetches swapped blocks"
 
 
 def test_a_caller_quantization_config_is_refused_before_loading():

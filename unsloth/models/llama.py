@@ -2455,6 +2455,12 @@ class FastLlamaModel:
         # HF gets it again through **kwargs alongside our config= and fails with a duplicate kwarg.
         user_config = kwargs.pop("config", None)
         block_swap_layers = kwargs.pop("block_swap_layers", 0)
+        if block_swap_layers and kwargs.get("state_dict") is not None:
+            # The host tail is read from the checkpoint files, not from a caller state_dict.
+            raise ValueError(
+                "Unsloth: from_pretrained(block_swap_layers = ...) does not take a state_dict; "
+                "save it as a safetensors checkpoint and load that."
+            )
         if block_swap_layers and kwargs.get("quantization_config") is not None:
             # The host tail is quantized from load_in_4bit alone and would ignore this config.
             raise ValueError(
