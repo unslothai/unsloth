@@ -261,7 +261,7 @@ export const ar = {
       section: "القسم",
       moveToSection: "نقل إلى قسم",
       newSectionEllipsis: "قسم جديد…",
-      noSection: "بدون قسم",
+      removeFromSection: "إزالة من القسم",
       // Shown in a section with nothing filed in it yet.
       empty: "اسحب المحادثات أو المشاريع إلى هنا",
       sectionOptions: "خيارات القسم",

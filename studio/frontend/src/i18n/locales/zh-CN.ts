@@ -259,7 +259,7 @@ export const zhCN = {
       section: "分区",
       moveToSection: "移至分区",
       newSectionEllipsis: "新建分区…",
-      noSection: "无分区",
+      removeFromSection: "从分区中移除",
       // Shown in a section with nothing filed in it yet.
       empty: "将对话或项目拖到此处",
       sectionOptions: "分区选项",

@@ -263,7 +263,7 @@ export const es = {
       section: "Sección",
       moveToSection: "Mover a sección",
       newSectionEllipsis: "Nueva sección…",
-      noSection: "Sin sección",
+      removeFromSection: "Quitar de la sección",
       // Shown in a section with nothing filed in it yet.
       empty: "Arrastra chats o proyectos aquí",
       sectionOptions: "Opciones de sección",

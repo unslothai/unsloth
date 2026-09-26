@@ -263,7 +263,7 @@ export const ptBR = {
       section: "Seção",
       moveToSection: "Mover para seção",
       newSectionEllipsis: "Nova seção…",
-      noSection: "Sem seção",
+      removeFromSection: "Remover da seção",
       // Shown in a section with nothing filed in it yet.
       empty: "Arraste conversas ou projetos para cá",
       sectionOptions: "Opções da seção",

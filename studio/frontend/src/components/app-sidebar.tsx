@@ -4104,7 +4104,8 @@ export function AppSidebar() {
       /** The section every row is drawn in, which is not offered again. A pinned row keeps its
        *  section while Pinned draws it, and filing it there is how it goes back, so it has none. */
       current: string | null;
-      /** Whether any row is in a section, which is what "No section" can undo. */
+      /** Whether any row is drawn in a section it was filed in, which "Remove from section"
+       *  undoes. Not a pinned row: Pinned draws it, whatever section it goes back to. */
       anyFiled: boolean;
     },
   ) {
@@ -4132,13 +4133,11 @@ export function AppSidebar() {
             <span>{t("shell.sections.newSectionEllipsis")}</span>
           </P.Item>
           {customSections.length > 0 && <P.Separator />}
-          {customSections.length > 0 && (
-            <P.Item
-              disabled={!config.anyFiled}
-              onSelect={() => fileSectionTarget(target, null)}
-            >
+          {/* An action, so only where there is something to undo: greyed out it read as a label. */}
+          {config.anyFiled && (
+            <P.Item onSelect={() => fileSectionTarget(target, null)}>
               <HugeiconsIcon icon={MinusSignCircleIcon} strokeWidth={1.75} className="size-icon" />
-              <span>{t("shell.sections.noSection")}</span>
+              <span>{t("shell.sections.removeFromSection")}</span>
             </P.Item>
           )}
           {customSections.map((section) => (
@@ -4168,7 +4167,7 @@ export function AppSidebar() {
           ? { chatIds: ids, selection: true }
           : { projectIds: ids, selection: true },
       current: sections.size === 1 ? [...sections][0] : null,
-      anyFiled: ids.some((id) => Boolean(assignments[id])),
+      anyFiled: ids.some((id) => !pinned.has(id) && Boolean(assignments[id])),
     });
   }
 
@@ -4438,7 +4437,7 @@ export function AppSidebar() {
               label: t("shell.sections.section"),
               target: { chatIds: [item.id] },
               current: pinnedIdSet.has(item.id) ? null : sectionByChatId[item.id] ?? null,
-              anyFiled: Boolean(sectionByChatId[item.id]),
+              anyFiled: !pinnedIdSet.has(item.id) && Boolean(sectionByChatId[item.id]),
             })}
             <P.Sub>
               <P.SubTrigger>
@@ -4799,7 +4798,7 @@ export function AppSidebar() {
             label: t("shell.sections.section"),
             target: { projectIds: [project.id] },
             current: pinnedProjectIdSet.has(project.id) ? null : sectionByProjectId[project.id] ?? null,
-            anyFiled: Boolean(sectionByProjectId[project.id]),
+            anyFiled: !pinnedProjectIdSet.has(project.id) && Boolean(sectionByProjectId[project.id]),
           })}
           <P.Separator />
           <P.Item

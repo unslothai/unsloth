@@ -263,7 +263,7 @@ export const ja = {
       section: "セクション",
       moveToSection: "セクションへ移動",
       newSectionEllipsis: "新しいセクション…",
-      noSection: "セクションなし",
+      removeFromSection: "セクションから削除",
       // Shown in a section with nothing filed in it yet.
       empty: "ここにチャットやプロジェクトをドラッグ",
       sectionOptions: "セクションのオプション",

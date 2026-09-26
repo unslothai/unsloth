@@ -868,3 +868,24 @@ test("signing in as another account drops the previous account's sections", asyn
   // And the page reloads, so the store in memory goes with it.
   assert.equal(reloadedTo, "/chat");
 });
+
+test("a row's section menu offers Remove from section only when it is in one", async () => {
+  // Shown greyed out on a row in no section, it read as a label ("No section"), not an action.
+  assert.match(
+    APP_SIDEBAR,
+    /\{config\.anyFiled && \(\n\s*<P\.Item onSelect=\{\(\) => fileSectionTarget\(target, null\)\}>/,
+  );
+  assert.doesNotMatch(APP_SIDEBAR, /disabled=\{!config\.anyFiled\}/);
+  // A pinned row is drawn in Pinned, so it has nothing to remove.
+  assert.match(APP_SIDEBAR, /anyFiled: !pinnedIdSet\.has\(item\.id\) && Boolean\(sectionByChatId\[item\.id\]\),/);
+  assert.match(
+    APP_SIDEBAR,
+    /anyFiled: !pinnedProjectIdSet\.has\(project\.id\) && Boolean\(sectionByProjectId\[project\.id\]\),/,
+  );
+  assert.match(APP_SIDEBAR, /anyFiled: ids\.some\(\(id\) => !pinned\.has\(id\) && Boolean\(assignments\[id\]\)\),/);
+  for (const locale of ["en", "de", "ja"]) {
+    const source = await readSrcAsync(`i18n/locales/${locale}.ts`);
+    assert.match(source, /removeFromSection: "/, locale);
+    assert.doesNotMatch(source, /noSection:/, locale);
+  }
+});

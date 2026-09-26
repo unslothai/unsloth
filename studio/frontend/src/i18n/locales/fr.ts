@@ -264,7 +264,7 @@ export const fr = {
       section: "Section",
       moveToSection: "Déplacer vers une section",
       newSectionEllipsis: "Nouvelle section…",
-      noSection: "Aucune section",
+      removeFromSection: "Retirer de la section",
       // Shown in a section with nothing filed in it yet.
       empty: "Faites glisser des discussions ou des projets ici",
       sectionOptions: "Options de la section",

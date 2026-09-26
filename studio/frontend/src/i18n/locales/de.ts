@@ -264,7 +264,7 @@ export const de = {
       section: "Abschnitt",
       moveToSection: "In Abschnitt verschieben",
       newSectionEllipsis: "Neuer Abschnitt…",
-      noSection: "Kein Abschnitt",
+      removeFromSection: "Aus Abschnitt entfernen",
       // Shown in a section with nothing filed in it yet.
       empty: "Chats oder Projekte hierher ziehen",
       sectionOptions: "Abschnittsoptionen",
