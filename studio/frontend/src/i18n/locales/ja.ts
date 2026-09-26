@@ -3042,6 +3042,7 @@ export const ja = {
       viewOriginalProject: "元のプロジェクトを表示",
       viewTrainingRun: "トレーニング実行を表示",
       sheetTruncated: "このシートの一部のみを表示中",
+      documentTruncated: "この文書の冒頭のみを表示中",
       emptyDocument: "このファイルは空です。",
       cannotPreview: "このファイルはここではプレビューできません。ダウンロードして開いてください。",
       noPreview: "この種類のファイルはプレビューできません。",

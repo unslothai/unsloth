@@ -8,12 +8,13 @@ import { openLink } from "@/lib/open-link";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { cn } from "@/lib/utils";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { type CSSProperties, type MouseEvent, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type MouseEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DocumentKind } from "./kind";
 import { useWidth } from "./use-width";
 import {
   type Deck,
   type Sheet,
+  type SheetCell,
   type Slide,
   type SlideBox,
   columnName,
@@ -23,7 +24,7 @@ import {
 } from "./office";
 
 type Parsed =
-  | { kind: "docx"; html: string }
+  | { kind: "docx"; html: string; truncated: boolean }
   | { kind: "sheet"; sheets: Sheet[] }
   | { kind: "slides"; deck: Deck };
 
@@ -35,7 +36,7 @@ async function parse(file: Blob, kind: DocumentKind, name: string): Promise<Pars
     // Large parts kept: an image past the XML ceiling still shows.
     const repacked = repackDocxAttachmentArchive(name, bytes, { keepLarge: true });
     const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.buffer as ArrayBuffer });
-    return { kind, html: sanitizeDocxHtml(value) };
+    return { kind, ...sanitizeDocxHtml(value) };
   }
   if (kind === "slides") return { kind, deck: readPptx(bytes) };
   if (extension === "csv" || extension === "tsv") {
@@ -57,10 +58,22 @@ const DOCX_TAGS = new Set(
 );
 const DOCX_ATTRIBUTES = new Set(["href", "src", "alt", "id", "colspan", "rowspan"]);
 
+// Elements past this are dropped: a small file can convert to far too many to mount.
+const MAX_DOCX_ELEMENTS = 50_000;
+
 /** mammoth writes a small vocabulary; anything else, and any link that is not a web, mail or
  *  in-document one, is dropped before the markup reaches the page. */
-function sanitizeDocxHtml(html: string): string {
+function sanitizeDocxHtml(html: string): { html: string; truncated: boolean } {
   const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
+  const elements = doc.body.querySelectorAll("*");
+  const cut = elements[MAX_DOCX_ELEMENTS];
+  if (cut) {
+    // Drop the cut and all that follows it at every level, so one long table keeps its first rows.
+    for (let node: Element = cut; node !== doc.body; node = node.parentElement!) {
+      while (node.nextSibling) node.nextSibling.remove();
+    }
+    cut.remove();
+  }
   for (const element of Array.from(doc.body.querySelectorAll("*"))) {
     if (!DOCX_TAGS.has(element.localName)) {
       element.replaceWith(...Array.from(element.childNodes));
@@ -75,13 +88,14 @@ function sanitizeDocxHtml(html: string): string {
       if (unsafe) element.removeAttribute(attr.name);
     }
   }
-  return doc.body.innerHTML;
+  return { html: doc.body.innerHTML, truncated: Boolean(cut) };
 }
 
 // A Letter page's width at 96 dpi.
 const DOCX_PAGE_WIDTH = 816;
 
-function DocxView({ html, scale }: { html: string; scale: number }) {
+function DocxView({ html, truncated, scale }: { html: string; truncated: boolean; scale: number }) {
+  const t = useT();
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   // A pixel width, which zoom scales the same way in every engine; a percentage it does not.
   // 100% is the page, or the pane when that is narrower.
@@ -109,6 +123,9 @@ function DocxView({ html, scale }: { html: string; scale: number }) {
         // Sanitised above: a fixed set of tags and attributes, with no scripts or handlers.
         dangerouslySetInnerHTML={{ __html: html }}
       />
+      {truncated && (
+        <p className="mt-4 text-center text-ui-12 text-muted-foreground">{t("library.preview.documentTruncated")}</p>
+      )}
     </div>
   );
 }
@@ -116,6 +133,53 @@ function DocxView({ html, scale }: { html: string; scale: number }) {
 const ROW_HEIGHT = 28;
 const DEFAULT_COLUMN_WIDTH = 100;
 const ROW_HEADER_WIDTH = 48;
+
+// Plain strings, not cn(): hundreds of cells render per scroll frame.
+const CELL = "h-7 border-r border-b border-border px-2 whitespace-nowrap overflow-hidden text-ellipsis";
+const HEADER = `${CELL} sticky bg-muted font-normal text-muted-foreground text-center`;
+
+/** Columns `start` to `end` of a row, with spacer cells for those scrolled past. Memoized so rows
+ *  still in view skip rendering. */
+const SheetRow = memo(function SheetRow({
+  r,
+  row,
+  columns,
+  start,
+  end,
+  left,
+  right,
+}: {
+  r: number;
+  row: (SheetCell | undefined)[] | undefined;
+  columns: number[];
+  start: number;
+  end: number;
+  left: boolean;
+  right: boolean;
+}) {
+  const cells = [];
+  for (let i = start; i < end; i++) {
+    const index = columns[i]!;
+    const value = row?.[index];
+    let className = CELL;
+    if (value?.numeric) className += " text-right";
+    if (value?.bold) className += " font-semibold";
+    if (value?.italic) className += " italic";
+    cells.push(
+      <td key={index} title={value && value.text.length > 12 ? value.text : undefined} className={className}>
+        {value?.text}
+      </td>,
+    );
+  }
+  return (
+    <tr>
+      <th className={`${HEADER} left-0 z-10`}>{r + 1}</th>
+      {left && <td className="p-0" />}
+      {cells}
+      {right && <td className="p-0" />}
+    </tr>
+  );
+});
 
 function SheetGrid({
   sheet,
@@ -129,23 +193,27 @@ function SheetGrid({
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const rowHeight = ROW_HEIGHT * uiScale * scale;
-  // reduce, not a spread: rows a sheet leaves out are holes, which a spread turns into NaN.
-  const columns = Math.max(
-    1,
-    sheet.rows.reduce((max, row) => Math.max(max, row?.length ?? 0), sheet.widths.length),
-  );
-  const rowCount = Math.max(sheet.rows.length, 1);
-  // Hidden rows and columns are skipped but keep their labels, as Excel shows them (A, C).
-  const visibleColumns = Array.from({ length: columns }, (_, index) => index).filter(
-    (index) => !sheet.hidden?.columns.has(index),
-  );
-  const visibleRows = sheet.hidden?.rows.size
-    ? Array.from({ length: rowCount }, (_, index) => index).filter((index) => !sheet.hidden!.rows.has(index))
-    : null;
-  const widths = visibleColumns.map((index) => (sheet.widths[index] ?? DEFAULT_COLUMN_WIDTH) * uiScale);
   const headerWidth = ROW_HEADER_WIDTH * uiScale;
+  // Per sheet, not per scroll frame.
+  const { visibleColumns, visibleRows, widths, rowCount } = useMemo(() => {
+    // reduce, not a spread: rows a sheet leaves out are holes, which a spread turns into NaN.
+    const columns = Math.max(
+      1,
+      sheet.rows.reduce((max, row) => Math.max(max, row?.length ?? 0), sheet.widths.length),
+    );
+    const rowCount = Math.max(sheet.rows.length, 1);
+    // Hidden rows and columns are skipped but keep their labels, as Excel shows them (A, C).
+    const visibleColumns = Array.from({ length: columns }, (_, index) => index).filter(
+      (index) => !sheet.hidden?.columns.has(index),
+    );
+    const visibleRows = sheet.hidden?.rows.size
+      ? Array.from({ length: rowCount }, (_, index) => index).filter((index) => !sheet.hidden!.rows.has(index))
+      : null;
+    const widths = visibleColumns.map((index) => (sheet.widths[index] ?? DEFAULT_COLUMN_WIDTH) * uiScale);
+    return { visibleColumns, visibleRows, widths, rowCount };
+  }, [sheet, uiScale]);
   // A fixed layout only honours the column widths when the table has a width of its own.
-  const tableWidth = widths.reduce((sum, width) => sum + width, headerWidth);
+  const tableWidth = useMemo(() => widths.reduce((sum, width) => sum + width, headerWidth), [widths, headerWidth]);
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: visibleRows?.length ?? rowCount,
@@ -153,13 +221,26 @@ function SheetGrid({
     estimateSize: () => rowHeight,
     // The sticky column header sits above the first row.
     paddingStart: rowHeight,
-    overscan: 20,
+    overscan: 6,
+  });
+  // Only the columns in view are mounted.
+  const columnVirtualizer = useVirtualizer({
+    horizontal: true,
+    count: visibleColumns.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (index) => widths[index]! * scale,
+    // The sticky row header sits left of the first column.
+    paddingStart: headerWidth * scale,
+    overscan: 4,
   });
   const items = virtualizer.getVirtualItems();
   const before = ((items[0]?.start ?? 0) - rowHeight) / scale;
   const after = (virtualizer.getTotalSize() - (items.at(-1)?.end ?? 0)) / scale;
-  const cell = "h-7 border-r border-b border-border px-2 whitespace-nowrap overflow-hidden text-ellipsis";
-  const header = "sticky bg-muted font-normal text-muted-foreground text-center";
+  const columnItems = columnVirtualizer.getVirtualItems();
+  const left = ((columnItems[0]?.start ?? headerWidth * scale) - headerWidth * scale) / scale;
+  const right = (columnVirtualizer.getTotalSize() - (columnItems.at(-1)?.end ?? headerWidth * scale)) / scale;
+  const start = columnItems[0]?.index ?? 0;
+  const end = (columnItems.at(-1)?.index ?? -1) + 1;
   return (
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
       <table
@@ -168,46 +249,42 @@ function SheetGrid({
       >
         <colgroup>
           <col style={{ width: headerWidth }} />
-          {widths.map((width, index) => (
-            <col key={index} style={{ width }} />
+          {left > 0 && <col style={{ width: left }} />}
+          {columnItems.map((item) => (
+            <col key={item.index} style={{ width: widths[item.index] }} />
           ))}
+          {right > 0 && <col style={{ width: right }} />}
         </colgroup>
         <thead>
           <tr>
-            <th className={cn(cell, header, "top-0 left-0 z-20")} />
-            {visibleColumns.map((index) => (
-              <th key={index} className={cn(cell, header, "top-0 z-10")}>
-                {columnName(index)}
-              </th>
-            ))}
+            <th className={`${HEADER} top-0 left-0 z-20`} />
+            {left > 0 && <th className="p-0" />}
+            {columnItems.map((item) => {
+              const index = visibleColumns[item.index]!;
+              return (
+                <th key={index} className={`${HEADER} top-0 z-10`}>
+                  {columnName(index)}
+                </th>
+              );
+            })}
+            {right > 0 && <th className="p-0" />}
           </tr>
         </thead>
         <tbody>
           {before > 0 && <tr style={{ height: before }} />}
           {items.map((item) => {
             const r = visibleRows?.[item.index] ?? item.index;
-            const row = sheet.rows[r];
             return (
-              <tr key={r}>
-                <th className={cn(cell, header, "left-0 z-10")}>{r + 1}</th>
-                {visibleColumns.map((index) => {
-                  const value = row?.[index];
-                  return (
-                    <td
-                      key={index}
-                      title={value && value.text.length > 12 ? value.text : undefined}
-                      className={cn(
-                        cell,
-                        value?.numeric && "text-right",
-                        value?.bold && "font-semibold",
-                        value?.italic && "italic",
-                      )}
-                    >
-                      {value?.text}
-                    </td>
-                  );
-                })}
-              </tr>
+              <SheetRow
+                key={r}
+                r={r}
+                row={sheet.rows[r]}
+                columns={visibleColumns}
+                start={start}
+                end={end}
+                left={left > 0}
+                right={right > 0}
+              />
             );
           })}
           {after > 0 && <tr style={{ height: after }} />}
@@ -311,7 +388,30 @@ function SlideTable({ rows, caption, widthPt }: { rows: string[][]; caption?: st
   );
 }
 
-function SlideFace({ slide, index, deck }: { slide: Slide; index: number; deck: Deck }) {
+/** The object URL lives only while the slide is mounted. */
+function SlideImage({ image }: { image: Blob }) {
+  // Stable, or every scroll re-render would remake the URL.
+  const attach = useCallback(
+    (element: HTMLImageElement | null) => {
+      if (!element) return;
+      const url = URL.createObjectURL(image);
+      element.src = url;
+      return () => URL.revokeObjectURL(url);
+    },
+    [image],
+  );
+  return (
+    <img
+      ref={attach}
+      alt=""
+      decoding="async"
+      className="size-full object-contain"
+    />
+  );
+}
+
+// Memoized: the list re-renders on every scroll frame.
+const SlideFace = memo(function SlideFace({ slide, index, deck }: { slide: Slide; index: number; deck: Deck }) {
   const flow = slide.boxes.filter((box) => !box.frame && box.paragraphs);
   const titles = flow.filter((box) => TITLES.has(box.placeholder ?? ""));
   const body = flow.filter((box) => !TITLES.has(box.placeholder ?? ""));
@@ -326,7 +426,7 @@ function SlideFace({ slide, index, deck }: { slide: Slide; index: number; deck: 
           box.frame ? (
             <div key={boxIndex} className="absolute overflow-hidden" style={frameStyle(box.frame)}>
               {box.image ? (
-                <img src={box.image} alt="" className="size-full object-contain" />
+                <SlideImage image={box.image} />
               ) : box.table ? (
                 <SlideTable rows={box.table} caption={box.caption} widthPt={deck.widthPt} />
               ) : (
@@ -355,7 +455,7 @@ function SlideFace({ slide, index, deck }: { slide: Slide; index: number; deck: 
       <span className="text-center text-ui-12 text-muted-foreground tabular-nums">{index + 1}</span>
     </div>
   );
-}
+});
 
 const SLIDE_GAP = 24;
 const SLIDE_LABEL = 26;
@@ -432,7 +532,7 @@ export default function OfficeView({
   }
   const parsed = current?.parsed;
   if (!parsed) return <Spinner className="m-auto size-6" />;
-  if (parsed.kind === "docx") return <DocxView html={parsed.html} scale={scale} />;
+  if (parsed.kind === "docx") return <DocxView html={parsed.html} truncated={parsed.truncated} scale={scale} />;
   if (parsed.kind === "slides") return <SlidesView deck={parsed.deck} scale={scale} />;
   return <SheetView sheets={parsed.sheets} tabs={!/\.(csv|tsv)$/i.test(name)} scale={scale} />;
 }

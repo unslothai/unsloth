@@ -3163,6 +3163,7 @@ export const de = {
       viewOriginalProject: "Ursprüngliches Projekt anzeigen",
       viewTrainingRun: "Trainingslauf anzeigen",
       sheetTruncated: "Nur ein Teil dieses Tabellenblatts wird angezeigt",
+      documentTruncated: "Nur der Anfang dieses Dokuments wird angezeigt",
       emptyDocument: "Diese Datei ist leer.",
       cannotPreview: "Für diese Datei ist hier keine Vorschau möglich. Laden Sie sie herunter, um sie zu öffnen.",
       noPreview: "Keine Vorschau für diesen Dateityp.",

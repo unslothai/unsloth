@@ -3174,6 +3174,7 @@ export const fr = {
       viewOriginalProject: "Voir le projet d'origine",
       viewTrainingRun: "Voir l'entraînement",
       sheetTruncated: "Affichage d'une partie de cette feuille",
+      documentTruncated: "Affichage du début de ce document",
       emptyDocument: "Ce fichier est vide.",
       cannotPreview: "Impossible d'afficher un aperçu de ce fichier ici. Téléchargez-le pour l'ouvrir.",
       noPreview: "Aucun aperçu pour ce type de fichier.",

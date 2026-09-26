@@ -321,6 +321,18 @@ def test_chat_attachments_holding_bytes_are_known_by_their_type_in_any_case(clie
     assert deleted == [("m:1", "voice")]
 
 
+def test_deleting_a_chat_attachment_from_the_library_sweeps_its_original(client, monkeypatch):
+    import storage.studio_db as studio_db
+    from core import chat_originals
+
+    sweeps = []
+    monkeypatch.setattr(chat_originals, "sweep", lambda force = False: sweeps.append(force))
+    monkeypatch.setattr(studio_db, "delete_chat_attachment", lambda *ids: True)
+    assert _delete(client, "attachment:m:doc") == 200
+    # It may have held the last reference to a kept original.
+    assert sweeps == [False]
+
+
 def test_an_original_sent_many_times_counts_once_toward_disk_usage(client, monkeypatch):
     import storage.studio_db as studio_db
 

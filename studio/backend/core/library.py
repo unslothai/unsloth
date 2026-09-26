@@ -2090,7 +2090,12 @@ def delete_item(item_id: str, fingerprint: Optional[str] = None) -> bool:
     `fingerprint` it was listed with, a path-derived item is only deleted while it is that file;
     ItemChanged otherwise."""
     with _overlay_lock:
-        return _delete_item(item_id, fingerprint)
+        deleted = _delete_item(item_id, fingerprint)
+    if deleted and item_id.startswith("attachment:"):
+        # May have held the last reference to an original. Swept outside the lock.
+        from core import chat_originals
+        chat_originals.sweep()
+    return deleted
 
 
 def _delete_item(item_id: str, fingerprint: Optional[str]) -> bool:

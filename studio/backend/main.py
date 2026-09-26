@@ -658,10 +658,15 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         return
     _start_linked_folder_auto_sync(generation)
 
-    # Chat originals a restart left unswept (core.chat_originals); cheap, and never fatal.
+    # Sweep chat originals in every account: pending sweep timers died with the last process.
     try:
         from core import chat_originals
-        chat_originals.sweep(force = True)
+        from core.training.account_jobs import startup_reconciliation_accounts
+        from utils.account_context import run_as
+        for account in startup_reconciliation_accounts():
+            if _post_warm_retired(generation):
+                return
+            run_as(account, chat_originals.sweep, True)
     except Exception:  # noqa: BLE001
         pass
 

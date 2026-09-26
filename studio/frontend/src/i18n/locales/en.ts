@@ -3098,6 +3098,7 @@ export const en = {
       viewOriginalProject: "View original project",
       viewTrainingRun: "View training run",
       sheetTruncated: "Showing part of this sheet",
+      documentTruncated: "Showing the start of this document",
       emptyDocument: "This file is empty.",
       cannotPreview: "This file can't be previewed here. Download it to open it.",
       noPreview: "No preview for this file type.",

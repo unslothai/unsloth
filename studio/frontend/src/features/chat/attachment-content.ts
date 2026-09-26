@@ -515,7 +515,7 @@ export function getDocumentAttachmentSizeError(
 
 export function assertDocumentAttachmentSize(
   file: File,
-  label: "PDF" | "DOCX",
+  label: "PDF" | "DOCX" | "XLSX" | "PPTX",
 ): void {
   const error = getDocumentAttachmentSizeError(file, label);
   if (error) {
@@ -723,28 +723,6 @@ export async function getDocxAttachmentError(
   return null;
 }
 
-/** As getDocxAttachmentError, for a workbook or deck: a corrupt or password-protected file is
- *  refused at add(), before the composer lets go of the typed message. */
-export async function getOfficeAttachmentError(
-  file: File,
-  label: "XLSX" | "PPTX",
-): Promise<string | null> {
-  const sizeError = getDocumentAttachmentSizeError(file, label);
-  if (sizeError) return sizeError;
-  try {
-    const [{ assertOfficeArchive }, buffer] = await Promise.all([
-      import("@/components/file-viewer/office"),
-      file.arrayBuffer(),
-    ]);
-    assertOfficeArchive(new Uint8Array(buffer), label === "XLSX" ? "xlsx" : "pptx");
-  } catch (error) {
-    return (error as Error | undefined)?.message === "File is too large to preview."
-      ? `${label} file is too large: ${file.name}`
-      : `${label} file could not be read: ${file.name}`;
-  }
-  return null;
-}
-
 export async function extractPdfAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "PDF");
   const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
@@ -761,21 +739,35 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
   }
 }
 
-// As much as a text attachment may carry. Rows and columns are capped but a cell is not, so one
-// large shared string repeated in every cell would otherwise be built in full.
-const MAX_OFFICE_TEXT_LENGTH = MAX_TEXT_ATTACHMENT_BYTES;
+// A text attachment's limit, in UTF-8 bytes. Cells are not capped, so the total must be.
+const MAX_OFFICE_TEXT_BYTES = MAX_TEXT_ATTACHMENT_BYTES;
 
+/** UTF-8 length of `text` up to `limit`, and where to cut to fit. */
+function utf8Within(text: string, limit: number): { bytes: number; end: number } {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    // A surrogate pair is one four-byte character.
+    const pair = code >= 0xd800 && code < 0xdc00 && i + 1 < text.length;
+    const size = code < 0x80 ? 1 : code < 0x800 ? 2 : pair ? 4 : 3;
+    if (bytes + size > limit) return { bytes, end: i };
+    bytes += size;
+    if (pair) i++;
+  }
+  return { bytes, end: text.length };
+}
+
+/** Charges each piece of text plus its delimiter to the byte budget. */
 function textBudget(limit: number) {
   let left = limit;
   let cut = false;
   return {
     take(text: string): string {
-      if (text.length > left) {
-        cut = true;
-        text = text.slice(0, left);
-      }
-      left -= text.length;
-      return text;
+      if (cut) return "";
+      const { bytes, end } = utf8Within(text, Math.max(0, left - 1));
+      if (end < text.length) cut = true;
+      left -= bytes + 1;
+      return text.slice(0, end);
     },
     get cut() {
       return cut;
@@ -783,36 +775,34 @@ function textBudget(limit: number) {
   };
 }
 
-/** Sheet rows as TSV, or slide text, for the model. Uses the viewer's readers. */
+/** Sheet rows as TSV, or slide text, for the model. Throws if too large or unreadable. */
 export async function extractOfficeAttachmentText(
   file: File,
   label: "XLSX" | "PPTX",
 ): Promise<string> {
+  assertDocumentAttachmentSize(file, label);
   const [{ MAX_SHEET_COLUMNS, MAX_SHEET_ROWS, readPptx, readXlsx }, buffer] = await Promise.all([
     import("@/components/file-viewer/office"),
     file.arrayBuffer(),
   ]);
   const bytes = new Uint8Array(buffer);
-  const budget = textBudget(MAX_OFFICE_TEXT_LENGTH);
+  const budget = textBudget(MAX_OFFICE_TEXT_BYTES);
   const parts: string[] = [];
   if (label === "PPTX") {
     for (const [index, slide] of readPptx(bytes, { images: false }).slides.entries()) {
       if (budget.cut) break;
-      const lines = slide.boxes.flatMap(
-        (box) =>
-          box.paragraphs?.map((p) => budget.take(p.text)) ??
-          (box.table && [
-            ...(box.caption ? [budget.take(box.caption)] : []),
-            ...box.table.map((row) => row.map((cell) => budget.take(cell)).join("\t")),
-          ]) ??
-          [],
-      );
-      parts.push([`Slide ${index + 1}`, ...lines].join("\n"));
+      const lines = [budget.take(`Slide ${index + 1}`)];
+      for (const box of slide.boxes) {
+        for (const p of box.paragraphs ?? []) lines.push(budget.take(p.text));
+        if (box.caption) lines.push(budget.take(box.caption));
+        for (const row of box.table ?? []) lines.push(row.map((cell) => budget.take(cell)).join("\t"));
+      }
+      parts.push(lines.join("\n"));
     }
   } else {
     for (const sheet of readXlsx(bytes)) {
       if (budget.cut) break;
-      const lines = [`Sheet: ${sheet.name}`];
+      const lines = [budget.take(`Sheet: ${sheet.name}`)];
       for (const row of sheet.rows) {
         if (!row || budget.cut) continue;
         const line = Array.from(row, (cell) => budget.take(cell?.text ?? ""))
@@ -831,7 +821,7 @@ export async function extractOfficeAttachmentText(
     }
   }
   if (budget.cut) {
-    parts.push(`[Truncated: the text stops after ${MAX_OFFICE_TEXT_LENGTH.toLocaleString("en-US")} characters.]`);
+    parts.push(`[Truncated: the text stops after ${MAX_OFFICE_TEXT_BYTES.toLocaleString("en-US")} bytes.]`);
   }
   return parts.join("\n\n");
 }

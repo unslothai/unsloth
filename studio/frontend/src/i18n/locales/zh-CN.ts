@@ -3001,6 +3001,7 @@ export const zhCN = {
       viewOriginalProject: "查看原始项目",
       viewTrainingRun: "查看训练运行",
       sheetTruncated: "仅显示此工作表的一部分",
+      documentTruncated: "仅显示此文档的开头部分",
       emptyDocument: "此文件为空。",
       cannotPreview: "无法在此预览该文件。请下载后打开。",
       noPreview: "此文件类型不支持预览。",

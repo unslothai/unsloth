@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from loggers import get_logger
-from utils.paths.storage_roots import account_path
+from utils.paths.storage_roots import account_path, ensure_account_dir
 
 logger = get_logger(__name__)
 
@@ -51,9 +51,9 @@ class TooLarge(Exception):
 
 
 def originals_dir() -> Path:
-    path = account_path("chat-originals")
-    path.mkdir(parents = True, exist_ok = True)
-    return path
+    """This account's originals folder. Only save() creates it, so a late sweep cannot recreate a
+    deleted account's workspace."""
+    return account_path("chat-originals")
 
 
 def attachment_sha256(attachment: object) -> Optional[str]:
@@ -82,7 +82,7 @@ def path_for(attachment: object) -> Optional[Path]:
 
 def save(chunks: Iterable[bytes]) -> tuple[str, int]:
     """Store streamed bytes under their hash: (sha256, size). Raises TooLarge past MAX_BYTES."""
-    directory = originals_dir()
+    directory = ensure_account_dir(originals_dir())
     tmp_path = directory / f".{uuid.uuid4().hex}.tmp"
     digest = hashlib.sha256()
     size = 0
@@ -113,7 +113,13 @@ def sweep(force: bool = False) -> int:
     from storage.studio_db import referenced_chat_original_hashes
 
     now = time.time()
-    directory = originals_dir()
+    try:
+        directory = originals_dir()
+        if not directory.is_dir():
+            # Nothing kept, or the account is gone.
+            return 0
+    except (OSError, ValueError):
+        return 0
     with _sweep_lock:
         throttled = not force and now - _last_sweep.get(directory, 0.0) < _SWEEP_INTERVAL_SECONDS
         if not throttled:

@@ -3160,6 +3160,7 @@ export const es = {
       viewOriginalProject: "Ver proyecto original",
       viewTrainingRun: "Ver ejecución de entrenamiento",
       sheetTruncated: "Mostrando parte de esta hoja",
+      documentTruncated: "Mostrando el principio de este documento",
       emptyDocument: "Este archivo está vacío.",
       cannotPreview: "No se puede previsualizar este archivo aquí. Descárgalo para abrirlo.",
       noPreview: "No hay vista previa para este tipo de archivo.",

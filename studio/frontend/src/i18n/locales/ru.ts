@@ -3121,6 +3121,7 @@ export const ru = {
       viewOriginalProject: "Открыть исходный проект",
       viewTrainingRun: "Открыть запуск обучения",
       sheetTruncated: "Показана только часть листа",
+      documentTruncated: "Показано только начало документа",
       emptyDocument: "Файл пуст.",
       cannotPreview: "Этот файл нельзя просмотреть здесь. Скачайте его, чтобы открыть.",
       noPreview: "Для этого типа файлов просмотр недоступен.",

@@ -3101,6 +3101,7 @@ export const hi = {
       viewOriginalProject: "मूल प्रोजेक्ट देखें",
       viewTrainingRun: "ट्रेनिंग रन देखें",
       sheetTruncated: "इस शीट का केवल एक भाग दिखाया जा रहा है",
+      documentTruncated: "इस दस्तावेज़ का केवल आरंभिक भाग दिखाया जा रहा है",
       emptyDocument: "यह फ़ाइल खाली है।",
       cannotPreview: "इस फ़ाइल का प्रीव्यू यहाँ नहीं दिखाया जा सकता। इसे खोलने के लिए डाउनलोड करें।",
       noPreview: "इस प्रकार की फ़ाइल का कोई प्रीव्यू नहीं है।",

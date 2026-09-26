@@ -64,7 +64,6 @@ import {
   extractPdfAttachmentText,
   getDocumentAttachmentSizeError,
   getDocxAttachmentError,
-  getOfficeAttachmentError,
 } from "./attachment-content";
 import { withAttachmentOriginal } from "./attachment-originals";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
@@ -593,7 +592,9 @@ class OfficeAttachmentAdapter implements AttachmentAdapter {
 
   // By extension, or by type for a deck picked without one.
   private label(name: string, type: string): "XLSX" | "PPTX" {
-    const byName = OFFICE_LABELS[name.split(".").pop()?.toLowerCase() ?? ""];
+    // Own keys only, so ".constructor" finds nothing.
+    const extension = name.split(".").pop()?.toLowerCase() ?? "";
+    const byName = Object.hasOwn(OFFICE_LABELS, extension) ? OFFICE_LABELS[extension] : undefined;
     return byName ?? (type.includes("presentationml") ? "PPTX" : "XLSX");
   }
 
@@ -603,16 +604,17 @@ class OfficeAttachmentAdapter implements AttachmentAdapter {
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     const label = this.label(file.name, file.type);
-    let error = await getOfficeAttachmentError(file, label);
-    let text = "";
-    if (!error) {
-      try {
-        text = await extractOfficeAttachmentText(file, label);
-      } catch {
-        error = `${label} file could not be read: ${file.name}`;
-      }
-    }
-    if (error) {
+    let text: string;
+    try {
+      // Extraction also validates size and archive, so the file is read once.
+      text = await extractOfficeAttachmentText(file, label);
+    } catch (cause) {
+      const message = (cause as Error | undefined)?.message;
+      const tooLarge = `${label} file is too large: ${file.name}`;
+      const error =
+        message === tooLarge || message === "File is too large to preview."
+          ? tooLarge
+          : `${label} file could not be read: ${file.name}`;
       toast.error(error);
       throw new Error(error);
     }

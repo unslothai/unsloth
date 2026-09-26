@@ -3094,6 +3094,7 @@ export const ar = {
       viewOriginalProject: "عرض المشروع الأصلي",
       viewTrainingRun: "عرض جولة التدريب",
       sheetTruncated: "عرض جزء من هذه الورقة",
+      documentTruncated: "عرض بداية هذا المستند",
       emptyDocument: "هذا الملف فارغ.",
       cannotPreview: "تتعذّر معاينة هذا الملف هنا. نزّله لفتحه.",
       noPreview: "لا تتوفر معاينة لهذا النوع من الملفات.",

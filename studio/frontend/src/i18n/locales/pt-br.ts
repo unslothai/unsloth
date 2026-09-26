@@ -3122,6 +3122,7 @@ export const ptBR = {
       viewOriginalProject: "Ver projeto original",
       viewTrainingRun: "Ver execução de treinamento",
       sheetTruncated: "Mostrando parte desta planilha",
+      documentTruncated: "Mostrando o início deste documento",
       emptyDocument: "Este arquivo está vazio.",
       cannotPreview: "Não é possível visualizar este arquivo aqui. Baixe-o para abri-lo.",
       noPreview: "Não há prévia para este tipo de arquivo.",

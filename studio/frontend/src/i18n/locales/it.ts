@@ -3161,6 +3161,7 @@ export const it = {
       viewOriginalProject: "Vai al progetto originale",
       viewTrainingRun: "Vedi l'addestramento",
       sheetTruncated: "Visualizzata solo una parte del foglio",
+      documentTruncated: "Visualizzato solo l'inizio del documento",
       emptyDocument: "Questo file è vuoto.",
       cannotPreview: "Impossibile visualizzare l'anteprima di questo file qui. Scaricalo per aprirlo.",
       noPreview: "Nessuna anteprima per questo tipo di file.",
