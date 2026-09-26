@@ -2244,7 +2244,6 @@ class FastBaseModel:
         layers_to_transform = None,
         layers_pattern = None,
         use_gradient_checkpointing = "unsloth",
-        block_swap_layers = 0,
         random_state = 3407,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,
@@ -2257,6 +2256,7 @@ class FastBaseModel:
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         finetune_audio_layers = False,  # placed last to preserve existing positional argument order
+        block_swap_layers = 0,
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":

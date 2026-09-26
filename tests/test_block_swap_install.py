@@ -1,18 +1,5 @@
-# Unsloth Zoo - Utilities for Unsloth
-# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published
-# by the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """Block swap helpers from _utils.py, extracted with ast to avoid importing torch's CUDA stack."""
 
@@ -172,3 +159,30 @@ def test_trim_refuses_what_install_refuses():
     ns, _ = _load(zoo = False)
     with pytest.raises(ImportError, match = "unsloth_zoo"):
         ns["trim_config_for_block_swap"](_Config(), 4)
+
+
+def _get_peft_model(path):
+    mod = ast.parse(open(os.path.join(HERE, "unsloth", "models", path), encoding = "utf-8").read())
+    return next(
+        f
+        for c in mod.body
+        if isinstance(c, ast.ClassDef)
+        for f in c.body
+        if isinstance(f, ast.FunctionDef) and f.name == "get_peft_model"
+    )
+
+
+@pytest.mark.parametrize("path", ["llama.py", "vision.py"])
+def test_block_swap_layers_is_last_so_positional_order_is_unchanged(path):
+    names = [a.arg for a in _get_peft_model(path).args.args]
+    assert names[-1] == "block_swap_layers", names
+
+
+def test_new_model_route_forwards_block_swap_layers():
+    fn = _get_peft_model("llama.py")
+    calls = [
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and ast.unparse(n.func) == "FastBaseModel.get_peft_model"
+    ]
+    assert calls and all(any(k.arg == "block_swap_layers" for k in c.keywords) for c in calls)
