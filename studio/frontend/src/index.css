@@ -2021,6 +2021,23 @@ html[data-chat-font] .aui-root {
 		);
 	}
 
+	/* A hair between menu rows, as ChatGPT has. Block margins collapse, so neighbours sit 2px apart. */
+	:is(
+			[data-slot="dropdown-menu-content"],
+			[data-slot="dropdown-menu-sub-content"],
+			[data-slot="context-menu-content"],
+			[data-slot="context-menu-sub-content"],
+			[data-slot="menubar-content"],
+			[data-slot="menubar-sub-content"]
+		)
+		:is(
+			[role="menuitem"],
+			[role="menuitemcheckbox"],
+			[role="menuitemradio"]
+		) {
+		margin-block: 2px;
+	}
+
 	/* List menus: one radius in both themes, slightly tighter than --radius-lg
 	   and matching the sidebar buttons. !important beats per-menu rounded-*. */
 	[data-slot="dropdown-menu-content"],
@@ -2727,17 +2744,13 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 4px 14px var(--background);
 	}
 
-	/* The sidebar's own menus open over the sidebar, which is the menus' own color in dark: a hair
-	   more lift in light, and a step lighter than the sidebar in dark, so they stand apart. */
-	.unsloth-plus-menu.sidebar-menu[data-slot] {
-		box-shadow:
-			0 4px 14px -3px rgba(0, 0, 0, 0.2),
-			0 1px 3px rgba(0, 0, 0, 0.05);
+	/* Sidebar and account menus: flat, no shadow. Important to beat the shared menu shadow. */
+	:is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
+		box-shadow: none !important;
 	}
 
-	/* ChatGPT's menu type: the system face at 14px on 36px rows, with larger icons. Scaled like
-	   every other UI size, so the font size setting still reaches it. */
-	.unsloth-plus-menu.sidebar-menu[data-slot] {
+	/* System font at 14px, scaled with the UI font size. */
+	:is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
 		font-family: ui-sans-serif, -apple-system, system-ui, "Segoe UI", Helvetica, "Apple Color Emoji", Arial, sans-serif;
 		--icon-size: calc(1.125rem * var(--ui-font-scale, 1));
 	}
@@ -2756,20 +2769,27 @@ html[data-chat-font] .aui-root {
 		line-height: calc(1.25rem * var(--ui-font-scale, 1));
 	}
 
-	/* And its dark colors, taken off ChatGPT's own menu: #2b2b2b under #ededed ink, #3e3e3e rules
-	   and a salmon Delete. Mixed from the palette, so the default dark lands on exactly those and
-	   another palette keeps its own hue. */
-	.dark .unsloth-plus-menu.sidebar-menu[data-slot] {
-		background-color: color-mix(in srgb, var(--card), white 2%);
+	.app-user-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		) {
+		@apply text-ui-14;
+		font-weight: 400;
+		color: inherit;
+	}
+
+	/* Dark: a step above the sidebar, from the palette so other themes keep their hue. */
+	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
+		background-color: color-mix(in srgb, var(--card), white 4%);
 		color: color-mix(in srgb, var(--foreground), white 45%);
 		--destructive: #ed716a;
 	}
 
-	.dark .unsloth-plus-menu.sidebar-menu :is(
+	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu :is(
 			[data-slot="dropdown-menu-separator"],
 			[data-slot="context-menu-separator"]
 		) {
-		background-color: color-mix(in srgb, var(--card), white 11%);
+		background-color: color-mix(in srgb, var(--card), white 13%);
 	}
 
 	/* Compact items; also applied to portaled sub-content. */

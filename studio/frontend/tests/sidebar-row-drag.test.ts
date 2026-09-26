@@ -62,7 +62,7 @@ function context(
 ): SidebarDropContext {
   return {
     organizeBy: "project",
-    chatSort: "priority",
+    chatSort: "updated",
     pinnedSort: "manual",
     projectSort: "manual",
     pinnedChatIds: new Set(["p1"]),

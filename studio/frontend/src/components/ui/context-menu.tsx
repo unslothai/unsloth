@@ -129,7 +129,8 @@ function ContextMenuSubTrigger({
       {children}
       <ChevronRightIcon
         strokeWidth={2}
-        className="ml-auto size-[calc(12px*var(--ui-space-scale,1))]"
+        // The glyph sits 7/24 further in than a leading icon, so pull it out to match.
+        className="ml-auto -mr-[calc(3.5px*var(--ui-space-scale,1))] size-[calc(12px*var(--ui-space-scale,1))]"
       />
     </ContextMenuPrimitive.SubTrigger>
   );

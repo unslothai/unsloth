@@ -85,6 +85,7 @@ import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
   Archive03Icon,
+  Cancel01Icon,
   BadgeInfoIcon,
   ChefHatIcon,
   CloudIcon,
@@ -119,6 +120,7 @@ import {
   LayoutAlignLeftIcon,
   Settings02Icon,
   Sun03Icon,
+  Tick02Icon,
   UserCircleIcon,
   ViewIcon,
   ViewOffSlashIcon,
@@ -476,18 +478,14 @@ const REVEAL_WITH_OPEN_MENU_PROJECT_CHAT =
 const REVEAL_WITH_OPEN_MENU_RECENT =
   "group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-100 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pointer-events-auto";
 
-// Every chat list offers the same three orders.
+// Every chat list offers the same two orders.
 const CHAT_SORT_OPTIONS: Array<{
   value: SidebarChatSort;
   key: TranslationKey;
 }> = [
-  { value: "priority", key: "shell.organize.priority" },
   { value: "updated", key: "shell.organize.lastUpdated" },
   { value: "manual", key: "shell.organize.manualOrder" },
 ];
-// Pinned is a list the user put together, so it sorts by hand or by activity, never by what
-// needs attention: that would shuffle the pins every time a chat started or finished.
-const PINNED_SORT_OPTIONS = CHAT_SORT_OPTIONS.filter((option) => option.value !== "priority");
 const ORGANIZE_OPTIONS: Array<{
   value: SidebarOrganizeBy;
   key: TranslationKey;
@@ -1439,16 +1437,9 @@ export function AppSidebar() {
         // newest first in Recents, pin order in Pinned.
         return applyManualOrder(items, manualOrder[scope], (item) => item.id);
       }
-      if (mode === "priority") {
-        return [...items].sort(
-          (a, b) =>
-            chatPriorityRank(a) - chatPriorityRank(b) ||
-            b.updatedAt - a.updatedAt,
-        );
-      }
       return [...items].sort((a, b) => b.updatedAt - a.updatedAt);
     },
-    [manualOrder, chatPriorityRank],
+    [manualOrder],
   );
   const sortedRecentChatItems = useMemo(
     () => sortChatItems(recentChatItems, RECENTS_ORDER_SCOPE, chatSort),
@@ -2090,6 +2081,10 @@ export function AppSidebar() {
   async function archiveSelected() {
     const items = selectedChatItems;
     clearSelection();
+    await archiveChatItems(items);
+  }
+
+  async function archiveChatItems(items: SidebarItem[]) {
     // Sequential: each archive can reset the active thread, and two of those
     // racing would fight over where the chat pane lands.
     let archived = 0;
@@ -3536,7 +3531,7 @@ export function AppSidebar() {
           value={pinnedSort}
           onValueChange={(value) => setPinnedSort(value as SidebarChatSort)}
         >
-          {PINNED_SORT_OPTIONS.map((option) => (
+          {CHAT_SORT_OPTIONS.map((option) => (
             <DropdownMenuRadioItem key={option.value} value={option.value}>
               {t(option.key)}
             </DropdownMenuRadioItem>
@@ -3602,24 +3597,34 @@ export function AppSidebar() {
         </>
       );
     } else if (options.kind === "section") {
-      // No move up or down: a section drags by its header.
+      // As ChatGPT's: edit, bulk actions on the section's own chats, then remove.
       const { section } = options;
+      const chats = (customSectionRows.get(section.id) ?? []).flatMap((row) =>
+        row.kind === "chat" ? [row.item] : [],
+      );
+      const threadIds = chats.flatMap(getSidebarItemThreadIds);
       body = (
         <>
           <DropdownMenuItem onSelect={() => setSectionDialog({ mode: "rename", section })}>
-            <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-            <span>{t("shell.sections.rename")}</span>
+            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+            <span>{t("shell.sections.edit")}</span>
           </DropdownMenuItem>
-          {renderSortSubmenu({
-            label: t("shell.organize.sortChatsBy"),
-            value: section.sort,
-            onChange: (next) => setCustomSectionSort(section.id, next),
-            options: CHAT_SORT_OPTIONS,
-          })}
           <DropdownMenuSeparator />
-          <DropdownMenuItem variant="destructive" onSelect={() => removeCustomSection(section)}>
-            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-            <span>{t("shell.sections.delete")}</span>
+          <DropdownMenuItem
+            disabled={!threadIds.some((id) => unreadThreadIds.has(id))}
+            onSelect={() => clearThreadsUnread(threadIds)}
+          >
+            <HugeiconsIcon icon={Tick02Icon} strokeWidth={1.75} className="size-icon" />
+            <span>{t("shell.sections.markAllRead")}</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem disabled={chats.length === 0} onSelect={() => void archiveChatItems(chats)}>
+            <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+            <span>{t("shell.selection.archiveChats")}</span>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => removeCustomSection(section)}>
+            <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-icon" />
+            <span>{t("shell.sections.remove")}</span>
           </DropdownMenuItem>
         </>
       );
@@ -5698,7 +5703,7 @@ export function AppSidebar() {
               side="top"
               align="center"
               sideOffset={8}
-              className="app-user-menu menu-soft-surface-up ring-0 w-[calc(16rem*var(--ui-space-scale,1))] rounded-[20px] border border-transparent px-2.5 py-2.5 font-heading dark:border-[rgb(255_255_255_/_calc(0.05*var(--contrast-edge-gain,1)))]"
+              className="app-user-menu sidebar-menu menu-soft-surface-up ring-0 w-[calc(16rem*var(--ui-space-scale,1))] rounded-[20px] border border-transparent px-2.5 py-2.5 font-heading dark:border-[rgb(255_255_255_/_calc(0.05*var(--contrast-edge-gain,1)))]"
               trigger={(triggerRef) => (
                 <SidebarMenuButton
                   ref={triggerRef}
@@ -5808,7 +5813,7 @@ export function AppSidebar() {
                 <DropdownMenuSubContent
                   sideOffset={8}
                   alignOffset={-4}
-                  className="unsloth-plus-menu sidebar-row-menu w-56"
+                  className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-56"
                 >
                   {HELP_GROUPS.map((group, index) => (
                     <DropdownMenuGroup key={group[0]}>

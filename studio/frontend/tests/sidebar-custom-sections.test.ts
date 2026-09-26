@@ -162,23 +162,24 @@ test("a section moves by dragging alone, and new sections open among the user's 
   assert.doesNotMatch(APP_SIDEBAR, /\bmoveSectionUp\b|\bmoveSectionDown\b|\bmoveCustomSection\b/);
 });
 
-test("Pinned sorts by hand or by activity, not by priority", () => {
-  const pinned = APP_SIDEBAR.slice(
-    APP_SIDEBAR.indexOf('if (options.kind === "pinned") {'),
-    APP_SIDEBAR.indexOf('} else if (options.kind === "projects")'),
-  );
-  assert.match(pinned, /PINNED_SORT_OPTIONS\.map/);
+test("no sidebar list sorts by priority", () => {
+  assert.doesNotMatch(APP_SIDEBAR, /"priority"|PINNED_SORT_OPTIONS/);
   assert.match(
     APP_SIDEBAR,
-    /const PINNED_SORT_OPTIONS = CHAT_SORT_OPTIONS\.filter\(\(option\) => option\.value !== "priority"\);/,
+    /\}> = \[\n  \{ value: "updated", key: "shell\.organize\.lastUpdated" \},\n  \{ value: "manual", key: "shell\.organize\.manualOrder" \},\n\];/,
   );
-  // A Pinned saved on Priority comes back in its manual order; the other lists keep theirs.
+  // A saved Priority falls back to each list's default.
   const merged = mergePersistedOrganization(
-    { pinnedSort: "priority", chatSort: "priority" },
+    {
+      pinnedSort: "priority",
+      chatSort: "priority",
+      customSections: [{ id: "s", name: "S", sort: "priority" }],
+    },
     useSidebarOrganizationStore.getInitialState(),
   );
   assert.equal(merged.pinnedSort, "manual");
-  assert.equal(merged.chatSort, "priority");
+  assert.equal(merged.chatSort, "updated");
+  assert.equal(merged.customSections[0]?.sort, "manual");
 });
 
 test("a dragged section lands on the edge it was dropped against", () => {
@@ -302,7 +303,7 @@ const SCOPE = customSectionScope(S);
 function context(overrides: Partial<SidebarDropContext> = {}): SidebarDropContext {
   return {
     organizeBy: "project",
-    chatSort: "priority",
+    chatSort: "updated",
     pinnedSort: "manual",
     projectSort: "manual",
     pinnedChatIds: new Set(["p1"]),
@@ -613,7 +614,7 @@ test("sections above Recents drag by their headers, and Recents stays last", () 
   assert.match(drag, /if \(commit && landing\) moveSection\(key, landing\.target, landing\.edge\)/);
 });
 
-test("only the sidebar's menus take ChatGPT's dark surface, type and stronger shadow", async () => {
+test("the sidebar and account menus share one flat surface and type; other menus keep theirs", async () => {
   const css = await readSrcAsync("index.css");
   // The shared menu surface, which the composer's menus use, is left as it was.
   assert.match(css, /\.dark \.unsloth-plus-menu\[data-slot\] \{\n\s*background-color: var\(--card\);/);
@@ -621,19 +622,45 @@ test("only the sidebar's menus take ChatGPT's dark surface, type and stronger sh
     css,
     /\.unsloth-plus-menu\[data-slot\] \{[\s\S]*?box-shadow: 0 2px 8px -2px rgba\(0, 0, 0, 0\.16\);\n\s*\}/,
   );
+  const tagged = ":is\\(\\.unsloth-plus-menu, \\.app-user-menu\\)\\.sidebar-menu\\[data-slot\\]";
+  // No shadow, over the shared menu shadow's !important.
+  assert.match(css, new RegExp(`${tagged} \\{\\n\\s*box-shadow: none !important;`));
   assert.match(
     css,
-    /\.dark \.unsloth-plus-menu\.sidebar-menu\[data-slot\] \{\n\s*background-color: color-mix\(in srgb, var\(--card\), white 2%\);\n\s*color: color-mix\(in srgb, var\(--foreground\), white 45%\);/,
+    new RegExp(
+      `\\.dark ${tagged} \\{\\n\\s*background-color: color-mix\\(in srgb, var\\(--card\\), white 4%\\);\\n\\s*color: color-mix\\(in srgb, var\\(--foreground\\), white 45%\\);`,
+    ),
   );
-  // ChatGPT's menu type, on the sidebar's menus only: the system face at 14px, scaled.
-  assert.match(css, /\.unsloth-plus-menu\.sidebar-menu\[data-slot\] \{\n\s*font-family: ui-sans-serif,/);
+  // The system face at 14px, scaled, on sidebar rows and account rows alike.
+  assert.match(css, new RegExp(`${tagged} \\{\\n\\s*font-family: ui-sans-serif,`));
   assert.match(
     css,
     /\.unsloth-plus-menu\.sidebar-row-menu\.sidebar-menu :is\([\s\S]*?\) \{\n\s*@apply py-2 text-ui-14;/,
   );
-  // The sidebar's own menus are marked. The account menu keeps its own surface, and so does its
-  // Help submenu, which would otherwise open a shade lighter than the menu it comes out of.
-  assert.equal((APP_SIDEBAR.match(/"unsloth-plus-menu sidebar-row-menu sidebar-menu/g) ?? []).length, 13);
-  const help = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf('{t("common.help")}'));
-  assert.match(help, /^[\s\S]*?<DropdownMenuSubContent[\s\S]*?className="unsloth-plus-menu sidebar-row-menu w-56"/);
+  assert.match(css, /\.app-user-menu\.sidebar-menu :is\([\s\S]*?\) \{\n\s*@apply text-ui-14;\n\s*font-weight: 400;/);
+  // Every sidebar menu is marked, the account menu and its Help submenu included.
+  assert.equal((APP_SIDEBAR.match(/"unsloth-plus-menu sidebar-row-menu sidebar-menu/g) ?? []).length, 14);
+  assert.match(APP_SIDEBAR, /className="app-user-menu sidebar-menu menu-soft-surface-up/);
+});
+
+test("a custom section's menu edits it, acts on its chats, and removes it", () => {
+  const menu = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf('} else if (options.kind === "section") {'),
+    APP_SIDEBAR.indexOf("    return (\n      // Opens out to the right"),
+  );
+  const labels = [...menu.matchAll(/t\("(shell\.[\w.]+)"\)/g)].map((match) => match[1]);
+  assert.deepEqual(labels, [
+    "shell.sections.edit",
+    "shell.sections.markAllRead",
+    "shell.selection.archiveChats",
+    "shell.sections.remove",
+  ]);
+  assert.equal((menu.match(/<DropdownMenuSeparator \/>/g) ?? []).length, 2);
+  // Only the section's own chats, and each action is off when it has nothing to do.
+  assert.match(menu, /row\.kind === "chat" \? \[row\.item\] : \[\]/);
+  assert.match(menu, /disabled=\{!threadIds\.some\(\(id\) => unreadThreadIds\.has\(id\)\)\}/);
+  assert.match(menu, /onSelect=\{\(\) => clearThreadsUnread\(threadIds\)\}/);
+  assert.match(menu, /disabled=\{chats\.length === 0\} onSelect=\{\(\) => void archiveChatItems\(chats\)\}/);
+  assert.match(menu, /icon=\{Settings02Icon\}[\s\S]*icon=\{Tick02Icon\}[\s\S]*icon=\{Archive03Icon\}[\s\S]*icon=\{Cancel01Icon\}/);
+  assert.doesNotMatch(menu, /variant="destructive"|renderSortSubmenu/);
 });

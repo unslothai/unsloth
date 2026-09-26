@@ -7,7 +7,7 @@ import { persist } from "zustand/middleware";
 /** How the sidebar arranges chats that belong to a project. */
 export type SidebarOrganizeBy = "project" | "list";
 /** How chat rows are ordered inside whichever list they land in. */
-export type SidebarChatSort = "priority" | "updated" | "manual";
+export type SidebarChatSort = "updated" | "manual";
 /** How project folders are ordered in the Projects section. */
 export type SidebarProjectSort = "updated" | "name" | "created" | "manual";
 
@@ -296,13 +296,10 @@ export function mergePersistedOrganization(
     value: unknown,
     fallback: SidebarChatSort,
   ): SidebarChatSort =>
-    value === "priority" || value === "updated" || value === "manual"
-      ? value
-      : fallback;
-  const chatSort = readSort(saved?.chatSort, "priority");
-  // Pinned no longer offers Priority; a saved one falls back to the manual order it defaults to.
-  const pinnedSort =
-    saved?.pinnedSort === "priority" ? "manual" : readSort(saved?.pinnedSort, "manual");
+    value === "updated" || value === "manual" ? value : fallback;
+  // A saved "priority", no longer offered, falls back to each list's default.
+  const chatSort = readSort(saved?.chatSort, "updated");
+  const pinnedSort = readSort(saved?.pinnedSort, "manual");
   const projectSort: SidebarProjectSort =
     saved?.projectSort === "updated" ||
     saved?.projectSort === "name" ||
@@ -386,7 +383,7 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
   persist(
     (set) => ({
       organizeBy: "project",
-      chatSort: "priority",
+      chatSort: "updated",
       pinnedSort: "manual",
       projectSort: "manual",
       manualOrder: {},
