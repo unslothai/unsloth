@@ -29043,13 +29043,28 @@ async def produce_openai_chat_completions(
     # ── Client-tool passthrough (safetensors + MLX) ──────────────
     # Client tools (or tool-result history) without server-side tools: render
     # tools into the template, generate one turn, heal text-form calls (#6801).
-    # supports_tools=False falls through to plain relay (GGUF gate parity).
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
     # Classified against the processor body above, before the server loop's own gate:
     # that gate reads the same flag, and deciding it here left the loop enabled on a
     # tokenizer body that renders tools while generation used a processor body that
     # does not, so the model was never shown the schemas the loop was driving.
     _sf_supports_tools = _sf_features.get("supports_tools", False)
+    if _has_active_tool_catalog and (_sf_is_gptoss or not _sf_supports_tools):
+        raise _reject(
+            400,
+            openai_error_body(
+                (
+                    "Client-supplied tools are not supported for gpt-oss on this backend; "
+                    "load a GGUF build of the model."
+                    if _sf_is_gptoss
+                    else "Client-supplied tools require a chat template with tool-call support; "
+                    "the current model/template does not advertise tools."
+                ),
+                status = 400,
+                code = "unsupported_parameter",
+                param = "tools",
+            ),
+        )
     # Gate on _sf_use_tools (did the server-side path claim the request?), not
     # raw mcp_enabled: an empty MCP registry must not silently drop client tools.
     _sf_client_tools = (
