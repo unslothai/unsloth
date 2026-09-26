@@ -12,19 +12,21 @@ import {
   useState,
 } from "react";
 import {
+  ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   ArrowReloadHorizontalIcon,
   Delete02Icon,
   Download01Icon,
-  FlimSlateIcon,
   Image03Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { MediaViewer } from "@/components/media-viewer";
+import { shortPrompt } from "@/lib/prompt-text";
 
 import { ImageDropzone } from "@/components/image-dropzone";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
@@ -76,7 +78,13 @@ import {
   curatedArtifactTakesDenseQuant,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
-import { useDenseQuantSchemes, useHostClass } from "@/hooks/use-host-class";
+import {
+  useDenseQuantSchemes,
+  useHostClass,
+  useNvfp4Diffusion,
+  useNvfp4DiffusionKnown,
+} from "@/hooks/use-host-class";
+import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -87,7 +95,14 @@ import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
 import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
-import { MediaPageLink } from "@/components/media-page-link";
+import { LibraryPageLink } from "@/components/media-page-link";
+import { translate, useT } from "@/i18n";
+import {
+  chatAboutMedia,
+  revealInFolder,
+  useLibraryFavorites,
+  useRevealLabel,
+} from "@/features/library";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   type NewRecordProbeBaseline,
@@ -156,6 +171,7 @@ import {
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
+import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { DEFAULT_GEN, defaultsFor, resolutionFor } from "./image-generation-defaults";
 import {
@@ -200,6 +216,7 @@ import {
   cancelDiffusionGeneration,
   deleteGalleryImage,
   fetchGalleryBlob,
+  fetchGalleryResponse,
   fetchGalleryObjectUrl,
   generateDiffusionImage,
   getDiffusionLoadProgress,
@@ -218,6 +235,7 @@ import {
 import {
   shouldContinueGenerating,
   shouldReportGenerateError,
+  stopButtonLabel,
 } from "./lib/generation-stop";
 import {
   ALLOW_OVERSIZED_HINT,
@@ -529,6 +547,7 @@ function formatTimestamp(epochSeconds: number): string {
 function genStepLabel(p: DiffusionGenerateProgress): string {
   // Text encoding happens before the first scheduler tick, so step 0 means "working, not denoising yet".
   if (p.step === 0) return "Preparing (text encoding + warmup)…";
+  if (p.phase === "decode") return "Decoding…";
   const base = `Step ${p.step}/${p.total_steps}`;
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
   return eta ? `${base} · ~${eta}` : base;
@@ -1245,6 +1264,11 @@ type LoadAdvanced = Pick<
   | "gpu_ids"
 >;
 
+function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
+  const text = shortPrompt(prompt);
+  return text ? t("library.viewer.openImageNamed", { prompt: text }) : t("library.viewer.openImage");
+}
+
 export function ImagesPage({
   active = true,
   onInitialReady,
@@ -1252,12 +1276,15 @@ export function ImagesPage({
   active?: boolean;
   onInitialReady?: () => void;
 }) {
+  const t = useT();
   const initialReadySent = useRef(false);
   const [rememberedModel, setRememberedModel] = useState(readImageModel);
   const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId; allowOversized?: boolean } | null>(null);
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
+  const nvfp4Diffusion = useNvfp4Diffusion();
+  const nvfp4DiffusionKnown = useNvfp4DiffusionKnown();
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
   const { rootStyle: railRootStyle } = useMediaRailWidth("images");
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
@@ -1418,6 +1445,10 @@ export function ImagesPage({
   const [attentionBackend, setAttentionBackend] = useState<"auto" | "native" | "cudnn" | "flash3" | "sage">(
     "auto",
   );
+  useEffect(() => {
+    setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
+    setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
+  }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant, textEncoderQuant]);
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
   // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
   // host. Persisted, unlike the selects around it: status carries the device a pipeline is on
@@ -1427,7 +1458,7 @@ export function ImagesPage({
     "auto",
   );
   const gpuChoices = useDiffusionGpuChoices();
-  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
+  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
@@ -1441,6 +1472,7 @@ export function ImagesPage({
 
   const [busy, setBusy] = useState<Busy>(null);
   const [genDone, setGenDone] = useState<number | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // visibilitychange handler active while a generation poll runs: background tabs clamp
@@ -1771,6 +1803,18 @@ export function ImagesPage({
     [images, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
+  const [viewerId, setViewerId] = useState<string | null>(null);
+  const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
+  const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
+  if (viewerId && (!active || !viewerImage)) setViewerId(null);
+  // Pruning below must not revoke the image on screen.
+  const viewerIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    viewerIdRef.current = viewerId;
+  }, [viewerId]);
+  const openViewer = () => selected && selectedSrc && setViewerId(selected.id);
+  const navigateToChat = useNavigate();
+  const revealLabel = useRevealLabel();
 
   // Fetch (once) the object URL for a record's PNG; cached across remounts.
   const ensureSrc = useCallback(async (image: GalleryImage) => {
@@ -1785,7 +1829,12 @@ export function ImagesPage({
       galleryCache.srcById.set(image.id, url, bytes);
       // Evict the coldest off-screen images this one pushed over budget; on-screen and open tiles are protected.
       const evicted = galleryCache.srcById.prune(
-        new Set([image.id, ...visibleIds.current, galleryCache.selectedId ?? ""]),
+        new Set([
+          image.id,
+          ...visibleIds.current,
+          galleryCache.selectedId ?? "",
+          viewerIdRef.current ?? "",
+        ]),
       );
       setSrcById((prev) => {
         const next = { ...prev, [image.id]: url };
@@ -2011,6 +2060,7 @@ export function ImagesPage({
 
   // The pin state each id was last CLICKED into, so a failing request can tell whether it is
   // still the current intent; without it a slow failure rolls back a later success.
+  const { isFavorite, toggleFavorite } = useLibraryFavorites();
   const pinAttempt = useRef(new Map<string, number>());
   const pinSeq = useRef(0);
 
@@ -2478,7 +2528,7 @@ export function ImagesPage({
           return;
         }
         setGenStep((prev) => {
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
+          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds && prev.phase === p.phase) return prev;
           return p;
         });
       } catch {
@@ -3263,6 +3313,37 @@ export function ImagesPage({
     revertPick,
   ]);
 
+  // A Library "View in" link arrives as ?item=: select that image, paging back until it loads. A
+  // counter, not effect cleanup, retires a lookup: clearing the query must not cancel its own.
+  const routedItem = active ? routeSearch?.item : undefined;
+  const routedLookup = useRef(0);
+  useEffect(() => {
+    if (!active) routedLookup.current += 1;
+  }, [active]);
+  useEffect(() => {
+    if (!routedItem) return;
+    const lookup = ++routedLookup.current;
+    void navigateSelf({ to: "/images", search: {}, replace: true });
+    void loadGalleryUntil({
+      has: () => galleryCache.images.some((entry) => entry.id === routedItem),
+      count: () => galleryCache.images.length,
+      hasMore: () => galleryCache.hasMore,
+      refresh: loadGallery,
+      loadMore,
+      busy: () => loadingMore.current,
+      cancelled: () => lookup !== routedLookup.current,
+    }).then((found) => {
+      if (lookup !== routedLookup.current) return;
+      if (found) {
+        setSelectedId(routedItem);
+      } else {
+        toast(translate("library.toast.imageNotFound"), {
+          description: translate("library.toast.notFoundDescription"),
+        });
+      }
+    });
+  }, [routedItem, navigateSelf, loadGallery, loadMore]);
+
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     const l = lastLoad.current;
@@ -3990,6 +4071,7 @@ export function ImagesPage({
     setGenStep(null);
     // Fresh run: a Stop from the PREVIOUS run must not cancel this one.
     cancelRequested.current = false;
+    setStopping(false);
     cancelAcked.current = false;
     // Per-run, like the two above: a cancel POST still outstanding from the PREVIOUS run would
     // leave the guard set and swallow this run's own Stop.
@@ -4009,7 +4091,7 @@ export function ImagesPage({
         // Skip the state update (and re-render) when nothing the bar shows moved.
         setGenStep((prev) => {
           if (!p.active) return null;
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
+          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds && prev.phase === p.phase) return prev;
           return p;
         });
       } catch {
@@ -4151,6 +4233,7 @@ export function ImagesPage({
       setBusy(null);
       setGenDone(null);
       setGenStep(null);
+      setStopping(false);
     }
   }, [allowOversized, prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
@@ -4158,6 +4241,7 @@ export function ImagesPage({
   // races the run that is already finishing.
   const handleCancelGenerate = useCallback(async () => {
     cancelRequested.current = true;
+    setStopping(true);
     // One Stop on the wire at a time. The button stays enabled so the click still latches, but a
     // second POST would target whatever is active when IT arrives.
     const token = runToken.current;
@@ -4168,11 +4252,13 @@ export function ImagesPage({
     try {
       const { cancelled } = await cancelDiffusionGeneration(abort.signal);
       cancelAcked.current = Boolean(cancelled);
+      if (!cancelled) setStopping(false);
     } catch {
       // An abort means the next run dropped this one on purpose, so there is nothing to report.
       // Otherwise the request never landed and the denoise runs on, so the click is not handled.
       if (!abort.signal.aborted) {
         cancelAcked.current = false;
+        setStopping(false);
         toast.error("Could not reach the server to stop this generation; it is still running");
       }
     } finally {
@@ -4343,12 +4429,15 @@ export function ImagesPage({
             // The explicit low-precision schemes need the dense tensor-core path, which a Mac or
             // CPU-only host cannot run, so the picker does not list what the loader would refuse.
             ...(hostOffersDensePrecision(hostClass)
-              ? ([
-                  ["fp8", "FP8"],
-                  ["int8", "INT8"],
-                  ["nvfp4", "NVFP4 (Blackwell)"],
-                  ["mxfp8", "MXFP8 (Blackwell)"],
-                ] as [string, string][])
+              ? withNvfp4Option(
+                  [
+                    ["fp8", "FP8"],
+                    ["int8", "INT8"],
+                    ["nvfp4", "NVFP4 (Blackwell)"],
+                    ["mxfp8", "MXFP8 (Blackwell)"],
+                  ] as [string, string][],
+                  nvfp4Diffusion,
+                )
               : []),
           ]}
         />
@@ -4368,16 +4457,18 @@ export function ImagesPage({
         badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
         value={textEncoderQuant}
         onValueChange={(v) => setTextEncoderQuant(v as typeof textEncoderQuant)}
-        options={[
-          ["auto", "Default"],
-          // The opt-out. Reachable only since a family default can pick a scheme on its own: with
-          // "Default" meaning bf16 everywhere, omitting the field WAS the dense request.
-          ["none", "Dense (bf16)"],
-          ["fp8", "FP8 (storage)"],
-          ["fp8_dynamic", "FP8 (compute)"],
-          ["int8", "INT8"],
-          ["nvfp4", "NVFP4 (Blackwell)"],
-        ]}
+        options={withNvfp4Option(
+          [
+            ["auto", "Default"],
+            // Opt-out: now that a family default can pick a scheme, omitting the field is no longer the dense request.
+            ["none", "Dense (bf16)"],
+            ["fp8", "FP8 (storage)"],
+            ["fp8_dynamic", "FP8 (compute)"],
+            ["int8", "INT8"],
+            ["nvfp4", "NVFP4 (Blackwell)"],
+          ] as [string, string][],
+          nvfp4Diffusion,
+        )}
       />
       <AdvancedSelect
         label="Attention"
@@ -4426,7 +4517,7 @@ export function ImagesPage({
       )}
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x, small quality cost). Auto turns it on only on the Max speed tier at 20+ steps, re-checked per image."
+        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x, small quality cost). Auto turns it on only on the Max speed tier at 20+ steps, re-checked per image. Static skip extrapolates every other middle step on a fixed schedule (12+ steps) and keeps the CUDA graph; never picked by Auto."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
@@ -4434,6 +4525,7 @@ export function ImagesPage({
           ["auto", "Auto"],
           ["off", "Off"],
           ["fbcache", "First-Block-Cache"],
+          ["static", "Static skip"],
         ]}
       />
       <div className="flex items-center justify-between">
@@ -4569,10 +4661,8 @@ export function ImagesPage({
           </div>
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              <MediaPageLink
-                to="/video"
-                label="Video"
-                icon={FlimSlateIcon}
+              <LibraryPageLink
+                tab="images"
                 labelClassName="hidden @[50rem]:inline"
                 arrowClassName="hidden @[50rem]:block"
               />
@@ -5264,7 +5354,7 @@ export function ImagesPage({
                 onClick={handleCancelGenerate}
               >
                 <Spinner className="mr-2 size-4" />
-                {genDone != null && count > 1 ? `Stop (${genDone}/${count})` : "Stop"}
+                {stopButtonLabel({ stopping, done: genDone, count })}
               </Button>
             ) : (
               <Button
@@ -5282,6 +5372,43 @@ export function ImagesPage({
           data-tour="images-preview"
           className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
         >
+          {viewerImage && viewerSrc && (
+            <MediaViewer
+              open={true}
+              onOpenChange={(open) => !open && setViewerId(null)}
+              title={viewerImage.prompt || t("library.viewer.untitledImage")}
+              meta={`Generated · ${viewerImage.width} × ${viewerImage.height}`}
+              media={true}
+              noun="image"
+              actions={{
+                primary: {
+                  label: t("library.menu.chatAboutThis"),
+                  icon: MessageCircleIcon,
+                  onClick: () =>
+                    void chatAboutMedia(
+                      navigateToChat,
+                      // The authenticated original: WebKit shows the object URL but cannot refetch it.
+                      () => fetchGalleryResponse(viewerImage.url),
+                      viewerImage.prompt,
+                      "image",
+                    ),
+                },
+                onDownload: () => void handleQuickDownload(viewerImage),
+                reveal: revealLabel
+                  ? { label: revealLabel, onClick: () => revealInFolder(`image:${viewerImage.id}`) }
+                  : undefined,
+                favorite: isFavorite(`image:${viewerImage.id}`),
+                onToggleFavorite: () => toggleFavorite(`image:${viewerImage.id}`),
+                onAddToProject: (projectId) => addGalleryImageToProject(viewerImage.id, projectId),
+                onDelete: () => {
+                  setViewerId(null);
+                  void handleDelete(viewerImage.id);
+                },
+              }}
+            >
+              <img src={viewerSrc} alt={viewerImage.prompt} className="size-full object-contain" />
+            </MediaViewer>
+          )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
             {selected && selectedSrc ? (
               <>
@@ -5289,12 +5416,35 @@ export function ImagesPage({
                   src={selectedSrc}
                   alt={selected.prompt}
                   style={TRANSPARENCY_CHECKER}
-                  className="max-h-full max-w-full object-contain shadow-sm"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={openImageLabel(t, selected.prompt)}
+                  onClick={openViewer}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openViewer();
+                    }
+                  }}
+                  className="max-h-full max-w-full cursor-zoom-in object-contain shadow-sm"
                 />
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
                     live in the Recipe popover. */}
                 {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={t("library.viewer.openImage")}
+                    title={t("library.viewer.openImage")}
+                    onClick={(event) => {
+                      // Safari does not focus a clicked button, and the viewer returns focus to what had it.
+                      event.currentTarget.focus();
+                      openViewer();
+                    }}
+                  >
+                    <HugeiconsIcon icon={ArrowExpand01Icon} className="size-4" />
+                  </Button>
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild={true}>
@@ -5326,6 +5476,8 @@ export function ImagesPage({
                     active={active}
                     pinned={Boolean(selected.pinned)}
                     archived={Boolean(selected.archived)}
+                    favorite={isFavorite(`image:${selected.id}`)}
+                    onToggleFavorite={() => toggleFavorite(`image:${selected.id}`)}
                     onTogglePin={() =>
                       void handleTogglePin(selected.id, !selected.pinned)
                     }
@@ -5453,6 +5605,8 @@ export function ImagesPage({
                       active={active}
                       pinned={Boolean(image.pinned)}
                       archived={Boolean(image.archived)}
+                      favorite={isFavorite(`image:${image.id}`)}
+                      onToggleFavorite={() => toggleFavorite(`image:${image.id}`)}
                       onTogglePin={() => void handleTogglePin(image.id, !image.pinned)}
                       onToggleArchive={() => void handleArchive(image.id)}
                       onDelete={() => void handleDelete(image.id)}

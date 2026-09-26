@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   SETTINGS_SEARCH_KEYWORDS,
   createSettingsSearchIndex,
+  renderedSearchEntries,
 } from "../src/features/settings/settings-search.ts";
 import { en } from "../src/i18n/locales/en.ts";
 
@@ -123,4 +124,13 @@ test("menu bar icon is searchable only when the platform supports it", () => {
   assert.ok(mac.general.includes(MENU_BAR_ICON_ENTRY));
   assert.ok(!windows.general.includes(MENU_BAR_ICON_ENTRY));
   assert.ok(!browser.general.includes(MENU_BAR_ICON_ENTRY));
+});
+
+test("the endpoint rows are searchable only while Hugging Face serves, as they render", () => {
+  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
+  const endpoint = ["settings.general.hub.endpoint", "settings.general.hub.datasetsServer"] as const;
+  const modelScope = renderedSearchEntries(index, "general", "modelscope");
+  const huggingFace = renderedSearchEntries(index, "general", "huggingface");
+  assert.deepEqual(endpoint.map((key) => [huggingFace.includes(key), modelScope.includes(key)]), [[true, false], [true, false]]);
+  assert.ok(modelScope.includes("settings.general.hub.source"));
 });

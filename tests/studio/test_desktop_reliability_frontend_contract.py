@@ -2405,10 +2405,11 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
         '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
     )
     assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
-    assert "grid h-full min-w-0 grid-cols-[1fr_auto]" in header
+    assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
     assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
-    assert "col-start-2 justify-self-end pr-3" in header
-    assert "@[50rem]:justify-self-center @[50rem]:pr-0" in header
+    assert "col-start-2 justify-self-end pt-" in header
+    assert "@[50rem]:justify-self-center" in header
+    assert "col-start-3" in header and "<LibraryPageLink" in header
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout

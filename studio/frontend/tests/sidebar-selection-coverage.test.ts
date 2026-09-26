@@ -33,7 +33,7 @@ test("folder rows select too, and open their own bulk menu", async () => {
     /handleProjectSelectionClick\(\n\s*event,\n\s*project\.id,\n\s*order\.selectionIds \?\? order\.orderedIds,\n\s*\)/,
   );
   assert.match(source, /selectProjectForContextMenu\(project\.id\)/);
-  assert.match(source, /\{renderProjectContextMenu\(project, order\)\}/);
+  assert.match(source, /\{renderProjectContextMenu\(project\)\}/);
   assert.match(source, /selectedProjectIds\.has\(project\.id\)/);
 });
 
@@ -221,8 +221,7 @@ test("the shared menu items are written against the injected family", () => {
     );
     assert.match(body, /<P\.Item/);
   }
-  // The two helpers these bodies call take the family too, rather than hardcoding the dropdown.
-  assert.match(APP_SIDEBAR, /function renderMoveRowItems\([^)]*P: RowMenuParts,\n\s*\)/s);
+  // The helper these bodies call takes the family too, rather than hardcoding the dropdown.
   assert.match(APP_SIDEBAR, /<OpenChatFolderUnavailableItem Item=\{P\.Item\} \/>/);
 });
 

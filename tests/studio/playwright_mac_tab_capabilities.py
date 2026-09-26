@@ -66,6 +66,7 @@ from _playwright_robust import (  # noqa: E402
     install_view_transition_killer,
     install_wall_clock_watchdog,
     is_benign_page_error,
+    robust_evaluate,
     wait_for_health,
 )
 
@@ -125,6 +126,7 @@ PROBE_PATHS = (LIVENESS_PATH, HEALTH_PATH)
 TABS = [
     ("/chat", "projects", "Chat"),
     ("/hub", "hub", "Hub"),
+    ("/library", "library", "Library"),
     ("/images", "images", "Images"),
     ("/studio", "train", "Train"),
     ("/video", "video", "Video"),
@@ -148,7 +150,7 @@ _SIGNED_OUT_PATHS = ("/login", "/change-password")
 # once more. test_inline_row_ids_match_the_frontends_default_pinned_set holds this tuple to
 # the store's pinned set, in both directions, so neither a pin nor an unpin can leave an
 # assertion here silently observing nothing.
-INLINE_ROW_IDS = ("hub", "projects", "images", "video", "train")
+INLINE_ROW_IDS = ("hub", "projects", "library", "images", "train")
 # The row every pending-state assertion below is pinned to.
 GATED_ROW_ID = "train"
 # Intercept pattern for the browser's health reads.
@@ -701,8 +703,14 @@ _ROW_STATE_JS = """(ids) => {
 
 
 def row_states(page, ids = INLINE_ROW_IDS) -> dict:
-    """DOM state of each nav row by test id; None for a row that is not rendered."""
-    return page.evaluate(_ROW_STATE_JS, list(ids)) or {}
+    """DOM state of each nav row by test id; None for a row that is not rendered.
+
+    Through robust_evaluate: the password rotation navigates the app on its own, which can
+    abort the post-login goto and leave a navigation in flight when the first sample is read
+    ("Execution context was destroyed"). That settles on its own and is not a page that
+    cannot be read; a page that stays unreadable still raises.
+    """
+    return robust_evaluate(page, _ROW_STATE_JS, list(ids)) or {}
 
 
 def sample_natural_warm_window(page) -> None:

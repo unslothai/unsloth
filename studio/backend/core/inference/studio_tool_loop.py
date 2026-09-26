@@ -1754,7 +1754,14 @@ async def stream_with_studio_tools(
                 reprompts = max_reprompts
                 continue
 
-            def _invoke(output_callback: Any, call = decision) -> str:
+            # Only a call the user answered: the executor lets it reach the host paths it names.
+            host_access_approved = verdict not in (None, "deny")
+
+            def _invoke(
+                output_callback: Any,
+                call = decision,
+                approved = host_access_approved,
+            ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -1768,6 +1775,8 @@ async def stream_with_studio_tools(
                 # leaves the replaced response in them.
                 if accepts_kwarg(execute_tool, "conversation_branch"):
                     kwargs["conversation_branch"] = request_branch
+                if approved and accepts_kwarg(execute_tool, "host_access_approved"):
+                    kwargs["host_access_approved"] = True
                 # And a budget, so the tool's clamp is not skipped. Unsloth cannot measure an external model's window,
                 # and a custom OpenAI-compatible endpoint can be a small local server, so a model-chosen 8 chunks is
                 # roughly 4K tokens replayed on every later call. Unmeasurable means one recall's worth. Explicitly

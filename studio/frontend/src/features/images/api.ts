@@ -42,6 +42,8 @@ export interface DiffusionStatus {
   // actually ran instead of echoing the load request back. Transformer quant engaged on the dense fast path
   // ("int8" / "fp8" / ...), null = the GGUF ran as-is.
   transformer_quant?: string | null;
+  transformer_quant_backend?: string | null;
+  transformer_quant_backend_reason?: string | null;
   // Text-encoder quant engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4"), null = dense bf16.
   text_encoder_quant?: string | null;
   // Memory mode the load ran under: "auto" | "fast" | "balanced" | "low_vram".
@@ -91,6 +93,8 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
+  // Absent (sd.cpp engine) means "denoise".
+  phase?: "denoise" | "decode" | null;
 }
 
 export interface DiffusionLoadProgress {
@@ -141,7 +145,7 @@ export interface DiffusionLoadRequest {
   // CUDA / ROCm physical indices this load may use; omit for automatic. Neither engine shards a
   // checkpoint, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
-  transformer_cache?: "off" | "fbcache";
+  transformer_cache?: "off" | "fbcache" | "static";
   // LoRA adapters to BAKE into a torchao int8/fp8 build: they can only attach to the dense transformer BEFORE
   // quantisation and compile, so a quantized load that omits them rejects every generation. Ignored by bf16 /
   // bnb-4bit, which apply at generate time.
@@ -528,11 +532,14 @@ export async function clearGallery(): Promise<void> {
   if (!res.ok) throw new Error(await readFastApiError(res));
 }
 
-/** Fetch an auth-protected gallery image as its original blob. */
-export async function fetchGalleryBlob(url: string): Promise<Blob> {
+export async function fetchGalleryResponse(url: string): Promise<Response> {
   const res = await authFetch(url);
   if (!res.ok) throw new Error(await readFastApiError(res));
-  return res.blob();
+  return res;
+}
+
+export async function fetchGalleryBlob(url: string): Promise<Blob> {
+  return (await fetchGalleryResponse(url)).blob();
 }
 
 /** Fetch a gallery PNG (auth-protected, so it cannot be a plain <img src>) and wrap it in an object

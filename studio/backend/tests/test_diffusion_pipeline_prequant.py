@@ -297,7 +297,7 @@ def _settle_backend(
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda _t: True)
     monkeypatch.setattr(dmod, "_pipeline_quant_uncompilable_reason", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: scheme
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_k: scheme
     )
     monkeypatch.setattr(
         pqmod, "restricted_prequant_load_supported", lambda _scheme, filename = None: True
@@ -382,7 +382,7 @@ def _settle_backend_walking(monkeypatch, *, artifacts: tuple, candidates: tuple)
     from core.inference import diffusion_transformer_quant as tq
 
     backend = _settle_backend(monkeypatch, scheme = candidates[0])
-    monkeypatch.setattr(tq, "auto_scheme_candidates", lambda target, family = None: candidates)
+    monkeypatch.setattr(tq, "auto_scheme_candidates", lambda target, family = None, **_k: candidates)
     monkeypatch.setattr(
         dmod,
         "denoiser_prequant_source",
@@ -430,6 +430,57 @@ def test_a_walk_with_no_resident_rung_declines(monkeypatch):
     assert _settle(backend) == PIPELINE_SEED_DECLINED
 
 
+def test_auto_planning_passes_the_base_and_prequant_probe(monkeypatch):
+    """Without the base and a checkpoint probe AUTO drops nvfp4, so the plan must ask like the load."""
+    from core.inference import diffusion_transformer_quant as tq
+
+    backend = _settle_backend(monkeypatch)
+    seen: dict = {}
+
+    def _select(
+        target,
+        mode,
+        family = None,
+        *,
+        base_repo = None,
+        has_prequant = None,
+        **_k,
+    ):
+        seen["select"] = base_repo
+        if base_repo == Z_IMAGE_REPO and has_prequant is not None and has_prequant("nvfp4"):
+            return "nvfp4"
+        return "mxfp8"
+
+    def _candidates(
+        target,
+        family = None,
+        *,
+        base_repo = None,
+        has_prequant = None,
+        **_k,
+    ):
+        seen["candidates"] = base_repo
+        head = ("nvfp4",) if has_prequant is not None and has_prequant("nvfp4") else ()
+        return head + ("mxfp8",)
+
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", _select)
+    monkeypatch.setattr(tq, "auto_scheme_candidates", _candidates)
+    monkeypatch.setattr(
+        dmod,
+        "usable_prequant_source",
+        lambda fam, scheme, **_k: object() if scheme == "nvfp4" else None,
+    )
+    monkeypatch.setattr(
+        dmod,
+        "denoiser_prequant_source",
+        lambda fam, scheme, **_k: ("unsloth/Z-Image-Turbo-NVFP4", "z.safetensors")
+        if scheme == "nvfp4"
+        else None,
+    )
+    assert _settle(backend) == "nvfp4"
+    assert seen == {"select": Z_IMAGE_REPO, "candidates": Z_IMAGE_REPO}
+
+
 def test_an_explicit_scheme_is_never_swapped_for_a_lower_rung(monkeypatch):
     """An explicit int8 that offloads declines; auto's walk is not offered to an explicit request."""
     backend = _settle_backend_walking(
@@ -440,7 +491,7 @@ def test_an_explicit_scheme_is_never_swapped_for_a_lower_rung(monkeypatch):
 
 def test_a_family_with_no_hosted_artifact_falls_through(monkeypatch):
     """A scheme with no hosted artifact falls through to the in-memory quantise."""
-    assert _settle(_settle_backend(monkeypatch, scheme = "nvfp4")) is None
+    assert _settle(_settle_backend(monkeypatch, scheme = "mxfp8")) is None
 
 
 def test_a_base_with_no_hosted_artifact_falls_through(monkeypatch):
@@ -698,7 +749,7 @@ def _load_backend(
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda _t: True)
     monkeypatch.setattr(tqmod, "dense_transformer_supported", lambda _t: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_k: "fp8"
     )
     monkeypatch.setattr(dmod, "dense_quant_blocker", lambda _pipe: None)
     monkeypatch.setattr(dmod, "_pipeline_quant_uncompilable_reason", lambda *_a, **_k: None)
@@ -955,6 +1006,44 @@ def test_the_rebuilt_fp8_artifacts_are_listed_for_both_schemes(family, repo):
     assert fam is not None
     for scheme in ("fp8", "int8"):
         assert family_prequant_repo(fam, scheme) == repo
+
+
+def _encoders_streamed(**_k):
+    return types.SimpleNamespace(offload_policy = "group", stream_transformer = False)
+
+
+def test_an_artifact_that_fits_once_the_encoders_stream_is_seeded(monkeypatch):
+    """An artifact-sized plan streaming only the encoders keeps the torchao seed."""
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", lambda *_a, **k: _encoders_streamed(**k))
+    assert _settle(backend) == "fp8"
+
+
+def test_an_artifact_plan_that_streams_the_transformer_still_declines(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **_k: types.SimpleNamespace(offload_policy = "group", stream_transformer = True),
+    )
+    assert _settle(backend) == PIPELINE_SEED_DECLINED
+
+
+def test_a_seed_whose_load_plan_streams_only_the_encoders_is_kept(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch, offload = "group")
+    real_plan = DiffusionBackend._plan_memory
+
+    def _plan(self, *a, **kwargs):
+        plan = real_plan(self, *a, **kwargs)
+        if kwargs.get("transformer_resident_override_mib") is not None:
+            plan.stream_transformer = False
+        return plan
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    status = _load(backend)
+
+    assert spy.seeds and spy.restored == []
+    assert status["transformer_quant"] == "fp8"
 
 
 _MEASURED = {"safe_device_budget_mib": 170_000, "resident_required_mib": 60_000}

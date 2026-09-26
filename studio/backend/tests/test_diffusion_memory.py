@@ -793,6 +793,48 @@ def test_refine_model_offload_streams_only_when_a_component_exceeds_budget(monke
     assert any("text_encoder" in reason for reason in refined.reasons)
 
 
+def test_largest_streamable_companion_mib_measures_only_the_text_encoders(monkeypatch):
+    from core.inference.diffusion_memory import largest_streamable_companion_mib
+
+    Module = _install_sized_torch(monkeypatch)
+    transformer = Module(9000)
+    pipe = types.SimpleNamespace(
+        transformer = transformer,
+        components = {
+            "transformer": transformer,
+            "text_encoder": Module(1200),
+            "text_encoder_2": Module(4800),
+            "vae": Module(9500),
+        },
+    )
+    assert largest_streamable_companion_mib(pipe) == 4800
+    only_dit = types.SimpleNamespace(
+        transformer = transformer, components = {"transformer": transformer}
+    )
+    assert largest_streamable_companion_mib(only_dit) is None
+
+
+def test_refine_keeps_model_offload_for_a_torchao_transformer(monkeypatch):
+    """A torchao transformer's bf16-shaped size must not force streaming."""
+    Module = _install_sized_torch(monkeypatch)
+    plan = MemoryPlan(
+        requested_mode = "low_vram",
+        offload_policy = OFFLOAD_MODEL,
+        vae_tiling = True,
+        vae_slicing = True,
+        device_memory = _discrete(8000),
+        estimates = {"safe_device_budget_mib": 6000},
+    )
+    transformer = Module(7500)
+    pipe = types.SimpleNamespace(
+        transformer = transformer,
+        components = {"transformer": transformer, "text_encoder": Module(1200)},
+    )
+    assert refine_memory_plan_for_components(pipe, plan).offload_policy == OFFLOAD_STREAMING
+    monkeypatch.setattr(diffusion_memory, "_pipe_denoisers_hold_torchao", lambda pipe: True)
+    assert refine_memory_plan_for_components(pipe, plan) is plan
+
+
 def test_refine_keeps_model_offload_when_streaming_cannot_help(monkeypatch):
     """Only a component streaming can actually hook justifies leaving whole-module offload."""
     Module = _install_sized_torch(monkeypatch)
@@ -2460,3 +2502,97 @@ def test_pinned_host_pricing_rounds_each_tensor_to_a_power_of_two(monkeypatch):
             return [_T(1024 * 1024)]
 
     assert mem._module_host_mib(_M()) == 13
+
+
+def test_only_resident_and_encoder_only_plans_keep_the_transformer_in_place():
+    from types import SimpleNamespace
+
+    import core.inference.diffusion_memory as mem
+
+    keeps = mem.plan_keeps_transformer_resident
+    assert keeps(SimpleNamespace(offload_policy = OFFLOAD_NONE)) is True
+    assert keeps(SimpleNamespace(offload_policy = OFFLOAD_GROUP, stream_transformer = False)) is True
+    assert keeps(SimpleNamespace(offload_policy = OFFLOAD_GROUP, stream_transformer = True)) is False
+    # Plans built before the field existed stream the transformer.
+    assert keeps(SimpleNamespace(offload_policy = OFFLOAD_GROUP)) is False
+    for policy in (OFFLOAD_MODEL, mem.OFFLOAD_STREAMING, mem.OFFLOAD_SEQUENTIAL):
+        assert keeps(SimpleNamespace(offload_policy = policy, stream_transformer = False)) is False
+    assert keeps(_q21_plan(_24G_FREE_MIB, _24G_TOTAL_MIB)) is True
+    assert keeps(_q21_plan(_16G_FREE_MIB, _16G_TOTAL_MIB)) is False
+
+
+class _TorchaoLikeTensor:
+    """Stands in for a torchao subclass: only its defining module is read."""
+
+
+_TorchaoLikeTensor.__module__ = "torchao.quantization.linear_activation_quantized_tensor"
+
+
+class _ParamsModule:
+    def __init__(self, *tensors):
+        self._tensors = tensors
+
+    def parameters(self):
+        return iter(self._tensors)
+
+
+def test_torchao_weights_are_told_apart_from_gguf_and_plain_ones():
+    import core.inference.diffusion_memory as mem
+
+    class _GGUFParameter:
+        pass
+
+    _GGUFParameter.__module__ = "diffusers.quantizers.gguf.utils"
+    assert mem._holds_torchao_weights(_ParamsModule(object(), _TorchaoLikeTensor())) is True
+    assert mem._holds_torchao_weights(_ParamsModule(_GGUFParameter(), object())) is False
+
+    class _Broken:
+        def parameters(self):
+            raise RuntimeError("no parameters")
+
+    assert mem._holds_torchao_weights(_Broken()) is False
+
+
+def test_a_refusing_encoder_never_hands_a_torchao_transformer_to_whole_module_offload(monkeypatch):
+    # Whole-module offload moves the transformer every call, which torchao weights do not survive.
+    import core.inference.diffusion_memory as mem
+
+    pipe = _RecordingPipe()
+    pipe.transformer = _ParamsModule(_TorchaoLikeTensor())
+    monkeypatch.setattr(mem, "_apply_group_offload", lambda *a, **k: False)
+    with pytest.raises(RuntimeError, match = "cannot move torchao weights"):
+        apply_memory_plan(pipe, _q21_plan(_24G_FREE_MIB, _24G_TOTAL_MIB), device = "cuda")
+    assert "model_offload" not in pipe.calls
+
+
+def test_a_refusing_encoder_still_falls_back_for_a_dense_transformer(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    pipe = _RecordingPipe()
+    pipe.transformer = _ParamsModule(object())
+    monkeypatch.setattr(mem, "_apply_group_offload", lambda *a, **k: False)
+    policy, _tiling = apply_memory_plan(
+        pipe, _q21_plan(_24G_FREE_MIB, _24G_TOTAL_MIB), device = "cuda"
+    )
+    assert policy == OFFLOAD_MODEL
+
+
+def test_a_late_encoder_refusal_never_streams_a_torchao_transformer(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    order: list[str] = []
+
+    def _apply(module, **kw):
+        if getattr(module, "name", "") == "text_encoder_2":
+            raise ValueError("no leaves to stream")
+        order.append("hook:" + module.name)
+
+    pipe, _unused, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
+    _swap_group_offloading(monkeypatch, _apply)
+    monkeypatch.setattr(mem, "_pipe_denoisers_hold_torchao", lambda _pipe: True)
+    with pytest.raises(ValueError, match = "no leaves to stream"):
+        mem._apply_group_offload(
+            pipe, "cuda", logger = None, stream_text_encoders = True, stream_transformer = False
+        )
+    assert order == ["hook:text_encoder"]
+    assert te2.placed is None

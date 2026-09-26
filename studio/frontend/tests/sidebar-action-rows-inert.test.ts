@@ -53,7 +53,7 @@ test("desktop branding clears the titlebar actions", async () => {
 
 test("desktop branding keeps an 11px gap above New chat", async () => {
   const source = APP_SIDEBAR;
-  assert.match(source, /usesDesktopTitlebar \? "pt-\[11px\]" : "pt-\[9px\]"/);
+  assert.match(source, /usesDesktopTitlebar \? "pt-\[11px\]" : "pt-\[7px\]"/);
 });
 
 test("footer profile sits 11px above the sidebar edge", async () => {
@@ -160,10 +160,8 @@ test("the sidebar list measures its scroll rail", async () => {
   );
 });
 
-test("Tauri chat Recents label keeps its 2px shift", async () => {
+test("Tauri chat Recents label takes the shared header inset, not a shift", async () => {
   const source = APP_SIDEBAR;
-  assert.match(
-    source,
-    /scrolled && "is-scrolled",\s*usesDesktopTitlebar && "translate-x-\[2px\]"/,
-  );
+  assert.match(source, /headerInset,\s*scrolled && "is-scrolled",\s*!chatOpen/);
+  assert.doesNotMatch(source, /translate-x-\[2px\]/);
 });

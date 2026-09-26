@@ -20,6 +20,8 @@ from pathlib import Path, PurePosixPath
 from typing import NamedTuple, Optional, Sequence
 from utils.paths.path_utils import is_appledouble_metadata
 
+from .diffusion_nvfp4_flag import nvfp4_blocked
+
 
 # Runtime->route contract: the /images/generate route matches these messages EXACTLY for a 409 (vs a 500), so both
 # engines raise them verbatim.
@@ -213,6 +215,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("black-forest-labs/flux.1-dev", "fp8", "unsloth/FLUX.1-dev-FP8"),
             ("black-forest-labs/flux.1-krea-dev", "int8", "unsloth/FLUX.1-Krea-dev-FP8"),
             ("black-forest-labs/flux.1-krea-dev", "fp8", "unsloth/FLUX.1-Krea-dev-FP8"),
+            # schnell ONLY: dev and Krea-dev would download it just for _validate_checkpoint to refuse.
+            ("black-forest-labs/flux.1-schnell", "nvfp4", "unsloth/FLUX.1-schnell-NVFP4"),
         ),
         # Pre-cast T5-XXL (9.52 -> 5.90 GB; CLIP-L stays dense). One artifact serves schnell/dev/Krea-dev (T5 shards
         # are byte-identical).
@@ -347,6 +351,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_variant_repos = (
             ("qwen/qwen-image-2512", "int8", "unsloth/Qwen-Image-2512-FP8"),
             ("qwen/qwen-image-2512", "fp8", "unsloth/Qwen-Image-2512-FP8"),
+            # Policy ``qwen2512_m120_attn8_v1``, 2512 only: Qwen/Qwen-Image keeps its nvfp4 deny.
+            ("qwen/qwen-image-2512", "nvfp4", "unsloth/Qwen-Image-2512-NVFP4"),
         ),
         # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). Always was independent of the DiT scheme rules.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
@@ -386,6 +392,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_repos = (
             ("int8", "unsloth/Qwen-Image-2.1-FP8"),
             ("fp8", "unsloth/Qwen-Image-2.1-FP8"),
+            ("nvfp4", "unsloth/Qwen-Image-2.1-NVFP4"),
         ),
         # The artifacts are safetensors, not the historical torch.save pickle, so the family has to
         # NAME them: every derived fallback ends in .pt, and without these rows the loader would ask
@@ -480,6 +487,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_repos = (
             ("int8", "unsloth/Z-Image-Turbo-FP8"),
             ("fp8", "unsloth/Z-Image-Turbo-FP8"),
+            ("nvfp4", "unsloth/Z-Image-Turbo-NVFP4"),
         ),
         # Both hosted checkpoints are baked from the distilled Turbo transformer, so the undistilled base has none and
         # must quantize its own dense weights.
@@ -1183,6 +1191,8 @@ def family_prequant_repo(
     close enough that planning around it costs nothing, since the base_model_id validation
     refuses the artifact well after the plan was made. A base whose weights really differ belongs
     in ``prequant_excluded_bases``, which returns None here instead."""
+    if nvfp4_blocked(scheme):
+        return None
     # Both tables are keyed on lowercased upstream ids.
     base = canonical_base(base_repo).lower()
     if base:
@@ -1684,6 +1694,54 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
         loadable.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
     return frozenset(r.strip().lower() for r in companions - loadable if r)
+
+
+def prequant_only_repo_ids() -> frozenset[str]:
+    """Repos hosting only prequant checkpoints (no model_index.json), never a base or mirror."""
+    hosted: set[str] = set()
+    bases: set[str] = set()
+    for fam in _FAMILIES:
+        hosted.update(repo for _scheme, repo in fam.prequant_repos)
+        hosted.update(repo for _base, _scheme, repo in fam.prequant_variant_repos)
+        hosted.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
+        bases.add(fam.base_repo)
+        bases.update(fam.train_base_repos)
+        if fam.deploy_base_repo:
+            bases.add(fam.deploy_base_repo)
+    bases.update(rid for pair in _MIRROR_PAIRS for rid in pair)
+    lowered = {b.strip().lower() for b in bases if b}
+    return frozenset(r.strip().lower() for r in hosted if r and r.strip().lower() not in lowered)
+
+
+def prequant_repo_role(
+    fam: DiffusionFamily, repo_id: str
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    key = (repo_id or "").strip().lower()
+    known = {
+        b.lower(): b
+        for b in (fam.base_repo, *fam.train_base_repos, fam.deploy_base_repo or "")
+        if b
+    }
+    bases: list[str] = []
+    schemes: list[str] = []
+    for entry_base, scheme, repo in fam.prequant_variant_repos:
+        if repo.strip().lower() == key:
+            bases.append(known.get(entry_base.lower(), entry_base))
+            schemes.append(scheme)
+    for scheme, repo in fam.prequant_repos:
+        if repo.strip().lower() == key:
+            bases.append(fam.base_repo)
+            schemes.append(scheme)
+    te = sorted(
+        {
+            scheme
+            for scheme, _component, repo in fam.te_prequant_repos
+            if repo.strip().lower() == key
+        }
+    )
+    if te and not bases:
+        bases.append(fam.base_repo)
+    return tuple(dict.fromkeys(bases)), tuple(sorted(set(schemes))), tuple(te)
 
 
 def sd_cpp_text_encoder_candidates(fam: DiffusionFamily) -> tuple[tuple[str, str, str], ...]:
