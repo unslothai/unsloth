@@ -1218,7 +1218,6 @@ def _mxfp4_lora_keeps_experts_packed(
     if device_map is None:
         try:
             import torch
-
             device_map = str(getattr(torch, "get_default_device", lambda: "cpu")())
         except Exception:
             device_map = "cpu"
@@ -1306,7 +1305,6 @@ def _mxfp4_lora_keeps_experts_packed(
                     # Offline (local_files_only / HF_HUB_OFFLINE) or unreachable: size the
                     # cached snapshot instead.
                     from huggingface_hub import snapshot_download
-
                     folder = snapshot_download(
                         str(model_name),
                         revision = revision,
@@ -1324,13 +1322,17 @@ def _mxfp4_lora_keeps_experts_packed(
             probed = backend.is_available() and backend.device_count() > 0
             if max_memory:
                 # Only the cards the caller allowed; an excluded card is never touched.
-                devices = sorted(
-                    {
-                        int(key)
-                        for key in max_memory
-                        if str(key).isdigit() and int(key) < backend.device_count()
-                    }
-                ) if probed else []
+                devices = (
+                    sorted(
+                        {
+                            int(key)
+                            for key in max_memory
+                            if str(key).isdigit() and int(key) < backend.device_count()
+                        }
+                    )
+                    if probed
+                    else []
+                )
             else:
                 devices = list(range(backend.device_count())) if probed else []
             free_bytes = 0
@@ -1343,7 +1345,6 @@ def _mxfp4_lora_keeps_experts_packed(
                 budget = max_memory.get(index, max_memory.get(str(index))) if max_memory else None
                 if isinstance(budget, str):
                     from accelerate.utils import convert_file_size_to_int
-
                     budget = convert_file_size_to_int(budget)
                 if isinstance(budget, int):
                     free = min(free, budget)
