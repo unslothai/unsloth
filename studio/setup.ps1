@@ -2665,6 +2665,12 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-StudioLine ("  " + [char]::ConvertFromUtf32(0x1F9A5) + " Unsloth Studio Setup") -ForegroundColor Green
     Write-StudioLine "  $Rule" -ForegroundColor DarkGray
 }
+# In-app source refresh (llama_cpp_update._run_setup_source_build) sets this so a live
+# Studio backend does not reinstall the venv or base packages -- mirrors setup.sh.
+$LlamaOnly = @("1", "true", "yes", "on") -contains "$($env:UNSLOTH_STUDIO_LLAMA_ONLY)".Trim().ToLowerInvariant()
+if ($LlamaOnly) {
+    substep "llama.cpp only mode"
+}
 
 # WebView2 caches keyed by the bundle id can keep serving the previous frontend
 # after an update. Cache-only: storage, cookies, settings, models and the studio
@@ -4831,6 +4837,9 @@ Write-StudioLine ""
 step "system" "prerequisites ready"
 Write-StudioLine ""
 
+# UNSLOTH_STUDIO_LLAMA_ONLY=1 skips frontend + venv/deps (base install); llama.cpp
+# and whisper still run below -- mirrors setup.sh's _LLAMA_ONLY guard.
+if (-not $LlamaOnly) {
 # ==========================================================================
 #  PHASE 2: Frontend build (skip if pip-installed -- already bundled)
 # ==========================================================================
@@ -8678,6 +8687,7 @@ if ($_NeedT5_510) {
     Repair-SidecarTiktoken -TargetDir $VenvT5_510Dir -DirName ".venv_t5_510"
 }
 $ErrorActionPreference = $script:PrevEAP_T5
+} # end llama-only skip of frontend + Python base/venv
 
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
@@ -9901,7 +9911,13 @@ if (-not $llamaCppIsLink -and (
 # ─────────────────────────────────────────────
 # Footer
 # ─────────────────────────────────────────────
-$DoneLabel = if ($env:SKIP_STUDIO_BASE -eq "1") { "Unsloth Studio Setup Complete" } else { "Unsloth Studio Updated" }
+if ($LlamaOnly) {
+    $DoneLabel = "llama.cpp update finished"
+} elseif ($env:SKIP_STUDIO_BASE -eq "1") {
+    $DoneLabel = "Unsloth Studio Setup Complete"
+} else {
+    $DoneLabel = "Unsloth Studio Updated"
+}
 if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-StudioLine ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
     if ($script:LlamaCppDegraded) {
@@ -9922,9 +9938,11 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
 if ($script:LlamaKeptGpuPrebuilt) {
     step "llama.cpp" "update failed; the installed $($script:LlamaKeptGpuPrebuilt) prebuilt was kept and the next update will retry" "Yellow"
 }
-step "launch" "unsloth studio -p 8888"
-substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
-substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
+if (-not $LlamaOnly) {
+    step "launch" "unsloth studio -p 8888"
+    substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+    substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
+}
 Write-StudioLine ""
 
 # Exit non-zero for degraded llama.cpp only under install.ps1; 'studio update' stays successful.
@@ -9955,4 +9973,6 @@ if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -ne "1" -and
     [Console]::Out.Flush()
 }
 
-Remove-WoaMergedOverrides
+if (Get-Command Remove-WoaMergedOverrides -CommandType Function -ErrorAction SilentlyContinue) {
+    Remove-WoaMergedOverrides
+}

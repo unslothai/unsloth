@@ -59,6 +59,8 @@ export interface LlamaUpdateStatus {
   latest_tag: string | null;
   // Prebuilt download size in bytes, if known.
   update_size_bytes: number | null;
+  // Managed source tree refresh (no matching prebuilt for this host).
+  source_refresh?: boolean;
   // The install recorded "auto" and detection now resolves elsewhere, so Update would move
   // it. Independent of update_available: reported only when the release is current.
   backend_migration_available: boolean;
@@ -127,6 +129,7 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
       typeof details.update_size_bytes === "number"
         ? details.update_size_bytes
         : null,
+    source_refresh: s.source_refresh === true,
     // The top-level version fields keep their llama meaning whatever `details` is.
     llama: {
       // Absent from a backend older than the whisper piggyback: there the legacy
