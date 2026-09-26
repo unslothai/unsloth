@@ -1039,6 +1039,19 @@ export const it = {
         saveError:
           "Impossibile aggiornare l'impostazione di avvio all'accesso.",
       },
+      hub: {
+        source: "Origine dei modelli",
+        sourceDescription: "Dove l'hub dei modelli cerca e scarica. Scegli ModelScope se Hugging Face è bloccato o lento sulla tua rete.",
+        sourceFallback: "Non è stato possibile avviare ModelScope, quindi viene usato Hugging Face. Controlla i log di Unsloth.",
+        sectionTitle: "Hub dei modelli",
+        endpoint: "Endpoint Hugging Face",
+        endpointDescription: "Da dove vengono scaricati modelli e dataset. Lascia vuoto per huggingface.co oppure inserisci un mirror come https://hf-mirror.com.",
+        datasetsServer: "Usalo anche per le anteprime dei dataset",
+        datasetsServerDescription: "Invia anche le anteprime dei dataset (HF_DATASETS_SERVER) a questo endpoint. Attivalo solo se il mirror le fornisce.",
+        invalidEndpoint: "Inserisci un URL http(s) senza credenziali né parametri. http semplice funziona solo con un indirizzo locale.",
+        saveFailed: "Impossibile salvare le impostazioni dell'hub.",
+        loadFailed: "Impossibile caricare le impostazioni dell'hub.",
+      },
       downloads: {
         sectionTitle: "Download",
         transport: "Trasporto di download",
@@ -2261,6 +2274,10 @@ export const it = {
       "Sono stati trovati più {noun} corrispondenti. Scegline uno dall'elenco.",
     rateLimitedTitle: "Limite di richieste di Hugging Face raggiunto",
     rateLimitedBody: "Attendi un momento, poi riprova a cercare {noun}.",
+    modelScope: "ModelScope",
+    useModelScope: "Usa ModelScope",
+    useModelScopeHint: "Cerca e scarica da ModelScope. Puoi tornare indietro nelle Impostazioni.",
+    useModelScopeFailed: "Impossibile passare a ModelScope.",
     hfToken: {
       label: "Token HF",
       saved: "Salvato",

@@ -92,6 +92,10 @@ export const de = {
     rateLimitedTitle: "Hugging Face-Ratenlimit erreicht",
     rateLimitedBody:
       "Warten Sie einen Moment und wiederholen Sie dann die Suche ({noun}).",
+    modelScope: "ModelScope",
+    useModelScope: "ModelScope verwenden",
+    useModelScopeHint: "Stattdessen über ModelScope suchen und herunterladen. Sie können in den Einstellungen zurückwechseln.",
+    useModelScopeFailed: "Wechsel zu ModelScope fehlgeschlagen.",
     hfToken: {
       label: "HF-Token",
       saved: "Gespeichert",
@@ -1067,6 +1071,19 @@ export const de = {
         loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
+      },
+      hub: {
+        source: "Modellquelle",
+        sourceDescription: "Wo der Model-Hub sucht und herunterlädt. Wählen Sie ModelScope, wenn Hugging Face in Ihrem Netzwerk blockiert oder langsam ist.",
+        sourceFallback: "ModelScope konnte nicht gestartet werden, daher wird Hugging Face verwendet. Prüfen Sie die Unsloth-Logs.",
+        sectionTitle: "Modell-Hub",
+        endpoint: "Hugging-Face-Endpunkt",
+        endpointDescription: "Von hier werden Modelle und Datensätze geladen. Leer lassen für huggingface.co oder einen Mirror wie https://hf-mirror.com eintragen.",
+        datasetsServer: "Auch für Datensatz-Vorschauen verwenden",
+        datasetsServerDescription: "Datensatz-Vorschauen (HF_DATASETS_SERVER) ebenfalls an diesen Endpunkt senden. Nur einschalten, wenn der Mirror sie bereitstellt.",
+        invalidEndpoint: "Geben Sie eine http(s)-URL ohne Anmeldedaten oder Query ein. Reines http funktioniert nur für eine lokale Adresse.",
+        saveFailed: "Die Hub-Einstellungen konnten nicht gespeichert werden.",
+        loadFailed: "Die Hub-Einstellungen konnten nicht geladen werden.",
       },
       downloads: {
         sectionTitle: "Downloads",

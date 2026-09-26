@@ -10,6 +10,7 @@ export {
   updateDownloadTransportSettings,
 } from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
+export { updateHubSource } from "./api/hub-settings";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
 export {
   loadHuggingFaceCacheSettings,
