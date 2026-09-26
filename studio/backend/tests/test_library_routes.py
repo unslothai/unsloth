@@ -651,7 +651,9 @@ def test_training_runs_map_only_folders_directly_under_outputs(monkeypatch):
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE training_runs (id TEXT, output_dir TEXT, started_at TEXT, status TEXT)")
+    conn.execute(
+        "CREATE TABLE training_runs (id TEXT, output_dir TEXT, started_at TEXT, status TEXT)"
+    )
     conn.executemany(
         "INSERT INTO training_runs VALUES (?, ?, ?, ?)",
         [
