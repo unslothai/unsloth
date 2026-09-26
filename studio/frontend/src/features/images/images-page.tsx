@@ -5322,8 +5322,7 @@ export function ImagesPage({
                 >
                   Generate
                 </Button>
-                {/* A resident full pipeline is reloadable by repo id alone, so it keeps Reapply even before a
-                    user-initiated load; GGUF/single_file residents hide the button. */}
+                {/* A resident full pipeline reloads by repo id alone; GGUF/single_file residents need a prior load. */}
                 {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
