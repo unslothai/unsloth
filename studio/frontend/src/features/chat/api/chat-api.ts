@@ -856,16 +856,18 @@ export async function listChatAttachments(
 }
 
 /** Keeps a document's original file on the server, by content hash, for the attachment to name. */
+/** `epoch`: the auth session the send began in. The upload is refused, and a retry stopped, once it has
+ *  changed, so a document never lands in the account switched to. */
 export async function uploadChatAttachmentOriginal(
   file: File,
+  epoch = getAuthSessionEpoch(),
 ): Promise<{ sha256: string; sizeBytes: number }> {
-  const form = new FormData();
-  form.append("file", file, file.name);
-  // Kept by the account that sent it: a retry after an account switch would carry the next one's token.
-  const epoch = getAuthSessionEpoch();
   const sameAccount = () => {
     if (getAuthSessionEpoch() !== epoch) throw new Error("The account changed during the upload.");
   };
+  sameAccount();
+  const form = new FormData();
+  form.append("file", file, file.name);
   const response = await authFetch(
     "/api/chat/attachment-originals",
     { method: "POST", body: form },

@@ -14,6 +14,7 @@ import { useWidth } from "./use-width";
 import {
   type Deck,
   type Sheet,
+  type Slide,
   type SlideBox,
   columnName,
   readDelimited,
@@ -310,6 +311,56 @@ function SlideTable({ rows, caption, widthPt }: { rows: string[][]; caption?: st
   );
 }
 
+function SlideFace({ slide, index, deck }: { slide: Slide; index: number; deck: Deck }) {
+  const flow = slide.boxes.filter((box) => !box.frame && box.paragraphs);
+  const titles = flow.filter((box) => TITLES.has(box.placeholder ?? ""));
+  const body = flow.filter((box) => !TITLES.has(box.placeholder ?? ""));
+  const titleSlide = titles.some((box) => box.placeholder === "ctrTitle");
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div
+        className="relative w-full overflow-hidden bg-white text-neutral-900 shadow-sm ring-1 ring-black/5 select-text"
+        style={{ aspectRatio: `1 / ${deck.aspect}`, containerType: "inline-size" }}
+      >
+        {slide.boxes.map((box, boxIndex) =>
+          box.frame ? (
+            <div key={boxIndex} className="absolute overflow-hidden" style={frameStyle(box.frame)}>
+              {box.image ? (
+                <img src={box.image} alt="" className="size-full object-contain" />
+              ) : box.table ? (
+                <SlideTable rows={box.table} caption={box.caption} widthPt={deck.widthPt} />
+              ) : (
+                <SlideText box={box} widthPt={deck.widthPt} />
+              )}
+            </div>
+          ) : null,
+        )}
+        {titles.length > 0 && (
+          <div
+            className={cn("absolute flex flex-col justify-end overflow-hidden", titleSlide && "text-center")}
+            style={frameStyle(titleSlide ? CENTER_TITLE_FRAME : TITLE_FRAME)}
+          >
+            {titles.map((box, i) => <SlideText key={i} box={box} widthPt={deck.widthPt} />)}
+          </div>
+        )}
+        {body.length > 0 && (
+          <div
+            className={cn("absolute overflow-hidden", titleSlide && "text-center")}
+            style={frameStyle(titleSlide ? SUBTITLE_FRAME : BODY_FRAME)}
+          >
+            {body.map((box, i) => <SlideText key={i} box={box} widthPt={deck.widthPt} />)}
+          </div>
+        )}
+      </div>
+      <span className="text-center text-ui-12 text-muted-foreground tabular-nums">{index + 1}</span>
+    </div>
+  );
+}
+
+const SLIDE_GAP = 24;
+const SLIDE_LABEL = 26;
+
+/** Only the slides near the viewport are mounted, so a deck of thousands opens as fast as a short one. */
 function SlidesView({ deck, scale }: { deck: Deck; scale: number }) {
   const t = useT();
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
@@ -319,54 +370,35 @@ function SlidesView({ deck, scale }: { deck: Deck; scale: number }) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.emptyDocument")}</p>;
   }
   return (
-    <div ref={setContainer} className="size-full overflow-auto bg-muted/60 py-6">
-      <div className="mx-auto flex flex-col gap-6" style={{ width }}>
-        {deck.slides.map((slide, index) => {
-          const flow = slide.boxes.filter((box) => !box.frame && box.paragraphs);
-          const titles = flow.filter((box) => TITLES.has(box.placeholder ?? ""));
-          const body = flow.filter((box) => !TITLES.has(box.placeholder ?? ""));
-          const titleSlide = titles.some((box) => box.placeholder === "ctrTitle");
-          return (
-            <div key={index} className="flex flex-col gap-1.5">
-              <div
-                className="relative w-full overflow-hidden bg-white text-neutral-900 shadow-sm ring-1 ring-black/5 select-text"
-                style={{ aspectRatio: `1 / ${deck.aspect}`, containerType: "inline-size" }}
-              >
-                {slide.boxes.map((box, boxIndex) =>
-                  box.frame ? (
-                    <div key={boxIndex} className="absolute overflow-hidden" style={frameStyle(box.frame)}>
-                      {box.image ? (
-                        <img src={box.image} alt="" className="size-full object-contain" />
-                      ) : box.table ? (
-                        <SlideTable rows={box.table} caption={box.caption} widthPt={deck.widthPt} />
-                      ) : (
-                        <SlideText box={box} widthPt={deck.widthPt} />
-                      )}
-                    </div>
-                  ) : null,
-                )}
-                {titles.length > 0 && (
-                  <div
-                    className={cn("absolute flex flex-col justify-end overflow-hidden", titleSlide && "text-center")}
-                    style={frameStyle(titleSlide ? CENTER_TITLE_FRAME : TITLE_FRAME)}
-                  >
-                    {titles.map((box, i) => <SlideText key={i} box={box} widthPt={deck.widthPt} />)}
-                  </div>
-                )}
-                {body.length > 0 && (
-                  <div
-                    className={cn("absolute overflow-hidden", titleSlide && "text-center")}
-                    style={frameStyle(titleSlide ? SUBTITLE_FRAME : BODY_FRAME)}
-                  >
-                    {body.map((box, i) => <SlideText key={i} box={box} widthPt={deck.widthPt} />)}
-                  </div>
-                )}
-              </div>
-              <span className="text-center text-ui-12 text-muted-foreground tabular-nums">{index + 1}</span>
-            </div>
-          );
-        })}
-      </div>
+    <div ref={setContainer} className="size-full overflow-auto bg-muted/60">
+      {/* Keyed on the width, so the virtualizer measures afresh. */}
+      <SlideList key={width} deck={deck} width={width} scrollElement={container} />
+    </div>
+  );
+}
+
+function SlideList({ deck, width, scrollElement }: { deck: Deck; width: number; scrollElement: HTMLElement | null }) {
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: deck.slides.length,
+    getScrollElement: () => scrollElement,
+    estimateSize: () => width * deck.aspect + SLIDE_LABEL + SLIDE_GAP,
+    paddingStart: SLIDE_GAP,
+    overscan: 2,
+  });
+  return (
+    <div className="relative mx-auto" style={{ width, height: virtualizer.getTotalSize() }}>
+      {virtualizer.getVirtualItems().map((item) => (
+        <div
+          key={item.key}
+          data-index={item.index}
+          ref={virtualizer.measureElement}
+          className="absolute top-0 left-0 w-full"
+          style={{ transform: `translateY(${item.start}px)`, paddingBottom: SLIDE_GAP }}
+        >
+          <SlideFace slide={deck.slides[item.index]!} index={item.index} deck={deck} />
+        </div>
+      ))}
     </div>
   );
 }

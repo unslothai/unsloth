@@ -8,7 +8,7 @@ import { DocumentView, documentKind } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { MediaViewer, ScaleMenu } from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
-import { fetchChatAttachmentBlob, parseAttachmentText } from "@/features/chat";
+import { attachmentBodyText, fetchChatAttachmentBlob, truncateAttachmentPreviewText } from "@/features/chat";
 import { formatBytes } from "@/features/hub";
 import { useT } from "@/i18n";
 import { downloadFile } from "@/lib/native-files";
@@ -19,8 +19,9 @@ import { type FC, type PropsWithChildren, useEffect, useRef, useState } from "re
 const SCALES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const MARKDOWN_NAME = /\.(md|markdown|mdx)$/i;
 
-/** `plain`: a sent document's stored text, shown when its original file is gone. */
-type Loaded = { blob?: Blob; text?: string; plain?: string; error?: boolean };
+/** `plain`: a sent document's stored text, shown when its original file is gone. `text` and `plain`
+ *  are capped for rendering (`truncated`); `blob`, which a download saves, is whole. */
+type Loaded = { blob?: Blob; text?: string; plain?: string; truncated?: boolean; error?: boolean };
 
 /** Rendered markdown, or the document's pages, grid or slides, at `scale`. */
 const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; scale: number }> = ({
@@ -84,11 +85,14 @@ const DocumentDialog: FC<
     loadRef
       .current()
       .then(async (blob) => {
-        const next: Loaded = markdown
-          ? { blob, text: await blob.text() }
-          : textFallback && blob.type.startsWith("text/")
-            ? { plain: await blob.text() }
-            : { blob };
+        let next: Loaded = { blob };
+        if (markdown) {
+          const { text, truncated } = truncateAttachmentPreviewText(await blob.text());
+          next = { blob, text, truncated };
+        } else if (textFallback && blob.type.startsWith("text/")) {
+          const { text, truncated } = truncateAttachmentPreviewText(await blob.text());
+          next = { plain: text, truncated };
+        }
         if (!cancelled) setLoaded(next);
       })
       .catch(() => !cancelled && setLoaded({ error: true }));
@@ -98,7 +102,11 @@ const DocumentDialog: FC<
   }, [open, loaded, markdown, textFallback]);
 
   const blob = loaded?.blob;
-  const meta = [source.name.split(".").pop()?.toUpperCase(), blob ? formatBytes(blob.size) : null]
+  const meta = [
+    source.name.split(".").pop()?.toUpperCase(),
+    blob ? formatBytes(blob.size) : null,
+    loaded?.truncated ? "preview truncated" : null,
+  ]
     .filter(Boolean)
     .join(" · ");
 
@@ -175,7 +183,7 @@ export const AttachmentDocumentDialog: FC<
     return (
       <DocumentDialog
         source={source}
-        load={() => Promise.resolve(new Blob([parseAttachmentText(text).text]))}
+        load={() => Promise.resolve(new Blob([attachmentBodyText(text)]))}
         redactFromReload={redactFromReload}
       >
         {children}

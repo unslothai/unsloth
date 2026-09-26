@@ -312,15 +312,52 @@ function placeDigits(number: number, format: string): string {
   return `${integer}.${part.map((token) => (isPlaceholder(token) ? digits[next++] : literalText(token))).join("")}`;
 }
 
+const CONDITION = /\[(<=|>=|<>|<|>|=)\s*(-?\d+(?:\.\d+)?)\]/;
+
+function meets(value: number, section: string | undefined): boolean | null {
+  const match = section ? CONDITION.exec(section) : null;
+  if (!match) return null;
+  const limit = Number(match[2]);
+  switch (match[1]) {
+    case "<":
+      return value < limit;
+    case ">":
+      return value > limit;
+    case "<=":
+      return value <= limit;
+    case ">=":
+      return value >= limit;
+    case "=":
+      return value === limit;
+    default:
+      return value !== limit;
+  }
+}
+
+/** Which section formats `value`, and whether a minus goes in front. Plain sections are
+ *  positive;negative;zero, a negative section writing its own sign. With conditions ([>=100]),
+ *  the first section whose condition holds, the section after them catching the rest. */
+function pickSection(value: number, sections: string[]): { index: number; sign: string } {
+  const first = meets(value, sections[0]);
+  const second = meets(value, sections[1]);
+  if (first === null && second === null) {
+    const index = value < 0 && sections.length > 1 ? 1 : value === 0 && sections.length > 2 ? 2 : 0;
+    return { index, sign: value < 0 && index === 0 ? "-" : "" };
+  }
+  // A conditional section shows the value's own sign.
+  const sign = value < 0 ? "-" : "";
+  if (first) return { index: 0, sign };
+  if (second || (second === null && sections.length > 1)) return { index: 1, sign };
+  return { index: Math.min(2, sections.length - 1), sign };
+}
+
 /** The common shapes of an Excel number format: digit placeholders, grouping, percent, currency,
  *  fractions, dates. `date1904`: the workbook counts dates from 1904, 1,462 days after the 1900 system. */
 export function formatNumber(value: number, rawCode: string | undefined, date1904 = false): string {
   if (!rawCode || rawCode === "General" || rawCode === "@") return generalText(value);
-  // Sections: positive;negative;zero. A negative section writes its own sign, if any.
   const sections = rawCode.split(";");
-  const index = value < 0 && sections.length > 1 ? 1 : value === 0 && sections.length > 2 ? 2 : 0;
+  const { index, sign } = pickSection(value, sections);
   const section = sections[index] ?? rawCode;
-  const sign = value < 0 && index === 0 ? "-" : "";
   // [$€-407]-style currency tags keep their symbol; [Red] and the like go, but not the
   // elapsed-time units [h], [m] and [s]. Padding (_x) and fill (*x) go too.
   const tagged = section
@@ -641,6 +678,8 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   const cy = Number(size?.getAttribute("cy")) || 6858000;
   const rels = relationships(files, "ppt/presentation.xml");
   const slides: Slide[] = [];
+  // Encoded once a deck: a logo on every slide is one picture, not one per slide.
+  const pictures = new Map<string, string>();
   for (const id of all(presentation, "sldId")) {
     const path = rels.get(relId(id, "id") ?? "");
     const doc = path ? xml(files, path) : null;
@@ -698,7 +737,9 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       const data = target && files[target];
       const type = target && IMAGE_TYPES[target.split(".").pop()!.toLowerCase()];
       if (!data || !type) continue;
-      boxes.unshift({ frame: readFrame(pic, cx, cy), image: dataUrl(data, type) });
+      const image = pictures.get(target) ?? dataUrl(data, type);
+      pictures.set(target, image);
+      boxes.unshift({ frame: readFrame(pic, cx, cy), image });
     }
     slides.push({ boxes });
   }

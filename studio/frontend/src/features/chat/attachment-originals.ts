@@ -35,17 +35,18 @@ export function attachmentOriginal(attachment: unknown): ChatAttachmentOriginal 
   return typeof sha256 === "string" && typeof sizeBytes === "number" ? { sha256, sizeBytes } : null;
 }
 
-/** Adds the kept original to a sent document. Skipped in temporary chats (`temporary`, as it was
- *  when the send began); upload errors are ignored. */
+/** Adds the kept original to a sent document. Skipped in temporary chats; `temporary` and `epoch`
+ *  (the auth session) are as they were when the send began. Upload errors are ignored. */
 export async function withAttachmentOriginal(
   pending: PendingAttachment,
   complete: CompleteAttachment,
   temporary: boolean,
+  epoch: number,
 ): Promise<CompleteAttachment> {
   const upload = complete.type === "document" && !temporary ? originalUpload(pending.file) : null;
   if (!upload) return complete;
   try {
-    const original: ChatAttachmentOriginal = await uploadChatAttachmentOriginal(upload);
+    const original: ChatAttachmentOriginal = await uploadChatAttachmentOriginal(upload, epoch);
     return { ...complete, original } as CompleteAttachment;
   } catch {
     return complete;

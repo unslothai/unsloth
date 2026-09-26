@@ -267,6 +267,7 @@ export {
   attachmentTextLanguage,
   countAttachmentTextLines,
   isAudioAttachment,
+  attachmentBodyText,
   parseAttachmentText,
   readAttachmentText,
   repackDocxAttachmentArchive,

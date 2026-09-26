@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import {
   classifiedAttachmentFile,
   needsAttachmentTrackInspection,
@@ -268,10 +268,11 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const threadIds = this.getThreadIds();
     const reservationToken = findPreStreamRunReservation(threadIds);
-    // Read now: extraction can take a while, and the send belongs to the chat as it was.
+    // Read now: extraction can take a while, and the send belongs to the chat and account as they were.
     const { incognito } = useChatRuntimeStore.getState();
+    const epoch = getAuthSessionEpoch();
     try {
-      return await withAttachmentOriginal(attachment, await this.delegate.send(attachment), incognito);
+      return await withAttachmentOriginal(attachment, await this.delegate.send(attachment), incognito, epoch);
     } catch (error) {
       if (
         reservationToken &&
@@ -596,16 +597,29 @@ class OfficeAttachmentAdapter implements AttachmentAdapter {
     return byName ?? (type.includes("presentationml") ? "PPTX" : "XLSX");
   }
 
-  // Refused at add, as the DOCX adapter does, so a file past the ceiling, corrupt or encrypted,
-  // never empties the composer.
+  // The text send() uses, read at add: the composer lets go of the typed message before send()
+  // runs, so a file that cannot be read is refused here, whichever of its parts is at fault.
+  private readonly texts = new Map<string, string>();
+
   async add({ file }: { file: File }): Promise<PendingAttachment> {
-    const error = await getOfficeAttachmentError(file, this.label(file.name, file.type));
+    const label = this.label(file.name, file.type);
+    let error = await getOfficeAttachmentError(file, label);
+    let text = "";
+    if (!error) {
+      try {
+        text = await extractOfficeAttachmentText(file, label);
+      } catch {
+        error = `${label} file could not be read: ${file.name}`;
+      }
+    }
     if (error) {
       toast.error(error);
       throw new Error(error);
     }
+    const id = crypto.randomUUID();
+    this.texts.set(id, text);
     return {
-      id: crypto.randomUUID(),
+      id,
       type: "document",
       name: file.name,
       contentType: file.type,
@@ -616,7 +630,8 @@ class OfficeAttachmentAdapter implements AttachmentAdapter {
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const label = this.label(attachment.name, attachment.contentType ?? "");
-    const text = await extractOfficeAttachmentText(attachment.file, label);
+    const text = this.texts.get(attachment.id) ?? (await extractOfficeAttachmentText(attachment.file, label));
+    this.texts.delete(attachment.id);
     return {
       id: attachment.id,
       type: "document",
@@ -627,7 +642,8 @@ class OfficeAttachmentAdapter implements AttachmentAdapter {
     };
   }
 
-  remove(): Promise<void> {
+  remove(attachment: Attachment): Promise<void> {
+    this.texts.delete(attachment.id);
     return Promise.resolve();
   }
 }

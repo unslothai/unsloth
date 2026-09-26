@@ -968,13 +968,29 @@ async function readBoundedText(
 // adapter's header rather than showing it. The stored payload has no size limit, so the
 // wrapper is matched on a prefix and only the capped body is copied out.
 export function parseAttachmentText(raw: string): AttachmentText {
+  const { label, start, end } = attachmentBodyRange(raw);
+  return { label, ...sliceAttachmentBody(raw, start, end) };
+}
+
+/** The whole body parseAttachmentText previews, uncapped: what a download holds. */
+export function attachmentBodyText(raw: string): string {
+  const { start, end } = attachmentBodyRange(raw);
+  return raw.slice(start, Math.max(start, end));
+}
+
+function attachmentBodyRange(raw: string): {
+  label: AttachmentTextLabel | null;
+  start: number;
+  end: number;
+} {
   const head = raw.slice(0, MAX_ATTACHMENT_WRAPPER_LENGTH);
 
   const labelled = head.match(LABELLED_ATTACHMENT_TEXT_RE);
   if (labelled) {
     return {
       label: labelled[1] as AttachmentTextLabel,
-      ...sliceAttachmentBody(raw, labelled[0].length, raw.length),
+      start: labelled[0].length,
+      end: raw.length,
     };
   }
 
@@ -982,15 +998,12 @@ export function parseAttachmentText(raw: string): AttachmentText {
   if (tagOpen && raw.endsWith(ATTACHMENT_TAG_CLOSE)) {
     return {
       label: null,
-      ...sliceAttachmentBody(
-        raw,
-        tagOpen[0].length,
-        raw.length - ATTACHMENT_TAG_CLOSE.length,
-      ),
+      start: tagOpen[0].length,
+      end: raw.length - ATTACHMENT_TAG_CLOSE.length,
     };
   }
 
-  return { label: null, ...sliceAttachmentBody(raw, 0, raw.length) };
+  return { label: null, start: 0, end: raw.length };
 }
 
 function sliceAttachmentBody(

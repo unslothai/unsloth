@@ -69,10 +69,11 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
   const available = useWidth(container);
   const [pages, setPages] = useState(0);
   const [aspect, setAspect] = useState(1.294);
-  const [error, setError] = useState<string | null>(null);
+  // The file that failed, so a different one passed in later gets its own try.
+  const [failed, setFailed] = useState<Blob | null>(null);
   const width = Math.max(200, Math.min(available, MAX_PAGE_WIDTH)) * scale;
 
-  if (error) {
+  if (failed === file) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
   }
   return (
@@ -86,7 +87,7 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
             setAspect(viewport.height / viewport.width);
           });
         }}
-        onLoadError={(err) => setError(err.message)}
+        onLoadError={() => setFailed(file)}
         loading={<Spinner className="mx-auto mt-24 size-6" />}
       >
         {/* Keyed on the size, so the virtualizer measures afresh. */}
