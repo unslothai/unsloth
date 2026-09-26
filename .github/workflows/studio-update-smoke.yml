@@ -43,6 +43,30 @@ on:
       - 'unsloth_cli/_system_dir_guard.py'
       - 'pyproject.toml'
       - '.github/workflows/studio-update-smoke.yml'
+      # The second update must report the llama.cpp prebuilt as up to date and
+      # validated. That outcome is computed by backend.utils.prebuilt.llama_backend
+      # (imported by install_llama_prebuilt.py), backend.utils.auth_safe and the
+      # vendored truststore (imported by prebuilt_core.py), wheel_utils.py and
+      # uv_path_safety.py (imported by install_python_stack.py), and mlx_repair.py
+      # (its MLX health probe). setup.sh runs nvidia_probe.py. The job drives this checkout's CLI, whose
+      # __init__.py imports every command module, and its pytest runs load the root and
+      # tests/studio/install conftests.
+      - 'studio/backend/__init__.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/backend/vendor/truststore/**'
+      - 'studio/backend/utils/wheel_utils.py'
+      - 'studio/backend/utils/uv_path_safety.py'
+      - 'studio/backend/utils/mlx_repair.py'
+      - 'studio/nvidia_probe.py'
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'tests/studio/install/conftest.py'
       - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
@@ -87,6 +111,30 @@ on:
       - 'unsloth_cli/_system_dir_guard.py'
       - 'pyproject.toml'
       - '.github/workflows/studio-update-smoke.yml'
+      # The second update must report the llama.cpp prebuilt as up to date and
+      # validated. That outcome is computed by backend.utils.prebuilt.llama_backend
+      # (imported by install_llama_prebuilt.py), backend.utils.auth_safe and the
+      # vendored truststore (imported by prebuilt_core.py), wheel_utils.py and
+      # uv_path_safety.py (imported by install_python_stack.py), and mlx_repair.py
+      # (its MLX health probe). setup.sh runs nvidia_probe.py. The job drives this checkout's CLI, whose
+      # __init__.py imports every command module, and its pytest runs load the root and
+      # tests/studio/install conftests.
+      - 'studio/backend/__init__.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/backend/vendor/truststore/**'
+      - 'studio/backend/utils/wheel_utils.py'
+      - 'studio/backend/utils/uv_path_safety.py'
+      - 'studio/backend/utils/mlx_repair.py'
+      - 'studio/nvidia_probe.py'
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'tests/studio/install/conftest.py'
       - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.

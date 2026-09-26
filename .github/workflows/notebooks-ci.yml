@@ -37,6 +37,19 @@ on:
       - 'tests/_zoo_aggressive_cuda_spoof.py'
       - 'tests/_torchcodec_stub.py'
       - '.github/workflows/notebooks-ci.yml'
+      # The smoke-install contract runs under pytest from the repo checkout, so the root
+      # conftest, the tests package, the tests/_shared helpers it loads
+      # (installer_venv_root.py imports studio/install_manifest.py) and the pytest
+      # config in pyproject.toml all shape the run.
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'studio/install_manifest.py'
+      - 'pyproject.toml'
+      # Every job here `uses:` the pip cache pair, so an edit to either action changes
+      # what it runs.
+      - '.github/actions/pip-cache-restore/**'
+      - '.github/actions/pip-cache-save/**'
   schedule:
     # Daily 06:17 UTC. Catches Colab preinstall bumps (the upstream image
     # is rebuilt roughly weekly) without us waiting on a PR. Off the
