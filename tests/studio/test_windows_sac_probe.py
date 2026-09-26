@@ -29,7 +29,11 @@ def _text(path):
     return Path(path).read_text(encoding = "utf-8")
 
 
-def _cut(text, start, end = None):
+def _cut(
+    text,
+    start,
+    end = None,
+):
     return text[text.index(start) :] if end is None else text[text.index(start) : text.index(end)]
 
 
@@ -79,7 +83,6 @@ def _before(text, first, *later):
 
 def _job():
     import yaml
-
     return yaml.safe_load(_text(WORKFLOW))["jobs"]["code-integrity"]
 
 
@@ -103,17 +106,27 @@ def _assert_ok(proc):
     assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]
 
 
-def _drive(tmp_path, names, body, strict = True, **params):
+def _drive(
+    tmp_path,
+    names,
+    body,
+    strict = True,
+    **params,
+):
     """Run body after defining the named sac-probe.ps1 functions from their AST."""
     head = "param([string]$Src" + "".join(f",[string]${k}" for k in params) + ")\n"
-    head += "$a=[System.Management.Automation.Language.Parser]::ParseFile($Src,[ref]$null,[ref]$null)\n"
+    head += (
+        "$a=[System.Management.Automation.Language.Parser]::ParseFile($Src,[ref]$null,[ref]$null)\n"
+    )
     if strict:
         head += "$ErrorActionPreference = 'Stop'\n"
     head += f"$want = '{','.join(names)}'.Split(',')\n"
     head += "foreach($f in $a.FindAll({$args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true)){\n"
     head += "  if($want -contains $f.Name){ Invoke-Expression $f.Extent.Text } }\n"
     if strict:
-        head += "$CI_LOG = 'Microsoft-Windows-CodeIntegrity/Operational'\nfunction Start-Sleep { }\n"
+        head += (
+            "$CI_LOG = 'Microsoft-Windows-CodeIntegrity/Operational'\nfunction Start-Sleep { }\n"
+        )
     driver = tmp_path / "drive.ps1"
     driver.write_text(head + body, encoding = "utf-8")
     args = ["-Src", PS1]
@@ -142,7 +155,12 @@ def _tool_end(result):
     return {"type": "tool_end", "tool_name": "web_search", "result": result}
 
 
-def _events(monkeypatch, s, events, error = None):
+def _events(
+    monkeypatch,
+    s,
+    events,
+    error = None,
+):
     monkeypatch.setattr(s, "_stream_events", lambda *a, **k: (200, events, error))
 
 
@@ -155,7 +173,14 @@ def _bootstrap(s, tmp_path, monkeypatch, password):
     (tmp_path / "auth" / ".bootstrap_password").write_text(password, encoding = "utf-8")
     posted: list[tuple[str, dict]] = []
 
-    def fake(base_url, method, path, payload = None, token = None, timeout = 900):
+    def fake(
+        base_url,
+        method,
+        path,
+        payload = None,
+        token = None,
+        timeout = 900,
+    ):
         posted.append((path, payload or {}))
         return 200, {"access_token": "tok"}
 
@@ -163,7 +188,14 @@ def _bootstrap(s, tmp_path, monkeypatch, password):
     return posted
 
 
-def _main(s, monkeypatch, tmp_path, model = "m", replies = None, events = ()):
+def _main(
+    s,
+    monkeypatch,
+    tmp_path,
+    model = "m",
+    replies = None,
+    events = (),
+):
     """Run the scenario against a fake Studio; returns (exit code, calls, results)."""
     calls: list[tuple[str, str, dict]] = []
     answers = {
@@ -172,11 +204,24 @@ def _main(s, monkeypatch, tmp_path, model = "m", replies = None, events = ()):
         **(replies or {}),
     }
 
-    def fake(base_url, method, path, payload = None, token = None, timeout = 900):
+    def fake(
+        base_url,
+        method,
+        path,
+        payload = None,
+        token = None,
+        timeout = 900,
+    ):
         calls.append((method, path, payload or {}))
         return answers.get(path, (200, {"status": "done"}))
 
-    def fake_stream(base_url, path, payload, token = None, timeout = 900):
+    def fake_stream(
+        base_url,
+        path,
+        payload,
+        token = None,
+        timeout = 900,
+    ):
         calls.append(("STREAM", path, payload or {}))
         return 200, list(events), None
 
@@ -276,7 +321,14 @@ def test_the_poller_abandons_a_read_at_the_frontend_timeout_and_measures_the_sta
     assert "timeout = self.read_timeout" in status_call[: status_call.index(")")]
     assert "poller.join(timeout = STATUS_READ_TIMEOUT_S + 15)" in source
 
-    def stalled(base_url, method, path, payload = None, token = None, timeout = 900):
+    def stalled(
+        base_url,
+        method,
+        path,
+        payload = None,
+        token = None,
+        timeout = 900,
+    ):
         threading.Event().wait(timeout)
         return 0, "timed out"
 
@@ -695,7 +747,14 @@ _LISTED = '{"Policies":[{"PolicyID":"{AAAA}","FriendlyName":"X AuditNoISG","IsEn
 _UNLISTED = '{"Policies":[]}'
 
 
-def _removal_step(tmp_path, name, remove_exit = 0, refresh_exit = None, list_exit = 0, listing = ""):
+def _removal_step(
+    tmp_path,
+    name,
+    remove_exit = 0,
+    refresh_exit = None,
+    list_exit = 0,
+    listing = "",
+):
     stub = "function CiTool.exe {\n"
     stub += f"  if ($args -contains '--remove-policy') {{ $global:LASTEXITCODE = {remove_exit}; return 'remove' }}\n"
     if refresh_exit is not None:
@@ -896,7 +955,11 @@ def test_prepare_proves_the_audit_policy_actually_evaluates_loads():
     assert prepare.index("-not (Test-PolicyActive $NOISG_GUID)") < prepare.index(
         "$controlFired = Test-AuditPolicyEvaluating"
     ), "the control runs only once the policy is verified to be in the active set"
-    _has(prepare, "if ($false -eq $controlFired) {", "$baseline.AuditPolicyControlFired = $controlFired")
+    _has(
+        prepare,
+        "if ($false -eq $controlFired) {",
+        "$baseline.AuditPolicyControlFired = $controlFired",
+    )
     assert "AuditPolicyControlFired = $null" in _ps1()
     _has(_collect(), "$true -ne $b.AuditPolicyControlFired", "NULL result, not an allow")
 
@@ -922,7 +985,9 @@ def test_a_completed_revert_spends_its_baseline():
     )
     revert = _revert()
     assert "-NotePropertyName RevertCompletedAt" in revert
-    _before(revert, "revert did not fully restore this machine", "-NotePropertyName RevertCompletedAt")
+    _before(
+        revert, "revert did not fully restore this machine", "-NotePropertyName RevertCompletedAt"
+    )
 
 
 def test_the_app_control_verdict_polls_before_reporting_an_allow():
@@ -1081,7 +1146,14 @@ def test_the_ci_verdict_needs_a_runtime_that_was_actually_extracted():
 def test_the_scenario_will_not_hand_its_password_to_an_unidentified_server(s, monkeypatch):
     """discover_port picks the port the operator's password is posted to, and 8888 is Jupyter's."""
 
-    def fake(base_url, method, path, payload = None, token = None, timeout = 900):
+    def fake(
+        base_url,
+        method,
+        path,
+        payload = None,
+        token = None,
+        timeout = 900,
+    ):
         if base_url.endswith(":8888"):
             return 200, {"status": "alive"}
         if base_url.endswith(":8890"):
@@ -1098,7 +1170,11 @@ def test_an_efi_mount_this_probe_owns_is_retried_by_the_next_stage():
     """$script:EfiStillMounted dies with the process."""
     assert "$EFI_OWNED_MARKER = Join-Path $WorkDir '.efi-mounted-by-probe'" in _ps1()
     mount = _ps1("function Mount-Efi", "$script:EfiStillMounted = $false")
-    _has(mount, "if (Test-Path -LiteralPath $EFI_OWNED_MARKER) {", "Set-Content -LiteralPath $EFI_OWNED_MARKER")
+    _has(
+        mount,
+        "if (Test-Path -LiteralPath $EFI_OWNED_MARKER) {",
+        "Set-Content -LiteralPath $EFI_OWNED_MARKER",
+    )
     _before(mount, "Test-Path -LiteralPath $EFI_OWNED_MARKER", "return $false")
     dismount = _ps1("function Dismount-Efi", "function Test-PolicyActive")
     assert "Remove-Item -LiteralPath $EFI_OWNED_MARKER" in dismount
@@ -1112,7 +1188,11 @@ def test_a_lost_preexisting_policy_backup_is_a_revert_failure():
         in revert
     )
     guard = _cut(revert, "$baseline.AuditPolicyPreexisting -and -not")
-    _before(guard, 'throw "the baseline says a policy with $NOISG_GUID', "Remove-Item -LiteralPath $NOISG_DEST")
+    _before(
+        guard,
+        'throw "the baseline says a policy with $NOISG_GUID',
+        "Remove-Item -LiteralPath $NOISG_DEST",
+    )
 
 
 def test_prepare_requires_the_log_capacity_it_asked_for():
@@ -1194,7 +1274,12 @@ def test_the_readme_pins_the_runtime_before_the_window_opens():
         "To pin a specific runtime for a cell",
         "## Reading the output",
     )
-    _has(pin, "before `prepare`", "-Stage prepare -Label custom-b10715-sac-on", "again\nbefore `prepare`")
+    _has(
+        pin,
+        "before `prepare`",
+        "-Stage prepare -Label custom-b10715-sac-on",
+        "again\nbefore `prepare`",
+    )
     _before(
         pin,
         "-Stage prepare -Label custom-b10715-sac-on",
@@ -1256,7 +1341,12 @@ def test_run_refuses_a_label_whose_revert_already_completed():
     run = _run()
     guard = "if ($runBaseline.RevertCompletedAt) {"
     assert guard in run
-    _before(run, guard, "if ($runBaseline.AuditPolicyApplied) {", "Write-Section 'Venv signature inventory'")
+    _before(
+        run,
+        guard,
+        "if ($runBaseline.AuditPolicyApplied) {",
+        "Write-Section 'Venv signature inventory'",
+    )
     assert "if ($baseline.RevertCompletedAt) {" in _revert()
 
 
@@ -1286,7 +1376,9 @@ def test_the_streamed_turns_opt_into_the_tool_control_frames(s, monkeypatch):
     """/v1/chat/completions emits a clean OpenAI stream for external clients"""
     backend = _text(REPO_ROOT / "studio" / "backend" / "routes" / "inference.py")
     assert 'UI_STREAM_EVENTS_HEADER = "X-Unsloth-Events"' in backend
-    chat_api = REPO_ROOT / "studio" / "frontend" / "src" / "features" / "chat" / "api" / "chat-api.ts"
+    chat_api = (
+        REPO_ROOT / "studio" / "frontend" / "src" / "features" / "chat" / "api" / "chat-api.ts"
+    )
     assert '"X-Unsloth-Events": "1"' in _text(chat_api)
     seen: dict[str, str] = {}
     lines = [
@@ -1631,7 +1723,9 @@ if ($true -ne (Test-EventDataFromPolicy $byName $NOISG)) { exit 52 }
 if ($true -eq (Test-EventDataFromPolicy $other $NOISG)) { exit 53 }
 if ($true -eq (Test-EventDataFromPolicy $null $NOISG)) { exit 54 }
 """
-    body += predicate + r"""
+    body += (
+        predicate
+        + r"""
 $NOISG_GUID = $NOISG
 $evOurs = [pscustomobject]@{ Id = 3076; EventData = $ours }
 $evOther = [pscustomobject]@{ Id = 3076; EventData = $other }
@@ -1643,6 +1737,7 @@ if ($true -eq (& $isOurAudit $evOurs)) { exit 57 }
 if ($true -eq (& $isOurAudit $evOther)) { exit 58 }
 exit 0
 """
+    )
     _drive(tmp_path, ["Test-EventDataFromPolicy"], body, Work = tmp_path)
 
 
