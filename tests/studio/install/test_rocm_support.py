@@ -219,6 +219,20 @@ def _write_dpkg_query_stub(
     os.chmod(path, 0o755)
 
 
+_needs_exec_stub = pytest.mark.skipif(os.name == "nt", reason = "shell stubs need a POSIX exec")
+
+
+def _run_bash_script(shell: str, script: str, **kwargs) -> subprocess.CompletedProcess:
+    # From a file, not -c: Git Bash's argv globbing truncates a quoted -c argument at 8K chars.
+    fd, path = tempfile.mkstemp(suffix = ".sh")
+    try:
+        with os.fdopen(fd, "w", encoding = "utf-8", newline = "\n") as f:
+            f.write(script)
+        return subprocess.run([shell, path.replace("\\", "/")], **kwargs)
+    finally:
+        os.unlink(path)
+
+
 # ── Helper: build HostInfo for different scenarios ──────────────────────────
 
 
@@ -567,6 +581,7 @@ class TestDetectRocmVersion:
                     result = _detect_rocm_version()
                     assert result == (6, 3)
 
+    @_needs_exec_stub
     def test_dpkg_fallback_without_hipconfig(self, tmp_path):
         """dpkg rocm-core fallback works when amd-smi and hipconfig are absent
         (regression: a shadowing local re import raised UnboundLocalError)."""
@@ -618,6 +633,7 @@ class TestDetectRocmVersion:
                 with patch("subprocess.run", return_value = mock_result):
                     assert _detect_rocm_version() == (6, 4)
 
+    @_needs_exec_stub
     def test_removed_dpkg_rocm_core_is_ignored(self, tmp_path):
         """Removed-but-not-purged rocm-core must not report a stale version."""
         dpkg = tmp_path / "dpkg-query"
@@ -637,6 +653,7 @@ class TestDetectRocmVersion:
             with patch("shutil.which", side_effect = which):
                 assert _detect_rocm_version() is None
 
+    @_needs_exec_stub
     def test_debian_split_runtime_uses_installed_hsa_runtime(self, tmp_path):
         """Debian can ship hipconfig 5.7 beside HSA 6.1 with no rocm-core."""
         hipconfig = tmp_path / "hipconfig"
@@ -663,6 +680,7 @@ class TestDetectRocmVersion:
             with patch("shutil.which", side_effect = which):
                 assert _detect_rocm_version() == (6, 1)
 
+    @_needs_exec_stub
     def test_installed_rocm_core_outranks_the_distro_hsa_package(self, tmp_path):
         """rocm-core wins over libhsa-runtime64-1 even when the HSA reading is HIGHER.
         HSA is emitted first, so taking the highest reading or the first line fails this."""
@@ -683,6 +701,7 @@ class TestDetectRocmVersion:
             with patch("shutil.which", side_effect = which):
                 assert _detect_rocm_version() == (6, 1)
 
+    @_needs_exec_stub
     def test_distro_hsa_package_does_not_manufacture_a_disagreement(self, capsys, tmp_path):
         """The real Ubuntu shape must resolve quietly, not warn on every install."""
         dpkg = tmp_path / "dpkg-query"
@@ -703,6 +722,7 @@ class TestDetectRocmVersion:
                 assert _detect_rocm_version() == (7, 2)
         assert "ROCm version sources disagree" not in capsys.readouterr().err
 
+    @_needs_exec_stub
     def test_removed_dpkg_hsa_runtime_is_ignored(self, tmp_path):
         """Removed-but-not-purged HSA runtime must not report a stale version."""
         dpkg = tmp_path / "dpkg-query"
@@ -845,7 +865,9 @@ def run_ensure_rocm_torch(
     pip_try = MagicMock(return_value = True)
     result = MagicMock(returncode = 0, stdout = (_MARK + probe + "\n") if probe else "\n")
     with contextlib.ExitStack() as stack:
-        for name, value in {"IS_WINDOWS": False, **(attrs or {})}.items():
+        # Pin Linux x86_64: on macOS or aarch64 the repair is a no-op.
+        stack.enter_context(patch("platform.machine", return_value = "x86_64"))
+        for name, value in {"IS_WINDOWS": False, "IS_MACOS": False, **(attrs or {})}.items():
             stack.enter_context(patch.object(stack_mod, name, value))
         stack.enter_context(patch.object(stack_mod, "pip_install", pip))
         stack.enter_context(patch.object(stack_mod, "pip_install_try", pip_try))
@@ -1115,6 +1137,8 @@ class TestEnsureRocmTorch:
         mock_pip, _ = run_ensure_rocm_torch(_has_rocm_gpu = True, _detect_rocm_version = (5, 0))
         mock_pip.assert_not_called()
 
+    @patch.object(stack_mod, "IS_MACOS", False)
+    @patch("platform.machine", return_value = "x86_64")
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
@@ -1132,6 +1156,7 @@ class TestEnsureRocmTorch:
         mock_gpu,
         mock_nvidia,
         mock_pip,
+        mock_machine,
         capsys,
     ):
         """ROCm detected but version unreadable should print warning and skip."""
@@ -1328,6 +1353,8 @@ GPU: 2
             os.environ["HIP_VISIBLE_DEVICES"] = "0"
             assert stack_mod._first_set_visible_mask() == "HIP_VISIBLE_DEVICES"
 
+    @patch.object(stack_mod, "IS_MACOS", False)
+    @patch("platform.machine", return_value = "x86_64")
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
@@ -1335,7 +1362,7 @@ GPU: 2
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (6, 4))
     def test_explicit_gfx_index_honored_and_skips_strix_reroute(
-        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, mock_machine
     ):
         """An explicit gfx wheel-index pin is authoritative: install from it verbatim
         with torch 2.11, and the pin must not be second-guessed (host ROCm 6.4 would
@@ -1417,6 +1444,8 @@ GPU: 2
         assert f(f"{base}/rocm7", "2.10.0") is True
         assert f(f"{base}/rocm7", "2.10.0+rocm") is False
 
+    @patch.object(stack_mod, "IS_MACOS", False)
+    @patch("platform.machine", return_value = "x86_64")
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
@@ -1424,7 +1453,7 @@ GPU: 2
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
     def test_rocm_pin_mismatch_over_installed_rocm_reinstalls(
-        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, mock_machine
     ):
         """A rocm7.2 pin over an already-installed OLDER +rocm6.4 build must reinstall,
         even though has_hip_torch is True (the ROCm analogue of the CUDA cuXXX mismatch)."""
@@ -1442,6 +1471,8 @@ GPU: 2
         assert "rocm7.2" in torch_call
         assert "torch>=2.11.0,<2.12.0" in torch_call
 
+    @patch.object(stack_mod, "IS_MACOS", False)
+    @patch("platform.machine", return_value = "x86_64")
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
@@ -1449,7 +1480,7 @@ GPU: 2
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (6, 4))
     def test_gfx_pin_over_installed_pre211_rocm_reinstalls(
-        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, mock_machine
     ):
         """A gfx* pin (2.11 line) over an installed pre-2.11 +rocm6.4 build reinstalls.
         The gfx probe may run for the bnb-skip flag but must not alter the pinned index."""
@@ -1530,6 +1561,8 @@ GPU: 2
             any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
         )
 
+    @patch.object(stack_mod, "IS_MACOS", False)
+    @patch("platform.machine", return_value = "x86_64")
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
@@ -1537,7 +1570,7 @@ GPU: 2
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
     def test_gfx_pin_over_generic_rocm211_reinstalls(
-        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, mock_machine
     ):
         """A gfx1151 pin over a GENERIC (two-part +rocm7.2) 2.11 wheel must reinstall
         the AMD per-arch wheel -- even though both are torch 2.11, the generic wheel
@@ -2081,7 +2114,7 @@ class TestGfx1102Rocm64Floor:
                 + routing_block
                 + '\nprintf "URL:%s LEAF:%s\\n" "$TORCH_INDEX_URL" "$_torch_index_leaf"\n'
             )
-            result = subprocess.run([shell, "-c", script], capture_output = True, text = True)
+            result = _run_bash_script(shell, script, capture_output = True, text = True)
             assert result.returncode == 0, result.stderr
             assert result.stdout.strip().endswith(f"/{expected} LEAF:{expected}"), result.stdout
 
@@ -2119,7 +2152,7 @@ class TestGfx1102Rocm64Floor:
             + '\nprintf "LEAF:%s TARGET:%s RADEON:%s\\n" '
             '"$_torch_index_leaf" "$_gfx_rocm64_target" "$_amd_gpu_radeon"\n'
         )
-        result = subprocess.run([shell, "-c", script], capture_output = True, text = True)
+        result = _run_bash_script(shell, script, capture_output = True, text = True)
         assert result.returncode == 0, result.stderr
         tail = result.stdout.strip().rsplit("LEAF:", 1)[-1]
         _leaf, _rest = tail.split(" TARGET:")
@@ -2350,7 +2383,7 @@ class TestGfx1102Rocm64Floor:
             with open(venv_py, "w", encoding = "utf-8") as fh:
                 fh.write(
                     "#!/bin/sh\n"
-                    f'exec {sys.executable} -c "\n'
+                    f'exec \'{sys.executable.replace(os.sep, "/")}\' -c "\n'
                     "import sys, types\n"
                     "t = types.ModuleType('torch')\n"
                     f"t.__version__ = '{torch_version}'\n"
@@ -2371,14 +2404,14 @@ class TestGfx1102Rocm64Floor:
                 + "\n"
                 + "substep() { :; }\n"
                 + '_install_torch_default_index() { printf "REINSTALL\\n"; }\n'
-                + f'_VENV_PY="{venv_py}"\n'
+                + f'_VENV_PY="{venv_py.replace(os.sep, "/")}"\n'
                 + f"_gfx_rocm64_target={gfx_target}\n"
                 + f"_gfx_rocm64_floor_maj={floor[0]}\n_gfx_rocm64_floor_min={floor[1]}\n"
                 + f'_torch_index_leaf="rocm{floor[0]}.{floor[1]}"\n'
                 + source[start:end]
                 + '\nprintf "DONE\\n"\n'
             )
-            r = subprocess.run([shell, "-c", script], capture_output = True, text = True)
+            r = _run_bash_script(shell, script, capture_output = True, text = True)
             assert r.returncode == 0, r.stderr
             return r.stdout
 
@@ -2856,7 +2889,7 @@ class TestInstallShStructure:
         )
         assert assignment, "could not extract the guarded _rocm_tag assignment"
         parts.append(assignment.group(0))
-        return "\n".join(parts).replace("/opt/rocm", rocm_prefix)
+        return "\n".join(parts).replace("/opt/rocm", rocm_prefix.replace("\\", "/"))
 
     def test_rocm_version_chain_survives_no_source_under_set_e(self):
         """When every ROCm version source is missing (e.g. rocminfo present but
@@ -2882,7 +2915,7 @@ class TestInstallShStructure:
                 "set -euo pipefail\n" + script_body + '\nprintf "SURVIVED:%s\\n" "$_rocm_tag"\n'
             )
             env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
-            r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
+            r = _run_bash_script(shell, script, env = env, capture_output = True, text = True)
             assert r.returncode == 0, f"version detection aborted under set -e: {r.stderr}"
             assert r.stdout.strip() == "SURVIVED:", r.stdout
         assert "rocm" in source.lower()
@@ -2927,7 +2960,7 @@ class TestInstallShStructure:
                     os.chmod(p, 0o755)
                 script = "set -euo pipefail\n" + script_body + '\nprintf "TAG:%s\\n" "$_rocm_tag"\n'
                 env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
-                r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
+                r = _run_bash_script(shell, script, env = env, capture_output = True, text = True)
                 assert r.returncode == 0, r.stderr
                 assert r.stdout.strip() == "TAG:rocm6.4", (
                     f"{winner} reported 6.4 while every other source reported 5.7, "
@@ -2968,8 +3001,9 @@ class TestInstallShStructure:
                 os.environ,
                 PATH = d + os.pathsep + os.environ.get("PATH", ""),
             )
-            r = subprocess.run(
-                [shell, "-c", script],
+            r = _run_bash_script(
+                shell,
+                script,
                 env = env,
                 capture_output = True,
                 text = True,
@@ -3009,7 +3043,7 @@ class TestInstallShStructure:
                     os.chmod(p, 0o755)
                 script = "set -euo pipefail\n" + script_body + '\nprintf "TAG:%s\\n" "$_rocm_tag"\n'
                 env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
-                r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
+                r = _run_bash_script(shell, script, env = env, capture_output = True, text = True)
                 assert r.returncode == 0, r.stderr
                 assert r.stdout.strip() == expected, (
                     f"dpkg rocm-core 7.0 in state {status!r} next to a 6.1 version file "
@@ -3318,9 +3352,7 @@ class TestInstallShStructure:
 
             def run(**extra):
                 env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""), **extra)
-                return subprocess.run(
-                    [shell, "-c", script], env = env, capture_output = True, text = True
-                )
+                return _run_bash_script(shell, script, env = env, capture_output = True, text = True)
 
             r = run(UNSLOTH_ROCM_GFX_ARCH = "GFX1151")
             assert r.returncode == 0, f"override probe aborted: {r.stderr}"
@@ -3360,9 +3392,7 @@ class TestInstallShStructure:
 
             def run(**extra):
                 env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""), **extra)
-                return subprocess.run(
-                    [shell, "-c", script], env = env, capture_output = True, text = True
-                )
+                return _run_bash_script(shell, script, env = env, capture_output = True, text = True)
 
             r = run(ROCR_VISIBLE_DEVICES = "-1")
             assert r.returncode == 0, f"masked probe aborted: {r.stderr}"
@@ -5699,6 +5729,9 @@ class TestWindowsRocmTorchaoGuard:
             patch.object(stack_mod, "_installed_torch_is_windows_rocm", return_value = True),
             patch.object(stack_mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin),
             patch.object(stack_mod, "LOCAL_DD_GITHUB_PLUGIN", github_plugin),
+            # The final core-payload check reads the real env; report unsloth installed and intact.
+            patch.object(stack_mod.install_manifest, "installed_versions", return_value = ["0"]),
+            patch.object(stack_mod.install_manifest, "damaged_payload_files", return_value = []),
             patch.object(stack_mod.subprocess, "run", return_value = subprocess_result),
         ):
             assert stack_mod.install_python_stack() == 0
@@ -5748,6 +5781,9 @@ class TestProgressStepCountMatchesTotal:
             patch.object(stack_mod, "_ensure_cpu_torch"),
             patch.object(stack_mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin),
             patch.object(stack_mod, "LOCAL_DD_GITHUB_PLUGIN", github_plugin),
+            # The final core-payload check reads the real env; report unsloth installed and intact.
+            patch.object(stack_mod.install_manifest, "installed_versions", return_value = ["0"]),
+            patch.object(stack_mod.install_manifest, "damaged_payload_files", return_value = []),
             patch.object(stack_mod.subprocess, "run", return_value = sub),
         ):
             assert stack_mod.install_python_stack() == 0
@@ -6556,7 +6592,7 @@ class TestStrixRocm71Override:
                     + "}\nprintf 'OK:%s\\n' \"$(probe || true)\"\n"
                 )
                 env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
-                r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
+                r = _run_bash_script(shell, script, env = env, capture_output = True, text = True)
                 assert r.returncode == 0, f"scan aborted: {r.stderr}"
                 assert (
                     r.stdout.splitlines()[-1] == expected
@@ -6815,7 +6851,7 @@ class TestStrixRocm71Override:
                 + '\nprintf "OK:%s\\n" "$_gfx_all"\n'
             )
             env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
-            r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
+            r = _run_bash_script(shell, script, env = env, capture_output = True, text = True)
             assert r.returncode == 0, f"probe aborted under set -e: {r.stderr}"
             assert "OK:gfx1151" in r.stdout, f"amd-smi fallback not reached: {r.stdout!r}"
 
@@ -6871,9 +6907,7 @@ class TestStrixRocm71Override:
                 for name in _visibility_mask_names(source):
                     env.pop(name, None)
                 env.update(extra)
-                return subprocess.run(
-                    [shell, "-c", script], env = env, capture_output = True, text = True
-                )
+                return _run_bash_script(shell, script, env = env, capture_output = True, text = True)
 
             # Mask hides everything: re-probe must recover the first GPU (Strix).
             r = run(ROCR_VISIBLE_DEVICES = "-1")
@@ -7985,6 +8019,7 @@ class TestRocmMiscomputingArchDemotion:
         calls = []
         monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
         monkeypatch.setattr(stack_mod, "IS_MACOS", False)
+        monkeypatch.setattr("platform.machine", lambda: "x86_64")
         monkeypatch.setattr(stack_mod, "_TORCH_BACKEND", "")
         monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: False)
         monkeypatch.setattr(stack_mod, "_has_rocm_gpu", lambda: True)

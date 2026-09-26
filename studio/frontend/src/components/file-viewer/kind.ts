@@ -19,8 +19,10 @@ const TYPE_KINDS: Record<string, DocumentKind> = {
   "application/pdf": "pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "sheet",
-  "application/vnd.ms-excel.sheet.macroEnabled.12": "sheet",
+  "application/vnd.ms-excel.sheet.macroenabled.12": "sheet",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation": "slides",
+  "text/csv": "sheet",
+  "text/tab-separated-values": "sheet",
 };
 
 // Own keys only: a name ending ".constructor" must not find Object.prototype's.
@@ -28,10 +30,39 @@ function lookUp(table: Record<string, DocumentKind>, key: string): DocumentKind 
   return Object.hasOwn(table, key) ? table[key] : undefined;
 }
 
-export function documentKind(name: string, contentType = ""): DocumentKind | null {
+function extensionOf(name: string): string {
   const dot = name.lastIndexOf(".");
-  const byExtension = dot > 0 ? lookUp(EXTENSION_KINDS, name.slice(dot + 1).toLowerCase()) : undefined;
-  return byExtension ?? lookUp(TYPE_KINDS, contentType.split(";", 1)[0]!.trim().toLowerCase()) ?? null;
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+function mimeOf(contentType: string): string {
+  return contentType.split(";", 1)[0]!.trim().toLowerCase();
+}
+
+export function documentKind(name: string, contentType = ""): DocumentKind | null {
+  return lookUp(EXTENSION_KINDS, extensionOf(name)) ?? lookUp(TYPE_KINDS, mimeOf(contentType)) ?? null;
+}
+
+const DELIMITERS: Record<string, "," | "\t"> = {
+  csv: ",",
+  tsv: "\t",
+  "text/csv": ",",
+  "text/tab-separated-values": "\t",
+};
+
+/** A CSV or TSV's delimiter, by extension or else MIME type; null for any other file. */
+export function sheetDelimiter(name: string, contentType = ""): "," | "\t" | null {
+  const extension = extensionOf(name);
+  const key = lookUp(EXTENSION_KINDS, extension) ? extension : mimeOf(contentType);
+  return Object.hasOwn(DELIMITERS, key) ? DELIMITERS[key]! : null;
+}
+
+const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdx"]);
+const MARKDOWN_TYPES = new Set(["text/markdown", "text/x-markdown"]);
+
+/** Markdown, by extension or MIME type: shown rendered rather than as its source. */
+export function isMarkdown(name: string, contentType = ""): boolean {
+  return MARKDOWN_EXTENSIONS.has(extensionOf(name)) || MARKDOWN_TYPES.has(mimeOf(contentType));
 }
 
 /** Documents past this are offered as a download instead: each viewer parses on the main thread. */

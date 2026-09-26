@@ -92,6 +92,10 @@ export const hi = {
     rateLimitedTitle: "Hugging Face की अनुरोध सीमा पूरी हो गई",
     rateLimitedBody:
       "कुछ देर प्रतीक्षा करें, फिर {noun} की खोज दोबारा करें।",
+    modelScope: "ModelScope",
+    useModelScope: "ModelScope इस्तेमाल करें",
+    useModelScopeHint: "इसके बजाय ModelScope से खोजें और डाउनलोड करें। आप सेटिंग्स में वापस बदल सकते हैं।",
+    useModelScopeFailed: "ModelScope पर स्विच नहीं हो सका।",
     hfToken: {
       label: "HF टोकन",
       saved: "सहेजा गया",
@@ -123,6 +127,16 @@ export const hi = {
     shutdown: "शटडाउन",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "दस्तावेज़",
+      keyboardShortcuts: "कीबोर्ड शॉर्टकट",
+      whatsNew: "नया क्या है",
+      troubleshooting: "समस्या निवारण",
+      systemStatus: "सिस्टम स्थिति",
+      sendFeedback: "फ़ीडबैक भेजें",
+      about: "Unsloth के बारे में",
+    },
     find: {
       label: "पेज में खोजें",
       previous: "पिछला मिलान",
@@ -230,8 +244,6 @@ export const hi = {
       organizeChats: "चैट व्यवस्थित करें",
       organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
-      moveUp: "ऊपर ले जाएँ",
-      moveDown: "नीचे ले जाएँ",
     },
     dialog: {
       deleteChat: {
@@ -1039,6 +1051,19 @@ export const hi = {
         closeToTraySaveError: "सिस्टम ट्रे में बंद करने की सेटिंग अपडेट नहीं हो सकी।",
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
+      },
+      hub: {
+        source: "मॉडल स्रोत",
+        sourceDescription: "मॉडल हब कहाँ खोजता और डाउनलोड करता है। अगर आपके नेटवर्क पर Hugging Face ब्लॉक या धीमा है तो ModelScope चुनें।",
+        sourceFallback: "ModelScope शुरू नहीं हो सका, इसलिए Hugging Face इस्तेमाल हो रहा है। Unsloth के लॉग देखें।",
+        sectionTitle: "मॉडल हब",
+        endpoint: "Hugging Face एंडपॉइंट",
+        endpointDescription: "मॉडल और डेटासेट यहीं से डाउनलोड होते हैं। huggingface.co के लिए खाली छोड़ें, या https://hf-mirror.com जैसा कोई मिरर डालें।",
+        datasetsServer: "डेटासेट प्रीव्यू के लिए भी इस्तेमाल करें",
+        datasetsServerDescription: "डेटासेट प्रीव्यू अनुरोध (HF_DATASETS_SERVER) भी इसी एंडपॉइंट पर भेजें। इसे तभी चालू करें जब मिरर इन्हें सपोर्ट करता हो।",
+        invalidEndpoint: "लॉगिन जानकारी या क्वेरी के बिना http(s) URL डालें। सादा http केवल लोकल पते के लिए काम करता है।",
+        saveFailed: "हब सेटिंग्स सेव नहीं हो सकीं।",
+        loadFailed: "हब सेटिंग्स लोड नहीं हो सकीं।",
       },
       downloads: {
         sectionTitle: "डाउनलोड",

@@ -92,6 +92,10 @@ export const ru = {
     rateLimitedTitle: "Достигнут лимит запросов Hugging Face",
     rateLimitedBody:
       "Подождите немного, затем повторите поиск в категории «{noun}».",
+    modelScope: "ModelScope",
+    useModelScope: "Использовать ModelScope",
+    useModelScopeHint: "Искать и скачивать через ModelScope. Вернуть можно в настройках.",
+    useModelScopeFailed: "Не удалось переключиться на ModelScope.",
     hfToken: {
       label: "Токен HF",
       saved: "Сохранён",
@@ -122,6 +126,16 @@ export const ru = {
     shutdown: "Выключить",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Документация",
+      keyboardShortcuts: "Сочетания клавиш",
+      whatsNew: "Что нового",
+      troubleshooting: "Устранение неполадок",
+      systemStatus: "Состояние системы",
+      sendFeedback: "Отправить отзыв",
+      about: "Об Unsloth",
+    },
     find: {
       label: "Поиск на странице",
       previous: "Предыдущее совпадение",
@@ -229,8 +243,6 @@ export const ru = {
       organizeChats: "Настроить чаты",
       organizeProjects: "Настроить проекты",
       sortPinnedChats: "Сортировать закреплённые чаты",
-      moveUp: "Переместить вверх",
-      moveDown: "Переместить вниз",
     },
     dialog: {
       deleteChat: {
@@ -1041,6 +1053,19 @@ export const ru = {
           "Не удалось обновить настройку закрытия в системный трей.",
         loadError: "Не удалось загрузить настройку автозапуска.",
         saveError: "Не удалось обновить настройку автозапуска.",
+      },
+      hub: {
+        source: "Источник моделей",
+        sourceDescription: "Где хаб моделей ищет и откуда скачивает. Выберите ModelScope, если Hugging Face заблокирован или медленно работает в вашей сети.",
+        sourceFallback: "Не удалось запустить ModelScope, поэтому используется Hugging Face. Проверьте журналы Unsloth.",
+        sectionTitle: "Хаб моделей",
+        endpoint: "Эндпоинт Hugging Face",
+        endpointDescription: "Откуда загружаются модели и датасеты. Оставьте пустым для huggingface.co или укажите зеркало, например https://hf-mirror.com.",
+        datasetsServer: "Использовать и для предпросмотра датасетов",
+        datasetsServerDescription: "Отправлять запросы предпросмотра датасетов (HF_DATASETS_SERVER) на этот же эндпоинт. Включайте, только если зеркало их поддерживает.",
+        invalidEndpoint: "Введите адрес http(s) без учётных данных и параметров. Обычный http работает только для локального адреса.",
+        saveFailed: "Не удалось сохранить настройки хаба.",
+        loadFailed: "Не удалось загрузить настройки хаба.",
       },
       downloads: {
         sectionTitle: "Загрузки",

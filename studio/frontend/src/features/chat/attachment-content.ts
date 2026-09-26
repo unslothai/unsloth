@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type Unzipped, strFromU8, unzipSync, zipSync } from "fflate";
+import { type Unzipped, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import {
   MAX_TEXT_ATTACHMENT_BYTES,
   TEXT_ATTACHMENT_ACCEPT,
@@ -603,17 +603,73 @@ type DocxArchive = {
  *  relationships point at, so a large unreferenced part must still preview.
  *  `assertDocxPartSizes` refuses the ones mammoth would have parsed. `keepLarge` keeps them
  *  (still marked oversized) for the viewer, which needs large images as well as text. */
+const DOCX_IMAGE_PART = /\.(png|jpe?g|gif|bmp|tiff?|emf|wmf|svg|webp)$/i;
+
+/** The viewer's view of a package's images: which parts are images, as mammoth reads them (their
+ *  Override in [Content_Types].xml, else their extension's Default, else their name), and which the
+ *  document and its notes and comments point at. Only those are unpacked: an image no part refers
+ *  to is never shown. */
+function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => boolean; used: Set<string> } {
+  const names = new Set<string>();
+  const parts = unzipSync(bytes, {
+    filter: (entry) => {
+      names.add(entry.name);
+      return (
+        (entry.name === DOCX_CONTENT_TYPES_PART || entry.name.endsWith(".rels")) &&
+        entry.originalSize <= MAX_OPEN_DOCUMENT_XML_BYTES
+      );
+    },
+  });
+  const types = parts[DOCX_CONTENT_TYPES_PART];
+  const defaults = new Map<string, string>();
+  const overrides = new Map<string, string>();
+  const markup = types ? strFromU8(types).replace(XML_NON_ELEMENT_RE, "") : "";
+  for (const [, tag, attributes] of markup.matchAll(/<(?:[\w.-]+:)?(Default|Override)\b([^>]*)>/g)) {
+    const values = new Map<string, string>();
+    for (const [, key, double, single] of attributes!.matchAll(XML_ATTRIBUTE_RE)) {
+      values.set(key!, double ?? single ?? "");
+    }
+    const type = (values.get("ContentType") ?? "").toLowerCase();
+    if (tag === "Default") defaults.set((values.get("Extension") ?? "").toLowerCase(), type);
+    else overrides.set((values.get("PartName") ?? "").replace(/^\//, "").toLowerCase(), type);
+  }
+  const isImage = (name: string) => {
+    const dot = name.lastIndexOf(".");
+    const type =
+      overrides.get(name.toLowerCase()) ?? (dot === -1 ? undefined : defaults.get(name.slice(dot + 1).toLowerCase()));
+    return type ? type.startsWith("image/") : DOCX_IMAGE_PART.test(name);
+  };
+  // Each part's targets resolve against its folder, and mammoth opens the first that exists.
+  const targetsOf = (path: string) =>
+    readDocxXmlTargets(parts[docxRelationshipsPath(path)], path.slice(0, Math.max(0, path.lastIndexOf("/"))));
+  const resolve = (targets: string[] | undefined, fallback: string) =>
+    targets?.find((path) => names.has(path)) ?? fallback;
+  const main = resolve(targetsOf("").get(DOCX_MAIN_DOCUMENT_TYPE), DOCX_MAIN_DOCUMENT_FALLBACK);
+  const mainTargets = targetsOf(main);
+  const used = new Set([...mainTargets.values()].flat());
+  for (const name of DOCX_BODY_PART_NAMES) {
+    const path = resolve(mainTargets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`), `word/${name}.xml`);
+    for (const target of [...targetsOf(path).values()].flat()) used.add(target);
+  }
+  return { isImage, used };
+}
+
 function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = false): DocxArchive {
   const names = new Set<string>();
   const oversized = new Set<string>();
+  const images = keepLarge ? docxPreviewImages(bytes) : null;
   let unpacked = 0;
 
   const entries = unzipSync(bytes, {
     filter: (entry) => {
       names.add(entry.name);
+      const image = images?.isImage(entry.name) ?? false;
+      // The viewer unpacks an image, whatever its size, only when a part points at it.
+      if (image && !images!.used.has(entry.name)) return false;
       if (entry.originalSize > MAX_OPEN_DOCUMENT_XML_BYTES) {
         oversized.add(entry.name);
-        if (!keepLarge) return false;
+        // Mammoth reads large media, never large unreferenced XML.
+        if (!image) return false;
       }
       unpacked += entry.originalSize;
       if (unpacked > MAX_DOCX_UNPACKED_BYTES) {
@@ -629,7 +685,7 @@ function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = fals
 /** Refuses the parts mammoth goes on to parse when they exceed the XML ceiling. mammoth takes
  *  no entry filter, so the set is resolved as findPartPaths resolves it, each falling back
  *  to a fixed name when no target resolves. Both sides read the same bytes. */
-function assertDocxPartSizes(filename: string, archive: DocxArchive): void {
+function assertDocxPartSizes(filename: string, archive: DocxArchive): string {
   const { entries, names, oversized } = archive;
   const bound = (path: string) => {
     if (oversized.has(path)) {
@@ -667,6 +723,7 @@ function assertDocxPartSizes(filename: string, archive: DocxArchive): void {
       bound(docxRelationshipsPath(path));
     }
   }
+  return mainDocument;
 }
 
 /** The archive mammoth is given: fflate's own output, so a part that lies about its size
@@ -674,11 +731,53 @@ function assertDocxPartSizes(filename: string, archive: DocxArchive): void {
 export function repackDocxAttachmentArchive(
   filename: string,
   bytes: Uint8Array,
-  { keepLarge = false } = {},
 ): Uint8Array {
-  const archive = unpackDocxEntries(filename, bytes, keepLarge);
+  const archive = unpackDocxEntries(filename, bytes);
   assertDocxPartSizes(filename, archive);
   return zipSync(archive.entries, { level: 0 });
+}
+
+// A tag, or markup whose text may look like one.
+const XML_TOKEN_RE =
+  /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<[?!][\s\S]*?>|<(\/?)([^\s/>]+)(?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*\s*(\/?)>/g;
+const PARAGRAPH_RE = /<(?:[\w.-]+:)?p[\s/>]/;
+
+/** The document cut after its `max`th paragraph (<w:p>, at any depth), each element still open
+ *  closed after it; null when it has no more. */
+function cutDocxParagraphs(xml: string, max: number): string | null {
+  const open: string[] = [];
+  let count = 0;
+  XML_TOKEN_RE.lastIndex = 0;
+  for (let match = XML_TOKEN_RE.exec(xml); match; match = XML_TOKEN_RE.exec(xml)) {
+    const [, closing, name, empty] = match;
+    if (!name) continue;
+    if (!closing && !empty) {
+      open.push(name);
+      continue;
+    }
+    if (closing) open.pop();
+    if (/(?:^|:)p$/.test(name) && ++count === max) {
+      const end = XML_TOKEN_RE.lastIndex;
+      if (!PARAGRAPH_RE.test(xml.slice(end))) return null;
+      return `${xml.slice(0, end)}${open.reverse().map((tag) => `</${tag}>`).join("")}`;
+    }
+  }
+  return null;
+}
+
+/** repackDocxAttachmentArchive for the viewer: large images kept, and the body cut after
+ *  `maxParagraphs`, so mammoth never converts more than is shown. */
+export function repackDocxPreviewArchive(
+  filename: string,
+  bytes: Uint8Array,
+  maxParagraphs: number,
+): { archive: Uint8Array; truncated: boolean } {
+  const archive = unpackDocxEntries(filename, bytes, true);
+  const mainDocument = assertDocxPartSizes(filename, archive);
+  const main = archive.entries[mainDocument];
+  const cut = main ? cutDocxParagraphs(strFromU8(main), maxParagraphs) : null;
+  if (cut !== null) archive.entries[mainDocument] = strToU8(cut);
+  return { archive: zipSync(archive.entries, { level: 0 }), truncated: cut !== null };
 }
 
 /** The bytes of a view, as an ArrayBuffer, without copying when it owns one. jszip reads the
@@ -789,7 +888,8 @@ export async function extractOfficeAttachmentText(
   const budget = textBudget(MAX_OFFICE_TEXT_BYTES);
   const parts: string[] = [];
   if (label === "PPTX") {
-    for (const [index, slide] of readPptx(bytes, { images: false }).slides.entries()) {
+    const deck = readPptx(bytes, { images: false });
+    for (const [index, slide] of deck.slides.entries()) {
       if (budget.cut) break;
       const lines = [budget.take(`Slide ${index + 1}`)];
       for (const box of slide.boxes) {
@@ -798,6 +898,9 @@ export async function extractOfficeAttachmentText(
         for (const row of box.table ?? []) lines.push(row.map((cell) => budget.take(cell)).join("\t"));
       }
       parts.push(lines.join("\n"));
+    }
+    if (deck.truncated && !budget.cut) {
+      parts.push(`[Truncated: only the first ${deck.slides.length} slides are included.]`);
     }
   } else {
     for (const sheet of readXlsx(bytes)) {

@@ -986,6 +986,22 @@ def test_the_moe_snapshot_matches_the_installed_transformers():
     assert not missing, f"fused MoE model types missing from the snapshot: {sorted(missing)}"
 
 
+def test_the_snapshot_covers_the_types_unsloth_registers_itself():
+    """Unsloth adds its own model types to the live map at runtime, so whether the comparison
+    above sees them depends on which tests ran first in the worker. Checked here directly, so
+    a registration the snapshot does not know about fails every time, not only in some orders.
+    """
+    source = (
+        Path(__file__).resolve().parents[2] / "unsloth" / "models" / "longcat_lsa.py"
+    ).read_text(encoding = "utf-8")
+    assert 'LONGCAT_LSA_MODEL_TYPE = "longcat_flash_lsa"' in source
+    assert 'table.setdefault(LONGCAT_LSA_MODEL_TYPE, table["longcat_flash"])' in source
+    assert (
+        F._PEFT_MOE_CONVERSION_PATTERNS["longcat_flash_lsa"]
+        == (F._PEFT_MOE_CONVERSION_PATTERNS["longcat_flash"])
+    )
+
+
 def test_an_unrelated_string_dictionary_is_not_installed_as_the_map(fake_modules):
     """Shape alone selects the biggest `dict[str, str]`, not the right one.
 

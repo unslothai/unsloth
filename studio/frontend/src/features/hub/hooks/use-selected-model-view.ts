@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useMemo } from "react";
+import { useHubName } from "@/lib/hf-endpoint";
 import { detectCapabilities, detectLicense } from "../lib/model-capabilities";
 import {
   buildSummary,
@@ -47,6 +48,7 @@ export function useSelectedModelView({
   selectedHfResult: HfResult;
   isDatasetMode: boolean;
 }): SelectedModelView | null {
+  const hubName = useHubName();
   return useMemo<SelectedModelView | null>(() => {
     if (selectedDiscoverRow) {
       if (
@@ -137,7 +139,7 @@ export function useSelectedModelView({
           ? "On device"
           : isResolvedPartial
             ? "Partial on device"
-            : "Hugging Face",
+            : hubName,
         path: onDevicePath,
         isLocal: false,
         isGguf:
@@ -392,6 +394,7 @@ export function useSelectedModelView({
 
     return null;
   }, [
+    hubName,
     isDatasetMode,
     selectedCachedRow,
     selectedDiscoverRow,

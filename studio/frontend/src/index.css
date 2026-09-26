@@ -77,14 +77,16 @@
 			rgb(from var(--sidebar-surface) r g b / 0)
 		);
 	}
-	/* Model picker list: once scrolled, the top edge fades so rows dissolve as
-	   they pass under the pinned search / tab bar. */
-	.model-list-scroll.is-scrolled {
+	/* Model picker list and the Settings tab rail: once scrolled, the top edge fades so
+	   rows dissolve as they pass under the pinned search / tab bar or title. */
+	.model-list-scroll.is-scrolled,
+	.settings-rail-fade.is-scrolled {
 		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
 		mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
 	}
 	/* Bottom edge fades while more rows sit below the fold. */
-	.model-list-scroll.is-bottom-faded {
+	.model-list-scroll.is-bottom-faded,
+	.settings-rail-fade.is-bottom-faded {
 		-webkit-mask-image: linear-gradient(
 			to bottom,
 			#000 calc(100% - 16px),
@@ -93,7 +95,8 @@
 		mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
 	}
 	/* Both edges fade when scrolled with rows above and below. */
-	.model-list-scroll.is-scrolled.is-bottom-faded {
+	.model-list-scroll.is-scrolled.is-bottom-faded,
+	.settings-rail-fade.is-scrolled.is-bottom-faded {
 		-webkit-mask-image: linear-gradient(
 			to bottom,
 			transparent 0,

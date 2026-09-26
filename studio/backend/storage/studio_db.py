@@ -121,7 +121,7 @@ _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
-_CHAT_ATTACHMENT_INVENTORY_VERSION = 4
+_CHAT_ATTACHMENT_INVENTORY_VERSION = 5
 
 
 def _project_slug(name: str) -> str:
@@ -621,6 +621,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             content_type TEXT,
             size_bytes INTEGER,
             original_sha256 TEXT,
+            text_bytes INTEGER,
             PRIMARY KEY(message_id, attachment_id)
         ) WITHOUT ROWID
         """
@@ -631,6 +632,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "original_sha256" not in inventory_columns:
         conn.execute("ALTER TABLE chat_attachment_inventory ADD COLUMN original_sha256 TEXT")
+    # Version 5: a kept original's extracted text, stored in the database alongside it.
+    if "text_bytes" not in inventory_columns:
+        conn.execute("ALTER TABLE chat_attachment_inventory ADD COLUMN text_bytes INTEGER")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_attachment_inventory_state (
@@ -3481,6 +3485,7 @@ def _chat_attachment_inventory_entries(
                 "contentType": _chat_attachment_metadata_text(attachment.get("contentType")),
                 "sizeBytes": _chat_attachment_size_bytes(attachment),
                 "originalSha256": chat_originals.attachment_sha256(attachment),
+                "textBytes": _chat_attachment_text_bytes(attachment),
             }
         )
     return entries
@@ -3508,8 +3513,9 @@ def _replace_chat_attachment_inventory(
     conn.executemany(
         """
         INSERT INTO chat_attachment_inventory
-            (message_id, attachment_id, name, type, content_type, size_bytes, original_sha256)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (message_id, attachment_id, name, type, content_type, size_bytes, original_sha256,
+             text_bytes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -3520,6 +3526,7 @@ def _replace_chat_attachment_inventory(
                 entry["contentType"],
                 entry["sizeBytes"],
                 entry["originalSha256"],
+                entry["textBytes"],
             )
             for entry in entries
         ],
@@ -4367,6 +4374,18 @@ def _attachment_content_parts(attachment: dict) -> list[dict]:
     return [part for part in content if isinstance(part, dict)]
 
 
+def _chat_attachment_text_bytes(attachment: dict) -> Optional[int]:
+    """UTF-8 size of a kept original's extracted text, which the database stores as well. None
+    without an original, whose size already counts its text."""
+    if chat_originals.attachment_sha256(attachment) is None:
+        return None
+    return sum(
+        len(part["text"].encode("utf-8", errors = "ignore"))
+        for part in _attachment_content_parts(attachment)
+        if isinstance(part.get("text"), str)
+    )
+
+
 def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
     """Approximate stored size of one attachment's content parts. Image, audio and file (video)
     parts hold base64 payloads (decoded bytes ~= 3/4 of the encoded length); text parts count their
@@ -4482,7 +4501,7 @@ def list_chat_attachments_page(
         rows = conn.execute(
             """
             SELECT i.attachment_id, i.name, i.type, i.content_type,
-                   i.size_bytes, i.original_sha256, m.id AS message_id, m.thread_id,
+                   i.size_bytes, i.original_sha256, i.text_bytes, m.id AS message_id, m.thread_id,
                    m.created_at, t.title AS thread_title, t.pair_id
             FROM chat_attachment_inventory i
             JOIN chat_messages m ON m.id = i.message_id
@@ -4511,6 +4530,7 @@ def list_chat_attachments_page(
             "contentType": row["content_type"],
             "sizeBytes": row["size_bytes"],
             "originalSha256": row["original_sha256"],
+            "textBytes": row["text_bytes"],
             "hasOriginal": bool(row["original_sha256"])
             and (originals / row["original_sha256"]).is_file(),
             "createdAt": row["created_at"],

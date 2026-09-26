@@ -91,6 +91,10 @@ export const ar = {
       "توجد عدة نتائج مطابقة ضمن {noun}. اختر نتيجة من القائمة.",
     rateLimitedTitle: "تم بلوغ حد طلبات Hugging Face",
     rateLimitedBody: "انتظر قليلًا، ثم أعد البحث في {noun}.",
+    modelScope: "ModelScope",
+    useModelScope: "استخدام ModelScope",
+    useModelScopeHint: "ابحث ونزّل من ModelScope بدلًا من ذلك. يمكنك العودة من الإعدادات.",
+    useModelScopeFailed: "تعذّر التبديل إلى ModelScope.",
     hfToken: {
       label: "توكن HF",
       saved: "محفوظ",
@@ -120,6 +124,16 @@ export const ar = {
     shutdown: "إيقاف التشغيل",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "الوثائق",
+      keyboardShortcuts: "اختصارات لوحة المفاتيح",
+      whatsNew: "ما الجديد",
+      troubleshooting: "استكشاف الأخطاء وإصلاحها",
+      systemStatus: "حالة النظام",
+      sendFeedback: "إرسال ملاحظات",
+      about: "حول Unsloth",
+    },
     find: {
       label: "البحث في الصفحة",
       previous: "التطابق السابق",
@@ -227,8 +241,6 @@ export const ar = {
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
       sortPinnedChats: "ترتيب المحادثات المثبتة",
-      moveUp: "تحريك لأعلى",
-      moveDown: "تحريك لأسفل",
     },
     dialog: {
       deleteChat: {
@@ -1036,6 +1048,19 @@ export const ar = {
         closeToTraySaveError: "تعذّر تحديث إعداد الإغلاق إلى علبة النظام.",
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
+      },
+      hub: {
+        source: "مصدر النماذج",
+        sourceDescription: "المكان الذي يبحث فيه مركز النماذج ويُنزّل منه. اختر ModelScope إذا كان Hugging Face محظورًا أو بطيئًا على شبكتك.",
+        sourceFallback: "تعذّر تشغيل ModelScope، لذلك يُستخدم Hugging Face. راجع سجلات Unsloth.",
+        sectionTitle: "مركز النماذج",
+        endpoint: "نقطة نهاية Hugging Face",
+        endpointDescription: "المصدر الذي تُنزَّل منه النماذج ومجموعات البيانات. اتركه فارغًا لاستخدام huggingface.co، أو أدخل مرآة مثل https://hf-mirror.com.",
+        datasetsServer: "استخدامه أيضًا لمعاينات مجموعات البيانات",
+        datasetsServerDescription: "إرسال طلبات معاينة مجموعات البيانات (HF_DATASETS_SERVER) إلى نقطة النهاية هذه أيضًا. فعّله فقط إذا كانت المرآة تدعمها.",
+        invalidEndpoint: "أدخل عنوان http(s) بلا بيانات دخول أو استعلام. لا يعمل http العادي إلا مع عنوان محلي.",
+        saveFailed: "تعذّر حفظ إعدادات المركز.",
+        loadFailed: "تعذّر تحميل إعدادات المركز.",
       },
       downloads: {
         sectionTitle: "التنزيلات",

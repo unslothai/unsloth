@@ -269,3 +269,13 @@ test("a composer clip reads as a video, not by its .mp4 name as audio", () => {
   assert.match(ATTACHMENT, /if \(isVideoAttachment\(attachment\)\) return "Video";\n\s*return isAudioAttachment\(/);
   assert.match(ATTACHMENT, /isVideo\n\s*\? Video01Icon\n\s*: isAudioAttachment\(name, contentType\)/);
 });
+
+test("a sent document shown from its stored text downloads and chats as a .txt", async () => {
+  const dialog = await readSrcAsync("components/assistant-ui/attachment-document-dialog.tsx");
+  assert.match(
+    dialog,
+    /saveAs=\{\n\s*loaded\?\.plain !== undefined\n\s*\? \{ name: `\$\{source\.name\.replace\(\/\\\.\[\^\.\]\+\$\/, ""\)\}\.txt`, contentType: "text\/plain" \}/,
+  );
+  assert.match(dialog, /const name = saveAs\?\.name \?\? \(source\.name \|\| "attachment"\);/);
+  assert.match(dialog, /downloadFile\(blob, name, contentType \|\| undefined\)/);
+});

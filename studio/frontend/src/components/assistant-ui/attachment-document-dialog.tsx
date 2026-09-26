@@ -8,7 +8,7 @@ import {
   attachmentViewerMeta,
 } from "@/components/assistant-ui/attachment-viewer-meta";
 import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
-import { DocumentView, documentKind } from "@/components/file-viewer";
+import { DocumentView, documentKind, isMarkdown } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { type MediaViewerActions, MediaViewer, ScaleMenu } from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
@@ -30,8 +30,6 @@ import {
   useState,
 } from "react";
 
-const MARKDOWN_NAME = /\.(md|markdown|mdx)$/i;
-
 /**
  * Opens an attachment in the Library's viewer, as a click on its tile, row or chip. The header
  * matches the Library's: name and subtitle, the page's own controls, "Chat about this" and a
@@ -49,6 +47,8 @@ export const AttachmentViewer: FC<{
   redactFromReload: boolean;
   /** The attachment's bytes, for the download and the chat. Unset while they are not ready. */
   load?: () => Promise<Blob>;
+  /** The name and type those bytes go out under, when not the attachment's own. */
+  saveAs?: { name: string; contentType: string };
   flush?: boolean;
   extra?: ReactNode;
   children: ReactNode;
@@ -62,6 +62,7 @@ export const AttachmentViewer: FC<{
   noun,
   redactFromReload,
   load,
+  saveAs,
   flush = true,
   extra,
   children,
@@ -72,7 +73,8 @@ export const AttachmentViewer: FC<{
   // attachment, and the viewer's project menu subscribes to and refetches the project list.
   const [mounted, setMounted] = useState(open);
   if (open && !mounted) setMounted(true);
-  const name = source.name || "attachment";
+  const name = saveAs?.name ?? (source.name || "attachment");
+  const contentType = saveAs?.contentType ?? source.contentType;
   // A sent original is fetched on click and can fail; say so rather than doing nothing.
   const actions: MediaViewerActions = {
     primary:
@@ -83,7 +85,7 @@ export const AttachmentViewer: FC<{
             onClick: () =>
               void load()
                 .then((blob) => {
-                  const file = new File([blob], name, { type: source.contentType || blob.type });
+                  const file = new File([blob], name, { type: contentType || blob.type });
                   onOpenChange(false);
                   startLibraryChat(navigate, { files: [file] });
                 })
@@ -93,7 +95,7 @@ export const AttachmentViewer: FC<{
     onDownload: load
       ? () =>
           void load()
-            .then((blob) => downloadFile(blob, name, source.contentType || undefined))
+            .then((blob) => downloadFile(blob, name, contentType || undefined))
             .catch(() => toast.error(t("library.toast.downloadFailed", { name })))
       : undefined,
   };
@@ -162,7 +164,7 @@ const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; sca
   }
   const kind = documentKind(name, contentType);
   if (!loaded.blob || !kind) return <Spinner className="m-auto size-6" />;
-  return <DocumentView file={loaded.blob} kind={kind} name={name} scale={scale} />;
+  return <DocumentView file={loaded.blob} kind={kind} name={name} contentType={contentType} scale={scale} />;
 };
 
 /** Opens a document attachment in the Library's viewer. `load` returns its bytes. */
@@ -178,7 +180,7 @@ const DocumentDialog: FC<
   const [open, setOpen] = useState(false);
   const [scale, setScale] = useState(1);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
-  const markdown = MARKDOWN_NAME.test(source.name);
+  const markdown = isMarkdown(source.name, source.contentType ?? "");
   // Read on open, so a re-render (e.g. streaming) does not restart the load.
   const loadRef = useRef(load);
   useEffect(() => {
@@ -197,7 +199,7 @@ const DocumentDialog: FC<
           next = { blob, text, truncated };
         } else if (textFallback && blob.type.startsWith("text/")) {
           const { text, truncated } = truncateAttachmentPreviewText(await blob.text());
-          next = { plain: text, truncated };
+          next = { blob, plain: text, truncated };
         }
         if (!cancelled) setLoaded(next);
       })
@@ -219,6 +221,12 @@ const DocumentDialog: FC<
       noun="file"
       redactFromReload={redactFromReload}
       load={blob ? () => Promise.resolve(blob) : undefined}
+      // The stored text, when the original is gone: saved as text, not under the document's type.
+      saveAs={
+        loaded?.plain !== undefined
+          ? { name: `${source.name.replace(/\.[^.]+$/, "")}.txt`, contentType: "text/plain" }
+          : undefined
+      }
       extra={
         <ScaleMenu
           value={scale}

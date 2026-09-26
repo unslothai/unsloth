@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from hub.utils.hf_errors import modelscope_missing
 from loggers import get_logger
 
 from .diffusion_attention import (
@@ -2293,7 +2294,7 @@ class VideoBackend:
 
             with self._lock:
                 if self._load_token == token and self._loading is not None:
-                    self._loading.error = redact_native_paths(str(exc))
+                    self._loading.error = modelscope_missing(exc) or redact_native_paths(str(exc))
 
     def _run_load_h3_native(
         self,

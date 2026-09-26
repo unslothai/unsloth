@@ -2,14 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Spinner } from "@/components/ui/spinner";
-import { repackDocxAttachmentArchive } from "@/features/chat";
+import { repackDocxPreviewArchive } from "@/features/chat";
 import { useT } from "@/i18n";
 import { openLink } from "@/lib/open-link";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { cn } from "@/lib/utils";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { type CSSProperties, type MouseEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DocumentKind } from "./kind";
+import { type DocumentKind, sheetDelimiter } from "./kind";
 import { useWidth } from "./use-width";
 import {
   type Deck,
@@ -28,18 +28,18 @@ type Parsed =
   | { kind: "sheet"; sheets: Sheet[] }
   | { kind: "slides"; deck: Deck };
 
-async function parse(file: Blob, kind: DocumentKind, name: string): Promise<Parsed> {
+async function parse(file: Blob, kind: DocumentKind, name: string, contentType: string): Promise<Parsed> {
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const extension = name.split(".").pop()?.toLowerCase();
   if (kind === "docx") {
     const { default: mammoth } = await import("mammoth");
-    // Large parts kept: an image past the XML ceiling still shows.
-    const repacked = repackDocxAttachmentArchive(name, bytes, { keepLarge: true });
-    const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.buffer as ArrayBuffer });
-    return { kind, ...sanitizeDocxHtml(value) };
+    const repacked = repackDocxPreviewArchive(name, bytes, MAX_DOCX_PARAGRAPHS);
+    const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.archive.buffer as ArrayBuffer });
+    const { html, truncated } = sanitizeDocxHtml(value);
+    return { kind, html, truncated: truncated || repacked.truncated };
   }
   if (kind === "slides") return { kind, deck: readPptx(bytes) };
-  if (extension === "csv" || extension === "tsv") {
+  const delimiter = sheetDelimiter(name, contentType);
+  if (delimiter) {
     // Excel's "Unicode Text" export is UTF-16 with a byte order mark.
     const encoding =
       bytes[0] === 0xff && bytes[1] === 0xfe
@@ -48,7 +48,7 @@ async function parse(file: Blob, kind: DocumentKind, name: string): Promise<Pars
           ? "utf-16be"
           : "utf-8";
     const text = new TextDecoder(encoding).decode(bytes);
-    return { kind: "sheet", sheets: [readDelimited(text, extension === "tsv" ? "\t" : ",", name)] };
+    return { kind: "sheet", sheets: [readDelimited(text, delimiter, name)] };
   }
   return { kind: "sheet", sheets: readXlsx(bytes) };
 }
@@ -58,7 +58,9 @@ const DOCX_TAGS = new Set(
 );
 const DOCX_ATTRIBUTES = new Set(["href", "src", "alt", "id", "colspan", "rowspan"]);
 
-// Elements past this are dropped: a small file can convert to far too many to mount.
+// Paragraphs past this are cut before conversion, so mammoth and the DOM never see them.
+const MAX_DOCX_PARAGRAPHS = 20_000;
+// Elements past this are dropped: a paragraph can still convert to many.
 const MAX_DOCX_ELEMENTS = 50_000;
 
 /** mammoth writes a small vocabulary; anything else, and any link that is not a web, mail or
@@ -338,12 +340,17 @@ const CENTER_TITLE_FRAME = { x: 0.1, y: 0.26, w: 0.8, h: 0.24 };
 const SUBTITLE_FRAME = { x: 0.15, y: 0.53, w: 0.7, h: 0.2 };
 const TITLES = new Set(["title", "ctrTitle"]);
 
-function frameStyle(frame: NonNullable<SlideBox["frame"]>): CSSProperties {
+/** `mirror` for a picture, which a flip mirrors. Text is never mirrored: a vertical flip turns it
+ *  upside down, as PowerPoint draws it, and a horizontal one leaves it be. */
+function frameStyle(frame: NonNullable<SlideBox["frame"]>, mirror = false): CSSProperties {
+  const turn = (frame.rot ?? 0) + (!mirror && frame.flipV ? 180 : 0);
+  const flip = mirror && (frame.flipH || frame.flipV) ? `scale(${frame.flipH ? -1 : 1}, ${frame.flipV ? -1 : 1})` : "";
   return {
     left: `${frame.x * 100}%`,
     top: `${frame.y * 100}%`,
     width: `${frame.w * 100}%`,
     height: `${frame.h * 100}%`,
+    transform: [turn ? `rotate(${turn}deg)` : "", flip].filter(Boolean).join(" ") || undefined,
   };
 }
 
@@ -389,7 +396,7 @@ function SlideTable({ rows, caption, widthPt }: { rows: string[][]; caption?: st
 }
 
 /** The object URL lives only while the slide is mounted. */
-function SlideImage({ image }: { image: Blob }) {
+function SlideImage({ image, crop }: { image: Blob; crop?: SlideBox["crop"] }) {
   // Stable, or every scroll re-render would remake the URL.
   const attach = useCallback(
     (element: HTMLImageElement | null) => {
@@ -400,12 +407,21 @@ function SlideImage({ image }: { image: Blob }) {
     },
     [image],
   );
+  // Stretched over the frame, as PowerPoint draws it; a crop scales it up and shifts it, the frame clipping the rest.
+  const w = crop ? 1 - crop.l - crop.r : 1;
+  const h = crop ? 1 - crop.t - crop.b : 1;
   return (
     <img
       ref={attach}
       alt=""
       decoding="async"
-      className="size-full object-contain"
+      className="absolute max-w-none"
+      style={{
+        left: `${(-(crop?.l ?? 0) / w) * 100}%`,
+        top: `${(-(crop?.t ?? 0) / h) * 100}%`,
+        width: `${100 / w}%`,
+        height: `${100 / h}%`,
+      }}
     />
   );
 }
@@ -424,9 +440,9 @@ const SlideFace = memo(function SlideFace({ slide, index, deck }: { slide: Slide
       >
         {slide.boxes.map((box, boxIndex) =>
           box.frame ? (
-            <div key={boxIndex} className="absolute overflow-hidden" style={frameStyle(box.frame)}>
+            <div key={boxIndex} className="absolute overflow-hidden" style={frameStyle(box.frame, Boolean(box.image))}>
               {box.image ? (
-                <SlideImage image={box.image} />
+                <SlideImage image={box.image} crop={box.crop} />
               ) : box.table ? (
                 <SlideTable rows={box.table} caption={box.caption} widthPt={deck.widthPt} />
               ) : (
@@ -473,6 +489,9 @@ function SlidesView({ deck, scale }: { deck: Deck; scale: number }) {
     <div ref={setContainer} className="size-full overflow-auto bg-muted/60">
       {/* Keyed on the width, so the virtualizer measures afresh. */}
       <SlideList key={width} deck={deck} width={width} scrollElement={container} />
+      {deck.truncated && (
+        <p className="pb-6 text-center text-ui-12 text-muted-foreground">{t("library.preview.documentTruncated")}</p>
+      )}
     </div>
   );
 }
@@ -507,25 +526,27 @@ export default function OfficeView({
   file,
   kind,
   name,
+  contentType,
   scale,
 }: {
   file: Blob;
   kind: DocumentKind;
   name: string;
+  contentType: string;
   scale: number;
 }) {
   const t = useT();
   const [state, setState] = useState<{ file: Blob; parsed?: Parsed; error?: boolean } | null>(null);
   useEffect(() => {
     let cancelled = false;
-    parse(file, kind, name).then(
+    parse(file, kind, name, contentType).then(
       (parsed) => !cancelled && setState({ file, parsed }),
       () => !cancelled && setState({ file, error: true }),
     );
     return () => {
       cancelled = true;
     };
-  }, [file, kind, name]);
+  }, [file, kind, name, contentType]);
   const current = state?.file === file ? state : null;
   if (current?.error) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
@@ -534,5 +555,5 @@ export default function OfficeView({
   if (!parsed) return <Spinner className="m-auto size-6" />;
   if (parsed.kind === "docx") return <DocxView html={parsed.html} truncated={parsed.truncated} scale={scale} />;
   if (parsed.kind === "slides") return <SlidesView deck={parsed.deck} scale={scale} />;
-  return <SheetView sheets={parsed.sheets} tabs={!/\.(csv|tsv)$/i.test(name)} scale={scale} />;
+  return <SheetView sheets={parsed.sheets} tabs={!sheetDelimiter(name, contentType)} scale={scale} />;
 }

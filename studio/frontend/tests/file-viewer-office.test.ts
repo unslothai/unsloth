@@ -68,9 +68,19 @@ test("number formats", () => {
     [-1.5, "# ?/?;(# ?/?)", "(1 1/2)"],
     [45000, "yyyy-mm-dd", "2023-03-15"],
     [12.5, '0.00 "kg; net"', "12.50 kg; net"],
+    [1, '"A_B"0', "A_B1"],
     [1234, '0.00E+00 "kg"', "1.23E+03 kg"],
     [-1234, "0.00E+00;(0.00E+00)", "(1.23E+03)"],
+    [0.0123, "0.00E+00%", "1.23E+00%"],
     [1.5 / 86400, "[h]:mm:ss.00", "0:00:01.50"],
+    [1 / 24, '[h]:mm "hours"', "1:00 hours"],
+    [1 / 24, "[h]:m:s", "1:0:0"],
+    [0.125, "# ?/?%", "12 1/2%"],
+    [125000, "# ?/?,", "125"],
+    [1.5, '0 "0/0"', "2 0/0"],
+    [0.01, "0%%", "100%%"],
+    [12345, "##0.0E+0", "12.3E+3"],
+    [0.00123, "##0.0E+0", "1.2E-3"],
   ];
   for (const [value, format, expected] of cases) assert.equal(formatNumber(value, format), expected, format);
 });
@@ -92,14 +102,14 @@ test("xlsx: reads only the parts and rows it keeps", () => {
 test("xlsx: sheet XML read as text", () => {
   const [sheet] = readXlsx(
     workbook(`<worksheet xmlns="${MAIN}"><cols><col min='2' max='2' hidden='1'/></cols><sheetData>
-<row r="1"><c r="A1" t="inlineStr"><is><r><t>a &amp; &#x42;</t></r><r><t><![CDATA[<c>]]></t></r><rPh><t>ruby</t></rPh></is></c><c r="B1"><v>9</v></c></row>
-<row r="2"><c r="A2"><f t="shared" ref="A2:A3" si="0">B2*2+$C$1</f><v>7</v></c></row>
+<row r="1"><c r="A1" t="inlineStr"><is><r><t>a &amp; &#x42;</t></r><r><t><![CDATA[<c></row>]]></t></r><rPh><t>ruby</t></rPh></is></c><c r="B1"><v>9</v></c></row>
+<row r="2"><c r="A2"><f t="shared" ref="A2:A3" si="0">SUM(b2,C:C,2:2)*2+$C$1+'A1'!A1</f><v>7</v></c></row>
 <row r="3"><c r="A3"><f t="shared" si="0"/></c></row>
 </sheetData></worksheet>`),
   );
   assert.deepEqual(
     sheet?.rows.map((row) => row.map((cell) => cell?.text)),
-    [["a & B<c>"], ["7"], ["=B3*2+$C$1"]],
+    [["a & B<c></row>"], ["7"], ["=SUM(B3,C:C,3:3)*2+$C$1+'A1'!A2"]],
   );
 });
 
@@ -118,7 +128,7 @@ test("pptx: tables capped, SmartArt read, pictures as Blobs", () => {
       `<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${REL}" xmlns:dgm="${DGM}"><p:cSld><p:spTree>` +
         `<p:graphicFrame><a:graphic><a:graphicData><a:tbl>${`<a:tr>${tc.repeat(10)}</a:tr>`.repeat(1000)}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>` +
         `<p:graphicFrame><a:graphic><a:graphicData><dgm:relIds r:dm="rId2"/></a:graphicData></a:graphic></p:graphicFrame>` +
-        `<p:pic><p:blipFill><a:blip r:embed="rId3"/></p:blipFill></p:pic>` +
+        `<p:pic><p:blipFill><a:blip r:embed="rId3"/><a:srcRect l="25000" b="-10000"/></p:blipFill></p:pic>` +
         `</p:spTree></p:cSld></p:sld>`,
     ),
     "ppt/slides/_rels/slide1.xml.rels": rels(
@@ -131,9 +141,70 @@ test("pptx: tables capped, SmartArt read, pictures as Blobs", () => {
     "ppt/media/clip.mp4": new Uint8Array(8),
   });
   // Video is never inflated.
-  const [image, table, diagram] = readPptx(declareHuge(zip, "ppt/media/clip.mp4")).slides[0]!.boxes;
+  const [table, diagram, image] = readPptx(declareHuge(zip, "ppt/media/clip.mp4")).slides[0]!.boxes;
   assert.equal(image?.image?.type, "image/png");
+  assert.deepEqual(image?.crop, { l: 0.25, t: 0, r: 0, b: -0.1 });
   assert.equal(table?.table?.length, 501);
   assert.deepEqual(table?.table?.at(-1), ["…"]);
   assert.deepEqual(diagram?.paragraphs?.map((p) => p.text), ["Plan"]);
+});
+
+for (const cache of ["<v></v>", "<v/>", "<s:v xmlns:s=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" />"]) {
+  test(`xlsx: preserves a cached empty string formula result (${cache})`, () => {
+    const [sheet] = readXlsx(workbook(
+      `<worksheet xmlns="${MAIN}"><sheetData><row r="1">
+        <c r="A1" t="str"><f>IF(1=1,&quot;&quot;,42)</f>${cache}</c>
+        <c r="B1" t="str"><f>IF(1=1,&quot;ready&quot;,42)</f><v>ready</v></c>
+        <c r="C1"><f>1-1</f><v>0</v></c>
+      </row></sheetData></worksheet>`,
+    ));
+    assert.equal(sheet?.rows[0]?.[0]?.text ?? "", "");
+    assert.equal(sheet?.rows[0]?.[1]?.text, "ready");
+    assert.equal(sheet?.rows[0]?.[2]?.text, "0");
+  });
+}
+
+test("xlsx: preserves formula fallback for uncalculated cells and shared followers", () => {
+  const [sheet] = readXlsx(workbook(
+    `<worksheet xmlns="${MAIN}"><sheetData><row r="1">
+      <c r="A1"><f>SUM(1,2)</f><v></v></c>
+      <c r="B1" t="n"><f>SUM(1,2)</f><v/></c>
+      <c r="C1"><f>SUM(1,2)</f></c>
+      <c r="D1" t="str"><f>IF(1=1,&quot;&quot;,42)</f></c>
+      <c r="E1" t="str"><f t="shared" si="0" ref="E1:G1">IF(A1=0,&quot;&quot;,A1)</f><v/></c>
+      <c r="F1" t="str"><f t="shared" si="0"/><v/></c>
+      <c r="G1"><f t="shared" si="0"/><v/></c>
+    </row></sheetData></worksheet>`,
+  ));
+  const row = sheet?.rows[0];
+  for (const col of [0, 1, 2]) assert.equal(row?.[col]?.text, "=SUM(1,2)");
+  assert.equal(row?.[3]?.text, '=IF(1=1,"",42)');
+  assert.equal(row?.[4]?.text ?? "", "");
+  assert.equal(row?.[5]?.text ?? "", "");
+  assert.equal(row?.[6]?.text, '=IF(C1=0,"",C1)');
+});
+
+
+test("xlsx: out-of-range date values do not prevent reading the workbook", () => {
+  for (const date1904 of [false, true]) {
+    for (const value of [1700000000, -1700000000]) {
+      assert.equal(formatNumber(value, "mmm-yy", date1904), String(value));
+      assert.equal(formatNumber(value, "mmmmm", date1904), String(value));
+    }
+  }
+  assert.equal(formatNumber(45000, "mmm-yy"), "Mar-23");
+  const [sheet] = readXlsx(workbook(
+    `<worksheet xmlns="${MAIN}"><sheetData><row r="1">
+      <c r="A1" s="1"><v>1700000000</v></c>
+      <c r="B1" s="1"><v>45000</v></c>
+      <c r="C1"><v>42</v></c>
+    </row></sheetData></worksheet>`,
+    {
+      "xl/styles.xml": strToU8(`<styleSheet xmlns="${MAIN}">
+        <numFmts count="1"><numFmt numFmtId="164" formatCode="mmm-yy"/></numFmts>
+        <cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="164"/></cellXfs>
+      </styleSheet>`),
+    },
+  ));
+  assert.deepEqual(sheet?.rows[0]?.map((cell) => cell?.text), ["1700000000", "Mar-23", "42"]);
 });

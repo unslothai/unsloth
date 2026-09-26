@@ -347,6 +347,7 @@ def test_an_original_sent_many_times_counts_once_toward_disk_usage(client, monke
             "contentType": "application/pdf",
             "sizeBytes": 1000,
             "originalSha256": sha256,
+            "textBytes": 50,
             "hasOriginal": has_original,
         }
 
@@ -359,12 +360,14 @@ def test_an_original_sent_many_times_counts_once_toward_disk_usage(client, monke
             sent("b", "1" * 64),
             sent("c", "2" * 64),
             sent("d", "1" * 64),
+            sent("e", "3" * 64, has_original = False),
         ],
     )
     items = _items(client)[0]
-    usage = [items[f"attachment:m:{name}"].get("storageBytes", 1000) for name in "abcd"]
-    assert usage == [1000, 0, 1000, 0]
-    assert all(items[f"attachment:m:{name}"]["sizeBytes"] == 1000 for name in "abcd")
+    # Each message's extracted text counts; the original only once, and only while on disk.
+    usage = [items[f"attachment:m:{name}"]["storageBytes"] for name in "abcde"]
+    assert usage == [1050, 50, 1050, 50, 50]
+    assert all(items[f"attachment:m:{name}"]["sizeBytes"] == 1000 for name in "abcde")
 
 
 def test_a_chat_audio_part_is_typed_by_its_format_or_its_bytes():
@@ -457,6 +460,54 @@ def test_a_clip_counts_its_recipe_toward_what_it_takes_on_disk(client, monkeypat
     assert item["sizeBytes"] == wav.stat().st_size
     assert item["storageBytes"] == wav.stat().st_size + wav.with_suffix(".json").stat().st_size
     assert "storageBytes" not in items[f"image:{image}"]
+
+
+def test_listed_images_are_sized_without_resolving_each_but_links_are_still_checked(
+    client, monkeypatch, tmp_path
+):
+    from core.inference import image_gallery
+
+    monkeypatch.setattr(library, "_SOURCES", (library._image_items,))
+    plain, inside, outside = (_gallery_image(p) for p in ("Plain", "Inside", "Outside"))
+    folder = image_gallery.gallery_dir()
+    elsewhere = tmp_path / "elsewhere.png"
+    os.replace(folder / f"{outside}.png", elsewhere)
+    kept = folder / f"{inside}.png"
+    os.replace(kept, folder / "kept.bin")
+    try:
+        os.symlink(folder / "kept.bin", kept)
+        os.symlink(elsewhere, folder / f"{outside}.png")
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    resolved = []
+    real = image_gallery.image_path
+    monkeypatch.setattr(image_gallery, "image_path", lambda i: resolved.append(i) or real(i))
+    items = _items(client)[0]
+    assert items[f"image:{plain}"]["sizeBytes"] == (folder / f"{plain}.png").stat().st_size
+    assert items[f"image:{inside}"]["sizeBytes"] == kept.stat().st_size
+    assert items[f"image:{outside}"]["sizeBytes"] is None
+    assert sorted(resolved) == sorted([inside, outside])
+
+
+def test_listed_images_are_sized_in_the_folder_in_use_after_listing(client, monkeypatch, tmp_path):
+    from core.inference import image_gallery
+
+    monkeypatch.setattr(library, "_SOURCES", (library._image_items,))
+    image = _gallery_image("Moved")
+    before, after = image_gallery.gallery_dir(), tmp_path / "moved"
+    after.mkdir()
+    (after / f"{image}.png").write_bytes(b"x" * 3)
+    moved = []
+    real = image_gallery.list_images
+
+    def list_then_move(**kwargs):
+        records = real(**kwargs)
+        moved.append(True)
+        return records
+
+    monkeypatch.setattr(image_gallery, "list_images", list_then_move)
+    monkeypatch.setattr(image_gallery, "gallery_dir", lambda: after if moved else before)
+    assert _items(client)[0][f"image:{image}"]["sizeBytes"] == 3
 
 
 def test_generated_audio_and_video_are_listed_and_deleted(client, monkeypatch):
@@ -591,7 +642,8 @@ def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
 
 
 def test_training_runs_map_only_folders_directly_under_outputs(monkeypatch):
-    """A newer run in an external folder of the same name must not claim the managed model."""
+    """A newer run in an external folder of the same name, or a newer failed one in the same
+    folder, must not claim the managed model."""
     import sqlite3
 
     from storage import studio_db
@@ -599,17 +651,45 @@ def test_training_runs_map_only_folders_directly_under_outputs(monkeypatch):
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE training_runs (id TEXT, output_dir TEXT, started_at TEXT)")
+    conn.execute(
+        "CREATE TABLE training_runs (id TEXT, output_dir TEXT, started_at TEXT, status TEXT)"
+    )
     conn.executemany(
-        "INSERT INTO training_runs VALUES (?, ?, ?)",
+        "INSERT INTO training_runs VALUES (?, ?, ?, ?)",
         [
-            ("managed", str(outputs_root() / "my-run"), "2026-01-01"),
-            ("external", "/tmp/elsewhere/my-run", "2026-02-01"),
-            ("nested", str(outputs_root() / "group" / "other"), "2026-03-01"),
+            ("managed", str(outputs_root() / "my-run"), "2026-01-01", "completed"),
+            ("external", "/tmp/elsewhere/my-run", "2026-02-01", "completed"),
+            ("nested", str(outputs_root() / "group" / "other"), "2026-03-01", "completed"),
+            ("failed", str(outputs_root() / "my-run"), "2026-04-01", "error"),
         ],
     )
     monkeypatch.setattr(studio_db, "get_connection", lambda: conn)
     assert library._training_runs_by_dir() == {"my-run": "managed"}
+
+
+def test_an_export_links_to_its_run_only_through_studio_metadata(tmp_path, monkeypatch):
+    from utils.paths import storage_roots
+
+    outputs, exports = tmp_path / "outputs", tmp_path / "exports"
+    monkeypatch.setattr(storage_roots, "outputs_root", lambda: outputs)
+    monkeypatch.setattr(storage_roots, "exports_root", lambda: exports)
+    runs = {"foo": "run-foo", "bar": "run-bar"}
+    for name, meta in [
+        ("foo-GGUF", None),
+        ("foo-merged", '{"base_model": null}'),
+        ("renamed", f'{{"source_checkpoint": "{outputs}/bar/checkpoint-10"}}'),
+    ]:
+        (exports / name).mkdir(parents = True)
+        (exports / name / "model.gguf").write_bytes(b"x")
+        if meta:
+            (exports / name / "export_metadata.json").write_text(meta)
+    run_id = lambda name: library._model_run_id(
+        str(exports / name / "model.gguf"), "exported", runs
+    )
+    # No metadata: a copied-in folder claims nothing, whatever its name.
+    assert run_id("foo-GGUF") is None
+    # An older Studio export falls back to its name; a newer one names its checkpoint.
+    assert (run_id("foo-merged"), run_id("renamed")) == ("run-foo", "run-bar")
 
 
 def test_an_api_key_lists_fine_tunes_by_reference_and_can_still_act_on_them(client, monkeypatch):

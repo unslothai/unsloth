@@ -100,6 +100,9 @@ def _run_install(
 
     with (
         patch.object(stack_mod, "IS_WINDOWS", False),
+        # Pin Linux x86_64: on macOS or aarch64 the repair is a no-op.
+        patch.object(stack_mod, "IS_MACOS", False),
+        patch("platform.machine", return_value = "x86_64"),
         patch.object(stack_mod, "pip_install_try", return_value = True) as pip_try,
         patch.object(stack_mod, "pip_install") as pip,
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False),
@@ -353,6 +356,9 @@ def test_a_repeated_arch_on_an_amd_smi_host_does_not_shift_the_mask():
 
     with (
         patch.object(stack_mod, "IS_WINDOWS", False),
+        # Pin Linux x86_64: on macOS or aarch64 the repair is a no-op.
+        patch.object(stack_mod, "IS_MACOS", False),
+        patch("platform.machine", return_value = "x86_64"),
         patch.object(stack_mod, "pip_install_try", return_value = True) as pip_try,
         patch.object(stack_mod, "pip_install") as pip,
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False),

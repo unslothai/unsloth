@@ -174,7 +174,7 @@ test("a reorder in a sorted list switches it to Manual order", () => {
 
 // A folder drop switches a sorted Projects list to Manual.
 test("a folder reorder or unpin switches a sorted Projects list to Manual", () => {
-  // Alt + arrow and Move up/down take the same switch.
+  // Alt + arrow takes the same switch.
   assert.ok(APP_SIDEBAR.includes("sort: { value: projectSort, set: setProjectSort }"));
   const home = folder("home", "projects", PROJECT_ORDER_SCOPE);
   const miscRow = folderRow("projects", PROJECT_ORDER_SCOPE, "misc");
@@ -892,7 +892,7 @@ test("the gesture is pointer events, not the HTML5 drag API", () => {
   assert.match(HOOK, /window\.addEventListener\("pointerup", onUp\);/);
   // A press is only a drag once it travels, or a click on a row would never open the chat.
   assert.match(HOOK, /export const DRAG_THRESHOLD_PX = \d+;/);
-  // Touch scrolls the list; its rows keep Move up and Move down.
+  // Touch scrolls the list rather than lifting a row.
   assert.match(HOOK, /event\.pointerType === "touch"\) return;/);
 });
 
@@ -975,7 +975,7 @@ test("every drop cue is drawn inside its row", () => {
 });
 
 // Alt + arrow is the keyboard's reorder.
-test("alt and an arrow reorder a row without a pointer", async () => {
+test("alt and an arrow reorder a row without a pointer", () => {
   assert.match(
     APP_SIDEBAR,
     /onKeyDown: \(event: React\.KeyboardEvent\) => \{\n\s*if \(\n\s*!event\.altKey \|\|\n\s*\(event\.key !== "ArrowUp" && event\.key !== "ArrowDown"\)\n\s*\)/,
@@ -986,34 +986,18 @@ test("alt and an arrow reorder a row without a pointer", async () => {
   );
   // Same rule as a drop: a sorted list switches to Manual.
   assert.match(APP_SIDEBAR, /if \(resorts\) \{\n\s*sort\.set\("manual"\);/);
-  // A touch browser starts no drag, so its row menus keep Move up and Move down.
-  assert.match(APP_SIDEBAR, /function renderMoveRowItems\(/);
-  // A pinned folder moves under Pinned's sort rule, from the keyboard and the touch menu alike:
+  // No Move up / Move down in row menus: drag and alt + arrow reorder.
+  assert.ok(!APP_SIDEBAR.includes("renderMoveRowItems"));
+  assert.ok(!EN.includes("moveUp:") && !EN.includes("moveDown:"));
+  // A pinned folder moves under Pinned's sort rule from the keyboard:
   // a sorted list switches to Manual, or refuses, exactly as a drop does.
   assert.match(
     APP_SIDEBAR,
     /orderedIds: order\.orderedIds,\n\s*sort: order\.sort,\n\s*\}\)\}/,
   );
-  assert.match(APP_SIDEBAR, /order\.orderedIds,\n\s*order\.sort,\n\s*P,\n\s*\)\}/);
   assert.match(
     APP_SIDEBAR,
     /selectionIds: pinnedProjectRowIds,\n\s*section: "pinned",\n\s*sort: \{ value: pinnedSort, set: setPinnedSort \},/,
-  );
-  assert.match(APP_SIDEBAR, /if \(!coarsePointer\) return null;/);
-  assert.match(APP_SIDEBAR, /const coarsePointer = useIsCoarsePointer\(\);/);
-  // Any touch pointer counts: a laptop with a touchscreen keeps the items too.
-  const MOBILE = await readSrcAsync("hooks/use-mobile.ts");
-  assert.match(
-    MOBILE,
-    /const COARSE_POINTER_QUERY = "\(any-pointer: coarse\)";/,
-  );
-  for (const key of ["moveUp", "moveDown"]) {
-    assert.ok(EN.includes(`${key}:`), `${key} is missing from the en locale`);
-  }
-  // Both paths share the reorder, so both honour the sort rule.
-  assert.equal(
-    (APP_SIDEBAR.match(/reorderRowBy\(item, orderedIds, sort, /g) ?? []).length,
-    3,
   );
 });
 

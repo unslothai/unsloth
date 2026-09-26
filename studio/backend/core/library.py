@@ -29,6 +29,7 @@ import functools
 import hashlib
 import importlib
 import io
+import json
 import mimetypes
 import os
 import platform
@@ -449,10 +450,14 @@ def _attachment_items() -> list[dict]:
                 pair_id = attachment.get("pairId"),
             )
         )
+        # Disk usage: the extracted text in the database, plus the original the first time it appears.
         sha256 = attachment.get("originalSha256")
-        if attachment.get("hasOriginal") and sha256:
-            if sha256 in counted:
-                items[-1]["storageBytes"] = 0
+        if sha256:
+            text_bytes = attachment.get("textBytes") or 0
+            first = attachment.get("hasOriginal") and sha256 not in counted
+            items[-1]["storageBytes"] = text_bytes + (
+                (attachment.get("sizeBytes") or 0) if first else 0
+            )
             counted.add(sha256)
     return items
 
@@ -490,12 +495,31 @@ def _gallery(kind: str) -> _Gallery:
     return _Gallery(module, getattr(module, records), getattr(module, resolve), *rest)
 
 
+def _listed_file(gallery: _Gallery, root: Path, record_id: str) -> Optional[Path]:
+    """``gallery.resolve`` for an id its own listing gave, with one lstat: a plain file in the
+    folder cannot lead out of it, a symlink still takes the full check."""
+    if not gallery.module._ID_RE.match(record_id):
+        return None
+    path = root / f"{record_id}.{gallery.extension}"
+    try:
+        mode = path.lstat().st_mode
+    except OSError:
+        return None
+    if stat.S_ISREG(mode):
+        return path
+    return gallery.resolve(record_id) if stat.S_ISLNK(mode) else None
+
+
 def _gallery_items(kind: str) -> list[dict]:
     gallery = _gallery(kind)
     items = []
     for archived in (False, True):
-        for record in gallery.records(archived = archived):
-            path = gallery.resolve(record["id"])
+        records = gallery.records(archived = archived)
+        # Looked up after the records, as each resolve was, so a folder moved meanwhile is the one
+        # sized; and only when there are some, so an unreadable folder still lists nothing.
+        root = gallery.module.gallery_dir() if records else None
+        for record in records:
+            path = _listed_file(gallery, root, record["id"])
             try:
                 size = path.stat().st_size if path is not None else None
             except OSError:
@@ -563,7 +587,8 @@ _EXPORT_SUFFIX_RE = re.compile(r"[-_](gguf|adapter|merged|finetune)$", re.IGNORE
 
 def _training_runs_by_dir() -> dict[str, str]:
     """Folder name under outputs/ to the id of the newest training run that wrote it. A run that wrote
-    anywhere else is left out, so an external folder of the same name never claims a managed model."""
+    anywhere else is left out, so an external folder of the same name never claims a managed model.
+    A finished run outranks a running or failed one reusing the folder, which may have written nothing."""
     from storage.studio_db import get_connection
     from utils.paths.storage_roots import outputs_root, resolve_output_dir
 
@@ -571,7 +596,7 @@ def _training_runs_by_dir() -> dict[str, str]:
     try:
         rows = conn.execute(
             "SELECT id, output_dir FROM training_runs WHERE output_dir IS NOT NULL"
-            " ORDER BY started_at"
+            " ORDER BY status IN ('completed', 'stopped'), started_at"
         ).fetchall()
     except Exception:
         logger.debug("library.training_runs_unavailable", exc_info = True)
@@ -590,14 +615,43 @@ def _training_runs_by_dir() -> dict[str, str]:
     return runs
 
 
+def _export_metadata(path: str, root: Path) -> Optional[dict]:
+    """The export_metadata.json Studio writes beside an export, from the model up to its top folder."""
+    here = Path(path)
+    if not here.is_dir():
+        here = here.parent
+    while True:
+        meta = here / "export_metadata.json"
+        if meta.is_file():
+            try:
+                data = json.loads(meta.read_text(encoding = "utf-8-sig"))
+            except (OSError, ValueError):
+                return None
+            return data if isinstance(data, dict) else None
+        if here.parent == root or here == root or here.parent == here:
+            return None
+        here = here.parent
+
+
 def _model_run_id(path: str, origin: str, runs: dict[str, str]) -> Optional[str]:
     """The training run a model came out of: its own folder under outputs/, or for an export the
-    run folder it was saved under (``{run}/{checkpoint}``, or ``{run}-GGUF`` and the like)."""
+    checkpoint its metadata records. An older Studio export, with metadata but no checkpoint, falls
+    back to its folder name (``{run}/{checkpoint}``, ``{run}-GGUF``); a folder with no metadata
+    has no known origin."""
     from utils.paths.storage_roots import exports_root, outputs_root
 
-    root = outputs_root() if origin == "training" else exports_root()
     try:
-        top = Path(path).resolve().relative_to(Path(root).resolve()).parts[0]
+        outputs = Path(outputs_root()).resolve()
+        if origin == "training":
+            return runs.get(Path(path).resolve().relative_to(outputs).parts[0])
+        root = Path(exports_root()).resolve()
+        top = Path(path).resolve().relative_to(root).parts[0]
+        meta = _export_metadata(path, root)
+        if meta is None:
+            return None
+        source = meta.get("source_checkpoint")
+        if isinstance(source, str) and source:
+            return runs.get(Path(source).resolve().relative_to(outputs).parts[0])
     except (ValueError, IndexError, OSError):
         return None
     while top and top not in runs:

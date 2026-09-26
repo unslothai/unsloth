@@ -13,6 +13,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
+import { documentKind } from "@/components/file-viewer/kind";
 import type { LibraryItem } from "./api";
 import { fileExtension } from "./file-name";
 
@@ -133,6 +134,10 @@ export function fileKind(
   if (type.startsWith("video/")) return "video";
   if (type === "application/pdf") return "pdf";
   if (type === "text/html") return "web";
+  // By MIME type, as the viewer opens it: text/csv is a spreadsheet.
+  const viewed = documentKind("", type);
+  if (viewed === "sheet") return "spreadsheet";
+  if (viewed === "slides") return "presentation";
   return "document";
 }
 
