@@ -85,6 +85,7 @@ def sizes(monkeypatch):
         "extra": [],
         "snapshot": None,
         "snapshot_calls": [],
+        "tokens": [],
     }
     GiB = 2**30
 
@@ -98,8 +99,10 @@ def sizes(monkeypatch):
             repo_id,
             revision = None,
             files_metadata = False,
+            token = None,
         ):
             state["calls"].append((repo_id, revision))
+            state["tokens"].append(token)
             if state["hub_raises"]:
                 raise OSError("offline")
             half = int(state["checkpoint"] * GiB / 2)
@@ -166,6 +169,7 @@ def _run_branch(
         "model_name": "openai/gpt-oss-20b",
         "kwargs": {},
         "_revision": None,
+        "token": None,
     }
     node = _dequantize_branch()
     code = ast.Module(body = [node], type_ignores = [])
@@ -444,3 +448,20 @@ def test_local_files_only_skips_the_hub_lookup(zoo, sizes, tmp_path):
     assert helper("mxfp4", False, "auto", "openai/gpt-oss-20b", None, None, None, None, None, True) is False
     assert sizes["calls"] == []
     assert sizes["snapshot_calls"][-1][1]["local_files_only"] is True
+
+
+def test_the_caller_token_reaches_the_size_lookup(zoo, sizes):
+    helper = _helper()
+    assert helper("mxfp4", False, "auto", "org/gated", None, None, None, None, None, False, "hf_x") is True
+    assert sizes["tokens"][-1] == "hf_x"
+    sizes["hub_raises"] = True
+    helper("mxfp4", False, "auto", "org/gated", None, None, None, None, None, False, "hf_x")
+    assert sizes["snapshot_calls"][-1][1]["token"] == "hf_x"
+
+
+def test_use_safetensors_false_sizes_the_bin_files(zoo, sizes):
+    sizes["checkpoint"], sizes["free"] = 40, [80]
+    sizes["extra"] = [("pytorch_model-00001-of-00002.bin", 45), ("pytorch_model-00002-of-00002.bin", 45)]
+    helper = _helper()
+    assert helper("mxfp4", False, "auto", "org/repo") is True
+    assert helper("mxfp4", False, "auto", "org/repo", None, None, None, None, None, False, None, False) is False

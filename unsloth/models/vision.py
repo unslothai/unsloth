@@ -1190,6 +1190,8 @@ def _mxfp4_lora_keeps_experts_packed(
     cache_dir = None,
     subfolder = None,
     local_files_only = False,
+    token = None,
+    use_safetensors = None,
 ):
     """Whether a LoRA load of an MXFP4 checkpoint should take unsloth_zoo's packed-experts path.
 
@@ -1272,7 +1274,8 @@ def _mxfp4_lora_keeps_experts_packed(
                     for i, pattern in enumerate(formats):
                         if pattern.fullmatch(name[len(prefix) :]):
                             totals[i] += size or 0
-                return totals[0] or totals[1]
+                # use_safetensors = False loads the .bin files even when both formats exist.
+                return totals[1] if use_safetensors is False else totals[0] or totals[1]
 
             def folder_files(folder):
                 folder = os.path.join(folder, prefix) if prefix else folder
@@ -1294,7 +1297,7 @@ def _mxfp4_lora_keeps_experts_packed(
                         raise OSError("local_files_only: no Hub lookup")
                     # The revision the config and weights are loaded from, not the default branch.
                     info = HfApi().model_info(
-                        str(model_name), revision = revision, files_metadata = True
+                        str(model_name), revision = revision, files_metadata = True, token = token
                     )
                     checkpoint_bytes = weight_bytes(
                         (sibling.rfilename, sibling.size) for sibling in (info.siblings or ())
@@ -1309,6 +1312,7 @@ def _mxfp4_lora_keeps_experts_packed(
                         revision = revision,
                         cache_dir = cache_dir,
                         local_files_only = True,
+                        token = token,
                         allow_patterns = ["*.safetensors", "*.bin"],
                     )
                     checkpoint_bytes = weight_bytes(folder_files(folder))
@@ -1883,6 +1887,8 @@ class FastBaseModel:
                             kwargs.get("cache_dir", None),
                             kwargs.get("subfolder", None),
                             kwargs.get("local_files_only", False),
+                            token,
+                            kwargs.get("use_safetensors", None),
                         )
                     ) and "dequantize" in inspect.signature(quantizer).parameters:
                         quantizer_kwargs["dequantize"] = True
