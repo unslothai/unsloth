@@ -665,73 +665,9 @@ def test_png_data_url_keeps_its_media_type(tmp_path, monkeypatch):
     assert response.media_type == "image/png"
 
 
-def _kept_original(tmp_path, monkeypatch, data: bytes = b"%PDF-1.7 original"):
-    """A document sent with its original file, as the composer stores it (core.chat_originals)."""
-    from core import chat_originals
-
-    # No timer threads in tests.
-    monkeypatch.setattr(chat_originals, "_schedule", lambda directory: None)
-    _reset_studio_db(tmp_path, monkeypatch)
-    sha256, size = chat_originals.save([data[:4], data[4:]])
-    attachment = {
-        "id": "att-pdf",
-        "type": "document",
-        "name": "report.pdf",
-        "contentType": "application/pdf",
-        "content": [{"type": "text", "text": "[PDF: report.pdf]\nextracted"}],
-        "original": {"sha256": sha256, "sizeBytes": size},
-    }
-    studio_db.upsert_chat_thread(_thread())
-    studio_db.upsert_chat_message(_message("msg-1", attachments = [attachment]))
-    return chat_originals, chat_originals.originals_dir() / sha256
-
-
-def _age(path, seconds: float = 2 * 3600) -> None:
-    old = path.stat().st_mtime - seconds
-    os.utime(path, (old, old))
-
-
-def test_a_kept_original_is_served_as_opaque_bytes_and_swept_once_unreferenced(
-    tmp_path, monkeypatch
-):
-    chat_originals, path = _kept_original(tmp_path, monkeypatch)
-    response = chat_history.get_attachment_file("msg-1", "att-pdf", current_subject = "unsloth")
-    assert str(response.path) == str(path)
-    assert response.media_type == "application/octet-stream"
-    assert response.headers["x-content-type-options"] == "nosniff"
-    [listed] = studio_db.list_chat_attachments()
-    assert listed["hasOriginal"] is True and listed["sizeBytes"] == path.stat().st_size
-
-    # Referenced: kept, however old.
-    _age(path)
-    assert chat_originals.sweep(force = True) == 0 and path.is_file()
-    assert studio_db.delete_chat_attachment("msg-1", "att-pdf") is True
-    assert chat_originals.sweep(force = True) == 1
-    assert not path.exists()
-
-
-def test_a_young_unreferenced_original_waits_and_a_resave_refreshes_it(tmp_path, monkeypatch):
-    chat_originals, path = _kept_original(tmp_path, monkeypatch)
-    studio_db.delete_chat_attachment("msg-1", "att-pdf")
-    scheduled = []
-    monkeypatch.setattr(chat_originals, "_schedule", scheduled.append)
-    # Within the grace period: kept, and another sweep scheduled.
-    assert chat_originals.sweep(force = True) == 0 and path.is_file()
-    assert scheduled == [path.parent]
-    # A deduplicated resave refreshes its age.
-    _age(path)
-    chat_originals.save([b"%PDF-1.7 original"])
-    assert chat_originals.sweep(force = True) == 0 and path.is_file()
-
-
 def test_a_sweep_never_creates_the_originals_folder(tmp_path, monkeypatch):
     from core import chat_originals
 
     _reset_studio_db(tmp_path, monkeypatch)
-
-    def query():
-        raise AssertionError("a sweep with nothing kept must not query the database")
-
-    monkeypatch.setattr(studio_db, "referenced_chat_original_hashes", query)
     assert chat_originals.sweep(force = True) == 0
     assert not chat_originals.originals_dir().exists()

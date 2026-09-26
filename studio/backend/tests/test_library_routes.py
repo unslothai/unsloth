@@ -329,7 +329,6 @@ def test_deleting_a_chat_attachment_from_the_library_sweeps_its_original(client,
     monkeypatch.setattr(chat_originals, "sweep", lambda force = False: sweeps.append(force))
     monkeypatch.setattr(studio_db, "delete_chat_attachment", lambda *ids: True)
     assert _delete(client, "attachment:m:doc") == 200
-    # It may have held the last reference to a kept original.
     assert sweeps == [False]
 
 
