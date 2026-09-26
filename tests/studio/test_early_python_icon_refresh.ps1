@@ -36,6 +36,8 @@ foreach ($name in @(
 
 if ($env:OS -eq "Windows_NT") { function Test-StudioChildScriptDirectoryElevated { return $false } }
 
+# The kill switch would make discovery decline; its own cases below set it explicitly.
+Remove-Item Env:UNSLOTH_EARLY_PYTHON_PROBE -ErrorAction SilentlyContinue
 $script:StudioEarlyPythonProbed = $false
 $script:StudioEarlyPython = $null
 if (-not (Get-StudioEarlyPython)) {

@@ -56,6 +56,8 @@ function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("earlypy-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 try {
+    # The kill switch would make discovery decline; its own cases below set it explicitly.
+    Remove-Item Env:UNSLOTH_EARLY_PYTHON_PROBE -ErrorAction SilentlyContinue
     $script:StudioEarlyPythonProbed = $false
     $script:StudioEarlyPython = $null
     $exe = Get-StudioEarlyPython

@@ -51,6 +51,8 @@ function Reset-RungState {
 
 # ---------------------------------------------------------------- the generic runner, for real
 
+# The kill switch would make discovery decline; its own cases below set it explicitly.
+Remove-Item Env:UNSLOTH_EARLY_PYTHON_PROBE -ErrorAction SilentlyContinue
 $script:StudioEarlyPythonProbed = $false
 $script:StudioEarlyPython = $null
 $exe = Get-StudioEarlyPython
