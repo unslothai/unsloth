@@ -87,6 +87,11 @@ for SH in dash bash; do
     assert_eq "[$SH] outside China: a retry state inherited from a parent is dropped" "SPARE=unset" "$(_run "$SH" MOCK_CN=0 _MF_ARGS=spare _UNSLOTH_MIRROR_SPARE='pypi|UV_DEFAULT_INDEX=https://x' _AFTER='echo "SPARE=${_UNSLOTH_MIRROR_SPARE-unset}"')"
     assert_eq "[$SH] UNSLOTH_MIRROR_FALLBACK=0: a retry state inherited from a parent is dropped" "SPARE=unset" "$(_run "$SH" UNSLOTH_MIRROR_FALLBACK=0 _UNSLOTH_MIRROR_SPARE='pypi|UV_DEFAULT_INDEX=https://x' _AFTER='echo "SPARE=${_UNSLOTH_MIRROR_SPARE-unset}"')"
     assert_eq "[$SH] the location is read once per process" "1" "$(env -i PATH=/usr/bin:/bin TZ=UTC "$SH" -c ". '$_WORK/block.sh'; n=0; _mirror_in_china() { n=\$((n+1)); false; }; _mirror_fallback spare; _mirror_fallback; _mirror_fallback; echo \$n")"
+    for _off in 1 true " Yes " on T; do
+        out=$(_run "$SH" MOCK_PYPI=blocked UV_OFFLINE="$_off" _AFTER='echo "SPARE=${_UNSLOTH_MIRROR_SPARE%%|*}"')
+        assert_eq "[$SH] UV_OFFLINE='$_off': nothing probed, retries still armed" "SPARE=pypi" "$out$(cat "$_WORK/curl.log")"
+    done
+    assert_contains "[$SH] UV_OFFLINE=0 still probes" "$(_run "$SH" MOCK_PYPI=blocked UV_OFFLINE=0)" "UV_DEFAULT_INDEX=$M/pypi/web/simple"
     for _on in 1 true yes on; do
         assert_contains "[$SH] outside China, UNSLOTH_MIRROR_FALLBACK=$_on opts in" "$(_run "$SH" MOCK_CN=0 UNSLOTH_MIRROR_FALLBACK=$_on MOCK_PYPI=blocked)" "UV_DEFAULT_INDEX=$M/pypi/web/simple"
     done

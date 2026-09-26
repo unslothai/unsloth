@@ -3454,7 +3454,13 @@ _mirror_fallback() {
     _mirror_configured python || _mf_hosts="$_mf_hosts python"
     [ -n "${UNSLOTH_UV_WHEEL_MIRROR:-}${UV_DOWNLOAD_URL:-}${INSTALLER_DOWNLOAD_URL:-}${UV_INSTALLER_GHE_BASE_URL:-}${UV_INSTALLER_GITHUB_BASE_URL:-}" ] || _mf_hosts="$_mf_hosts uvbin"
     [ -n "$_mf_hosts" ] || return 0
-    if [ "${1:-}" = spare ]; then _mirror_spare_export; return 0; fi
+    # UV_OFFLINE (uv's spellings) asked for no network: arm the retries, probe nothing.
+    _mf_uvo=${UV_OFFLINE:-}
+    _mf_uvo=${_mf_uvo#"${_mf_uvo%%[![:space:]]*}"}
+    _mf_uvo=${_mf_uvo%"${_mf_uvo##*[![:space:]]}"}
+    case "${1:-}/$_mf_uvo" in
+        spare/* | */1 | */[Tt] | */[Tt][Rr][Uu][Ee] | */[Yy] | */[Yy][Ee][Ss] | */[Oo][Nn]) _mirror_spare_export; return 0 ;;
+    esac
     _mf_dir=$(mktemp -d 2>/dev/null) || return 0
     _mf_pids=""
     _mirror_index_probe $_mf_hosts

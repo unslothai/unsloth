@@ -4437,7 +4437,7 @@ exit 1
             }
         }
         $env:_UNSLOTH_MIRROR_SPARE = @($hosts.Keys | ForEach-Object { (@($_) + @(& $varsOf $_)) -join '|' }) -join ' '
-        if ($SpareOnly) { return }
+        if ($SpareOnly -or (Test-UvEnvFlag 'UV_OFFLINE')) { return }
         $answered = @{}
         $codeOf = { param($index, $result) if ($index -and "$($answered[$index][0])" -notmatch '^2\d\d$') { 0 } else { $result[0] } }
         # PS 5.1 may pin TLS 1.0/1.1 (every probed host refuses it; Tls|Tls12 still fails) and queues past 2 connections per host.

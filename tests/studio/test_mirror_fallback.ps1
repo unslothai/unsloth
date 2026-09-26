@@ -7,7 +7,7 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$errors)
 if ($errors) { throw "install.ps1 has parse errors" }
 $setupAst = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ([System.IO.Path]::Combine($PSScriptRoot, "..", "..", "studio", "setup.ps1"))).Path, [ref]$tokens, [ref]$errors)
-$load = 'Test-MirrorConfigured', 'Start-MirrorProbe', 'Wait-MirrorProbe', 'Invoke-MirrorFallback', 'Get-MirrorName', 'Set-MirrorEnv', 'Pop-MirrorSpare', 'Use-MirrorSpare', 'Get-MirrorFailedHost',
+$load = 'Test-UvEnvFlag', 'Test-MirrorConfigured', 'Start-MirrorProbe', 'Wait-MirrorProbe', 'Invoke-MirrorFallback', 'Get-MirrorName', 'Set-MirrorEnv', 'Pop-MirrorSpare', 'Use-MirrorSpare', 'Get-MirrorFailedHost',
     'Install-UvFromRelease', 'Redact-InstallOutput', 'Invoke-InstallCommand', 'Invoke-InstallMirrorRetry', 'Invoke-InstallCommandRetry'
 foreach ($pair in @($load | ForEach-Object { , @($ast, $_) }) + (@('Install-UvFromPinnedRelease', 'Get-UvInstallDir', 'Invoke-SetupCommand', 'Invoke-NpmMirrorRetry') | ForEach-Object { , @($setupAst, $_) })) {
     $fn = $pair[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $pair[1] }, $true)
@@ -57,7 +57,7 @@ try {
 } finally { $proc.Kill() }
 
 $names = '_UNSLOTH_MIRROR_PROBED', 'UNSLOTH_MIRROR_FALLBACK', 'UV_INDEX', 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX_STRATEGY', 'PIP_INDEX_URL',
-    'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY', 'NPM_CONFIG_REGISTRY', 'UV_CONFIG_FILE', 'PIP_CONFIG_FILE',
+    'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY', 'NPM_CONFIG_REGISTRY', 'UV_OFFLINE', 'UV_CONFIG_FILE', 'PIP_CONFIG_FILE',
     'UNSLOTH_UV_WHEEL_MIRROR', 'UV_INSTALLER_GITHUB_BASE_URL', 'UV_INSTALL_DIR', 'UV_NO_MODIFY_PATH', '_UNSLOTH_MIRROR_SPARE', 'UNSLOTH_INSTALL_RETRIES', 'UNSLOTH_INSTALL_RETRY_DELAY'
 $saved = @{}; foreach ($n in $names + 'APPDATA', 'USERPROFILE', 'ProgramData', 'PATH') { $saved[$n] = [Environment]::GetEnvironmentVariable($n) }
 $home_ = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-mirror-" + [guid]::NewGuid())
@@ -118,6 +118,8 @@ try {
     Run @{ pypi = 'blocked'; torch = 'blocked'; npm = 'blocked' } -Abroad
     Check "outside China: nothing probed, switched, armed or exported" ($script:probed.Count -eq 0 -and $script:lines.Count -eq 0 -and -not $env:UV_DEFAULT_INDEX -and -not $env:_UNSLOTH_MIRROR_SPARE -and -not $env:_UNSLOTH_MIRROR_PROBED)
     Run @{} -Abroad -SpareOnly; Check "outside China: no retry is armed either" (-not $env:_UNSLOTH_MIRROR_SPARE)
+    foreach ($on in '1', 'true', ' Yes ', 'on') { Run @{ pypi = 'blocked' } @{ UV_OFFLINE = $on }; Check "UV_OFFLINE=$($on): nothing probed, retries still armed" ($script:probed.Count -eq 0 -and -not $env:UV_DEFAULT_INDEX -and $env:_UNSLOTH_MIRROR_SPARE -like 'pypi|*') }
+    Run @{ pypi = 'blocked' } @{ UV_OFFLINE = '0' }; Check "UV_OFFLINE=0 still probes" ($env:UV_DEFAULT_INDEX -eq "$M/pypi/web/simple")
     Run @{} @{ _UNSLOTH_MIRROR_SPARE = 'pypi|UV_DEFAULT_INDEX=https://x' } -Abroad -SpareOnly; Check "outside China: a retry state inherited from a parent is dropped" (-not $env:_UNSLOTH_MIRROR_SPARE)
     Run @{} @{ _UNSLOTH_MIRROR_SPARE = 'pypi|UV_DEFAULT_INDEX=https://x'; UNSLOTH_MIRROR_FALLBACK = '0' } -SpareOnly; Check "UNSLOTH_MIRROR_FALLBACK=0: a retry state inherited from a parent is dropped" (-not $env:_UNSLOTH_MIRROR_SPARE)
     Run @{ pypi = 'blocked' } @{ UNSLOTH_MIRROR_FALLBACK = '1' } -Abroad; Check "outside China, UNSLOTH_MIRROR_FALLBACK=1 opts in" ($env:UV_DEFAULT_INDEX -eq "$M/pypi/web/simple")
