@@ -255,6 +255,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     value: gridSortValue,
     activity: tab === "suggested" && !folderId,
     showSize: Boolean(folderId) || tab !== "folders",
+    desc: sort.desc,
+    onDirectionChange: (desc: boolean) =>
+      desc !== sort.desc && go({ ...search, sort: sortParam({ key: sort.key, desc }) }, true),
     // Reselecting the checked key keeps its direction, which list view may have flipped.
     onChange: (choice: LibrarySortChoice) =>
       choice !== gridSortValue &&

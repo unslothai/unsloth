@@ -76,6 +76,9 @@ export interface LibrarySortMenuProps {
   activity?: boolean;
   /** False where only folders show, which have no size. */
   showSize?: boolean;
+  /** Newest first, for the Last activity order. */
+  desc?: boolean;
+  onDirectionChange?: (desc: boolean) => void;
 }
 
 const SORT_OPTIONS: { value: LibrarySortChoice; label: TranslationKey }[] = [
@@ -174,11 +177,38 @@ function FilterMenu({
   );
 }
 
+function SortRadio({
+  label,
+  checked,
+  onSelect,
+}: {
+  label: string;
+  checked: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <DropdownMenuItem role="menuitemradio" aria-checked={checked} onSelect={onSelect}>
+      <span className="flex-1">{label}</span>
+      <span
+        aria-hidden="true"
+        className={cn(
+          "ml-2 flex size-3.5 shrink-0 items-center justify-center rounded-full border-[1.5px]",
+          checked ? "border-foreground bg-foreground" : "border-muted-foreground/60",
+        )}
+      >
+        {checked && <span className="size-1.25 rounded-full bg-background" />}
+      </span>
+    </DropdownMenuItem>
+  );
+}
+
 function SortMenu({
   value,
   onChange,
   activity = false,
   showSize = true,
+  desc = true,
+  onDirectionChange,
 }: LibrarySortMenuProps) {
   const t = useT();
   // Suggested orders "Modified" by last activity, as its list view header says.
@@ -201,28 +231,29 @@ function SortMenu({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" sideOffset={4} className="w-max min-w-36">
-        {options.map(({ value: option, label }) => {
-          const checked = option === value;
-          return (
-            <DropdownMenuItem
-              key={option}
-              role="menuitemradio"
-              aria-checked={checked}
-              onSelect={() => onChange(option)}
-            >
-              <span className="flex-1">{t(label)}</span>
-              <span
-                aria-hidden="true"
-                className={cn(
-                  "ml-2 flex size-4 shrink-0 items-center justify-center rounded-full border-[1.5px]",
-                  checked ? "border-foreground bg-foreground" : "border-muted-foreground/60",
-                )}
-              >
-                {checked && <span className="size-1.5 rounded-full bg-background" />}
-              </span>
-            </DropdownMenuItem>
-          );
-        })}
+        {options.map(({ value: option, label }) => (
+          <SortRadio
+            key={option}
+            label={t(label)}
+            checked={option === value}
+            onSelect={() => onChange(option)}
+          />
+        ))}
+        {value === "modified" && onDirectionChange && (
+          <>
+            <DropdownMenuSeparator className="mx-3" />
+            <SortRadio
+              label={t("library.toolbar.sortAscending")}
+              checked={!desc}
+              onSelect={() => onDirectionChange(false)}
+            />
+            <SortRadio
+              label={t("library.toolbar.sortDescending")}
+              checked={desc}
+              onSelect={() => onDirectionChange(true)}
+            />
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

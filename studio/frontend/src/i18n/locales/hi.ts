@@ -3024,6 +3024,8 @@ export const hi = {
       fileType: "फ़ाइल का प्रकार",
       clearFilters: "फ़िल्टर हटाएँ",
       uploaded: "अपलोड की गई",
+      sortAscending: "आरोही",
+      sortDescending: "अवरोही",
       generated: "जनरेट की गई",
       documents: "दस्तावेज़",
       spreadsheets: "स्प्रेडशीट",

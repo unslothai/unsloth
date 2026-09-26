@@ -142,7 +142,7 @@ function CardFrame({
         onClick={select && selecting ? () => select.toggle(selectKey) : onOpen}
         className={cn(
           "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-          selected && "ring-3 ring-foreground",
+          selected && "ring-2 ring-foreground",
           className,
         )}
       >

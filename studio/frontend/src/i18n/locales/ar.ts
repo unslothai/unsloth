@@ -3017,6 +3017,8 @@ export const ar = {
       fileType: "نوع الملف",
       clearFilters: "مسح عوامل التصفية",
       uploaded: "مرفوعة",
+      sortAscending: "تصاعدي",
+      sortDescending: "تنازلي",
       generated: "منشأة",
       documents: "المستندات",
       spreadsheets: "جداول البيانات",

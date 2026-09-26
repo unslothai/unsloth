@@ -2924,6 +2924,8 @@ export const zhCN = {
       fileType: "文件类型",
       clearFilters: "清除筛选",
       uploaded: "已上传",
+      sortAscending: "升序",
+      sortDescending: "降序",
       generated: "已生成",
       documents: "文档",
       spreadsheets: "电子表格",

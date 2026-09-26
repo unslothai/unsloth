@@ -3083,6 +3083,8 @@ export const es = {
       fileType: "Tipo de archivo",
       clearFilters: "Borrar filtros",
       uploaded: "Subidos",
+      sortAscending: "Ascendente",
+      sortDescending: "Descendente",
       generated: "Generados",
       documents: "Documentos",
       spreadsheets: "Hojas de cálculo",

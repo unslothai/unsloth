@@ -3045,6 +3045,8 @@ export const ptBR = {
       fileType: "Tipo de arquivo",
       clearFilters: "Limpar filtros",
       uploaded: "Enviados",
+      sortAscending: "Crescente",
+      sortDescending: "Decrescente",
       generated: "Gerados",
       documents: "Documentos",
       spreadsheets: "Planilhas",

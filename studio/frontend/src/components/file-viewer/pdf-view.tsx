@@ -64,7 +64,7 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
   const [pages, setPages] = useState(0);
   const [aspect, setAspect] = useState(1.294);
   const [error, setError] = useState<string | null>(null);
-  const width = Math.max(200, Math.min(available - 48, MAX_PAGE_WIDTH)) * scale;
+  const width = Math.max(200, Math.min(available, MAX_PAGE_WIDTH)) * scale;
 
   if (error) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
@@ -82,7 +82,7 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
         }}
         onLoadError={(err) => setError(err.message)}
         loading={<Spinner className="mx-auto mt-24 size-6" />}
-        className="flex min-w-fit flex-col gap-4 px-6"
+        className="flex min-w-fit flex-col gap-4"
       >
         {available > 0 &&
           Array.from({ length: pages }, (_, index) => (

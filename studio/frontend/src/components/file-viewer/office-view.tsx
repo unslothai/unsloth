@@ -76,9 +76,8 @@ function sanitizeDocxHtml(html: string): string {
   return doc.body.innerHTML;
 }
 
-// A Letter page's width at 96 dpi, and the scroll pane's p-6 on each side.
+// A Letter page's width at 96 dpi.
 const DOCX_PAGE_WIDTH = 816;
-const PANE_GUTTER = 48;
 
 function DocxView({ html, scale }: { html: string; scale: number }) {
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
@@ -86,7 +85,7 @@ function DocxView({ html, scale }: { html: string; scale: number }) {
   // 100% is the page, or the pane when that is narrower.
   const pageWidth = Math.max(
     200,
-    Math.min(useWidth(container) - PANE_GUTTER, DOCX_PAGE_WIDTH * useUiSpaceScale()),
+    Math.min(useWidth(container), DOCX_PAGE_WIDTH * useUiSpaceScale()),
   );
   const onClick = (event: MouseEvent<HTMLDivElement>) => {
     const link = (event.target as Element).closest("a");
@@ -100,7 +99,7 @@ function DocxView({ html, scale }: { html: string; scale: number }) {
     }
   };
   return (
-    <div ref={setContainer} className="size-full overflow-auto bg-muted/60 p-6">
+    <div ref={setContainer} className="size-full overflow-auto bg-muted/60 py-6">
       <article
         onClick={onClick}
         style={{ zoom: scale, width: pageWidth }}
@@ -288,12 +287,12 @@ function SlidesView({ deck, scale }: { deck: Deck; scale: number }) {
   const t = useT();
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   // 100% fits a slide to the pane's width; a larger zoom overflows it and scrolls sideways.
-  const width = Math.max(200, useWidth(container) - PANE_GUTTER) * scale;
+  const width = Math.max(200, useWidth(container)) * scale;
   if (!deck.slides.length) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.emptyDocument")}</p>;
   }
   return (
-    <div ref={setContainer} className="size-full overflow-auto bg-muted/60 p-6">
+    <div ref={setContainer} className="size-full overflow-auto bg-muted/60 py-6">
       <div className="mx-auto flex flex-col gap-6" style={{ width }}>
         {deck.slides.map((slide, index) => {
           const flow = slide.boxes.filter((box) => !box.frame && box.paragraphs);

@@ -3022,6 +3022,8 @@ export const en = {
       sortName: "Name",
       sortModified: "Modified",
       sortSize: "Size",
+      sortAscending: "Ascending",
+      sortDescending: "Descending",
     },
     // Entries of the New menu.
     create: {

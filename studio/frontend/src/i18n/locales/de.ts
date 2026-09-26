@@ -3086,6 +3086,8 @@ export const de = {
       fileType: "Dateityp",
       clearFilters: "Filter zurücksetzen",
       uploaded: "Hochgeladen",
+      sortAscending: "Aufsteigend",
+      sortDescending: "Absteigend",
       generated: "Generiert",
       documents: "Dokumente",
       spreadsheets: "Tabellen",

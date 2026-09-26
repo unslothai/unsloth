@@ -167,10 +167,10 @@ export function useColumnCount(
     const element = ref.current;
     if (!element) return;
     const measure = () => {
-      const width = element.clientWidth;
-      setColumns(
-        Math.max(2, Math.min(maxColumns, Math.floor(width / minColumnWidth))),
-      );
+      // Each column but the last also takes a gap.
+      const gap = parseFloat(getComputedStyle(element).columnGap) || 0;
+      const fit = Math.floor((element.clientWidth + gap) / (minColumnWidth + gap));
+      setColumns(Math.max(2, Math.min(maxColumns, fit)));
     };
     measure();
     const observer = new ResizeObserver(measure);

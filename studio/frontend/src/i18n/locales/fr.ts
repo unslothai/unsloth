@@ -3097,6 +3097,8 @@ export const fr = {
       fileType: "Type de fichier",
       clearFilters: "Effacer les filtres",
       uploaded: "Importés",
+      sortAscending: "Croissant",
+      sortDescending: "Décroissant",
       generated: "Générés",
       documents: "Documents",
       spreadsheets: "Feuilles de calcul",

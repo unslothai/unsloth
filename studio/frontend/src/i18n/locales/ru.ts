@@ -3044,6 +3044,8 @@ export const ru = {
       fileType: "Тип файла",
       clearFilters: "Сбросить фильтры",
       uploaded: "Загруженные",
+      sortAscending: "По возрастанию",
+      sortDescending: "По убыванию",
       generated: "Сгенерированные",
       documents: "Документы",
       spreadsheets: "Таблицы",

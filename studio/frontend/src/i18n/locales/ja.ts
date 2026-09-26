@@ -2965,6 +2965,8 @@ export const ja = {
       fileType: "ファイルの種類",
       clearFilters: "フィルタをクリア",
       uploaded: "アップロード済み",
+      sortAscending: "昇順",
+      sortDescending: "降順",
       generated: "生成済み",
       documents: "ドキュメント",
       spreadsheets: "スプレッドシート",

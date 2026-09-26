@@ -3011,6 +3011,8 @@ export const ko = {
       fileType: "파일 형식",
       clearFilters: "필터 지우기",
       uploaded: "업로드됨",
+      sortAscending: "오름차순",
+      sortDescending: "내림차순",
       generated: "생성됨",
       documents: "문서",
       spreadsheets: "스프레드시트",

@@ -3084,6 +3084,8 @@ export const it = {
       fileType: "Tipo di file",
       clearFilters: "Rimuovi filtri",
       uploaded: "Caricati",
+      sortAscending: "Crescente",
+      sortDescending: "Decrescente",
       generated: "Generati",
       documents: "Documenti",
       spreadsheets: "Fogli di calcolo",
