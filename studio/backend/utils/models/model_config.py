@@ -23,6 +23,7 @@ from hub.utils.hf_tokens import (
     recording_a_request_token_fetch,
     ANONYMOUS_CACHE_IDENTITY,
     cached_read_refused,
+    public_cache_read_authorized,
     qualify_cache_identity,
     HfTokenArg,
     apply_token_to_child_env,
@@ -56,7 +57,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, List, Tuple
+from typing import Callable, List, Set, Tuple
 import hashlib
 import json
 import threading
@@ -764,6 +765,112 @@ def _is_vlm(config) -> bool:
     )
 
 
+def _revocation_error(exc: BaseException) -> bool:
+    """Whether *exc* means "this repo is no longer readable" rather than "the Hub is down".
+
+    Only a definitive refusal qualifies. A timeout or DNS failure is transient and must keep
+    raising, so a flaky network never silently pins a stale local copy as the answer.
+    """
+    try:
+        from huggingface_hub.errors import (
+            RepositoryNotFoundError,
+            GatedRepoError,
+        )
+    except ImportError:  # pragma: no cover - older hub layout
+        try:
+            from huggingface_hub.utils import RepositoryNotFoundError, GatedRepoError
+        except ImportError:
+            return False
+    return isinstance(exc, (RepositoryNotFoundError, GatedRepoError))
+
+
+def _shared_cache_installation() -> bool:
+    """Whether this installation's Hub cache can hold more than one person's downloads.
+
+    Managed accounts, not login mode: a deactivated account's files stay on disk, so an
+    installation that has ever had one still has a cache that is not solely the caller's.
+    Fails CLOSED -- if the policy layer cannot answer, assume the cache is shared, because
+    the cost of guessing wrong is serving a private repo across accounts.
+    """
+    try:
+        from auth.policy import installation_has_managed_accounts
+        return installation_has_managed_accounts()
+    except Exception as exc:
+        logger.debug("Could not determine installation account shape: %s", exc)
+        return True
+
+
+def _revoked_repo_local_snapshot(model_name: str):
+    """The downloaded snapshot for a repo the Hub now refuses, or None.
+
+    Returns the ``(snapshot, filenames)`` shape ``_current_cached_snapshot`` promises. The
+    file list is what is actually on disk: with the repo gone there is no document to ask,
+    and a caller reading "not in the list" then means "we do not have it", which is the
+    honest answer offline.
+
+    The usual guard cannot decide this one. ``cached_read_refused`` resolves through
+    ``/auth-check`` on the repo, and a repo that has been deleted answers 401 to its own
+    former owner exactly as it does to a stranger, so the probe is not merely unavailable
+    here, it is unanswerable: gating on it refuses every caller forever and leaves #10929
+    unfixed. What entitlement remains to be read is prior possession -- the snapshot is in
+    this installation's own cache, so somebody here could read the repo while it was still
+    readable.
+
+    Prior possession is only sound where the cache has one user. On an installation with
+    managed accounts it is another account's download, and serving it across that boundary
+    is the leak ``test_account_offline_dataset_fallback.py`` exists to prevent, so there the
+    fallback narrows to repos that were public anyway and can leak nothing.
+    """
+    from utils.utils import hf_cache_snapshot_dir
+
+    snapshot = hf_cache_snapshot_dir(model_name)
+    if snapshot is None or not Path(snapshot).is_dir():
+        return None
+    snapshot = Path(snapshot)
+    if _shared_cache_installation() and not public_cache_read_authorized(
+        repo_id = model_name,
+    ):
+        logger.debug(
+            "'%s' is unreadable on the Hub and this installation has managed accounts; "
+            "not serving another account's cached copy",
+            model_name,
+        )
+        return None
+    listed = {
+        str(path.relative_to(snapshot)).replace("\\", "/")
+        for path in snapshot.rglob("*")
+        if path.is_file()
+    }
+    if not listed:
+        return None
+    return snapshot, listed
+
+
+# Revocation is a property of the repo, not of the request, and every capability probe asks
+# again: without this the operator gets the same warning three times per load.
+_revoked_repo_warned: Set[str] = set()
+_revoked_repo_warned_lock = threading.Lock()
+
+
+def _warn_repo_revoked_once(model_name: str, exc: BaseException) -> None:
+    """Say plainly that withdrawn weights are being served, once per repo per process.
+
+    Locked: the probes this runs under are dispatched concurrently, and a bare check-then-add
+    lets two of them both pass the test and log the same line twice.
+    """
+    with _revoked_repo_warned_lock:
+        if model_name in _revoked_repo_warned:
+            return
+        _revoked_repo_warned.add(model_name)
+    logger.warning(
+        "'%s' is no longer readable on the Hub (%s); using the cached copy already on "
+        "disk. The model was deleted, made private or gated after it was downloaded. "
+        "It will keep loading from cache, but it can no longer be re-downloaded or updated.",
+        model_name,
+        type(exc).__name__,
+    )
+
+
 def _current_cached_snapshot(
     model_name: str,
     hf_token: HfTokenArg = None,
@@ -788,7 +895,21 @@ def _current_cached_snapshot(
         # Cheap check first: with nothing cached, the document below buys only that answer.
         if repo_dir is None or not (Path(repo_dir) / "snapshots").is_dir():
             return None
-        info = _hub_model_info(model_name, hf_token)
+        try:
+            info = _hub_model_info(model_name, hf_token)
+        except Exception as exc:
+            # A repo deleted, privated or gated after download answers every read 401/403.
+            # That says the current commit is unknowable, not that the copy on disk is gone,
+            # and returning None here drops the caller onto probes that also fail, leaving
+            # capability detection to guess from the repo NAME (see #10929). Serve what was
+            # already downloaded instead, exactly as HF_HUB_OFFLINE=1 does.
+            if not _revocation_error(exc):
+                raise
+            local = _revoked_repo_local_snapshot(model_name)
+            if local is None:
+                return None
+            _warn_repo_revoked_once(model_name, exc)
+            return local
         sha = getattr(info, "sha", None)
         if not sha:
             return None
