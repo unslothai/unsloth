@@ -594,6 +594,44 @@ def _docx(path: str) -> list[Page]:
     return [_page("\n".join(lines), None)]
 
 
+def _declared_charset(data: bytes) -> str | None:
+    # Lazy: tools is heavy, and only HTML that is not UTF-8 gets here.
+    from ..inference.tools import _META_CHARSET_SCAN_BYTES, _sniff_meta_charset
+    return _sniff_meta_charset(data[:_META_CHARSET_SCAN_BYTES], "text/html")
+
+
+def _decode_text(data: bytes, *, html: bool = False) -> str:
+    # Check UTF-32 before its overlapping UTF-16 prefix.
+    for bom, codec in (
+        (codecs.BOM_UTF32_LE, "utf-32"),
+        (codecs.BOM_UTF32_BE, "utf-32"),
+        (codecs.BOM_UTF16_LE, "utf-16"),
+        (codecs.BOM_UTF16_BE, "utf-16"),
+        (codecs.BOM_UTF8, "utf-8-sig"),
+    ):
+        if data.startswith(bom):
+            return data.decode(codec, errors = "replace")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    else:
+        # ISO-2022-JP is 7-bit, so it always passes as UTF-8; its escapes give it away.
+        if html and "\x1b$" in text and _declared_charset(data) == "iso2022_jp":
+            return data.decode("iso2022_jp", errors = "replace")
+        return text
+    declared = _declared_charset(data) if html else None
+    # WHATWG reads UTF-16 labels as UTF-8, which these bytes already failed.
+    if declared and declared != "utf-8":
+        return data.decode(declared, errors = "replace")
+    text = data.decode("utf-8", errors = "replace")
+    # Ties stay UTF-8 (truncated file); cp1252 can form a stray valid sequence ("à\xa0»").
+    non_ascii = len(text) - len(text.encode("ascii", "ignore"))
+    if non_ascii >= 2 * text.count("\ufffd"):
+        return text
+    return data.decode("cp1252", errors = "replace")
+
+
 def parse(path: str, *, want_images: bool = False):
     """Parse a file into pages by extension. Returns ``list[Page]``, or
     ``(list[Page], list[ParsedImage])`` when ``want_images=True`` (only PDFs yield
@@ -609,22 +647,12 @@ def parse(path: str, *, want_images: bool = False):
         return (pages, []) if want_images else pages
 
     if ext in (".html", ".htm", ".txt", ".md", ".markdown"):
-        # Honor Unicode BOMs; check UTF-32 before its overlapping UTF-16 prefix.
+        is_html = ext in (".html", ".htm")
         with open(path, "rb") as f:
-            prefix = f.read(4)
-        encoding = "utf-8-sig"
-        for bom, codec in (
-            (codecs.BOM_UTF32_LE, "utf-32"),
-            (codecs.BOM_UTF32_BE, "utf-32"),
-            (codecs.BOM_UTF16_LE, "utf-16"),
-            (codecs.BOM_UTF16_BE, "utf-16"),
-        ):
-            if prefix.startswith(bom):
-                encoding = codec
-                break
-        with open(path, encoding = encoding, errors = "replace") as f:
-            raw = f.read()
-        pages = _html(raw) if ext in (".html", ".htm") else [_page(raw, None)]
+            raw = _decode_text(f.read(), html = is_html)
+        # Universal newlines, as text-mode open() gave: the chunker splits on "\n\n".
+        raw = raw.replace("\r\n", "\n").replace("\r", "\n")
+        pages = _html(raw) if is_html else [_page(raw, None)]
         return (pages, []) if want_images else pages
 
     raise ValueError(f"unsupported file type: {ext}")
