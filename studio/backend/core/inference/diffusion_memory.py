@@ -937,7 +937,8 @@ class CalibratedImageActivation:
         )
 
 
-# Worst case over every build, speed tier and CFG setting measured on NVIDIA (streamed encoders, first calls included);
+# Worst case over every build, speed tier and CFG setting measured on NVIDIA (streamed encoders, first calls included,
+# channels_last and contiguous VAE weights);
 # (off / eager / default, max). Unlisted families keep the flat estimate: a U-Net cannot stream its encoders beside it.
 _ACTIVATION_MARGIN = 1.2
 _MEASURED_IMAGE_ACTIVATION_MIB: dict[
@@ -945,9 +946,9 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
 ] = {
     # text encoder, denoise, untiled decode, tiled decode (all at 1024x1024), max(denoise, tiled decode) at 2048x2048
     "qwen-image-2.1": ((1_849, 666, 7_648, 449, 2_479), (1_849, 2_489, 7_648, 449, 9_602)),
-    "flux.1": ((288, 892, 2_666, 1_797, 2_674), (288, 892, 2_666, 1_797, 2_674)),
-    "flux.2-klein": ((1_516, 1_160, 2_645, 1_808, 3_876), (1_516, 1_205, 2_677, 1_808, 3_924)),
-    "z-image": ((744, 1_199, 2_666, 1_833, 4_327), (744, 1_271, 2_669, 1_833, 4_327)),
+    "flux.1": ((288, 892, 2_666, 2_456, 2_674), (288, 892, 2_666, 2_456, 2_674)),
+    "flux.2-klein": ((1_516, 1_160, 2_645, 2_456, 3_876), (1_516, 1_205, 2_677, 2_456, 3_924)),
+    "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
 }
 
 
