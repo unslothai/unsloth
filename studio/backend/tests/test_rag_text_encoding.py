@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+from __future__ import annotations
+
+import codecs
+
+from core.rag import parsers
+
+GREETING = "Sehr geehrte Frau Müller,\nviele Grüße aus Köln – 5 €.\n"
+
+
+def _text(tmp_path, name: str, data: bytes) -> str:
+    path = tmp_path / name
+    path.write_bytes(data)
+    return "\n".join(page.text for page in parsers.parse(str(path)))
+
+
+def test_a_windows_1252_text_file_keeps_its_accented_letters(tmp_path):
+    assert _text(tmp_path, "letter.txt", GREETING.encode("cp1252")) == GREETING
+
+
+def test_a_latin_1_markdown_file_keeps_its_accented_letters(tmp_path):
+    markdown = "# Überblick\nCafé und Crème brûlée\n"
+    assert _text(tmp_path, "notes.md", markdown.encode("latin-1")) == markdown
+
+
+def test_utf8_is_read_as_before(tmp_path):
+    assert _text(tmp_path, "plain.txt", GREETING.encode("utf-8")) == GREETING
+    assert _text(tmp_path, "bom.txt", GREETING.encode("utf-8-sig")) == GREETING
+
+
+def test_a_damaged_byte_in_utf8_costs_only_that_byte(tmp_path):
+    data = GREETING.encode("utf-8") + b"\xff"
+    assert _text(tmp_path, "damaged.txt", data) == GREETING + "�"
+
+
+def test_a_short_utf8_file_with_a_truncated_character_stays_utf8(tmp_path):
+    assert _text(tmp_path, "cut.txt", b"caf\xc3\xa9\xc3") == "caf\u00e9\ufffd"
+    page = b"<meta charset=utf-8><p>caf\xc3\xa9\xff</p>"
+    assert _text(tmp_path, "cut.html", page) == "caf\u00e9\ufffd"
+
+
+def test_a_utf8_byte_order_mark_wins_over_a_damaged_byte_and_a_declared_charset(tmp_path):
+    assert _text(tmp_path, "bom.txt", b"\xef\xbb\xbfhello\xff") == "hello\ufffd"
+    page = '<meta charset="shift_jis"><p>café \xff</p>'.encode("utf-8").replace(
+        b"\xc3\xbf", b"\xff"
+    )
+    assert _text(tmp_path, "bom.html", codecs.BOM_UTF8 + page) == "café \ufffd"
+
+
+def test_a_utf16_file_is_read_by_its_byte_order_mark(tmp_path):
+    assert _text(tmp_path, "wide.txt", GREETING.encode("utf-16")) == GREETING
+
+
+def test_an_html_page_is_read_in_the_charset_it_declares(tmp_path):
+    for charset, text in (("shift_jis", "日本語のページ"), ("gbk", "中文网页")):
+        page = f'<html><head><meta charset="{charset}"></head><body><p>{text}</p></body></html>'
+        assert _text(tmp_path, f"{charset}.html", page.encode(charset)) == text
+
+
+def test_a_declared_iso_2022_jp_page_is_not_read_as_its_escape_sequences(tmp_path):
+    page = (
+        '<html><head><meta charset="iso-2022-jp"></head><body><p>日本語のページ</p></body></html>'
+    )
+    assert _text(tmp_path, "jis.html", page.encode("iso2022_jp")) == "日本語のページ"
+
+
+def test_an_http_equiv_content_type_declares_the_charset_too(tmp_path):
+    page = (
+        '<html><head><meta http-equiv="Content-Type" content="text/html; charset=iso-8859-2">'
+        "</head><body><p>Dobrý den, Łódź</p></body></html>"
+    )
+    assert _text(tmp_path, "latin2.html", page.encode("iso-8859-2")) == "Dobrý den, Łódź"
+
+
+def test_an_undeclared_windows_1252_page_keeps_its_accented_letters(tmp_path):
+    page = "<html><body><p>Grüße aus Köln</p></body></html>"
+    assert _text(tmp_path, "page.html", page.encode("cp1252")) == "Grüße aus Köln"
+
+
+def test_a_declared_charset_that_cannot_have_written_the_page_is_ignored(tmp_path):
+    for charset in ("no-such-charset", "utf-16", "punycode", "idna"):
+        page = f'<html><head><meta charset="{charset}"></head><body><p>Grüße</p></body></html>'
+        assert _text(tmp_path, "odd.html", page.encode("cp1252")) == "Grüße", charset
+
+
+def test_crlf_and_cr_line_endings_become_newlines(tmp_path):
+    windows = "Para one.\r\nStill one.\r\n\r\nPara two.\r\n"
+    expected = "Para one.\nStill one.\n\nPara two.\n"
+    assert _text(tmp_path, "crlf.txt", windows.encode("utf-8")) == expected
+    assert _text(tmp_path, "crlf_ansi.txt", windows.encode("cp1252")) == expected
+    assert _text(tmp_path, "crlf_wide.txt", windows.encode("utf-16")) == expected
+    assert _text(tmp_path, "cr.md", b"a\rb\r") == "a\nb\n"
+
+
+def test_a_stray_valid_utf8_sequence_does_not_keep_a_windows_1252_file_as_utf8(tmp_path):
+    # Word puts a no-break space before "»" in French; "à\xa0»" is also valid UTF-8.
+    french = "Il a dit «\xa0voilà\xa0» à l'été, café, crème.\n"
+    assert _text(tmp_path, "fr.txt", french.encode("cp1252")) == french
+
+
+def test_a_declared_charset_decodes_as_its_browser_superset(tmp_path):
+    for charset, codec, text in (
+        ("iso-8859-1", "cp1252", "“smart” quotes cost €5"),
+        ("shift_jis", "cp932", "① 髙橋"),
+        ("gb2312", "gbk", "镕"),
+    ):
+        page = f'<html><head><meta charset="{charset}"></head><body><p>{text}</p></body></html>'
+        assert _text(tmp_path, f"{charset}.html", page.encode(codec)) == text, charset

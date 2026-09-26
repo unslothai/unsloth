@@ -24,7 +24,7 @@ from hub.schemas.inventory import GgufVariantDetail, GgufVariantsResponse
 from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
-from hub.utils.hf_errors import hf_error_status
+from hub.utils.hf_errors import hf_error_status, modelscope_missing
 from hub.utils.hf_tokens import cached_read_refused as hub_cached_read_refused
 from hub.utils.hf_cache_state import (
     incomplete_blob_hash,
@@ -2096,7 +2096,9 @@ async def get_gguf_variants_answer(
     except HTTPException:
         raise
     except Exception as e:
-        scrubbed = download_registry.scrub_secrets(str(e), hf_token = hf_token)
+        scrubbed = modelscope_missing(e) or download_registry.scrub_secrets(
+            str(e), hf_token = hf_token
+        )
         # Client-side HF error (missing repo, gated, bad token): pass the status through.
         status = hf_error_status(e)
         if status is not None:

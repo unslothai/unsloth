@@ -92,6 +92,10 @@ export const en = {
     multipleMatches: "Multiple matching {noun}. Choose one from the list.",
     rateLimitedTitle: "Hugging Face rate limit reached",
     rateLimitedBody: "Wait a moment, then retry searching {noun}.",
+    modelScope: "ModelScope",
+    useModelScope: "Use ModelScope",
+    useModelScopeHint: "Search and download from ModelScope instead. You can switch back in Settings.",
+    useModelScopeFailed: "Couldn't switch to ModelScope.",
     hfToken: {
       label: "HF token",
       saved: "Saved",
@@ -121,6 +125,16 @@ export const en = {
     shutdown: "Shutdown",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Documentation",
+      keyboardShortcuts: "Keyboard Shortcuts",
+      whatsNew: "What's New",
+      troubleshooting: "Troubleshooting",
+      systemStatus: "System Status",
+      sendFeedback: "Send Feedback",
+      about: "About Unsloth",
+    },
     find: {
       label: "Find in page",
       previous: "Previous match",
@@ -226,6 +240,9 @@ export const en = {
       inOneList: "In one list",
       sortChatsBy: "Sort chats by",
       sortPinnedBy: "Sort pinned by",
+      sortProjectsBy: "Sort projects by",
+      name: "Name",
+      dateCreated: "Date created",
       priority: "Priority",
       lastUpdated: "Last updated",
       manualOrder: "Manual order",
@@ -233,8 +250,6 @@ export const en = {
       organizeChats: "Organize chats",
       organizeProjects: "Organize projects",
       sortPinnedChats: "Sort pinned chats",
-      moveUp: "Move up",
-      moveDown: "Move down",
     },
     dialog: {
       deleteChat: {
@@ -1042,6 +1057,19 @@ export const en = {
         closeToTraySaveError: "Failed to update the close to system tray setting.",
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
+      },
+      hub: {
+        source: "Model source",
+        sourceDescription: "Where the model hub searches and downloads. Choose ModelScope if Hugging Face is blocked or slow on your network.",
+        sourceFallback: "ModelScope couldn't be started, so Hugging Face is in use. Check the Unsloth logs.",
+        sectionTitle: "Model hub",
+        endpoint: "Hugging Face endpoint",
+        endpointDescription: "Where models and datasets are downloaded from. Leave empty for huggingface.co, or enter a mirror such as https://hf-mirror.com.",
+        datasetsServer: "Use it for dataset previews",
+        datasetsServerDescription: "Also send dataset preview requests (HF_DATASETS_SERVER) to this endpoint. Turn on only if the mirror serves them.",
+        invalidEndpoint: "Enter an http(s) URL without a login or query. Plain http works only for a local address.",
+        saveFailed: "Couldn't save the hub settings.",
+        loadFailed: "Couldn't load the hub settings.",
       },
       downloads: {
         sectionTitle: "Downloads",
@@ -3014,6 +3042,11 @@ export const en = {
       gridView: "Grid view",
       listView: "List view",
       settings: "Library settings",
+      sort: "Sort",
+      sortDefault: "Default order",
+      sortName: "Name",
+      sortModified: "Modified",
+      sortSize: "Size",
     },
     // Entries of the New menu.
     create: {

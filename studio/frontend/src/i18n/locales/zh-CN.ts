@@ -89,6 +89,10 @@ export const zhCN = {
     multipleMatches: "找到多个匹配的{noun}。请从列表中选择一个。",
     rateLimitedTitle: "已达到 Hugging Face 速率限制",
     rateLimitedBody: "请稍候，然后重试搜索{noun}。",
+    modelScope: "ModelScope",
+    useModelScope: "使用 ModelScope",
+    useModelScopeHint: "改为从 ModelScope 搜索和下载。可随时在设置中切换回来。",
+    useModelScopeFailed: "无法切换到 ModelScope。",
     hfToken: {
       label: "HF token",
       saved: "已保存",
@@ -118,6 +122,16 @@ export const zhCN = {
     shutdown: "关闭服务",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "文档",
+      keyboardShortcuts: "键盘快捷键",
+      whatsNew: "新功能",
+      troubleshooting: "故障排除",
+      systemStatus: "系统状态",
+      sendFeedback: "发送反馈",
+      about: "关于 Unsloth",
+    },
     find: {
       label: "在页面中查找",
       previous: "上一个匹配项",
@@ -225,8 +239,6 @@ export const zhCN = {
       organizeChats: "整理对话",
       organizeProjects: "整理项目",
       sortPinnedChats: "对置顶对话排序",
-      moveUp: "上移",
-      moveDown: "下移",
     },
     dialog: {
       deleteChat: {
@@ -1016,6 +1028,19 @@ export const zhCN = {
         closeToTraySaveError: "无法更新关闭到系统托盘设置。",
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
+      },
+      hub: {
+        source: "模型来源",
+        sourceDescription: "模型中心搜索和下载的来源。如果你的网络无法访问 Hugging Face 或速度很慢，请选择 ModelScope。",
+        sourceFallback: "无法启动 ModelScope，当前使用 Hugging Face。请查看 Unsloth 日志。",
+        sectionTitle: "模型中心",
+        endpoint: "Hugging Face 端点",
+        endpointDescription: "模型和数据集的下载来源。留空则使用 huggingface.co，或填写镜像地址，例如 https://hf-mirror.com。",
+        datasetsServer: "同时用于数据集预览",
+        datasetsServerDescription: "数据集预览请求（HF_DATASETS_SERVER）也发送到此端点。仅当镜像提供该服务时开启。",
+        invalidEndpoint: "请输入不含登录信息和查询参数的 http(s) 地址。http 仅适用于本机地址。",
+        saveFailed: "无法保存模型中心设置。",
+        loadFailed: "无法加载模型中心设置。",
       },
       downloads: {
         sectionTitle: "下载",
