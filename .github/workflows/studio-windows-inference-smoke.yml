@@ -186,11 +186,6 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           pwsh -NoProfile -File tests/studio/test_path_probe_access_denied.ps1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          # test_path_resolver_degrades.ps1 is deliberately NOT here. Its whole premise
-          # is a host where the lower rungs of each ladder cannot answer, so it asserts
-          # that an unanswerable process reads as unknown and that a path resolved without
-          # an interpreter is reported inexact. On a healthy Windows runner those rungs
-          # SUCCEED and those assertions are false. It runs on the Linux leg of
           # cross-platform-parity-ci.yml, which is the host it describes.
 
       # uninstall.ps1: native uninstall must keep the shared unsloth.ico while a

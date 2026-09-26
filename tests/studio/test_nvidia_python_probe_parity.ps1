@@ -68,7 +68,6 @@ $blockNames = @(
     "Read-NvidiaLibraryRawViaPython",
     "Read-NvidiaLibraryRaw",
     "Get-NvidiaLibraryInventory",
-    # Appended rather than inserted: the indices below are positional.
     "Test-StudioChildScriptDirectoryElevated",
     "Get-StudioSystem32Tool",
     "Test-StudioPathUnderAdminRoot",
@@ -100,11 +99,6 @@ Write-Host "=== the embedded probe matches studio/nvidia_probe.py ==="
 
 $referenceProbe = [System.IO.File]::ReadAllText($probePy)
 
-# Every native symbol the probe calls, and the two attribute numbers. If the embedded probe and
-# nvidia_probe.py ever disagree on one of these, they are probing different things.
-#
-# Two implementations now, not three: the emitted type that carried the same import list is
-# gone, and comparing against its old index would compare the probe with itself.
 $symbols = @(
     "nvmlInit_v2", "nvmlShutdown", "nvmlSystemGetCudaDriverVersion_v2",
     "nvmlDeviceGetCount_v2", "nvmlDeviceGetHandleByIndex_v2", "nvmlDeviceGetCudaComputeCapability",
@@ -135,10 +129,6 @@ Write-Host ""
 Write-Host "=== the rung stays underneath the emitted one ==="
 
 $rawBlock = & $strip $setupParts[3]
-# ONE rung. The emitted UnslothNvidiaProbeV2 type is gone, so there is no first rung to sit
-# behind and no leftover budget to pass on. $TimeoutMs is a per-reader bound (30s): one child
-# reads NVML then CUDA under it, and only a child killed at that bound earns a second, CUDA-only
-# child under a bound of its own. The behaviour is driven below; these pin the shape.
 Check "the reader delegates straight to the Python rung" `
     ($rawBlock -match '\$raw = Read-NvidiaLibraryRawViaPython -TimeoutMs \$TimeoutMs\b')
 Check "only a timed-out first child earns the CUDA-only retry" `
@@ -249,11 +239,6 @@ try {
     Check "a stray `$ManagedPythonPath is not a candidate" ((Get-NvidiaProbePythonExe) -eq "/early/python3")
     Remove-Variable -Name ManagedPythonPath -ErrorAction SilentlyContinue
 
-    # Elevated, or whoami blocked (read as elevated), with the venv under a per-user root. main
-    # read the driver library in process with no elevation condition, and this same elevated run
-    # already executes $VenvPython directly for its platform checks and every uv pip install, so
-    # declining it here protected nothing and left a host with a hung or missing nvidia-smi on CPU
-    # torch. The venv has to be used.
     $env:OS = "Windows_NT"
     function Test-StudioChildScriptDirectoryElevated { return $true }
     function Test-StudioPathUnderAdminRoot { param([string]$Path) return $false }
@@ -273,7 +258,6 @@ try {
         else { $env:UNSLOTH_EARLY_PYTHON_PROBE = $saved }
     }
 
-    # setup.ps1's own copy, same elevated condition: it finds the venv under $VenvDir.
     $setupHook = @(Get-HelperSources $setupPs1 @("Get-NvidiaProbePythonExe"))[0]
     Invoke-Expression $setupHook
     $VenvDir = Join-Path $hookDir "venv"
@@ -289,8 +273,6 @@ try {
     Remove-Item -LiteralPath $hookDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# The ordering that makes the above reachable at all: the venv interpreter is assigned before
-# the first Get-NvidiaLibraryInventory call, or the hook would read $null however it is written.
 $installText = [System.IO.File]::ReadAllText($installPs1)
 $venvAt = $installText.IndexOf('$VenvPython = Join-Path $VenvDir')
 $firstInventoryAt = $installText.IndexOf('if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory))')
@@ -341,14 +323,6 @@ function Get-NvidiaProbePythonExe { return $script:PythonExe }
 
 Check "no interpreter means no answer, not an error" ((Read-NvidiaLibraryRawViaPython -TimeoutMs 5000) -eq "")
 
-# ---- where the program is written ----
-#
-# The program is written, closed, and then its PATHNAME is handed to Start-Process. Anything of
-# the same user watching the directory can swap the file in that gap, and when this shell is
-# elevated the child then runs that file with the administrator token. A directory of our own
-# closes it: a name nothing can predict, and a High mandatory integrity label that a medium
-# integrity process of the same user cannot write through. A DACL cannot express this, because
-# the attacker is the OWNER and an owner can always rewrite its own DACL.
 foreach ($file in @($installPs1, $setupPs1)) {
     $leaf = Split-Path -Leaf $file
     $dirFn = @(Get-HelperSources $file @("New-StudioChildScriptDirectory"))[0]
@@ -358,15 +332,8 @@ foreach ($file in @($installPs1, $setupPs1)) {
         $dirFn -notmatch 'New-Item -ItemType Directory[^\r\n]*-Force')
     Check "$leaf raises the integrity label rather than trusting a DACL" (
         $dirFn -match 'icacls' -and $dirFn -match 'setintegritylevel')
-    # icacls can be absent, blocked by application control, or fail for its own reasons, and none
-    # of that throws. Setting the label and assuming it took hands back a directory that looks
-    # protected and is not, which is the whole of the escalation this closes. So the label is read
-    # back, and a run that could not raise it while elevated refuses instead of returning a path.
     Check "$leaf reads the label back rather than assuming it took" (
         $dirFn -match '\$labelled' -and $dirFn -match 'High Mandatory Level')
-    # And reads it in a way a non-English Windows can answer. icacls renders the well-known
-    # account name in the OS language, so matching only the English spelling made an elevated
-    # non-English host delete the directory it had just correctly labelled.
     Check "$leaf does not depend on the English spelling of the label" (
         $dirFn -match '\$LASTEXITCODE -eq 0' -and $dirFn -match 'S-1-16-12288')
     # And the create is accepted on the path it will HAND BACK, not on New-Item not throwing:
@@ -375,19 +342,12 @@ foreach ($file in @($installPs1, $setupPs1)) {
         $dirFn -match 'Test-Path -LiteralPath \$dir -PathType Container')
     Check "$leaf cleans up a directory the pattern created elsewhere" (
         $dirFn -match 'Remove-Item -LiteralPath \$createdPath')
-    # Until the label lands the directory carries the medium one it inherited from %TEMP%, so a
-    # same-user process can plant early.py or nvprobe.py inside it in that window. Writing over
-    # that file leaves the attacker's DACL on it, so it can be rewritten again before the launch.
-    # Nothing can be planted afterwards, so anything present once the label is on was planted
-    # during the window and the directory has to be refused.
     Check "$leaf refuses a directory something was planted in before the label landed" (
         $dirFn -match 'Get-ChildItem -LiteralPath \$dir -Force' -and $dirFn -match '\$planted')
     Check "$leaf refuses an unlabelled directory when it is elevated" (
         $dirFn -match 'Test-StudioChildScriptDirectoryElevated' -and
         $dirFn -match 'Remove-Item[^\r\n]*\$dir')
     $elevFn = @(Get-HelperSources $file @("Test-StudioChildScriptDirectoryElevated"))[0]
-    # Comments stripped first. The helper's own comment NAMES the construct it avoids, so the
-    # check below read the explanation and failed on it rather than on any code.
     $elevCode = (($elevFn -split "`r?`n") | Where-Object { $_.Trim() -notmatch '^#' }) -join "`n"
     # whoami, not WindowsPrincipal: the managed identity types are not reachable under
     # Constrained Language Mode, which is the population this whole ladder exists for.
@@ -395,16 +355,9 @@ foreach ($file in @($installPs1, $setupPs1)) {
         $elevCode -match 'whoami' -and $elevCode -match 'S-1-16-')
     Check "$leaf does not use the managed principal types for it" (
         $elevCode -notmatch 'WindowsPrincipal')
-    # Unknown has to answer YES. whoami can be missing or blocked by application control, and
-    # neither is evidence of a medium token: reading that as "not elevated" hands back an
-    # unlabelled directory on a host that may well be elevated, which is the escalation this
-    # exists to stop. The only confirmed no is a token naming a mandatory label below High.
     Check "$leaf treats an unreadable token as elevated" (
         $elevCode -match 'catch \{ return \$true \}' -and
         $elevCode -match 'IsNullOrWhiteSpace\(\$groups\)\) \{ return \$true \}')
-    # And the tools are the real ones. `& icacls.exe` is PowerShell command resolution, so a
-    # function or executable of that name from the user's session would run with the
-    # administrator token, and a fake one can report success without applying the label at all.
     Check "$leaf names the in-box tools by absolute path" (
         $dirFn -match 'Get-StudioSystem32Tool -Name "icacls\.exe"' -and
         $elevCode -match 'Get-StudioSystem32Tool -Name "whoami\.exe"')
@@ -413,9 +366,6 @@ foreach ($file in @($installPs1, $setupPs1)) {
     $toolFn = @(Get-HelperSources $file @("Get-StudioSystem32Tool"))[0]
     Check "$leaf builds that path under System32" (
         $toolFn -match 'System32' -and $toolFn -match 'Test-Path -LiteralPath \$candidate')
-    # The NVIDIA probe's venv interpreter is NOT elevation-gated: the run already executes it
-    # directly, so a gate here only cost elevated hosts their CUDA inventory. The behaviour is
-    # driven above; this pins that the gate did not come back in either file.
     $probePick = @(Get-HelperSources $file @("Get-NvidiaProbePythonExe"))[0]
     Check "$leaf does not elevation-gate the venv interpreter it already runs" (
         $probePick -notmatch 'Test-StudioChildScriptDirectoryElevated' -and
@@ -423,8 +373,6 @@ foreach ($file in @($installPs1, $setupPs1)) {
     Check "$leaf only answers no for a label it actually read" (
         $elevCode -match 'S-1-16-\\d\+.*return \$false')
     Check "$leaf comment stripper kept the code (bites)" ($elevCode -match 'return')
-    # And every launcher in the file uses it, rather than naming the shared root itself. The
-    # shared-root spelling is what the finding was about, so its absence is the check.
     $whole = [System.IO.File]::ReadAllText($file)
     # The shared root may hold the ANSWER when the private directory declines (the program then
     # travels in the environment), never the program: the only write of the script is gated.
@@ -433,9 +381,6 @@ foreach ($file in @($installPs1, $setupPs1)) {
         ($whole -match 'if \(-not \$inline\) \{ Set-Content -LiteralPath \$scriptFile' -and
          @([regex]::Matches($whole, 'Set-Content -LiteralPath \$scriptFile')).Count -eq 1))
 }
-# A temp root with wildcard characters in it. "C:\Users\Mike [work]" is a legal profile path, and
-# New-Item takes -Path with no -LiteralPath on 5.1, so the create there reads the brackets as a
-# pattern. Nothing about such a host should cost it the Python rungs.
 $bracketRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth [test] " + [guid]::NewGuid().ToString("N"))
 $null = New-Item -ItemType Directory -Path $bracketRoot -Force
 $savedTemp = $env:TEMP
@@ -446,9 +391,6 @@ try {
     $bracketDir = New-StudioChildScriptDirectory
     Check "a temp root with brackets still yields a directory" (
         -not [string]::IsNullOrWhiteSpace($bracketDir))
-    # The path it HANDED BACK has to be the one that exists. The escaped spelling can succeed at a
-    # different path, so a helper that trusted New-Item not throwing would return a name with
-    # nothing behind it and every write into it would fail.
     Check "and the path it returned is the directory that exists" (
         $bracketDir -and (Test-Path -LiteralPath $bracketDir -PathType Container))
     Check "and it is inside the bracketed root, not beside it" (
@@ -460,8 +402,6 @@ try {
     Remove-Item -LiteralPath $bracketRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# Driven rather than read: stub the label as applied and the directory as non-empty, and the
-# helper has to decline. This is a Windows-only branch, so $env:OS is set for the call.
 $savedOs = $env:OS
 try {
     $env:OS = "Windows_NT"
@@ -470,8 +410,6 @@ try {
         param($LiteralPath, [switch]$Force, $ErrorAction)
         return @([pscustomobject]@{ Name = "early.py" })
     }
-    # icacls is absent on this host, and the branch under test is gated on the label having
-    # been applied, so stand in for the executable and leave the exit code at success.
     function icacls.exe { $global:LASTEXITCODE = 0 }
     $plantedAnswer = New-StudioChildScriptDirectory
     Check "a directory with something already in it is refused" (
@@ -479,8 +417,6 @@ try {
 } finally {
     Remove-Item Function:Get-ChildItem -ErrorAction SilentlyContinue
     Remove-Item Function:icacls.exe -ErrorAction SilentlyContinue
-    # Restored rather than removed: this one came from the file under test, and the rows below
-    # still drive it. Removing it left them failing on a missing command instead of on the code.
     Invoke-Expression ($setupParts[5])
     Invoke-Expression ($setupParts[6])
     Invoke-Expression ($setupParts[7])
@@ -502,7 +438,6 @@ try {
     $env:PATH = $savedPath
 }
 
-# Run it: a directory really is created, really is fresh, and really is cleaned up.
 $madeDir = New-StudioChildScriptDirectory
 Check "the directory is created" (-not [string]::IsNullOrWhiteSpace($madeDir))
 if ($madeDir) {
@@ -569,7 +504,6 @@ Check "the launcher sets the switch only for a -SkipNvml child" `
     (($pyCode -match 'if \(\$SkipNvml\) \{ \$env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = "1" \}') -and
      ($pyCode -match 'finally \{[\s\S]*Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML'))
 
-# Stubbed launcher: the real Read-NvidiaLibraryRaw resolves the stub through dynamic scope.
 function Invoke-RawWithStub($outcomes) {
     $script:StubCalls = @()
     $script:StubOutcomes = [System.Collections.ArrayList]@($outcomes)
@@ -653,9 +587,6 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
         $null = Read-NvidiaLibraryRaw -TimeoutMs 2000
         Check "live: an unset switch is left unset" ($null -eq $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML)
 
-        # The private directory declines when icacls is missing, whoami is blocked, or %TEMP% takes
-        # no label. The program then travels in the environment rather than as a file, and a working
-        # card must still get an inventory: declining here used to leave it with CPU wheels.
         $env:UNSLOTH_FAKE_PY_MODE = "inline"
         $savedDirFn = ${function:New-StudioChildScriptDirectory}
         function New-StudioChildScriptDirectory { return "" }

@@ -1263,53 +1263,11 @@ function Get-NvidiaProbePythonExe {
     foreach ($leaf in @("Scripts\python.exe", "bin/python3", "bin/python")) {
         $candidate = Join-Path $VenvDir $leaf
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
-        # No elevation gate on the venv interpreter: this run already executes it directly
-        # (every pip install and torch probe below), elevated or not, so declining it here
-        # protected nothing and only cost an elevated run without a working nvidia-smi its
-        # CUDA inventory.
         return $candidate
     }
     return ""
 }
 
-# Writing the program into the shared %TEMP% and then naming that path to Start-Process leaves a
-# time-of-check to time-of-use gap: any process of the same user can watch the directory and
-# swap the file between the write and the launch. That only becomes a privilege question when
-# THIS shell is elevated, and then it is the whole of one, because the child runs our program
-# with the administrator token.
-#
-# A fresh directory nothing else can predict the name of, then a mandatory integrity label of
-# High on it. An unelevated process of the same user runs at medium integrity and cannot write
-# into a High-labelled directory. A DACL cannot express that: the attacker is the owner, and an
-# owner can always rewrite its own DACL. icacls is the in-box tool for the label and stays
-# reachable under Constrained Language Mode, where the managed ACL APIs do not.
-#
-# The label is READ BACK rather than assumed. icacls can be missing, blocked by application
-# control, or fail for its own reasons, and none of that throws: the directory would come back
-# looking protected while still being writable by the same user's medium-integrity processes,
-# which is exactly the escalation this helper exists to close. So when the label did not take,
-# ask whether it MATTERS: an unelevated run cannot raise the label and does not need to, since
-# a medium-integrity child has no token worth stealing, while an elevated run that could not
-# raise it must refuse rather than hand back the directory. Every caller already treats "" as
-# "this rung declined" and falls to the one below it.
-#
-# Declared here, above its first caller, and not beside the NVIDIA inventory it was written
-# for. All of this file is one function, so these declarations run in order: a helper defined
-# further down does not exist yet when an earlier statement calls it, and the throw is caught
-# and read as "the rung declined" rather than as a missing definition.
-#
-# New-Item with -ErrorAction Stop, not -Force: it must FAIL on a directory that already exists,
-# or a pre-created one carrying an attacker's ACL would be adopted instead of refused.
-# An in-box tool, named by its full path, or "" when it is not there.
-#
-# `& icacls.exe` is PowerShell command resolution: a function, alias or executable of that
-# name from the user's session or PATH wins, and on an elevated run it would then execute
-# with the administrator token. A fake one can also report success without applying the
-# label, which reopens the file-swap this helper is here to close. So the real one, by
-# absolute path, and nothing at all rather than whatever PATH offers.
-#
-# System32 resolves to SysWOW64 in a 32-bit process, which carries both of these tools, so
-# this spelling is right in either bitness.
 function Get-StudioSystem32Tool {
     param([Parameter(Mandatory = $true)][string]$Name)
     if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) { return "" }
@@ -1318,27 +1276,17 @@ function Get-StudioSystem32Tool {
     return $candidate
 }
 
-# Does an SDDL rights field let its holder change what is in a directory.
-#
-# The field is either a hex mask or a run of two-letter aliases, and both spellings turn up on
-# the same machine, so both are read. Anything that cannot be read at all answers YES, because
-# this feeds a gate whose safe answer is to decline.
 function Test-StudioSddlRightsAreWrite {
     param([string]$Rights)
     if ([string]::IsNullOrWhiteSpace($Rights)) { return $true }
     $text = "$Rights".Trim().ToUpper()
     if ($text -like "0X*") {
-        # Parsed a digit at a time rather than with [Convert]::ToInt64: this whole helper runs
-        # on Constrained Language Mode hosts, and a [long] accumulator is needed anyway because
-        # a full 32-bit mask overflows [int] into a Double, which -band then refuses.
         $mask = [long]0
         foreach ($ch in $text.Substring(2).ToCharArray()) {
             $digit = "0123456789ABCDEF".IndexOf($ch)
             if ($digit -lt 0) { return $true }
             $mask = ($mask * 16) + $digit
         }
-        # WRITE_DATA, APPEND_DATA, WRITE_EA, DELETE_CHILD, WRITE_ATTRIBUTES, DELETE, WRITE_DAC,
-        # WRITE_OWNER, GENERIC_ALL, GENERIC_WRITE.
         return (($mask -band 0x500D0156) -ne 0)
     }
     foreach ($alias in @("GA", "GW", "WD", "WO", "SD", "DT", "FA", "FW", "KA", "KW",
@@ -1348,12 +1296,6 @@ function Test-StudioSddlRightsAreWrite {
     return $false
 }
 
-# Is this SDDL principal one that a standard user cannot act as.
-#
-# An allowlist, not a denylist of the well-known user groups. A denylist has to be complete to
-# be correct, and the one principal that matters most is a domain account nobody can enumerate
-# ahead of time. Both spellings are accepted because which one Get-Acl prints depends on the
-# build rather than on the ACL.
 function Test-StudioSddlPrincipalIsAdminOnly {
     param([string]$Principal)
     if ([string]::IsNullOrWhiteSpace($Principal)) { return $false }
@@ -1364,20 +1306,10 @@ function Test-StudioSddlPrincipalIsAdminOnly {
     ) -contains $who)
 }
 
-# Can anyone but an administrator change what is in the directory this SDDL describes.
-#
-# Unreadable answers YES throughout, so a shape this parser does not understand declines the
-# interpreter rather than accepting it.
 function Test-StudioSddlWritableByNonAdmin {
     param([string]$Sddl)
     if ([string]::IsNullOrWhiteSpace($Sddl)) { return $true }
     $text = "$Sddl".Trim()
-    # The owner first, and it is not a formality. The owner of an object holds WRITE_DAC
-    # implicitly whatever the DACL says, so a directory an attacker created can carry an ACL
-    # that reads as locked down and still be entirely theirs to rewrite.
-    # Non-greedy up to the next section marker: the owner and the group run together in the
-    # string, so "O:BAG:SY" is owner BA and group SY, and a class that simply stops at the next
-    # colon reads the owner as "BAG".
     if (-not ($text -match '^O:([A-Za-z0-9\-]+?)(?:G:|D:|S:|$)')) { return $true }
     if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $Matches[1])) { return $true }
     $daclAt = $text.IndexOf("D:")
@@ -1386,9 +1318,6 @@ function Test-StudioSddlWritableByNonAdmin {
     $saclAt = $dacl.IndexOf("S:")
     if ($saclAt -ge 0) { $dacl = $dacl.Substring(0, $saclAt) }
     $seen = 0
-    # Split rather than [regex]::Matches, which is not a Constrained Language Mode type. A
-    # conditional ACE carries parentheses of its own and comes apart here into fields that do
-    # not parse, which the field-count check below turns into a decline.
     foreach ($chunk in ($dacl -split '\)')) {
         $open = $chunk.IndexOf("(")
         if ($open -lt 0) { continue }
@@ -1397,10 +1326,6 @@ function Test-StudioSddlWritableByNonAdmin {
         if ($fields.Count -lt 6) { return $true }
         $type = "$($fields[0])".Trim().ToUpper()
         $flags = "$($fields[1])".Trim().ToUpper()
-        # Everything that is not a deny counts as a grant, including the conditional forms this
-        # cannot evaluate. An inherit-only ACE does not apply to this directory at all, and that
-        # exemption is load-bearing rather than tidy: CREATOR OWNER is spelled exactly that way
-        # on every one of these roots, so reading it as an effective grant rejects all of them.
         if (@("D", "OD", "XD") -contains $type) { continue }
         if ($flags.Contains("IO")) { continue }
         if (-not (Test-StudioSddlRightsAreWrite -Rights $fields[2])) { continue }
@@ -1412,7 +1337,6 @@ function Test-StudioSddlWritableByNonAdmin {
     return $false
 }
 
-# Is this one directory administrator-only, by its own ACL.
 function Test-StudioDirectoryIsAdminOnly {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -1427,12 +1351,6 @@ function Test-StudioDirectoryIsAdminOnly {
     return (-not (Test-StudioSddlWritableByNonAdmin -Sddl $sddl))
 }
 
-# The parent directory, computed lexically and for both separators.
-#
-# Split-Path is the obvious way to do this and is wrong here: on a non-Windows host it does not
-# treat a backslash as a separator at all, so "C:\Program Files\Python312\python.exe" has no
-# parent and the walk below ends before it starts. That matters because the parity lane runs
-# these checks on Linux, where a silently empty walk reads as a clean decline.
 function Get-StudioLexicalParent {
     param([string]$Path)
     $trimmed = "$Path".TrimEnd('\', '/')
@@ -1441,30 +1359,6 @@ function Get-StudioLexicalParent {
     return $trimmed.Substring(0, $cut)
 }
 
-# Is this path inside a root that only an administrator can write.
-#
-# An elevated run launches whatever interpreter this ladder settles on WITH THE ADMINISTRATOR
-# TOKEN. A per-user CPython under %LOCALAPPDATA%, or one on PATH from a directory the same
-# user's medium-integrity token can write, is then a way to have arbitrary code run elevated:
-# replace the executable, wait for the next install. The labelled child directory does not
-# help, because it protects the script this runs, not the thing running it.
-#
-# Being under one of the Windows-protected roots is necessary but NOT sufficient, and the
-# earlier version of this helper stopped there. Microsoft's own AppLocker guidance says why:
-# %WINDIR% contains a Temp subfolder the Users group is deliberately given Create Files/Write
-# Data and Create Folders/Append Data on for application compatibility, and a handful of
-# siblings are the same, which is precisely what makes a path rule over %WINDIR% a documented
-# bypass. C:\Windows\Temp\python.exe passed the prefix test and would have been launched with
-# the administrator token.
-#
-# So the location test is kept as the cheap first filter, the documented compatibility
-# directories are refused outright, and then every directory from the interpreter's own up to
-# the matched root has to be administrator-only by its ACL. The ACL is read as SDDL, which
-# carries SIDs and two-letter aliases rather than the account names icacls renders in the OS
-# language, so nothing here depends on the machine's locale.
-#
-# Every unknown declines. An unelevated run is not affected at all: it has no token worth
-# stealing, and this gate is only consulted when the run is elevated.
 function Test-StudioPathUnderAdminRoot {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -1476,13 +1370,6 @@ function Test-StudioPathUnderAdminRoot {
     }
     $matchedRoot = ""
     foreach ($root in $roots) {
-        # The separator is part of the comparison: "C:\Program Files" must not match
-        # "C:\Program Files Evil", which any user can create.
-        #
-        # -like, not String.StartsWith with a StringComparison: that enum is not on
-        # Constrained Language Mode's allowed type list either, and -like is already
-        # case-insensitive. The root is escaped first, because a bracket in it would
-        # otherwise be read as a character class and match the wrong thing.
         $escapedRoot = $root -replace '([\[\]\*\?])', '`$1'
         if (("$Path" -like ($escapedRoot + "\*")) -or ("$Path" -like ($escapedRoot + "/*"))) {
             $matchedRoot = $root
@@ -1490,9 +1377,6 @@ function Test-StudioPathUnderAdminRoot {
         }
     }
     if ([string]::IsNullOrWhiteSpace($matchedRoot)) { return $false }
-    # The documented compatibility directories, refused without asking anything. They are
-    # fixed English names rather than display names, so this holds in every OS language, and it
-    # still holds on a host where the ACL cannot be read at all.
     $windowsRoot = "$($env:SystemRoot)".TrimEnd('\', '/')
     if (-not [string]::IsNullOrWhiteSpace($windowsRoot)) {
         foreach ($leaf in @(
@@ -1507,9 +1391,6 @@ function Test-StudioPathUnderAdminRoot {
                 ("$Path" -like ($escapedWritable + "/*"))) { return $false }
         }
     }
-    # And then the ACL, every level from the interpreter's own directory up to the root. Only
-    # the immediate directory is not enough: a directory created under one that grants Users
-    # write belongs to whoever created it, and its own ACL can say anything they like.
     $current = Get-StudioLexicalParent -Path "$Path"
     $guard = 0
     while (-not [string]::IsNullOrWhiteSpace($current)) {
@@ -1525,17 +1406,6 @@ function Test-StudioPathUnderAdminRoot {
 }
 
 function Test-StudioChildScriptDirectoryElevated {
-    # whoami is in-box and prints the token's own mandatory label, as a SID, which is the same
-    # text in every language. The WindowsPrincipal route the rest of this file uses for
-    # elevation is a managed type Constrained Language Mode refuses, and CLM is the population
-    # this ladder exists for.
-    #
-    # Unknown answers YES. whoami can be missing or blocked by application control, and
-    # neither is evidence of a medium token: reading that as "not elevated" hands back an
-    # unlabelled directory on a host that may well be elevated, which is the whole of the
-    # escalation this is here to stop. The only confirmed no is a token that names a
-    # mandatory label below High. Costs an unelevated host with whoami blocked the Python
-    # rungs, which degrade to the lexical resolver and say so.
     $groups = ""
     $whoami = Get-StudioSystem32Tool -Name "whoami.exe"
     if (-not $whoami) { return $true }
@@ -1549,25 +1419,6 @@ function Test-StudioChildScriptDirectoryElevated {
 function New-StudioChildScriptDirectory {
     $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
     $dir = Join-Path $tempRoot ("unsloth-child-" + [guid]::NewGuid().ToString("N"))
-    # New-Item takes -Path and Windows PowerShell 5.1 has no -LiteralPath, so a profile like
-    # "C:\Users\Mike [work]" turns %TEMP% into a wildcard pattern there and the create fails,
-    # which would decline this rung on a host with nothing wrong with it. Elsewhere this file
-    # reaches for [System.IO.Directory]::CreateDirectory for the same reason; that is not
-    # available here, because this helper has to keep working under Constrained Language Mode,
-    # where the type is refused.
-    #
-    # So: the path as written first, and the bracket-escaped spelling only if that failed.
-    # Not the escaped one first. Measured on PowerShell 7: it takes -Path literally and the
-    # escaped spelling creates a directory whose NAME contains the backticks, somewhere else
-    # entirely. Hence the confirmation below rather than trusting either call to have made
-    # the directory the caller is about to be handed.
-    # Success is "the path we are about to hand back exists", never "New-Item did not throw".
-    # A pattern can MATCH SOMETHING ELSE: with a %TEMP% of "C:\Users\Mike [work]" a sibling
-    # "C:\Users\Mike w" satisfies it, and the create then succeeds under that other directory.
-    # Taking that as done would skip the escaped spelling, hand back a path with nothing behind
-    # it, and leave a directory behind somewhere the caller never named. The created path is
-    # read back through Select-Object, not off the object: property reads on DirectoryInfo are
-    # refused under Constrained Language Mode, and cmdlets are not.
     $made = $false
     try {
         $createdPath = "$(New-Item -ItemType Directory -Path $dir -ErrorAction Stop |
@@ -1591,20 +1442,11 @@ function New-StudioChildScriptDirectory {
         $labelled = $false
         $icacls = Get-StudioSystem32Tool -Name "icacls.exe"
         if (-not $icacls) {
-            # No way to raise the label, and no way to tell whether it mattered either, so
-            # the directory is given up rather than handed back unprotected.
             try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
             return ""
         }
         try {
             $null = & $icacls "$dir" /setintegritylevel "(OI)(CI)H" 2>&1
-            # Two signals, both locale-independent. icacls reports through its exit code that
-            # it wrote the ACE, and the label's SID is the same text in every language. The
-            # English name is accepted as well, for a host that resolves it that way.
-            #
-            # Matching only the English name was wrong: icacls renders the well-known account
-            # name in the OS language, so an elevated non-English host read its own correctly
-            # applied label as missing and the helper deleted the directory it had just made.
             $labelled = ($LASTEXITCODE -eq 0)
             if (-not $labelled) {
                 $labelled = ("$(& $icacls "$dir" 2>&1)" -match "S-1-16-12288|High Mandatory Level")
@@ -1614,17 +1456,6 @@ function New-StudioChildScriptDirectory {
             try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
             return ""
         }
-        # The gap between creating the directory and raising its label is the rest of the
-        # race. Until the label lands the directory carries the medium one it inherited from
-        # %TEMP%, and a same-user process watching that root can drop its own early.py or
-        # nvprobe.py in. Writing our program over that file does not help: an existing file
-        # keeps its own DACL, so the attacker can rewrite it again between our write and the
-        # launch, and an elevated run then executes it with the administrator token.
-        #
-        # Nothing can be planted once the label is on, so anything in here now was planted
-        # inside that window. The directory is refused rather than emptied: this one is
-        # cheap to give up, the caller treats "" as the rung declining, and the next call
-        # gets a fresh name.
         if ($labelled) {
             $planted = $true
             try {
@@ -1656,7 +1487,6 @@ function Get-NvidiaNvmlLibraryPath {
 
 # The same inventory with nothing emitted: CPython's ctypes makes the identical NVML and CUDA
 # driver calls, and the interop leaves the scanned surface rather than moving within it.
-# The only source now, and it declines rather than guesses: "" whenever no interpreter is
 # available or the probe itself says nothing.
 # Get-NvidiaProbePythonExe is deliberately per-file. The installer has its early read-only
 # interpreter ladder; setup.ps1 has the venv a previous run already built.
@@ -1805,14 +1635,7 @@ def main():
 main()
 '@
     # Cmdlets only. Constrained Language Mode refuses New-Object ProcessStartInfo and
-    # [Process]::Start, and CLM is one of the policies that used to leave a locked-down host with
-    # no GPU detection at all, so this launcher has to work on the hosts that need it most.
     $probeDir = New-StudioChildScriptDirectory
-    # The labelled directory protects the program FILE from a same-user swap, nothing else. When it
-    # declines (icacls missing, whoami blocked, an elevated run whose %TEMP% will not take a label) the
-    # program travels in this process's environment instead, so no file is executed and there is
-    # nothing to swap; only the answer lands in %TEMP%, as it did before the directory existed.
-    # Declining here used to leave a working NVIDIA card without an inventory.
     $inline = (-not $probeDir)
     if ($inline) {
         $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
@@ -1836,7 +1659,6 @@ main()
         # each native argument verbatim, so a script under "C:\Users\First Last\AppData\Local\
         # Temp" or a hint under "C:\Program Files\NVIDIA Corporation\NVSMI" would split on its
         # spaces and the child would run something else. The script arrives on stdin and the two
-        # library hints in the environment; the only arguments left are -I -S -B and a bare dash.
         $savedNvml = $env:UNSLOTH_NVML_HINT
         $savedCuda = $env:UNSLOTH_CUDA_HINT
         $savedSkip = $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML
@@ -1848,7 +1670,6 @@ main()
         else { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -ErrorAction SilentlyContinue }
         try {
             if ($inline) {
-                # No space and no double quote in the -c argument, for the same 5.1 reason as above.
                 $env:UNSLOTH_NVIDIA_PROBE_SOURCE = $probeSource
                 $proc = Start-Process -FilePath $exe -NoNewWindow -PassThru `
                     -ArgumentList @("-I", "-S", "-B", "-c", "exec(__import__('os').environ['UNSLOTH_NVIDIA_PROBE_SOURCE'])") `
@@ -1894,17 +1715,6 @@ main()
 }
 
 # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
-# answers. Versions are major*1000 + minor*10.
-#
-# One rung now. The emitted UnslothNvidiaProbeV2 type that used to run first is gone, and with
-# it the child runspace that bounded it: CPython's ctypes makes the identical NVML and CUDA
-# driver calls, returns the identical string, and is not blocked by the policies that stopped
-# the emitted rung being defined at all. Those policies are exactly where an NVIDIA GPU used to
-# go unnoticed, so this is the wider source, not the narrower one.
-# $TimeoutMs is a per-reader bound. One child reads NVML and then the CUDA driver API. Only when
-# that child is killed at the bound (a hung NVML) does a second child read the CUDA driver API
-# alone, under a bound of its own. A host whose NVML answers or is absent spawns one child, a
-# hung NVML no longer starves CUDA, and the worst case is two bounds.
 function Read-NvidiaLibraryRaw {
     param([int]$TimeoutMs = 30000)
     $raw = ""
@@ -2712,8 +2522,6 @@ function Ensure-VCRedist {
 # ─────────────────────────────────────────────
 $Rule = [string]::new([char]0x2500, 52)
 
-# This script declares no native method at all, and neither does install.ps1. Which product
-# blocked what is recorded in tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD).
 
 function Enable-StudioVirtualTerminal {
     if ($env:NO_COLOR) { return $false }

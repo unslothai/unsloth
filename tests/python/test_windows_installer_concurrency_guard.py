@@ -404,11 +404,6 @@ public static class UnslothStudioFinalPath
 $resolved = Get-StudioFinalPath -Path $env:SystemRoot
 Write-Output ([bool]($resolved -and (Test-Path -LiteralPath $resolved)))
 """
-    # A type left in the session by an older installer used to be a collision: the resolver
-    # defined its own and had to carry a version suffix to avoid the name. It defines nothing now,
-    # so the old type is simply inert, and this asserts that rather than asserting the suffix.
-    # A type cannot be unloaded from a session, so an installer that DID collide could not
-    # recover; this is the scenario that made the suffix necessary in the first place.
     assert _run_powershell(shell, script, os.environ.copy()).splitlines() == ["True"]
 
 

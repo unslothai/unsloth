@@ -87,8 +87,6 @@ function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) Wr
 # not recognized" inside whichever case happened to reach it first. The closure above
 # makes an install.ps1-defined callee unreachable by construction; this catches the rest,
 # including a helper that calls a sink this file forgot to stub.
-# Get-Acl too: Microsoft.PowerShell.Security ships it on Windows only, and the elevated-run
-# interpreter gate reads an SDDL through it inside a try that declines on any failure.
 $windowsOnlyCommands = @("Get-CimInstance", "Get-Acl")
 $unresolved = [System.Collections.Generic.List[string]]::new()
 foreach ($name in $extracted) {

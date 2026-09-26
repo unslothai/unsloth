@@ -295,23 +295,6 @@ def test_both_entrypoints_resolve_and_reuse_the_same_managed_directory() -> None
     assert "$LlamaCppDir =" not in phase
 
 
-# Labelling a directory the installer just created is not repairing anyone's permissions.
-#
-# The rule below is about the user's files: a denied path is REPORTED, never taken over, because
-# an installer that quietly rewrites ACLs on a directory it does not own is both a support
-# problem and a privilege one. Raising the mandatory integrity level on a freshly created,
-# randomly named directory of our own is the opposite: it is what stops a same-user process at
-# medium integrity writing a program into it between the write and the launch, which an elevated
-# installer would then run with its own token. A DACL cannot express that, since the attacker is
-# the owner, so icacls is the in-box way to say it and it stays reachable under Constrained
-# Language Mode where the managed ACL APIs do not.
-#
-# Two spellings, both on that directory: setting the label, and reading it back to confirm it
-# took. The read changes nothing at all, and it is there because icacls can be missing or blocked
-# and neither throws, so an unverified label would leave a directory looking protected and not be.
-#
-# Spelled tightly on purpose: this variable, and either this verb or no verb at all. A grant, a
-# reset, any other target, and any takeown still fail.
 _LABELS_OUR_OWN_DIRECTORY = re.compile(r'icacls\.exe "\$dir"(?: /setintegritylevel\b| 2>&1)')
 
 

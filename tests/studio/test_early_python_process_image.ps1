@@ -36,15 +36,8 @@ foreach ($name in @(
     Invoke-Expression $fn[0].Extent.Text
 }
 
-# CI's Windows runners are elevated and their Python is not admin-owned, so the real elevation
-# gate declines it and every row below would skip, which is how these suites once passed on
-# Windows having tested nothing. The rung itself is what they test; the gate has its own rows
-# in test_early_python_path_resolver.ps1, driven by stubs. So run the rows below as unelevated.
 if ($env:OS -eq "Windows_NT") { function Test-StudioChildScriptDirectoryElevated { return $false } }
 
-# The emitted rung that used to sit at the top is gone. Get-Process, which is the rung above this
-# one now, and the WMI rung below it are both forced off: this is the state the ctypes rung exists
-# to improve, and on a host where either of them answers nothing here ever runs.
 function Get-Process { param($Id, $ErrorAction) throw "no such process" }
 function Get-CimInstance { param($ClassName, $ErrorAction) throw "WMI is unavailable" }
 function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
@@ -72,15 +65,6 @@ if (-not $exe) {
         Write-Host "  SKIP  UNSLOTH_EARLY_PYTHON_PROBE=0, so this rung is switched off by request" -ForegroundColor Yellow
         exit 0
     }
-    # USABLE, not merely present. The installer rejects an interpreter that cannot complete its own
-    # probe, so presence on PATH is not proof that discovery should have found one: Python 2, any
-    # Python below 3.8 (whose Windows resolve() does not follow links), a broken executable, and a
-    # Windows Store App Execution Alias are all on PATH and all correctly refused. Failing here on
-    # those hosts blames this file for the installer behaving as designed.
-    #
-    # So ask the same question Invoke-StudioEarlyPython asks, of the same candidates, and only then
-    # decide. The WindowsApps aliases are excluded WITHOUT running them: they are zero-length stubs
-    # that open the Microsoft Store, which a test must not do to whoever is running it.
     $elevatedHost = $false
     if ($env:OS -eq "Windows_NT") { try { $elevatedHost = [bool](Test-StudioChildScriptDirectoryElevated) } catch { $elevatedHost = $true } }
     $usable = $null
@@ -261,23 +245,12 @@ Check "the probe declares CloseHandle's argument type" (
     $probeText -match "CloseHandle\.argtypes")
 # 0x400 is refused by protected and cross-session processes; 0x1000 is not.
 Check "the probe asks for the limited-information right only" ($probeText -match "OpenProcess\(0x1000,")
-# EnumProcesses reports the bytes it used. Equal to the buffer size means it may have run out, so
-# only a strictly smaller figure proves the enumeration was complete.
-# Exactness. There is no longer a native rung to agree WITH: the emitted
-# UnslothStudioProcessImageV1 type is gone and this ctypes probe is the only caller of
-# OpenProcess and QueryFullProcessImageNameW in the installer. What still matters is that the
-# call it makes is the one the native rung used to make, because Test-StudioProtectedPathMatch
-# compares paths this returns against paths recorded by earlier installs that used the native
-# rung. Same access right, same flags argument (0 is the Win32 path form; 1 would return
-# \Device\HarddiskVolume1\... instead), same buffer size. Those three constants are pinned
-# here directly rather than by comparison, since there is nothing left to compare against.
 Check "the probe asks for PROCESS_QUERY_LIMITED_INFORMATION, as the native rung did" (
     $probeText -match "OpenProcess\(0x1000,")
 Check "it passes flags 0, so it gets the Win32 path form and not the device form" (
     $probeText -match "QueryFullProcessImageNameW\(h,0,")
 Check "it sizes the buffer as the native rung did" (
     $probeText -match "create_unicode_buffer\(32768\)")
-# And the rung it replaced really is gone, rather than merely unreferenced by this test.
 $installWhole = [System.IO.File]::ReadAllText($installPs1)
 Check "no emitted process-image type remains" ($installWhole -notmatch "UnslothStudioProcessImageV1")
 Check "no native process-image helper remains" (

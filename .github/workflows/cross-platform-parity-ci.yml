@@ -410,11 +410,6 @@ jobs:
       - name: Uninstaller ownership gate tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_uninstall_legacy_layout_gate.ps1
-      # Linux on purpose, and the only lane that can run it. It needs a host where the
-      # LOWER rungs cannot answer: the ctypes process-image rung is Windows-only and there
-      # is no Win32_Process here, so the ladder runs out and has to report unknown rather
-      # than a wrong path. A healthy Windows runner answers on every rung, so the
-      # degradation half of this file is not reproducible there.
       - name: Path resolver degradation tests
         if: runner.os == 'Linux'
         run: pwsh -NoProfile -File tests/studio/test_path_resolver_degrades.ps1

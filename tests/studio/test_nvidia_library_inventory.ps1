@@ -70,9 +70,6 @@ $installBlock = $installParts[4]
 $setupBlock = $setupParts[4]
 $setupPath = $setupParts[1]
 $readBlock = $setupParts[3]
-# The NVML and CUDA calls moved from a PowerShell reader over an emitted type into the embedded
-# Python probe, so the semantic checks below read THAT rather than $readBlock, which is now a
-# thin wrapper. Same assertions, same meaning, pointed at where the code actually lives.
 $viaPythonBlock = $setupParts[2]
 $probeBody = ""
 $probeAt = $viaPythonBlock.IndexOf("`$probeSource = @'")
@@ -88,9 +85,6 @@ for ($k = 0; $k -lt $blockNames.Count; $k++) {
     Check "install.ps1 and setup.ps1 carry the same $($blockNames[$k])" ((& $strip $installParts[$k]) -eq (& $strip $setupParts[$k]))
 }
 # The installer must not spawn a C# compiler (windows-no-compiler-ci): the methods are emitted.
-# Nothing is compiled and nothing is emitted. The inventory used to reach the driver through a
-# P/Invoke type built at runtime; it now reaches it through CPython's ctypes, so neither csc.exe
-# (windows-no-compiler-ci) nor System.Reflection.Emit is involved at any point.
 $joined = ($setupParts -join "`n")
 Check "the inventory compiles nothing" ($joined -notmatch 'Add-Type')
 Check "the inventory emits nothing" ($joined -notmatch 'New-StudioEmittedNativeType|DefinePInvokeMethod|Reflection\.Emit')
@@ -120,8 +114,6 @@ Check "a failed driver-version read is not an inventory" (
 
 # The real libraries, in a child so the fake type below can own this session.
 $helperFile = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-inventory-" + [System.IO.Path]::GetRandomFileName() + ".ps1")
-# No emitters and no capability stub any more: the helpers are self-contained, and the only
-# thing the child needs is an interpreter to run the probe with.
 $pythonStub = 'function Get-NvidiaProbePythonExe { $c = Get-Command python3 -ErrorAction SilentlyContinue; if (-not $c) { $c = Get-Command python -ErrorAction SilentlyContinue }; if ($c) { return $c.Source } return "" }'
 $helperBody = (@($pythonStub) + $setupParts) -join "`n"
 Set-Content -LiteralPath $helperFile -Value ($helperBody + "`n`$inv = Get-NvidiaLibraryInventory`nif (`$inv) { `$inv | ConvertTo-Json -Compress } else { 'null' }")

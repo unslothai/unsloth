@@ -595,11 +595,6 @@ def _console_less_probe(path: Path) -> str:
         r"[ \t]*try \{ \$script:StudioStdoutRedirected = \[Console\]::IsOutputRedirected \} catch \{ \}",
     )
     parts += [redirect_probe or "$script:StudioStdoutRedirected = $false", ""]
-    # Enable-StudioVirtualTerminal's own helpers come first, because it calls them: without them
-    # the probe dies with an unrecognised command, which reads as "the predecessor disagreed" when
-    # in truth it never ran. Anything the sliced functions call has to be sliced with them. The
-    # four emit helpers that used to head this list are gone from both scripts, and each name is
-    # sliced only if it is still there, so removing them from here changes nothing that runs.
     for name in (
         "Write-StudioLine",
         "Enable-StudioVirtualTerminal",

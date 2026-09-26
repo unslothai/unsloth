@@ -45,10 +45,6 @@ foreach ($name in @(
     Invoke-Expression $fn[0].Extent.Text
 }
 
-# CI's Windows runners are elevated and their Python is not admin-owned, so the real elevation
-# gate declines it and every row below would skip, which is how these suites once passed on
-# Windows having tested nothing. The rung itself is what they test; the gate has its own rows
-# in test_early_python_path_resolver.ps1, driven by stubs. So run the rows below as unelevated.
 if ($env:OS -eq "Windows_NT") { function Test-StudioChildScriptDirectoryElevated { return $false } }
 
 $script:StudioEarlyPythonProbed = $false
@@ -64,15 +60,6 @@ if (-not (Get-StudioEarlyPython)) {
         Write-Host "  SKIP  UNSLOTH_EARLY_PYTHON_PROBE=0, so this rung is switched off by request" -ForegroundColor Yellow
         exit 0
     }
-    # USABLE, not merely present. The installer rejects an interpreter that cannot complete its own
-    # probe, so presence on PATH is not proof that discovery should have found one: Python 2, any
-    # Python below 3.8 (whose Windows resolve() does not follow links), a broken executable, and a
-    # Windows Store App Execution Alias are all on PATH and all correctly refused. Failing here on
-    # those hosts blames this file for the installer behaving as designed.
-    #
-    # So ask the same question Invoke-StudioEarlyPython asks, of the same candidates, and only then
-    # decide. The WindowsApps aliases are excluded WITHOUT running them: they are zero-length stubs
-    # that open the Microsoft Store, which a test must not do to whoever is running it.
     $elevatedHost = $false
     if ($env:OS -eq "Windows_NT") { try { $elevatedHost = [bool](Test-StudioChildScriptDirectoryElevated) } catch { $elevatedHost = $true } }
     $usable = $null
@@ -189,10 +176,6 @@ try {
     Check "New-StudioShortcuts passes its own interpreter to the refresh" (
         $shortcutFn -match '(?s)Invoke-StudioPythonShellIconRefresh[^\r\n]*[\r\n\s`]*-Paths \$createdShortcutPaths -Exe \$ManagedPythonPath')
 
-    # No elevation gate here, unlike the interpreters the early-Python ladder discovers on PATH.
-    # This is the venv interpreter the run has already executed directly (its installs, the NVIDIA
-    # probe), so skipping it on an elevated run protected nothing and only lost the refresh the
-    # emitted type used to do there.
     Check "an elevated run still refreshes through the venv interpreter" (
         $shortcutFn -notmatch 'Test-StudioPathUnderAdminRoot' -and
         $shortcutFn -notmatch 'iconRefreshSafe')
@@ -254,11 +237,6 @@ Check "the probe still sends the global SHCNE_ASSOCCHANGED broadcast, flushed" (
 Check "the probe declares SHChangeNotify's signature" (
     $probeText -match "SHChangeNotify\.argtypes" -and $probeText -match "LPCWSTR")
 
-# This is now the ONLY rung, not a fallback. The emitted UnslothShellIconRefresh type it used to
-# sit behind is gone, and with it the hosts where the refresh simply did not happen: under
-# Constrained Language Mode or WDAC the type could not be defined at all, so the icon stayed
-# stale until something else invalidated Explorer's cache. ctypes reaches the same shell32 entry
-# point everywhere.
 $source = Get-Content -LiteralPath $installPs1 -Raw
 Check "no emitted shell-icon type is left to try first" ($source -notmatch "UnslothShellIconRefresh")
 Check "the refresh goes straight through the child interpreter" (

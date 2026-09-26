@@ -26,9 +26,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = ROOT / "install.ps1"
 
-# The helpers whose ordering actually decides whether a rung runs. Each one is called from inside
-# another helper rather than directly by the statement that triggers it, which is what makes the
-# ordering easy to get wrong: the call site and the declaration are thousands of lines apart.
 CHECKED = (
     "New-StudioChildScriptDirectory",
     "Test-StudioChildScriptDirectoryElevated",

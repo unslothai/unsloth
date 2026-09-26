@@ -2168,26 +2168,9 @@ function Install-UnslothStudio {
     try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
     $tauriProfile = if ($defaultProfile) { $defaultProfile } else { $env:USERPROFILE }
 
-    # This script declares no native method at all. Add-Type compiles through csc.exe, which
-    # security software blocks and which failed outright when %TEMP% was unusable (issue
-    # #9140); reflection emit avoided the compiler but was the largest single contributor to a
-    # behavioural verdict on the shipped file. Every entry point is reached through a child
-    # interpreter and ctypes now. Which product blocked what:
     # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 
-    # pathlib.Path.resolve is GetFinalPathNameByHandleW on Windows, and that is the only exact
-    # answer for a path: it follows junctions, symlinks and SUBST drives, expands 8.3 aliases
-    # and reports the on-disk spelling, none of which GetFullPath does. Where no interpreter
-    # can be reached, Get-StudioLexicalPath carries the run and the identity is inexact.
-    # Reset with the rest: under `irm | iex` this is the caller's own.
     $script:StudioFinalPathWarned = $false
-    # $true once this run knows there is no earlier install at the target, set where $VenvDir
-    # is first computed and before anything is created there. The warning below is about two
-    # spellings of an EXISTING install escaping one another's lock; a first install has nothing
-    # there to protect, and on the old native resolver a Python-less host printed nothing, so a
-    # first install stays quiet. The locking is unchanged either way: an inexact answer still
-    # makes Test-StudioPathEqual return $null and the caller take both runtime locks. Unknown
-    # (a caller before the root is computed, or a test driving the helper alone) still warns.
     $script:StudioInstallIsFresh = $null
     function Write-StudioFinalPathDegraded {
         param([string]$Reason)
@@ -2367,27 +2350,17 @@ function Install-UnslothStudio {
     $script:StudioEarlyPython = $null
     $script:StudioEarlyPythonProbedWithoutVenv = $false
 
-    # Does an SDDL rights field let its holder change what is in a directory.
-    #
-    # The field is either a hex mask or a run of two-letter aliases, and both spellings turn up on
-    # the same machine, so both are read. Anything that cannot be read at all answers YES, because
-    # this feeds a gate whose safe answer is to decline.
     function Test-StudioSddlRightsAreWrite {
         param([string]$Rights)
         if ([string]::IsNullOrWhiteSpace($Rights)) { return $true }
         $text = "$Rights".Trim().ToUpper()
         if ($text -like "0X*") {
-            # Parsed a digit at a time rather than with [Convert]::ToInt64: this whole helper runs
-            # on Constrained Language Mode hosts, and a [long] accumulator is needed anyway because
-            # a full 32-bit mask overflows [int] into a Double, which -band then refuses.
             $mask = [long]0
             foreach ($ch in $text.Substring(2).ToCharArray()) {
                 $digit = "0123456789ABCDEF".IndexOf($ch)
                 if ($digit -lt 0) { return $true }
                 $mask = ($mask * 16) + $digit
             }
-            # WRITE_DATA, APPEND_DATA, WRITE_EA, DELETE_CHILD, WRITE_ATTRIBUTES, DELETE, WRITE_DAC,
-            # WRITE_OWNER, GENERIC_ALL, GENERIC_WRITE.
             return (($mask -band 0x500D0156) -ne 0)
         }
         foreach ($alias in @("GA", "GW", "WD", "WO", "SD", "DT", "FA", "FW", "KA", "KW",
@@ -2397,12 +2370,6 @@ function Install-UnslothStudio {
         return $false
     }
 
-    # Is this SDDL principal one that a standard user cannot act as.
-    #
-    # An allowlist, not a denylist of the well-known user groups. A denylist has to be complete to
-    # be correct, and the one principal that matters most is a domain account nobody can enumerate
-    # ahead of time. Both spellings are accepted because which one Get-Acl prints depends on the
-    # build rather than on the ACL.
     function Test-StudioSddlPrincipalIsAdminOnly {
         param([string]$Principal)
         if ([string]::IsNullOrWhiteSpace($Principal)) { return $false }
@@ -2413,20 +2380,10 @@ function Install-UnslothStudio {
         ) -contains $who)
     }
 
-    # Can anyone but an administrator change what is in the directory this SDDL describes.
-    #
-    # Unreadable answers YES throughout, so a shape this parser does not understand declines the
-    # interpreter rather than accepting it.
     function Test-StudioSddlWritableByNonAdmin {
         param([string]$Sddl)
         if ([string]::IsNullOrWhiteSpace($Sddl)) { return $true }
         $text = "$Sddl".Trim()
-        # The owner first, and it is not a formality. The owner of an object holds WRITE_DAC
-        # implicitly whatever the DACL says, so a directory an attacker created can carry an ACL
-        # that reads as locked down and still be entirely theirs to rewrite.
-        # Non-greedy up to the next section marker: the owner and the group run together in the
-        # string, so "O:BAG:SY" is owner BA and group SY, and a class that simply stops at the next
-        # colon reads the owner as "BAG".
         if (-not ($text -match '^O:([A-Za-z0-9\-]+?)(?:G:|D:|S:|$)')) { return $true }
         if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $Matches[1])) { return $true }
         $daclAt = $text.IndexOf("D:")
@@ -2435,9 +2392,6 @@ function Install-UnslothStudio {
         $saclAt = $dacl.IndexOf("S:")
         if ($saclAt -ge 0) { $dacl = $dacl.Substring(0, $saclAt) }
         $seen = 0
-        # Split rather than [regex]::Matches, which is not a Constrained Language Mode type. A
-        # conditional ACE carries parentheses of its own and comes apart here into fields that do
-        # not parse, which the field-count check below turns into a decline.
         foreach ($chunk in ($dacl -split '\)')) {
             $open = $chunk.IndexOf("(")
             if ($open -lt 0) { continue }
@@ -2446,10 +2400,6 @@ function Install-UnslothStudio {
             if ($fields.Count -lt 6) { return $true }
             $type = "$($fields[0])".Trim().ToUpper()
             $flags = "$($fields[1])".Trim().ToUpper()
-            # Everything that is not a deny counts as a grant, including the conditional forms this
-            # cannot evaluate. An inherit-only ACE does not apply to this directory at all, and that
-            # exemption is load-bearing rather than tidy: CREATOR OWNER is spelled exactly that way
-            # on every one of these roots, so reading it as an effective grant rejects all of them.
             if (@("D", "OD", "XD") -contains $type) { continue }
             if ($flags.Contains("IO")) { continue }
             if (-not (Test-StudioSddlRightsAreWrite -Rights $fields[2])) { continue }
@@ -2461,7 +2411,6 @@ function Install-UnslothStudio {
         return $false
     }
 
-    # Is this one directory administrator-only, by its own ACL.
     function Test-StudioDirectoryIsAdminOnly {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -2476,12 +2425,6 @@ function Install-UnslothStudio {
         return (-not (Test-StudioSddlWritableByNonAdmin -Sddl $sddl))
     }
 
-    # The parent directory, computed lexically and for both separators.
-    #
-    # Split-Path is the obvious way to do this and is wrong here: on a non-Windows host it does not
-    # treat a backslash as a separator at all, so "C:\Program Files\Python312\python.exe" has no
-    # parent and the walk below ends before it starts. That matters because the parity lane runs
-    # these checks on Linux, where a silently empty walk reads as a clean decline.
     function Get-StudioLexicalParent {
         param([string]$Path)
         $trimmed = "$Path".TrimEnd('\', '/')
@@ -2490,30 +2433,6 @@ function Install-UnslothStudio {
         return $trimmed.Substring(0, $cut)
     }
 
-    # Is this path inside a root that only an administrator can write.
-    #
-    # An elevated run launches whatever interpreter this ladder settles on WITH THE ADMINISTRATOR
-    # TOKEN. A per-user CPython under %LOCALAPPDATA%, or one on PATH from a directory the same
-    # user's medium-integrity token can write, is then a way to have arbitrary code run elevated:
-    # replace the executable, wait for the next install. The labelled child directory does not
-    # help, because it protects the script this runs, not the thing running it.
-    #
-    # Being under one of the Windows-protected roots is necessary but NOT sufficient, and the
-    # earlier version of this helper stopped there. Microsoft's own AppLocker guidance says why:
-    # %WINDIR% contains a Temp subfolder the Users group is deliberately given Create Files/Write
-    # Data and Create Folders/Append Data on for application compatibility, and a handful of
-    # siblings are the same, which is precisely what makes a path rule over %WINDIR% a documented
-    # bypass. C:\Windows\Temp\python.exe passed the prefix test and would have been launched with
-    # the administrator token.
-    #
-    # So the location test is kept as the cheap first filter, the documented compatibility
-    # directories are refused outright, and then every directory from the interpreter's own up to
-    # the matched root has to be administrator-only by its ACL. The ACL is read as SDDL, which
-    # carries SIDs and two-letter aliases rather than the account names icacls renders in the OS
-    # language, so nothing here depends on the machine's locale.
-    #
-    # Every unknown declines. An unelevated run is not affected at all: it has no token worth
-    # stealing, and this gate is only consulted when the run is elevated.
     function Test-StudioPathUnderAdminRoot {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -2525,13 +2444,6 @@ function Install-UnslothStudio {
         }
         $matchedRoot = ""
         foreach ($root in $roots) {
-            # The separator is part of the comparison: "C:\Program Files" must not match
-            # "C:\Program Files Evil", which any user can create.
-            #
-            # -like, not String.StartsWith with a StringComparison: that enum is not on
-            # Constrained Language Mode's allowed type list either, and -like is already
-            # case-insensitive. The root is escaped first, because a bracket in it would
-            # otherwise be read as a character class and match the wrong thing.
             $escapedRoot = $root -replace '([\[\]\*\?])', '`$1'
             if (("$Path" -like ($escapedRoot + "\*")) -or ("$Path" -like ($escapedRoot + "/*"))) {
                 $matchedRoot = $root
@@ -2539,9 +2451,6 @@ function Install-UnslothStudio {
             }
         }
         if ([string]::IsNullOrWhiteSpace($matchedRoot)) { return $false }
-        # The documented compatibility directories, refused without asking anything. They are
-        # fixed English names rather than display names, so this holds in every OS language, and it
-        # still holds on a host where the ACL cannot be read at all.
         $windowsRoot = "$($env:SystemRoot)".TrimEnd('\', '/')
         if (-not [string]::IsNullOrWhiteSpace($windowsRoot)) {
             foreach ($leaf in @(
@@ -2556,9 +2465,6 @@ function Install-UnslothStudio {
                     ("$Path" -like ($escapedWritable + "/*"))) { return $false }
             }
         }
-        # And then the ACL, every level from the interpreter's own directory up to the root. Only
-        # the immediate directory is not enough: a directory created under one that grants Users
-        # write belongs to whoever created it, and its own ACL can say anything they like.
         $current = Get-StudioLexicalParent -Path "$Path"
         $guard = 0
         while (-not [string]::IsNullOrWhiteSpace($current)) {
@@ -2573,21 +2479,10 @@ function Install-UnslothStudio {
         return $false
     }
 
-    # Is the interpreter FILE itself something only an administrator can change.
-    #
-    # Test-StudioPathUnderAdminRoot vouches for the directories, not the file in them. Windows lets
-    # a file inside an administrator-only directory carry a DACL a standard user can write, and a
-    # symlink or other reparse point there can lead to a file the user controls. Either one lets a
-    # medium-integrity process replace what the elevated run launches. So a reparse point is
-    # refused outright rather than followed, and the file's own descriptor must pass the same SDDL
-    # rule the directories do. Every unknown declines.
     function Test-StudioInterpreterFileIsAdminOnly {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
         try {
-            # Select-Object -Property, not a property read or -ExpandProperty: Constrained Language
-            # Mode refuses the former, and the latter errors on a LinkType that is empty, which is
-            # exactly the ordinary file this has to accept.
             $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop |
                 Select-Object -Property Attributes, LinkType
             if ($null -eq $item) { return $false }
@@ -2626,11 +2521,8 @@ function Install-UnslothStudio {
                 }
             } catch {}
         }
-        # Asked once, and only on Windows: everything below is about which token a child would
-        # run with, and the elevation split is a Windows one.
         $requireAdminRoot = $false
         if ($env:OS -eq "Windows_NT") {
-            # Unknown reads as elevated, the cautious answer.
             try { $requireAdminRoot = Test-StudioChildScriptDirectoryElevated } catch { $requireAdminRoot = $true }
         }
         $rejectedForWritability = $false
@@ -2641,15 +2533,7 @@ function Install-UnslothStudio {
             $isFile = $false
             try { $isFile = Test-Path -LiteralPath $candidate -PathType Leaf } catch {}
             if (-not $isFile) { continue }
-            # Elevated: only an interpreter a medium-integrity process cannot replace, since it
-            # runs with the administrator token. Declining costs only the exact path identity.
-            # The existing install's own venv interpreter is the exception: this elevated run
-            # executes it anyway (platform checks, uv pip install --python, the torch probes), so
-            # refusing it here protected nothing and left every elevated upgrade inexact.
-            # The file is checked as well as the directories above it: a user-writable DACL on the
-            # file, or a reparse point in its place, is the same replacement by another route.
             if ($requireAdminRoot -and ($venvCandidates -notcontains $candidate)) {
-                # A check that cannot answer rejects the candidate, as a failed one does.
                 $adminOnly = $false
                 try {
                     $adminOnly = (Test-StudioPathUnderAdminRoot -Path $candidate) -and
@@ -2660,8 +2544,6 @@ function Install-UnslothStudio {
                     continue
                 }
             }
-            # WindowsApps python.exe / python3.exe are App Execution Alias stubs that open the
-            # Microsoft Store instead of running, and would burn the probe timeout doing it.
             if ("$candidate" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]') { continue }
             # Probe the interpreter's own directory: $PSScriptRoot is empty under `irm | iex`.
             $probeDir = $null
@@ -2758,45 +2640,7 @@ function Install-UnslothStudio {
         }
     }
 
-    # Writing the program into the shared %TEMP% and then naming that path to Start-Process leaves a
-    # time-of-check to time-of-use gap: any process of the same user can watch the directory and
-    # swap the file between the write and the launch. That only becomes a privilege question when
-    # THIS shell is elevated, and then it is the whole of one, because the child runs our program
-    # with the administrator token.
-    #
-    # A fresh directory nothing else can predict the name of, then a mandatory integrity label of
-    # High on it. An unelevated process of the same user runs at medium integrity and cannot write
-    # into a High-labelled directory. A DACL cannot express that: the attacker is the owner, and an
-    # owner can always rewrite its own DACL. icacls is the in-box tool for the label and stays
-    # reachable under Constrained Language Mode, where the managed ACL APIs do not.
-    #
-    # The label is READ BACK rather than assumed. icacls can be missing, blocked by application
-    # control, or fail for its own reasons, and none of that throws: the directory would come back
-    # looking protected while still being writable by the same user's medium-integrity processes,
-    # which is exactly the escalation this helper exists to close. So when the label did not take,
-    # ask whether it MATTERS: an unelevated run cannot raise the label and does not need to, since
-    # a medium-integrity child has no token worth stealing, while an elevated run that could not
-    # raise it must refuse rather than hand back the directory. Every caller already treats "" as
-    # "this rung declined" and falls to the one below it.
-    #
-    # Declared here, above its first caller, and not beside the NVIDIA inventory it was written
-    # for. All of this file is one function, so these declarations run in order: a helper defined
-    # further down does not exist yet when an earlier statement calls it, and the throw is caught
-    # and read as "the rung declined" rather than as a missing definition.
-    #
-    # New-Item with -ErrorAction Stop, not -Force: it must FAIL on a directory that already exists,
-    # or a pre-created one carrying an attacker's ACL would be adopted instead of refused.
 
-    # An in-box tool, named by its full path, or "" when it is not there.
-    #
-    # `& icacls.exe` is PowerShell command resolution: a function, alias or executable of that
-    # name from the user's session or PATH wins, and on an elevated run it would then execute
-    # with the administrator token. A fake one can also report success without applying the
-    # label, which reopens the file-swap this helper is here to close. So the real one, by
-    # absolute path, and nothing at all rather than whatever PATH offers.
-    #
-    # System32 resolves to SysWOW64 in a 32-bit process, which carries both of these tools, so
-    # this spelling is right in either bitness.
     function Get-StudioSystem32Tool {
         param([Parameter(Mandatory = $true)][string]$Name)
         if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) { return "" }
@@ -2806,17 +2650,6 @@ function Install-UnslothStudio {
     }
 
     function Test-StudioChildScriptDirectoryElevated {
-        # whoami is in-box and prints the token's own mandatory label, as a SID, which is the same
-        # text in every language. The WindowsPrincipal route the rest of this file uses for
-        # elevation is a managed type Constrained Language Mode refuses, and CLM is the population
-        # this ladder exists for.
-        #
-        # Unknown answers YES. whoami can be missing or blocked by application control, and
-        # neither is evidence of a medium token: reading that as "not elevated" hands back an
-        # unlabelled directory on a host that may well be elevated, which is the whole of the
-        # escalation this is here to stop. The only confirmed no is a token that names a
-        # mandatory label below High. Costs an unelevated host with whoami blocked the Python
-        # rungs, which degrade to the lexical resolver and say so.
         $groups = ""
         $whoami = Get-StudioSystem32Tool -Name "whoami.exe"
         if (-not $whoami) { return $true }
@@ -2830,25 +2663,6 @@ function Install-UnslothStudio {
     function New-StudioChildScriptDirectory {
         $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
         $dir = Join-Path $tempRoot ("unsloth-child-" + [guid]::NewGuid().ToString("N"))
-        # New-Item takes -Path and Windows PowerShell 5.1 has no -LiteralPath, so a profile like
-        # "C:\Users\Mike [work]" turns %TEMP% into a wildcard pattern there and the create fails,
-        # which would decline this rung on a host with nothing wrong with it. Elsewhere this file
-        # reaches for [System.IO.Directory]::CreateDirectory for the same reason; that is not
-        # available here, because this helper has to keep working under Constrained Language Mode,
-        # where the type is refused.
-        #
-        # So: the path as written first, and the bracket-escaped spelling only if that failed.
-        # Not the escaped one first. Measured on PowerShell 7: it takes -Path literally and the
-        # escaped spelling creates a directory whose NAME contains the backticks, somewhere else
-        # entirely. Hence the confirmation below rather than trusting either call to have made
-        # the directory the caller is about to be handed.
-        # Success is "the path we are about to hand back exists", never "New-Item did not throw".
-        # A pattern can MATCH SOMETHING ELSE: with a %TEMP% of "C:\Users\Mike [work]" a sibling
-        # "C:\Users\Mike w" satisfies it, and the create then succeeds under that other directory.
-        # Taking that as done would skip the escaped spelling, hand back a path with nothing behind
-        # it, and leave a directory behind somewhere the caller never named. The created path is
-        # read back through Select-Object, not off the object: property reads on DirectoryInfo are
-        # refused under Constrained Language Mode, and cmdlets are not.
         $made = $false
         try {
             $createdPath = "$(New-Item -ItemType Directory -Path $dir -ErrorAction Stop |
@@ -2872,20 +2686,11 @@ function Install-UnslothStudio {
             $labelled = $false
             $icacls = Get-StudioSystem32Tool -Name "icacls.exe"
             if (-not $icacls) {
-                # No way to raise the label, and no way to tell whether it mattered either, so
-                # the directory is given up rather than handed back unprotected.
                 try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
                 return ""
             }
             try {
                 $null = & $icacls "$dir" /setintegritylevel "(OI)(CI)H" 2>&1
-                # Two signals, both locale-independent. icacls reports through its exit code that
-                # it wrote the ACE, and the label's SID is the same text in every language. The
-                # English name is accepted as well, for a host that resolves it that way.
-                #
-                # Matching only the English name was wrong: icacls renders the well-known account
-                # name in the OS language, so an elevated non-English host read its own correctly
-                # applied label as missing and the helper deleted the directory it had just made.
                 $labelled = ($LASTEXITCODE -eq 0)
                 if (-not $labelled) {
                     $labelled = ("$(& $icacls "$dir" 2>&1)" -match "S-1-16-12288|High Mandatory Level")
@@ -2895,17 +2700,6 @@ function Install-UnslothStudio {
                 try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
                 return ""
             }
-            # The gap between creating the directory and raising its label is the rest of the
-            # race. Until the label lands the directory carries the medium one it inherited from
-            # %TEMP%, and a same-user process watching that root can drop its own early.py or
-            # nvprobe.py in. Writing our program over that file does not help: an existing file
-            # keeps its own DACL, so the attacker can rewrite it again between our write and the
-            # launch, and an elevated run then executes it with the administrator token.
-            #
-            # Nothing can be planted once the label is on, so anything in here now was planted
-            # inside that window. The directory is refused rather than emptied: this one is
-            # cheap to give up, the caller treats "" as the rung declining, and the next call
-            # gets a fresh name.
             if ($labelled) {
                 $planted = $true
                 try {
@@ -2921,7 +2715,6 @@ function Install-UnslothStudio {
     }
 
     # One child per distinct path: the process scan asks for the same image paths repeatedly.
-    # Misses are cached too, and Resolve-StudioFinalPathsInOneChild primes it in bulk.
     $script:StudioPythonFinalPathCache = $null
 
     function Get-StudioPythonFinalPath {
@@ -2940,19 +2733,6 @@ function Install-UnslothStudio {
         return $answer
     }
 
-    # Resolve many paths in ONE child, and prime the cache above with the answers.
-    #
-    # Purely an optimisation: every entry it writes is exactly what Invoke-StudioEarlyPython would
-    # have returned for that path, same expression and same two post-checks, so the ladder above is
-    # unchanged and simply stops paying for children it can avoid. It matters because of one
-    # caller. Get-RunningStudioVenvProcesses resolves the image path of EVERY running process, and
-    # the install scan repeats that for each of the two to four protected roots; on a machine with
-    # a few hundred processes that is a few hundred interpreter launches where the resolver this
-    # replaced made an in-process call. Measured as the reason to batch, not guessed.
-    #
-    # The path list goes through a file rather than argv. Windows caps a command line at 32767
-    # characters and a few hundred image paths can pass that, which would fail the whole batch
-    # rather than a single path.
     function Resolve-StudioFinalPathsInOneChild {
         param([string[]]$Paths = @())
         if ($null -eq $script:StudioPythonFinalPathCache) { $script:StudioPythonFinalPathCache = @{} }
@@ -2963,32 +2743,14 @@ function Install-UnslothStudio {
             if ($wanted -notcontains $candidate) { $wanted += $candidate }
         }
         if ($wanted.Count -eq 0) { return }
-        # Optional like the per-path rung: a discovery failure leaves the paths to the lexical rung.
         $exe = $null
         try { $exe = Get-StudioEarlyPython } catch {}
         if (-not $exe) { return }
-        # The list is data rather than a program, but it decides which running processes the
-        # installer believes are using a protected root. A same-user process that rewrites it
-        # between the write and the read makes a live managed environment look idle, which is the
-        # same harm as the failed-batch case below, so it gets the same private directory.
         $listDir = New-StudioChildScriptDirectory
         if (-not $listDir) { return }
         $listFile = Join-Path $listDir "paths.txt"
         try { Set-Content -LiteralPath $listFile -Value $wanted -Encoding UTF8 -ErrorAction Stop }
         catch { Remove-Item -LiteralPath $listDir -Recurse -Force -ErrorAction SilentlyContinue; return }
-        # Character for character the expression Invoke-StudioEarlyPython uses, including
-        # strict=True and the version gate, because a batched answer that differed from the
-        # single-path one would be a second implementation of path identity.
-        # utf-8-sig, not utf-8. Windows PowerShell 5.1 is the interpreter the desktop app
-        # spawns, and there -Encoding UTF8 means UTF-8 WITH a BOM: "any Unicode encoding, except
-        # UTF7, always creates a BOM" (about_Character_Encoding, 5.1). Read as plain utf-8 the
-        # BOM becomes part of the FIRST path, resolve() rejects it, and that one entry silently
-        # loses its exact identity on every Windows host. utf-8-sig strips a BOM when there is
-        # one and is plain utf-8 when there is not, so both hosts read the same list.
-        #
-        # One line per input, including the ones that fail, so an empty answer means "asked and
-        # unresolvable" while NO output at all means the child never ran. Those two want opposite
-        # handling below and a silent batch cannot tell them apart.
         $probe = "import pathlib,sys" + [char]10 +
             "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
             "out=[]" + [char]10 +
@@ -3006,14 +2768,6 @@ function Install-UnslothStudio {
         catch { $raw = "" }
         finally { Remove-Item -LiteralPath $listDir -Recurse -Force -ErrorAction SilentlyContinue }
         $answers = @{}
-        # Which paths the child actually answered about, which is not the same question as which
-        # ones it resolved. A child that never started, or that hit the timeout, says nothing at
-        # all; treating that silence as "every one of these paths is unresolvable" would switch
-        # the single-path rung off for the whole run, and the process scan would then compare
-        # lexical spellings, so an executable reached through a junction or a SUBST drive stops
-        # matching its protected root, the live managed process is not seen, and the installer
-        # overwrites an environment in use. This map is the only thing standing between those two
-        # cases: nothing enters the cache that the child did not speak to.
         $reported = @{}
         foreach ($line in ("$raw" -split "`r?`n")) {
             if ([string]::IsNullOrWhiteSpace($line)) { continue }
@@ -3023,13 +2777,8 @@ function Install-UnslothStudio {
             if ($split -lt 1) { continue }
             $requested = $line.Substring(0, $split)
             $answer = $line.Substring($split + 1)
-            # Reported either way: the child answers for every path it was given, so this is the
-            # record that it was really asked rather than lost in a truncated pipe.
             $reported[$requested] = $true
             if ([string]::IsNullOrWhiteSpace($answer)) { continue }
-            # The same two checks the single-path rung applies to its own answer. A relative
-            # answer is not an identity, and a path that does not exist cannot be the resolution
-            # of one that does.
             if (-not (Split-Path -IsAbsolute $answer)) { continue }
             if (-not (Test-Path -LiteralPath $answer)) { continue }
             $answers[$requested] = $answer
@@ -3129,19 +2878,10 @@ function Install-UnslothStudio {
             $missingSegments = @($leaf) + $missingSegments
             $existingPath = $parent
         }
-        # Python first, then the lexical answer. The emitted CreateFileW /
-        # GetFinalPathNameByHandleW rung that used to sit on top of these is gone; the
-        # interpreter reaches the SAME system call, os.path.realpath being
-        # GetFinalPathNameByHandleW on Windows, so Exact = $true here is earned rather than
-        # assumed and the answer is the same string the native rung returned.
         $exact = $false
         $resolved = Get-StudioPythonFinalPath -Path $existingPath
         if (-not [string]::IsNullOrWhiteSpace($resolved)) { $exact = $true }
         if ([string]::IsNullOrEmpty($resolved)) {
-            # No interpreter this early: a first install on a host carrying no Python of its
-            # own. Exact = $false, which makes Test-StudioPathEqual answer $null and the caller
-            # take BOTH runtime locks, so the degradation fails closed rather than open. Say so
-            # once, because an operator should not have to infer it from behaviour.
             $resolved = Get-StudioLexicalPath -Path $existingPath
             $exact = $false
             Write-StudioFinalPathDegraded -Reason "no Python interpreter was available to resolve it"
@@ -3174,19 +2914,6 @@ function Install-UnslothStudio {
         return (Resolve-StudioFinalPathInfo -Path $Path).Path
     }
 
-    # Two spellings, one directory? Asked of the filesystem rather than of the two strings.
-    #
-    # Only reached when the strings disagree, which on a host that resolved both paths exactly
-    # means they really are different directories. Where no interpreter could be reached the
-    # lexical resolver carried the run, and it folds SUBST drives and reparse points but cannot
-    # expand an 8.3 alias or a volume-GUID spelling: "C:\Users\DANIEL~1\.unsloth\studio" and the
-    # profile root it names compare unequal, and the check below would refuse the default root
-    # it exists to accept. The emitted rung that was removed resolved both to one string.
-    #
-    # Writing a uniquely named file through one spelling and looking for it through the other is
-    # decisive where the comparison is not, and it is cmdlets only, so it still answers on a host
-    # under Constrained Language Mode. Both sides must already exist; when either does not, they
-    # cannot be aliases of one directory and the answer is no without touching the disk.
     function Test-StudioSameDirectoryByProbe {
         param([string]$Left, [string]$Right)
         if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) { return $false }
@@ -3202,12 +2929,6 @@ function Install-UnslothStudio {
         }
     }
 
-    # The deepest ancestor of $Path that exists, and the part below it that does not.
-    #
-    # The probe above needs two directories to compare, and on a first install neither root has
-    # been created yet, which is exactly the run the comparison has to get right. Two spellings of
-    # one root differ only ABOVE the segments this installer would create itself, so the existing
-    # ancestors are what to compare and the remaining segments have to match as text.
     function Split-StudioExistingAncestor {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
@@ -3353,9 +3074,6 @@ function Install-UnslothStudio {
         )
         $_tauriOverride = $_tauriOverride.TrimEnd($_trimSeps)
         $_legacyTauriRoot = $_legacyTauriRoot.TrimEnd($_trimSeps)
-        # Unequal strings are only proof of different directories when both sides resolved
-        # exactly. They did not here whenever the interpreter could not be reached, so ask the
-        # filesystem before refusing an install.
         $_tauriSameRoot = $false
         if ($_tauriOverride -eq $_legacyTauriRoot) {
             $_tauriSameRoot = $true
@@ -3363,10 +3081,6 @@ function Install-UnslothStudio {
             $_tauriSameRoot = Test-StudioSameDirectoryByProbe -Left $_tauriOverride -Right $_legacyTauriRoot
         }
         if (-not $_tauriSameRoot) {
-            # Neither root exists yet on a first install, and that is when this matters most: the
-            # probe needs two directories and has none, so it answers no and a valid override is
-            # refused. Compare the deepest ancestors that DO exist, and require the segments below
-            # them to match, since those are the ones this installer creates itself.
             $_tauriLeft = Split-StudioExistingAncestor -Path $_tauriOverride
             $_tauriRight = Split-StudioExistingAncestor -Path $_legacyTauriRoot
             if ($_tauriLeft -and $_tauriRight -and [string]::Equals(
@@ -5668,10 +5382,6 @@ exit 0
                 if ($createdShortcutCount -gt 0) {
                     substep "Created Unsloth Studio shortcut"
                     # Per-item SHChangeNotify: the global broadcast misses a rewritten same-name .lnk.
-                    # Through a child interpreter, so no type is defined in this script. Cosmetic:
-                    # a failure leaves stale icons and cannot fail the install. No elevation gate:
-                    # this is the venv interpreter the run has already executed directly for its
-                    # installs and the NVIDIA probe, so the same rule as Get-NvidiaProbePythonExe.
                     try {
                         $null = Invoke-StudioPythonShellIconRefresh `
                             -Paths $createdShortcutPaths -Exe $ManagedPythonPath
@@ -5926,8 +5636,6 @@ exit 0
         # exactly; otherwise they may be aliases of one. $null is the caller's
         # "identity unresolved" signal and makes it take both runtime locks.
         if (-not $leftInfo.Exact -or -not $rightInfo.Exact) {
-            # Quiet on a first install for the reason given at Write-StudioFinalPathDegraded;
-            # the $null, and so both locks, is the same either way.
             if ($script:StudioInstallIsFresh -ne $true) {
                 Write-StudioLine "[WARN] Could not resolve Unsloth path identity; using the runtime lock." -ForegroundColor Yellow
             }
@@ -6300,10 +6008,6 @@ exit 0
 
     function Get-StudioProcessImagePath {
         param([Parameter(Mandatory = $true)][int]$ProcessId)
-        # Get-Process first, then ctypes through a child interpreter, then WMI. The emitted
-        # OpenProcess / QueryFullProcessImageNameW rung that used to sit on top is gone; the
-        # ctypes rung below calls the same two entry points with the same access right, so
-        # nothing this ladder could answer before has become unanswerable.
         $process = $null
         try { $process = Get-Process -Id $ProcessId -ErrorAction Stop } catch { $process = $null }
         if ($process) {
@@ -6321,8 +6025,6 @@ exit 0
             try { $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable } catch {
                 $script:StudioPythonProcessImageTable = $null
             }
-            # This rung is what reads an image Get-Process cannot (an elevated Studio seen from a
-            # standard shell). Without it only WMI is left, so say the scan may miss one, once.
             if ($env:OS -eq "Windows_NT" -and $null -eq $script:StudioPythonProcessImageTable -and
                 -not $script:StudioProcessImageWarned) {
                 $script:StudioProcessImageWarned = $true
@@ -6371,22 +6073,6 @@ exit 0
 
         # Block only confirmed executable identities: a command line or working
         # directory that merely mentions the path is not proof of an open file.
-        #
-        # Two passes. The image paths are collected first and resolved in ONE child, because the
-        # resolver below is called once per running process and this whole scan runs again for
-        # each protected root: a few hundred processes meant a few hundred interpreter launches.
-        # The cache is script-scoped and keyed on the raw image path, so the repeat scans cost
-        # nothing at all. It is a cache of answers, not a second resolver; every entry is what
-        # the single-path rung would have returned.
-        # Select-Object, not the raw Get-Process output. Constrained Language Mode permits
-        # property reads only on its allowed type list, and System.Diagnostics.Process is not on
-        # it, so $process.Id THROWS there rather than returning anything. It throws INSIDE the
-        # catch below, so every process was skipped in silence and the live-process guard went
-        # blind on exactly the hosts the ctypes rung exists for: the installer would then find no
-        # running processes and overwrite a managed environment in use. Select-Object projects
-        # into a PSCustomObject, which IS on the allowed list, and does the read itself inside
-        # compiled code where the language mode does not reach. Same reason as the
-        # -ExpandProperty Source in Get-StudioEarlyPython.
         $studioScanProcesses = @(Get-Process -ErrorAction SilentlyContinue |
             Select-Object -Property Id, ProcessName)
         $studioScanImages = @{}
@@ -8661,11 +8347,6 @@ exit 0
         # has created a managed interpreter and then a venv, so asking the cache would decline
         # on exactly the fresh install where nvidia-smi is also most likely to be missing. The
         # host would take CPU wheels while holding a working NVIDIA card.
-        #
-        # No elevation gate on the venv interpreter: this run already executes it directly
-        # (platform checks, uv pip install --python, the torch probes), elevated or not, so
-        # declining it here protected nothing and only cost an elevated run without a working
-        # nvidia-smi its CUDA inventory. The early ladder below keeps its own admin-root rule.
         if (-not [string]::IsNullOrWhiteSpace($VenvPython) -and
             (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
             return $VenvPython
@@ -8690,7 +8371,6 @@ exit 0
 
     # The same inventory with nothing emitted: CPython's ctypes makes the identical NVML and CUDA
     # driver calls, and the interop leaves the scanned surface rather than moving within it.
-    # The only source now, and it declines rather than guesses: "" whenever no interpreter is
     # available or the probe itself says nothing.
     # Get-NvidiaProbePythonExe is deliberately per-file. The installer has its early read-only
     # interpreter ladder; setup.ps1 has the venv a previous run already built.
@@ -8839,14 +8519,7 @@ def main():
 main()
 '@
         # Cmdlets only. Constrained Language Mode refuses New-Object ProcessStartInfo and
-        # [Process]::Start, and CLM is one of the policies that used to leave a locked-down host with
-        # no GPU detection at all, so this launcher has to work on the hosts that need it most.
         $probeDir = New-StudioChildScriptDirectory
-        # The labelled directory protects the program FILE from a same-user swap, nothing else. When it
-        # declines (icacls missing, whoami blocked, an elevated run whose %TEMP% will not take a label) the
-        # program travels in this process's environment instead, so no file is executed and there is
-        # nothing to swap; only the answer lands in %TEMP%, as it did before the directory existed.
-        # Declining here used to leave a working NVIDIA card without an inventory.
         $inline = (-not $probeDir)
         if ($inline) {
             $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
@@ -8870,7 +8543,6 @@ main()
             # each native argument verbatim, so a script under "C:\Users\First Last\AppData\Local\
             # Temp" or a hint under "C:\Program Files\NVIDIA Corporation\NVSMI" would split on its
             # spaces and the child would run something else. The script arrives on stdin and the two
-            # library hints in the environment; the only arguments left are -I -S -B and a bare dash.
             $savedNvml = $env:UNSLOTH_NVML_HINT
             $savedCuda = $env:UNSLOTH_CUDA_HINT
             $savedSkip = $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML
@@ -8882,7 +8554,6 @@ main()
             else { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -ErrorAction SilentlyContinue }
             try {
                 if ($inline) {
-                    # No space and no double quote in the -c argument, for the same 5.1 reason as above.
                     $env:UNSLOTH_NVIDIA_PROBE_SOURCE = $probeSource
                     $proc = Start-Process -FilePath $exe -NoNewWindow -PassThru `
                         -ArgumentList @("-I", "-S", "-B", "-c", "exec(__import__('os').environ['UNSLOTH_NVIDIA_PROBE_SOURCE'])") `
@@ -8928,17 +8599,6 @@ main()
     }
 
     # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
-    # answers. Versions are major*1000 + minor*10.
-    #
-    # One rung now. The emitted UnslothNvidiaProbeV2 type that used to run first is gone, and with
-    # it the child runspace that bounded it: CPython's ctypes makes the identical NVML and CUDA
-    # driver calls, returns the identical string, and is not blocked by the policies that stopped
-    # the emitted rung being defined at all. Those policies are exactly where an NVIDIA GPU used to
-    # go unnoticed, so this is the wider source, not the narrower one.
-    # $TimeoutMs is a per-reader bound. One child reads NVML and then the CUDA driver API. Only when
-    # that child is killed at the bound (a hung NVML) does a second child read the CUDA driver API
-    # alone, under a bound of its own. A host whose NVML answers or is absent spawns one child, a
-    # hung NVML no longer starves CUDA, and the worst case is two bounds.
     function Read-NvidiaLibraryRaw {
         param([int]$TimeoutMs = 30000)
         $raw = ""

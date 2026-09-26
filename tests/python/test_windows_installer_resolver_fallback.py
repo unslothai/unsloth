@@ -75,11 +75,6 @@ SABOTAGE = (
     """function Add-Type { throw "(0) : error CS2001: Source file 'a.0.cs' could not be found" }"""
 )
 
-# What a host with no exact resolver looks like, which is what these tests mean by degraded.
-# There is exactly one exact rung left: a child interpreter running pathlib.resolve. The kill
-# switch is the supported way to remove it, and it reaches the same branch a machine carrying no
-# Python of its own reaches. The rung itself has its own coverage in
-# tests/studio/test_early_python_path_resolver.ps1 and tests/studio/test_path_resolver_degrades.ps1.
 NO_NATIVE = '$env:UNSLOTH_EARLY_PYTHON_PROBE = "0"'
 
 
@@ -161,16 +156,6 @@ def _run_powershell(script: str, env: dict[str, str] | None = None) -> subproces
             pass
 
 
-# An ordinary, unelevated run, stated rather than inherited from whoever is running the test.
-#
-# An elevated install refuses to launch an interpreter a standard user could replace, since it
-# would be launching it with the administrator token, and every interpreter on a hosted Windows
-# runner is under C:\hostedtoolcache rather than a protected root. The runner account is an
-# administrator, so without this the rung declines, every EXACT below reads False, and the
-# failure looks like the ladder being broken rather than like the gate doing its job.
-#
-# The gate itself is driven directly in test_an_elevated_run_declines_a_user_writable_interpreter
-# and in tests/studio/test_early_python_path_resolver.ps1.
 NOT_ELEVATED = "function Test-StudioChildScriptDirectoryElevated { return $false }"
 
 
@@ -309,7 +294,6 @@ Exit-StudioInstallMutex -Mutex $mutex
     )
     assert result.returncode == 0, result.stderr
     assert _lines(result, "FRESH:") == [f"FRESH:{not warns}"]
-    # Inexact either way, and so the caller still takes both runtime locks either way.
     assert _lines(result, "EXACT:") == ["EXACT:False"]
     assert _lines(result, "EQUAL:") == ["EQUAL:True"], result.stdout
     assert _lines(result, "LOCK:") == ["LOCK:True"]
@@ -463,10 +447,6 @@ Write-Output "TEMP:$env:TEMP"
     assert _lines(result, "TMP:") == [f"TMP:{dead}"]
     assert _lines(result, "TEMP:") == [f"TEMP:{dead}"]
     assert list((local_app_data / "Unsloth Studio" / "temp").glob("ust-*")) == []
-    # An answer, not an exception and not an empty string. Whether it came from the
-    # interpreter or from the lexical rung is deliberately not asserted: that depends on
-    # whether this host's interpreter can be reached without a writable %TEMP%, and the
-    # claim being made is only that the install continues either way.
     assert _lines(result, "PATH:")[0].startswith("PATH:")
     assert _lines(result, "PATH:") != ["PATH:"]
 
@@ -1296,8 +1276,6 @@ Write-Output "CALLS:$global:Calls"
         line for line in result.stdout.splitlines() if "Could not resolve a path exactly" in line
     ]
     assert len(warnings) == 1, warnings
-    # The failing rung was really reached, four times, rather than everything falling
-    # back because the helper was absent.
     assert _lines(result, "CALLS:") == ["CALLS:4"]
 
 

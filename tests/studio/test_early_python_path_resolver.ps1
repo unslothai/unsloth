@@ -1,19 +1,6 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Ask Python for an exact path identity, which is the only way the installer asks for one now.
-#
-# pathlib.Path.resolve calls GetFinalPathNameByHandleW on Windows, so it follows junctions, symlinks
-# and SUBST drives, expands 8.3 names and reports the stored casing: the same answer the emitted
-# CreateFileW / GetFinalPathNameByHandleW rung used to give, from the same system call.
-# unsloth_cli/_studio_runtime_gate.py already derives the runtime lock name from the same
-# expression, so an answer from this rung agrees with a running Unsloth by construction rather than
-# by two implementations happening to match.
-#
-# This rung was additive when it was added, sitting under an emitted resolver. That resolver is gone
-# -- it was the largest single contributor to a behavioural antivirus verdict on the shipped
-# installer -- so this is the top rung, and the lexical answer with Exact = $false is what sits
-# below it.
 # Run: pwsh -NoProfile -File tests/studio/test_early_python_path_resolver.ps1
 
 $ErrorActionPreference = "Stop"
@@ -41,11 +28,8 @@ $wanted = @(
     "Get-StudioLexicalParent", "Test-StudioInterpreterFileIsAdminOnly",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo", "Resolve-StudioFinalPathsInOneChild",
-    # Called by Resolve-StudioFinalPathInfo on the rung below this one. Extracted rather than
-    # stubbed: whether the degradation is announced is part of what the ladder owes its caller.
     "Write-StudioFinalPathDegraded"
 )
-# Source text of a named function, for the checks that read code rather than run it.
 function Get-FunctionTextOrEmpty($path, $name) {
     $a = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$null)
     $f = @($a.FindAll({ param($n)
@@ -64,15 +48,9 @@ foreach ($name in $wanted) {
     Invoke-Expression $fn[0].Extent.Text
 }
 
-# CI's Windows runners are elevated and their Python is not admin-owned, so the real elevation
-# gate declines it and every row below would skip, which is how these suites once passed on
-# Windows having tested nothing. The rung itself is what they test; the gate has its own rows
-# in test_early_python_path_resolver.ps1, driven by stubs. So run the rows below as unelevated.
 if ($env:OS -eq "Windows_NT") { function Test-StudioChildScriptDirectoryElevated { return $false } }
 
 
-# The emitted rung that used to sit above this one is gone, so nothing needs forcing off: the
-# interpreter IS the exact rung now, and the lexical answer is what sits below it.
 function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("earlypy-" + [guid]::NewGuid().ToString("N"))
@@ -94,15 +72,6 @@ try {
             Write-Host "  SKIP  UNSLOTH_EARLY_PYTHON_PROBE=0, so this rung is switched off by request" -ForegroundColor Yellow
             exit 0
         }
-        # USABLE, not merely present. The installer rejects an interpreter that cannot complete its own
-        # probe, so presence on PATH is not proof that discovery should have found one: Python 2, any
-        # Python below 3.8 (whose Windows resolve() does not follow links), a broken executable, and a
-        # Windows Store App Execution Alias are all on PATH and all correctly refused. Failing here on
-        # those hosts blames this file for the installer behaving as designed.
-        #
-        # So ask the same question Invoke-StudioEarlyPython asks, of the same candidates, and only then
-        # decide. The WindowsApps aliases are excluded WITHOUT running them: they are zero-length stubs
-        # that open the Microsoft Store, which a test must not do to whoever is running it.
         $elevatedHost = $false
         if ($env:OS -eq "Windows_NT") { try { $elevatedHost = [bool](Test-StudioChildScriptDirectoryElevated) } catch { $elevatedHost = $true } }
         $usable = $null
@@ -393,7 +362,6 @@ try {
     Check "a discovery failure declines to the lexical rung instead of throwing" ($null -eq $threw -and $null -eq $none)
     ${function:Get-StudioEarlyPython} = $savedFinder2
     Remove-Item Function:Test-Path -ErrorAction SilentlyContinue
-    # Later checks rely on the interpreter found earlier.
     $script:StudioEarlyPython, $script:StudioEarlyPythonProbed, $script:StudioEarlyPythonProbedWithoutVenv = $savedEarly
     $script:StudioPythonFinalPathCache = $null
     Remove-Item Function:Get-Command -ErrorAction SilentlyContinue
@@ -419,12 +387,6 @@ try {
     ${function:Get-StudioEarlyPython} = $savedFinder3
     $script:StudioPythonFinalPathCache = $null
 
-    # ---- The batch, which exists for one caller and one number ----
-    #
-    # Get-RunningStudioVenvProcesses resolves the image path of every running process, and the
-    # install scan repeats that for each protected root. One child per resolution meant a few
-    # hundred interpreter launches on an ordinary machine, where the resolver this replaced made
-    # an in-process call. Counted here rather than reasoned about.
     $script:StudioPythonFinalPathCache = $null
     $batchDir = Join-Path $tmp "batch"
     $null = New-Item -ItemType Directory -Path $batchDir -Force
@@ -435,8 +397,6 @@ try {
         $batchPaths += $leaf
     }
 
-    # A counter around the single-path rung, so what is measured is children avoided rather than
-    # a cache being populated.
     $script:RealInvoke = ${function:Invoke-StudioEarlyPython}
     $script:SingleCalls = 0
     function Invoke-StudioEarlyPython {
@@ -467,8 +427,6 @@ try {
     Check "the batched answer is a real path (bites)" (-not [string]::IsNullOrWhiteSpace($one))
     Check "the batch answers byte for byte what the single rung answers" ($batched -ceq $one)
 
-    # A path the child cannot resolve is recorded as a miss rather than left absent, or the whole
-    # scan re-asks it once per protected root.
     $script:StudioPythonFinalPathCache = $null
     $missing = Join-Path $batchDir "no-such-file"
     Resolve-StudioFinalPathsInOneChild -Paths @($missing)
@@ -478,12 +436,6 @@ try {
     $null = Get-StudioPythonFinalPath -Path $missing
     Check "and is not re-asked" ($script:SingleCalls -eq 0)
 
-    # A batch that FAILS is not a batch of misses, and telling them apart is the whole point of
-    # the child answering for every path it was given. A child that never started or hit the
-    # timeout says nothing; caching that as "all unresolvable" switches the single-path rung off
-    # for the rest of the run, and the process scan then compares lexical spellings, so an
-    # executable reached through a junction stops matching its protected root and the installer
-    # overwrites an environment that is in use.
     $script:StudioPythonFinalPathCache = $null
     $script:RealScript = ${function:Invoke-StudioEarlyPythonScript}
     function Invoke-StudioEarlyPythonScript {
@@ -515,12 +467,6 @@ try {
         -not $script:StudioPythonFinalPathCache.ContainsKey($batchPaths[1]))
     ${function:Invoke-StudioEarlyPythonScript} = $script:RealScript
 
-    # The BOM. Windows PowerShell 5.1 is the interpreter the desktop app spawns, and there
-    # -Encoding UTF8 means UTF-8 WITH a BOM: "any Unicode encoding, except UTF7, always creates a
-    # BOM" (about_Character_Encoding, 5.1). Read as plain utf-8 the BOM joins the FIRST path,
-    # resolve() rejects it, and exactly one entry per batch silently loses its exact identity on
-    # every Windows host. This engine writes no BOM, so the behaviour cannot be reproduced here;
-    # what is checked is that the reader tolerates one either way, run for real.
     $bomFile = Join-Path $batchDir "with-bom.txt"
     $bomBytes = [byte[]](0xEF, 0xBB, 0xBF) + [System.Text.Encoding]::UTF8.GetBytes(($batchPaths -join "`n"))
     [System.IO.File]::WriteAllBytes($bomFile, $bomBytes)
@@ -556,7 +502,6 @@ try {
     Check "the batch hands the child a list FILE rather than an argv of paths" (
         $batchText -match 'Set-Content -LiteralPath \$listFile' -and
         $batchText -match 'ScriptArgs @\(\$listFile\)')
-    # Same expression as the single-path rung, or the two can disagree about identity.
     Check "the batch resolves with the same expression the single rung uses" (
         $batchText -match 'pathlib\.Path\(p\)\.resolve\(strict=True\)')
     Check "and keeps the same version gate" ($batchText -match 'sys\.version_info < \(3,8\)')
@@ -564,14 +509,6 @@ try {
         $batchText -match 'Split-Path -IsAbsolute \$answer' -and
         $batchText -match 'Test-Path -LiteralPath \$answer')
 
-    # ---- Windows Store App Execution Aliases ----
-    #
-    # Windows ships python.exe and python3.exe in WindowsApps as zero-length reparse stubs that
-    # satisfy Get-Command and Test-Path and OPEN THE MICROSOFT STORE when run. On a first install
-    # with no CPython that is the first candidate on PATH, so probing it shows the user a Store
-    # window and then burns the probe timeout waiting for output that never arrives.
-    # Comments stripped first: the comment that explains the filter NAMES WindowsApps, so the
-    # positive check passed against prose with the code deleted.
     $discoveryText = Get-FunctionTextOrEmpty $installPs1 "Get-StudioEarlyPython"
     $discoveryCode = ($discoveryText -split "`r?`n" |
         Where-Object { -not ($_.TrimStart().StartsWith("#")) }) -join "`n"
@@ -589,22 +526,10 @@ try {
         $hit = [bool]("$($case.P)" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]')
         Check "the alias filter $(if ($case.Skip) { 'skips' } else { 'keeps' }) $($case.P)" ($hit -eq $case.Skip)
     }
-    # ---- an elevated run will not launch an interpreter a standard user can replace ----
-    #
-    # Whatever this ladder settles on is launched WITH THE ADMINISTRATOR TOKEN when the install is
-    # elevated. A per-user CPython, or any on PATH from a directory the same user's medium
-    # integrity token can write, is then a way to have arbitrary code run elevated: replace the
-    # executable and wait for the next install. The labelled child directory does not help, since
-    # it protects the script being run and not the thing running it.
-    # The roots come from the environment, so they are set here rather than assumed: a Linux
-    # runner has no C: drive, and Join-Path on one throws rather than composing a string.
     $savedProgramFiles = $env:ProgramFiles
     $savedSystemRoot = $env:SystemRoot
     $env:ProgramFiles = "C:\Program Files"
     $env:SystemRoot = "C:\Windows"
-    # The ACL half is driven through a stubbed Get-Acl, because the real one is Windows-only and
-    # this file runs on every OS in the parity lane. The strings are the shapes Windows really
-    # prints: System32's, %WINDIR%\Temp's, and one for a directory an attacker created.
     $script:AclTable = @{}
     $script:AclDefault = ("O:S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464G:SY" +
         "D:AI(A;;FA;;;S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464)" +
@@ -620,27 +545,18 @@ try {
         if ($script:AclTable.ContainsKey($key)) { $sddl = $script:AclTable[$key] }
         return [pscustomobject]@{ Sddl = $sddl }
     }
-    # %WINDIR%\Temp as Windows really ships it: the two 0x1000xx ACEs are the Create Files/Write
-    # Data and Create Folders/Append Data grants to BUILTIN\Users that AppLocker's own default
-    # rule documentation calls out as the reason a path rule over %WINDIR% is a bypass.
     $tempSddl = ("O:BAG:SYD:PAI(A;;FA;;;SY)(A;OICIIO;GA;;;SY)(A;;FA;;;BA)(A;OICIIO;GA;;;BA)" +
         "(A;;0x100004;;;BU)(A;;0x100002;;;BU)(A;OICIIO;GA;;;CO)")
     $ownedSddl = "O:S-1-5-21-1-2-3-1001G:SYD:PAI(A;;FA;;;SY)(A;;FA;;;BA)"
 
     Check "the admin-root test accepts a system-wide location" (
         (Test-StudioPathUnderAdminRoot -Path "C:\Program Files\Python312\python.exe") -eq $true)
-    # A directory any user can create, whose name merely starts with a protected one.
     Check "and is not fooled by a look-alike root" (
         (Test-StudioPathUnderAdminRoot -Path "C:\Program Files Evil\python.exe") -eq $false)
     Check "and rejects a per-user install" (
         (Test-StudioPathUnderAdminRoot -Path "C:\Users\me\AppData\Local\Programs\Python\python.exe") -eq $false)
     Check "and rejects an empty path" ((Test-StudioPathUnderAdminRoot -Path "") -eq $false)
 
-    # ---- being under a protected root is necessary, not sufficient ----
-    #
-    # %WINDIR%\Temp is below $env:SystemRoot and every standard user can create files in it, by
-    # design and by Microsoft's documentation. The prefix-only version of this helper called it
-    # administrator-protected and the elevated run would have launched it.
     Check "a location test alone would have accepted C:\Windows\Temp (bites)" (
         "C:\Windows\Temp\python.exe" -like "C:\Windows\*")
     Check "but the compatibility directories are refused outright" (
@@ -650,20 +566,11 @@ try {
         Check "and so is C:\Windows\$leaf" (
             (Test-StudioPathUnderAdminRoot -Path "C:\Windows\$leaf\python.exe") -eq $false)
     }
-    # And the ACL is read as well, so a directory that is user-writable without being on that
-    # list is refused too. This is the general case the list is only a cheap backstop for.
     $script:AclTable["C:\Windows\Sloppy"] = $tempSddl
     Check "a user-writable directory under a protected root is refused by its ACL" (
         (Test-StudioPathUnderAdminRoot -Path "C:\Windows\Sloppy\python.exe") -eq $false)
-    # A parent that grants Users write is enough on its own, and the leaf's own ACL reading as
-    # administrator-only does not redeem it. That is not a hypothetical: write access to a
-    # directory is permission to create a junction in it, and Get-Acl on a junction reports the
-    # TARGET's descriptor, so a link the attacker can retarget at will reads here as System32.
-    # This row leaves the leaf on the default System32 descriptor for exactly that reason, so it
-    # can only be refused by walking up.
     Check "and so is a directory whose parent is user-writable, however tight its own ACL" (
         (Test-StudioPathUnderAdminRoot -Path "C:\Windows\Sloppy\mine\python.exe") -eq $false)
-    # Owner, separately: an attacker who owns a directory holds WRITE_DAC whatever its DACL says.
     $script:AclTable["C:\Program Files\Mine"] = $ownedSddl
     Check "a directory owned by a standard user is refused however tight its DACL" (
         (Test-StudioPathUnderAdminRoot -Path "C:\Program Files\Mine\python.exe") -eq $false)
@@ -685,9 +592,6 @@ try {
     Check "a descriptor this cannot parse is treated as writable" (
         (Test-StudioSddlWritableByNonAdmin -Sddl "not a descriptor") -eq $true)
     Check "and so is an empty one" ((Test-StudioSddlWritableByNonAdmin -Sddl "") -eq $true)
-    # The owner really is read as BA and not as BAG: the owner and the group run together in the
-    # string, and a class that stops at the next colon reads the owner as "BAG" and declines
-    # every genuinely administrator-owned directory on the machine.
     Check "the owner is split from the group correctly" (
         (Test-StudioSddlWritableByNonAdmin -Sddl "O:BAG:SYD:PAI(A;;FA;;;BA)") -eq $false)
     Check "read and execute is not write" (
@@ -730,9 +634,6 @@ try {
         $script:StudioEarlyPythonProbedWithoutVenv = $false
         Check "control: an unelevated run still finds one" (
             -not [string]::IsNullOrWhiteSpace((Get-StudioEarlyPython)))
-        # The existing install's own venv interpreter is the exception: the elevated run executes it
-        # anyway, so refusing it only left every elevated upgrade with an inexact identity. Off
-        # Windows only: a python.exe linked into another directory cannot find its standard library.
         $hostPy = (Get-Command python3 -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
         if ($savedOsElev -ne "Windows_NT" -and $hostPy) {
             $venvRoot = Join-Path $tmp "elevated-venv"
@@ -755,13 +656,6 @@ try {
         $script:StudioEarlyPython = $null
     }
 
-    # ---- the interpreter FILE, not only the directories above it ----
-    #
-    # Windows lets a file inside an administrator-only directory carry a DACL a standard user can
-    # write, and a symlink there can lead to a file the user controls. Either one lets a
-    # medium-integrity process replace what the elevated run launches, and the directory walk
-    # never looks at either. Real files on this host, a stubbed Get-Acl, and ProgramFiles pointed
-    # at a temporary root so the directory half passes and only the file half is under test.
     $hostPy3 = (Get-Command python3 -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
     if ($IsWindows -or $env:OS -eq "Windows_NT" -or -not $hostPy3) {
         Write-Host "  SKIP  interpreter-file checks need a non-Windows host with python3" -ForegroundColor Yellow
@@ -813,7 +707,6 @@ try {
                 [string]::IsNullOrWhiteSpace((& $reprobe)))
             $script:AclTable.Remove($wrapper)
 
-            # Owned by a standard user: WRITE_DAC is implicit, whatever the DACL says.
             $script:AclTable[$wrapper] = "O:S-1-5-21-1-2-3-1001G:SYD:PAI(A;;FA;;;SY)(A;;FA;;;BA)"
             Check "the file helper refuses a file owned by a standard user" (
                 (Test-StudioInterpreterFileIsAdminOnly -Path $wrapper) -eq $false)
@@ -828,8 +721,6 @@ try {
             Check "and a missing file" (
                 (Test-StudioInterpreterFileIsAdminOnly -Path (Join-Path $pfBin "absent")) -eq $false)
 
-            # A symlink in the protected directory, whose own descriptor reads as administrator-only
-            # (Get-Acl reports the target's), pointing at a file anyone could own.
             Remove-Item -LiteralPath $wrapper -Force
             New-Item -ItemType SymbolicLink -Path $wrapper -Target $hostPy3 | Out-Null
             Check "the directory walk accepts the symlinked candidate (bites)" (

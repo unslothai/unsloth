@@ -1171,8 +1171,6 @@ def test_the_path_resolver_still_has_a_lexical_fallback() -> None:
     text = _text("install.ps1")
     assert "Write-StudioFinalPathDegraded" in text
     assert "Get-StudioLexicalPath" in text
-    # The exact rung is a child interpreter now, and every host that has none lands on the
-    # lexical answer. The kill switch reaches the same branch, which is how it is tested.
     assert "Get-StudioPythonFinalPath" in text
     assert "UNSLOTH_EARLY_PYTHON_PROBE" in text
 
@@ -1450,15 +1448,6 @@ def test_a_comment_never_points_at_a_file_that_is_not_here(name: str) -> None:
     )
 
 
-# A comment that does not start where it looks like it does.
-#
-# `f# whatever` is not a comment: PowerShell reads the bareword, and `#` after one starts a
-# command name, so the line is an invocation of a command called `f#`. Under this file's
-# $ErrorActionPreference = "Stop" that is CommandNotFoundException and the run ends there.
-#
-# Nothing catches it earlier. The parser accepts it, so an AST parse reports no errors, and the
-# suites that read functions out of the file by name still find them. It reached review as a live
-# defect twice, both times from an edit that shifted a line by one character.
 @pytest.mark.parametrize("name", PS_SCRIPTS)
 def test_no_comment_line_starts_with_a_bareword(name: str) -> None:
     path = REPO / name
