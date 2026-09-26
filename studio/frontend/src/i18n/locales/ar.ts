@@ -3050,6 +3050,11 @@ export const ar = {
       gridView: "عرض الشبكة",
       listView: "عرض القائمة",
       settings: "إعدادات المكتبة",
+      sort: "الترتيب",
+      sortDefault: "الترتيب الافتراضي",
+      sortName: "الاسم",
+      sortModified: "تاريخ التعديل",
+      sortSize: "الحجم",
     },
     create: {
       note: "ملاحظة",

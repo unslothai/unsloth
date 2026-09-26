@@ -3057,6 +3057,11 @@ export const hi = {
       gridView: "ग्रिड व्यू",
       listView: "सूची व्यू",
       settings: "लाइब्रेरी सेटिंग्स",
+      sort: "क्रमबद्ध करें",
+      sortDefault: "डिफ़ॉल्ट क्रम",
+      sortName: "नाम",
+      sortModified: "बदला गया",
+      sortSize: "आकार",
     },
     create: {
       note: "नोट",
