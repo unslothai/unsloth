@@ -128,7 +128,7 @@ test("pptx: tables capped, SmartArt read, pictures as Blobs", () => {
       `<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${REL}" xmlns:dgm="${DGM}"><p:cSld><p:spTree>` +
         `<p:graphicFrame><a:graphic><a:graphicData><a:tbl>${`<a:tr>${tc.repeat(10)}</a:tr>`.repeat(1000)}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>` +
         `<p:graphicFrame><a:graphic><a:graphicData><dgm:relIds r:dm="rId2"/></a:graphicData></a:graphic></p:graphicFrame>` +
-        `<p:pic><p:blipFill><a:blip r:embed="rId3"/></p:blipFill></p:pic>` +
+        `<p:pic><p:blipFill><a:blip r:embed="rId3"/><a:srcRect l="25000" b="-10000"/></p:blipFill></p:pic>` +
         `</p:spTree></p:cSld></p:sld>`,
     ),
     "ppt/slides/_rels/slide1.xml.rels": rels(
@@ -143,6 +143,7 @@ test("pptx: tables capped, SmartArt read, pictures as Blobs", () => {
   // Video is never inflated.
   const [table, diagram, image] = readPptx(declareHuge(zip, "ppt/media/clip.mp4")).slides[0]!.boxes;
   assert.equal(image?.image?.type, "image/png");
+  assert.deepEqual(image?.crop, { l: 0.25, t: 0, r: 0, b: -0.1 });
   assert.equal(table?.table?.length, 501);
   assert.deepEqual(table?.table?.at(-1), ["…"]);
   assert.deepEqual(diagram?.paragraphs?.map((p) => p.text), ["Plan"]);

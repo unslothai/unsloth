@@ -605,13 +605,22 @@ type DocxArchive = {
  *  (still marked oversized) for the viewer, which needs large images as well as text. */
 const DOCX_IMAGE_PART = /\.(png|jpe?g|gif|bmp|tiff?|emf|wmf|svg|webp)$/i;
 
-/** Whether the package calls a part an image, as mammoth reads it: by its Override in
- *  [Content_Types].xml, else its extension's Default, else its name. A .bin part can be a picture. */
-function docxImageParts(bytes: Uint8Array): (name: string) => boolean {
-  const types = unzipSync(bytes, {
-    filter: (entry) =>
-      entry.name === DOCX_CONTENT_TYPES_PART && entry.originalSize <= MAX_OPEN_DOCUMENT_XML_BYTES,
-  })[DOCX_CONTENT_TYPES_PART];
+/** The viewer's view of a package's images: which parts are images, as mammoth reads them (their
+ *  Override in [Content_Types].xml, else their extension's Default, else their name), and which the
+ *  document and its notes and comments point at. Only those are unpacked: an image no part refers
+ *  to is never shown. */
+function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => boolean; used: Set<string> } {
+  const names = new Set<string>();
+  const parts = unzipSync(bytes, {
+    filter: (entry) => {
+      names.add(entry.name);
+      return (
+        (entry.name === DOCX_CONTENT_TYPES_PART || entry.name.endsWith(".rels")) &&
+        entry.originalSize <= MAX_OPEN_DOCUMENT_XML_BYTES
+      );
+    },
+  });
+  const types = parts[DOCX_CONTENT_TYPES_PART];
   const defaults = new Map<string, string>();
   const overrides = new Map<string, string>();
   const markup = types ? strFromU8(types).replace(XML_NON_ELEMENT_RE, "") : "";
@@ -624,27 +633,43 @@ function docxImageParts(bytes: Uint8Array): (name: string) => boolean {
     if (tag === "Default") defaults.set((values.get("Extension") ?? "").toLowerCase(), type);
     else overrides.set((values.get("PartName") ?? "").replace(/^\//, "").toLowerCase(), type);
   }
-  return (name) => {
+  const isImage = (name: string) => {
     const dot = name.lastIndexOf(".");
     const type =
       overrides.get(name.toLowerCase()) ?? (dot === -1 ? undefined : defaults.get(name.slice(dot + 1).toLowerCase()));
     return type ? type.startsWith("image/") : DOCX_IMAGE_PART.test(name);
   };
+  // Each part's targets resolve against its folder, and mammoth opens the first that exists.
+  const targetsOf = (path: string) =>
+    readDocxXmlTargets(parts[docxRelationshipsPath(path)], path.slice(0, Math.max(0, path.lastIndexOf("/"))));
+  const resolve = (targets: string[] | undefined, fallback: string) =>
+    targets?.find((path) => names.has(path)) ?? fallback;
+  const main = resolve(targetsOf("").get(DOCX_MAIN_DOCUMENT_TYPE), DOCX_MAIN_DOCUMENT_FALLBACK);
+  const mainTargets = targetsOf(main);
+  const used = new Set([...mainTargets.values()].flat());
+  for (const name of DOCX_BODY_PART_NAMES) {
+    const path = resolve(mainTargets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`), `word/${name}.xml`);
+    for (const target of [...targetsOf(path).values()].flat()) used.add(target);
+  }
+  return { isImage, used };
 }
 
 function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = false): DocxArchive {
   const names = new Set<string>();
   const oversized = new Set<string>();
-  const isImage = keepLarge ? docxImageParts(bytes) : () => false;
+  const images = keepLarge ? docxPreviewImages(bytes) : null;
   let unpacked = 0;
 
   const entries = unzipSync(bytes, {
     filter: (entry) => {
       names.add(entry.name);
+      const image = images?.isImage(entry.name) ?? false;
+      // The viewer unpacks an image, whatever its size, only when a part points at it.
+      if (image && !images!.used.has(entry.name)) return false;
       if (entry.originalSize > MAX_OPEN_DOCUMENT_XML_BYTES) {
         oversized.add(entry.name);
         // Mammoth reads large media, never large unreferenced XML.
-        if (!isImage(entry.name)) return false;
+        if (!image) return false;
       }
       unpacked += entry.originalSize;
       if (unpacked > MAX_DOCX_UNPACKED_BYTES) {

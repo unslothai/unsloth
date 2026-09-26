@@ -396,7 +396,7 @@ function SlideTable({ rows, caption, widthPt }: { rows: string[][]; caption?: st
 }
 
 /** The object URL lives only while the slide is mounted. */
-function SlideImage({ image }: { image: Blob }) {
+function SlideImage({ image, crop }: { image: Blob; crop?: SlideBox["crop"] }) {
   // Stable, or every scroll re-render would remake the URL.
   const attach = useCallback(
     (element: HTMLImageElement | null) => {
@@ -407,12 +407,21 @@ function SlideImage({ image }: { image: Blob }) {
     },
     [image],
   );
+  // Stretched over the frame, as PowerPoint draws it; a crop scales it up and shifts it, the frame clipping the rest.
+  const w = crop ? 1 - crop.l - crop.r : 1;
+  const h = crop ? 1 - crop.t - crop.b : 1;
   return (
     <img
       ref={attach}
       alt=""
       decoding="async"
-      className="size-full object-contain"
+      className="absolute max-w-none"
+      style={{
+        left: `${(-(crop?.l ?? 0) / w) * 100}%`,
+        top: `${(-(crop?.t ?? 0) / h) * 100}%`,
+        width: `${100 / w}%`,
+        height: `${100 / h}%`,
+      }}
     />
   );
 }
@@ -433,7 +442,7 @@ const SlideFace = memo(function SlideFace({ slide, index, deck }: { slide: Slide
           box.frame ? (
             <div key={boxIndex} className="absolute overflow-hidden" style={frameStyle(box.frame, Boolean(box.image))}>
               {box.image ? (
-                <SlideImage image={box.image} />
+                <SlideImage image={box.image} crop={box.crop} />
               ) : box.table ? (
                 <SlideTable rows={box.table} caption={box.caption} widthPt={deck.widthPt} />
               ) : (

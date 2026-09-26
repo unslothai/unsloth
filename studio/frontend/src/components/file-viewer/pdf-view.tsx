@@ -23,11 +23,16 @@ const MAX_CANVAS_PIXELS = 32 * 1024 * 1024;
 const MAX_CANVAS_SIDE = 16384;
 // Below this resolution a page is too blurred to read, and shows as unpreviewable.
 const MIN_PIXEL_RATIO = 0.1;
+// A page with more text runs than this shows without its text layer: each is a positioned span.
+const MAX_TEXT_ITEMS = 20_000;
 // Layout keeps even an extreme first page to a sane height until each page is measured.
 const clampAspect = (aspect: number) => Math.min(Math.max(aspect, 0.05), 20);
 
 type PdfDocument = {
-  getPage(page: number): Promise<{ getViewport(options: { scale: number }): { width: number; height: number } }>;
+  getPage(page: number): Promise<{
+    getViewport(options: { scale: number }): { width: number; height: number };
+    streamTextContent(): ReadableStream<{ items: unknown[] }>;
+  }>;
 };
 
 /** One page, at its own shape and a resolution its canvas can hold. */
@@ -43,6 +48,26 @@ function PdfPage({ pdf, index, width, aspect }: { pdf: PdfDocument; index: numbe
       },
       () => live && setOwn({ index, aspect: Number.NaN }),
     );
+    return () => {
+      live = false;
+    };
+  }, [pdf, index]);
+  // The page whose text runs were counted and found within the bound: its text layer is added then.
+  const [selectable, setSelectable] = useState<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    let reader: ReadableStreamDefaultReader<{ items: unknown[] }> | undefined;
+    void (async () => {
+      reader = (await pdf.getPage(index + 1)).streamTextContent().getReader();
+      let items = 0;
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+        items += chunk.value.items.length;
+        if (!live || items > MAX_TEXT_ITEMS) return;
+      }
+      if (live) setSelectable(index);
+    })()
+      .catch(() => {})
+      .finally(() => void reader?.cancel().catch(() => {}));
     return () => {
       live = false;
     };
@@ -69,6 +94,7 @@ function PdfPage({ pdf, index, width, aspect }: { pdf: PdfDocument; index: numbe
       width={width}
       devicePixelRatio={ratio}
       renderAnnotationLayer={false}
+      renderTextLayer={selectable === index}
       loading={<div style={{ height }} />}
     />
   );

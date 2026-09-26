@@ -41,30 +41,61 @@ interface ZipEntry {
   method: number;
 }
 
-/** The central directory, read once: each part's name to where its data sits. Null for ZIP64 or
- *  a directory that does not parse, which unzipSync then reads instead. */
+/** The central directory, read once, ZIP64 included: each part's name to where its data sits. Null
+ *  for a directory that does not parse, which unzipSync then reads instead. */
 function zipIndex(bytes: Uint8Array, view: DataView): Map<string, ZipEntry> | null {
   let end = bytes.length - 22;
   const stop = Math.max(0, end - 0xffff);
   while (end >= stop && view.getUint32(end, true) !== 0x06054b50) end--;
   if (end < stop) return null;
-  const count = view.getUint16(end + 10, true);
+  let count = view.getUint16(end + 10, true);
   let at = view.getUint32(end + 16, true);
-  if (count === 0xffff || at === 0xffffffff) return null;
+  // A 64-bit value, or NaN past the end of the archive.
+  const u64 = (offset: number) => (offset + 8 <= bytes.length ? Number(view.getBigUint64(offset, true)) : Number.NaN);
+  if (count === 0xffff || at === 0xffffffff) {
+    // ZIP64: the real count and directory offset are in the record its locator points at.
+    const locator = end - 20;
+    if (locator < 0 || view.getUint32(locator, true) !== 0x07064b50) return null;
+    const record = u64(locator + 8);
+    if (!(record + 56 <= bytes.length) || view.getUint32(record, true) !== 0x06064b50) return null;
+    count = u64(record + 32);
+    at = u64(record + 48);
+    if (!Number.isSafeInteger(count) || !Number.isSafeInteger(at)) return null;
+  }
   const utf8 = new TextDecoder();
   const index = new Map<string, ZipEntry>();
   for (let i = 0; i < count; i++) {
     if (at + 46 > bytes.length || view.getUint32(at, true) !== 0x02014b50) return null;
-    const size = view.getUint32(at + 20, true);
-    const originalSize = view.getUint32(at + 24, true);
-    const offset = view.getUint32(at + 42, true);
-    if (size === 0xffffffff || originalSize === 0xffffffff || offset === 0xffffffff) return null;
+    let size = view.getUint32(at + 20, true);
+    let originalSize = view.getUint32(at + 24, true);
+    let offset = view.getUint32(at + 42, true);
     const nameEnd = at + 46 + view.getUint16(at + 28, true);
+    const extraEnd = nameEnd + view.getUint16(at + 30, true);
+    if (size === 0xffffffff || originalSize === 0xffffffff || offset === 0xffffffff) {
+      // The ZIP64 extra field (0x0001) holds, in order, the 64-bit values that did not fit.
+      let field = -1;
+      for (let extra = nameEnd; extra + 4 <= extraEnd; extra += 4 + view.getUint16(extra + 2, true)) {
+        if (view.getUint16(extra, true) === 1) {
+          field = extra + 4;
+          break;
+        }
+      }
+      if (field === -1) return null;
+      const next = () => {
+        const value = field + 8 <= extraEnd ? u64(field) : Number.NaN;
+        field += 8;
+        return value;
+      };
+      if (originalSize === 0xffffffff) originalSize = next();
+      if (size === 0xffffffff) size = next();
+      if (offset === 0xffffffff) offset = next();
+      if (![size, originalSize, offset].every(Number.isSafeInteger)) return null;
+    }
     const raw = bytes.subarray(at + 46, nameEnd);
     // Bit 11 marks a UTF-8 name; otherwise one byte a character, as unzipSync reads it.
     const name = view.getUint16(at + 8, true) & 0x800 ? utf8.decode(raw) : String.fromCharCode(...raw);
     index.set(name, { offset, size, originalSize, method: view.getUint16(at + 10, true) });
-    at = nameEnd + view.getUint16(at + 30, true) + view.getUint16(at + 32, true);
+    at = extraEnd + view.getUint16(at + 32, true);
   }
   return index;
 }
@@ -87,6 +118,8 @@ type Reader = ((names: Iterable<string>, limit?: number) => Unzipped) & {
   size: (name: string) => number | undefined;
   /** A part's first `max` bytes, inflating no further (all of it when shorter). */
   head: (name: string, max: number) => Uint8Array | undefined;
+  /** A part to inflate only as far as it is read, up to `max` bytes. */
+  open: (name: string, max: number) => Growing | undefined;
 };
 
 function archive(bytes: Uint8Array): Reader {
@@ -114,8 +147,16 @@ function archive(bytes: Uint8Array): Reader {
       }
       return sizes.get(name);
     };
-    const head = (name: string, max: number) => read([name])[name]?.subarray(0, max);
-    return Object.assign(read, { size, head });
+    // Unindexed, a part cannot be inflated in pieces: one past `max` is refused rather than read whole.
+    const head = (name: string, max: number) => {
+      if ((size(name) ?? 0) > max) throw new Error("File is too large to preview.");
+      return read([name])[name];
+    };
+    const open = (name: string, max: number): Growing | undefined => {
+      const data = head(name, max);
+      return data && { data, done: true, grow() {} };
+    };
+    return Object.assign(read, { size, head, open });
   }
   const read = (names: Iterable<string>, limit = Infinity) => {
     const files: Unzipped = {};
@@ -127,41 +168,70 @@ function archive(bytes: Uint8Array): Reader {
     }
     return files;
   };
+  const open = (name: string, max: number) => {
+    const entry = index.get(name);
+    return entry && growing(bytes, view, entry, max, charge);
+  };
   const head = (name: string, max: number) => {
     const entry = index.get(name);
     if (!entry || entry.originalSize <= max) return read([name])[name];
-    charge(max);
-    return inflateHead(bytes, view, entry, max);
+    const part = growing(bytes, view, entry, max, charge);
+    while (!part.done) part.grow();
+    return part.data;
   };
-  return Object.assign(read, { size: (name: string) => index.get(name)?.originalSize, head });
+  return Object.assign(read, { size: (name: string) => index.get(name)?.originalSize, head, open });
 }
 
-/** An entry's first `max` bytes, inflated a little at a time and stopped there. */
-function inflateHead(bytes: Uint8Array, view: DataView, entry: ZipEntry, max: number): Uint8Array {
+/** A part inflated a piece at a time, only as far as it is read, up to `max` bytes. */
+export interface Growing {
+  /** What is inflated so far. */
+  data: Uint8Array;
+  /** Nothing more to inflate: the part ended, or reached `max`. */
+  done: boolean;
+  /** Inflates another megabyte or so, unless done. */
+  grow(): void;
+}
+
+function growing(bytes: Uint8Array, view: DataView, entry: ZipEntry, max: number, charge: (size: number) => void): Growing {
   const at = entry.offset;
   if (view.getUint32(at, true) !== 0x04034b50) throw new Error("Not a valid ZIP archive.");
   const start = at + 30 + view.getUint16(at + 26, true) + view.getUint16(at + 28, true);
   const data = bytes.subarray(start, start + entry.size);
-  if (entry.method === 0) return data.slice(0, max);
+  if (entry.method === 0) {
+    const whole = data.slice(0, max);
+    charge(whole.length);
+    return { data: whole, done: true, grow() {} };
+  }
   if (entry.method !== 8) throw new Error(`Unsupported ZIP compression method ${entry.method}.`);
-  const chunks: Uint8Array[] = [];
-  let total = 0;
+  let buffer = new Uint8Array(Math.min(max, 1 << 20));
+  let length = 0;
+  let from = 0;
   const inflater = new Inflate((chunk) => {
-    chunks.push(chunk);
-    total += chunk.length;
+    const room = Math.min(chunk.length, max - length);
+    if (length + room > buffer.length) {
+      const next = new Uint8Array(Math.min(max, Math.max(buffer.length * 2, length + room)));
+      next.set(buffer.subarray(0, length));
+      buffer = next;
+    }
+    buffer.set(chunk.subarray(0, room), length);
+    length += room;
   });
-  // 16 KB in, at most about 16 MB out a step.
-  for (let from = 0; from < data.length && total < max; from += 16384) {
-    inflater.push(data.subarray(from, from + 16384), from + 16384 >= data.length);
-  }
-  const out = new Uint8Array(Math.min(total, max));
-  let filled = 0;
-  for (const chunk of chunks) {
-    if (filled >= out.length) break;
-    out.set(chunk.subarray(0, out.length - filled), filled);
-    filled += chunk.length;
-  }
-  return out;
+  const part: Growing = {
+    data: buffer.subarray(0, 0),
+    done: false,
+    grow() {
+      const before = length;
+      // 16 KB in, at most about 16 MB out a step.
+      while (!part.done && length < before + (1 << 20)) {
+        inflater.push(data.subarray(from, from + 16384), from + 16384 >= data.length);
+        from += 16384;
+        if (from >= data.length || length >= max) part.done = true;
+      }
+      charge(length - before);
+      part.data = buffer.subarray(0, length);
+    },
+  };
+  return part;
 }
 
 function xml(files: Unzipped, path: string): Document | null {
@@ -1064,36 +1134,41 @@ function findTag(bytes: Uint8Array, from: number, name: string, closing: boolean
 
 /** Shared strings as cells ask for them: the part is scanned only up to the highest index used,
  *  and each string decoded alone, so a large or stale table costs little. */
-function sharedStrings(bytes: Uint8Array | undefined): (index: number) => string {
+/** `part` inflates only as far as the highest index asked for: a large tail no cell uses is never
+ *  unpacked. */
+function sharedStrings(part: Growing | undefined): (index: number) => string {
   // Where each string's XML starts and ends, in flat arrays: a million strings skipped on the way
   // to a high index cost 8 MB, not a million objects.
   let starts = new Uint32Array(1024);
   let ends = new Uint32Array(1024);
   let count = 0;
   const texts = new Map<number, string>();
-  let at = bytes ? 0 : -1;
+  let at = part ? 0 : -1;
   return (index) => {
-    while (bytes && at !== -1 && count <= index) {
-      const open = findTag(bytes, at, "si", false);
-      const close = open && !open.empty ? findTag(bytes, open.end, "si", true) : null;
-      if (!open || (!open.empty && !close)) at = -1;
-      else {
-        if (count === starts.length) {
-          starts = grow(starts);
-          ends = grow(ends);
-        }
-        starts[count] = open.end;
-        ends[count] = close ? close.start : open.end;
-        count++;
-        at = close ? close.end : open.end;
+    while (part && at !== -1 && count <= index) {
+      const open = findTag(part.data, at, "si", false);
+      const close = open && !open.empty ? findTag(part.data, open.end, "si", true) : null;
+      if (!open || (!open.empty && !close)) {
+        // The string may run on past what is inflated yet.
+        if (part.done) at = -1;
+        else part.grow();
+        continue;
       }
+      if (count === starts.length) {
+        starts = grow(starts);
+        ends = grow(ends);
+      }
+      starts[count] = open.end;
+      ends[count] = close ? close.start : open.end;
+      count++;
+      at = close ? close.end : open.end;
     }
-    if (!bytes || !Number.isInteger(index) || index < 0 || index >= count) return "";
+    if (!part || !Number.isInteger(index) || index < 0 || index >= count) return "";
     let text = texts.get(index);
     if (text === undefined) {
       // A cell's worth of XML at most: a string cut there ends in an open run, which still reads.
       const start = starts[index]!;
-      text = stringText(strFromU8(bytes.subarray(start, Math.min(ends[index]!, start + MAX_CELL_BYTES))));
+      text = stringText(strFromU8(part.data.subarray(start, Math.min(ends[index]!, start + MAX_CELL_BYTES))));
       texts.set(index, text);
     }
     return text;
@@ -1142,7 +1217,7 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
   const stylesPath = partOf("styles", "xl/styles.xml");
   // Each read when a kept cell first needs it: a workbook can carry a large table no cell uses.
   let strings: ((index: number) => string) | undefined;
-  const string = (index: number) => (strings ??= sharedStrings(read([stringsPath])[stringsPath]))(index);
+  const string = (index: number) => (strings ??= sharedStrings(read.open(stringsPath, MAX_SHEET_XML_BYTES)))(index);
   let styles: CellStyle[] | undefined;
   const style = (index: number) =>
     (styles ??= readStyles(styleSections(read([stylesPath], MAX_STYLES_BYTES)[stylesPath])))[index];
@@ -1237,6 +1312,8 @@ export interface SlideBox {
   paragraphs?: { text: string; size?: number; bold?: boolean; align?: string; bullet?: boolean }[];
   /** A picture's bytes. The viewer makes a URL only while its slide is mounted. */
   image?: Blob;
+  /** How much of the picture is cut from each edge, as fractions of it; negative insets it. */
+  crop?: { l: number; t: number; r: number; b: number };
   /** A table's cell text, by row. A chart's cached data comes as one too. */
   table?: string[][];
   /** A chart's title, shown above its data. */
@@ -1414,6 +1491,19 @@ function paragraphText(p: Element): string {
 function point(xfrm: Element | undefined, name: string, a: string, b: string): [number, number] | undefined {
   const node = xfrm && children(xfrm, name)[0];
   return node ? [Number(node.getAttribute(a)) || 0, Number(node.getAttribute(b)) || 0] : undefined;
+}
+
+/** A picture's srcRect, in thousandths of a percent. The picture is stretched over its frame. */
+function readCrop(pic: Element): SlideBox["crop"] {
+  const rect = first(pic, "srcRect");
+  const side = (name: string) => {
+    const value = Number(rect?.getAttribute(name)) / 100_000;
+    return Number.isFinite(value) ? value : 0;
+  };
+  const [l, t, r, b] = ["l", "t", "r", "b"].map(side) as [number, number, number, number];
+  // Nothing, or no picture left, to show: drawn whole.
+  if (!(l || t || r || b) || l + r >= 1 || t + b >= 1) return undefined;
+  return { l, t, r, b };
 }
 
 function readFrame(shape: Element, cx: number, cy: number): SlideBox["frame"] {
@@ -1629,7 +1719,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
         pictures.set(target, image);
       }
       left--;
-      boxes.push({ frame: readFrame(pic, cx, cy), image });
+      boxes.push({ frame: readFrame(pic, cx, cy), image, crop: readCrop(pic) });
       return false;
     };
     // In document order, as PowerPoint stacks them: a later shape draws over an earlier one.
