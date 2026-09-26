@@ -6053,6 +6053,49 @@ def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[st
     return _extra_args_device(extra_args, {"--spec-draft-device", "-devd", "--device-draft"})
 
 
+_CUDA_DEVICE_TOKEN_RE = re.compile(r"CUDA(\d+)$", re.IGNORECASE)
+
+
+def _widen_pin_ids_for_companion_devices(
+    cmd: List[str], pin_ids: list[int], extra_args: Optional[Iterable[str]]
+) -> tuple[list[int], str]:
+    """Grow a pinned CUDA mask to cover the GPUs the user's extra args name (#11810).
+
+    ``--mmproj-device`` / ``--spec-draft-device`` are relative to the GPUs the child
+    can SEE, so a single-GPU pin that hides the card a companion device names makes
+    llama.cpp reject the flag as "invalid device" -- and Studio's retry chain then
+    misreads that as a fit/decoding failure, exhausting every attempt on the same
+    masked environment. The mask is a placement constraint on the MAIN model only,
+    so grow it with whatever extra card the user pointed a companion at, and (when
+    the user named no ``--device`` themselves) emit one so the main model keeps its
+    original GPUs instead of spreading over the widened mask under ``-ngl -1``.
+
+    llama.cpp numbers ``CUDA<n>`` by position in the visible set, so the emitted
+    main --device remaps through the FINAL mask. Returns the widened mask and a
+    one-line note for the log; when every requested card is already visible, the
+    mask and command are returned untouched.
+    """
+    if not pin_ids or not extra_args:
+        return list(pin_ids), ""
+    wanted: set[int] = set()
+    for value in (
+        _extra_args_device(extra_args, {"--mmproj-device", "-mmdev"}),
+        _extra_args_draft_device(extra_args),
+    ):
+        for token in str(value or "").split(","):
+            match = _CUDA_DEVICE_TOKEN_RE.match(token.strip())
+            if match:
+                wanted.add(int(match.group(1)))
+    wanted -= set(pin_ids)
+    if not wanted:
+        return list(pin_ids), ""
+    main_ids = list(pin_ids)
+    widened = list(main_ids) + sorted(wanted)
+    if _extra_args_main_device(extra_args) is None:
+        cmd.extend(["--device", ",".join(f"CUDA{widened.index(i)}" for i in main_ids)])
+    return widened, f"[{main_ids}] -> {widened}"
+
+
 def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
     """Return a GPU draft-device override; cpu/none do not conflict with a pin."""
     last_dev = _extra_args_draft_device(extra_args)
@@ -28652,6 +28695,19 @@ class LlamaCppBackend:
                     # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).
+                    # A share the user's companion-device flags point at but the pin
+                    # hides is "invalid device" to llama.cpp (#11810), so widen the
+                    # mask here -- after the inherited order resolved and rewrote the
+                    # split, before it becomes the child's environment.
+                    _pin_ids, _companion_widen = _widen_pin_ids_for_companion_devices(
+                        cmd, _pin_ids, extra_args
+                    )
+                    if _companion_widen:
+                        logger.info(
+                            "User extra args name a GPU outside the pinned mask; "
+                            "widening for the companion devices: %s",
+                            _companion_widen,
+                        )
                     self._emit_child_gpu_visibility(
                         env,
                         LlamaCppBackend._child_visibility_for(_pin_ids),
