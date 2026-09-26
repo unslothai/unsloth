@@ -1742,11 +1742,28 @@ nvidia-cublas==13.1.0.3 \
     #   cuda-toolkit
     #   nvidia-cudnn-cu13
     #   nvidia-cusolver
+nvidia-cuda-cccl==13.0.85 \
+    --hash=sha256:6f0203e29fed809ee2b7fe9b1344df66ecab990c37d6a2e0e189b26d6c97ed7c \
+    --hash=sha256:e0da7ad981f3a8aff08241b5bfc1af868742a63e2762f53a5171c492ef242649 \
+    --hash=sha256:e160c6f031687b913fbe6e82e43f1788c3dd2a2a6378d3a8b15a31934b3ab285
+    # via -r studio/backend/requirements/engines/sglang-linux-cu130.in
+nvidia-cuda-crt==13.0.88 \
+    --hash=sha256:2c8043c7c9e02492716426e9919fc78d2c5b3b2a7a768a88e952676b08aa55a4 \
+    --hash=sha256:31e02c52916804ca15e31f272a96181d8fadaf40c4c82a77a6f78071a22eccf3 \
+    --hash=sha256:ee2ea2a97073e02ee62bb27841f437332be2c248e3eac013df07997ada39c003
+    # via
+    #   -r studio/backend/requirements/engines/sglang-linux-cu130.in
+    #   nvidia-cuda-nvcc
 nvidia-cuda-cupti==13.0.85 \
     --hash=sha256:4eb01c08e859bf924d222250d2e8f8b8ff6d3db4721288cf35d14252a4d933c8 \
     --hash=sha256:683f58d301548deeefcb8f6fac1b8d907691b9d8b18eccab417f51e362102f00 \
     --hash=sha256:796bd679890ee55fb14a94629b698b6db54bcfd833d391d5e94017dd9d7d3151
     # via cuda-toolkit
+nvidia-cuda-nvcc==13.0.88 \
+    --hash=sha256:56fe502eb77625a12f25172caa3cdddb4e4c8ba2c8c17dba44b164761b380f03 \
+    --hash=sha256:7c3a32c8ca9866addfd784da363ddee2f6874d560027a296f583e86a61f2d543 \
+    --hash=sha256:c7ff28f86a24effdc6c034fa15230c549a273e4771b10a7fec14996f8cf3307f
+    # via -r studio/backend/requirements/engines/sglang-linux-cu130.in
 nvidia-cuda-nvrtc==13.0.88 \
     --hash=sha256:6bcd4e7f8e205cbe644f5a98f2f799bef9556fefc89dd786e79a16312ce49872 \
     --hash=sha256:ad9b6d2ead2435f11cbb6868809d2adeeee302e9bb94bcf0539c7a40d80e8575 \
@@ -1756,7 +1773,9 @@ nvidia-cuda-runtime==13.0.96 \
     --hash=sha256:7f82250d7782aa23b6cfe765ecc7db554bd3c2870c43f3d1821f1d18aebf0548 \
     --hash=sha256:ef9bcbe90493a2b9d810e43d249adb3d02e98dd30200d86607d8d02687c43f55 \
     --hash=sha256:f79298c8a098cec150a597c8eba58ecdab96e3bdc4b9bc4f9983635031740492
-    # via cuda-toolkit
+    # via
+    #   cuda-toolkit
+    #   nvidia-cuda-nvcc
 nvidia-cudnn-cu13==9.19.0.56 \
     --hash=sha256:40d8c375005bcb01495f8edf375230b203a411a0c05fb6dc92a3781edcb23eac \
     --hash=sha256:6ed29ffaee1176c612daf442e4dd6cfeb6a0caa43ddcbeb59da94953030b1be4 \
@@ -1864,6 +1883,13 @@ nvidia-nvtx==13.0.85 \
     --hash=sha256:cb7780edb6b14107373c835bf8b72e7a178bac7367e23da7acb108f973f157a6 \
     --hash=sha256:d66ea44254dd3c6eacc300047af6e1288d2269dd072b417e0adffbf479e18519
     # via cuda-toolkit
+nvidia-nvvm==13.0.88 \
+    --hash=sha256:2ef0db7849e476d3b2fc3c09b27bdd79bd7ea8ce58cd9c86553d64ea40844ba0 \
+    --hash=sha256:c4376a291d72d22a315d9d2f69bdae8f8cd83a627f75bad395cee49a0fe65dc1 \
+    --hash=sha256:c5f41ffeb6466944a026dfa5317d7d85355c119bbec279205d22f1869d1054e0
+    # via
+    #   -r studio/backend/requirements/engines/sglang-linux-cu130.in
+    #   nvidia-cuda-nvcc
 openai==2.6.1 \
     --hash=sha256:27ae704d190615fca0c0fc2b796a38f8b5879645a3a52c9c453b23f97141bb49 \
     --hash=sha256:904e4b5254a8416746a2f05649594fa41b19d799843cd134dac86167e094edef

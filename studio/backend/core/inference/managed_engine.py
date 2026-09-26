@@ -322,6 +322,10 @@ class ManagedEngine:
                 child_env["TRITON_CACHE_DIR"] = str(cache / "triton")
                 # FlashInfer's JIT build files name this env's sources; a shared ~/.cache outlives a replaced env.
                 child_env["FLASHINFER_WORKSPACE_BASE"] = info["path"]
+                from .engine_install import cuda_environment
+
+                child_env.pop("CUDA_PATH", None)
+                child_env.update(cuda_environment(info))
                 memory_fraction = gpu_memory_fraction(gpu_ids or [0])
                 child_env.update(self.adapter.environment(len(gpu_ids or [0])))
                 if self.engine == "vllm" and _deep_gemm_unloadable(info["path"]):

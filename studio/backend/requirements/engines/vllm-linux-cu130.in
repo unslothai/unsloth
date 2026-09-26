@@ -11,3 +11,9 @@ bitsandbytes==0.49.2
 
 # Native load-time INT8 conversion.
 torchao==0.17.0
+
+# nvcc for FlashInfer JIT kernels (vLLM compiles trtllm fmha on Blackwell) on hosts with only the driver.
+nvidia-cuda-nvcc==13.0.88
+nvidia-nvvm==13.0.88
+nvidia-cuda-cccl==13.0.85
+nvidia-cuda-crt==13.0.88

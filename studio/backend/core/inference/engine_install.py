@@ -197,6 +197,59 @@ def install_plan(engine: str) -> dict:
     }
 
 
+def _cuda_trees(env: Path, shared: bool) -> list[Path]:
+    sites = [env / "lib" / "python{}.{}".format(*PYTHON) / "site-packages"]
+    sites += [Path(path) for path in _studio_site()] if shared else []
+    return [site / "nvidia" / "cu13" for site in sites if (site / "nvidia" / "cu13").is_dir()]
+
+
+def link_cuda_home(env: Path, shared: bool) -> None:
+    """FlashInfer JIT-compiles some kernels; this CUDA_HOME is the locked pip nvcc, since a host may
+    have only the driver, or a toolkit of another CUDA major."""
+    home = env / "cuda"
+    (home / "lib64").mkdir(parents = True, exist_ok = True)
+    trees = _cuda_trees(env, shared)
+    for name, link in (
+        ("bin", home / "bin"),
+        ("nvvm", home / "nvvm"),
+        ("include", home / "include"),
+    ):
+        source = next(
+            (
+                tree / name
+                for tree in trees
+                if (tree / name / ("nvcc" if name == "bin" else "")).exists()
+            ),
+            None,
+        )
+        if source is not None and not link.is_symlink():
+            link.symlink_to(source)
+    # nvcc links -lcudart, and the runtime wheel ships only the versioned soname.
+    cudart = next(
+        (
+            tree / "lib" / "libcudart.so.13"
+            for tree in trees
+            if (tree / "lib" / "libcudart.so.13").exists()
+        ),
+        None,
+    )
+    if cudart is not None and not (home / "lib64" / "libcudart.so").is_symlink():
+        (home / "lib64" / "libcudart.so").symlink_to(cudart)
+
+
+def cuda_environment(info: dict) -> dict[str, str]:
+    """CUDA_HOME for the engine's JIT compiles; CPATH covers headers split across a shared environment."""
+    env = Path(info["path"])
+    if not (env / "cuda" / "bin" / "nvcc").exists():
+        return {}
+    return {
+        "CUDA_HOME": str(env / "cuda"),
+        "CPATH": os.pathsep.join(
+            str(tree / "include") for tree in _cuda_trees(env, bool(info.get("shared")))
+        ),
+    }
+
+
 def stale(info: dict) -> bool:
     """True when Studio no longer provides what a shared engine environment was checked with."""
     if not info.get("shared"):
@@ -669,6 +722,7 @@ def _install(
                     _STUDIO_BASE_SOURCE.format(paths = _studio_site()), encoding = "utf-8"
                 )
                 (site / _BASE_PTH).write_text(f"import {_BASE_MODULE}\n", encoding = "utf-8")
+            link_cuda_home(destination, plan["shared"])
             _update(engine, phase = "checking", message = "Checking the installed engine")
             _run(
                 engine,

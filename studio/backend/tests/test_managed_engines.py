@@ -183,6 +183,37 @@ def test_shared_engine_never_sees_studio_flashinfer(tmp_path):
     assert out.stdout.strip() == "None None ['studio_only']"
 
 
+def test_engine_cuda_home_is_the_locked_pip_nvcc(tmp_path, monkeypatch):
+    import os
+
+    env, studio = tmp_path / "env", tmp_path / "studio"
+    engine_cuda = env / "lib" / "python3.13" / "site-packages" / "nvidia" / "cu13"
+    studio_cuda = studio / "nvidia" / "cu13"
+    for path in (
+        engine_cuda / "bin" / "nvcc",
+        engine_cuda / "include" / "crt" / "host_defines.h",
+        studio_cuda / "lib" / "libcudart.so.13",
+        studio_cuda / "include" / "cuda_runtime.h",
+    ):
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.touch()
+    (engine_cuda / "nvvm").mkdir()
+    monkeypatch.setattr(install, "_studio_site", lambda: [str(studio)])
+    assert install.cuda_environment({"path": str(env), "shared": True}) == {}
+
+    install.link_cuda_home(env, shared = True)
+    install.link_cuda_home(env, shared = True)
+    home = env / "cuda"
+    assert (home / "bin" / "nvcc").exists() and (home / "nvvm").resolve() == engine_cuda / "nvvm"
+    assert (home / "lib64" / "libcudart.so").resolve() == studio_cuda / "lib" / "libcudart.so.13"
+    cuda = install.cuda_environment({"path": str(env), "shared": True})
+    assert cuda["CUDA_HOME"] == str(home)
+    assert cuda["CPATH"].split(os.pathsep) == [
+        str(engine_cuda / "include"),
+        str(studio_cuda / "include"),
+    ]
+
+
 def test_changed_studio_torch_uses_an_isolated_environment(isolated, monkeypatch):
     studio_with_engine_torch(monkeypatch, "vllm", torch = "2.99.0")
     monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
