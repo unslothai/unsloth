@@ -594,6 +594,7 @@ def run_safetensors_tool_loop(
     execute_tool: Callable[..., str],
     cancel_event: Optional[threading.Event] = None,
     auto_heal_tool_calls: bool = True,
+    deduplicate_tool_calls: bool = True,
     nudge_tool_calls: Optional[bool] = None,
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
@@ -705,6 +706,7 @@ def run_safetensors_tool_loop(
     tool_controller = ToolLoopController(
         tools = (None if unrestricted_tools else _authorized),
         auto_heal_tool_calls = auto_heal_tool_calls,
+        deduplicate_tool_calls = deduplicate_tool_calls,
     )
     # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).
     kb_search_count = 0

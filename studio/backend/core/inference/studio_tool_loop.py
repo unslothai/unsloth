@@ -394,6 +394,8 @@ class ToolLoopPolicy:
     # Called when a provider turn ends, however it ended. Headerless only: clears the stripper's withheld-call flag,
     # which the wire cannot always close because a turn may end on [DONE] alone.
     on_provider_turn_end: Callable[[], None] | None = None
+    # None keeps the request default (on); explicit booleans win.
+    deduplicate_tool_calls: bool | None = None
 
 
 def _reject_json_constant(name: str) -> Any:
@@ -1267,6 +1269,7 @@ async def stream_with_studio_tools(
     controller = ToolLoopController(
         tools = tools,
         auto_heal_tool_calls = policy.auto_heal is not False,
+        deduplicate_tool_calls = policy.deduplicate_tool_calls is not False,
     )
     tool_hint = ", ".join(sorted(allowed_tool_names))
     reprompts = 0

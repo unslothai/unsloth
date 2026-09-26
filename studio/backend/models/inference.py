@@ -2365,6 +2365,14 @@ class ChatCompletionRequest(BaseModel):
             "UNSLOTH_TOOL_CALL_NUDGE=1 flips the process default."
         ),
     )
+    deduplicate_tool_calls: Optional[bool] = Field(
+        True,
+        description = (
+            "[x-unsloth] When false, a tool call identical to one that already "
+            "succeeded in this response runs again instead of being answered "
+            "with a duplicate notice. Default on."
+        ),
+    )
     context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
         None,
         description = (

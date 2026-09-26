@@ -200,6 +200,22 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
     assert controller.active_tools() == []
 
 
+def test_deduplication_can_be_disabled():
+    controller = ToolLoopController(
+        tools = [_tool("web_search"), _tool("python")],
+        deduplicate_tool_calls = False,
+    )
+    first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
+    controller.record_result(first, "ok")
+
+    repeat = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_b"))
+    assert repeat.action == "execute"
+    assert repeat.should_execute
+    controller.record_result(repeat, "ok")
+    assert not controller.force_final_answer
+    _shared_setup_1(controller)
+
+
 def test_command_can_run_again_after_a_file_edit():
     controller = ToolLoopController(
         tools = [_tool("terminal"), _tool("edit_file"), _tool("web_search")]

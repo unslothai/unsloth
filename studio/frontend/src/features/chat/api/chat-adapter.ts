@@ -6319,6 +6319,7 @@ export function createOpenAIStreamAdapter(
                     // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
                     // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
                     nudge_tool_calls: false,
+                    deduplicate_tool_calls: runtime.deduplicateToolCalls,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
                     run_tools_locally: true,
@@ -6551,6 +6552,7 @@ export function createOpenAIStreamAdapter(
                     : {}),
                   auto_heal_tool_calls: runtime.autoHealToolCalls,
                   nudge_tool_calls: runtime.nudgeToolCalls,
+                  deduplicate_tool_calls: runtime.deduplicateToolCalls,
                   max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
                     const mins = runtime.toolCallTimeout;
