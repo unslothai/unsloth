@@ -78,7 +78,12 @@ function inflateEntry(bytes: Uint8Array, view: DataView, entry: ZipEntry): Uint8
 
 /** Inflates the named parts, on demand. The archive is indexed once, so each read is by lookup,
  *  not another pass over every entry. The unpacked total counts across calls. */
-function archive(bytes: Uint8Array): (names: Iterable<string>) => Unzipped {
+type Reader = ((names: Iterable<string>) => Unzipped) & {
+  /** A part's unpacked size, when the index knows it. */
+  size: (name: string) => number | undefined;
+};
+
+function archive(bytes: Uint8Array): Reader {
   let total = 0;
   const charge = (size: number) => {
     total += size;
@@ -87,14 +92,15 @@ function archive(bytes: Uint8Array): (names: Iterable<string>) => Unzipped {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const index = zipIndex(bytes, view);
   if (!index) {
-    return (names) => {
+    const read = (names: Iterable<string>) => {
       const wanted = new Set(names);
       return unzipSync(bytes, {
         filter: (entry) => wanted.has(entry.name) && (charge(entry.originalSize), true),
       });
     };
+    return Object.assign(read, { size: () => undefined });
   }
-  return (names) => {
+  const read = (names: Iterable<string>) => {
     const files: Unzipped = {};
     for (const name of new Set(names)) {
       const entry = index.get(name);
@@ -104,6 +110,7 @@ function archive(bytes: Uint8Array): (names: Iterable<string>) => Unzipped {
     }
     return files;
   };
+  return Object.assign(read, { size: (name: string) => index.get(name)?.originalSize });
 }
 
 function xml(files: Unzipped, path: string): Document | null {
@@ -563,8 +570,21 @@ function formatScientific(value: number, format: string): string {
   const tokens: string[] = mantissaFormat.match(/"[^"]*"|\\.|[0#?.]|[^"\\0#?.]+/g) ?? [];
   const dot = tokens.indexOf(".");
   const places = dot === -1 ? 0 : tokens.slice(dot + 1).filter(isPlaceholder).length;
-  const [mantissa = "0", exponentText = "0"] = value.toExponential(places).split("e");
-  const exponent = Number(exponentText);
+  // More than one integer placeholder steps the exponent by that many: ##0.0E+0 is engineering
+  // notation, 12345 showing as 12.3E+3.
+  const step = Math.max(1, (dot === -1 ? tokens : tokens.slice(0, dot)).filter(isPlaceholder).length);
+  const [normalized = "0", exponentText = "0"] = value.toExponential(places).split("e");
+  let mantissa = normalized;
+  let exponent = Number(exponentText);
+  if (step > 1 && value !== 0) {
+    exponent = Math.floor(Math.log10(value) / step) * step;
+    mantissa = (value / 10 ** exponent).toFixed(places);
+    // Rounding can carry into the next step: 999.96 in ##0.0E+0 is 1.0E+3.
+    if (Number(mantissa) >= 10 ** step) {
+      exponent += step;
+      mantissa = (value / 10 ** exponent).toFixed(places);
+    }
+  }
   const expSign = exponent < 0 ? "-" : format[at + 1] === "+" ? "+" : "";
   return `${placeDigits(Number(mantissa), mantissaFormat)}E${expSign}${placeDigits(Math.abs(exponent), exponentFormat)}`;
 }
@@ -955,24 +975,45 @@ function findTag(bytes: Uint8Array, from: number, name: string, closing: boolean
 /** Shared strings as cells ask for them: the part is scanned only up to the highest index used,
  *  and each string decoded alone, so a large or stale table costs little. */
 function sharedStrings(bytes: Uint8Array | undefined): (index: number) => string {
-  const ranges: [number, number][] = [];
-  const texts: (string | undefined)[] = [];
+  // Where each string's XML starts and ends, in flat arrays: a million strings skipped on the way
+  // to a high index cost 8 MB, not a million objects.
+  let starts = new Uint32Array(1024);
+  let ends = new Uint32Array(1024);
+  let count = 0;
+  const texts = new Map<number, string>();
   let at = bytes ? 0 : -1;
   return (index) => {
-    while (bytes && at !== -1 && ranges.length <= index) {
+    while (bytes && at !== -1 && count <= index) {
       const open = findTag(bytes, at, "si", false);
       const close = open && !open.empty ? findTag(bytes, open.end, "si", true) : null;
       if (!open || (!open.empty && !close)) at = -1;
       else {
-        ranges.push([open.end, close ? close.start : open.end]);
+        if (count === starts.length) {
+          starts = grow(starts);
+          ends = grow(ends);
+        }
+        starts[count] = open.end;
+        ends[count] = close ? close.start : open.end;
+        count++;
         at = close ? close.end : open.end;
       }
     }
-    const range = ranges[index];
-    if (!bytes || !range) return "";
-    // A cell's worth of XML at most: a string cut there ends in an open run, which still reads.
-    return (texts[index] ??= stringText(strFromU8(bytes.subarray(range[0], Math.min(range[1], range[0] + MAX_CELL_BYTES)))));
+    if (!bytes || !Number.isInteger(index) || index < 0 || index >= count) return "";
+    let text = texts.get(index);
+    if (text === undefined) {
+      // A cell's worth of XML at most: a string cut there ends in an open run, which still reads.
+      const start = starts[index]!;
+      text = stringText(strFromU8(bytes.subarray(start, Math.min(ends[index]!, start + MAX_CELL_BYTES))));
+      texts.set(index, text);
+    }
+    return text;
   };
+}
+
+function grow(array: Uint32Array): Uint32Array<ArrayBuffer> {
+  const next = new Uint32Array(array.length * 2);
+  next.set(array);
+  return next;
 }
 
 // A style section past this is skipped: real ones are far smaller, even at Excel's 64,000 formats.
@@ -1046,14 +1087,18 @@ export function readDelimited(text: string, delimiter: string, name: string): Sh
     } else truncated = true;
     field = "";
   };
+  // A field stops growing at a cell's worth, as an XLSX cell does.
+  const append = (char: string) => {
+    if (field.length < MAX_CELL_TEXT) field += char;
+  };
   for (let i = 0; i < text.length; i++) {
     const char = text[i]!;
     if (quoted) {
       if (char === '"' && text[i + 1] === '"') {
-        field += '"';
+        append('"');
         i++;
       } else if (char === '"') quoted = false;
-      else field += char;
+      else append(char);
     } else if (char === '"' && field === "") quoted = true;
     else if (char === delimiter) push();
     else if (char === "\n" || char === "\r") {
@@ -1065,7 +1110,7 @@ export function readDelimited(text: string, delimiter: string, name: string): Sh
         truncated = i < text.length - 1;
         break;
       }
-    } else field += char;
+    } else append(char);
   }
   if (field !== "" || row.length) {
     push();
@@ -1079,7 +1124,7 @@ export function readDelimited(text: string, delimiter: string, name: string): Sh
 
 export interface SlideBox {
   /** Position and size as fractions of the slide, when the shape sets its own. */
-  frame?: { x: number; y: number; w: number; h: number };
+  frame?: { x: number; y: number; w: number; h: number; /** Clockwise, in degrees. */ rot?: number };
   placeholder?: string;
   paragraphs?: { text: string; size?: number; bold?: boolean; align?: string; bullet?: boolean }[];
   /** A picture's bytes. The viewer makes a URL only while its slide is mounted. */
@@ -1125,6 +1170,8 @@ const MAX_CHART_CELLS = 5000;
 
 // Slides read: each is kept as boxes once parsed.
 const MAX_SLIDES = 500;
+// As the ceiling on a Word document's XML.
+const MAX_SLIDE_XML_BYTES = 10 * 1024 * 1024;
 const HIDDEN_SLIDE = /<(?:[\w.-]+:)?sld\b[^>]*\sshow\s*=\s*["'](?:0|false)["']/;
 
 // Paragraphs, table cells and pictures on one slide, all of which it mounts at once.
@@ -1226,8 +1273,10 @@ function readFrame(shape: Element, cx: number, cy: number): SlideBox["frame"] {
   if (!off || !ext) return undefined;
   let [x, y] = off;
   let [w, h] = ext;
+  let rot = degrees(xfrm);
   // In a group, a frame is in the group's child space (chOff, chExt): map it out through each
-  // group to the slide.
+  // group to the slide. A flip mirrors it within the group, turning it the other way; a rotation
+  // turns it about the group's centre.
   for (let group = shape.parentElement; group; group = group.parentElement) {
     if (group.localName !== "grpSp") continue;
     const box = children(group, "grpSpPr").flatMap((props) => children(props, "xfrm"))[0];
@@ -1241,8 +1290,31 @@ function readFrame(shape: Element, cx: number, cy: number): SlideBox["frame"] {
     y = gy + (y - oy) * sy;
     w *= sx;
     h *= sy;
+    if (isTrue(box?.getAttribute("flipH") ?? null)) {
+      x = 2 * gx + gw - x - w;
+      rot = -rot;
+    }
+    if (isTrue(box?.getAttribute("flipV") ?? null)) {
+      y = 2 * gy + gh - y - h;
+      rot = -rot;
+    }
+    const turn = degrees(box);
+    if (turn) {
+      const angle = (turn * Math.PI) / 180;
+      const dx = x + w / 2 - (gx + gw / 2);
+      const dy = y + h / 2 - (gy + gh / 2);
+      x = gx + gw / 2 + dx * Math.cos(angle) - dy * Math.sin(angle) - w / 2;
+      y = gy + gh / 2 + dx * Math.sin(angle) + dy * Math.cos(angle) - h / 2;
+      rot += turn;
+    }
   }
-  return { x: x / cx, y: y / cy, w: w / cx, h: h / cy };
+  rot %= 360;
+  return { x: x / cx, y: y / cy, w: w / cx, h: h / cy, ...(rot ? { rot } : {}) };
+}
+
+/** An xfrm's clockwise rotation in degrees (rot is in 60,000ths). */
+function degrees(xfrm: Element | undefined): number {
+  return Number(xfrm?.getAttribute("rot")) / 60000 || 0;
 }
 
 /** `images: false` reads text only, leaving slide media unpacked. Only the parts visible slides
@@ -1264,6 +1336,15 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   let truncated = false;
   for (const path of slidePaths) {
     if (!path) continue;
+    // Past this a slide is not parsed, its DOM too large to build: it shows as cut.
+    if ((read.size(path) ?? 0) > MAX_SLIDE_XML_BYTES) {
+      if (slides.length === MAX_SLIDES) {
+        truncated = true;
+        break;
+      }
+      slides.push({ boxes: [{ paragraphs: [{ text: "…" }] }] });
+      continue;
+    }
     // One slide at a time, parsed before the next is read: a long deck holds one slide's XML and
     // inflates no more than it shows.
     const part = read([path, relsPath(path)]);

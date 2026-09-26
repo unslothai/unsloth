@@ -79,6 +79,8 @@ test("number formats", () => {
     [125000, "# ?/?,", "125"],
     [1.5, '0 "0/0"', "2 0/0"],
     [0.01, "0%%", "100%%"],
+    [12345, "##0.0E+0", "12.3E+3"],
+    [0.00123, "##0.0E+0", "1.2E-3"],
   ];
   for (const [value, format, expected] of cases) assert.equal(formatNumber(value, format), expected, format);
 });

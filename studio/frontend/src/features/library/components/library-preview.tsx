@@ -3,7 +3,7 @@
 
 import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { CodeSourceView } from "@/components/code-source-view";
-import { DocumentView, documentKind } from "@/components/file-viewer";
+import { DocumentView, documentKind, sheetDelimiter } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { Button } from "@/components/ui/button";
 import { MediaViewer, ScaleMenu } from "@/components/media-viewer";
@@ -85,7 +85,7 @@ function bodyFor(item: LibraryItem): Body {
     const extension = fileExtension(ownName(item));
     if (MARKDOWN_EXTENSIONS.has(extension)) return "markdown";
     // A CSV sent in chat keeps its whole text, so it opens as a grid like an upload.
-    return ["csv", "tsv"].includes(extension) ? "document" : "text";
+    return sheetDelimiter(ownName(item), item.contentType) ? "document" : "text";
   }
   if (documentKind(ownName(item), item.contentType)) return "document";
   const kind = fileKind(item);
@@ -99,7 +99,7 @@ function bodyFor(item: LibraryItem): Body {
  *  CSV's text. An uploaded note is edited in that view. */
 function hasSource(item: LibraryItem, body: Body): boolean {
   if (body === "web" || body === "markdown") return true;
-  return body === "document" && ["csv", "tsv"].includes(fileExtension(ownName(item)));
+  return body === "document" && sheetDelimiter(ownName(item), item.contentType) !== null;
 }
 
 /** What shows: the source, as text, when a rendered body is toggled to its code. */

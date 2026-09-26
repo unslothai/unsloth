@@ -346,6 +346,7 @@ function frameStyle(frame: NonNullable<SlideBox["frame"]>): CSSProperties {
     top: `${frame.y * 100}%`,
     width: `${frame.w * 100}%`,
     height: `${frame.h * 100}%`,
+    transform: frame.rot ? `rotate(${frame.rot}deg)` : undefined,
   };
 }
 
