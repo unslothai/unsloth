@@ -15,11 +15,13 @@ from unittest.mock import patch
 import pytest
 
 from utils.models.gguf_metadata import (
+    gguf_mainline_q2_offset_mismatch,
     is_gguf_embedding_architecture,
     is_gguf_embedding_model,
     is_mmproj_by_metadata,
     mmproj_accepts_image,
     pairing_score,
+    prism_legacy_q2_gguf_user_message,
     read_gguf_architecture,
     read_gguf_context_length,
     read_gguf_general_metadata,
@@ -131,6 +133,78 @@ def test_returns_none_for_non_gguf(tmp_path: Path):
     p = tmp_path / "garbage.gguf"
     p.write_bytes(b"not a gguf file at all, just bytes")
     assert read_gguf_general_metadata(str(p)) is None
+
+
+def _write_legacy_q2_offset_mismatch_gguf(
+    path: Path,
+    *,
+    mismatch_tensor: str = "blk.0.weight",
+    architecture: str | None = None,
+) -> Path:
+    """Two-tensor header where the second offset matches legacy Q2_0 packing, not mainline."""
+    _GGML_TYPE_Q2_0 = 42
+    _GGML_TYPE_F32 = 0
+    # Mainline Q2_0 [64, 64] -> 1152 bytes; legacy Prism packing -> 1088 bytes.
+    legacy_running = 1088
+    body = b""
+    kv_count = 0
+    if architecture is not None:
+        body += _enc_kv_string("general.architecture", architecture)
+        kv_count = 1
+    tensor_info = b""
+    for name, ggml_type, ne, offset in (
+        ("token_embd.weight", _GGML_TYPE_Q2_0, (64, 64), 0),
+        (mismatch_tensor, _GGML_TYPE_F32, (1,), legacy_running),
+    ):
+        tensor_info += _enc_string(name)
+        tensor_info += struct.pack("<I", len(ne))
+        for dim in ne:
+            tensor_info += struct.pack("<Q", dim)
+        tensor_info += struct.pack("<I", ggml_type)
+        tensor_info += struct.pack("<Q", offset)
+    header = struct.pack("<IIQQ", _GGUF_MAGIC, 3, 2, kv_count)
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_bytes(header + body + tensor_info)
+    return path
+
+
+def test_gguf_mainline_q2_offset_mismatch_detects_legacy_packing(tmp_path: Path):
+    p = _write_legacy_q2_offset_mismatch_gguf(tmp_path / "bonsai-legacy.gguf")
+    assert gguf_mainline_q2_offset_mismatch(str(p)) == "blk.0.weight"
+
+
+def test_gguf_mainline_q2_probe_on_reported_dspark_q4_1_filename(tmp_path: Path):
+    """#11259: sidecar is named *-dspark-Q4_1.gguf but legacy Q2_0 packing trips on dspark.fc.weight."""
+    p = _write_legacy_q2_offset_mismatch_gguf(
+        tmp_path / "Ternary-Bonsai-27B-dspark-Q4_1.gguf",
+        mismatch_tensor = "dspark.fc.weight",
+        architecture = "llama",
+    )
+    assert gguf_mainline_q2_offset_mismatch(str(p)) == "dspark.fc.weight"
+
+
+def test_gguf_mainline_q2_probe_ignores_offset_mismatch_without_q2_0(tmp_path: Path):
+    """Truncated or non-legacy files can share the log line; the probe must stay silent."""
+    _GGML_TYPE_F32 = 0
+    body = _enc_kv_string("general.architecture", "llama")
+    tensor_info = b""
+    for name, offset in (("only.weight", 0), ("dspark.fc.weight", 8)):
+        tensor_info += _enc_string(name)
+        tensor_info += struct.pack("<I", 1)
+        tensor_info += struct.pack("<Q", 1)
+        tensor_info += struct.pack("<I", _GGML_TYPE_F32)
+        tensor_info += struct.pack("<Q", offset)
+    header = struct.pack("<IIQQ", _GGUF_MAGIC, 3, 2, 1)
+    p = tmp_path / "Ternary-Bonsai-27B-dspark-Q4_1.gguf"
+    p.write_bytes(header + body + tensor_info)
+    assert gguf_mainline_q2_offset_mismatch(str(p)) is None
+
+
+def test_prism_legacy_q2_message_names_the_tensor():
+    msg = prism_legacy_q2_gguf_user_message(tensor_name = "dspark.fc.weight")
+    assert "Q2_g64" in msg
+    assert "dspark.fc.weight" in msg
+    assert "enough memory" not in msg.lower()
 
 
 def test_context_length_none_for_missing_file(tmp_path: Path):

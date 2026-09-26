@@ -37,6 +37,7 @@ if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+from test_gguf_metadata import _write_legacy_q2_offset_mismatch_gguf
 import time
 
 _classify = LlamaCppBackend._classify_llama_start_failure
@@ -775,6 +776,43 @@ class TestMacOSLoaderFailures:
         out = "llama_model_load: error loading model: Reason: something went wrong"
         msg = _classify(out, "/models/x.gguf", "local/x", 1)
         assert "llama-server failed to start." in msg
+
+
+class TestPrismLegacyQ2Gguf:
+    _OUT = (
+        "load_model: loading model "
+        "'Ternary-Bonsai-27B-dspark-Q4_1.gguf'\n"
+        "gguf_init_from_reader: tensor 'dspark.fc.weight' has offset 337718592, "
+        "expected 357584192\n"
+        "gguf_init_from_reader: failed to read tensor data\n"
+        "llama_model_load: error loading model: llama_model_loader: failed to load model"
+    )
+
+    def test_tensor_offset_mismatch_is_not_blamed_on_memory(self, tmp_path: Path):
+        gguf = _write_legacy_q2_offset_mismatch_gguf(
+            tmp_path / "Ternary-Bonsai-27B-dspark-Q4_1.gguf",
+            mismatch_tensor = "dspark.fc.weight",
+        )
+        msg = _classify(
+            self._OUT,
+            str(gguf),
+            "prism-ml/Ternary-Bonsai-27B-gguf",
+            1,
+        )
+        assert "Q2_g64" in msg
+        assert "dspark.fc.weight" in msg
+        assert "enough memory" not in msg.lower()
+        assert not msg.startswith("llama-server failed to start.")
+
+    def test_tensor_offset_mismatch_without_legacy_probe_falls_back_generic(self):
+        msg = _classify(
+            self._OUT,
+            "/cache/Ternary-Bonsai-27B-dspark-Q4_1.gguf",
+            "prism-ml/Ternary-Bonsai-27B-gguf",
+            1,
+        )
+        assert "Q2_g64" not in msg
+        assert "enough memory" in msg.lower()
 
 
 class TestANonGgufFile:

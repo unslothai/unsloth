@@ -20504,6 +20504,31 @@ class LlamaCppBackend:
 
         # llama.cpp prints the four bytes it found with %c, so a binary header arrives as
         # unprintable characters; the generic fallback then blamed the user's memory (#8566).
+        # Prism ML Bonsai / legacy ternary GGUFs use an older Q2_0 packing; llama.cpp
+        # then reports a tensor offset mismatch (often on dspark.fc.weight) and the
+        # generic fallback wrongly blames memory or file validity (#11259).
+        tensor_offset_mismatch = re.search(
+            r"gguf_init_from_reader: tensor '([^']+)' has offset \d+, expected \d+",
+            output or "",
+            re.IGNORECASE,
+        )
+        if tensor_offset_mismatch:
+            from utils.models.gguf_metadata import (
+                gguf_mainline_q2_offset_mismatch,
+                prism_legacy_q2_gguf_user_message,
+            )
+
+            legacy_tensor: Optional[str] = None
+            if gguf_path and Path(gguf_path).is_file():
+                legacy_tensor = gguf_mainline_q2_offset_mismatch(gguf_path)
+            if legacy_tensor is not None:
+                return LlamaCppBackend._with_startup_diagnostics(
+                    prism_legacy_q2_gguf_user_message(tensor_name = legacy_tensor),
+                    output,
+                    log_path,
+                    secrets,
+                )
+
         if "invalid magic characters" in lowered:
             # Not necessarily the main model: the projector and drafter report this too.
             base = os.path.basename(gguf_path) if gguf_path else ""
@@ -23118,6 +23143,20 @@ class LlamaCppBackend:
                         gguf_path,
                     )
                     raise ValueError(_early_non_chat)
+                from utils.models.gguf_metadata import (
+                    gguf_mainline_q2_offset_mismatch,
+                    prism_legacy_q2_gguf_user_message,
+                )
+
+                _legacy_q2 = gguf_mainline_q2_offset_mismatch(gguf_path)
+                if _legacy_q2 is not None:
+                    _legacy_msg = prism_legacy_q2_gguf_user_message(tensor_name = _legacy_q2)
+                    logger.error(
+                        "Refusing legacy Prism Q2_0 GGUF before teardown: %s (%s)",
+                        _legacy_msg,
+                        gguf_path,
+                    )
+                    raise ValueError(_legacy_msg)
 
             # The same refusal for a REPO load, which is what the Model Hub actually sends:
             # the route resolves every Hub model to hf_repo, so leaving this to the
