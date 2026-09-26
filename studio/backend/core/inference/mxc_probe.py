@@ -22,6 +22,13 @@ _cache: dict[tuple, tuple[float, bool, str]] = {}
 _inflight: dict[tuple, threading.Event] = {}
 POSITIVE_TTL = 300.0
 NEGATIVE_TTL = 30.0
+# A shell that cannot start in any container stays that way until the runtime, the shell or the opt-in changes,
+# all of which are in the cache key; re-probing it every NEGATIVE_TTL costs ~15s of DACL-tier launches each time.
+INCOMPATIBLE_TTL = 6 * 3600.0
+MSYS_NAMESPACE_REASON = (
+    "Git Bash (the MSYS2 runtime) cannot start inside the MXC container: it creates a global "
+    "named-object directory the container denies (microsoft/mxc#1061)"
+)
 
 
 _host_prep_cache: dict[str, tuple[float, str | None]] = {}
@@ -111,6 +118,20 @@ def _terminal_probe(selected_executable: str, workdir: Path, canary: Path, outsi
         )
         return (selected_executable, "-c", command)
     raise ValueError(f"the selected Windows Terminal shell is not qualified for MXC: {name}")
+
+
+def _is_msys_namespace_failure(selected_executable: str, execution_kind: str, output) -> bool:
+    """msys-2.0.dll dies in DLL init on NtCreateDirectoryObject(\\BaseNamedObjects\\msys-...) = ACCESS_DENIED, before
+    it reads its command; AppContainer redirects only the Win32 named-object APIs, not that absolute NT path."""
+    name = Path(selected_executable).name.casefold()
+    if execution_kind != "terminal" or name not in {"bash", "bash.exe"}:
+        return False
+    text = output or ""
+    return (
+        "NtCreateDirectoryObject" in text
+        and "\\BaseNamedObjects\\" in text
+        and "0xc0000022" in text.casefold()
+    )
 
 
 def _probe(
@@ -230,6 +251,10 @@ def _probe(
             or result.get("exitCode") != 0
             or result.get("cleanup") != "complete"
         ):
+            if result.get("cleanup") == "complete" and _is_msys_namespace_failure(
+                selected_executable, execution_kind, output
+            ):
+                return False, MSYS_NAMESPACE_REASON
             return False, "the live MXC probe did not complete cleanly"
         if execution_kind == "terminal":
             captured = workdir / "outside-read.txt"
@@ -306,7 +331,12 @@ def probe(
         result = _probe(selected_executable, execution_kind, cancel_event)
         with _lock:
             if cancel_event is None or not cancel_event.is_set():
-                ttl = POSITIVE_TTL if result[0] else NEGATIVE_TTL
+                if result[0]:
+                    ttl = POSITIVE_TTL
+                elif result[1] == MSYS_NAMESPACE_REASON:
+                    ttl = INCOMPATIBLE_TTL
+                else:
+                    ttl = NEGATIVE_TTL
                 _cache[key] = (time.monotonic() + ttl, *result)
         return result
     finally:

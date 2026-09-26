@@ -93,8 +93,19 @@ def capability_snapshot(
             "tier: it adds temporary permission entries to the granted host folders, removed "
             "on exit, and needs a one-time administrator host preparation plus one per reboot."
         )
+    shell_incompatible = reason == mxc_probe.MSYS_NAMESPACE_REASON
+    if shell_incompatible:
+        # Install and host prep are done or irrelevant here: repeating them cannot help this shell start.
+        remediation = (
+            "Python tools are still isolated. Terminal commands run with software safeguards in Auto "
+            "and are refused when isolation is Required, because Git Bash cannot run in the Windows sandbox."
+        )
     # Only in DACL mode: a bare --probe allows the fallback, so it warns on hosts Studio never uses it on.
-    host_prep = mxc_probe.host_prep_remediation() if dacl and not available else None
+    host_prep = (
+        mxc_probe.host_prep_remediation()
+        if dacl and not available and not shell_incompatible
+        else None
+    )
     if host_prep:
         remediation = f"{remediation} {host_prep}"
     return SandboxCapability(
