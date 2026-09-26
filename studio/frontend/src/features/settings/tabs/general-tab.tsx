@@ -67,6 +67,10 @@ import {
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { useIsAccountOwner } from "@/features/auth";
+import {
+  LIBRARY_SETTINGS_STORAGE_KEY,
+  LIBRARY_VIEW_STORAGE_KEY,
+} from "@/features/library";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
 import {
@@ -77,6 +81,7 @@ import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
 import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
+import { HubSettingsSection } from "../components/hub-settings-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -101,6 +106,8 @@ const PREFS_KEYS: string[] = [
   "sidebar_width",
   "chat_settings_width",
   "unsloth_sidebar_navigate_open",
+  LIBRARY_SETTINGS_STORAGE_KEY,
+  LIBRARY_VIEW_STORAGE_KEY,
   // Grouping, sort and the manual row order.
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
@@ -763,6 +770,8 @@ export function GeneralTab() {
       )}
 
       <DocumentsRagSection />
+
+      <HubSettingsSection />
 
       <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
         <DownloadTransportRow />

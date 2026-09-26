@@ -10,6 +10,13 @@ import {
 } from "@/config/hardware-verdict";
 import { create } from "zustand";
 
+// Backend routes, so same origin: the page CSP already allows them whatever endpoint is saved later.
+const MODELSCOPE_HUB_PATH = "/api/hub/modelscope";
+
+function backendUrl(path: string): string {
+  return new URL(apiUrl(path), window.location.href).href;
+}
+
 export const env = {
   MODE: import.meta.env.MODE,
   DEV: import.meta.env.DEV,
@@ -21,6 +28,8 @@ export const env = {
 
 export type DeviceType = "mac" | "windows" | "linux" | string;
 
+export type FileManager = "finder" | "explorer" | "files" | null;
+
 interface PlatformState {
   deviceType: DeviceType;
   // Unified memory: GPU and system draw on one pool, so an over-committed load has
@@ -28,6 +37,7 @@ interface PlatformState {
   // deviceType === "mac", which includes Intel Macs with a discrete GPU, where spilling
   // to system RAM is exactly what happens. Mirrors the backend's is_apple_silicon gate.
   appleSilicon: boolean;
+  fileManager: FileManager | undefined;
   chatOnly: boolean;
   // Why chatOnly is set (null when training is enabled), from /api/health.
   // e.g. "mlx_unavailable" on Apple Silicon -> the UI explains the greyed-out
@@ -69,6 +79,7 @@ const localDeviceType = detectLocalPlatform();
 export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: localDeviceType,
   appleSilicon: false,
+  fileManager: undefined,
   // A guess from the user agent, kept only as the pre-measurement fallback for the redirects
   // that must decide something before /api/health answers. Capability gating must read
   // capabilitiesUnknown() first and hold, not gray a tab out on this.
@@ -160,6 +171,7 @@ export async function fetchDeviceType(options?: {
       const data = (await res.json()) as {
         device_type?: string;
         apple_silicon?: boolean;
+        file_manager?: FileManager;
         chat_only?: boolean;
         chat_only_reason?: string | null;
         hardware_detecting?: boolean;
@@ -168,6 +180,9 @@ export async function fetchDeviceType(options?: {
         secure?: boolean;
         hf_endpoint?: string;
         hf_datasets_server?: string;
+        hub_source?: string;
+        hub_proxy?: string | null;
+        datasets_server_proxy?: string | null;
       };
       // Once the store holds an authoritative (server-reported) platform, a non-forced response
       // must not overwrite it. It may be an unauthenticated fallback, or an earlier authenticated
@@ -177,7 +192,19 @@ export async function fetchDeviceType(options?: {
       // Before the authoritative-platform guard below: unauthenticated and
       // idempotent, and a mirror whose first authoritative reply already landed
       // would otherwise never route its Hub calls.
-      setHfEndpoints(data.hf_endpoint, data.hf_datasets_server);
+      const hubProxy = typeof data.hub_proxy === "string" ? data.hub_proxy : null;
+      const datasetsProxy =
+        typeof data.datasets_server_proxy === "string" ? data.datasets_server_proxy : null;
+      setHfEndpoints(
+        data.hub_source === "modelscope"
+          ? backendUrl(MODELSCOPE_HUB_PATH)
+          : hubProxy
+            ? backendUrl(hubProxy)
+            : data.hf_endpoint,
+        datasetsProxy ? backendUrl(datasetsProxy) : data.hf_datasets_server,
+        data.hub_source,
+        { endpoint: hubProxy !== null, datasetsServer: datasetsProxy !== null },
+      );
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         return usePlatformStore.getState().deviceType;
       }
@@ -194,6 +221,12 @@ export async function fetchDeviceType(options?: {
       // on an Intel Mac, and on a Mac browser pointed at a Linux host.
       const appleSilicon =
         data.apple_silicon ?? (keepPlatform ? previous.appleSilicon : false);
+      const fileManager =
+        data.device_type !== undefined
+          ? data.file_manager
+          : keepPlatform
+            ? previous.fileManager
+            : undefined;
       // A still-provisional reply keeps the stored verdict: see resolveVerdict.
       const { chatOnly, chatOnlyReason, chatOnlyDetail } = resolveVerdict(
         data,
@@ -205,6 +238,7 @@ export async function fetchDeviceType(options?: {
       usePlatformStore.setState({
         deviceType,
         appleSilicon,
+        fileManager,
         chatOnly,
         chatOnlyReason,
         chatOnlyDetail,

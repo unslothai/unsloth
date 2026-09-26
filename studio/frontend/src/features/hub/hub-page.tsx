@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import { useHfEndpoint } from "@/lib/hf-endpoint";
+import { useHfEndpoint, useHubSource } from "@/lib/hf-endpoint";
 import { usePlatformStore } from "@/config/env";
 import {
   applyActiveModelStatusToStore,
@@ -822,8 +822,14 @@ export function ModelsPage() {
     return null;
   }, [isChannelListMode, isFeedMode, activeChannel]);
 
-  const effectiveSort: HfSortKey =
+  const hubSource = useHubSource();
+  const requestedSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
+  // ModelScope has no creation-date sort; its closest is last modified.
+  const effectiveSort: HfSortKey =
+    hubSource === "modelscope" && requestedSort === "createdAt"
+      ? "lastModified"
+      : requestedSort;
   const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;
   // The format dropdown always filters the visible list, including the feed's "Latest" list, so
   // the default (GGUF) hides fp8/safetensors and picking a format actually changes the rows.
