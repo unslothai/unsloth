@@ -327,6 +327,14 @@ def test_builder_publishes_rotated_and_plain_int8_under_different_names():
     )
     assert dest(True) == "Qwen-Image-2.1-INT8-ConvRot.safetensors"
     assert dest(False) == "Qwen-Image-2.1-INT8.safetensors"
+    spec_build = build.upload_destination(
+        fam, "int8", rotated = True, safetensors = True, upload_repo = repo, convrot_group = 256
+    )
+    assert spec_build == "Qwen-Image-2.1-INT8-ConvRot.safetensors"
+    with pytest.raises(ValueError, match = "reserved"):
+        build.upload_destination(
+            fam, "int8", rotated = True, safetensors = True, upload_repo = repo, convrot_group = 64
+        )
     assert (
         build.upload_destination(fam, "fp8", rotated = False, safetensors = True, upload_repo = repo)
         == "Qwen-Image-2.1-FP8.safetensors"

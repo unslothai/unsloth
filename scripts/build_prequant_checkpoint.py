@@ -67,6 +67,7 @@ def upload_destination(
     override: Optional[str] = None,
     upload_repo: Optional[str] = None,
     component: str = DEFAULT_COMPONENT,
+    convrot_group: Optional[int] = None,
 ) -> str:
     """The repo-root filename this build should publish under.
 
@@ -124,12 +125,22 @@ def upload_destination(
     if not rotated and not safetensors:
         return prequant_filename(scheme)
     from core.inference.diffusion_families import family_prequant_filename
-    from core.inference.diffusion_transformer_quant import convrot_prequant_filename
+    from core.inference.diffusion_transformer_quant import (
+        convrot_prequant_filename,
+        convrot_spec_for_scheme,
+    )
 
     # the opt-in rotated artifact has its own name, so it never overwrites the plain one
-    rotated_name = (
-        convrot_prequant_filename(scheme, getattr(fam, "name", None)) if rotated else None
-    )
+    family = getattr(fam, "name", None)
+    rotated_name = convrot_prequant_filename(scheme, family) if rotated else None
+    if rotated_name:
+        spec_group = convrot_spec_for_scheme(scheme, family)[0]
+        if convrot_group is not None and int(convrot_group) != spec_group:
+            # the canonical name is what opt-in loads fetch; only the runtime spec may publish there
+            raise ValueError(
+                f"{rotated_name} is reserved for the ConvRot group {spec_group} build that matches "
+                f"the runtime path; a group {convrot_group} build needs --upload-filename."
+            )
     preferred = rotated_name or family_prequant_filename(fam, scheme)
     why = "a rotated checkpoint" if rotated else "a safetensors checkpoint"
     if not preferred:
@@ -327,6 +338,7 @@ def main(argv = None) -> int:
                 fam,
                 scheme,
                 rotated = bool(convrot_group),
+                convrot_group = convrot_group,
                 safetensors = is_safetensors_out,
                 override = args.upload_filename,
                 upload_repo = args.upload_repo,
