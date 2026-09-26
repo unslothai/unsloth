@@ -51,12 +51,14 @@ export interface PerModelConfig {
      *  to launch with. */
   llamaExtraArgs?: string[] | null;
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs parse. Absent or null
-  // selectedGpuIds means automatic. --tensor-split is not remembered: it follows the GPU set.
+  // selectedGpuIds means automatic.
   gpuMemoryMode?: "auto" | "manual";
   gpuLayers?: number;
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
   selectedGpuIndexKind?: GpuIndexKind | null;
+  /** --tensor-split per GPU in picker order; never stored. `undefined` keeps the runtime's split, `null` = default. */
+  tensorSplit?: number[] | null;
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {

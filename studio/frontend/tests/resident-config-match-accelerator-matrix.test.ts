@@ -473,6 +473,8 @@ test("every PerModelConfig field is either compared or deliberately excluded", (
     // Qualifies selectedGpuIds rather than adding a dimension of its own: it is read, as
     // the reconciler's namespace argument, but /status has no field to compare it against.
     "selectedGpuIndexKind",
+    // Compared through standing.splitRatio, which the caller seeds from it.
+    "tensorSplit",
   ]);
   const unclassified = [...declared].filter(
     (field) => !compared.has(field) && !excluded.has(field),

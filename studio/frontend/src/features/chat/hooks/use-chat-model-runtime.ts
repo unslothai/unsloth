@@ -1541,10 +1541,13 @@ export function useChatModelRuntime() {
               });
             },
             parallelSlots: managedFlags?.defaultParallelSlots || null,
-            // Never a config field, so the store is the only place it can come from, and the reset clears it
-            splitRatio: resetsPerModelSettings
-              ? null
-              : useChatRuntimeStore.getState().splitRatio,
+            // Never stored: only the config page's editor puts one on the pick, else the store (cleared on reset)
+            splitRatio:
+              pendingConfig?.tensorSplit !== undefined
+                ? pendingConfig.tensorSplit
+                : resetsPerModelSettings
+                  ? null
+                  : useChatRuntimeStore.getState().splitRatio,
             // What /load sends: a pick saved in another index namespace, or naming GPUs that are gone, is
             // reconciled to Automatic before it leaves.
             reconcileGpuIds: (ids, savedIndexKind) =>
@@ -2040,7 +2043,10 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.gpuLayers ?? stateBeforeUnload.gpuLayers;
           let loadNCpuMoe =
             pendingLoadConfig?.nCpuMoe ?? stateBeforeUnload.nCpuMoe;
-          let loadSplitRatio = stateBeforeUnload.splitRatio;
+          let loadSplitRatio =
+            pendingLoadConfig?.tensorSplit !== undefined
+              ? pendingLoadConfig.tensorSplit
+              : stateBeforeUnload.splitRatio;
           // Reconcile the persisted pick against the GPUs present now, so a stale cross-host pick is
           // dropped before /load rather than rejected there. Warm the device cache first: a cold cache
           // would pass the pick through unvalidated.
@@ -2389,7 +2395,7 @@ export function useChatModelRuntime() {
                   : null;
               loadGpuLayers = pendingLoadConfig?.gpuLayers ?? GPU_LAYERS_AUTO;
               loadNCpuMoe = pendingLoadConfig?.nCpuMoe ?? 0;
-              loadSplitRatio = null;
+              loadSplitRatio = pendingLoadConfig?.tensorSplit ?? null;
             }
 
             // The Context Length the USER set for this load, captured before the clamp below can stand in for
