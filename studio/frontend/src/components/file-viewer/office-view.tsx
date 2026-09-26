@@ -128,8 +128,10 @@ function SheetGrid({
   const scrollRef = useRef<HTMLDivElement>(null);
   const rowHeight = ROW_HEIGHT * uiScale * scale;
   // reduce, not a spread: rows a sheet leaves out are holes, which a spread turns into NaN.
-  const columns =
-    sheet.rows.reduce((max, row) => Math.max(max, row?.length ?? 0), sheet.widths.length) + 1;
+  const columns = Math.max(
+    1,
+    sheet.rows.reduce((max, row) => Math.max(max, row?.length ?? 0), sheet.widths.length),
+  );
   const rowCount = Math.max(sheet.rows.length, 1);
   const widths = Array.from(
     { length: columns },
@@ -283,6 +285,24 @@ function SlideText({ box, widthPt }: { box: SlideBox; widthPt: number }) {
   );
 }
 
+function SlideTable({ rows, widthPt }: { rows: string[][]; widthPt: number }) {
+  return (
+    <table className="size-full table-fixed border-collapse" style={{ fontSize: `${(14 / widthPt) * 100}cqw` }}>
+      <tbody>
+        {rows.map((row, r) => (
+          <tr key={r} className={cn(r === 0 && "font-semibold")}>
+            {row.map((cell, c) => (
+              <td key={c} className="border border-neutral-300 px-[0.4em] py-[0.2em] align-top whitespace-pre-wrap">
+                {cell}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function SlidesView({ deck, scale }: { deck: Deck; scale: number }) {
   const t = useT();
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
@@ -310,6 +330,8 @@ function SlidesView({ deck, scale }: { deck: Deck; scale: number }) {
                     <div key={boxIndex} className="absolute overflow-hidden" style={frameStyle(box.frame)}>
                       {box.image ? (
                         <img src={box.image} alt="" className="size-full object-contain" />
+                      ) : box.table ? (
+                        <SlideTable rows={box.table} widthPt={deck.widthPt} />
                       ) : (
                         <SlideText box={box} widthPt={deck.widthPt} />
                       )}

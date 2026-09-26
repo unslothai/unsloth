@@ -741,7 +741,7 @@ export async function extractOfficeAttachmentText(
   file: File,
   label: "XLSX" | "PPTX",
 ): Promise<string> {
-  const [{ readPptx, readXlsx }, buffer] = await Promise.all([
+  const [{ MAX_SHEET_COLUMNS, MAX_SHEET_ROWS, readPptx, readXlsx }, buffer] = await Promise.all([
     import("@/components/file-viewer/office"),
     file.arrayBuffer(),
   ]);
@@ -749,7 +749,9 @@ export async function extractOfficeAttachmentText(
   if (label === "PPTX") {
     return readPptx(bytes)
       .slides.map((slide, index) => {
-        const lines = slide.boxes.flatMap((box) => box.paragraphs?.map((p) => p.text) ?? []);
+        const lines = slide.boxes.flatMap(
+          (box) => box.paragraphs?.map((p) => p.text) ?? box.table?.map((row) => row.join("\t")) ?? [],
+        );
         return [`Slide ${index + 1}`, ...lines].join("\n");
       })
       .join("\n\n");
@@ -760,7 +762,11 @@ export async function extractOfficeAttachmentText(
         .filter(Boolean)
         .map((row) => Array.from(row, (cell) => cell?.text ?? "").join("\t").trimEnd())
         .filter((line) => line.length > 0);
-      return [`Sheet: ${sheet.name}`, ...rows].join("\n");
+      // Said outright, so the model does not answer as if it read the whole sheet.
+      const note = sheet.truncated
+        ? [`[Truncated: only the first ${MAX_SHEET_ROWS} rows and ${MAX_SHEET_COLUMNS} columns are included.]`]
+        : [];
+      return [`Sheet: ${sheet.name}`, ...rows, ...note].join("\n");
     })
     .join("\n\n");
 }

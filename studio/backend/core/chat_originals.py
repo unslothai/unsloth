@@ -9,11 +9,13 @@ SHA-256, which the attachment records as ``{"original": {"sha256", "sizeBytes"}}
 import copies the reference, never the bytes, and a retried send stores nothing new.
 
 A file no attachment references any more is removed by ``sweep``, once it is older than an hour, so
-one uploaded moments before its message is saved is never taken.
+one uploaded moments before its message is saved is never taken. A sweep that leaves such a file for
+being too new schedules another for when it is not.
 """
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import os
 import re
@@ -36,7 +38,9 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SWEEP_GRACE_SECONDS = 3600
 _SWEEP_INTERVAL_SECONDS = 600
 _sweep_lock = threading.Lock()
-_last_sweep = 0.0
+# Per originals folder: each account has its own, and one account's sweep must not delay another's.
+_last_sweep: dict[Path, float] = {}
+_scheduled: set[Path] = set()
 
 
 class TooLarge(Exception):
@@ -102,29 +106,56 @@ def save(chunks: Iterable[bytes]) -> tuple[str, int]:
 def sweep(force: bool = False) -> int:
     """Remove originals no attachment references, older than the grace period. At most once every
     few minutes unless ``force``. Returns how many were removed."""
-    global _last_sweep
     from storage.studio_db import referenced_chat_original_hashes
 
     now = time.time()
+    directory = originals_dir()
     with _sweep_lock:
-        if not force and now - _last_sweep < _SWEEP_INTERVAL_SECONDS:
-            return 0
-        _last_sweep = now
+        throttled = not force and now - _last_sweep.get(directory, 0.0) < _SWEEP_INTERVAL_SECONDS
+        if not throttled:
+            _last_sweep[directory] = now
+    if throttled:
+        # A file uploaded now still needs a sweep once it ages past the grace period.
+        _schedule(directory)
+        return 0
     try:
         referenced = referenced_chat_original_hashes()
         removed = 0
-        with os.scandir(originals_dir()) as entries:
+        waiting = False
+        with os.scandir(directory) as entries:
             for entry in entries:
                 is_original = _SHA256_RE.match(entry.name) is not None
                 if (is_original and entry.name in referenced) or not entry.is_file():
                     continue
-                if now - entry.stat().st_mtime < _SWEEP_GRACE_SECONDS:
+                if not (is_original or entry.name.endswith(".tmp")):
                     continue
                 # Unreferenced originals, and temp files a crashed upload left behind.
-                if is_original or entry.name.endswith(".tmp"):
-                    os.unlink(entry.path)
-                    removed += 1
+                if now - entry.stat().st_mtime < _SWEEP_GRACE_SECONDS:
+                    waiting = True
+                    continue
+                os.unlink(entry.path)
+                removed += 1
+        if waiting:
+            _schedule(directory)
         return removed
     except Exception:
         logger.debug("chat_originals.sweep_failed", exc_info = True)
         return 0
+
+
+def _schedule(directory: Path) -> None:
+    """Sweep ``directory`` again once the grace period has passed, in this account's context."""
+    with _sweep_lock:
+        if directory in _scheduled:
+            return
+        _scheduled.add(directory)
+    context = contextvars.copy_context()
+
+    def run() -> None:
+        with _sweep_lock:
+            _scheduled.discard(directory)
+        context.run(sweep, True)
+
+    timer = threading.Timer(_SWEEP_GRACE_SECONDS + 60, run)
+    timer.daemon = True
+    timer.start()

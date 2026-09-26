@@ -488,3 +488,4 @@ export {
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
 } from "./utils/composer-preferences";
+export { isTextAttachmentName } from "./text-attachment-accept";

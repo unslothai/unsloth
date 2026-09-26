@@ -140,8 +140,9 @@ function formatDate(serial: number, code: string): string {
   return time ? `${out} ${time}` : out;
 }
 
-/** The common shapes of an Excel number format: decimals, grouping, percent, currency, dates. */
-export function formatNumber(value: number, rawCode: string | undefined): string {
+/** The common shapes of an Excel number format: decimals, grouping, percent, currency, dates.
+ *  `date1904`: the workbook counts dates from 1904, 1,462 days after the 1900 system. */
+export function formatNumber(value: number, rawCode: string | undefined, date1904 = false): string {
   if (!rawCode || rawCode === "General" || rawCode === "@") {
     return String(Number.isInteger(value) ? value : Number(value.toPrecision(11)));
   }
@@ -154,7 +155,7 @@ export function formatNumber(value: number, rawCode: string | undefined): string
     .replace(/\\(.)/g, "$1")
     .replace(/_.|\*./g, "");
   if (!/[0#?]/.test(code) && /[dmyhs]/i.test(code)) {
-    return formatDate(value, code.toLowerCase());
+    return formatDate(date1904 ? value + 1462 : value, code.toLowerCase());
   }
   if (/E\+/i.test(code)) {
     // Excel's form: 1.23E+03, a two-digit exponent and an upper-case E.
@@ -232,7 +233,13 @@ function readStyles(doc: Document | null): CellStyle[] {
   });
 }
 
-function readSheet(doc: Document, name: string, strings: string[], styles: CellStyle[]): Sheet {
+function readSheet(
+  doc: Document,
+  name: string,
+  strings: string[],
+  styles: CellStyle[],
+  date1904: boolean,
+): Sheet {
   const rows: (SheetCell | undefined)[][] = [];
   let truncated = false;
   let nextRow = 0;
@@ -262,7 +269,7 @@ function readSheet(doc: Document, name: string, strings: string[], styles: CellS
       else if (type === "inlineStr") text = inlineText(c);
       else if (type === "b") text = raw === "1" ? "TRUE" : "FALSE";
       else if (type !== "str" && type !== "e" && raw !== "" && Number.isFinite(Number(raw))) {
-        text = formatNumber(Number(raw), style.format);
+        text = formatNumber(Number(raw), style.format, date1904);
         numeric = true;
       }
       if (text === "" && !style.bold) continue;
@@ -289,12 +296,13 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
   const sharedDoc = xml(files, "xl/sharedStrings.xml");
   const strings = sharedDoc ? all(sharedDoc, "si").map(inlineText) : [];
   const styles = readStyles(xml(files, "xl/styles.xml"));
+  const date1904 = ["1", "true"].includes(first(workbook, "workbookPr")?.getAttribute("date1904") ?? "");
   const sheets: Sheet[] = [];
   for (const sheet of all(workbook, "sheet")) {
     if (sheet.getAttribute("state") === "hidden" || sheet.getAttribute("state") === "veryHidden") continue;
     const path = rels.get(relId(sheet, "id") ?? "");
     const doc = path ? xml(files, path) : null;
-    if (doc) sheets.push(readSheet(doc, sheet.getAttribute("name") ?? "Sheet", strings, styles));
+    if (doc) sheets.push(readSheet(doc, sheet.getAttribute("name") ?? "Sheet", strings, styles, date1904));
   }
   return sheets;
 }
@@ -350,6 +358,8 @@ export interface SlideBox {
   placeholder?: string;
   paragraphs?: { text: string; size?: number; bold?: boolean; align?: string; bullet?: boolean }[];
   image?: string;
+  /** A table's cell text, by row. */
+  table?: string[][];
 }
 
 export interface Slide {
@@ -435,6 +445,20 @@ export function readPptx(bytes: Uint8Array): Deck {
         placeholder: first(shape, "ph")?.getAttribute("type") ?? (first(shape, "ph") ? "body" : undefined),
         paragraphs,
       });
+    }
+    // Tables sit in a graphicFrame, not a shape.
+    for (const frame of all(doc, "graphicFrame")) {
+      const tbl = first(frame, "tbl");
+      if (!tbl) continue;
+      const table = children(tbl, "tr").map((tr) =>
+        children(tr, "tc").map((tc) =>
+          all(tc, "p")
+            .map((p) => all(p, "t").map((t) => t.textContent ?? "").join(""))
+            .join("\n"),
+        ),
+      );
+      if (!table.some((row) => row.some((cell) => cell.trim()))) continue;
+      boxes.push({ frame: readFrame(frame, cx, cy) ?? { x: 0.05, y: 0.25, w: 0.9, h: 0.65 }, table });
     }
     for (const pic of all(doc, "pic")) {
       const blip = first(pic, "blip");

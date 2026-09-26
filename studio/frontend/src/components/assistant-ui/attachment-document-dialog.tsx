@@ -19,7 +19,8 @@ import { type FC, type PropsWithChildren, useEffect, useRef, useState } from "re
 const SCALES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const MARKDOWN_NAME = /\.(md|markdown|mdx)$/i;
 
-type Loaded = { blob?: Blob; text?: string; error?: boolean };
+/** `plain`: a sent document's stored text, shown when its original file is gone. */
+type Loaded = { blob?: Blob; text?: string; plain?: string; error?: boolean };
 
 /** Rendered markdown, or the document's pages, grid or slides, at `scale`. */
 const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; scale: number }> = ({
@@ -31,6 +32,13 @@ const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; sca
   const t = useT();
   if (loaded.error) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
+  }
+  if (loaded.plain !== undefined) {
+    return (
+      <pre className="size-full overflow-auto whitespace-pre-wrap px-6 py-4 font-sans text-ui-14 select-text">
+        {loaded.plain}
+      </pre>
+    );
   }
   if (loaded.text !== undefined) {
     return (
@@ -56,8 +64,10 @@ const DocumentDialog: FC<
     source: AttachmentSource;
     load: () => Promise<Blob>;
     redactFromReload: boolean;
+    /** A text response is the stored text: the server serves that when the original is gone. */
+    textFallback?: boolean;
   }>
-> = ({ children, source, load, redactFromReload }) => {
+> = ({ children, source, load, redactFromReload, textFallback = false }) => {
   const [open, setOpen] = useState(false);
   const [scale, setScale] = useState(1);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -74,14 +84,18 @@ const DocumentDialog: FC<
     loadRef
       .current()
       .then(async (blob) => {
-        const next: Loaded = markdown ? { blob, text: await blob.text() } : { blob };
+        const next: Loaded = markdown
+          ? { blob, text: await blob.text() }
+          : textFallback && blob.type.startsWith("text/")
+            ? { plain: await blob.text() }
+            : { blob };
         if (!cancelled) setLoaded(next);
       })
       .catch(() => !cancelled && setLoaded({ error: true }));
     return () => {
       cancelled = true;
     };
-  }, [open, loaded, markdown]);
+  }, [open, loaded, markdown, textFallback]);
 
   const blob = loaded?.blob;
   const meta = [source.name.split(".").pop()?.toUpperCase(), blob ? formatBytes(blob.size) : null]
@@ -138,6 +152,7 @@ const SentOriginalDialog: FC<
       source={source}
       load={() => fetchChatAttachmentBlob(messageId, attachmentId)}
       redactFromReload={redactFromReload}
+      textFallback={true}
     >
       {children}
     </DocumentDialog>

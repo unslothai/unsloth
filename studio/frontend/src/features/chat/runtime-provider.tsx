@@ -587,13 +587,15 @@ class OfficeAttachmentAdapter implements AttachmentAdapter {
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   ].join(",");
 
-  private label(name: string): "XLSX" | "PPTX" {
-    return OFFICE_LABELS[name.split(".").pop()?.toLowerCase() ?? ""] ?? "XLSX";
+  // By extension, or by type for a deck picked without one.
+  private label(name: string, type: string): "XLSX" | "PPTX" {
+    const byName = OFFICE_LABELS[name.split(".").pop()?.toLowerCase() ?? ""];
+    return byName ?? (type.includes("presentationml") ? "PPTX" : "XLSX");
   }
 
   // Refused at add, as the PDF adapter does, so a file past the ceiling never empties the composer.
   add({ file }: { file: File }): Promise<PendingAttachment> {
-    const sizeError = getDocumentAttachmentSizeError(file, this.label(file.name));
+    const sizeError = getDocumentAttachmentSizeError(file, this.label(file.name, file.type));
     if (sizeError) {
       toast.error(sizeError);
       throw new Error(sizeError);
@@ -609,7 +611,7 @@ class OfficeAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const label = this.label(attachment.name);
+    const label = this.label(attachment.name, attachment.contentType ?? "");
     const text = await extractOfficeAttachmentText(attachment.file, label);
     return {
       id: attachment.id,

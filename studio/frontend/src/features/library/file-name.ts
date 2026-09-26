@@ -34,7 +34,9 @@ export function libraryFileName(item: {
   fileName?: string;
   textOnly?: boolean;
 }): string {
-  const extension = clean(item.textOnly ? "txt" : fileExtension(item.fileName ?? item.name));
+  // A text file chat stores whole (CSV, markdown, code) keeps its extension; extracted text is .txt.
+  const own = item.fileName ?? item.name;
+  const extension = clean(item.textOnly && !isTextAttachmentName(own) ? "txt" : fileExtension(own));
   let name = clean(item.name) || FALLBACK_STEM;
   if (extension && fileExtension(name) !== extension) name = `${name}.${extension}`;
   const [base, suffix] = splitName(name);

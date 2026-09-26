@@ -658,6 +658,13 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         return
     _start_linked_folder_auto_sync(generation)
 
+    # Chat originals a restart left unswept (core.chat_originals); cheap, and never fatal.
+    try:
+        from core import chat_originals
+        chat_originals.sweep(force = True)
+    except Exception:  # noqa: BLE001
+        pass
+
     # Last, and deliberately so: it is the only item here that is pure latency work rather than
     # correctness, so everything above keeps its place in the queue. Roughly 5.3s of diffusers
     # import that the first image load would otherwise pay, moved onto this thread, and only on
