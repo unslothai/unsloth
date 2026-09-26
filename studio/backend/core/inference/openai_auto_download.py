@@ -653,7 +653,7 @@ async def _admit_and_start(
     subject: Optional[str] = None,
     via_api_key: bool = False,
 ) -> Optional[AutoDownloadRefusal]:
-    from hub.utils.hf_errors import hf_error_status
+    from hub.utils.hf_errors import hf_error_status, modelscope_missing
 
     endpoint = _endpoint()
 
@@ -686,7 +686,8 @@ async def _admit_and_start(
             return AutoDownloadRefusal(
                 status = 404,
                 code = "model_not_found",
-                message = (
+                message = modelscope_missing(exc)
+                or (
                     f"'{repo_id}' was not found on Hugging Face, or is not accessible. "
                     "If it is private, send a token in the X-Unsloth-HF-Token header."
                 ),

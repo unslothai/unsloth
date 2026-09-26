@@ -385,6 +385,16 @@ def test_missing_repo_is_404_without_confirming_existence(hub):
     assert hub["started"] == []
 
 
+def test_a_repo_missing_on_modelscope_keeps_the_switch_back_advice(hub):
+    from hub.utils.hf_errors import not_on_modelscope
+
+    sentence = not_on_modelscope("unsloth/not-real")
+    hub["raise"] = _hub_error(_repo_not_found_error(), 404, sentence)
+    refusal = _run("unsloth/not-real:UD-Q4_K_XL")
+    assert refusal.status == 404 and refusal.code == "model_not_found"
+    assert refusal.message == sentence
+
+
 def test_an_id_the_hub_does_not_know_falls_through(hub):
     hub["raise"] = _hub_error(_repo_not_found_error(), 404, "nope")
     # "vendor/model" is how LiteLLM names providers, so an unknown id stays a foreign label.
