@@ -936,6 +936,9 @@ def test_partial_safetensors_download_keeps_delete_menu():
     # A download still running is not a partial to clean up yet.
     for env in every(isDownloaded = False, downloading = True):
         assert not shows_menu(env), env
+    # Nothing cached and nothing running: no menu. Every input false also turns off any cache
+    # source added later (like companionPrefetch), so it stays free to widen the guard.
+    assert not shows_menu(dict.fromkeys(names, False)), names
 
 
 def test_pinned_validation_uses_cached_local_variant_listing():
