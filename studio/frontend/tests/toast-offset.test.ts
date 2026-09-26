@@ -42,11 +42,12 @@ test("desktop routes without page headers clear the titlebar", () => {
   });
 });
 
-test("custom-titlebar desktop headers clear both titlebar bands", () => {
+test("custom-titlebar desktop headers share the titlebar band", () => {
+  // Its header is 48px, 4px taller than the macOS one, and keeps the same 8px gap.
   for (const pathname of ["/chat", "/images", "/video"]) {
     assert.deepEqual(getToastOffsets(pathname, true, true), {
-      default: { top: 86, right: 12 },
-      mobile: { top: 86, right: 16 },
+      default: { top: 56, right: 12 },
+      mobile: { top: 56, right: 16 },
     });
   }
 });
@@ -106,14 +107,14 @@ test("offsets are pure, so a caller cannot poison the next lookup", () => {
 
 test("the header offset follows the UI font size, the titlebar does not", () => {
   // The page header is 48px * the scale, so a fixed 52px top lands inside it
-  // at the 20px setting. The titlebar band is fixed and keeps its 34px.
+  // at the 20px setting.
   assert.deepEqual(getToastOffsets("/chat", false, false, 20 / 15), {
     default: { top: 69, right: 12 },
     mobile: { top: 69, right: 16 },
   });
   assert.deepEqual(getToastOffsets("/chat", true, true, 20 / 15), {
-    default: { top: 103, right: 12 },
-    mobile: { top: 103, right: 16 },
+    default: { top: 75, right: 12 },
+    mobile: { top: 75, right: 16 },
   });
   // A route with no header keeps its corner inset at any size.
   assert.deepEqual(getToastOffsets("/settings", false, false, 20 / 15), {
