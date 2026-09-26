@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getHfEndpoint } from "@/lib/hf-endpoint";
+import { fetchHub } from "@/lib/hub-fetch";
 
 const NETWORK_STATUS_EVENT = "unsloth-network-status";
 const REMOTE_OFFLINE_TTL_MS = 30_000;
@@ -358,7 +359,10 @@ export async function fetchWithTimeout(
   const origin = originFromFetchInput(input);
 
   try {
-    const response = await fetch(input, { ...init, signal: controller.signal });
+    const response = await fetchHub(input, {
+      ...init,
+      signal: controller.signal,
+    });
     if (origin) {
       markRemoteNetworkOnline(origin);
     }

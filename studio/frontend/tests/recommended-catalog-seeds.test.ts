@@ -17,6 +17,7 @@ import {
   hfModelFitsDevice,
   loadScopedGpu,
   orderRecommendedRows,
+  recommendedEmptyState,
   searchRowFitsDevice,
 } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 
@@ -652,4 +653,13 @@ test("a pinToTop family leads Recommended whatever the listing sort, both artifa
     );
   assert.deepEqual(order(), [qwen2512, zImageTurbo, qwen21, qwen21Gguf]);
   assert.deepEqual(order(pinnedFamilies), [qwen21, qwen21Gguf, qwen2512, zImageTurbo]);
+});
+
+test("an empty Recommended list names a failed search or unreachable hub, not an empty catalog", () => {
+  const state = (isLoading: boolean, error: string | null, hubPhase: "available" | "probing" | "unavailable") =>
+    recommendedEmptyState({ isLoading, error, hubPhase });
+  assert.deepEqual(
+    [state(false, null, "available"), state(false, "Failed to fetch", "available"), state(false, null, "unavailable"), state(false, null, "probing"), state(true, "Failed to fetch", "unavailable")],
+    ["empty", "failed", "failed", "failed", "loading"],
+  );
 });

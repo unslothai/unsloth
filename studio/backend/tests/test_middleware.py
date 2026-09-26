@@ -1470,3 +1470,24 @@ class TestRemoteAccessCORS:
         for published in (None, self.TUNNEL):
             app.state.cloudflare_url = published
             assert self._allowed(client, "https://evil.example") == "https://evil.example"
+
+
+def test_health_reports_the_default_for_a_settings_saved_endpoint(main_module, monkeypatch):
+    from starlette.requests import Request
+    import utils.hub_settings as hub_settings
+
+    local = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1)})
+    monkeypatch.setenv("HF_ENDPOINT", "https://hub.internal")
+    monkeypatch.setenv("HF_DATASETS_SERVER", "https://hub.internal")
+    monkeypatch.setattr(hub_settings, "_saved_only_endpoints", frozenset(), raising = False)
+    assert main_module._reportable_hf_endpoints(local) == {
+        "hf_endpoint": "https://hub.internal",
+        "hf_datasets_server": "https://hub.internal",
+    }
+    monkeypatch.setattr(
+        hub_settings, "_saved_only_endpoints", frozenset({"https://hub.internal"}), raising = False
+    )
+    assert main_module._reportable_hf_endpoints(local) == {
+        "hf_endpoint": "https://huggingface.co",
+        "hf_datasets_server": "https://datasets-server.huggingface.co",
+    }
