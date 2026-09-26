@@ -1940,6 +1940,7 @@ function Save-Baseline([string] $dir) {
   $b = [pscustomobject]@{ CapturedAt = (Get-Date).ToString('o'); Sac = [pscustomobject]@{ Mode = 'off'; RegistryState = 0; Policies = @() }
     AuditPolicyApplied = $false; AuditPolicyPreexisting = $false; AuditPolicyControlFired = $null; RevertCompletedAt = $null }
   Save-ProbeBaseline $b (Join-Path $dir 'baseline.json'); $b }
+function Get-PendingRegistry { Join-Path $Work '.machine' }
 function Read-Baseline([string] $label) { Get-Content -LiteralPath (Join-Path (Join-Path $Work $label) 'baseline.json') -Raw | ConvertFrom-Json }
 """
 
@@ -1950,6 +1951,7 @@ def _drive_stages(tmp_path, body):
         "Get-RollbackPolicyPath",
         "Save-ProbeBaseline",
         "Test-PolicyActive",
+        "Get-PendingEntry",
         "Get-UnrevertedLabel",
         "Invoke-Prepare",
         "Invoke-Revert",
@@ -1973,6 +1975,26 @@ try { Invoke-Prepare; exit 73 } catch { if ("$_" -ne 'PAST-GUARD') { Write-Host 
 Save-ProbeBaseline ([pscustomobject]@{ AuditPolicyApplied = $false; RevertCompletedAt = 'done' }) (Join-Path $Work 'A/baseline.json')
 $Label = 'B'
 try { Invoke-Prepare; exit 75 } catch { if ("$_" -ne 'PAST-GUARD') { Write-Host "$_"; exit 76 } }
+exit 0
+""",
+    )
+
+
+def test_prepare_refuses_a_label_left_unreverted_under_another_workdir(tmp_path):
+    """The guard scanned one -WorkDir, so B saved A's probe policy as pre-existing and reverting B put it back."""
+    _drive_stages(
+        tmp_path,
+        r"""
+function Get-SacState { [pscustomobject]@{ Policies = @(if (Test-Path -LiteralPath $NOISG_DEST) { [pscustomobject]@{ PolicyID = '{aaaa}'; FriendlyName = 'AuditNoISG' } }) } }
+function Test-AuditPolicyEvaluating { $true }
+$other = Join-Path $Work 'second'
+$Label = 'A'; Invoke-Prepare
+$WorkDir = $other; $Label = 'B'
+try { Invoke-Prepare; exit 81 } catch { if ("$_" -notlike "*label 'A' has not been reverted*revert -Label A -WorkDir*") { Write-Host "$_"; exit 82 } }
+$WorkDir = $Work; $Label = 'A'; Invoke-Revert
+if (@(Get-ChildItem -LiteralPath (Get-PendingRegistry) -File).Count -ne 0) { exit 83 }
+$WorkDir = $other; $Label = 'B'; Invoke-Prepare
+if ((Read-Baseline 'second/B').AuditPolicyPreexisting) { exit 84 }
 exit 0
 """,
     )
@@ -2083,6 +2105,7 @@ def test_revert_keeps_the_baseline_pending_when_the_policy_list_is_unreadable(tm
         "Save-ProbeBaseline",
         "Test-PolicyActive",
         "Get-SacState",
+        "Get-PendingEntry",
         "Invoke-Revert",
     ]
     body = r"""

@@ -675,15 +675,36 @@ function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077), [string]
     }
 }
 
+# Machine-wide, so a label prepared under another -WorkDir is seen too.
+function Get-PendingRegistry {
+    return (Join-Path $env:ProgramData 'unsloth-sac-probe\pending')
+}
+
+function Get-PendingEntry([string] $dir) {
+    $key = [System.IO.Path]::GetFullPath($dir).TrimEnd('\', '/').ToLowerInvariant()
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($key)) | ForEach-Object { $_.ToString('x2') }) }
+    finally { $sha.Dispose() }
+    return (Join-Path (Get-PendingRegistry) ($hash.Substring(0, 16) + '.txt'))
+}
+
 # A label whose baseline is not spent still has its changes on this machine.
 function Get-UnrevertedLabel([string] $dir) {
-    foreach ($other in @(Get-ChildItem -LiteralPath (Split-Path -Parent $dir) -Directory -ErrorAction SilentlyContinue)) {
-        if ($other.Name -eq (Split-Path -Leaf $dir)) { continue }
-        $path = Join-Path $other.FullName 'baseline.json'
+    $candidates = @(Get-ChildItem -LiteralPath (Split-Path -Parent $dir) -Directory -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.FullName })
+    $self = Get-PendingEntry $dir
+    foreach ($entry in @(Get-ChildItem -LiteralPath (Get-PendingRegistry) -File -Filter '*.txt' -ErrorAction SilentlyContinue)) {
+        if ($entry.FullName -eq $self) { continue }
+        $recorded = Get-Content -LiteralPath $entry.FullName -Raw -ErrorAction SilentlyContinue
+        if ($recorded) { $candidates += $recorded.Trim() }
+    }
+    foreach ($other in $candidates) {
+        if ((Get-PendingEntry $other) -eq $self) { continue }
+        $path = Join-Path $other 'baseline.json'
         if (-not (Test-Path -LiteralPath $path)) { continue }
         $b = $null
         try { $b = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json } catch { }
-        if ($b -and -not $b.RevertCompletedAt) { return $other.Name }
+        if ($b -and -not $b.RevertCompletedAt) { return $other }
     }
     return $null
 }
@@ -693,7 +714,8 @@ function Invoke-Prepare {
     $dir = Get-RunDir
     $unreverted = Get-UnrevertedLabel $dir
     if ($unreverted) {
-        throw "label '$unreverted' has not been reverted, so this machine still carries its changes (and its audit policy would be taken for a pre-existing one). Run .\sac-probe.ps1 -Stage revert -Label $unreverted first, then prepare label '$Label'."
+        $name = Split-Path -Leaf $unreverted
+        throw "label '$name' has not been reverted, so this machine still carries its changes (and its audit policy would be taken for a pre-existing one). Run .\sac-probe.ps1 -Stage revert -Label $name -WorkDir '$(Split-Path -Parent $unreverted)' first, then prepare label '$Label'."
     }
     $ROLLBACK_POLICY = Get-RollbackPolicyPath $dir
     Write-Section 'Baseline'
@@ -713,6 +735,9 @@ function Invoke-Prepare {
         }
         $baseline = Save-Baseline $dir
     }
+    $pending = Get-PendingEntry $dir
+    New-Item -ItemType Directory -Force -Path (Split-Path $pending) | Out-Null
+    [System.IO.Path]::GetFullPath($dir) | Set-Content -LiteralPath $pending -Encoding UTF8
     Write-Host ("Smart App Control: {0} (registry state {1})" -f $baseline.Sac.Mode, $baseline.Sac.RegistryState)
     foreach ($p in $baseline.Sac.Policies) {
         Write-Host ("  policy {0} enforced={1}" -f $p.FriendlyName, $p.IsEnforced)
@@ -1667,6 +1692,7 @@ function Invoke-Revert {
     $baseline | Add-Member -NotePropertyName RevertCompletedAt `
         -NotePropertyValue ((Get-Date).ToString('o')) -Force
     Save-ProbeBaseline $baseline $baselinePath
+    Remove-Item -LiteralPath (Get-PendingEntry $dir) -Force -ErrorAction SilentlyContinue
     Write-Host 'revert complete. Smart App Control itself was never changed by this script.'
 }
 
