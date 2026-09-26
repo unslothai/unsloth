@@ -450,7 +450,6 @@ class TestExportWorkerVisibility:
         assert gpu_ids_with_torch_kernels() == [0, 2]
 
     def test_a_card_amd_smi_missed_is_kept(self, monkeypatch, no_mask):
-        # Keep the supported GPU even when AMD SMI undercounts.
         monkeypatch.setattr("utils.hardware.hardware.get_physical_gpu_count", lambda: 1)
         _install(monkeypatch, _fake_torch([_props("gfx1036"), _props("gfx1101")]))
         assert rocm_gpu_ids_without_torch_kernels() == {0}
@@ -478,7 +477,6 @@ class TestExportWorkerVisibility:
         assert spawned["resolved_gpu_ids"] == [0]
         assert spawned["device_backend"] == DeviceType.CUDA.value
 
-        # Apply the mask as the worker does before GPU initialization.
         with patch.dict(os.environ):
             monkeypatch.setattr(sys, "platform", "win32")
             apply_gpu_ids(spawned["resolved_gpu_ids"], backend = spawned["device_backend"])

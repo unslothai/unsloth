@@ -5335,7 +5335,6 @@ def _props_gfx_arch(props) -> str:
 
 def _torch_ordinal_physical_ids(device_count: int) -> Optional[list[int]]:
     """Map torch ordinals to physical GPU IDs, or return None if uncertain."""
-    # UUID/MIG masks cannot be mapped to numeric IDs.
     visible_spec = _get_parent_visible_gpu_spec()
     physical_ids = visible_spec["numeric_ids"]
     if physical_ids is None:
@@ -5344,7 +5343,6 @@ def _torch_ordinal_physical_ids(device_count: int) -> Optional[list[int]]:
         # Without a mask, torch ordinals include GPUs AMD SMI may miss (#8792).
         if visible_spec["raw"] is None:
             return list(range(device_count))
-        # A mask/count mismatch leaves extra ordinals unmappable.
         logger.debug(
             "Skipping torch arch gate: %s torch devices but mask %r names %s ids",
             device_count,
@@ -5488,7 +5486,6 @@ def gpu_ids_with_torch_kernels() -> Optional[list[int]]:
     try:
         import torch
 
-        # Use the gate's mapping, including GPUs AMD SMI missed.
         visible = _torch_ordinal_physical_ids(torch.cuda.device_count())
     except Exception as e:
         logger.debug("Could not map torch devices to physical ids: %s", e)
