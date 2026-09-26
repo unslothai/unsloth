@@ -311,6 +311,8 @@ def w8a8_block_fp8_matmul_triton(
             BLOCK_SIZE_N = BLOCK_SIZE_N,
             BLOCK_SIZE_K = BLOCK_SIZE_K,
             GROUP_SIZE_M = 8,
+            # 4 warps (the default) spill on 128x128 fp8 tiles: 8 is 1.7-2.5x faster at training M, never slower.
+            num_warps = 8,
         )
     return C
 
@@ -495,7 +497,8 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         return grad_X, None, None
 
 
-@torch_compile
+# Not torch.compiled: after a model's second weight shape, automatic dynamic shapes recompile the
+# user Triton kernel into a version 40-80x slower than eager (the only work here is that kernel).
 def fp8_torch_block_quant_forward(X, weight, weight_scale):
     return FP8BlockQuantLinear.apply(X, weight, weight_scale)
 
@@ -743,7 +746,7 @@ except:
     pass
 
 
-@torch_compile
+# Not torch.compiled, for the same reason as fp8_torch_block_quant_forward.
 def fp8_linear(
     X,
     weight,
