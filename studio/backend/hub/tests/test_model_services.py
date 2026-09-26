@@ -4071,10 +4071,7 @@ def test_qwen3_asr_gguf_name_hint_is_not_classified_as_chat(monkeypatch, tmp_pat
 
 
 def test_a_gguf_with_no_architecture_is_classified_from_its_name(monkeypatch, tmp_path):
-    """``unsloth/Qwen-Image-2.1-GGUF`` files carry no ``general.*`` keys at all, so the header
-    answered None: the Images picker filters On Device rows on an exact task and dropped it, and
-    the unfiltered Chat picker listed it only to refuse it. A readable header that names nothing
-    takes the same name-only route as a cloud placeholder; a name that says nothing stays None."""
+    """``unsloth/Qwen-Image-2.1-GGUF`` files have kv_count 0; a name that says nothing stays None."""
     from hub.services.models import catalog_classification
 
     image = tmp_path / "qwen-image-2.1-Q4_K_M.gguf"
@@ -4082,7 +4079,6 @@ def test_a_gguf_with_no_architecture_is_classified_from_its_name(monkeypatch, tm
     image.write_bytes(b"gguf")
     chat.write_bytes(b"gguf")
     monkeypatch.setattr(catalog_classification, "_gguf_architecture", lambda _path: None)
-    # Pinned: whether this host can build the family is a different question from what the file is.
     monkeypatch.setattr(catalog_classification, "_gguf_family_buildable", lambda _hints: True)
 
     assert (

@@ -173,9 +173,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
     if arch is None:
-        # A header that names no architecture settles as little as one never read: the Qwen-Image-2.1 GGUFs carry no
-        # key-value pairs at all, so this answered None, the Images picker (which filters On Device on an exact task)
-        # dropped the row, and Chat listed it only to refuse it. Same name-only route as a cloud placeholder.
+        # Qwen-Image-2.1 GGUFs have kv_count 0, so the name is the only evidence, as for a cloud placeholder.
         return _unhydrated_gguf_task(name_hints)
     normalized = arch.lower()
     if normalized == "qwen3" and any(
@@ -315,7 +313,7 @@ def _gguf_folder_task(
             complete = False
             continue
         if task is None:
-            # A truncated header gives no architecture, and _arch_to_task answers None.
+            # No architecture and a name that says nothing: unclassified.
             complete = False
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:
