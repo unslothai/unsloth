@@ -42,7 +42,7 @@ def _local_conv(mod, rank: int, cp: int):
             weight[k0 : k0 + local_key],
             weight[v0 : v0 + local_value],
         ],
-        dim=0,
+        dim = 0,
     )
     if bias is not None:
         bias = torch.cat(
@@ -51,12 +51,18 @@ def _local_conv(mod, rank: int, cp: int):
                 bias[k0 : k0 + local_key],
                 bias[v0 : v0 + local_value],
             ],
-            dim=0,
+            dim = 0,
         )
     return weight, bias
 
 
-def gdn_forward_with_cp(self, hidden_states, cache_params=None, attention_mask=None, **kwargs):
+def gdn_forward_with_cp(
+    self,
+    hidden_states,
+    cache_params = None,
+    attention_mask = None,
+    **kwargs,
+):
     from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
         apply_mask_to_padding_states,
         causal_conv1d_fn,
@@ -67,7 +73,7 @@ def gdn_forward_with_cp(self, hidden_states, cache_params=None, attention_mask=N
     cp = dist.get_world_size(group)
     if cp <= 1:
         return self._cp_original_forward(
-            hidden_states, cache_params=cache_params, attention_mask=attention_mask, **kwargs
+            hidden_states, cache_params = cache_params, attention_mask = attention_mask, **kwargs
         )
     if cache_params is not None:
         raise RuntimeError("GDN context parallel is the training path; cache is off.")
@@ -85,37 +91,49 @@ def gdn_forward_with_cp(self, hidden_states, cache_params=None, attention_mask=N
     z = self.in_proj_z(hidden_states).reshape(batch, seq_len, self.num_v_heads, self.head_v_dim)
     b = self.in_proj_b(hidden_states)
     a = self.in_proj_a(hidden_states)
-    q_proj, k_proj, v_proj = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
-    q_proj = SeqAllToAll4D.apply(group, q_proj.reshape(batch, seq_len, self.num_k_heads, self.head_k_dim), 2, 1)
-    k_proj = SeqAllToAll4D.apply(group, k_proj.reshape(batch, seq_len, self.num_k_heads, self.head_k_dim), 2, 1)
-    v_proj = SeqAllToAll4D.apply(group, v_proj.reshape(batch, seq_len, self.num_v_heads, self.head_v_dim), 2, 1)
+    q_proj, k_proj, v_proj = torch.split(
+        mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim = -1
+    )
+    q_proj = SeqAllToAll4D.apply(
+        group, q_proj.reshape(batch, seq_len, self.num_k_heads, self.head_k_dim), 2, 1
+    )
+    k_proj = SeqAllToAll4D.apply(
+        group, k_proj.reshape(batch, seq_len, self.num_k_heads, self.head_k_dim), 2, 1
+    )
+    v_proj = SeqAllToAll4D.apply(
+        group, v_proj.reshape(batch, seq_len, self.num_v_heads, self.head_v_dim), 2, 1
+    )
     b = SeqAllToAll4D.apply(group, b.reshape(batch, seq_len, self.num_v_heads, 1), 2, 1).squeeze(-1)
     a = SeqAllToAll4D.apply(group, a.reshape(batch, seq_len, self.num_v_heads, 1), 2, 1).squeeze(-1)
 
     full_seq = q_proj.shape[1]
     local_k = self.num_k_heads // cp
     local_v = self.num_v_heads // cp
-    mixed = torch.cat(
-        [
-            q_proj.reshape(batch, full_seq, local_k * self.head_k_dim),
-            k_proj.reshape(batch, full_seq, local_k * self.head_k_dim),
-            v_proj.reshape(batch, full_seq, local_v * self.head_v_dim),
-        ],
-        dim=-1,
-    ).transpose(1, 2).contiguous()
+    mixed = (
+        torch.cat(
+            [
+                q_proj.reshape(batch, full_seq, local_k * self.head_k_dim),
+                k_proj.reshape(batch, full_seq, local_k * self.head_k_dim),
+                v_proj.reshape(batch, full_seq, local_v * self.head_v_dim),
+            ],
+            dim = -1,
+        )
+        .transpose(1, 2)
+        .contiguous()
+    )
     conv_weight, conv_bias = _local_conv(self, rank, cp)
-    mixed = causal_conv1d_fn(mixed, conv_weight, conv_bias, activation=self.activation)
+    mixed = causal_conv1d_fn(mixed, conv_weight, conv_bias, activation = self.activation)
     mixed = mixed.transpose(1, 2)
     local_key = local_k * self.head_k_dim
     local_value = local_v * self.head_v_dim
-    query, key, value = torch.split(mixed, [local_key, local_key, local_value], dim=-1)
+    query, key, value = torch.split(mixed, [local_key, local_key, local_value], dim = -1)
     query = query.reshape(batch, full_seq, local_k, self.head_k_dim)
     key = key.reshape(batch, full_seq, local_k, self.head_k_dim)
     value = value.reshape(batch, full_seq, local_v, self.head_v_dim)
     if local_v // local_k > 1:
         repeat = local_v // local_k
-        query = query.repeat_interleave(repeat, dim=2)
-        key = key.repeat_interleave(repeat, dim=2)
+        query = query.repeat_interleave(repeat, dim = 2)
+        key = key.repeat_interleave(repeat, dim = 2)
     head_slice = slice(rank * local_v, (rank + 1) * local_v)
     g = -self.A_log[head_slice].float().exp() * F.softplus(a.float() + self.dt_bias[head_slice])
     beta = b.sigmoid()
@@ -123,11 +141,11 @@ def gdn_forward_with_cp(self, hidden_states, cache_params=None, attention_mask=N
         query,
         key,
         value,
-        g=g,
-        beta=beta,
-        initial_state=None,
-        output_final_state=False,
-        use_qk_l2norm_in_kernel=True,
+        g = g,
+        beta = beta,
+        initial_state = None,
+        output_final_state = False,
+        use_qk_l2norm_in_kernel = True,
     )
     core = SeqAllToAll4D.apply(group, core, 1, 2)
     core = self.norm(core.reshape(-1, self.head_v_dim), z.reshape(-1, self.head_v_dim))

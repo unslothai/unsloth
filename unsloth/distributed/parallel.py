@@ -24,7 +24,7 @@ from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 def init_process_group():
     if dist.is_initialized():
         return
-    dist.init_process_group(backend="nccl")
+    dist.init_process_group(backend = "nccl")
     torch.cuda.set_device(local_rank())
 
 
@@ -66,7 +66,11 @@ def _blocked_key_mask(attention_mask, position_ids, batch: int, seq_len: int, de
         pos = pos.to(device)
     packed = pos is not None and seq_len > 1 and bool((pos[:, 1:] <= pos[:, :-1]).any())
     pad = None
-    if torch.is_tensor(attention_mask) and attention_mask.ndim == 2 and attention_mask.shape[-1] == seq_len:
+    if (
+        torch.is_tensor(attention_mask)
+        and attention_mask.ndim == 2
+        and attention_mask.shape[-1] == seq_len
+    ):
         pad = attention_mask
         if pad.shape[0] == 1 and batch > 1:
             pad = pad.expand(batch, -1)
@@ -75,13 +79,13 @@ def _blocked_key_mask(attention_mask, position_ids, batch: int, seq_len: int, de
     if not packed and pad is None:
         return None
 
-    index = torch.arange(seq_len, device=device)
+    index = torch.arange(seq_len, device = device)
     keep = index[None, :] <= index[:, None]
     keep = keep.view(1, 1, seq_len, seq_len).expand(batch, 1, seq_len, seq_len).clone()
     if packed:
-        reset = torch.zeros(batch, seq_len, dtype=torch.bool, device=device)
+        reset = torch.zeros(batch, seq_len, dtype = torch.bool, device = device)
         reset[:, 1:] = pos[:, 1:] <= pos[:, :-1]
-        segment = reset.long().cumsum(dim=-1)
+        segment = reset.long().cumsum(dim = -1)
         same = segment[:, :, None] == segment[:, None, :]
         keep &= same[:, None, :, :]
     if pad is not None:
@@ -94,10 +98,10 @@ def sdpa_flash_fn(
     key_states,
     value_states,
     attention_mask,
-    query_length=None,
-    is_causal=True,
-    dropout=0.0,
-    softmax_scale=None,
+    query_length = None,
+    is_causal = True,
+    dropout = 0.0,
+    softmax_scale = None,
     **kwargs,
 ):
     """Inner attention for Ulysses. Layout in and out is [batch, seq, heads, dim]."""
@@ -117,17 +121,17 @@ def sdpa_flash_fn(
     if keep is not None:
         # Float mask: 0 keeps the score, a large negative drops the key.
         # Bool masks disagree across torch versions about which value is blocked.
-        attn_mask = torch.zeros(keep.shape, dtype=torch.float32, device=query.device)
+        attn_mask = torch.zeros(keep.shape, dtype = torch.float32, device = query.device)
         attn_mask.masked_fill_(~keep, torch.finfo(torch.float32).min)
         causal = False
     out = F.scaled_dot_product_attention(
         query,
         key,
         value,
-        attn_mask=attn_mask,
-        is_causal=causal,
-        scale=softmax_scale,
-        enable_gqa=query.shape[1] != key.shape[1],
+        attn_mask = attn_mask,
+        is_causal = causal,
+        scale = softmax_scale,
+        enable_gqa = query.shape[1] != key.shape[1],
     )
     return out.transpose(1, 2).contiguous()
 
@@ -144,7 +148,7 @@ def apply_cp(model, cp_group) -> int:
     from .ulysses import apply_ulysses_attention
 
     cp = dist.get_world_size(cp_group)
-    apply_ulysses_attention(model, cp, cp_group, attn_fn=sdpa_flash_fn)
+    apply_ulysses_attention(model, cp, cp_group, attn_fn = sdpa_flash_fn)
     n_gdn = apply_gdn_cp(model, cp_group)
     for module in model.modules():
         config = getattr(module, "config", None)
@@ -167,16 +171,16 @@ def _layer_classes(model) -> set[type]:
 def apply_fsdp(model, mesh) -> None:
     """Same wrap order as LLaMA-Factory FSDP2Engine.prepare_model."""
     policy = MixedPrecisionPolicy(
-        param_dtype=torch.bfloat16,
-        reduce_dtype=torch.float32,
-        cast_forward_inputs=True,
+        param_dtype = torch.bfloat16,
+        reduce_dtype = torch.float32,
+        cast_forward_inputs = True,
     )
     # Shard decoder layers, not each LoRA leaf. A leaf wrap plus the parent
     # wrap feeds aten.mm a mix of Tensor and DTensor.
     classes = _layer_classes(model)
     for module in model.modules():
         if type(module) in classes:
-            fully_shard(module, mesh=mesh, reshard_after_forward=True, mp_policy=policy)
+            fully_shard(module, mesh = mesh, reshard_after_forward = True, mp_policy = policy)
     if hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()
 
@@ -196,10 +200,10 @@ def apply_fsdp_checkpoint(model) -> int:
         return 0
     apply_activation_checkpointing(
         model,
-        checkpoint_wrapper_fn=lambda module: checkpoint_wrapper(
-            module, checkpoint_impl=CheckpointImpl.NO_REENTRANT
+        checkpoint_wrapper_fn = lambda module: checkpoint_wrapper(
+            module, checkpoint_impl = CheckpointImpl.NO_REENTRANT
         ),
-        check_fn=is_decoder,
+        check_fn = is_decoder,
     )
     return n
 
@@ -218,20 +222,25 @@ def build_meshes(use_fsdp: bool, use_cp: bool):
     if use_fsdp:
         if world < 2:
             raise RuntimeError("FSDP needs 2 processes")
-        fsdp_mesh = init_device_mesh("cuda", (world,), mesh_dim_names=("fsdp",))
+        fsdp_mesh = init_device_mesh("cuda", (world,), mesh_dim_names = ("fsdp",))
     if use_cp:
         if world < 2:
             raise RuntimeError("CP needs 2 processes")
-        cp_mesh = init_device_mesh("cuda", (world,), mesh_dim_names=("cp",))
+        cp_mesh = init_device_mesh("cuda", (world,), mesh_dim_names = ("cp",))
         cp_group = cp_mesh.get_group()
     return device, fsdp_mesh, cp_group
 
 
-def _chunked_nll(lm_head, hidden, labels, chunk: int = 128):
+def _chunked_nll(
+    lm_head,
+    hidden,
+    labels,
+    chunk: int = 128,
+):
     """Sum of token NLL. lm_head is applied on short chunks so the
     vocab-sized logit tensor (about 30 GiB at 65536) is never allocated.
     """
-    total = hidden.new_zeros((), dtype=torch.float32)
+    total = hidden.new_zeros((), dtype = torch.float32)
     length = hidden.shape[1]
     for start in range(0, length, chunk):
         stop = min(start + chunk, length)
@@ -240,8 +249,8 @@ def _chunked_nll(lm_head, hidden, labels, chunk: int = 128):
         total = total + F.cross_entropy(
             logits.reshape(-1, logits.size(-1)),
             piece.reshape(-1),
-            reduction="sum",
-            ignore_index=-100,
+            reduction = "sum",
+            ignore_index = -100,
         )
         del logits
     return total
@@ -250,7 +259,7 @@ def _chunked_nll(lm_head, hidden, labels, chunk: int = 128):
 def sft_loss(model, input_ids, labels, cp_group):
     """Shifted token CE. CP keeps a contiguous shard of the sequence."""
     position_ids = None
-    shift_labels = F.pad(labels[:, 1:], (0, 1), value=-100)
+    shift_labels = F.pad(labels[:, 1:], (0, 1), value = -100)
     if cp_group is not None:
         cp = dist.get_world_size(cp_group)
         rank = dist.get_rank(cp_group)
@@ -258,10 +267,10 @@ def sft_loss(model, input_ids, labels, cp_group):
         start = rank * local
         input_ids = input_ids[:, start : start + local].contiguous()
         shift_labels = shift_labels[:, start : start + local].contiguous()
-        position_ids = torch.arange(start, start + local, device=input_ids.device)
+        position_ids = torch.arange(start, start + local, device = input_ids.device)
         position_ids = position_ids.unsqueeze(0).expand(input_ids.shape[0], -1)
     base = model.get_base_model() if hasattr(model, "get_base_model") else model
-    outputs = base.model(input_ids=input_ids, position_ids=position_ids, use_cache=False)
+    outputs = base.model(input_ids = input_ids, position_ids = position_ids, use_cache = False)
     hidden = outputs.last_hidden_state if hasattr(outputs, "last_hidden_state") else outputs[0]
     local_num = _chunked_nll(base.lm_head, hidden, shift_labels)
     denom = (labels[:, 1:] != -100).sum().clamp_min(1).to(local_num.dtype)
@@ -269,7 +278,7 @@ def sft_loss(model, input_ids, labels, cp_group):
         return local_num / denom
     from torch.distributed.nn.functional import all_gather
 
-    parts = all_gather(local_num, group=cp_group)
+    parts = all_gather(local_num, group = cp_group)
     return torch.stack(parts).sum() / denom
 
 
@@ -277,4 +286,4 @@ def sync_replicated_grads(model, cp_group) -> None:
     for param in model.parameters():
         if param.grad is None:
             continue
-        dist.all_reduce(param.grad, op=dist.ReduceOp.SUM, group=cp_group)
+        dist.all_reduce(param.grad, op = dist.ReduceOp.SUM, group = cp_group)
