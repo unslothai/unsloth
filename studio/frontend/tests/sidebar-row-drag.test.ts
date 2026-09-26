@@ -1288,7 +1288,7 @@ test("a carried row lifts a copy that follows the pointer", () => {
   }
   assert.match(CSS, /\.sidebar-row-ghost \* \{\n\s*pointer-events: none;/);
   // Every way a drag ends takes it down: clear() is the one exit.
-  assert.match(HOOK, /const clear = useCallback\(\(\) => \{[^]*?ghost\.current\?\.element\.remove\(\);\n\s*ghost\.current = null;/);
+  assert.match(HOOK, /const clear = useCallback\(\(\) => \{[^]*?ghost\.current\?\.element\.remove\(\);\n\s*ghost\.current\?\.cue\.remove\(\);\n\s*ghost\.current = null;/);
   // The row it came from dims as a section does, bare of its pressed look.
   assert.equal(APP_SIDEBAR.match(/draggingRow\?\.id === (item|project)\.id && "opacity-40"/g)?.length, 2);
   assert.match(CSS, /body\.sidebar-row-dragging \[data-sidebar="menu-button"\]:active \{\n\s*background-color: transparent;/);
@@ -1493,4 +1493,51 @@ test("a drop into a folder lights the folder, even while a line shows the slot",
   assert.equal(litRingKey(reorder), null);
   assert.equal(litRingKey(null), null);
   assert.match(HOOK, /\(key: string\): boolean => litRingKey\(plan\) === key/);
+});
+
+// The end of Recents: its strip past the last row, and the empty sidebar below it.
+test("a Recents chat dropped past the last row moves to the end", () => {
+  const tail: SidebarDropZone = {
+    section: "recents",
+    blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "recents" },
+  };
+  const plan = plannedDrop(
+    planSidebarDrop(chat("r1", "recents", RECENTS_ORDER_SCOPE, null), tail, "bottom", context()),
+  );
+  assert.deepEqual(plan.effects.orders, [{ scope: RECENTS_ORDER_SCOPE, ids: ["r2", "r1"] }]);
+  assert.deepEqual(plan.cue, { line: { rowKey: rowKey(RECENTS_ORDER_SCOPE, "r2"), edge: "bottom" } });
+  // Already last: nothing to do, and the section does not answer instead.
+  assert.equal(
+    planSidebarDrop(chat("r2", "recents", RECENTS_ORDER_SCOPE, null), tail, "bottom", context()),
+    STAY,
+  );
+  // A chat from elsewhere lands last too, as it does on the section.
+  const pinned = plannedDrop(
+    planSidebarDrop(chat("p1", "pinned", PINNED_ORDER_SCOPE, null), tail, "bottom", context()),
+  );
+  assert.deepEqual(pinned.effects.orders.at(-1)?.ids.at(-1), "p1");
+});
+
+test("Recents draws an end strip, and the empty sidebar below it aims there", () => {
+  assert.match(
+    APP_SIDEBAR,
+    /dropCueClass\(SIDEBAR_TAIL_SCOPE, "recents"\),\n\s*\)\}\n\s*\{\.\.\.dnd\.dropZoneProps\(\{\n\s*section: "recents",\n\s*blockEnd: \{ scope: SIDEBAR_TAIL_SCOPE, id: "recents" \},/,
+  );
+  assert.match(HOOK, /const past = under\.length === 0 \? zonePastRecents\(x, y, scroller\.current\) : null;/);
+  // Only below the strip and inside the list, not over the account row under it.
+  assert.match(HOOK, /y < rect\.bottom \|\| x < rect\.left \|\| x > rect\.right\) return null;/);
+  assert.match(HOOK, /if \(list && y > list\.getBoundingClientRect\(\)\.bottom\) return null;/);
+});
+
+test("the drop cue is drawn again above the carried row's copy", () => {
+  // Every cue carries the marker the overlay looks for.
+  for (const name of ["DROP_CUE_BASE", "DROP_INTO_CUE", "DROP_INTO_ROW_CUE"]) {
+    assert.match(APP_SIDEBAR, new RegExp(`const ${name} = \`\\$\\{DROP_CUE_CLASS\\} `), name);
+  }
+  // Painted each frame after the plan is tracked, and removed with the copy.
+  assert.match(HOOK, /track\(at\.x, at\.y\);\n\s*if \(ghost\.current\) placeCue\(ghost\.current\);/);
+  assert.match(HOOK, /ghost\.current\?\.cue\.remove\(\);/);
+  // Its border only: the tint under the copy would double.
+  assert.doesNotMatch(HOOK.slice(HOOK.indexOf("function placeCue"), HOOK.indexOf("function zoneOf")), /background/);
+  assert.match(CSS, /\.sidebar-drop-cue-overlay \{\n\tposition: fixed;[\s\S]*?z-index: 61;[\s\S]*?pointer-events: none;/);
 });

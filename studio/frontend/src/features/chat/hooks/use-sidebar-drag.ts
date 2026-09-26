@@ -56,6 +56,14 @@ const NO_DRAG_SELECTOR = ".sidebar-row-action";
 /** The raised copy of a carried row. */
 export const ROW_GHOST_CLASS = "sidebar-row-ghost";
 
+/** On the element that paints the drop cue: the insertion line, or the outline of what the row
+ *  would join. */
+export const DROP_CUE_CLASS = "sidebar-drop-cue";
+
+/** The cue's border drawn again above the carried copy, which covers the spot it is aimed at.
+ *  The section drag draws its line above its header's copy the same way. */
+const CUE_OVERLAY_CLASS = "sidebar-drop-cue-overlay";
+
 /** How long a dropped row takes to slide from where it was let go into its slot. */
 const SETTLE_MS = 180;
 
@@ -92,6 +100,28 @@ function zonesUnder(x: number, y: number): ZoneHit[] {
     }
   }
   return hits;
+}
+
+/** The end strip Recents draws past its last row. Recents is always the last list, so the empty
+ *  sidebar below it is past the end of every list: a drop there lands where it would on the strip. */
+function zonePastRecents(x: number, y: number, list: Element | null): ZoneHit | null {
+  if (typeof document === "undefined") return null;
+  const tail = document.querySelector(
+    `[${ROW_KEY_ATTR}="${CSS.escape(rowKey(SIDEBAR_TAIL_SCOPE, "recents"))}"]`,
+  );
+  if (!tail) return null;
+  const rect = tail.getBoundingClientRect();
+  if (rect.height === 0 || y < rect.bottom || x < rect.left || x > rect.right) return null;
+  // Inside the list, not over the account row under it.
+  if (list && y > list.getBoundingClientRect().bottom) return null;
+  try {
+    const parsed = JSON.parse(tail.getAttribute(DROP_ZONE_ATTR) ?? "") as {
+      zone: SidebarDropZone;
+    };
+    return { zone: parsed.zone, closed: false, rect };
+  } catch {
+    return null;
+  }
 }
 
 /** Max distance between a row's bottom and the next row's top for them to share a gap. */
@@ -149,6 +179,8 @@ interface RowGhost {
   grab: number;
   /** The box the copy stays inside: the list it scrolls in. */
   view: Element;
+  /** The cue drawn over the copy. */
+  cue: HTMLElement;
 }
 
 /** A copy of the row's face on a raised pill, over the row it came from. */
@@ -177,8 +209,43 @@ function liftRow(row: HTMLElement, pressY: number, view: Element): RowGhost | nu
   // The icon size is the sidebar's own variable, which the copy leaves behind on the body.
   const iconSize = style.getPropertyValue("--icon-size");
   if (iconSize) element.style.setProperty("--icon-size", iconSize);
-  document.body.append(element);
-  return { element, grab: pressY - rect.top, view };
+  const cue = document.createElement("div");
+  cue.setAttribute("aria-hidden", "true");
+  cue.className = CUE_OVERLAY_CLASS;
+  document.body.append(element, cue);
+  return { element, grab: pressY - rect.top, view, cue };
+}
+
+/** Draws the cue painted under the copy again over it: its border only, since the tint under the
+ *  copy would otherwise double where the two meet. Clipped to the list, as the cue is. */
+function placeCue(ghost: RowGhost) {
+  const overlay = ghost.cue;
+  const cue = document.querySelector<HTMLElement>(`.${DROP_CUE_CLASS}`);
+  const style = cue ? getComputedStyle(cue, "::before") : null;
+  if (!cue || !style || style.content === "none" || cue.offsetHeight === 0) {
+    overlay.style.display = "none";
+    return;
+  }
+  const box = cue.getBoundingClientRect();
+  // border-box, so the width and height read here include the border.
+  const left = box.left + (parseFloat(style.left) || 0);
+  const top = box.top + (parseFloat(style.top) || 0);
+  const height = parseFloat(style.height) || 0;
+  const view = ghost.view.getBoundingClientRect();
+  Object.assign(overlay.style, {
+    display: "block",
+    width: style.width,
+    height: `${height}px`,
+    borderStyle: style.borderStyle,
+    borderColor: style.borderColor,
+    borderTopWidth: style.borderTopWidth,
+    borderRightWidth: style.borderRightWidth,
+    borderBottomWidth: style.borderBottomWidth,
+    borderLeftWidth: style.borderLeftWidth,
+    borderRadius: style.borderRadius,
+    transform: `translate3d(${left}px, ${top}px, 0)`,
+    clipPath: `inset(${Math.max(0, view.top - top)}px 0 ${Math.max(0, top + height - view.bottom)}px 0)`,
+  });
 }
 
 /** Keeps the copy under the pointer, inside the list it came from. */
@@ -342,6 +409,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
     cancelSpring();
     scroller.current = null;
     ghost.current?.element.remove();
+    ghost.current?.cue.remove();
     ghost.current = null;
     document.body.classList.remove(DRAGGING_BODY_CLASS);
     setDrag(null);
@@ -360,7 +428,9 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
       const dragged = sidebarDragSource();
       if (!dragged) return null;
       const context = optionsRef.current.context();
-      for (const hit of zonesUnder(x, y)) {
+      const under = zonesUnder(x, y);
+      const past = under.length === 0 ? zonePastRecents(x, y, scroller.current) : null;
+      for (const hit of past ? [past] : under) {
         const outcome = planSidebarDrop(
           dragged,
           hit.zone,
@@ -491,6 +561,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           edgeScroll(at.y);
           if (ghost.current) placeGhost(ghost.current, at.y);
           track(at.x, at.y);
+          if (ghost.current) placeCue(ghost.current);
         };
         // Abandons this gesture whole, for a drop that never came: the same as a cancel.
         const self = {

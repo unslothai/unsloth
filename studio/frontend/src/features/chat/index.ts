@@ -142,6 +142,7 @@ export {
   SPRING_OPEN_DELAY_MS,
   DRAG_THRESHOLD_PX,
   DRAGGING_BODY_CLASS,
+  DROP_CUE_CLASS,
 } from "./hooks/use-sidebar-drag";
 export {
   useSectionDrag,

@@ -3714,6 +3714,17 @@ body.sidebar-row-dragging [data-sidebar="menu-button"]:active {
 	pointer-events: none;
 }
 
+/* The drop cue under a carried row's copy, drawn again above it (use-sidebar-drag.ts). */
+.sidebar-drop-cue-overlay {
+	position: fixed;
+	top: 0;
+	left: 0;
+	z-index: 61;
+	display: none;
+	box-sizing: border-box;
+	pointer-events: none;
+}
+
 /* A row's copy is its face as drawn, lit like a hovered row but never like the open chat. */
 .sidebar-row-ghost > [data-sidebar="menu-button"] {
 	width: 100%;

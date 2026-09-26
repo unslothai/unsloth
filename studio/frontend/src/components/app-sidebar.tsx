@@ -273,6 +273,7 @@ import { toast } from "@/lib/toast";
 import {
   folderRingKey,
   sectionRingKey,
+  DROP_CUE_CLASS,
   SIDEBAR_TAIL_SCOPE,
   useSidebarDrag,
   type SidebarDragItem,
@@ -371,18 +372,17 @@ const SELECT_WITH_META =
 // overflow, and the first and last rows are exactly where a row is dragged to. A border, not a
 // filled bar: border widths snap to whole device pixels, so the line keeps one thickness at any
 // zoom or UI scale instead of rounding differently per row.
-const DROP_CUE_BASE =
-  "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']";
+// DROP_CUE_CLASS: the carried row's copy covers the spot it is aimed at, so the drag draws each
+// cue's border again above it.
+const DROP_CUE_BASE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']`;
 const DROP_CUE_TOP = `${DROP_CUE_BASE} before:top-0`;
 // bottom-px: on the last row, DROP_ROW_HIT's extra pixel is clipped by the list.
 const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-px`;
 // A row dropped onto a folder or section joins it, so the whole target is tinted and outlined,
 // with the same border as the line. Kept inside the box for the same clipping reason.
-const DROP_INTO_CUE =
-  "before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']";
+const DROP_INTO_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
 // Folder rows match their hover pill.
-const DROP_INTO_ROW_CUE =
-  "before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']";
+const DROP_INTO_ROW_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
 // The menu keeps a 1px gap between rows. A pointer resting on that gap would hit the section
 // instead, which answers with its last slot, so each row's box reaches over the gap below it.
 const DROP_ROW_HIT = "pb-px -mb-px";
@@ -5489,6 +5489,21 @@ export function AppSidebar() {
                         section: "recents",
                         sort: { value: chatSort, set: setChatSort },
                       }),
+                    )}
+                    {sortedRecentChatItems.length > 0 && (
+                      // The end of the list, as somewhere to aim; see Pinned's. The empty sidebar
+                      // below it aims here too (use-sidebar-drag.ts).
+                      <SidebarMenuItem
+                        aria-hidden
+                        className={cn(
+                          "relative z-[1] h-[calc(8px*var(--ui-space-scale,1))]",
+                          dropCueClass(SIDEBAR_TAIL_SCOPE, "recents"),
+                        )}
+                        {...dnd.dropZoneProps({
+                          section: "recents",
+                          blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "recents" },
+                        })}
+                      />
                     )}
                   </SidebarMenu>
                   {/* "No chats yet" only when there is truly no history:
