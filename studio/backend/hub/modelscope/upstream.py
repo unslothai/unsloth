@@ -262,8 +262,8 @@ async def _file_entries(kind: str, repo: str, sha: str) -> list[dict]:
         batch = (data.get("Data") or {}).get("Files") or []
         entries.extend(batch)
         if len(batch) < _TREE_PAGE:
-            break
-    return entries
+            return entries
+    raise UpstreamError(f"ModelScope lists more than {len(entries)} files for {repo}")
 
 
 @_cached(300)

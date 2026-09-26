@@ -300,3 +300,14 @@ def test_cache_gate_asks_hugging_face_while_modelscope_serves(monkeypatch):
     )
     assert refused is True
     assert asked and all(url.startswith("https://hf.example/api/") for url in asked)
+
+
+def test_a_dataset_tree_past_the_page_cap_is_an_error_not_a_truncated_listing(hub, monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(upstream, "_TREE_MAX_PAGES", 2)
+    monkeypatch.setattr(upstream, "_TREE_PAGE", len(DATASET_FILES))
+    with pytest.raises(upstream.UpstreamError):
+        asyncio.run(upstream._file_entries("dataset", "org/ds", SHA))
+    monkeypatch.setattr(upstream, "_TREE_PAGE", len(DATASET_FILES) + 1)
+    assert asyncio.run(upstream._file_entries("dataset", "org/ds", SHA)) == DATASET_FILES
