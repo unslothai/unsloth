@@ -85,6 +85,8 @@ __all__ = [
     "maybe_prefetch_hf_snapshot",
     "is_moe_model",
     "install_block_swap",
+    "trim_config_for_block_swap",
+    "attach_block_swap_layers",
     "get_moe_target_parameters",
     "get_moe_target_modules",
     "warn_if_zoo_cannot_merge_moe_experts",
@@ -157,6 +159,10 @@ try:
     from unsloth_zoo.block_swap import BlockSwap, find_decoder_layers
 except ImportError:  # unsloth_zoo predates block_swap
     BlockSwap = find_decoder_layers = None
+try:
+    from unsloth_zoo.block_swap import build_host_layers
+except ImportError:  # unsloth_zoo predates loading straight to host
+    build_host_layers = None
 from unsloth_zoo.gradient_checkpointing import (
     Unsloth_Offloaded_Gradient_Checkpointer,
     unsloth_offloaded_gradient_checkpoint,
@@ -4620,31 +4626,13 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
     return token
 
 
-def install_block_swap(
-    model,
-    block_swap_layers = 0,
-    prefetch_depth = 2,
-):
-    """Stream the last `block_swap_layers` frozen decoder blocks from pinned host RAM.
-
-    Off at 0. Refused where it cannot help or would break: MoE moves every
-    expert but computes with a few, so the fetch never hides; a unified-memory
-    GPU has no separate RAM to swap to; vLLM would sync evicted weights as
-    empty tensors.
-    """
-    if not block_swap_layers or block_swap_layers <= 0:
-        return None
+def _check_block_swap(model_or_config):
     if BlockSwap is None:
         raise ImportError(
             "Unsloth: block_swap_layers needs a newer unsloth_zoo. "
             "Run `pip install --upgrade unsloth_zoo`."
         )
-    if getattr(model, "vllm_engine", None) is not None:
-        raise ValueError(
-            "Unsloth: block_swap_layers cannot be combined with fast_inference = True, "
-            "since evicted weights would sync to vLLM as empty tensors."
-        )
-    if is_moe_model(model):
+    if is_moe_model(model_or_config):
         raise ValueError(
             "Unsloth: block_swap_layers does not support MoE models. Every expert "
             "has to move across PCIe but only the active ones compute, so the copy "
@@ -4655,7 +4643,131 @@ def install_block_swap(
             "Unsloth: block_swap_layers has nothing to swap to on a unified-memory "
             "GPU; host and device already share the same RAM."
         )
-    swapper = BlockSwap(find_decoder_layers(model), block_swap_layers, prefetch_depth)
+
+
+def install_block_swap(
+    model,
+    block_swap_layers = 0,
+    prefetch_depth = 2,
+    use_gradient_checkpointing = "unsloth",
+):
+    """Stream the last `block_swap_layers` frozen decoder blocks from pinned host RAM.
+
+    Off at 0. Refused where it cannot help or would break: MoE moves every
+    expert but computes with a few, so the fetch never hides; a unified-memory
+    GPU has no separate RAM to swap to; vLLM would sync evicted weights as
+    empty tensors; without gradient checkpointing every block stays live until
+    backward, so the pool runs dry mid-forward. A model loaded with
+    `from_pretrained(block_swap_layers = N)` already carries its swapper.
+    """
+    existing = getattr(model, "_unsloth_block_swap", None)
+    if existing is None and (not block_swap_layers or block_swap_layers <= 0):
+        return None
+    if not use_gradient_checkpointing:
+        raise ValueError(
+            "Unsloth: block_swap_layers needs use_gradient_checkpointing. Without "
+            "it every swapped block stays on the card until backward, so there is "
+            "nothing to save and the slot pool runs dry mid-forward."
+        )
+    if existing is not None:
+        return existing
+    if getattr(model, "vllm_engine", None) is not None:
+        raise ValueError(
+            "Unsloth: block_swap_layers cannot be combined with fast_inference = True, "
+            "since evicted weights would sync to vLLM as empty tensors."
+        )
+    _check_block_swap(model)
+    layers = find_decoder_layers(model)
+    swapper = BlockSwap(layers, block_swap_layers, prefetch_depth)
+    # On the layer list too: the fast decode loop only sees the inner model.
+    layers._unsloth_block_swap = swapper
+    model._unsloth_block_swap = swapper
+    return swapper
+
+
+def _checkpoint_tensors(model_name, token = None, revision = None, cache_dir = None,
+                        local_files_only = False, subfolder = None):
+    """Map every safetensors key in the checkpoint to a lazy loader."""
+    from safetensors import safe_open
+    import json
+
+    def _get(filename):
+        if os.path.isdir(model_name):
+            path = os.path.join(model_name, subfolder or "", filename)
+            return path if os.path.exists(path) else None
+        from huggingface_hub import hf_hub_download
+        try:
+            return hf_hub_download(model_name, filename, subfolder = subfolder, revision = revision,
+                                   token = token, cache_dir = cache_dir,
+                                   local_files_only = local_files_only)
+        except Exception:
+            return None
+
+    index = _get("model.safetensors.index.json")
+    if index is not None:
+        with open(index, "r", encoding = "utf-8") as f:
+            shards = sorted(set(json.load(f)["weight_map"].values()))
+    else:
+        shards = ["model.safetensors"]
+    handles, tensors = [], {}
+    for shard in shards:
+        path = _get(shard)
+        if path is None:
+            raise RuntimeError(f"Unsloth: block_swap_layers could not find {shard} for {model_name}.")
+        h = safe_open(path, framework = "pt", device = "cpu")
+        handles.append(h)
+        for key in h.keys():
+            tensors[key] = (lambda h = h, key = key: h.get_tensor(key))
+    return tensors, handles
+
+
+def trim_config_for_block_swap(config, block_swap_layers):
+    """Shorten the config so the standard load stops before the swapped tail.
+    Returns the per-layer attributes to put back, or None when off."""
+    if not block_swap_layers or block_swap_layers <= 0:
+        return None
+    if build_host_layers is None:
+        raise ImportError(
+            "Unsloth: from_pretrained(block_swap_layers = ...) needs a newer unsloth_zoo. "
+            "Run `pip install --upgrade unsloth_zoo`."
+        )
+    _check_block_swap(config)
+    total = config.num_hidden_layers
+    n = min(int(block_swap_layers), total - 1)
+    saved = {"num_hidden_layers": total}
+    for key, value in list(vars(config).items()):
+        if isinstance(value, (list, tuple)) and len(value) == total:
+            saved[key] = value
+            setattr(config, key, type(value)(value[: total - n]))
+    config.num_hidden_layers = total - n
+    return saved
+
+
+def attach_block_swap_layers(model, saved, model_name, dtype, load_in_4bit, skip_modules = (),
+                             **hub_kwargs):
+    """Put back the trimmed config, build the tail layers in host RAM, install the swap."""
+    if saved is None:
+        return None
+    layers = find_decoder_layers(model)
+    first = len(layers)
+    config = model.config
+    for key, value in saved.items():
+        setattr(config, key, value)
+    count = config.num_hidden_layers - first
+    layer_cls = type(layers[0])
+    tensors, handles = _checkpoint_tensors(model_name, **hub_kwargs)
+    try:
+        new = build_host_layers(
+            lambda idx: layer_cls(config, idx), first, count, tensors,
+            device = torch.device("cuda", torch.cuda.current_device()),
+            compute_dtype = dtype, quantize_4bit = load_in_4bit, skip_modules = skip_modules,
+        )
+    finally:
+        del handles
+    for layer in new:
+        layers.append(layer)
+    swapper = BlockSwap(layers, count)
+    layers._unsloth_block_swap = swapper
     model._unsloth_block_swap = swapper
     return swapper
 

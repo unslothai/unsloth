@@ -1278,8 +1278,11 @@ def _LlamaModel_fast_forward_inference(
         rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
 
         next_decoder_cache = []
+        block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
 
         for idx, decoder_layer in enumerate(self.model.layers):
+            if block_swap is not None:
+                block_swap.enter(idx)
             layer_device, device_index = per_layer_device(decoder_layer)
             X, residual, position_ids = move_to_device(layer_device, X, residual, position_ids)
             residual.copy_(X)
@@ -1316,6 +1319,8 @@ def _LlamaModel_fast_forward_inference(
                 temp_up = temp_ups[device_index],
             )
             X += residual
+            if block_swap is not None:
+                block_swap.leave(idx)
 
             next_decoder_cache.append(present_key_value)
         X = fast_rms_layernorm_inference(
@@ -2448,6 +2453,7 @@ class FastLlamaModel:
         # Respect a user-provided config so it is the single config object used everywhere below; else
         # HF gets it again through **kwargs alongside our config= and fails with a duplicate kwarg.
         user_config = kwargs.pop("config", None)
+        block_swap_layers = kwargs.pop("block_swap_layers", 0)
         if user_config is not None:
             model_config = user_config
             # model_name may have been remapped to a prequantized repo whose checkpoint needs its
@@ -2714,6 +2720,15 @@ class FastLlamaModel:
 
         kwargs = add_dtype_kwargs(dtype, kwargs)
 
+        if block_swap_layers and (fast_inference or num_labels is not None):
+            raise ValueError(
+                "Unsloth: from_pretrained(block_swap_layers = ...) does not support "
+                "fast_inference or classification heads."
+            )
+        # The swapped tail skips the standard load and is built straight in host
+        # RAM afterwards, so a model larger than the card can load at all.
+        _block_swap_saved = trim_config_for_block_swap(model_config, block_swap_layers)
+
         raise_handler = RaiseUninitialized()
         try:
             if num_labels is not None:
@@ -2780,7 +2795,7 @@ class FastLlamaModel:
                     variant = kwargs.get("variant"),
                 )
             elif not fast_inference:
-                if user_config is not None:
+                if user_config is not None or _block_swap_saved is not None:
                     # Transformers 5.x @strict model init rejects extra kwargs next to config=, so set the override
                     # on the config and pass the single config object through.
                     if max_position_embeddings is not None:
@@ -2907,6 +2922,19 @@ class FastLlamaModel:
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model, tokenizer = model_patcher.post_patch(model, tokenizer, correct_dtype = dtype)
+        attach_block_swap_layers(
+            model,
+            _block_swap_saved,
+            model_name,
+            dtype,
+            load_in_4bit,
+            skip_modules = SKIP_QUANTIZATION_MODULES,
+            token = token,
+            revision = revision,
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = kwargs.get("local_files_only", False),
+            subfolder = kwargs.get("subfolder"),
+        )
 
         for idx, layer in enumerate(model.model.layers):
             layer.self_attn.apply_qkv = original_apply_qkv
@@ -3607,7 +3635,9 @@ class FastLlamaModel:
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
         model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
-        install_block_swap(model, block_swap_layers)
+        install_block_swap(
+            model, block_swap_layers, use_gradient_checkpointing = use_gradient_checkpointing
+        )
 
         if ensure_weight_tying:
             try:
