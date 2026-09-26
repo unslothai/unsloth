@@ -4,6 +4,11 @@
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import {
+  isMemoryEstimateRefusal,
+  MEMORY_REFUSAL_HEADER,
+  MemoryEstimateRefusalError,
+} from "./lib/memory-refusal";
 
 // One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
 // value (null when off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto"
@@ -37,6 +42,8 @@ export interface DiffusionStatus {
   // actually ran instead of echoing the load request back. Transformer quant engaged on the dense fast path
   // ("int8" / "fp8" / ...), null = the GGUF ran as-is.
   transformer_quant?: string | null;
+  transformer_quant_backend?: string | null;
+  transformer_quant_backend_reason?: string | null;
   // Text-encoder quant engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4"), null = dense bf16.
   text_encoder_quant?: string | null;
   // Memory mode the load ran under: "auto" | "fast" | "balanced" | "low_vram".
@@ -136,7 +143,7 @@ export interface DiffusionLoadRequest {
   // CUDA / ROCm physical indices this load may use; omit for automatic. Neither engine shards a
   // checkpoint, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
-  transformer_cache?: "off" | "fbcache";
+  transformer_cache?: "off" | "fbcache" | "static";
   // LoRA adapters to BAKE into a torchao int8/fp8 build: they can only attach to the dense transformer BEFORE
   // quantisation and compile, so a quantized load that omits them rejects every generation. Ignored by bf16 /
   // bnb-4bit, which apply at generate time.
@@ -159,6 +166,7 @@ export interface DiffusionGenerateRequest {
   strength?: number;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;
+  allow_oversized?: boolean;
   // Additional images after init_image, in order, for the reference and edit workflows.
   reference_images?: string[];
   workflow?: "edit" | "reference";
@@ -253,6 +261,8 @@ export interface GalleryImage {
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;
   archived?: boolean;
+  /** The server's unpinned sort key: the drag key, else the file mtime. */
+  order_at?: number | null;
 }
 
 export interface DiffusionGenerateResponse {
@@ -405,6 +415,12 @@ export async function generateDiffusionImage(
     }
     throw new GenerateResponseLostError(detail);
   }
+  if (
+    !response.ok &&
+    isMemoryEstimateRefusal(response.status, response.headers.get(MEMORY_REFUSAL_HEADER))
+  ) {
+    throw new MemoryEstimateRefusalError(await readFastApiError(response));
+  }
   return parseJson(response);
 }
 
@@ -465,6 +481,31 @@ export async function getGallery(offset = 0, limit = 50, archived = false): Prom
 }
 
 /** Pin/unpin or archive/restore one image; omitted flags are left alone. Returns the new record. */
+/** Move one image to just after `afterId` (null = front). The server also decides the pin. */
+export async function moveGalleryImage(id: string, afterId: string | null): Promise<GalleryImage> {
+  return parseJson(
+    await authFetch(`/api/inference/images/gallery/${id}/move`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ after_id: afterId }),
+    }),
+  );
+}
+
+/** Copy one image into a chat project's folder. */
+export async function addGalleryImageToProject(
+  id: string,
+  projectId: string,
+): Promise<{ path: string; already: boolean }> {
+  return parseJson(
+    await authFetch(`/api/inference/images/gallery/${id}/project`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: projectId }),
+    }),
+  );
+}
+
 export async function setGalleryImageFlags(
   id: string,
   flags: { pinned?: boolean; archived?: boolean },
@@ -489,11 +530,14 @@ export async function clearGallery(): Promise<void> {
   if (!res.ok) throw new Error(await readFastApiError(res));
 }
 
-/** Fetch an auth-protected gallery image as its original blob. */
-export async function fetchGalleryBlob(url: string): Promise<Blob> {
+export async function fetchGalleryResponse(url: string): Promise<Response> {
   const res = await authFetch(url);
   if (!res.ok) throw new Error(await readFastApiError(res));
-  return res.blob();
+  return res;
+}
+
+export async function fetchGalleryBlob(url: string): Promise<Blob> {
+  return (await fetchGalleryResponse(url)).blob();
 }
 
 /** Fetch a gallery PNG (auth-protected, so it cannot be a plain <img src>) and wrap it in an object

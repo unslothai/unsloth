@@ -1870,6 +1870,22 @@
       "evidence_hash": "20a717b5faac68b3a57b11859f90d21959c29302e413bf3cd36e1263ccfbb00b"
     },
     {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/hf_api.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L4828:         while True: sha256:1ce337753534aa45be81cf67dddfd1180290ee5b1835930cee09022741137ef2",
+      "evidence_hash": "af1e941508b9439bb9baa2644fa142fffc38e4be8b5a8ca713e45bd91058ff8e"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/_sandbox.py",
+      "check": "openssl encryption + network/key material (encrypted exfiltration)",
+      "severity": "CRITICAL",
+      "evidence": "OpenSSL: L137:   actual=$(openssl dgst -sha256 -r \"$d\" | cut -d' ' -f1)\nNetwork: L650:         self._client = httpx2.Client(\nL651:             headers={\"X-Sandbox-Token\": sandbox_token},\nL652:             auth=_SandboxAuth(api),\nL653:             limits=httpx2.Limits(max_connections=max_connections, max_keepalive_connections=max_connections),\nL654: \nL655: \nL656: \nL657: \nL658:             follow_redirects=False,\nL659:         )",
+      "evidence_hash": "49365231ff611c1cd73306c8294803dc31018e697a59b66ee57f0c166c3c320b"
+    },
+    {
       "package": "scikit-learn",
       "file": "sklearn/datasets/_openml.py",
       "check": "C2 polling/beaconing loop detected",

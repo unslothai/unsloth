@@ -54,6 +54,7 @@ import {
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { holdSidebarPinned, releaseSidebarPinned } from "@/hooks/use-sidebar-pin";
 import {
   DOWNLOAD_KIND,
   dismissStartToast,
@@ -78,6 +79,7 @@ import {
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
+import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
@@ -109,6 +111,10 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
+import {
+  SaveTemporaryChatButton,
+  TemporaryChatSaveBridge,
+} from "./components/temporary-chat-save";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type CSSProperties,
@@ -132,6 +138,7 @@ import {
   useChatArtifactsStore,
   useSelectedChatArtifact,
 } from "./artifacts/store";
+import { isKnownTextOnlySelection } from "./utils/model-vision-capability";
 import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
 import { McpServersDialogMount } from "./mcp-composer-button";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
@@ -178,6 +185,7 @@ import {
 import {
   externalReasoningTakesEffort,
   getExternalReasoningCapabilities,
+  providerSupportsPreserveThinking,
   getProviderCapabilities,
   modelCatalogVersion,
   providerHostsCodeExecution,
@@ -221,6 +229,7 @@ import {
   reconcilePinnedReasoningEffort,
   takeEffortDisplacedByPin,
   threadScopedOverride,
+  resolvePreserveThinkingOnLoad,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { wantsDownloadManagerStaging } from "./utils/model-download-staging";
@@ -249,7 +258,16 @@ import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
   hasProjectSourcesPending,
+  noteProjectLandingMounted,
 } from "@/features/rag/components/project-source-dropzone";
+import {
+  exportConversationCsv,
+  exportConversationMarkdown,
+  exportConversationMessagesJsonl,
+  exportConversationRawJsonl,
+  exportConversationShareGPT,
+  saveChatItemAsProjectSource,
+} from "./prompt-storage/prompt-storage-dialog";
 
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
@@ -800,7 +818,7 @@ function CompareShell({
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
         <div
           data-tour="chat-compare-view"
-          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col pt-[var(--studio-content-top-inset,0px)] md:flex-row"
+          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col pt-[var(--studio-content-top-inset,0px)] lg:flex-row"
         >
           {children}
         </div>
@@ -947,9 +965,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
           onInitialHistoryReady={
             threadsSettled ? markInitialHistoryReady : undefined
           }
-          borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
+          borderClassName="border-t border-border/60 lg:border-t-0 lg:border-l"
           header={
-            <div className="shrink-0 px-3 py-1.5 text-start md:text-end md:pr-[calc(4rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+            <div className="shrink-0 px-3 py-1.5 text-start lg:text-end lg:pr-[calc(4rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
               <span className="text-ui-10 font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned
               </span>
@@ -1191,7 +1209,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           onInitialHistoryReady={
             threadsSettled ? markInitialHistoryReady : undefined
           }
-          borderClassName="border-t border-sidebar-border md:border-t-0 md:border-l"
+          borderClassName="border-t border-sidebar-border lg:border-t-0 lg:border-l"
           header={
             <GeneralCompareHeader
               side="right"
@@ -1262,14 +1280,13 @@ async function exportProjectConversation(
   threadId: string,
   format: ProjectChatExportFormat,
 ): Promise<void> {
-  const exports = await import("./prompt-storage/prompt-storage-dialog");
-  if (format === "raw-jsonl") return exports.exportConversationRawJsonl(threadId);
+  if (format === "raw-jsonl") return exportConversationRawJsonl(threadId);
   if (format === "messages-jsonl")
-    return exports.exportConversationMessagesJsonl(threadId);
-  if (format === "csv") return exports.exportConversationCsv(threadId);
+    return exportConversationMessagesJsonl(threadId);
+  if (format === "csv") return exportConversationCsv(threadId);
   if (format === CONVERSATION_MARKDOWN_FORMAT)
-    return exports.exportConversationMarkdown(threadId);
-  if (format === "sharegpt-jsonl") return exports.exportConversationShareGPT(threadId);
+    return exportConversationMarkdown(threadId);
+  if (format === "sharegpt-jsonl") return exportConversationShareGPT(threadId);
   // Was a fallthrough return, so an unhandled format silently exported ShareGPT.
   const unhandled: never = format;
   throw new Error(`Unhandled export format: ${String(unhandled)}`);
@@ -1290,9 +1307,6 @@ async function saveProjectChatItemAsSource(
   item: SidebarItem,
   projectId: string,
 ): Promise<void> {
-  const { saveChatItemAsProjectSource } = await import(
-    "./prompt-storage/prompt-storage-dialog"
-  );
   await saveChatItemAsProjectSource(item, projectId);
 }
 
@@ -1357,6 +1371,7 @@ function ProjectLanding({
   // Drop the marker once committed: React may replay the initializer above.
   useEffect(() => {
     consumeProjectSourcesPending(projectId);
+    return noteProjectLandingMounted(projectId);
   }, [projectId]);
   const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
     null,
@@ -1719,7 +1734,7 @@ function ProjectLanding({
           }
         >
           {/* Slightly narrower than the composer max; every block shares this. */}
-          <div className="mx-auto flex w-full max-w-[44rem] flex-col pt-[calc(120px*var(--ui-space-scale,1))] pb-14">
+          <div className="mx-auto flex w-full max-w-[calc(44rem*var(--ui-space-scale,1))] flex-col pt-[calc(120px*var(--ui-space-scale,1))] pb-14">
             <div className="mb-12 flex items-center gap-4">
               <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
                 <HugeiconsIcon
@@ -2376,7 +2391,14 @@ export function ChatPage({
   );
   const {
     refresh,
+    cancelLoadingForReplacement,
+    invalidatePendingModelSelection,
+    discardExternalReplacement,
+    restoreConfigForExternalReplacement,
+
+    isModelSelectionIntentCurrent,
     selectModel,
+    loadNpuModel,
     ejectModel,
     cancelLoading,
     loadingModel,
@@ -2478,7 +2500,12 @@ export function ChatPage({
     const provider = externalProvidersForChat.find(
       (p) => p.id === selection.providerId,
     );
-    const baseCapabilities = getProviderCapabilities(provider?.providerType);
+    const baseCapabilities = getProviderCapabilities(
+      provider?.providerType,
+      provider?.apiType,
+      selection.modelId,
+      provider?.baseUrl,
+    );
     if (!baseCapabilities) return baseCapabilities;
     const anthropicThinkingEnabled =
       provider?.providerType === "anthropic" &&
@@ -2511,6 +2538,7 @@ export function ChatPage({
       {
         isReasoningProvider: provider?.isReasoningModel === true,
         baseUrl: provider?.baseUrl ?? null,
+        apiType: provider?.apiType,
       },
     );
     const state = useChatRuntimeStore.getState();
@@ -2524,6 +2552,7 @@ export function ChatPage({
     const nextReasoningEffort = resolveExternalReasoningEffort({
       caps: reasoningCaps,
       providerType: provider?.providerType,
+      apiType: provider?.apiType,
       // Same as the switch below: a checkpoint that changed without going through it leaves the
       // previous model's pin in the live level, which an unpinned model must not inherit.
       current:
@@ -2545,12 +2574,14 @@ export function ChatPage({
       provider?.providerType,
       selection.modelId,
       provider?.baseUrl,
+      provider?.apiType,
     );
     const supportsBuiltinImageGeneration =
       providerSupportsBuiltinImageGeneration(
         provider?.providerType,
         selection.modelId,
         provider?.baseUrl,
+        provider?.apiType,
       );
     const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
       provider?.providerType,
@@ -2590,7 +2621,11 @@ export function ChatPage({
     // provider that cannot use it runs nothing either way.
     const canRunCode = codeToolCanRun({
       hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
-      providerHostsCodeExecution: providerHostsCodeExecution(provider?.providerType),
+      providerHostsCodeExecution: providerHostsCodeExecution(
+        provider?.providerType,
+        provider?.baseUrl,
+        provider?.apiType,
+      ),
       supportsStudioTools: supportsStudioToolsHere,
     });
     const nextToolsEnabled = canSearch
@@ -2612,7 +2647,10 @@ export function ChatPage({
             : state.reasoningEnabled
           : true
         : state.reasoningEnabled,
-      supportsPreserveThinking: false,
+      supportsPreserveThinking: providerSupportsPreserveThinking(provider?.providerType),
+      preserveThinking: resolvePreserveThinkingOnLoad({
+        supports_preserve_thinking: providerSupportsPreserveThinking(provider?.providerType),
+      }),
       supportsTools: supportsStudioToolsHere,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
@@ -2653,12 +2691,14 @@ export function ChatPage({
       {
         isReasoningProvider: provider?.isReasoningModel === true,
         baseUrl: provider?.baseUrl ?? null,
+        apiType: provider?.apiType,
       },
     );
     reconcilePinnedReasoningEffort({
       checkpoint: inferenceParams.checkpoint,
       caps,
       providerType: provider?.providerType,
+      apiType: provider?.apiType,
     });
   }, [activePinnedEffort, externalProvidersForChat, inferenceParams.checkpoint]);
   // A catalog that lands after selection refreshes only the stored reasoning fields (the effort shortcut reads them),
@@ -2683,6 +2723,7 @@ export function ChatPage({
       {
         isReasoningProvider: provider?.isReasoningModel === true,
         baseUrl: provider?.baseUrl ?? null,
+        apiType: provider?.apiType,
       },
     );
     useChatRuntimeStore.setState(
@@ -2694,6 +2735,7 @@ export function ChatPage({
       checkpoint: inferenceParams.checkpoint,
       caps,
       providerType: provider?.providerType,
+      apiType: provider?.apiType,
     });
   }, [modelCatalogChange, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
@@ -2893,7 +2935,10 @@ export function ChatPage({
           toast.info("This model is already loading", {
             description: "It's downloading as part of the load in progress.",
           });
-        } else if (wantManagerStaging) {
+          // The duplicate click is the only pick this guard refuses.
+          return;
+        }
+        if (wantManagerStaging) {
           const outcome = await downloadManager.requestStart({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
@@ -2918,12 +2963,11 @@ export function ChatPage({
                 "Another download for this model is still running. Reselect it once that finishes to load it.",
             });
           }
-        } else {
-          toast.info("Another model is already loading", {
-            description: "Wait for it to finish or cancel it first.",
-          });
+          return;
         }
-        return;
+        // A different pick takes the slot rather than being rejected: fall through to
+        // selectModel below, which cancels the pending load and keeps the working
+        // checkpoint as the rollback target for the replacement.
       }
       if (wantManagerStaging) {
         setPendingHubAutoLoad((current) =>
@@ -3169,13 +3213,63 @@ export function ChatPage({
       const currentVariant = store.activeGgufVariant;
       if (!value) return;
       setPendingHubAutoLoad(null);
+      const isExternalSelection =
+        meta?.source === "external" || isExternalModelId(value);
+      const isActiveModelLoad = modelOperationInProgress || loadingModel;
       const isSameLoadedModel =
         value === currentCheckpoint &&
         (meta?.ggufVariant ?? null) === (currentVariant ?? null);
       if (isSameLoadedModel && !meta?.forceReload) {
+        if (!isExternalSelection) return;
+        // A repeated external pick is a no-op unless it supersedes a local load. With only a
+        // preflight in flight, invalidate it here even though no loading flag has been published.
+        if (!isActiveModelLoad) {
+          invalidatePendingModelSelection();
+          return;
+        }
+      }
+      if (isNpuModelId(value)) {
+        void loadNpuModel(value, {
+          forceReload: meta?.forceReload,
+          config: meta?.config,
+        });
         return;
       }
-      if (meta?.source === "external" || isExternalModelId(value)) {
+      if (isExternalSelection) {
+        // Any pending local preflight is stale now, even before it has published a loading run.
+        const externalIntentId = invalidatePendingModelSelection();
+        let externalCapabilityPatch: Partial<ReturnType<typeof useChatRuntimeStore.getState>> | null = null;
+        // A local load still in flight has to be stopped by this external pick. Leaving it
+        // running pins modelLoading true, which makes the composer treat even this external
+        // checkpoint as unavailable, and the local run's completion would write the local
+        // model's capability fields over the ones set below. The intent is invalidated before
+        // the cancellation so a local run still parked in its preflight yields on wakeup
+        // instead of adopting its status and starting anyway.
+        if (isActiveModelLoad) {
+          void cancelLoadingForReplacement(externalIntentId).then((stopped) => {
+            // A newer pick already owns the store; this one must not write to it.
+            if (!isModelSelectionIntentCurrent(externalIntentId)) return;
+            if (!stopped) {
+              // The backend is uncertain after a failed stop, so drop the rollback marker a
+              // later local pick would otherwise inherit from the run that did not stop.
+              discardExternalReplacement(externalIntentId);
+              return;
+            }
+            restoreConfigForExternalReplacement(externalIntentId);
+            // The cancelled run's own reconciliation clears the store checkpoint when it had
+            // already unloaded the resident. The external pick is still the user's choice, so
+            // put it back rather than leaving the bar naming a model that is gone.
+            const live = useChatRuntimeStore.getState();
+            if (live.params.checkpoint !== value) {
+              live.setCheckpoint(value, null);
+            }
+            // Cancellation can finish after clearCheckpoint reset these fields. Reapply the
+            // complete external capability/tool state computed below, not just its checkpoint.
+            if (externalCapabilityPatch) {
+              useChatRuntimeStore.setState(externalCapabilityPatch);
+            }
+          });
+        }
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
           ? externalProvidersForChat.find(
@@ -3188,6 +3282,7 @@ export function ChatPage({
           {
             isReasoningProvider: selectedProvider?.isReasoningModel === true,
             baseUrl: selectedProvider?.baseUrl ?? null,
+            apiType: selectedProvider?.apiType,
           },
         );
         const effortLevels = reasoningCaps.reasoningEffortLevels;
@@ -3197,6 +3292,7 @@ export function ChatPage({
         const nextReasoningEffort = resolveExternalReasoningEffort({
           caps: reasoningCaps,
           providerType: selectedProvider?.providerType,
+          apiType: selectedProvider?.apiType,
           // The outgoing model's pin is what the live level holds, so an unpinned target resolves
           // from the chat's own effort rather than inheriting one model's override.
           current:
@@ -3225,12 +3321,14 @@ export function ChatPage({
             selectedProvider?.providerType,
             selectedExternal?.modelId,
             selectedProvider?.baseUrl,
+            selectedProvider?.apiType,
           );
         const supportsBuiltinImageGeneration =
           providerSupportsBuiltinImageGeneration(
             selectedProvider?.providerType,
             selectedExternal?.modelId,
             selectedProvider?.baseUrl,
+            selectedProvider?.apiType,
           );
         const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
           selectedProvider?.providerType,
@@ -3269,6 +3367,8 @@ export function ChatPage({
           hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
           providerHostsCodeExecution: providerHostsCodeExecution(
             selectedProvider?.providerType,
+            selectedProvider?.baseUrl,
+            selectedProvider?.apiType,
           ),
           supportsStudioTools: supportsStudioToolsHere,
         });
@@ -3277,7 +3377,7 @@ export function ChatPage({
             ? false
             : (storedToolsEnabled ?? searchOnByDefault)
           : false;
-        useChatRuntimeStore.setState({
+        externalCapabilityPatch = {
           activeGgufVariant: null,
           ...loadedContextFields(null),
           activeNativePathToken: null,
@@ -3299,7 +3399,10 @@ export function ChatPage({
                 : store.reasoningEnabled
               : true
             : store.reasoningEnabled,
-          supportsPreserveThinking: false,
+          supportsPreserveThinking: providerSupportsPreserveThinking(selectedProvider?.providerType),
+          preserveThinking: resolvePreserveThinkingOnLoad({
+            supports_preserve_thinking: providerSupportsPreserveThinking(selectedProvider?.providerType),
+          }),
           supportsTools: supportsStudioToolsHere,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
@@ -3316,7 +3419,8 @@ export function ChatPage({
             ? (storedWebFetchToolsEnabled ?? false)
             : false,
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
-        });
+        };
+        useChatRuntimeStore.setState(externalCapabilityPatch);
         return;
       }
       // Local model picked: drop any cached openrouter/free chosen model.
@@ -3336,7 +3440,11 @@ export function ChatPage({
                 (model) => model.id === value,
               );
               showImageCompatibilityWarning =
-                hasImage && targetModel?.isVision === false;
+                hasImage &&
+                isKnownTextOnlySelection(
+                  { isVision: meta?.isVision, isGguf: meta?.isGguf },
+                  targetModel,
+                );
             }
           }
         }
@@ -3358,6 +3466,7 @@ export function ChatPage({
           expectedBytes: meta?.expectedBytes,
           downloadPresentation: meta?.downloadPresentation,
           isGguf: meta?.isGguf,
+          isVision: meta?.isVision,
           isDiffusion: meta?.isDiffusion,
           config: meta?.config,
           nativePathToken: meta?.nativePathToken,
@@ -3370,9 +3479,18 @@ export function ChatPage({
     [
       activeThreadId,
       externalProvidersForChat,
+      loadNpuModel,
       modelsFromStore,
       stageOrLoad,
       view,
+      modelOperationInProgress,
+      loadingModel,
+      cancelLoadingForReplacement,
+      invalidatePendingModelSelection,
+      discardExternalReplacement,
+      restoreConfigForExternalReplacement,
+
+      isModelSelectionIntentCurrent,
     ],
   );
   const handleReloadActiveModel = useCallback(
@@ -3561,17 +3679,11 @@ export function ChatPage({
     },
     { enabled: active && fastModeSupported },
   );
-  const { isMobile, pinned, setPinned } = useSidebar();
-  // The tour's orientation step spotlights the nav, so show it for that step and put the user's
-  // own pin setting back on the way out; it is persisted, so a tour must not rewrite it.
-  const sidebarWasPinnedRef = useRef(pinned);
-  const showSidebarForTour = useCallback(() => {
-    sidebarWasPinnedRef.current = pinned;
-    setPinned(true);
-  }, [pinned, setPinned]);
-  const restoreSidebarAfterTour = useCallback(() => {
-    if (!sidebarWasPinnedRef.current) setPinned(false);
-  }, [setPinned]);
+  const { isMobile, pinned } = useSidebar();
+  // The tour's orientation step spotlights the nav, so hold it open for that step. The hold is
+  // never persisted, so a tour cannot rewrite the user's pin or the width default.
+  const showSidebarForTour = holdSidebarPinned;
+  const restoreSidebarAfterTour = releaseSidebarPinned;
 
   const enterCompare = useCallback(() => {
     viewBeforeCompareRef.current = { ...search };
@@ -3757,6 +3869,7 @@ export function ChatPage({
       updatedAt: lora.updatedAt,
       source: lora.source,
       exportType: lora.exportType,
+      sizeBytes: lora.sizeBytes,
       audioType: lora.audioType,
     }));
     return [...fromLoras, ...localModels];
@@ -3984,12 +4097,12 @@ export function ChatPage({
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="chat-header-fade pointer-events-none absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-0 right-[calc(10px*var(--ui-space-scale,1))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
           className={cn(
-            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[10px] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[calc(10px*var(--ui-space-scale,1))] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile
               ? "pl-12"
               : pinned
@@ -3998,7 +4111,7 @@ export function ChatPage({
                   ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
                   : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
-              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+              "right-[calc(10px*var(--ui-space-scale,1))] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
           <div className="pointer-events-auto flex items-center gap-1">
@@ -4053,7 +4166,7 @@ export function ChatPage({
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
-                className="max-w-[62vw] !pr-3 sm:max-w-none !h-[var(--studio-chat-control-height,34px)]"
+                className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"
               />
             )}
             {view.mode !== "compare" && currentProjectId && (
@@ -4145,6 +4258,9 @@ export function ChatPage({
                 contextEnforced={loadedContextEnforced}
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
+            ) : null}
+            {view.mode === "single" && incognito ? (
+              <SaveTemporaryChatButton className="mr-[calc(6px*var(--ui-space-scale,1))] flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:text-white" />
             ) : null}
             {view.mode === "single" && (
               <Tooltip>
@@ -4302,6 +4418,7 @@ export function ChatPage({
                   <NativeAttachmentTargetContext.Provider
                     value={baseAttachmentTargetKey}
                   >
+                    <TemporaryChatSaveBridge />
                     <SingleContent
                       threadId={baseView.threadId}
                       artifact={selectedArtifact}
@@ -4352,6 +4469,7 @@ export function ChatPage({
               modelId={inferenceParams.checkpoint}
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
+              isLora={activeModelIsLora}
               isDiffusion={activeModelIsDiffusion}
               nativeContextLength={nativeContextLength}
               loadedContextLength={loadedContextLength}

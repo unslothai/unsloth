@@ -20,6 +20,8 @@ from pathlib import Path, PurePosixPath
 from typing import NamedTuple, Optional, Sequence
 from utils.paths.path_utils import is_appledouble_metadata
 
+from .diffusion_nvfp4_flag import nvfp4_blocked
+
 
 # Runtime->route contract: the /images/generate route matches these messages EXACTLY for a 409 (vs a 500), so both
 # engines raise them verbatim.
@@ -213,6 +215,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("black-forest-labs/flux.1-dev", "fp8", "unsloth/FLUX.1-dev-FP8"),
             ("black-forest-labs/flux.1-krea-dev", "int8", "unsloth/FLUX.1-Krea-dev-FP8"),
             ("black-forest-labs/flux.1-krea-dev", "fp8", "unsloth/FLUX.1-Krea-dev-FP8"),
+            # schnell ONLY: dev and Krea-dev would download it just for _validate_checkpoint to refuse.
+            ("black-forest-labs/flux.1-schnell", "nvfp4", "unsloth/FLUX.1-schnell-NVFP4"),
         ),
         # Pre-cast T5-XXL (9.52 -> 5.90 GB; CLIP-L stays dense). One artifact serves schnell/dev/Krea-dev (T5 shards
         # are byte-identical).
@@ -347,6 +351,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_variant_repos = (
             ("qwen/qwen-image-2512", "int8", "unsloth/Qwen-Image-2512-FP8"),
             ("qwen/qwen-image-2512", "fp8", "unsloth/Qwen-Image-2512-FP8"),
+            # Policy ``qwen2512_m120_attn8_v1``, 2512 only: Qwen/Qwen-Image keeps its nvfp4 deny.
+            ("qwen/qwen-image-2512", "nvfp4", "unsloth/Qwen-Image-2512-NVFP4"),
         ),
         # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). Always was independent of the DiT scheme rules.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
@@ -386,6 +392,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_repos = (
             ("int8", "unsloth/Qwen-Image-2.1-FP8"),
             ("fp8", "unsloth/Qwen-Image-2.1-FP8"),
+            ("nvfp4", "unsloth/Qwen-Image-2.1-NVFP4"),
         ),
         # The artifacts are safetensors, not the historical torch.save pickle, so the family has to
         # NAME them: every derived fallback ends in .pt, and without these rows the loader would ask
@@ -480,6 +487,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_repos = (
             ("int8", "unsloth/Z-Image-Turbo-FP8"),
             ("fp8", "unsloth/Z-Image-Turbo-FP8"),
+            ("nvfp4", "unsloth/Z-Image-Turbo-NVFP4"),
         ),
         # Both hosted checkpoints are baked from the distilled Turbo transformer, so the undistilled base has none and
         # must quantize its own dense weights.
@@ -849,6 +857,7 @@ _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
 # credentials, so a complete local snapshot must keep being used rather than re-pulled from the mirror.
 _UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512"),
+    ("Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1"),
     ("Qwen/Qwen-Image", "unsloth/Qwen-Image"),
     ("Qwen/Qwen-Image-Edit-2511", "unsloth/Qwen-Image-Edit-2511"),
     ("black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"),
@@ -1088,6 +1097,8 @@ def prefer_ungated_mirror(
 
     Declines to today's behaviour under ``UNSLOTH_DIFFUSION_NO_MIRROR``, for a local path, or when
     the upstream already satisfies the load from cache and switching would re-pull tens of GiB.
+    Under that opt-out a mirror id picked directly maps back to its upstream, cached or not: even
+    a cached mirror is listed on the Hub before it loads.
     ``files`` sharpens that last test to the names about to be fetched; without it any weight
     counts.
 
@@ -1097,8 +1108,10 @@ def prefer_ungated_mirror(
     is unused, kept so callers need not care.
     """
     del hf_token  # noqa: F841 -- signature stability only
+    if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+        return base if _is_local_path(base) else canonical_base(base)
     mirror = mirror_repo(base)
-    if not mirror or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+    if not mirror:
         return base
     # a local path is never a Hub id: rewriting one sends loads the other sites resolve on disk to the Hub, skipping
     # the copy already downloaded
@@ -1178,6 +1191,8 @@ def family_prequant_repo(
     close enough that planning around it costs nothing, since the base_model_id validation
     refuses the artifact well after the plan was made. A base whose weights really differ belongs
     in ``prequant_excluded_bases``, which returns None here instead."""
+    if nvfp4_blocked(scheme):
+        return None
     # Both tables are keyed on lowercased upstream ids.
     base = canonical_base(base_repo).lower()
     if base:
@@ -1325,6 +1340,18 @@ _DIFFUSERS_MAIN_COMMIT_RE = re.compile(
 )
 
 
+# Leads every refusal: a desktop install has no terminal, so pip spellings come second.
+DIFFUSERS_UPDATE_REMEDY = (
+    "Update Unsloth to install it (in the desktop app: Settings, Check for updates; from a "
+    "terminal: unsloth studio update), then restart Unsloth."
+)
+DIFFUSERS_MAIN_RESTART_REMEDY = (
+    "Restart Unsloth: on start it installs this pinned build by itself when it can reach "
+    "github.com. If that still fails, update Unsloth (in the desktop app: Settings, Check for "
+    "updates)."
+)
+
+
 def _diffusers_main_archive_remedy() -> str:
     """A remedy line a reader can actually run, naming the commit this build wants.
 
@@ -1341,8 +1368,9 @@ def _diffusers_main_archive_remedy() -> str:
     cannot name the SHA.
     """
     generic = (
-        "Re-run the Unsloth installer (leaving UNSLOTH_DIFFUSERS_MAIN unset), which installs it "
-        "from a zip archive when git is missing."
+        f"{DIFFUSERS_MAIN_RESTART_REMEDY} On a pip or server install, re-run the Unsloth installer "
+        "(leaving UNSLOTH_DIFFUSERS_MAIN unset), which installs it from a zip archive when git is "
+        "missing."
     )
     try:
         text = _DIFFUSERS_MAIN_PIN.read_text(encoding = "utf-8-sig")
@@ -1360,7 +1388,7 @@ def _diffusers_main_archive_remedy() -> str:
             f"{found.group('commit').lower()}.zip"
         )
         return (
-            f"{generic} To install it by hand with no git at all: "
+            f"{generic} To install it by hand from a terminal with no git at all: "
             f'pip install "diffusers @ {url}"'
         )
     return generic
@@ -1373,29 +1401,21 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
     if minimum is None:
         return (
             f"'{family_name}' needs a newer diffusers ({pipeline_class}); this environment has "
-            f"diffusers {installed}. Upgrade with: pip install -U diffusers."
+            f"diffusers {installed}. {DIFFUSERS_UPDATE_REMEDY} On a plain pip install: "
+            "pip install -U diffusers."
         )
     if minimum in _UNRELEASED_MIN_DIFFUSERS:
-        try:
-            from utils.diffusers_repair import diffusers_repair_installed
-            installed_since = diffusers_repair_installed()
-        except Exception:  # noqa: BLE001 - no self-heal module is no repair
-            installed_since = False
-        if installed_since:
-            return (
-                f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}). Unsloth has just "
-                f"installed it, but this session already loaded diffusers {installed}. Restart "
-                "Unsloth Studio to use it."
-            )
         remedy = _diffusers_main_archive_remedy()
         return (
             f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}), which has not been "
             f"released yet; this environment has diffusers {installed}. Unsloth installs a pinned "
             "build of diffusers main for this and that build is not here, which almost always "
-            "means the install had no working git (run: git --version) or could not reach "
+            "means the install had no working git (check with: git --version) or could not reach "
             f"github.com. {remedy}"
         )
-    remedy = f"Upgrade with: pip install -U 'diffusers>={minimum}'."
+    remedy = (
+        f"{DIFFUSERS_UPDATE_REMEDY} On a plain pip install: pip install -U 'diffusers>={minimum}'."
+    )
     if needs_py310:
         remedy += (
             f" diffusers dropped Python 3.9 in {_DIFFUSERS_DROPPED_PY39}, so that release needs "
@@ -1471,16 +1491,6 @@ def assert_pipeline_class_available(
     except Exception:  # noqa: BLE001, S110 - optimisation only, and this module has no logger
         pass
 
-    if "diffusers" not in sys.modules:
-        try:
-            from utils.diffusers_repair import IN_FLIGHT_MESSAGE, diffusers_repair_in_flight
-            repairing = diffusers_repair_in_flight()
-        except Exception:  # noqa: BLE001 - no self-heal module is no repair
-            repairing = False
-        # Importing now would read files the install is replacing, and pin the release for the session.
-        if repairing:
-            raise ValueError(IN_FLIGHT_MESSAGE)
-
     try:
         import diffusers
         present = hasattr(diffusers, pipeline_class)
@@ -1498,7 +1508,8 @@ def assert_pipeline_class_available(
         if strict:
             raise ValueError(
                 f"'{family_name}' needs diffusers ({pipeline_class}), which this environment "
-                f"cannot import: {exc}. Install or repair it with: pip install -U diffusers."
+                f"cannot import: {exc}. {DIFFUSERS_UPDATE_REMEDY} On a plain pip install, repair it "
+                "with: pip install -U diffusers."
             ) from None
         return
 

@@ -213,8 +213,76 @@ _uv_download_markers() {
 }
 
 run_install_cmd() {
+    # Nothing armed (outside mainland China): the plain runner, set -e and all.
+    if [ -z "${_UNSLOTH_MIRROR_SPARE:-}" ]; then
+        _run_install_cmd_once "$@"
+        return
+    fi
+    _run_install_cmd_once "$@" || _mirror_retry_install "$?" "$@"
+}
+
+_mirror_retry_install() {
+    [ -n "${_UNSLOTH_MIRROR_SPARE:-}" ] || return "$1"
+    _mri_rc=$1
+    _mri_label=$2
+    shift 2
+    case " $* " in
+        *" https://download.pytorch.org/whl"*) _mri_ran=torch ;;
+        *" --index-url "*|*" --default-index "*|*" --find-links "*|*" --no-index "*|*"://"*|*" --torch-backend"*) _mri_ran="" ;;
+        *" uv venv "*|*" uv python install "*) _mri_ran=python ;;
+        *) _mri_ran=pypi ;;
+    esac
+    _mri_host=$(_mirror_failed_host "${_ric_log:-}" "$_mri_ran") || _mri_host=""
+    rm -f "${_ric_log:-}"
+    case "$_mri_host $* " in
+        "pypi "*" --index-url "*|"pypi "*" --default-index "*) return "$_mri_rc" ;;
+        "unsynced "*" --index-url "*|"unsynced "*" --default-index "*|"unsynced "*" --no-index "*) return "$_mri_rc" ;;
+        "torch "*https://download.pytorch.org/whl*|"pypi "*|"python "*|"unsynced "*) ;;
+        *) return "$_mri_rc" ;;
+    esac
+    _mirror_take "$_mri_host" || return "$_mri_rc"
+    (
+        for _mri_pair in $_MT_PAIRS; do export "$_mri_pair"; done
+        [ "$_mri_host" != torch ] || _ric_torch_mirror=$UNSLOTH_PYTORCH_MIRROR
+        _run_install_cmd_once "$_mri_label" "$@" || { _mri_rc=$?; rm -f "${_ric_log:-}"; exit "$_mri_rc"; }
+    ) || return
+    for _mri_pair in $_MT_PAIRS; do export "$_mri_pair"; done
+    if [ "$_mri_host" = torch ]; then
+        _ric_torch_mirror=$UNSLOTH_PYTORCH_MIRROR
+        case "${TORCH_INDEX_URL:-}" in
+            https://download.pytorch.org/whl*) TORCH_INDEX_URL=$_ric_torch_mirror${TORCH_INDEX_URL#https://download.pytorch.org/whl} ;;
+        esac
+    fi
+}
+
+_ric_run() {
+    if "$@" 2>&1; then
+        _cmd_rc=0
+    else
+        _cmd_rc=$?
+    fi
+    printf '%s' "$_cmd_rc" > "$_rcf"
+}
+
+_ric_tee() {
+    if command -v tee >/dev/null 2>&1; then tee "$1"; else cat; fi
+}
+
+_run_install_cmd_once() {
     _label="$1"
     shift
+    [ -z "${_ric_log:-}" ] || rm -f "$_ric_log"
+    _ric_log=""
+    if [ -n "${_ric_torch_mirror:-}" ]; then
+        _ric_n=$#
+        for _ric_arg in "$@"; do
+            case "$_ric_arg" in
+                https://download.pytorch.org/whl*) _ric_arg=$_ric_torch_mirror${_ric_arg#https://download.pytorch.org/whl} ;;
+            esac
+            set -- "$@" "$_ric_arg"
+        done
+        shift "$_ric_n"
+    fi
     # For --default-index, clear inherited uv index vars so a uv.toml cannot outrank the CLI pin.
     case " $* " in
         *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS -u UV_CONFIG_FILE UV_NO_CONFIG=1 "$@" ;;
@@ -223,21 +291,22 @@ run_install_cmd() {
         # Stream through the redactor; the rc file carries the exit code (no pipefail in sh).
         _rcf=$(mktemp)
         tauri_stream_log stdout "OUTPUT_CLEAR" "$_label"
-        {
-            if "$@" 2>&1; then
-                _cmd_rc=0
-            else
-                _cmd_rc=$?
-            fi
-            printf '%s' "$_cmd_rc" > "$_rcf"
-        } | _uv_download_markers "" "$UNSLOTH_DL_MARKER_MIN_BYTES" | _redact_install_output
+        _log=""
+        if [ -n "${_UNSLOTH_MIRROR_SPARE:-}" ]; then
+            _log=$(mktemp)
+            _ric_run "$@" | _ric_tee "$_log" | _uv_download_markers "" "$UNSLOTH_DL_MARKER_MIN_BYTES" | _redact_install_output
+        else
+            _ric_run "$@" | _uv_download_markers "" "$UNSLOTH_DL_MARKER_MIN_BYTES" | _redact_install_output
+        fi
         _rc=$(cat "$_rcf" 2>/dev/null || echo 1)
         rm -f "$_rcf"
         _rc=${_rc:-1}
         if [ "$_rc" -eq 0 ] 2>/dev/null; then
+            [ -z "$_log" ] || rm -f "$_log"
             tauri_clear_install_error "$_label recovered"
             return 0
         fi
+        _ric_log=$_log
         tauri_stream_log stdout "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
         step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
         return "$_rc"
@@ -265,7 +334,7 @@ run_install_cmd() {
     step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
     _redact_install_output "$_log" >&2
     tauri_stream_log stderr "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
-    rm -f "$_log"
+    if [ -n "${_UNSLOTH_MIRROR_SPARE:-}" ]; then _ric_log=$_log; else rm -f "$_log"; fi
     return $_rc
 }
 
@@ -286,10 +355,11 @@ run_install_cmd_retry() {
     _ricr_attempt=1
     while :; do
         # AND-OR (not `if`) preserves the real failure code for the rollback path.
-        run_install_cmd "$@" && return 0
+        _run_install_cmd_once "$@" && return 0
         _ricr_rc=$?
         if [ "$_ricr_attempt" -ge "$_ricr_max" ]; then
-            return "$_ricr_rc"
+            _mirror_retry_install "$_ricr_rc" "$@" && return 0
+            return $?
         fi
         substep "retrying \"$_ricr_label\" after transient failure (attempt $((_ricr_attempt + 1))/$_ricr_max, waiting ${_ricr_delay}s)..." "$C_WARN"
         sleep "$_ricr_delay" || true
@@ -1263,6 +1333,7 @@ _cleanup_install_temporaries() {
     [ -n "${_UIP_STAGE:-}" ] && rm -f "$_UIP_STAGE" 2>/dev/null || true
     [ -n "${_UIP_STAGE2:-}" ] && rm -f "$_UIP_STAGE2" 2>/dev/null || true
     [ -n "${_ROCM_TAG_MEMO_DIR:-}" ] && rm -rf "$_ROCM_TAG_MEMO_DIR" 2>/dev/null || true
+    [ -n "${_ric_log:-}" ] && rm -f "$_ric_log" 2>/dev/null || true
     # The probe's ceiling is held by this shell, so a cancel during one would otherwise leave the
     # candidate (and, under monitor mode, its whole group) running with nobody left to stop it.
     if [ -n "${_UV_PROBE_TARGET:-}" ] && [ -n "${_UV_PROBE_PID:-}" ]; then
@@ -1347,6 +1418,8 @@ _is_pkg_installed() {
             command -v dpkg >/dev/null 2>&1 && dpkg -s "$1" >/dev/null 2>&1 ;;
         pciutils)
             command -v lspci >/dev/null 2>&1 ;;
+        bubblewrap)
+            command -v bwrap >/dev/null 2>&1 ;;
         *) command -v "$1" >/dev/null 2>&1 ;;
     esac
 }
@@ -2644,8 +2717,10 @@ _wsl_amd_gpu_name() {
 
 # ── Bounded command runner ──
 _run_bounded() {
+    _rb_secs=10
+    if [ "${1:-}" = "--secs" ]; then _rb_secs=$2; shift 2; fi
     if command -v timeout >/dev/null 2>&1; then
-        timeout 10 "$@"
+        timeout "$_rb_secs" "$@"
     else
         "$@"
     fi
@@ -2676,7 +2751,11 @@ _nvidia_library_inventory() {
     else return 1
     fi
     _NVIDIA_LIBRARY_INVENTORY_STATE="none"
-    _NVIDIA_LIBRARY_INVENTORY_VALUE=$(_run_bounded "$_nli_py" -I - 2>/dev/null <<'PY'
+    _NVIDIA_LIBRARY_INVENTORY_VALUE=""
+    # One deadline per reader: a shared bound let slow NVML starve the CUDA driver API reader.
+    for _nli_reader in nvml cuda; do
+        case "$_nli_reader" in nvml) _nli_secs=30 ;; *) _nli_secs=20 ;; esac
+        _NVIDIA_LIBRARY_INVENTORY_VALUE=$(_run_bounded --secs "$_nli_secs" "$_nli_py" -I - "$_nli_reader" 2>/dev/null <<'PY'
 import ctypes, os, sys
 
 def load(*names):
@@ -2733,8 +2812,10 @@ def cuda():
         caps.append(f"{major.value}.{minor.value}")
     return version.value, caps
 
+# argv[1] runs one reader ("nvml" / "cuda") so each gets its own deadline; none runs both.
+only = {"nvml": (nvml,), "cuda": (cuda,)}.get(sys.argv[1] if len(sys.argv) > 1 else "")
 found = None
-for reader in (nvml, cuda):  # a reader that raises (a missing symbol) yields to the next
+for reader in only or (nvml, cuda):  # a reader that raises (a missing symbol) yields to the next
     try:
         found = reader()
     except Exception:
@@ -2746,9 +2827,50 @@ if not found or not found[1]:
 version, caps = found
 print(f"{version // 1000}.{version % 1000 // 10} {','.join(caps)}")
 PY
-) && [ -n "$_NVIDIA_LIBRARY_INVENTORY_VALUE" ] || return 1
+) && [ -n "$_NVIDIA_LIBRARY_INVENTORY_VALUE" ] && break
+        _NVIDIA_LIBRARY_INVENTORY_VALUE=""
+    done
+    [ -n "$_NVIDIA_LIBRARY_INVENTORY_VALUE" ] || return 1
     _NVIDIA_LIBRARY_INVENTORY_STATE="found"
     printf '%s\n' "$_NVIDIA_LIBRARY_INVENTORY_VALUE"
+}
+
+# Driver CUDA version without cuInit (cuDriverGetVersion, else /proc as in nvidia_probe.py _DRIVER_MAJOR_CUDA); picks a family only.
+_nvidia_driver_cuda_version() {
+    [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ] || return 1
+    if command -v python3 >/dev/null 2>&1; then _ndv_py=python3
+    elif [ -n "${VENV_DIR:-}" ] && [ -x "$VENV_DIR/bin/python" ]; then _ndv_py="$VENV_DIR/bin/python"
+    else _ndv_py=""
+    fi
+    if [ -n "$_ndv_py" ]; then
+        _ndv_ver=$(_run_bounded "$_ndv_py" -I -c '
+import ctypes, sys
+for name in ("libcuda.so.1", "libcuda.so"):
+    try:
+        lib = ctypes.CDLL(name)
+        break
+    except OSError:
+        lib = None
+v = ctypes.c_int()
+if lib is None or lib.cuDriverGetVersion(ctypes.byref(v)) != 0 or v.value < 1000:
+    sys.exit(1)
+print(f"{v.value // 1000}.{v.value % 1000 // 10}")
+' 2>/dev/null </dev/null | awk 'NR == 1 { print $1 }') || _ndv_ver=""
+        case "$_ndv_ver" in
+            [0-9]*.[0-9]*) printf '%s\n' "$_ndv_ver"; return 0 ;;
+        esac
+    fi
+    # "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  590.48.01  Release Build ..."
+    _ndv_drv=$(awk 'NR == 1 { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+(\.[0-9]+)?$/) { split($i, v, "."); print v[1]; exit } }' \
+        /proc/driver/nvidia/version 2>/dev/null) || _ndv_drv=""
+    case "$_ndv_drv" in ''|*[!0-9]*) return 1 ;; esac
+    if [ "$_ndv_drv" -ge 580 ]; then echo "13.0"
+    elif [ "$_ndv_drv" -ge 570 ]; then echo "12.8"
+    elif [ "$_ndv_drv" -ge 560 ]; then echo "12.6"
+    elif [ "$_ndv_drv" -ge 525 ]; then echo "12.0"
+    elif [ "$_ndv_drv" -ge 450 ]; then echo "11.0"
+    else return 1
+    fi
 }
 
 # ── NVIDIA usable-GPU helper ──
@@ -2978,6 +3100,7 @@ _maybe_reroute_strixhalo_to_2404() {
     [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ] && _rr_exports="$_rr_exports; export UNSLOTH_ROCM_WSL_AUTO=1"
     [ -n "${UNSLOTH_TORCH_INDEX_URL:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_URL=$(_rr_q "$UNSLOTH_TORCH_INDEX_URL")"
     [ -n "${UNSLOTH_TORCH_INDEX_FAMILY:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_FAMILY=$(_rr_q "$UNSLOTH_TORCH_INDEX_FAMILY")"
+    [ -n "${UNSLOTH_MIRROR_FALLBACK:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_MIRROR_FALLBACK=$(_rr_q "$UNSLOTH_MIRROR_FALLBACK")"
     [ "$_SKIP_AUTOSTART" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_SKIP_AUTOSTART=1"
     _rr_args=""
     [ "$PACKAGE_NAME" != "unsloth" ] && _rr_args="$_rr_args --package $(_rr_q "$PACKAGE_NAME")"
@@ -3128,14 +3251,380 @@ _check_linux_deps() {
     return 0
 }
 
+# Keep in step with os_sandbox._BWRAP_APPARMOR_FIX.
+_BWRAP_APPARMOR_FIX="sudo apt-get install -y apparmor-profiles && sudo install -m 644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/ && sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict"
+
+# The command that installs bubblewrap here; keep in step with os_sandbox._BWRAP_INSTALL_COMMANDS.
+_bwrap_install_command() {
+    if command -v apt-get >/dev/null 2>&1; then echo "sudo apt-get install -y bubblewrap"
+    elif command -v dnf >/dev/null 2>&1; then echo "sudo dnf install -y bubblewrap"
+    elif command -v pacman >/dev/null 2>&1; then echo "sudo pacman -S --needed bubblewrap"
+    elif command -v zypper >/dev/null 2>&1; then echo "sudo zypper install -y bubblewrap"
+    elif command -v apk >/dev/null 2>&1; then echo "sudo apk add bubblewrap"
+    fi
+}
+
+# Wanted, never required: bubblewrap runs Python and Terminal tool calls in an OS sandbox, and without it they run with software safeguards. Optional like the build tools, so it never asks for sudo: installed when the installer already runs as root, otherwise the one command is printed.
+_check_linux_tool_sandbox() {
+    _bw_restrict=""
+    # read, not cat: a builtin, so a minimal image without coreutils still gets the right advice.
+    read -r _bw_restrict <"${_BW_USERNS_SYSCTL:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}" 2>/dev/null || true
+    if ! command -v bwrap >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+        ( _SMART_APT_OPTIONAL=true; _smart_apt_install bubblewrap ) || true
+    fi
+    if ! command -v bwrap >/dev/null 2>&1; then
+        step "sandbox" "bubblewrap not installed: tool calls run with software safeguards" "$C_WARN"
+        _bw_cmd="$(_bwrap_install_command)"
+        # One copy-paste on Ubuntu 23.10+: installing bwrap alone still leaves it blocked there.
+        case "$_bw_restrict:$_bw_cmd" in
+            1:*apt-get*) _bw_cmd="$_bw_cmd && $_BWRAP_APPARMOR_FIX" ;;
+        esac
+        if [ -n "$_bw_cmd" ]; then
+            substep "To run them in an OS sandbox: $_bw_cmd"
+        else
+            substep "To run them in an OS sandbox, install bubblewrap with your package manager."
+        fi
+        return 0
+    fi
+    # The runtime's namespaces, not --unshare-all: that adds the network namespace, which tool calls never get.
+    if bwrap --unshare-user --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup --ro-bind / / true </dev/null >/dev/null 2>&1; then
+        step "sandbox" "bubblewrap works: tool calls run in an OS sandbox"
+        return 0
+    fi
+    if [ "$_bw_restrict" = 1 ]; then
+        step "sandbox" "AppArmor blocks bubblewrap: tool calls run with software safeguards" "$C_WARN"
+        # Ubuntu ships this profile disabled in apparmor-profiles; it lets /usr/bin/bwrap create the namespace and strips its children's capabilities.
+        substep "To enable it, load Ubuntu's own bwrap profile:"
+        substep "  $_BWRAP_APPARMOR_FIX"
+    else
+        step "sandbox" "bubblewrap cannot create a sandbox here: tool calls run with software safeguards" "$C_WARN"
+        substep "Containers usually block user namespaces; outside one, check user.max_user_namespaces."
+    fi
+    return 0
+}
+
 case "$OS" in
     macos)
         _check_macos_deps || exit 1
         ;;
     linux|wsl)
         _check_linux_deps || exit 1
+        _check_linux_tool_sandbox || true
         ;;
 esac
+
+# ── BEGIN mirror fallback (kept identical in install.sh and studio/setup.sh) ──
+# Only in mainland China (or UNSLOTH_MIRROR_FALLBACK=1): swaps a default host below 1 MiB/s or unreachable for its mirror when faster; user-set sources untouched; UNSLOTH_MIRROR_FALLBACK=0 disables.
+_MIRROR_CERNET="https://tuna.mirrors.cernet.edu.cn"
+_MIRROR_PYPI="$_MIRROR_CERNET/pypi/web/simple"
+_MIRROR_NPM="https://registry.npmmirror.com"
+# GitHub-release mirrors keep only the newest Python builds, while a pinned uv asks for the builds it shipped with; npmmirror keeps every release.
+_MIRROR_PYTHON="$_MIRROR_NPM/-/binary/python-build-standalone"
+_MIRROR_MIN_BPS=1048576
+
+_mirror_probe() {
+    _mp_out=$(curl -sL -o /dev/null -r "0-$3" -w '%{http_code} %{speed_download}' --connect-timeout "$2" --max-time "$2" "$1" 2>/dev/null) || true
+    _mp_bps=${_mp_out#* }
+    _mp_bps=${_mp_bps%%.*}
+    case "$_mp_bps" in ''|*[!0-9]*) _mp_bps=0 ;; esac
+    _mp_code=${_mp_out%% *}
+    case "$_mp_code" in [0-9][0-9][0-9]) ;; *) _mp_code=000 ;; esac
+    echo "$_mp_code $_mp_bps"
+}
+
+_mirror_url() {
+    case "$1" in
+        pypi) echo "https://files.pythonhosted.org/packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
+        cernet-pypi) echo "$_MIRROR_CERNET/pypi/web/packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
+        torch) echo "https://download-r2.pytorch.org/whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" ;;
+        cernet-torch) echo "$_MIRROR_CERNET/pytorch/whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" ;;
+        node) echo "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.gz" ;;
+        npmmirror-node) echo "$_MIRROR_NPM/-/binary/node/v24.18.0/node-v24.18.0-linux-x64.tar.gz" ;;
+        npm) echo "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz" ;;
+        npmmirror) echo "$_MIRROR_NPM/typescript/-/typescript-5.9.3.tgz" ;;
+        astral) echo "https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz" ;;
+        pypi-index) echo "https://pypi.org/simple/uv/" ;;
+        torch-index) echo "https://download.pytorch.org/whl/cpu/torch/" ;;
+        cernet-pypi-index) echo "$_MIRROR_PYPI/uv/" ;;
+        cernet-torch-index) echo "$_MIRROR_CERNET/pytorch/whl/cpu/torch/" ;;
+    esac
+}
+
+_mirror_default() {
+    case "$1" in python|uvbin) echo astral ;; *) echo "$1" ;; esac
+}
+
+_mirror_source() {
+    case "$1" in npm|python) echo npmmirror ;; node) echo npmmirror-node ;; pypi|uvbin) echo cernet-pypi ;; *) echo "cernet-$1" ;; esac
+}
+
+_mirror_index_probe() {
+    for _mip_name in "$@"; do
+        case "$_mip_name" in
+            pypi|torch|cernet-pypi|cernet-torch)
+                _mirror_probe "$(_mirror_url "$_mip_name-index")" 4 1023 > "$_mf_dir/$_mip_name-index" &
+                _mf_pids="$_mf_pids $!" ;;
+        esac
+    done
+}
+
+_mirror_index_wait() {
+    for _miw_pid in $_mf_pids; do
+        wait "$_miw_pid" || true
+    done
+    _mf_pids=""
+}
+
+_mirror_index_ok() {
+    [ -f "$_mf_dir/$1-index" ] || return 0
+    read -r _mio_code _mio_bps < "$_mf_dir/$1-index"
+    case "$_mio_code" in 2??) return 0 ;; *) return 1 ;; esac
+}
+
+_mirror_uv_project_config() {
+    _mup_dir=$PWD
+    while [ -n "$_mup_dir" ]; do
+        if [ -f "$_mup_dir/uv.toml" ]; then echo "$_mup_dir/uv.toml"; return 0; fi
+        if grep -Eqs '^[[:space:]]*\[+tool\.uv(\.|\])' "$_mup_dir/pyproject.toml"; then echo "$_mup_dir/pyproject.toml"; return 0; fi
+        [ "$_mup_dir" = / ] && return 0
+        _mup_dir=$(dirname "$_mup_dir")
+    done
+}
+
+_mirror_configured() {
+    case "$1" in
+        uv)
+            [ -n "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}${UV_INDEX:-}${UV_EXTRA_INDEX_URL:-}" ] && return 0
+            _mic_key='\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)[[:space:]]*=' ;;
+        python)
+            [ -n "${UV_PYTHON_INSTALL_MIRROR:-}" ] && return 0
+            _mic_key='python-install-mirror[[:space:]]*=' ;;
+        pip)
+            [ -n "${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_NO_INDEX:-}" ] && return 0
+            _mic_key='(index[-_]url|extra[-_]index[-_]url|no[-_]index)[[:space:]]*[=:]' ;;
+    esac
+    _mic_suffix=uv/uv.toml
+    [ "$1" != pip ] || _mic_suffix=pip/pip.conf
+    if [ "$1" = pip ]; then
+        set -- "${PIP_CONFIG_FILE:-}" "${VENV_DIR:+$VENV_DIR/pip.conf}" "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" "$HOME/.pip/pip.conf" "$HOME/Library/Application Support/pip/pip.conf" /etc/xdg/pip/pip.conf /etc/pip.conf
+    else
+        set -- "${UV_CONFIG_FILE:-}" "$(_mirror_uv_project_config)" "${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml" /etc/xdg/uv/uv.toml /etc/uv/uv.toml
+    fi
+    _mic_xdg=${XDG_CONFIG_DIRS:-}
+    while [ -n "$_mic_xdg" ]; do
+        set -- "$@" "${_mic_xdg%%:*}/$_mic_suffix"
+        case "$_mic_xdg" in *:*) _mic_xdg=${_mic_xdg#*:} ;; *) _mic_xdg="" ;; esac
+    done
+    for _mic_file in "$@"; do
+        if [ -f "$_mic_file" ] && grep -Eq "^[[:space:]]*($_mic_key)" "$_mic_file" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+_mirror_probe_all() {
+    _mpa_dir="$1"
+    _mpa_secs="$2"
+    shift 2
+    _mpa_pids=""
+    for _mpa_name in "$@"; do
+        _mirror_probe "$(_mirror_url "$_mpa_name")" "$_mpa_secs" 1048575 > "$_mpa_dir/$_mpa_name" &
+        _mpa_pids="$_mpa_pids $!"
+    done
+    for _mpa_pid in $_mpa_pids; do
+        wait "$_mpa_pid" || true
+    done
+}
+
+_mirror_vars() {
+    case "$1" in
+        pypi)
+            [ "$_mf_uv" = false ] || echo "UV_DEFAULT_INDEX=$_MIRROR_PYPI"
+            [ "$_mf_pip" = false ] || echo "PIP_INDEX_URL=$_MIRROR_PYPI" ;;
+        unsynced)
+            # Only for one rerun: uv's unsafe-first-match fetches every package from every index, and fails outright when one is unreachable.
+            [ "$_mf_uv" = false ] || echo "UV_DEFAULT_INDEX=https://pypi.org/simple UV_INDEX=$_MIRROR_PYPI UV_INDEX_STRATEGY=${UV_INDEX_STRATEGY:-unsafe-first-match}"
+            [ "$_mf_pip" = false ] || echo "PIP_EXTRA_INDEX_URL=https://pypi.org/simple PIP_INDEX_URL=$_MIRROR_PYPI" ;;
+        torch) echo "UNSLOTH_PYTORCH_MIRROR=$_MIRROR_CERNET/pytorch/whl" ;;
+        node) echo "UNSLOTH_NODE_MIRROR=$_MIRROR_NPM/-/binary/node" ;;
+        npm) echo "UNSLOTH_NPM_REGISTRY=$_MIRROR_NPM" ;;
+        python) echo "UV_PYTHON_INSTALL_MIRROR=$_MIRROR_PYTHON" ;;
+        uvbin) echo "UNSLOTH_UV_WHEEL_MIRROR=$_MIRROR_CERNET/pypi/web" ;;
+    esac
+}
+
+_mirror_name() {
+    case "$1" in
+        pypi) echo "PyPI" ;;
+        unsynced) echo "The PyPI mirror" ;;
+        torch) echo "download.pytorch.org" ;;
+        node) echo "nodejs.org" ;;
+        npm) echo "registry.npmjs.org" ;;
+        python) echo "releases.astral.sh (Python builds)" ;;
+        uvbin) echo "releases.astral.sh (uv)" ;;
+    esac
+}
+
+_mirror_use() {
+    _mu_to=""
+    for _mu_pair in $(_mirror_vars "$1"); do
+        export "$_mu_pair"
+        [ -n "$_mu_to" ] || _mu_to=${_mu_pair#*=}
+    done
+    step "mirror" "$(_mirror_name "$1") is $2 ($(($3 / 1024)) KB/s, mirror $(($4 / 1024)) KB/s); using $_mu_to" "$C_WARN"
+    _mf_switched="$_mf_switched $1"
+    [ "$1 $2" != "pypi slow" ] || _mf_unsynced=true
+}
+
+_mirror_take() {
+    _MT_PAIRS=""
+    _mt_spare=""
+    for _mt_entry in ${_UNSLOTH_MIRROR_SPARE:-}; do
+        if [ "${_mt_entry%%|*}" = "$1" ]; then
+            _MT_PAIRS=$(printf '%s' "${_mt_entry#*|}" | tr '|' ' ')
+        else
+            _mt_spare="$_mt_spare $_mt_entry"
+        fi
+    done
+    [ -n "$_MT_PAIRS" ] || return 1
+    export _UNSLOTH_MIRROR_SPARE="${_mt_spare# }"
+    _mt_to=${_MT_PAIRS%% *}
+    step "mirror" "$(_mirror_name "$1") failed; retrying through ${_mt_to#*=}" "$C_WARN"
+}
+
+_mirror_switch() {
+    _mirror_take "$1" || return 1
+    for _ms_pair in $_MT_PAIRS; do export "$_ms_pair"; done
+}
+
+_mirror_failed_host() {
+    if ! grep -Eqi 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up' "$1" 2>/dev/null; then
+        grep -Eqi 'only [^ ]+ (.* )?(is|are) available|no versions? of|not found in the package registry|could not find a version that satisfies|no matching distribution found' "$1" 2>/dev/null || return 1
+        echo unsynced
+        return 0
+    fi
+    if grep -Eq 'download(-r2)?\.pytorch\.org' "$1"; then echo torch
+    elif grep -q 'python-build-standalone' "$1"; then echo python
+    elif grep -q 'registry\.npmjs\.org' "$1"; then echo npm
+    elif grep -Eq 'pypi\.org|pythonhosted\.org' "$1"; then echo pypi
+    elif [ -n "${2:-}" ] && ! grep -Eq 'https?://' "$1"; then echo "$2"
+    else return 1
+    fi
+}
+
+# No network call: a mainland China time zone, or a resolver from a mainland public DNS or cloud (the addresses below).
+_mirror_in_china() {
+    _mcn_tz=${TZ:-}
+    [ -n "$_mcn_tz" ] || _mcn_tz=$(cat /etc/timezone 2>/dev/null) || true
+    [ -n "$_mcn_tz" ] || _mcn_tz=$(readlink /etc/localtime 2>/dev/null) || true
+    case "${_mcn_tz#:}" in
+        *Asia/Shanghai|*Asia/Chongqing|*Asia/Chungking|*Asia/Harbin|*Asia/Urumqi|*Asia/Kashgar|PRC|*/PRC) return 0 ;;
+    esac
+    grep -Eqs '^[[:space:]]*nameserver[[:space:]]+(223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[0459]|182\.254\.116\.116|119\.28\.28\.28|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98))[[:space:]]*$' /etc/resolv.conf /run/systemd/resolve/resolv.conf
+}
+
+# Decided once per process; when off, a retry state inherited from a parent is dropped so nothing downstream acts on it.
+_mirror_enabled() {
+    if [ -z "${_mirror_on:-}" ]; then
+        case "${UNSLOTH_MIRROR_FALLBACK:-}" in
+            0|false|False|FALSE|no|off) _mirror_on=no ;;
+            1|true|True|TRUE|yes|on) _mirror_on=yes ;;
+            *) if _mirror_in_china; then _mirror_on=yes; else _mirror_on=no; fi ;;
+        esac
+        [ "$_mirror_on" = yes ] || unset _UNSLOTH_MIRROR_SPARE
+    fi
+    [ "$_mirror_on" = yes ]
+}
+
+_mirror_fallback() {
+    _mirror_enabled || return 0
+    [ -z "${_UNSLOTH_MIRROR_PROBED:-}" ] || return 0
+    command -v curl >/dev/null 2>&1 || return 0
+    [ "${1:-}" = spare ] || export _UNSLOTH_MIRROR_PROBED=1
+    _mf_uv=true
+    _mf_pip=true
+    _mf_switched=""
+    _mf_unsynced=false
+    _mirror_configured uv && _mf_uv=false
+    _mirror_configured pip && _mf_pip=false
+    _mf_hosts=""
+    if [ "$_mf_uv" = true ] || [ "$_mf_pip" = true ]; then
+        _mf_hosts="pypi"
+    fi
+    [ -n "${UNSLOTH_PYTORCH_MIRROR:-}${UNSLOTH_TORCH_INDEX_URL:-}" ] || _mf_hosts="$_mf_hosts torch"
+    [ -n "${UNSLOTH_NODE_MIRROR:-}" ] || _mf_hosts="$_mf_hosts node"
+    [ -n "${UNSLOTH_NPM_REGISTRY:-}${NPM_CONFIG_REGISTRY:-}${npm_config_registry:-}" ] || _mf_hosts="$_mf_hosts npm"
+    _mirror_configured python || _mf_hosts="$_mf_hosts python"
+    [ -n "${UNSLOTH_UV_WHEEL_MIRROR:-}${UV_DOWNLOAD_URL:-}${INSTALLER_DOWNLOAD_URL:-}${UV_INSTALLER_GHE_BASE_URL:-}${UV_INSTALLER_GITHUB_BASE_URL:-}" ] || _mf_hosts="$_mf_hosts uvbin"
+    [ -n "$_mf_hosts" ] || return 0
+    # UV_OFFLINE (uv's spellings) asked for no network: arm the retries, probe nothing.
+    _mf_uvo=${UV_OFFLINE:-}
+    _mf_uvo=${_mf_uvo#"${_mf_uvo%%[![:space:]]*}"}
+    _mf_uvo=${_mf_uvo%"${_mf_uvo##*[![:space:]]}"}
+    case "${1:-}/$_mf_uvo" in
+        spare/* | */1 | */[Tt] | */[Tt][Rr][Uu][Ee] | */[Yy] | */[Yy][Ee][Ss] | */[Oo][Nn]) _mirror_spare_export; return 0 ;;
+    esac
+    _mf_dir=$(mktemp -d 2>/dev/null) || return 0
+    _mf_pids=""
+    _mirror_index_probe $_mf_hosts
+    for _mf_name in $(for _mf_host in $_mf_hosts; do _mirror_default "$_mf_host"; done | sort -u); do
+        _mirror_probe "$(_mirror_url "$_mf_name")" 1.5 1048575 > "$_mf_dir/$_mf_name"
+    done
+    _mirror_index_wait
+    _mf_slow=""
+    for _mf_host in $_mf_hosts; do
+        read -r _mf_code _mf_bps < "$_mf_dir/$(_mirror_default "$_mf_host")"
+        _mirror_index_ok "$_mf_host" || _mf_code=000
+        case "$_mf_code" in
+            000|3??) _mf_slow="$_mf_slow $_mf_host" ;;
+            2??) [ "$_mf_bps" -ge "$_MIRROR_MIN_BPS" ] || _mf_slow="$_mf_slow $_mf_host" ;;
+        esac
+    done
+    if [ -n "$_mf_slow" ]; then
+        _mirror_index_probe $_mf_slow $(for _mf_host in $_mf_slow; do echo "cernet-$_mf_host"; done)
+        _mirror_probe_all "$_mf_dir" 4 $(for _mf_host in $_mf_slow; do _mirror_default "$_mf_host"; _mirror_source "$_mf_host"; done | sort -u)
+        _mirror_index_wait
+        for _mf_host in $_mf_slow; do
+            read -r _mf_code _mf_bps < "$_mf_dir/$(_mirror_default "$_mf_host")"
+            read -r _mf_mcode _mf_mbps < "$_mf_dir/$(_mirror_source "$_mf_host")"
+            _mirror_index_ok "$_mf_host" || _mf_code=000
+            _mirror_index_ok "cernet-$_mf_host" || _mf_mcode=000
+            case "$_mf_code" in
+                2??) _mf_how=slow ;;
+                *) _mf_how=blocked; _mf_bps=0 ;;
+            esac
+            case "$_mf_mcode" in
+                2??) [ "$_mf_bps" -lt "$_MIRROR_MIN_BPS" ] && [ "$_mf_mbps" -gt "$_mf_bps" ] && _mirror_use "$_mf_host" "$_mf_how" "$_mf_bps" "$_mf_mbps" ;;
+            esac
+        done
+        if [ -n "$_mf_switched" ]; then
+            substep "Set UNSLOTH_MIRROR_FALLBACK=0 to always use the default hosts."
+        fi
+    fi
+    rm -rf "$_mf_dir"
+    _mirror_spare_export
+}
+
+_mirror_spare_export() {
+    _mf_spare=""
+    for _mf_host in $_mf_hosts; do
+        case " $_mf_switched " in *" $_mf_host "*) continue ;; esac
+        _mf_entry=""
+        for _mf_pair in $(_mirror_vars "$_mf_host"); do
+            _mf_entry="$_mf_entry|$_mf_pair"
+        done
+        [ -z "$_mf_entry" ] || _mf_spare="$_mf_spare $_mf_host$_mf_entry"
+    done
+    if [ "$_mf_unsynced" = true ]; then
+        _mf_spare="$_mf_spare unsynced"
+        for _mf_pair in $(_mirror_vars unsynced); do
+            _mf_spare="$_mf_spare|$_mf_pair"
+        done
+    fi
+    export _UNSLOTH_MIRROR_SPARE="${_mf_spare# }"
+}
+# ── END mirror fallback ──
 
 # ── Install uv ──
 tauri_log "STEP" "Installing uv package manager"
@@ -3160,6 +3649,8 @@ if [ "$OS" = "macos" ]; then
 fi
 [ -n "${UV_SYSTEM_CERTS:-}" ] && export UV_SYSTEM_CERTS
 [ -n "${UV_NATIVE_TLS:-}" ] && export UV_NATIVE_TLS
+
+_mirror_fallback
 
 version_ge() {
     # returns 0 if $1 >= $2
@@ -3241,7 +3732,7 @@ _uv_version_ok() {  # uv command, floor (defaults to UV_MIN_VERSION)
 }
 
 # ── uv from a pinned release ──
-# Same archive, destination and PATH treatment as astral's installer, but it fetches a data file with a pinned SHA-256 instead of a script it runs and deletes. Mirrors Install-UvFromRelease in install.ps1. Bumping the version means bumping every hash, from https://github.com/astral-sh/uv/releases/download/<ver>/<asset>.sha256. Only the four mainstream targets are pinned; musl, armv7 and the rest fall through to the caller's existing path rather than risk a wrong triple.
+# Mirrors Install-UvFromRelease in install.ps1; bumping the version means bumping every hash (<asset>.sha256) and every _uv_pinned_wheel entry.
 UV_PINNED_VERSION="0.12.1"
 
 # Echoes the glibc minor version (the N in 2.N), or nothing when this is not a glibc host or the version cannot be read. "not musl" is not the same as "a glibc new enough to run the GNU build": astral's installer checks a minimum and drops to its musl-static archive below it, so a host we cannot positively confirm has to reach the fallback rather than take a binary that will not exec.
@@ -3298,6 +3789,30 @@ _uv_pinned_asset() {
         *) return 1 ;;
     esac
     return 0
+}
+
+_uv_pinned_wheel() {
+    case "$1" in
+        uv-x86_64-unknown-linux-gnu.tar.gz)
+            echo "packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl 27211df9b277f440dea438a4e525ba40250fb721ad39b8927eefc2d91f9aea15" ;;
+        uv-aarch64-unknown-linux-gnu.tar.gz)
+            echo "packages/9a/c7/29e426865c2eb8df61253dae93b953523f48c9fca1e471c7e49ff068f19a/uv-0.12.1-py3-none-manylinux_2_28_aarch64.whl b255ac23958e45f39f9c7a4cd65890df5ef46f539a3b14de03bd296bbba9cb60" ;;
+        uv-x86_64-apple-darwin.tar.gz)
+            echo "packages/fd/07/a417475380e901f4325d13b09938baab227b0c143547124b944c5bc71783/uv-0.12.1-py3-none-macosx_10_12_x86_64.whl 41b8fc2335f682312a1ca39a7b4abfd6af800992065c663582ca3e4d51cf9258" ;;
+        uv-aarch64-apple-darwin.tar.gz)
+            echo "packages/c9/68/391ff0cc3d8020e64adc43bb4e50607f744c69e792fb7623dc7c1526704b/uv-0.12.1-py3-none-macosx_11_0_arm64.whl 2e9b0b86e180abc5968b979c6e25203b32e85969abb5083ee1e8b88a5aa98a76" ;;
+        *) return 1 ;;
+    esac
+}
+
+# A wheel is a zip, which GNU tar cannot read and minimal Linux images often have no unzip for.
+_uv_unzip() {
+    if command -v unzip >/dev/null 2>&1 && unzip -qo "$1" -d "$2" >/dev/null 2>&1; then return 0; fi
+    case "$(tar --version 2>/dev/null)" in
+        *bsdtar*) tar -xf "$1" -C "$2" 2>/dev/null && return 0 ;;
+    esac
+    command -v python3 >/dev/null 2>&1 &&
+        python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$1" "$2" 2>/dev/null
 }
 
 # Echoes the SHA-256 of "$1", or nothing when the host has no digest tool.
@@ -3389,6 +3904,7 @@ _uv_probe_exec() {
 }
 
 _uv_install_pinned() {
+    _UIP_UNFETCHED=false
     _uip_spec=$(_uv_pinned_asset) || return 1
     [ -n "$_uip_spec" ] || return 1
     _uip_asset=${_uip_spec%% *}
@@ -3421,13 +3937,23 @@ _uv_install_pinned() {
         _uip_bases="${UV_INSTALLER_GHE_BASE_URL%/}/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
     elif [ -n "${UV_INSTALLER_GITHUB_BASE_URL:-}" ]; then
         _uip_bases="${UV_INSTALLER_GITHUB_BASE_URL%/}/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
+    elif [ -n "${UNSLOTH_UV_WHEEL_MIRROR:-}" ]; then
+        _uip_bases=""
+        if _uip_wheel=$(_uv_pinned_wheel "$_uip_asset"); then
+            _uip_path=${_uip_wheel% *}
+            _uip_bases="${UNSLOTH_UV_WHEEL_MIRROR%/}/${_uip_path%/*}"
+            _uip_asset=${_uip_path##*/}
+            _uip_want=${_uip_wheel##* }
+        fi
     else
         _uip_bases="https://releases.astral.sh/github/uv/releases/download/$UV_PINNED_VERSION
 https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
     fi
+    _UIP_UNFETCHED=true
     for _uip_base in $_uip_bases; do
         # 2>/dev/null: curl -sS prints its own errors and these attempts are speculative, so an unreachable mirror stays off the console when the install still succeeds.
         if ! download "$_uip_base/$_uip_asset" "$_uip_work/$_uip_asset" 2>/dev/null; then continue; fi
+        _UIP_UNFETCHED=false
         _uip_got=$(_uv_sha256 "$_uip_work/$_uip_asset")
         if [ "$_uip_got" != "$_uip_want" ]; then
             # Not tauri_log: [TAURI:WARN] is a marker install.sh has never emitted, and the app forwards unknown markers to its progress UI verbatim. Verbose only, since the next mirror or the fallback still runs.
@@ -3436,8 +3962,10 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
             fi
             continue
         fi
-        # The POSIX archives hold uv and uvx under a uv-<triple>/ directory.
-        if ! tar -xzf "$_uip_work/$_uip_asset" -C "$_uip_work" 2>/dev/null; then continue; fi
+        case "$_uip_asset" in
+            *.whl) _uv_unzip "$_uip_work/$_uip_asset" "$_uip_work" || continue ;;
+            *) tar -xzf "$_uip_work/$_uip_asset" -C "$_uip_work" 2>/dev/null || continue ;;
+        esac
         mkdir -p "$_uip_dest" 2>/dev/null || break
         _uip_placed=0
         # uv first, and either half failing aborts the placement: the two ship as a set, and a pinned uvx beside the host's older uv is a pairing we never built or tested. Stage both, then publish both: the renames sit next to each other so the pair is replaced as one, and a failure anywhere before them leaves the destination untouched.
@@ -3497,7 +4025,7 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     # download() exits the shell outright when neither curl nor wget is present, which an `if` cannot catch, so probe first: a minimal image with uv copied in but no downloader must keep the install it had before the floor moved.
     if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
         # Pinned release first: fetch a digest-checked data file rather than download-run-delete a remote script. See tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-        if _uv_install_pinned; then
+        if _uv_install_pinned || { [ "$_UIP_UNFETCHED" = true ] && _mirror_switch uvbin && _uv_install_pinned; }; then
             :
         else
             # Unpinned hosts keep the path they have always had: a wrong triple breaks the install outright, which costs more than the fallback's score.
@@ -5235,19 +5763,37 @@ get_torch_index_url() {
         echo "$_base/cpu"; return
     fi
     # CUDA version from nvidia-smi: accept "CUDA Version:" and the newer "CUDA UMD Version:".
-    _cuda_ver=$(export LC_ALL=C; _run_bounded "$_smi" 2>/dev/null \
+    _smi_rc=0
+    _smi_out=$(export LC_ALL=C; _run_bounded "$_smi" 2>/dev/null) || _smi_rc=$?
+    if [ "$_smi_rc" = "124" ]; then
+        echo "[INFO] nvidia-smi did not answer within 10s; retrying with a 45s limit..." >&2
+        _smi_rc=0
+        _smi_out=$(export LC_ALL=C; _run_bounded --secs 45 "$_smi" 2>/dev/null) || _smi_rc=$?
+        # Still hung: do not spend another bound asking it for compute capabilities below.
+        [ "$_smi_rc" = "124" ] && _smi=""
+    fi
+    _cuda_ver=$(printf '%s\n' "$_smi_out" \
         | sed -n \
             -e 's/.*CUDA UMD Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
             -e 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
         | head -1)
     _inventory_caps=""
+    _cuda_from_driver=""
+    # A mirror base can carry credentials, so name only the leaf.
+    if [ -n "${UNSLOTH_PYTORCH_MIRROR:-}" ]; then _pin_hint="UNSLOTH_TORCH_INDEX_FAMILY="
+    else _pin_hint="UNSLOTH_TORCH_INDEX_URL=$_base/"
+    fi
     if [ -z "$_cuda_ver" ]; then
         # nvidia-smi absent, stale or hung: the driver library knows both; cu126 is the last resort.
         if _inventory=$(_nvidia_library_inventory) && [ -n "$_inventory" ]; then
             _cuda_ver=${_inventory%% *}
             _inventory_caps=$(printf '%s' "${_inventory#* }" | tr ',' '\n')
+        elif _cuda_ver=$(_nvidia_driver_cuda_version) && [ -n "$_cuda_ver" ]; then
+            _cuda_from_driver=1
         else
             echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
+            echo "[WARN] cu126 has no kernels for Blackwell (sm_100 / sm_120). To choose the wheel yourself, re-run with" >&2
+            echo "[WARN]   ${_pin_hint}cu128   (or cu130 on a driver that supports CUDA 13)" >&2
             echo "$_base/cu126"; return
         fi
     fi
@@ -5259,7 +5805,14 @@ get_torch_index_url() {
     elif [ "$_major" -ge 12 ]; then _cuda_tag=cu124
     elif [ "$_major" -ge 11 ]; then _cuda_tag=cu118
     else echo "$_base/cpu"; return; fi
-    echo "$_base/$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi" "$_inventory_caps")"
+    _cuda_tag=$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi" "$_inventory_caps")
+    if [ -n "$_cuda_from_driver" ]; then
+        echo "[WARN] nvidia-smi and the NVIDIA driver libraries did not answer in time; the driver supports CUDA $_cuda_ver." >&2
+        echo "[WARN] Selecting the $_cuda_tag PyTorch wheels from the driver version alone. If that is wrong for this GPU, re-run with" >&2
+        echo "[WARN]   ${_pin_hint}cu126   (Maxwell to Hopper, sm_50-90)" >&2
+        echo "[WARN]   ${_pin_hint}cu128   (Turing and newer, including Blackwell)" >&2
+    fi
+    echo "$_base/$_cuda_tag"
 }
 
 # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
@@ -5921,7 +6474,7 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     fi
                     # Off the family, not the arch: no family straddles this boundary.
                     case "$_amd_family" in
-                        gfx120X-all|gfx1151|gfx1150|gfx1152)
+                        gfx120X-all|gfx1151|gfx1150|gfx1152|gfx103X-all|gfx110X-all)
                             TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
                             TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
                             TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
@@ -6008,7 +6561,7 @@ fi
 
 # rocm7.2 and per-gfx indexes ship torch 2.11.0: raise the floor, matching the FINAL leaf only.
 case "$_torch_index_leaf" in
-    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152)
+    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152|gfx103x-all|gfx110x-all)
         TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
         TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
@@ -6083,7 +6636,7 @@ case "$_torch_index_leaf" in
             if [ -n "$_gfx_records" ]; then
                 # HIP_ID from `amd-smi list -e` maps discovery order onto the order HIP numbers, as the GPU summary below does. The first output line reports which space came back.
                 _gfx_smi_out=$(amd-smi list -e 2>/dev/null | _amd_smi_hip_order "$_gfx_records" || true)
-                _gfx_space=$(printf '%s\n' "$_gfx_smi_out" | head -n 1)
+                _gfx_space=$(printf '%s\n' "$_gfx_smi_out" | sed -n 1p)
                 _gfx_records=$(printf '%s\n' "$_gfx_smi_out" | tail -n +2)
                 _gfx_all=$(printf '%s\n' "$_gfx_records" | _gfx_arch_slots || true)
                 [ -n "$_gfx_all" ] && _gfx_probe=amd-smi
@@ -6344,7 +6897,7 @@ elif _torch_index_url_is_rocm "$TORCH_INDEX_URL"; then
         if [ -n "$_gpu_disp_smi_records" ]; then
             _gpu_disp_smi_out=$(amd-smi list -e 2>/dev/null \
                 | _amd_smi_hip_order "$_gpu_disp_smi_records" || true)
-            _gpu_disp_smi_space=$(printf '%s\n' "$_gpu_disp_smi_out" | head -n 1)
+            _gpu_disp_smi_space=$(printf '%s\n' "$_gpu_disp_smi_out" | sed -n 1p)
             _gpu_disp_smi_records=$(printf '%s\n' "$_gpu_disp_smi_out" | tail -n +2)
             # No map, and the adapters are not interchangeable: the mask indexes HIP order while these records are in discovery order, so any ordinal is a guess. Report nothing rather than name one card while the mask selects another. amd-smi 6.1.1 reports no TARGET_GRAPHICS_VERSION at all and the arch is then inferred from the name, so an archless record is compared on its name instead. Interchangeable adapters are unaffected: every ordinal gives the same answer.
             if [ "$_gpu_disp_smi_space" != hip ] && \
@@ -7002,7 +7555,7 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.10}"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.11}"
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.
@@ -7369,6 +7922,112 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$(_torch_spec_with_extra "$TORCH_CONSTRAINT")\" \"$(_torch_spec_with_extra "$TORCHVISION_CONSTRAINT")\" \"$TORCHAUDIO_CONSTRAINT\" --default-index $(_strip_index_url_credentials "$TORCH_INDEX_URL") --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
         fi
     fi
+fi
+
+# A wrong CUDA family fails only at first kernel launch; never cuInit here (minutes on a congested driver).
+if [ "$SKIP_TORCH" = false ] && ! _cvd_hides_nvidia; then
+    case "${_expected_torch_tag:-}" in
+        cu[0-9]*)
+            _arch_check=$(_run_bounded --secs 120 "$_VENV_PY" -c '
+import ctypes, sys
+
+def load(*names):
+    for name in names:
+        try:
+            return ctypes.CDLL(name)
+        except OSError:
+            pass
+
+def nvml_caps():
+    lib = load("libnvidia-ml.so.1", "libnvidia-ml.so")
+    if lib is None or lib.nvmlInit_v2() != 0:
+        return None
+    try:
+        count, caps = ctypes.c_uint(), set()
+        if lib.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0 or not count.value:
+            return None
+        for i in range(count.value):
+            dev, major, minor = ctypes.c_void_p(), ctypes.c_int(), ctypes.c_int()
+            if lib.nvmlDeviceGetHandleByIndex_v2(i, ctypes.byref(dev)) != 0 or \
+               lib.nvmlDeviceGetCudaComputeCapability(dev, ctypes.byref(major), ctypes.byref(minor)) != 0:
+                return None
+            caps.add((major.value, minor.value))
+        return sorted(caps)
+    finally:
+        lib.nvmlShutdown()
+
+try:
+    import torch
+    if not torch.version.cuda or getattr(torch.version, "hip", None):
+        sys.exit(0)
+    try:
+        archs = torch._C._cuda_getArchFlags().split()
+    except Exception:
+        archs = torch.cuda.get_arch_list()
+    try:
+        caps = nvml_caps()
+    except Exception:
+        caps = None
+    if caps is None:
+        if not torch.cuda.is_available():
+            sys.exit(0)
+        caps = sorted({torch.cuda.get_device_capability(i) for i in range(torch.cuda.device_count())})
+except Exception:
+    sys.exit(0)
+
+def runs(arch, cap):
+    kind, _, rest = arch.partition("_")
+    n = len(rest) - len(rest.lstrip("0123456789"))
+    digits, suffix = rest[:n], rest[n:]
+    if n < 2:
+        return False
+    built = (int(digits[:-1]), int(digits[-1]))
+    if suffix == "a":  # arch-specific cubin / PTX: that exact GPU only
+        return built == cap
+    if kind == "sm":  # a cubin runs on its own major at the same or a newer minor
+        return built[0] == cap[0] and built[1] <= cap[1]
+    return kind == "compute" and built <= cap  # PTX is JIT-compiled forward
+
+missing = [c for c in caps if not any(runs(a, c) for a in archs)]
+if not archs or not caps or not missing:
+    sys.exit(0)
+driver = ctypes.c_int()
+cuda = load("libcuda.so.1", "libcuda.so")  # cuDriverGetVersion needs no cuInit
+if cuda is None or cuda.cuDriverGetVersion(ctypes.byref(driver)) != 0:
+    driver.value = 0
+family = "cu126" if min(missing) < (7, 5) else ("cu130" if driver.value >= 13000 else "cu128")
+status = "none" if len(missing) == len(caps) else "some"
+# No wheel to point at (pre-Maxwell, or the family already installed): warn, never fail the install.
+if min(missing) < (5, 0) or family == "cu" + torch.version.cuda.replace(".", ""):
+    status = "nofix"
+fmt = lambda cs: ",".join(f"{a}.{b}" for a, b in cs)
+print("UNSLOTH_ARCH_CHECK=%s|%s|%s|%s|%s" % (status, fmt(missing), torch.__version__, " ".join(archs), family))
+' 2>/dev/null | sed -n 's/^UNSLOTH_ARCH_CHECK=//p' | tail -n 1 || true)
+            if [ -n "$_arch_check" ]; then
+                IFS='|' read -r _ac_status _ac_caps _ac_torch _ac_archs _ac_family <<EOF_ARCH
+$_arch_check
+EOF_ARCH
+                if [ -n "${UNSLOTH_PYTORCH_MIRROR:-}" ]; then _ac_pin="UNSLOTH_TORCH_INDEX_FAMILY=$_ac_family"
+                else _ac_pin="UNSLOTH_TORCH_INDEX_URL=https://download.pytorch.org/whl/$_ac_family"
+                fi
+                if [ "$_ac_status" = "none" ] && [ "$_torch_index_pinned" = false ]; then
+                    tauri_log "ERROR" "PyTorch $_ac_torch has no kernels for this GPU (compute capability $_ac_caps)"
+                    substep "[ERROR] PyTorch $_ac_torch has no kernels for this GPU (compute capability $_ac_caps)." "$C_ERR"
+                    substep "[ERROR] It was built for: $_ac_archs" "$C_ERR"
+                    substep "[ERROR] Training would fail with \"no kernel image is available for execution on the device\"." "$C_ERR"
+                    substep "[ERROR] Re-run this installer with the matching PyTorch wheels:" "$C_ERR"
+                    substep "[ERROR]   $_ac_pin" "$C_ERR"
+                    exit 1
+                fi
+                substep "[WARN] PyTorch $_ac_torch has no kernels for the GPUs with compute capability $_ac_caps." "$C_WARN"
+                if [ "$_ac_status" = "nofix" ]; then
+                    substep "[WARN] It was built for: $_ac_archs. Those GPUs will not be usable for training." "$C_WARN"
+                else
+                    substep "[WARN] It was built for: $_ac_archs. Those GPUs will not be usable; for them, re-run with $_ac_pin" "$C_WARN"
+                fi
+            fi
+            ;;
+    esac
 fi
 
 # An extras pin lands on a leaf the flavor enforcement above does not recognise, so it skips

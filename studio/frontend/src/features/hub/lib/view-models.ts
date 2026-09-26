@@ -39,7 +39,7 @@ export const CAPABILITY_FILTER_OPTIONS: ReadonlyArray<{
   { value: "vision", label: "Vision" },
   { value: "audio", label: "Audio" },
   { value: "embedding", label: "Embeddings" },
-  { value: "diffusion", label: "Image generation" },
+  { value: "diffusion", label: "Image/video gen" },
 ];
 
 export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
@@ -190,14 +190,24 @@ export function toHfModelResult(raw: unknown): HfModelResult | null {
   };
 }
 
-// buildDiscoverRows reads each row's repo, format, partial and companion state; a change in any of
+// buildDiscoverRows reads each row's repo, format, partial, downloading and companion state; a change in any of
 // them has to change this key, or the memoised Discover grid keeps the stale state.
 export function discoveryInventorySignature(
   cachedRows: readonly CachedInventoryRow[],
   localRows: readonly LocalInventoryRow[],
 ): string {
-  const state = (row: { partial?: boolean; companionPrefetch?: boolean }) =>
-    row.companionPrefetch ? "x" : row.partial ? "p" : "c";
+  const state = (row: {
+    partial?: boolean;
+    downloading?: boolean;
+    companionPrefetch?: boolean;
+  }) =>
+    row.companionPrefetch
+      ? "x"
+      : row.partial
+        ? row.downloading
+          ? "d"
+          : "p"
+        : "c";
   const parts: string[] = [];
   for (const row of cachedRows) {
     parts.push(
@@ -233,6 +243,11 @@ export function buildDiscoverRows(
       Boolean(
         resource.cachedRow?.partial ?? resource.localRow?.partial ?? false,
       );
+    const downloading =
+      partial &&
+      Boolean(
+        resource.cachedRow?.downloading ?? resource.localRow?.downloading,
+      );
     return {
       id: result.id,
       owner: ownerOf(result.id),
@@ -241,6 +256,7 @@ export function buildDiscoverRows(
       isAvailableOnDevice:
         !companionPrefetch && Boolean(resource.cachedRow || resource.localRow),
       isPartialOnDevice: partial,
+      isDownloadingOnDevice: downloading,
       summary: buildSummary(result),
       capabilities: detectCapabilities(
         result.tags,

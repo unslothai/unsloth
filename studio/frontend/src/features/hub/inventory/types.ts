@@ -48,6 +48,7 @@ export interface CachedInventoryRow {
   partialTransport?: string | null;
   /** This partial can be continued byte for byte. */
   partialResumable?: boolean;
+  downloading?: boolean;
   /** A download manifest or cancel marker exists for some quant; moves on a sibling cancel, which changes neither bytes nor mtime. */
   hasVariantState?: boolean;
   pipelineTag?: string | null;
@@ -98,6 +99,7 @@ export interface LocalInventoryRow {
   partialTransport?: string | null;
   /** This partial can be continued byte for byte. */
   partialResumable?: boolean;
+  downloading?: boolean;
   // Same as CachedInventoryRow.companionPrefetch, from the local listing.
   companionPrefetch?: boolean;
   activeCache?: boolean | null;

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isChatGgufTask, reconcileGgufPinsAfterDelete } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
+
 import {
   Tooltip,
   TooltipContent,
@@ -53,6 +55,7 @@ import type {
   DiscoverRow,
   LocalInventoryRow,
 } from "../types";
+import { DOWNLOADING_DOT_CLASS } from "./dot-tag";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessGlyphs } from "./shared";
 
@@ -303,11 +306,13 @@ function CatalogRow({
   );
 }
 
+export { DOWNLOADING_DOT_CLASS };
+
 function StatusDot({
   tone,
   label,
 }: {
-  tone: "warning" | "danger" | "success";
+  tone: "warning" | "danger" | "success" | "downloading";
   label: string;
 }) {
   const toneClass =
@@ -315,13 +320,23 @@ function StatusDot({
       ? "bg-status-warning"
       : tone === "danger"
         ? "bg-status-danger"
-        : "bg-status-success";
+        : tone === "downloading"
+          ? DOWNLOADING_DOT_CLASS
+          : "bg-status-success";
   return (
     <span
       role="img"
       aria-label={label}
-      className={cn("inline-block size-[5px] shrink-0 rounded-full", toneClass)}
+      className={cn("inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full", toneClass)}
     />
+  );
+}
+
+function PartialStatusDot({ downloading }: { downloading: boolean }) {
+  return downloading ? (
+    <StatusDot tone="downloading" label="Downloading" />
+  ) : (
+    <StatusDot tone="warning" label="Partial download" />
   );
 }
 
@@ -351,6 +366,7 @@ export function buildRowStatusTooltip({
   isAdapter,
   isAvailableOnDevice,
   partialRepoId,
+  downloading = false,
   unsupported,
   unsupportedReason,
   resourceLabel = "model",
@@ -359,6 +375,7 @@ export function buildRowStatusTooltip({
   isAdapter?: boolean;
   isAvailableOnDevice?: boolean;
   partialRepoId?: string;
+  downloading?: boolean;
   unsupported?: boolean;
   unsupportedReason?: string | null;
   resourceLabel?: "model" | "dataset";
@@ -380,7 +397,14 @@ export function buildRowStatusTooltip({
     );
   }
 
-  if (partialRepoId) {
+  if (partialRepoId && downloading) {
+    lines.push(
+      <TooltipLegendRow key="downloading" toneClass={DOWNLOADING_DOT_CLASS}>
+        Downloading <span className="font-medium">{partialRepoId}</span>.
+        Progress is in the downloads panel.
+      </TooltipLegendRow>,
+    );
+  } else if (partialRepoId) {
     lines.push(
       <TooltipLegendRow key="partial" toneClass="bg-status-warning">
         Partial download of <span className="font-medium">{partialRepoId}</span>
@@ -450,11 +474,13 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
     row.isAvailableOnDevice && row.isPartialOnDevice
       ? row.result.id
       : undefined;
+  const downloading = Boolean(partialRepoId && row.isDownloadingOnDevice);
   const tooltip = buildRowStatusTooltip({
     isGguf: row.result.isGguf,
     isAdapter: false,
     isAvailableOnDevice: row.isAvailableOnDevice,
     partialRepoId,
+    downloading,
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -488,14 +514,14 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
                 <span
                   role="img"
                   aria-label="GGUF"
-                  className="inline-block size-[5px] shrink-0 rounded-full bg-format-gguf"
+                  className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-gguf"
                 />
               )}
               {unsupported && (
                 <StatusDot tone="danger" label="May not be supported yet" />
               )}
               {row.isAvailableOnDevice && row.isPartialOnDevice && (
-                <StatusDot tone="warning" label="Partial download" />
+                <PartialStatusDot downloading={downloading} />
               )}
               {row.isAvailableOnDevice && !row.isPartialOnDevice && (
                 <StatusDot tone="success" label="On device" />
@@ -539,6 +565,7 @@ export const InventoryRow = memo(function InventoryRow({
   dimmed,
   deviceType,
   compact = false,
+  showFormatDot = true,
   onSelect,
   onChange,
 }: {
@@ -549,6 +576,7 @@ export const InventoryRow = memo(function InventoryRow({
   deviceType: string | null;
   /** Narrow split master pane: drop the capability column so the name fits. */
   compact?: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
   onChange?: () => void;
 }) {
@@ -599,11 +627,13 @@ export const InventoryRow = memo(function InventoryRow({
         ? row.repoId
         : (row.repoId ?? row.loadId)
       : undefined;
+  const downloading = Boolean(partialRepoId && row.downloading);
   const tooltip = buildRowStatusTooltip({
-    isGguf: row.isGguf,
-    isAdapter: row.modelFormat === "adapter",
+    isGguf: showFormatDot && row.isGguf,
+    isAdapter: showFormatDot && row.modelFormat === "adapter",
     isAvailableOnDevice: !row.partial,
     partialRepoId,
+    downloading,
     unsupported,
     resourceLabel: isDataset ? "dataset" : "model",
   });
@@ -641,22 +671,22 @@ export const InventoryRow = memo(function InventoryRow({
 
   const statusMarkers = (
     <>
-      {row.isGguf && (
+      {showFormatDot && row.isGguf && (
         <span
           role="img"
           aria-label="GGUF"
-          className="inline-block size-[5px] shrink-0 rounded-full bg-format-gguf"
+          className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-gguf"
         />
       )}
-      {row.modelFormat === "adapter" && (
+      {showFormatDot && row.modelFormat === "adapter" && (
         <span
           role="img"
           aria-label="Adapter"
-          className="inline-block size-[5px] shrink-0 rounded-full bg-format-adapter"
+          className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-adapter"
         />
       )}
       {partialRepoId ? (
-        <StatusDot tone="warning" label="Partial download" />
+        <PartialStatusDot downloading={downloading} />
       ) : (
         <StatusDot tone="success" label="On device" />
       )}
@@ -671,7 +701,7 @@ export const InventoryRow = memo(function InventoryRow({
   const compactMarkers =
     partialRepoId || unsupported ? (
       <span className="flex shrink-0 items-center gap-1">
-        {partialRepoId && <StatusDot tone="warning" label="Partial download" />}
+        {partialRepoId && <PartialStatusDot downloading={downloading} />}
         {unsupported && (
           <StatusDot tone="danger" label="May not be supported yet" />
         )}
@@ -749,9 +779,14 @@ export const InventoryRow = memo(function InventoryRow({
                 undefined,
                 rowCachePath,
               );
-              // Deleted repos can't stay pinned: drop the repo pin and any of
-              // its per-quant pins so stale rows don't linger up top.
-              usePinnedModelsStore.getState().unpinRepo(deletableRepoId);
+              if (row.isGguf && isChatGgufTask(row.pipelineTag)) {
+                await reconcileGgufPinsAfterDelete(
+                  deletableRepoId,
+                  useHfTokenStore.getState().token || undefined,
+                );
+              } else {
+                usePinnedModelsStore.getState().unpinRepo(deletableRepoId);
+              }
             }
           },
           onDeleted: onChange,
@@ -866,7 +901,7 @@ export const InventoryRow = memo(function InventoryRow({
 
         {metaChips}
 
-        <div className="flex w-[96px] shrink-0 items-center justify-end text-right">
+        <div className="flex w-[calc(96px*var(--ui-space-scale,1))] shrink-0 items-center justify-end text-right">
           {row.kind === "cache" ? (
             <CachedSizeChip
               repoId={row.repoId}
