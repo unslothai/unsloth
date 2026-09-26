@@ -6363,9 +6363,7 @@ def _ensure_rocm_torch() -> None:
             # resolver as before. _runtime_gfx also carries a KFD-only reading that
             # _runtime_is_gfx906 does not see. Same predicate as the repair above.
             _bnb_floor_target = (
-                bool(_runtime_gfx)
-                and _runtime_gfx.lower() != "gfx906"
-                and not _runtime_is_gfx906
+                bool(_runtime_gfx) and _runtime_gfx.lower() != "gfx906" and not _runtime_is_gfx906
             )
             tag = (
                 _automatic_generic_pytorch_rocm_tag(ver)

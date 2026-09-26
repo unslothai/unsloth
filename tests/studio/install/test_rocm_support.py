@@ -2199,9 +2199,7 @@ class TestGfx1102Rocm64Floor:
         here; the floor must still see gfx906 through the selected runtime target, or the
         MI50 is moved to rocm6.4, which ships no gfx906 BLAS kernels.
         """
-        torch_call = str(
-            self._ensure_for_gfx("", monkeypatch, kfd = ["gfx906"]).call_args_list[0]
-        )
+        torch_call = str(self._ensure_for_gfx("", monkeypatch, kfd = ["gfx906"]).call_args_list[0])
         assert "whl/rocm6.1" in torch_call
         assert "whl/rocm6.4" not in torch_call
 
