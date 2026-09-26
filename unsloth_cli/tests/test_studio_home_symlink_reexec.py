@@ -122,6 +122,7 @@ def _run_app(
 
     monkeypatch.setattr(_tp_mod, "resolve_tool_policy", lambda host, flag, yes, silent: False)
     monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(studio_mod.platform, "system", lambda: "Linux")
     execs = []
 
     def fake_execvp(file, argv):
@@ -145,7 +146,8 @@ def test_reexec_marks_the_child(monkeypatch):
     studio_mod, result, execs = _run_app(monkeypatch, prefix = "/nonexistent/outer/venv")
     assert len(execs) == 1, result.output
     argv, guard = execs[0]
-    assert argv[1:3] == ["studio", "run"]
+    # Head is the console script or, when the venv path resolves elsewhere, python -c.
+    assert argv[argv.index("studio") + 1] == "run"
     assert guard == "1", "the re-exec'd child must see the marker"
     assert studio_mod._STUDIO_REEXEC_ENV not in os.environ, "the parent must not keep it"
 
