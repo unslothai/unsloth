@@ -971,7 +971,10 @@ class HttpChatBackend:
 
         def cumulative():
             # Accumulate SSE deltas into the full-text-so-far convention the stream helpers expect.
+            # The server moves <think> reasoning into delta.reasoning_content; wrap it back in
+            # <think> tags so visible_text shows or hides it as it does for a local model.
             text = ""
+            thinking = False
             with resp:
                 for raw_line in resp:
                     line = raw_line.decode("utf-8", "replace").strip()
@@ -996,12 +999,21 @@ class HttpChatBackend:
                     if choice.get("finish_reason") is not None:
                         self.reply_hit_token_limit = choice["finish_reason"] == "length"
                     try:
+                        reasoning = choice["delta"].get("reasoning_content")
                         delta = choice["delta"].get("content")
                     except (KeyError, AttributeError, TypeError):
                         continue
-                    if not delta:
+                    if reasoning:
+                        if not thinking:
+                            text += _THINK_OPEN
+                            thinking = True
+                        text += reasoning
+                    if delta and thinking:
+                        text += "</think>"
+                        thinking = False
+                    if not (reasoning or delta):
                         continue
-                    text += delta
+                    text += delta or ""
                     # An emoji can arrive split across two deltas as lone surrogate halves: hold back a trailing
                     # half, merge pairs.
                     visible = text
