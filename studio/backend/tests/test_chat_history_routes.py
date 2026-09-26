@@ -75,9 +75,7 @@ def test_message_removal_paths_sweep_chat_originals(monkeypatch):
             ),
             current_subject = "test-user",
         )
-    monkeypatch.setattr(
-        chat_history, "upsert_chat_message", lambda message, **kwargs: message
-    )
+    monkeypatch.setattr(chat_history, "upsert_chat_message", lambda message, **kwargs: message)
     chat_history.save_thread_message(
         "thread-1", "msg-1", _message("msg-1", "thread-1"), current_subject = "test-user"
     )
