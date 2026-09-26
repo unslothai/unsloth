@@ -8255,6 +8255,7 @@ class DiffusionBackend:
                             f"Use a smaller source image."
                         )
                     init_pil = init_pil.resize((tw, th), Image.LANCZOS)
+                    upscale = round(max(tw / iw, th / ih), 2)  # the factor after both caps, for the log
                     if strength is None:
                         strength = 0.35  # hires-fix default: preserve content, add detail
                 elif getattr(fam, "reference", False) and init_image is not None:
@@ -8741,7 +8742,7 @@ class DiffusionBackend:
                         engine = "diffusers",
                         steps = steps,
                         strength = strength_applied,
-                        upscale = upscale,
+                        upscale = upscale if workflow == "upscale" else None,
                     ),
                 )
                 return result
