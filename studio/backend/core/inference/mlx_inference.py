@@ -105,7 +105,10 @@ def _is_opaque_cache(value):
 
 def _copy_value(value, mx):
     if isinstance(value, mx.array):
-        return value + 0
+        # Shares a buffer the array spans, and a write through either one then copies it first,
+        # since MLX writes in place only into a buffer nothing else references. A slice of a larger
+        # one is copied out: kept, it would hold the rest alive uncounted.
+        return mx.contiguous(value)
     if isinstance(value, list):
         return [_copy_value(item, mx) for item in value]
     if isinstance(value, tuple):
@@ -158,7 +161,7 @@ def release_cache_entries(entries):
 
 
 def copy_cache_entries(entries):
-    """Copies, object-shallow and array-deep, evaluated so they own their data."""
+    """Copies that share array buffers until either side writes, evaluated so they hold data."""
     import mlx.core as mx
 
     for entry in entries:
@@ -224,12 +227,23 @@ def _place_per_layer_inputs(kwargs, rows, start):
 
 
 class _ForwardRecord:
-    __slots__ = ("forwards", "capture_at", "snapshot", "resume_offset", "on_resume")
+    __slots__ = (
+        "forwards",
+        "capture_at",
+        "snapshot",
+        "tail_at",
+        "tail",
+        "resume_offset",
+        "on_resume",
+    )
 
     def __init__(self):
         self.forwards = 0
         self.capture_at = 0
         self.snapshot = None
+        # Where the prefill ends, as the last token's own forward begins.
+        self.tail_at = 0
+        self.tail = None
         self.resume_offset = None
         self.on_resume = None
 
@@ -277,14 +291,19 @@ def _recording_class(base):
         # two (KV quantization).
         if (
             record is not None
-            and record.capture_at
-            and record.forwards == record.capture_at
+            and record.forwards
+            and record.forwards in (record.capture_at, record.tail_at)
             and cache is not None
         ):
             try:
-                record.snapshot = copy_cache_entries(cache)
+                copied = copy_cache_entries(cache)
             except Exception as exc:
                 logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
+            else:
+                if record.forwards == record.capture_at:
+                    record.snapshot = copied
+                else:
+                    record.tail = copied
         output = base.__call__(self, *args, **kwargs)
         if record is not None:
             record.forwards += 1
@@ -343,8 +362,102 @@ class RecordingForward:
         return self._base.__call__(self._language_model, *args, **kwargs)
 
 
+def _cache_classes(name):
+    """``name`` from mlx-vlm's and mlx-lm's cache modules, whichever are loaded: a cache can
+    only be built from a loaded one."""
+    modules = (sys.modules.get(m) for m in ("mlx_vlm.models.cache", "mlx_lm.models.cache"))
+    return tuple(getattr(m, name) for m in modules if hasattr(m, name))
+
+
+def _rows_in_order(entry, classes):
+    """Whether ``entry`` holds its rows as positions 0..offset-1 in order: a plain KV entry, or
+    a sliding-window one that has not dropped a row yet (Studio's context limit makes every
+    layer one on models without their own cache layout)."""
+    kv, rings = classes
+    if entry.keys is None:
+        return False
+    return type(entry) in kv or (
+        type(entry) in rings and entry.offset == entry._idx == entry.keys.shape[2]
+    )
+
+
+def _shared_kv_pairs(entries, base, classes, pairs):
+    """Collect each entry of ``entries`` whose rows are in order with its counterpart in
+    ``base``; False when ``base`` cannot serve every one of them. All or none: an entry only
+    loses its order by growing, so what a snapshot shares with its base, the base shares with
+    any longer one, and the two always move together."""
+    if isinstance(entries, (list, tuple)):
+        if not isinstance(base, (list, tuple)) or len(entries) != len(base):
+            return False
+        return all(_shared_kv_pairs(e, b, classes, pairs) for e, b in zip(entries, base))
+    if type(entries) is not type(base):
+        return False
+    if type(entries) in classes[0] + classes[1]:
+        if not _rows_in_order(entries, classes):
+            return True
+        if not _rows_in_order(base, classes) or entries.offset > base.offset:
+            return False
+        if entries.keys.shape[2] > base.keys.shape[2]:
+            return False
+        pairs.append((entries, base))
+        return True
+    nested = getattr(entries, "caches", None)
+    if isinstance(nested, (list, tuple)):
+        return _shared_kv_pairs(nested, base.caches, classes, pairs)
+    return True
+
+
+def share_kv_rows(entries, base):
+    """Point every entry of ``entries`` that holds its rows in order at the leading rows of its
+    counterpart in ``base``, all or none, and return the bytes now read through ``base``."""
+    pairs = []
+    classes = (_cache_classes("KVCache"), _cache_classes("RotatingKVCache"))
+    if not _shared_kv_pairs(entries, base, classes, pairs):
+        return 0
+    shared = 0
+    for entry, source in pairs:
+        # Its own capacity too, so a resume grows the cache exactly as it would have.
+        rows = entry.keys.shape[2]
+        entry.keys = source.keys[..., :rows, :]
+        entry.values = source.values[..., :rows, :]
+        shared += entry.keys.nbytes + entry.values.nbytes
+    return shared
+
+
+def compact_sliding_windows(entries):
+    """Drop the rows a sliding-window entry holds beyond its window after a multi-row update.
+    Its next update, of any size, reads none of them, so this changes nothing that update
+    computes, and a snapshot would otherwise keep a whole prefill chunk."""
+    rings = _cache_classes("RotatingKVCache")
+    pending = list(entries)
+    compacted = []
+    while pending:
+        entry = pending.pop()
+        nested = entry if isinstance(entry, (list, tuple)) else getattr(entry, "caches", None)
+        if isinstance(nested, (list, tuple)):
+            pending.extend(nested)
+        elif type(entry) in rings and entry.keys is not None:
+            excess = entry.keys.shape[2] - entry.max_size
+            # In temporal order, as a multi-row update leaves it; the trim is the single-row update's own.
+            if excess > 0 and entry._idx == entry.keys.shape[2]:
+                entry.keys = entry._trim(excess, entry.keys)
+                entry.values = entry._trim(excess, entry.values)
+                entry._idx = entry.max_size
+                compacted.extend((entry.keys, entry.values))
+    if compacted:
+        import mlx.core as mx
+
+        # Now, so the rows cut are released rather than held by a pending slice.
+        mx.eval(compacted)
+
+
 class VLMPromptSnapshotStore:
-    """Boundary snapshots, most recently used last, under a byte budget."""
+    """Boundary snapshots, most recently used last, under a byte budget. A snapshot that a
+    longer one of the same conversation extends reads its in-order KV rows from that one, its
+    base: both were prefilled on one grid, so those rows are the same, and a base's views are
+    only counted once. One snapshot per key may instead hold where a prompt's prefill ended, a
+    replay: its last rows came from a chunk that stopped there, so it serves only a prompt of
+    that length and reads through no other snapshot."""
 
     def __init__(
         self,
@@ -354,17 +467,22 @@ class VLMPromptSnapshotStore:
         self._max_bytes = max_bytes
         self._max_entries = max_entries
         self._entries = OrderedDict()
+        self._bases = {}
+        self._replays = {}
         self.nbytes = 0
 
     def __len__(self):
         return len(self._entries)
 
     def lookup(self, key, token_ids, limit):
-        """Longest stored prefix of ``token_ids`` under ``key`` ending by ``limit``."""
+        """Longest stored prefix of ``token_ids`` under ``key`` ending by ``limit``, or the replay
+        holding all of it but the last token."""
         best = None
-        for (stored_key, prefix), (entries, _nbytes) in self._entries.items():
+        for item, (entries, _nbytes) in self._entries.items():
+            stored_key, prefix = item
             n = len(prefix)
-            if stored_key != key or n == 0 or n > limit:
+            fits = n == len(token_ids) - 1 if self._is_replay(item) else n <= limit
+            if stored_key != key or n == 0 or not fits:
                 continue
             if best is not None and n <= len(best[0]):
                 continue
@@ -372,10 +490,17 @@ class VLMPromptSnapshotStore:
                 best = (prefix, entries)
         if best is None:
             return None, 0
-        self._entries.move_to_end((key, best[0]))
+        self._touch((key, best[0]))
         return best[1], len(best[0])
 
-    def store(self, key, prefix_ids, entries):
+    def store(
+        self,
+        key,
+        prefix_ids,
+        entries,
+        replay = False,
+    ):
+        compact_sliding_windows(entries)
         nbytes = cache_entries_nbytes(entries)
         if nbytes > self._max_bytes:
             logger.debug(
@@ -385,27 +510,92 @@ class VLMPromptSnapshotStore:
             )
             return False
         item = (key, tuple(prefix_ids))
-        self.discard(item)
-        while self._entries and (
-            self.nbytes + nbytes > self._max_bytes or len(self._entries) >= self._max_entries
-        ):
-            self.discard(next(iter(self._entries)))
+        replay = replay or self._is_replay(item)
+        readers = [other for other, base in self._bases.items() if base == item]
+        self._pop(item)
         self._entries[item] = (entries, nbytes)
         self.nbytes += nbytes
-        return True
+        replaced = self._replays.get(key)
+        if replay:
+            self._replays[key] = item
+        longer = [other for other in reversed(self._entries) if _extends(other, item)]
+        # A replay is the base of what it extends, so the one it replaces takes nothing along.
+        base = self._bases.get(longer[0], longer[0]) if longer and not replay else item
+        rebased = {
+            other
+            for other in list(self._entries)
+            if other != base
+            and other not in (replaced, self._replays.get(key))
+            and (other == item or _extends(item, other))
+            and self._rebase(other, base)
+        }
+        for other in readers:
+            # Still reading the replaced buffers, which nothing counts any more.
+            if other not in rebased:
+                self.discard(other)
+        if replay and replaced not in (None, item):
+            self.discard(replaced)
+        self._touch(item)
+        while self._entries and (
+            self.nbytes > self._max_bytes or len(self._entries) > self._max_entries
+        ):
+            self.discard(next(iter(self._entries)))
+        return item in self._entries
 
-    def discard(self, item):
+    def _rebase(self, item, base):
+        entries, nbytes = self._entries[item]
+        shared = share_kv_rows(entries, self._entries[base][0])
+        if shared:
+            owned = cache_entries_nbytes(entries) - shared
+            self._entries[item] = (entries, owned)
+            self.nbytes += owned - nbytes
+            self._bases[item] = base
+        return bool(shared)
+
+    def _touch(self, item):
+        self._entries.move_to_end(item)
+        base = self._bases.get(item)
+        if base is not None:
+            # Behind what reads through it, so eviction reaches it last.
+            self._entries.move_to_end(base)
+
+    def _is_replay(self, item):
+        return self._replays.get(item[0]) == item
+
+    def _pop(self, item):
         dropped = self._entries.pop(item, None)
+        self._bases.pop(item, None)
+        if self._is_replay(item):
+            del self._replays[item[0]]
         if dropped is not None:
             self.nbytes -= dropped[1]
 
+    def discard(self, item):
+        self._pop(item)
+        # Views would keep a dropped base's buffers alive, uncounted.
+        for other in [other for other, base in self._bases.items() if base == item]:
+            self.discard(other)
+
     def retain(self, item):
-        for other in [other for other in self._entries if other != item]:
+        keep = (item, self._bases.get(item))
+        for other in [other for other in self._entries if other not in keep]:
             self.discard(other)
 
     def clear(self):
         self._entries.clear()
+        self._bases.clear()
+        self._replays.clear()
         self.nbytes = 0
+
+
+def _extends(item, other):
+    """Whether ``item`` holds a strictly longer prefix of ``other``'s conversation."""
+    (key, prefix), (other_key, other_prefix) = item, other
+    return (
+        key == other_key
+        and len(prefix) > len(other_prefix)
+        and prefix[: len(other_prefix)] == other_prefix
+    )
 
 
 class VLMPromptCacheSession:
@@ -499,6 +689,9 @@ class VLMPromptCacheSession:
             record.on_resume = self._detach_served
         self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
         record.capture_at = (boundary - prefix_len) // self.step
+        if prefix_len <= boundary < len(token_ids) - 1:
+            # One chunk more: what ends the prefill.
+            record.tail_at = record.capture_at + 1
         self.reused_tokens = prefix_len
         return prefix_len
 
@@ -532,8 +725,25 @@ class VLMPromptCacheSession:
         stops reading early."""
 
     def finish(self):
-        snapshot = self._forward.record.snapshot
-        if snapshot is None or self._token_ids is None:
+        if self._token_ids is None:
+            return False
+        record = self._forward.record
+        stored = self._store_boundary(record.snapshot)
+        replay = len(self._token_ids) - 1
+        # Only a prefill on the offered chunks: a declined offer started over from row 0.
+        if (
+            record.tail is not None
+            and record.resume_offset == self.reused_tokens
+            and cache_entries_offset(record.tail) == replay
+        ):
+            stored = (
+                self._store.store(self._key, self._token_ids[:replay], record.tail, replay = True)
+                or stored
+            )
+        return stored
+
+    def _store_boundary(self, snapshot):
+        if snapshot is None:
             return False
         # Read off the snapshot: a declined offer captures an earlier boundary.
         held = cache_entries_offset(snapshot)
