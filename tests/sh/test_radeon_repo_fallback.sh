@@ -51,18 +51,18 @@ assert_eq "HTTP 404 -> fetch fails, host recorded as answering" \
     "fail answered=true" "$(run_fetch 22 404)"
 assert_eq "HTTP 410 -> fetch fails, host recorded as answering" \
     "fail answered=true" "$(run_fetch 22 410)"
-assert_eq "HTTP 503 -> outage, host not recorded as answering" \
-    "fail answered=false" "$(run_fetch 22 503)"
-assert_eq "HTTP 429 -> rate limit, host not recorded as answering" \
-    "fail answered=false" "$(run_fetch 22 429)"
+assert_eq "HTTP 503 -> outage, inconclusive" \
+    "fail answered=inconclusive" "$(run_fetch 22 503)"
+assert_eq "HTTP 429 -> rate limit, inconclusive" \
+    "fail answered=inconclusive" "$(run_fetch 22 429)"
 
 # 2) Connection refused (7).
-assert_eq "connection refused -> fetch fails, host not recorded as answering" \
-    "fail answered=false" "$(run_fetch 7 000)"
+assert_eq "connection refused -> inconclusive" \
+    "fail answered=inconclusive" "$(run_fetch 7 000)"
 
 # 3) Timeout (28).
-assert_eq "timeout -> fetch fails, host not recorded as answering" \
-    "fail answered=false" "$(run_fetch 28 000)"
+assert_eq "timeout -> inconclusive" \
+    "fail answered=inconclusive" "$(run_fetch 28 000)"
 
 # 4) Served listing.
 _curl_dir=$(mktemp -d)
@@ -86,29 +86,35 @@ _result=$(PATH="$_curl_dir:$PATH" bash -c "
 assert_eq "a served listing -> fetch succeeds" "ok answered=false pytag=cp312" "$_result"
 rm -rf "$_curl_dir"
 
-# 5) Sticky: 404 on X.Y.Z then a transport failure on X.Y still means the host is up.
-_curl_dir=$(mktemp -d)
-cat > "$_curl_dir/curl" <<STUB
+# 5) Two attempts (X.Y.Z, then X.Y): "no release" only if BOTH were 404/410.
+# $1/$2 = first call's rc/http, $3/$4 = second call's.
+run_two() {
+    _curl_dir=$(mktemp -d)
+    cat > "$_curl_dir/curl" <<STUB
 #!/bin/sh
 _n=\$(cat "$_curl_dir/calls" 2>/dev/null || echo 0)
 echo \$((_n + 1)) > "$_curl_dir/calls"
-[ "\$_n" = 0 ] && { printf '\\n404'; exit 22; }
-printf '\\n000'
-exit 7
+[ "\$_n" = 0 ] && { printf '\\n%s' '$2'; exit $1; }
+printf '\\n%s' '$4'
+exit $3
 STUB
-chmod +x "$_curl_dir/curl"
-_result=$(PATH="$_curl_dir:$PATH" bash -c "
-    . '$_FUNC_FILE'
-    _VENV_PY='$_STUB_DIR/fakepy'
-    _RADEON_LISTING=''
-    _RADEON_HOST_ANSWERED=false
-    _radeon_fetch_listing 'https://repo.radeon.com/rocm/manylinux/rocm-rel-7.14.60850/' || true
-    _RADEON_LISTING=''
-    _radeon_fetch_listing 'https://repo.radeon.com/rocm/manylinux/rocm-rel-7.14/' || true
-    printf '%s calls=%s\n' \"\$_RADEON_HOST_ANSWERED\" \"\$(cat '$_curl_dir/calls')\"
-")
-assert_eq "one answer across two attempts is enough" "true calls=2" "$_result"
-rm -rf "$_curl_dir"
+    chmod +x "$_curl_dir/curl"
+    PATH="$_curl_dir:$PATH" bash -c "
+        . '$_FUNC_FILE'
+        _VENV_PY='$_STUB_DIR/fakepy'
+        _RADEON_LISTING=''
+        _RADEON_HOST_ANSWERED=false
+        _radeon_fetch_listing 'https://repo.radeon.com/rocm/manylinux/rocm-rel-7.14.60850/' || true
+        _RADEON_LISTING=''
+        _radeon_fetch_listing 'https://repo.radeon.com/rocm/manylinux/rocm-rel-7.14/' || true
+        printf '%s calls=%s\n' \"\$_RADEON_HOST_ANSWERED\" \"\$(cat '$_curl_dir/calls')\"
+    "
+    rm -rf "$_curl_dir"
+}
+assert_eq "404 then 404 -> release unpublished" "true calls=2" "$(run_two 22 404 22 404)"
+assert_eq "404 then 503 -> inconclusive" "inconclusive calls=2" "$(run_two 22 404 22 503)"
+assert_eq "404 then connection refused -> inconclusive" "inconclusive calls=2" "$(run_two 22 404 7 000)"
+assert_eq "timeout then 404 -> stays inconclusive" "inconclusive calls=2" "$(run_two 28 000 22 404)"
 
 # 6) wget (only reached without curl): its 8 covers every HTTP error, so it stays "unreachable".
 run_fetch_wget() {
@@ -132,10 +138,10 @@ STUB
     "
     rm -rf "$_wget_dir"
 }
-assert_eq "no curl, wget HTTP error -> host not recorded as answering" \
-    "fail answered=false" "$(run_fetch_wget 8)"
-assert_eq "no curl, wget network failure -> host not recorded as answering" \
-    "fail answered=false" "$(run_fetch_wget 4)"
+assert_eq "no curl, wget HTTP error -> inconclusive" \
+    "fail answered=inconclusive" "$(run_fetch_wget 8)"
+assert_eq "no curl, wget network failure -> inconclusive" \
+    "fail answered=inconclusive" "$(run_fetch_wget 4)"
 
 # 7) The not-published arm precedes the unreachable arm.
 _answered_line=$(grep -n 'elif \[ "\$_RADEON_HOST_ANSWERED" = true \]; then' "$INSTALL_SH" | head -1 | cut -d: -f1)

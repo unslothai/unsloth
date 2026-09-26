@@ -5559,7 +5559,7 @@ get_radeon_wheel_url() {
 _RADEON_LISTING=""
 _RADEON_PYTAG=""
 _RADEON_BASE_URL=""
-# Sticky across the X.Y.Z and X.Y attempts: one HTTP answer proves the host is up.
+# true only while every attempt (X.Y.Z, then X.Y) returned 404/410; any transient failure pins "inconclusive".
 _RADEON_HOST_ANSWERED=false
 
 _radeon_fetch_listing() {
@@ -5580,7 +5580,8 @@ print('cp{}{}'.format(sys.version_info.major, sys.version_info.minor))
     fi
     # Only 404/410 mean "no such release": curl -f exits 22 on 429/5xx too, and wget's 8 is any error.
     case "$_radeon_http" in
-        404|410) _RADEON_HOST_ANSWERED=true ;;
+        404|410) [ "$_RADEON_HOST_ANSWERED" = inconclusive ] || _RADEON_HOST_ANSWERED=true ;;
+        *) [ -n "$_RADEON_LISTING" ] || _RADEON_HOST_ANSWERED=inconclusive ;;
     esac
     [ -n "$_RADEON_LISTING" ] || return 1
 }
