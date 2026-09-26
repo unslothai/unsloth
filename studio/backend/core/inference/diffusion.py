@@ -149,6 +149,7 @@ from .diffusion_speed import (
     snapshot_backend_flags,
     vae_decode_compile_allowed,
 )
+from .diffusion_vae_fp16 import enable_fp16_vae_decode
 from .diffusion_attention import (
     apply_attention_backend,
     normalize_attention_backend,
@@ -6383,6 +6384,12 @@ class DiffusionBackend:
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
+                    # After the speed optims, so the non-finite check sits outside a compiled decode. An explicit
+                    # `off` keeps the bit-identical fp32 decode.
+                    if str(speed_mode or "").strip().lower() != SPEED_OFF:
+                        speed_applied["vae_fp16_decode"] = enable_fp16_vae_decode(
+                            pipe, target, logger = logger
+                        )
                     self._raise_if_load_cancelled(_load_token)
                     if (
                         transformer_quant_engaged is not None
