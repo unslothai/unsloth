@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A gpt-oss MXFP4 LoRA load without load_in_16bit must take unsloth_zoo's packed-experts path.
+"""gpt-oss MXFP4 LoRA without load_in_16bit must take unsloth_zoo's packed experts path.
 
-load_in_4bit = False (no load_in_16bit) used to keep the native Mxfp4GptOssExperts, whose
-triton_kernels matmul_ogs forward has no backward: Unsloth's copy raises "Backwards pass
-using MXFP4 is still under construction", and the transformers copy returns an output
-detached from the graph, so LoRA below the MoE layers trains on the residual gradient only.
-When unsloth_zoo keeps the experts packed (still MXFP4 in memory, decoded one layer at a
-time in a differentiable forward), the loader now asks for Mxfp4Config(dequantize = True)
-so that path is taken. Without the zoo path, the native load is unchanged.
-
-Source-level, because reaching the branch needs a real checkpoint download. No GPU needed.
+Native matmul_ogs has no backward. Source-level (the real branch needs a checkpoint); no GPU.
 """
 
 import ast
@@ -235,7 +227,6 @@ def test_helper_off_when_zoo_declines_or_fails(zoo):
 
 
 def test_helper_off_without_the_zoo_packed_path(monkeypatch):
-    # An unsloth_zoo release without keep_mxfp4_experts_packed.
     monkeypatch.setitem(sys.modules, ZOO_MXFP4, types.ModuleType(ZOO_MXFP4))
     assert _helper()("mxfp4") is False
 
@@ -259,13 +250,11 @@ def test_load_in_16bit_still_dequantizes(zoo):
 
 
 def test_offloading_device_map_keeps_native_load(zoo):
-    # unsloth_zoo cannot keep CPU / disk offloaded experts packed, so dequantize = True there
-    # would turn the MXFP4 experts into a full 16 bit copy at load.
+    # Offloaded experts would be dequantized to a full 16 bit copy.
     offload = {"model.embed_tokens": 0, "model.layers.0": 0, "model.layers.1": "cpu", "lm_head": 0}
     assert _helper()("mxfp4", False, offload) is False
     assert _helper()("mxfp4", False, {**offload, "model.layers.1": "disk"}) is False
     assert _run_branch(False, "mxfp4", False, device_map = offload) is False
-    # Maps that stay on accelerators, and string maps, still take the packed path.
     assert _helper()("mxfp4", False, {"": 0}) is True
     assert _helper()("mxfp4", False, {"model.layers.0": 0, "model.layers.1": 1}) is True
     for device_map in ("sequential", "auto"):
@@ -280,21 +269,16 @@ def test_quantizer_without_dequantize_argument_untouched(zoo):
 
 
 def test_placement_strategy_that_would_offload_keeps_native_load(zoo, sizes):
-    # "auto" / "sequential" resolve after this decision; a checkpoint larger than the free
-    # accelerator memory will be spilled to CPU, where the packed path would dequantize.
     sizes["checkpoint"], sizes["free"] = 65, [40]
     for device_map in ("sequential", "auto", "balanced", "balanced_low_0"):
         assert _helper()("mxfp4", False, device_map, "openai/gpt-oss-120b") is False
         assert _run_branch(False, "mxfp4", False, device_map = device_map) is False
-    # Two cards together hold it.
     sizes["free"] = [40, 40]
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b") is True
-    # A caller's max_memory caps each card and leaves unnamed cards out.
     assert (
         _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b", {0: "30GiB", 1: "30GiB"}) is False
     )
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b", {0: 40 * 2**30}) is False
-    # A named device or a planned map is not a strategy and is not sized here.
     assert _helper()("mxfp4", False, {"": 0}, "openai/gpt-oss-120b") is True
 
 
@@ -328,8 +312,6 @@ def test_zero_accelerator_capacity_counts_as_offload(zoo, sizes):
 
 
 def test_no_sizing_without_the_packed_path(zoo, sizes, monkeypatch):
-    # An unsloth_zoo without keep_mxfp4_experts_packed (or one that declines) must not touch
-    # the Hub or the accelerators.
     zoo["keep"] = False
     assert _helper()("mxfp4", False, "sequential", "openai/gpt-oss-20b") is False
     monkeypatch.setitem(sys.modules, ZOO_MXFP4, types.ModuleType(ZOO_MXFP4))
@@ -344,12 +326,10 @@ def test_named_cpu_device_map_keeps_native_load(zoo, sizes):
 
 
 def test_only_the_loaded_weight_files_are_counted(zoo, sizes):
-    # gpt-oss-120b ships original/*.safetensors next to the HF shards (61 GiB each); only
-    # the top-level shards are loaded, so it fits one 80 GiB card.
+    # gpt-oss-120b's original/ copy (61 GiB) is never loaded.
     sizes["checkpoint"], sizes["free"] = 61, [80]
     sizes["extra"] = [("original/model--00001-of-00007.safetensors", 61)]
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b") is True
-    # Another variant in the same repo is not counted unless selected.
     sizes["extra"] = [
         ("model.fp16-00001-of-00002.safetensors", 30),
         ("model.fp16-00002-of-00002.safetensors", 30),
@@ -383,7 +363,6 @@ def test_offline_load_sizes_the_cached_snapshot(zoo, sizes, tmp_path):
     repo, kwargs = sizes["snapshot_calls"][-1]
     assert repo == "openai/gpt-oss-20b" and kwargs["local_files_only"] is True
     assert kwargs["revision"] == "main" and kwargs["cache_dir"] == "/cache"
-    # Not cached either: size unknown, packed path kept.
     sizes["snapshot"] = None
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is True
 
@@ -465,7 +444,6 @@ def test_a_card_that_fails_the_probe_adds_no_capacity(zoo, sizes, monkeypatch):
 
 
 def test_unset_device_map_follows_the_default_device(zoo, sizes, monkeypatch):
-    # device_map = None loads on the default device: the CPU unless the caller set one.
     import torch
 
     monkeypatch.setattr(torch, "get_default_device", lambda: torch.device("cpu"))
@@ -489,7 +467,6 @@ def test_pytorch_bin_checkpoints_are_sized(zoo, sizes, tmp_path):
         ("pytorch_model-00002-of-00002.bin", 45),
     ]
     assert _helper()("mxfp4", False, "auto", "org/repo") is False
-    # With safetensors present those are what is loaded, not the .bin copy as well.
     sizes["checkpoint"] = 40
     assert _helper()("mxfp4", False, "auto", "org/repo") is True
     (tmp_path / "pytorch_model.bin").write_bytes(b"0" * 8192)
@@ -537,7 +514,6 @@ def test_use_safetensors_false_sizes_the_bin_files(zoo, sizes):
 
 
 def test_only_the_file_or_index_from_pretrained_selects_is_sized(zoo, sizes, tmp_path):
-    # Stale shards from an earlier save: only the ones the index lists are loaded.
     sizes["checkpoint"], sizes["free"] = 13, [80]
     sizes["extra"] = [(f"model-0000{i}-of-00003.safetensors", 30) for i in (1, 2, 3)]
     sizes["index"] = {
@@ -549,10 +525,8 @@ def test_only_the_file_or_index_from_pretrained_selects_is_sized(zoo, sizes, tmp
     assert _helper()("mxfp4", False, "auto", "org/repo") is True
     sizes["index"] = {}
     assert _helper()("mxfp4", False, "auto", "org/repo") is False
-    # A single model.safetensors wins over shards next to it.
     sizes["extra"] = [("model.safetensors", 13)] + sizes["extra"]
     assert _helper()("mxfp4", False, "auto", "org/repo") is True
-    # The same order in a local folder.
     local = tmp_path / "local"
     local.mkdir()
     (local / "model-00001-of-00001.safetensors").write_bytes(b"0" * 8192)
@@ -580,18 +554,16 @@ def test_index_shards_in_nested_folders_are_sized(zoo, sizes, tmp_path):
 
 
 def test_an_explicit_max_memory_budget_is_used_whole(zoo, sizes):
-    # 38 GiB against a 40 GiB budget fits: accelerate places against max_memory as given.
+    # accelerate uses max_memory as given (no margin).
     sizes["checkpoint"], sizes["free"] = 38, [80]
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b", {0: "40GiB"}) is True
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b", {0: "36GiB"}) is False
-    # Measured free memory keeps its margin.
     sizes["free"] = [40]
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is False
 
 
 def test_balanced_low_0_still_counts_the_first_card(zoo, sizes):
-    # accelerate's get_balanced_memory(low_zero = True) caps GPU 0 at what the other cards
-    # cannot hold, so the overflow lands there before any CPU offload.
+    # get_balanced_memory(low_zero = True) still spills overflow onto GPU 0 before CPU.
     sizes["checkpoint"], sizes["free"] = 60, [80, 40]
     assert _helper()("mxfp4", False, "balanced_low_0", "openai/gpt-oss-120b") is True
     sizes["free"] = [30, 30]

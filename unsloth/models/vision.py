@@ -1255,44 +1255,31 @@ def _mxfp4_lora_keeps_experts_packed(
     token = None,
     use_safetensors = None,
 ):
-    """Whether a LoRA load of an MXFP4 checkpoint should take unsloth_zoo's packed-experts path.
+    """Whether an MXFP4 LoRA load should use unsloth_zoo's packed experts (dequantize = True).
 
-    That path (Mxfp4Config(dequantize = True) with unsloth_zoo's keep_mxfp4_experts_packed) keeps
-    the experts MXFP4 in memory and decodes one layer at a time inside a differentiable forward.
-    The native Mxfp4GptOssExperts forward runs triton_kernels' matmul_ogs, which has no backward:
-    Unsloth's copy raises "Backwards pass using MXFP4 is still under construction", and the
-    transformers one returns an output detached from the graph, so LoRA below every MoE layer
-    silently gets the gradient of the residual stream only. Off when unsloth_zoo has no packed
-    path, for full finetuning, with UNSLOTH_MXFP4_KEEP_PACKED=0, and for a device map that
-    offloads to CPU or disk: unsloth_zoo cannot keep offloaded experts packed and would
-    dequantize every expert to 16 bit at load instead. A placement strategy ("auto",
-    "sequential", ...) is only resolved later, so it counts as offloading when the checkpoint
-    does not fit in the accelerators' free memory (or the caller's max_memory)."""
-    # A config built in memory carries transformers' QuantizationMethod enum, whose str() is
-    # "QuantizationMethod.MXFP4"; compare its value.
+    Native matmul_ogs has no backward (transformers silently detaches LoRA grads below MoE layers).
+    Off for full finetuning, UNSLOTH_MXFP4_KEEP_PACKED=0, or CPU / disk offload (zoo would then
+    dequantize every expert to 16 bit); "auto"-style maps count as offload if the checkpoint does
+    not fit in free accelerator memory / max_memory."""
+    # In-memory configs carry the QuantizationMethod enum; str() is "QuantizationMethod.MXFP4".
     quant_method = getattr(quant_method, "value", quant_method)
     if full_finetuning or str(quant_method).lower() != "mxfp4":
         return False
-    # transformers also takes a torch.device or a bare index and wraps it as {"": device}.
     if device_map is not None and not isinstance(device_map, (dict, str)):
         device_map = str(device_map)
-    # No map loads on the default device, which is the CPU unless the caller set one.
     if device_map is None:
         try:
             import torch
             device_map = str(getattr(torch, "get_default_device", lambda: "cpu")())
         except Exception:
             device_map = "cpu"
-    # unsloth_zoo only learns about offload once transformers resolves the map, after this
-    # config is built, so an explicit map that offloads is checked here.
+    # unsloth_zoo only sees offload after this config is built, so check explicit maps here.
     if isinstance(device_map, dict) and any(
         str(value).split(":")[0] in ("cpu", "disk") for value in device_map.values()
     ):
         return False
     if isinstance(device_map, str) and device_map.split(":")[0] in ("cpu", "disk"):
         return False
-    # The capability check comes first, so an unsloth_zoo without the packed path never
-    # triggers the Hub lookup or the accelerator probe below.
     try:
         from unsloth_zoo.temporary_patches.mxfp4 import keep_mxfp4_experts_packed
     except Exception:
@@ -1308,8 +1295,7 @@ def _mxfp4_lora_keeps_experts_packed(
         "balanced_low_0",
         "sequential",
     ):
-        # transformers resolves these with infer_auto_device_map, which spills to CPU / disk
-        # once the accelerators are full. Unknown sizes keep the packed path, as before.
+        # infer_auto_device_map spills to CPU / disk when full; unknown sizes stay packed.
         try:
             import json
             import os
@@ -1318,7 +1304,7 @@ def _mxfp4_lora_keeps_experts_packed(
             prefix = subfolder.strip("/") + "/" if subfolder else ""
 
             def with_variant(name):
-                # transformers' _add_variant: the variant goes before the last suffix.
+                # Mirrors transformers' _add_variant.
                 if not variant:
                     return name
                 parts = name.split(".")
@@ -1329,10 +1315,7 @@ def _mxfp4_lora_keeps_experts_packed(
                 read_index,
                 size_of = None,
             ):
-                # The files from_pretrained reads, in its order: model.safetensors, else the
-                # shards the safetensors index lists, else the same for pytorch_model.bin
-                # (only the .bin pair with use_safetensors = False), for the selected variant
-                # and subfolder. Stale shards, gpt-oss's original/ and adapters never count.
+                # Only files from_pretrained reads, in its order (not stale shards / original/).
                 files = {name.replace(os.sep, "/"): size or 0 for name, size in files}
                 formats = [
                     ("model.safetensors", "model.safetensors.index.json"),
@@ -1344,8 +1327,7 @@ def _mxfp4_lora_keeps_experts_packed(
                         return files[single]
                     if index in files:
                         shards = set(json.loads(read_index(index))["weight_map"].values())
-                        # An index may name shards in nested folders, which a folder listing
-                        # does not reach.
+                        # Shards may sit in nested folders a listing does not reach.
                         return sum(
                             files.get(prefix + shard) or (size_of(prefix + shard) if size_of else 0)
                             for shard in shards
@@ -1387,7 +1369,6 @@ def _mxfp4_lora_keeps_experts_packed(
 
                     if local_files_only:
                         raise OSError("local_files_only: no Hub lookup")
-                    # The revision the config and weights are loaded from, not the default branch.
                     info = HfApi().model_info(
                         str(model_name), revision = revision, files_metadata = True, token = token
                     )
@@ -1408,8 +1389,7 @@ def _mxfp4_lora_keeps_experts_packed(
                         hub_index,
                     )
                 except Exception:
-                    # Offline (local_files_only / HF_HUB_OFFLINE) or unreachable: size the
-                    # cached snapshot instead.
+                    # Offline or unreachable: size the cached snapshot.
                     from huggingface_hub import snapshot_download
                     folder = snapshot_download(
                         str(model_name),
@@ -1422,14 +1402,12 @@ def _mxfp4_lora_keeps_experts_packed(
                     checkpoint_bytes = weight_bytes(
                         folder_files(folder), folder_index(folder), folder_size(folder)
                     )
-            # The backend accelerate fills: CUDA / ROCm, else Intel XPU.
             backend = torch.cuda
             if not torch.cuda.is_available() and getattr(torch, "xpu", None) is not None:
                 if torch.xpu.is_available():
                     backend = torch.xpu
             probed = backend.is_available() and backend.device_count() > 0
             if max_memory:
-                # Only the cards the caller allowed; an excluded card is never touched.
                 devices = (
                     sorted(
                         {
@@ -1448,7 +1426,6 @@ def _mxfp4_lora_keeps_experts_packed(
                 try:
                     free = backend.mem_get_info(index)[0]
                 except Exception:
-                    # accelerate leaves a card it cannot query out of the map.
                     continue
                 budget = max_memory.get(index, max_memory.get(str(index))) if max_memory else None
                 if isinstance(budget, str):
@@ -1457,9 +1434,7 @@ def _mxfp4_lora_keeps_experts_packed(
                 if isinstance(budget, int):
                     free = min(free, budget)
                 free_bytes += free
-            # Zero measured capacity (every card excluded or capped at 0) spills everything.
-            # A caller's max_memory is the budget accelerate places against as given; measured
-            # free memory keeps a margin for activations and the CUDA context.
+            # max_memory is used as given; measured free memory keeps a margin for activations.
             limit = free_bytes if max_memory else 0.9 * free_bytes
             if checkpoint_bytes and probed and checkpoint_bytes > limit:
                 return False
@@ -2490,8 +2465,7 @@ class FastBaseModel:
                     pass
                 else:
                     # Cannot dequantize, since gpt-oss-20b MXFP4 would become gpt-oss-20b-BF16.
-                    # The one exception is a LoRA load that unsloth_zoo keeps packed: its experts
-                    # stay MXFP4 and, unlike the native kernels, it has a backward pass.
+                    # Except LoRA with zoo's packed experts: stays MXFP4 and has a backward.
                     if (
                         load_in_16bit
                         or _mxfp4_lora_keeps_experts_packed(
