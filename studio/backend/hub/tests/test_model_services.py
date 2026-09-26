@@ -703,6 +703,72 @@ def test_local_inventory_prefers_active_cache_when_copies_are_equally_complete(t
     assert local_inventory._dedupe_local_models([previous, active]) == [active]
 
 
+def _custom_gguf_row(
+    tmp_path: Path,
+    *,
+    load_path: Path,
+    size_bytes: int = 10,
+):
+    return model_common._local_model_info(
+        scan_path = load_path,
+        load_path = load_path,
+        source = "custom",
+        model_format = "gguf",
+        size_bytes = size_bytes,
+    )
+
+
+def test_custom_dedupe_overlapping_symlink_scans_collapse_to_one_row(tmp_path):
+    """Two overlapping symlink scan roots can rediscover the same alias path once."""
+    target = tmp_path / "weights"
+    target.mkdir()
+    gguf_file = target / "model.gguf"
+    gguf_file.write_bytes(b"x" * 10)
+    scan_root = tmp_path / "scan-link"
+    try:
+        scan_root.symlink_to(target, target_is_directory = True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    row = _custom_gguf_row(tmp_path, load_path = scan_root / "model.gguf")
+    assert local_inventory._dedupe_custom_local_models([row, row]) == [row]
+
+
+def test_custom_dedupe_collapses_duplicate_scanner_rows_for_one_symlink_alias(tmp_path):
+    """Multiple scanners can emit the same symlink alias path once per scan."""
+    target = tmp_path / "weights"
+    target.mkdir()
+    (target / "model.gguf").write_bytes(b"x" * 10)
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(target, target_is_directory = True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    row = _custom_gguf_row(tmp_path, load_path = alias / "model.gguf")
+    duplicate = _custom_gguf_row(tmp_path, load_path = alias / "model.gguf", size_bytes = 20)
+    result = local_inventory._dedupe_custom_local_models([row, duplicate])
+    assert len(result) == 1
+    assert result[0].size_bytes == 20
+
+
+def test_custom_dedupe_distinct_symlink_aliases_stay_separate_rows(tmp_path):
+    """Different symlink paths to one on-disk model keep separate settings rows."""
+    target = tmp_path / "weights"
+    target.mkdir()
+    (target / "model.gguf").write_bytes(b"x" * 10)
+    alias_a = tmp_path / "alias-a"
+    alias_b = tmp_path / "alias-b"
+    try:
+        alias_a.symlink_to(target, target_is_directory = True)
+        alias_b.symlink_to(target, target_is_directory = True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    row_a = _custom_gguf_row(tmp_path, load_path = alias_a / "model.gguf")
+    row_b = _custom_gguf_row(tmp_path, load_path = alias_b / "model.gguf")
+    result = local_inventory._dedupe_custom_local_models([row_a, row_b])
+    assert len(result) == 2
+    assert {r.path for r in result} == {row_a.path, row_b.path}
+
+
 def test_loaded_repo_match_accepts_previous_cache_snapshot_path(monkeypatch, tmp_path):
     repo_dir = tmp_path / "old-hub" / "models--Org--Model"
     snapshot = repo_dir / "snapshots" / "revision"
