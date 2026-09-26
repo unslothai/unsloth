@@ -344,14 +344,18 @@ function formatElapsed(value: number, format: string): string {
   const scale = 10 ** (digits - 1);
   const ticks = Math.round(Math.abs(value) * 86400 * scale);
   const total = Math.floor(ticks / scale);
-  const pad = (n: number) => String(n).padStart(2, "0");
+  // As wide as the placeholder: [h]:m:s shows one hour as 1:0:0, [hh]:mm:ss as 01:00:00.
+  const pad = (n: number, width: number) => String(n).padStart(Math.min(width, 2), "0");
   const out = tokens
     .map((token) => {
       const unit = token.toLowerCase();
-      if (unit.startsWith("[")) return String(Math.floor(total / (unit[1] === "h" ? 3600 : unit[1] === "m" ? 60 : 1)));
-      if (unit[0] === "h") return pad(Math.floor(total / 3600) % 24);
-      if (unit[0] === "m") return pad(Math.floor((total % 3600) / 60));
-      if (unit[0] === "s") return pad(total % 60);
+      if (unit.startsWith("[")) {
+        const per = unit[1] === "h" ? 3600 : unit[1] === "m" ? 60 : 1;
+        return pad(Math.floor(total / per), unit.length - 2);
+      }
+      if (unit[0] === "h") return pad(Math.floor(total / 3600) % 24, unit.length);
+      if (unit[0] === "m") return pad(Math.floor((total % 3600) / 60), unit.length);
+      if (unit[0] === "s") return pad(total % 60, unit.length);
       if (/^\.0+$/.test(token)) return `.${String(ticks % scale).padStart(digits - 1, "0")}`;
       if (token.startsWith('"')) return token.slice(1, -1);
       return token.startsWith("\\") ? token.slice(1) : token;
@@ -567,7 +571,7 @@ export function formatNumber(value: number, rawCode: string | undefined, date190
   if (kind === "literal") return `${sign}${code.replace(/general/i, generalText(Math.abs(value)))}`.trim();
   if (kind === "scientific") return `${sign}${formatScientific(Math.abs(percent ? value * 100 : value), tagged).trim()}`;
   // The magnitude: the section's own sign, as in the other branches. (# ?/?;(# ?/?) shows (1 1/2).)
-  const fraction = formatFraction(Math.abs(value), code);
+  const fraction = formatFraction(Math.abs(percent ? value * 100 : value), code);
   if (fraction !== null) return `${sign}${fraction}`;
   const number = Math.abs(percent ? value * 100 : value) / scale;
   return `${sign}${placeDigits(number, tagged).trim()}`;
@@ -1167,15 +1171,24 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   const cy = Number(size?.getAttribute("cy")) || 6858000;
   const rels = relationships(head, main);
   const slidePaths = all(presentation, "sldId").map((id) => rels.get(relId(id, "id") ?? ""));
-  const wanted = new Set(slidePaths.flatMap((path) => (path ? [path, relsPath(path)] : [])));
-  const slideFiles = read(wanted);
-  // A hidden slide is left out of the show, so out of the viewer and the model's text too. Read
-  // from the root tag, so each slide is parsed only when its turn comes.
-  const shown = slidePaths.filter(
-    (path): path is string =>
-      Boolean(path && slideFiles[path]) && !HIDDEN_SLIDE.test(strFromU8(slideFiles[path!]!.subarray(0, 16384))),
-  );
-  const visible = shown.slice(0, MAX_SLIDES).map((path) => ({ path, rels: relationshipList(slideFiles, path) }));
+  const slideFiles: Unzipped = {};
+  const visible: { path: string; rels: ReturnType<typeof relationshipList> }[] = [];
+  let truncated = false;
+  for (const path of slidePaths) {
+    if (!path) continue;
+    // One slide at a time, so a deck past the cap inflates no more than it shows.
+    const part = read([path, relsPath(path)]);
+    const slide = part[path];
+    // A hidden slide is left out of the show, so out of the viewer and the model's text too. Read
+    // from the root tag, so each slide is parsed only when its turn comes.
+    if (!slide || HIDDEN_SLIDE.test(strFromU8(slide.subarray(0, 16384)))) continue;
+    if (visible.length === MAX_SLIDES) {
+      truncated = true;
+      break;
+    }
+    slideFiles[path] = slide;
+    visible.push({ path, rels: relationshipList(part, path) });
+  }
   const used = new Set(
     visible.flatMap((slide) =>
       slide.rels
@@ -1275,5 +1288,5 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
     if (cut) boxes.push({ paragraphs: [{ text: "…" }] });
     slides.push({ boxes });
   }
-  return { aspect: cy / cx, widthPt: cx / 12700, slides, truncated: shown.length > MAX_SLIDES };
+  return { aspect: cy / cx, widthPt: cx / 12700, slides, truncated };
 }

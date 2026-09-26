@@ -74,6 +74,8 @@ test("number formats", () => {
     [0.0123, "0.00E+00%", "1.23E+00%"],
     [1.5 / 86400, "[h]:mm:ss.00", "0:00:01.50"],
     [1 / 24, '[h]:mm "hours"', "1:00 hours"],
+    [1 / 24, "[h]:m:s", "1:0:0"],
+    [0.125, "# ?/?%", "12 1/2%"],
   ];
   for (const [value, format, expected] of cases) assert.equal(formatNumber(value, format), expected, format);
 });
