@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 import sys
 from pathlib import Path
 
@@ -365,8 +366,15 @@ def test_every_tracked_python_file_is_already_formatted(tmp_path):
 
     # Batched, and through the same builder the Windows-limit test above measures. One call with
     # all ~2650 paths on it is 9.9x over Windows' CreateProcess cap and dies with WinError 206.
-    for argv in formatter_argvs(copies):
-        run = subprocess.run(argv, capture_output = True, text = True)
+    # The batches touch disjoint files, so they run side by side: nearly all of the time is the
+    # hook's single-threaded Python passes (ruff itself is a fraction of a second), and run one
+    # after another on a loaded CI runner they went past pytest-timeout's 330 s.
+    argvs = formatter_argvs(copies)
+    with ThreadPoolExecutor(max_workers = max(1, min(len(argvs), os.cpu_count() or 1))) as pool:
+        runs = list(
+            pool.map(lambda argv: subprocess.run(argv, capture_output = True, text = True), argvs)
+        )
+    for run in runs:
         assert run.returncode == 0, f"the formatter itself failed:\n{run.stdout}\n{run.stderr}"
 
     drifted = [name for name in names if (tmp_path / name).read_bytes() != originals[name]]
