@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
 
-"""Opt-in merged-column SentenceTransformer ranking loss."""
-
 import torch
 
 try:
@@ -40,7 +38,6 @@ class FastMultipleNegativesRankingLoss(MultipleNegativesRankingLoss):
                 value.dtype != torch.float32 or value.device != parameter.device
                 for value in self.model.parameters()
             )
-            # Full module walk last: 16-bit and autocast runs exit above in microseconds.
             or any(
                 isinstance(module, torch.nn.modules.batchnorm._BatchNorm)
                 for module in self.model.modules()
