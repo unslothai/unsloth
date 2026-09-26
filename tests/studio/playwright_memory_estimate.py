@@ -641,9 +641,12 @@ with sync_playwright() as p:
             diagnose("no-row-gear", f"Inference settings for ...{hint}")
             return None
         gear.click()
-        if wait_for_first(
-            popover.get_by_role("button", name = "Back to model list"), timeout_ms = 10_000
-        ) is not None:
+        if (
+            wait_for_first(
+                popover.get_by_role("button", name = "Back to model list"), timeout_ms = 10_000
+            )
+            is not None
+        ):
             # Kept: CONFIG_SETTLE_MS is a bounded wait because the panel exposes no readiness
             # signal to poll (see playwright_model_config.py).
             page.wait_for_timeout(CONFIG_SETTLE_MS)

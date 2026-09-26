@@ -703,9 +703,12 @@ with sync_playwright() as p:
         gear.click()
         # Gate on the page itself rather than a sleep, so a slow mount is waited out and a failed open is not mistaken
         # for a missing Context Length input below.
-        if wait_for_first(
-            popover.get_by_role("button", name = "Back to model list"), timeout_ms = 5_000
-        ) is not None:
+        if (
+            wait_for_first(
+                popover.get_by_role("button", name = "Back to model list"), timeout_ms = 5_000
+            )
+            is not None
+        ):
             # Kept: CONFIG_SETTLE_MS is a bounded wait because the panel exposes no readiness
             # signal to poll (see its definition).
             page.wait_for_timeout(CONFIG_SETTLE_MS)
@@ -793,7 +796,9 @@ with sync_playwright() as p:
                         timeout = 5_000,
                     )
                 except Exception as exc:
-                    info(f"WARN filter for {needle!r} in '{tab_name}' did not settle: {type(exc).__name__}")
+                    info(
+                        f"WARN filter for {needle!r} in '{tab_name}' did not settle: {type(exc).__name__}"
+                    )
             hit = popover.locator(
                 "[data-model-picker-option]",
                 has_text = re.compile(re.escape(needle), re.I),
