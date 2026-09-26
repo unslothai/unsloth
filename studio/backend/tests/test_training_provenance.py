@@ -23,6 +23,7 @@ from core.training.provenance import (
     exact_model_snapshot_path,
     normalize_worker_provenance_event,
     resource_provenance_allows_resume,
+    validate_exact_model_pin,
 )
 from hub.utils import dataset_cache, hf_cache_state
 
@@ -559,18 +560,21 @@ def test_mlx_top_level_quantization_attests_prequantized_snapshot(tmp_path):
     assert resource_provenance_allows_resume({**config, **updates}) is True
 
 
-def test_mlx_top_level_8bit_quantization_does_not_attest_as_4bit(tmp_path):
+def test_mlx_top_level_8bit_quantization_attests_prequantized_8bit_snapshot(tmp_path):
     model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
     (model_snapshot / "config.json").write_text(
         json.dumps({"quantization": {"bits": 8, "group_size": 64}}),
         encoding = "utf-8",
     )
     config, event = _shared_setup_2(model_snapshot, tmp_path)
+    updates = normalize_worker_provenance_event(event, config)
 
-    assert event["model"]["status"] == "incomplete"
+    assert event["model"]["load_mode"] == "prequantized_8bit"
+    assert updates[RESOURCE_PROVENANCE_KEY]["status"] == "complete"
+    assert resource_provenance_allows_resume({**config, **updates}) is True
 
 
-def test_mlx_conflicting_quantization_widths_do_not_attest_as_4bit(tmp_path):
+def test_mlx_mixed_quantization_widths_attest_prequantized_4_8bit_snapshot(tmp_path):
     model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
     (model_snapshot / "config.json").write_text(
         json.dumps(
@@ -582,6 +586,133 @@ def test_mlx_conflicting_quantization_widths_do_not_attest_as_4bit(tmp_path):
                 }
             }
         ),
+        encoding = "utf-8",
+    )
+    config, event = _shared_setup_2(model_snapshot, tmp_path)
+    updates = normalize_worker_provenance_event(event, config)
+
+    assert event["model"]["load_mode"] == "prequantized_4_8bit"
+    assert resource_provenance_allows_resume({**config, **updates}) is True
+
+
+def test_mlx_top_level_8bit_quantization_attests_regardless_of_the_4bit_toggle(tmp_path):
+    """The toggle-off row from the issue: an 8-bit MLX snapshot loaded with the 4-bit
+    toggle off used to attest as ``unquantized``, discarding the real width and leaving
+    the run unable to resume once that width no longer matched what was on disk.
+    """
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    (model_snapshot / "config.json").write_text(
+        json.dumps({"quantization": {"bits": 8, "group_size": 64}}),
+        encoding = "utf-8",
+    )
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model_snapshot),
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "load_in_4bit": False,
+    }
+    event = build_worker_provenance_event(
+        config,
+        SimpleNamespace(),
+        model_load_target = str(model_snapshot),
+        model_load_in_4bit = False,
+        dataset_loaded_from_exact_snapshot = True,
+    )
+    updates = normalize_worker_provenance_event(event, config)
+
+    assert event["model"]["load_mode"] == "prequantized_8bit"
+    assert resource_provenance_allows_resume({**config, **updates}) is True
+
+
+def test_prequantized_8bit_pin_refuses_resume_once_the_snapshot_declares_4bit(tmp_path):
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    (model_snapshot / "config.json").write_text(
+        json.dumps({"quantization": {"bits": 8}}),
+        encoding = "utf-8",
+    )
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model_snapshot),
+        "load_in_4bit": True,
+        "resume_model_load_mode": "prequantized_8bit",
+    }
+    assert validate_exact_model_pin(config) == str(model_snapshot.resolve())
+
+    # The cache re-quantizes the same snapshot path to 4-bit: the pin no longer matches
+    # what is actually on disk, so the resume must refuse rather than silently swap widths.
+    (model_snapshot / "config.json").write_text(
+        json.dumps({"quantization": {"bits": 4}}),
+        encoding = "utf-8",
+    )
+    with pytest.raises(ExactResumeResourcesUnavailable):
+        validate_exact_model_pin(config)
+
+
+def test_legacy_unquantized_marker_resumes_even_if_the_snapshot_now_declares_8bit(tmp_path):
+    """Back-compat: a v1 marker written before this change never checked the snapshot's
+    declared width for an ``unquantized`` pin, and that stays true so old runs keep
+    resuming.
+    """
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    (model_snapshot / "config.json").write_text(
+        json.dumps({"quantization": {"bits": 8}}),
+        encoding = "utf-8",
+    )
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model_snapshot),
+        "load_in_4bit": False,
+        RESOURCE_PROVENANCE_KEY: {
+            "version": 1,
+            "status": "complete",
+            "model_load_mode": "unquantized",
+        },
+    }
+    assert validate_exact_model_pin(config) == str(model_snapshot.resolve())
+
+
+@pytest.mark.parametrize(
+    ("stored_mode", "canonical_mode", "quantization"),
+    [
+        ("prequantized_08bit", "prequantized_8bit", {"bits": 8}),
+        ("prequantized_8_8bit", "prequantized_8bit", {"bits": 8}),
+        (
+            "prequantized_8_4bit",
+            "prequantized_4_8bit",
+            {"bits": 8, "overrides": {"decoder.layers.0": {"bits": 4}}},
+        ),
+        ("prequantized_bit", "prequantized_8bit", {"bits": 8}),
+    ],
+)
+def test_non_canonical_stored_load_mode_refuses_resume(
+    tmp_path, stored_mode, canonical_mode, quantization
+):
+    # The snapshot declares the widths a lax parse would read out of `stored_mode`, so
+    # only the canonical-form check can refuse it; the canonical spelling still resumes.
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    (model_snapshot / "config.json").write_text(
+        json.dumps({"quantization": quantization}),
+        encoding = "utf-8",
+    )
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model_snapshot),
+        "load_in_4bit": True,
+    }
+
+    assert validate_exact_model_pin({**config, "resume_model_load_mode": canonical_mode}) == str(
+        model_snapshot.resolve()
+    )
+    with pytest.raises(ExactResumeResourcesUnavailable):
+        validate_exact_model_pin({**config, "resume_model_load_mode": stored_mode})
+
+
+def test_snapshot_declaring_out_of_range_width_does_not_attest(tmp_path):
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    (model_snapshot / "config.json").write_text(
+        json.dumps({"quantization": {"bits": 32}}),
         encoding = "utf-8",
     )
     config, event = _shared_setup_2(model_snapshot, tmp_path)
