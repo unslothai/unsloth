@@ -164,9 +164,15 @@ def _unhydrated_gguf_task(name_hints: tuple[Optional[str], ...]) -> Optional[str
     """
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
+    from core.inference.video_families import detect_video_family
+
     # Leaves only: family detection matches a keyword in ANY path segment, so a chat GGUF under
     # .../FLUX.1-dev-GGUF/extra/ read as text-to-image.
-    return _name_hint_media_task(tuple(_hint_leaf(hint) for hint in name_hints if hint), None)
+    leaves = tuple(_hint_leaf(hint) for hint in name_hints if hint)
+    # H3 denoisers matched by prefix above; any other H3 name (qwen3vl_32b_minimax_h3-*) is the conditioner.
+    if any(getattr(detect_video_family(leaf), "name", None) == "minimax-h3" for leaf in leaves):
+        return None
+    return _name_hint_media_task(leaves, None)
 
 
 def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:

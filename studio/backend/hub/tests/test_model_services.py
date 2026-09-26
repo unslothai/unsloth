@@ -4087,6 +4087,14 @@ def test_a_gguf_with_no_architecture_is_classified_from_its_name(monkeypatch, tm
     )
     assert catalog_classification._gguf_path_task(chat) is None
 
+    # H3's conditioner is kv_count 0 too; only the fl2va / ref2va denoisers are video.
+    conditioner = tmp_path / "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+    denoiser = tmp_path / "minimax_h3_fl2va_pruned-Q4_K.gguf"
+    conditioner.write_bytes(b"gguf")
+    denoiser.write_bytes(b"gguf")
+    assert catalog_classification._gguf_path_task(conditioner) is None
+    assert catalog_classification._gguf_path_task(denoiser) == "text-to-video"
+
 
 def test_local_inventory_filters_embedder_configured_by_snapshot_path(monkeypatch, tmp_path):
     from core.rag import config as rag_config
