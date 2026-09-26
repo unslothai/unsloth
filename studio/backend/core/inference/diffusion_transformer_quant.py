@@ -224,7 +224,6 @@ _INT8_FAMILY_CONVROT: dict[str, tuple[int, tuple[str, ...]]] = {
 def convrot_spec_for_scheme(
     scheme: str, family: Optional[str] = None
 ) -> tuple[int, tuple[str, ...]]:
-    """``(group, fqn_suffixes)`` the int8 quantize path rotates, ``(0, ())`` for none."""
     if scheme != TQ_INT8:
         return 0, ()
     return _INT8_FAMILY_CONVROT.get(str(family or "").strip().lower(), (0, ()))

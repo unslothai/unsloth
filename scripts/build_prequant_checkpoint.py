@@ -266,7 +266,6 @@ def main(argv = None) -> int:
     if fam is None:
         print(f"error: unknown family '{args.family}'", flush = True)
         return 2
-    # unset = runtime family spec (offline == runtime); explicit group rotates all; 0 = plain
     convrot_suffixes: tuple = ()
     if args.convrot_groupsize is None:
         convrot_group, convrot_suffixes = convrot_spec_for_scheme(scheme, fam.name)

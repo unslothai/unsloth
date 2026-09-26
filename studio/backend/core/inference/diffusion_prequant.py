@@ -1223,7 +1223,7 @@ def load_prequantized_transformer(
 
         transformer = transformer.to(device)
         if declares_rotation(metadata):
-            try:  # saves the block recompile the first cache fill would cause; never worth sinking a load over
+            try:
                 import torch
 
                 on = next(iter(transformer.parameters()), None)
@@ -1408,7 +1408,6 @@ def _resolve_checkpoint_path(
                 # happened. Offline, a cache miss is the only verdict there is, so the chain is
                 # walked exactly as for a 404.
                 if not local_files_only or last:
-                    # a later, already-cached name (older download) still loads without a fetch
                     cached = (
                         None
                         if last

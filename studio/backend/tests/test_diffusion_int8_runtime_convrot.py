@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Runtime int8 ConvRot: target Linears, dense exactness, ordering before quantize_, family gating."""
 
 import sys
 import types
@@ -44,7 +43,7 @@ class _Block(nn.Module):
         self.img_mlp = _Mlp(dim)
         self.extra = nn.Linear(
             dim, dim, bias = False
-        )  # quantized, but not in the family's rotation spec
+        )
 
     def forward(self, x):
         x = x + self.attn(x)
@@ -138,9 +137,9 @@ def test_runtime_convrot_rotates_the_quantized_set_and_keeps_the_model_exact():
         )
         got = model(x, y)
     assert set(rotated) == _ROTATED
-    assert not is_rotated_linear(model.txt_in)  # family exclusion
-    assert not is_rotated_linear(model.small)  # below min_features
-    assert not is_rotated_linear(model.odd)  # 640 not divisible by 256
+    assert not is_rotated_linear(model.txt_in)
+    assert not is_rotated_linear(model.small)
+    assert not is_rotated_linear(model.odd)
     assert not any(is_rotated_linear(blk.extra) for blk in model.transformer_blocks)
     assert getattr(model, CONVROT_ATTR)["linears"] == 12
     for a, b in zip(ref, got):
@@ -273,7 +272,7 @@ def test_unreachable_hub_still_loads_the_plain_artifact_already_cached(monkeypat
     plain.unlink()
     with pytest.raises(
         LocalEntryNotFoundError
-    ):  # nothing cached: the connection error is still the answer
+    ):
         pq._resolve_checkpoint_path(source, None, None)
 
 
@@ -301,7 +300,6 @@ def test_builder_publishes_rotated_and_plain_int8_under_different_names():
 
 
 class _LoraLike(nn.Module):
-    """PEFT's LoRA Linear layout: the frozen Linear under ``base_layer``, a side path on the same input."""
 
     def __init__(self, base):
         super().__init__()
