@@ -3354,8 +3354,9 @@ function Test-IntelXpuRuntimeProven {
 function Test-OtherVendorAdapterPresent {
     param($Scan = $null)
     if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
-    # AMD evidence the AMD route finds without WMI (override, HIP SDK, opted-in amd-smi) vetoes too.
-    if ("$env:UNSLOTH_ROCM_GFX_ARCH".Trim()) { return $true }
+    # AMD evidence the AMD route finds without WMI (override, the installer's forwarded arch, HIP SDK,
+    # opted-in amd-smi) vetoes too.
+    if ("$env:UNSLOTH_ROCM_GFX_ARCH".Trim() -or "$env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF".Trim()) { return $true }
     try {
         if (Get-Command hipinfo -CommandType Application -ErrorAction SilentlyContinue) { return $true }
         foreach ($hipEnv in @($env:HIP_PATH, $env:HIP_PATH_57, $env:ROCM_PATH)) {

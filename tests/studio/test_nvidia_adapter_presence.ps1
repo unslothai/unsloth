@@ -149,7 +149,7 @@ $hipRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("hip-" + [guid]::NewGuid
 New-Item -ItemType Directory -Force -Path (Join-Path $hipRoot "bin") | Out-Null
 Set-Content -LiteralPath (Join-Path $hipRoot "bin\hipinfo.exe") -Value ""
 $savedAmdEnv = @{}
-foreach ($v in @("UNSLOTH_ROCM_GFX_ARCH", "HIP_PATH", "HIP_PATH_57", "ROCM_PATH", "UNSLOTH_ENABLE_AMD_SMI")) {
+foreach ($v in @("UNSLOTH_ROCM_GFX_ARCH", "_UNSLOTH_ROCM_GFX_ARCH_HANDOFF", "HIP_PATH", "HIP_PATH_57", "ROCM_PATH", "UNSLOTH_ENABLE_AMD_SMI")) {
     $savedAmdEnv[$v] = [Environment]::GetEnvironmentVariable($v)
     [Environment]::SetEnvironmentVariable($v, $null)
 }
@@ -160,6 +160,7 @@ try {
     Check "no AMD evidence anywhere leaves the gate open" ((Test-OtherVendorAdapterPresent) -eq $false)
     foreach ($case in @(
         @{ N = "an UNSLOTH_ROCM_GFX_ARCH override"; Env = @{ UNSLOTH_ROCM_GFX_ARCH = "gfx1100" } },
+        @{ N = "an arch the installer forwarded";   Env = @{ _UNSLOTH_ROCM_GFX_ARCH_HANDOFF = "gfx1100" } },
         @{ N = "hipinfo on PATH";                    Cmd = @("hipinfo") },
         @{ N = "a HIP SDK under HIP_PATH";           Env = @{ HIP_PATH = $hipRoot } },
         @{ N = "a HIP SDK under ROCM_PATH";          Env = @{ ROCM_PATH = $hipRoot } },
