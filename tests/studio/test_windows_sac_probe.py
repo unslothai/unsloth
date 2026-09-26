@@ -2033,6 +2033,63 @@ exit 0
     )
 
 
+def test_a_prepare_that_fails_starting_studio_rolls_the_policy_back(tmp_path):
+    """Initialize-Studio ran outside the rollback, so a Studio startup failure left the policy installed."""
+    _drive_stages(
+        tmp_path,
+        r"""
+function Get-SacState { [pscustomobject]@{ Policies = @(if (Test-Path -LiteralPath $NOISG_DEST) { [pscustomobject]@{ PolicyID = '{aaaa}'; IsEnforced = $true } }) } }
+function Test-AuditPolicyEvaluating { $true }
+function Initialize-Studio { throw 'STUDIO-TIMEOUT' }
+$Label = 'late'
+try { Invoke-Prepare; exit 61 } catch { if ("$_" -ne 'STUDIO-TIMEOUT') { Write-Host "$_"; exit 62 } }
+if (Test-Path -LiteralPath $NOISG_DEST) { exit 63 }
+if ($false -ne (Read-Baseline 'late').AuditPolicyApplied) { exit 64 }
+exit 0
+""",
+    )
+
+
+def test_revert_keeps_the_baseline_pending_when_the_policy_list_is_unreadable(tmp_path):
+    """A failed CiTool -lp became an empty list, so revert read 'cannot tell' as 'removed' and spent the baseline."""
+    names = [
+        "Get-RunDir",
+        "Get-RollbackPolicyPath",
+        "Save-ProbeBaseline",
+        "Test-PolicyActive",
+        "Get-SacState",
+        "Invoke-Revert",
+    ]
+    body = r"""
+$global:listExit = 7
+function CiTool.exe { $global:LASTEXITCODE = $global:listExit; if ($global:listExit) { 'query failed' } else { '{"Policies":[]}' } }
+$Label = 'u'
+New-Item -ItemType Directory -Force -Path (Split-Path $NOISG_DEST) | Out-Null
+'probe policy' | Set-Content -LiteralPath $NOISG_DEST
+New-Item -ItemType Directory -Force -Path (Join-Path $Work 'u') | Out-Null
+Save-ProbeBaseline ([pscustomobject]@{ AuditPolicyApplied = $true; AuditPolicyPreexisting = $false; RevertCompletedAt = $null }) (Join-Path $Work 'u/baseline.json')
+try { Invoke-Revert; exit 91 } catch { if ("$_" -notlike '*could not list the policies*') { Write-Host "$_"; exit 92 } }
+$b = Read-Baseline 'u'
+if ($b.RevertCompletedAt -or $true -ne $b.AuditPolicyApplied) { exit 93 }
+$global:listExit = 0
+Invoke-Revert
+if (-not (Read-Baseline 'u').RevertCompletedAt) { exit 94 }
+exit 0
+"""
+    _drive(tmp_path, names, _PROBE_MOCKS + body, Work = tmp_path)
+
+
+@pytest.mark.parametrize("enforced, active", [("false", "False"), ("true", "True")])
+def test_a_listed_policy_that_is_not_enforced_is_not_active(tmp_path, enforced, active):
+    """CiTool -lp lists inactive policies too; IsEnforced says whether one is active."""
+    body = (
+        "function CiTool.exe { $global:LASTEXITCODE = 0; "
+        f"""'{{"Policies":[{{"PolicyID":"{{aaaa}}","IsEnforced":{enforced}}}]}}' }}\n"""
+        f"if ([string](Test-PolicyActive '{{AAAA}}') -ne '{active}') {{ exit 95 }}\nexit 0\n"
+    )
+    _drive(tmp_path, ["Get-SacState", "Test-PolicyActive"], body)
+
+
 @pytest.mark.parametrize(
     "refresh_exit, list_exit, listing",
     [(5, 0, _UNLISTED), (0, 7, _UNLISTED), (0, 0, "INVALID JSON")],

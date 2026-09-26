@@ -180,10 +180,13 @@ function Clear-EfiOwnership {
     Dismount-Efi $true
 }
 
+# $null when CiTool could not list the policies. -lp also lists inactive policies, which carry IsEnforced=false.
 function Test-PolicyActive([string] $Guid) {
     $bare = $Guid.Trim('{', '}').ToLowerInvariant()
-    foreach ($p in (Get-SacState).Policies) {
-        if ((([string]$p.PolicyID) -replace '[{}]', '') -eq $bare) { return $true }
+    $policies = (Get-SacState).Policies
+    if ($null -eq $policies) { return $null }
+    foreach ($p in $policies) {
+        if ((([string]$p.PolicyID) -replace '[{}]', '') -eq $bare -and [string]$p.IsEnforced -ne 'False') { return $true }
     }
     return $false
 }
@@ -265,11 +268,14 @@ function Get-SacState {
         2 { 'evaluation' }
         default { 'absent' }
     }
-    $policies = @()
+    # $null, not empty, when the listing failed or is not the expected JSON
+    $policies = $null
     try {
         $raw = & CiTool.exe -lp --json 2>$null
         if ($LASTEXITCODE -eq 0 -and $raw) {
             $parsed = ($raw | Out-String | ConvertFrom-Json)
+            if ($null -eq $parsed -or -not $parsed.PSObject.Properties['Policies']) { throw 'no Policies in the CiTool listing' }
+            $policies = @()
             foreach ($p in $parsed.Policies) {
                 $policies += [pscustomobject]@{
                     FriendlyName = $p.FriendlyName
@@ -279,6 +285,7 @@ function Get-SacState {
             }
         }
     } catch {
+        $policies = $null
     }
     return [pscustomobject]@{
         RegistryState = $state
@@ -795,14 +802,15 @@ function Invoke-Prepare {
     }
     Write-Host ("CodeIntegrity/Operational enabled, max size {0} (was enabled={1}, maxSize={2})" -f $ciNow.MaxSize, $baseline.CiLogEnabled, $baseline.CiLogMaxSize)
 
+    # Every failure from here on rolls back the policy once it was copied.
+    $policyCopied = $false
+  try {
     if ($AuditPolicy) {
         Write-Section 'Audit policy'
         if (-not (Test-Path -LiteralPath $AuditPolicy)) {
             throw "audit policy not found: $AuditPolicy"
         }
         # The NoISG policy checks signatures only and skips the cloud reputation lookup, which is why it works even with Smart App Control off.
-        $policyCopied = $false
-      try {
         $mounted = Mount-Efi
         try {
             # A file already there is somebody's policy only if this label did not put it there
@@ -834,6 +842,9 @@ function Invoke-Prepare {
             Write-Host ("  policy {0} enforced={1}" -f $p.FriendlyName, $p.IsEnforced)
         }
         # Printing whatever is listed is not verification.
+        if ($null -eq $after.Policies) {
+            throw "CiTool could not list the policies, so the audit policy cannot be verified as active"
+        }
         if ($after.Policies.Count -gt 0 -and -not (Test-PolicyActive $NOISG_GUID)) {
             throw "the audit policy $NOISG_GUID is not in the active policy set after refresh"
         }
@@ -849,36 +860,6 @@ function Invoke-Prepare {
         }
         $baseline.AuditPolicyControlFired = $controlFired
         Save-ProbeBaseline $baseline $baselinePath
-      } catch {
-        $failure = $_
-        # A failed prepare must not leave the policy it applied behind.
-        if ($policyCopied) {
-            Write-Warning 'prepare failed after applying the audit policy; rolling the policy back'
-            try {
-                $mounted = Mount-Efi
-                try {
-                    if ($baseline.AuditPolicyPreexisting) {
-                        Copy-Item -LiteralPath $ROLLBACK_POLICY -Destination $NOISG_DEST -Force
-                    } elseif (Test-Path -LiteralPath $NOISG_DEST) {
-                        Remove-Item -LiteralPath $NOISG_DEST -Force
-                    }
-                    Invoke-Native 'CiTool.exe' @('-r')
-                } finally {
-                    Dismount-Efi $mounted
-                }
-                if (-not $baseline.AuditPolicyPreexisting -and (Test-PolicyActive $NOISG_GUID)) {
-                    Write-Warning "the audit policy $NOISG_GUID was removed but is still active until Windows restarts; restart, then run .\sac-probe.ps1 -Stage revert -Label $Label"
-                } else {
-                    $baseline.AuditPolicyApplied = $false
-                    Save-ProbeBaseline $baseline $baselinePath
-                    Write-Host 'audit policy rolled back'
-                }
-            } catch {
-                Write-Warning "could not roll back the audit policy: $_ (run .\sac-probe.ps1 -Stage revert -Label $Label)"
-            }
-        }
-        throw $failure
-      }
     } else {
         Write-Host ''
         Write-Host 'No -AuditPolicy given. Download the sample policies from https://aka.ms/sacauditpolicies'
@@ -919,6 +900,39 @@ function Invoke-Prepare {
     (Get-Date).ToString('o') | Set-Content -LiteralPath (Join-Path $dir 'window-start.txt') -Encoding UTF8
 
     Initialize-Studio $dir $true
+  } catch {
+    $failure = $_
+    # A failed prepare must not leave the policy it applied behind.
+    if ($policyCopied) {
+        Write-Warning 'prepare failed after applying the audit policy; rolling the policy back'
+        try {
+            $mounted = Mount-Efi
+            try {
+                if ($baseline.AuditPolicyPreexisting) {
+                    Copy-Item -LiteralPath $ROLLBACK_POLICY -Destination $NOISG_DEST -Force
+                } elseif (Test-Path -LiteralPath $NOISG_DEST) {
+                    Remove-Item -LiteralPath $NOISG_DEST -Force
+                }
+                Invoke-Native 'CiTool.exe' @('-r')
+            } finally {
+                Dismount-Efi $mounted
+            }
+            $stillActive = if ($baseline.AuditPolicyPreexisting) { $false } else { Test-PolicyActive $NOISG_GUID }
+            if ($null -eq $stillActive) {
+                Write-Warning "the audit policy $NOISG_GUID was removed but CiTool could not list the policies to confirm it; run .\sac-probe.ps1 -Stage revert -Label $Label"
+            } elseif ($stillActive) {
+                Write-Warning "the audit policy $NOISG_GUID was removed but is still active until Windows restarts; restart, then run .\sac-probe.ps1 -Stage revert -Label $Label"
+            } else {
+                $baseline.AuditPolicyApplied = $false
+                Save-ProbeBaseline $baseline $baselinePath
+                Write-Host 'audit policy rolled back'
+            }
+        } catch {
+            Write-Warning "could not roll back the audit policy: $_ (run .\sac-probe.ps1 -Stage revert -Label $Label)"
+        }
+    }
+    throw $failure
+  }
 
     Write-Host ''
     Write-Host "prepare complete. Next: .\sac-probe.ps1 -Stage run -Label $Label"
@@ -1508,7 +1522,11 @@ function Invoke-Revert {
             Dismount-Efi $mounted
         }
         # Before Windows 11 24H2 a removed policy can stay active until a restart.
-        if (-not $baseline.AuditPolicyPreexisting -and (Test-PolicyActive $NOISG_GUID)) {
+        $stillActive = if ($baseline.AuditPolicyPreexisting) { $false } else { Test-PolicyActive $NOISG_GUID }
+        if ($null -eq $stillActive) {
+            throw "the audit policy $NOISG_GUID was removed and refreshed but CiTool could not list the policies to confirm it is gone; run .\sac-probe.ps1 -Stage revert -Label $Label again once CiTool -lp works"
+        }
+        if ($stillActive) {
             throw "the audit policy $NOISG_GUID was removed and refreshed but is still active; restart Windows, then run .\sac-probe.ps1 -Stage revert -Label $Label again"
         }
         # Only once the refresh succeeded and the policy is gone

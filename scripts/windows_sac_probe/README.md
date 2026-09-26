@@ -207,7 +207,8 @@ was never prepared rather than exporting unrelated events.
 `prepare` refuses a new label while another label has not been reverted: revert
 that label first. A `prepare` that fails after applying the audit policy removes
 it again. If `revert` finds the policy still active after removing it (Windows 11
-before 24H2 needs a restart for that), it leaves the baseline pending: restart and
+before 24H2 needs a restart for that), or `CiTool -lp` cannot list the policies to
+confirm it is gone, it leaves the baseline pending: restart (or fix CiTool) and
 run `revert` again.
 
 ### On a machine with no Unsloth on it
