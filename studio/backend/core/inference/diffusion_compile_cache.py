@@ -302,7 +302,7 @@ def model_fingerprint(
         # Native layers compile to a different graph than torchao under the same scheme name.
         from .diffusion_native_quant import native_quant_signature
         quant = native_quant_signature(transformer) or quant
-    return {
+    fp = {
         "family": str(family),
         "transformer_cls": type(transformer).__name__ if transformer is not None else None,
         "repeated_blocks": sorted(str(b) for b in blocks),
@@ -317,6 +317,15 @@ def model_fingerprint(
         },
         "shape_bucket": shape_bucket,
     }
+    # Added only when armed, so other bundles keep their key.
+    try:
+        from .diffusion_dynamic_text import fingerprint as _dynamic_text_fp
+        dynamic_text = _dynamic_text_fp(transformer, compile_kwargs.get("dynamic", True))
+    except Exception:  # noqa: BLE001
+        dynamic_text = None
+    if dynamic_text:
+        fp["dynamic_text"] = dynamic_text
+    return fp
 
 
 def cache_key(env_fp: dict[str, Any], model_fp: dict[str, Any]) -> str:

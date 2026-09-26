@@ -82,6 +82,13 @@ def capability_snapshot(
     )
     if dacl:
         limitations += ("mxc_tier3_dacl_host_permission_changes",)
+    shell_incompatible = reason == mxc_probe.MSYS_NAMESPACE_REASON
+    if shell_incompatible:
+        remediation = (
+            "Set tool isolation to auto to run Terminal commands with software safeguards, or use "
+            "the Python tool, which is sandboxed separately."
+        )
+    elif dacl:
         remediation = (
             "Install the pinned Microsoft WXC runtime and prepare this host once as an "
             "administrator; the null device step repeats after every reboot."
@@ -94,7 +101,11 @@ def capability_snapshot(
             "on exit, and needs a one-time administrator host preparation plus one per reboot."
         )
     # Only in DACL mode: a bare --probe allows the fallback, so it warns on hosts Studio never uses it on.
-    host_prep = mxc_probe.host_prep_remediation() if dacl and not available else None
+    host_prep = (
+        mxc_probe.host_prep_remediation()
+        if dacl and not available and not shell_incompatible
+        else None
+    )
     if host_prep:
         remediation = f"{remediation} {host_prep}"
     return SandboxCapability(
