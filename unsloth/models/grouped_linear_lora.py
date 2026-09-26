@@ -38,7 +38,6 @@ def grouped_linear_classes(model):
 def _grouped_lora_layer():
     from peft.tuners.lora.layer import Linear as LoraLinear
     class GroupedLinearLoRA(LoraLinear):
-
         _unsloth_grouped_lora = True
 
         def merge(self, *args, **kwargs):
