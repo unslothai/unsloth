@@ -933,6 +933,9 @@ def test_partial_safetensors_download_keeps_delete_menu():
         assert shows_menu(env), env
     for env in every(isDownloaded = False, isPartial = True, downloading = False, localPath = False):
         assert shows_menu(env), env
+    # A local folder is not a managed cache repo, so there is nothing for its Delete to remove.
+    for env in every(localPath = True):
+        assert not shows_menu(env), env
     # A download still running is not a partial to clean up yet.
     for env in every(isDownloaded = False, downloading = True):
         assert not shows_menu(env), env
