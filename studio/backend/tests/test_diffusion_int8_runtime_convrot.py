@@ -380,7 +380,16 @@ def test_lora_baked_targets_rotate_their_base_layer_and_stay_exact():
     _check_base_layers_rotated(model)
 
 
-def test_real_peft_adapters_rotate_their_base_layer_and_stay_exact():
+@pytest.fixture
+def _fresh_peft_torchao_probe():
+    # peft caches is_torchao_available(); a value cached here leaks into later tests that block torchao
+    is_torchao_available = pytest.importorskip("peft.import_utils").is_torchao_available
+    is_torchao_available.cache_clear()
+    yield
+    is_torchao_available.cache_clear()
+
+
+def test_real_peft_adapters_rotate_their_base_layer_and_stay_exact(_fresh_peft_torchao_probe):
     peft = pytest.importorskip("peft")
     torch.manual_seed(0)
     cfg = peft.LoraConfig(
