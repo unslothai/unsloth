@@ -811,6 +811,252 @@ def test_the_video_backend_wires_the_layer_into_the_h3_load_only():
     assert compile_settle.lineno < settle.lineno
 
 
+def test_the_h3_load_holds_cudnn_benchmark_off_for_the_audio_decode_only_when_it_engaged():
+    import ast
+    import pathlib
+
+    source = (pathlib.Path(H.__file__).parent / "video.py").read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    installs = [
+        c
+        for c in ast.walk(tree)
+        if isinstance(c, ast.Call)
+        and getattr(c.func, "id", None) == "install_audio_vae_without_cudnn_benchmark"
+    ]
+    (install,) = installs
+    load = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_load_h3_modular_pipeline"
+    )
+    assert any(c is install for c in ast.walk(load))
+    guard = next(
+        n
+        for n in ast.walk(load)
+        if isinstance(n, ast.If) and any(c is install for c in ast.walk(n))
+    )
+    assert "cudnn_benchmark" in ast.unparse(guard.test) and "speed_optims" in ast.unparse(
+        guard.test
+    )
+
+
+@pytest.fixture
+def _ampere(monkeypatch):
+    monkeypatch.setattr(H, "_audio_vae_search_gains_nothing", lambda: True)
+
+
+class _AudioVAE:
+    def __init__(self):
+        self.seen = []
+
+    def decode(self, z, **kwargs):
+        self.seen.append(torch.backends.cudnn.benchmark)
+        return (z,)
+
+    def encode(self, x, **kwargs):
+        self.seen.append(("encode", torch.backends.cudnn.benchmark))
+        return (x,)
+
+
+@pytest.mark.parametrize("before", [True, False])
+def test_audio_decode_runs_without_cudnn_benchmark_and_restores_it(before, _ampere):
+    from core.inference import diffusion_speed as S
+    prev = torch.backends.cudnn.benchmark
+    try:
+        torch.backends.cudnn.benchmark = before
+        vae = _AudioVAE()
+        assert H.install_audio_vae_without_cudnn_benchmark(vae)
+        assert not H.install_audio_vae_without_cudnn_benchmark(vae), "installs once"
+        z = torch.zeros(1)
+        assert vae.decode(z, return_dict = False)[0] is z
+        vae.decode(z)
+        assert vae.encode(z, return_dict = False)[0] is z
+        assert vae.seen == [False, False, ("encode", False)]
+        assert torch.backends.cudnn.benchmark is before
+        assert not S._cudnn_bench_scopes
+    finally:
+        torch.backends.cudnn.benchmark = prev
+
+
+def test_audio_decode_scope_restores_after_a_raising_decode(_ampere):
+    prev = torch.backends.cudnn.benchmark
+
+    class _Raises:
+        def decode(self, z):
+            raise RuntimeError("boom")
+
+    try:
+        torch.backends.cudnn.benchmark = True
+        vae = _Raises()
+        assert H.install_audio_vae_without_cudnn_benchmark(vae)
+        with pytest.raises(RuntimeError, match = "boom"):
+            vae.decode(0)
+        assert torch.backends.cudnn.benchmark is True
+    finally:
+        torch.backends.cudnn.benchmark = prev
+
+
+def test_audio_decode_scope_ignores_missing_decoders(_ampere):
+    assert not H.install_audio_vae_without_cudnn_benchmark(None)
+    assert not H.install_audio_vae_without_cudnn_benchmark(types.SimpleNamespace(decode = None))
+
+
+def test_audio_decode_scope_wraps_a_decode_only_vae(_ampere):
+    prev = torch.backends.cudnn.benchmark
+    seen = []
+
+    class _DecodeOnly:
+        def decode(self, z):
+            seen.append(torch.backends.cudnn.benchmark)
+            return z
+
+    try:
+        torch.backends.cudnn.benchmark = True
+        vae = _DecodeOnly()
+        assert H.install_audio_vae_without_cudnn_benchmark(vae)
+        assert vae.decode(1) == 1 and seen == [False] and not hasattr(vae, "encode")
+        assert torch.backends.cudnn.benchmark is True
+    finally:
+        torch.backends.cudnn.benchmark = prev
+
+
+@pytest.mark.parametrize("mid", [True, False])
+def test_cudnn_benchmark_written_mid_decode_survives_it(mid, _ampere):
+    from core.inference import diffusion_speed as S
+
+    seen = {}
+
+    class _VAE:
+        def decode(self, z):
+            seen["snapshot"] = S.snapshot_backend_flags()["cudnn_benchmark"]
+            S.restore_backend_flags({"cudnn_benchmark": mid})
+            seen["after_write"] = torch.backends.cudnn.benchmark
+            return z
+
+    prev = torch.backends.cudnn.benchmark
+    try:
+        torch.backends.cudnn.benchmark = True
+        vae = _VAE()
+        assert H.install_audio_vae_without_cudnn_benchmark(vae)
+        vae.decode(0)
+        assert seen["snapshot"] is True, "a snapshot taken mid-decode must see the process value"
+        assert seen["after_write"] is False, "the decode keeps its own value until it ends"
+        assert (
+            torch.backends.cudnn.benchmark is mid
+        ), "the write made during the decode must survive it"
+        assert not S._cudnn_bench_scopes
+    finally:
+        torch.backends.cudnn.benchmark = prev
+
+
+def test_enabling_cudnn_benchmark_mid_decode_lands_after_it(monkeypatch, _ampere):
+    from core.inference import diffusion_speed as S
+
+    monkeypatch.setattr("core._torchao_stub._module_is_rocm", lambda torch: False)
+    seen = {}
+
+    class _VAE:
+        def decode(self, z):
+            seen["enabled"] = S._enable_cudnn_benchmark(None)
+            seen["inside"] = torch.backends.cudnn.benchmark
+            return z
+
+    prev = torch.backends.cudnn.benchmark
+    try:
+        torch.backends.cudnn.benchmark = False
+        vae = _VAE()
+        assert H.install_audio_vae_without_cudnn_benchmark(vae)
+        vae.decode(0)
+        assert seen == {"enabled": True, "inside": False}
+        assert torch.backends.cudnn.benchmark is True
+    finally:
+        torch.backends.cudnn.benchmark = prev
+
+
+@pytest.mark.parametrize(
+    "capability, installs",
+    [
+        ((7, 5), False),
+        ((8, 0), True),
+        ((8, 6), False),
+        ((8, 9), False),
+        ((9, 0), False),
+        ((10, 0), True),
+        ((12, 0), True),
+        (RuntimeError("no GPU"), False),
+    ],
+)
+def test_the_audio_vae_keeps_the_search_where_it_was_not_measured_to_gain_nothing(
+    monkeypatch, capability, installs
+):
+    def probe(device = None):
+        if isinstance(capability, Exception):
+            raise capability
+        return capability
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", probe)
+    vae = _AudioVAE()
+    stock = vae.decode
+    assert H.install_audio_vae_without_cudnn_benchmark(vae) is installs
+    assert (vae.decode == stock) is not installs
+
+
+def test_cudnn_benchmark_scopes_that_close_out_of_order():
+    from core.inference import diffusion_speed as S
+
+    cudnn = torch.backends.cudnn
+    prev = cudnn.benchmark
+    try:
+        cudnn.benchmark = True
+        a, b = S.cudnn_benchmark_scope(False), S.cudnn_benchmark_scope(True)
+        a.__enter__()
+        assert cudnn.benchmark is False
+        b.__enter__()
+        assert cudnn.benchmark is True
+        a.__exit__(None, None, None)
+        assert cudnn.benchmark is True, "the scope still open keeps its value"
+        b.__exit__(None, None, None)
+        assert cudnn.benchmark is True and not S._cudnn_bench_scopes
+        cudnn.benchmark = False
+        a, b = S.cudnn_benchmark_scope(False), S.cudnn_benchmark_scope(False)
+        a.__enter__()
+        b.__enter__()
+        b.__exit__(None, None, None)
+        a.__exit__(None, None, None)
+        assert cudnn.benchmark is False and not S._cudnn_bench_scopes
+    finally:
+        cudnn.benchmark = prev
+
+
+def test_cudnn_benchmark_scopes_on_two_threads_restore_the_process_value():
+    import threading
+
+    from core.inference import diffusion_speed as S
+
+    cudnn = torch.backends.cudnn
+    prev = cudnn.benchmark
+    inside, release = threading.Event(), threading.Event()
+
+    def other():
+        with S.cudnn_benchmark_scope(False):
+            inside.set()
+            release.wait(5)
+
+    try:
+        cudnn.benchmark = True
+        t = threading.Thread(target = other)
+        t.start()
+        assert inside.wait(5)
+        with S.cudnn_benchmark_scope(False):
+            release.set()
+            t.join(5)
+        assert not t.is_alive()
+        assert cudnn.benchmark is True and not S._cudnn_bench_scopes
+    finally:
+        release.set()
+        cudnn.benchmark = prev
+
+
 @pytest.mark.skipif(H._kernels() is None, reason = "needs Triton")
 def test_kernel_annotations_resolve_against_the_module_globals():
     # Triton <= 3.2 resolves kernel annotations in module globals; a closure-local ``tl`` NameErrors there

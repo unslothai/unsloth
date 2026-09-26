@@ -108,6 +108,50 @@ def fp16_accumulation_scope(value: bool) -> Iterator[None]:
             )
 
 
+_CUDNN_BENCH_LOCK = threading.RLock()
+_cudnn_bench_scopes: list = []
+_cudnn_bench_base: Optional[bool] = None
+
+
+def _read_cudnn_benchmark(cudnn: Any) -> bool:
+    with _CUDNN_BENCH_LOCK:
+        if _cudnn_bench_scopes:
+            return bool(_cudnn_bench_base)
+        return bool(cudnn.benchmark)
+
+
+def _write_cudnn_benchmark(cudnn: Any, value: Any) -> None:
+    global _cudnn_bench_base
+    with _CUDNN_BENCH_LOCK:
+        if _cudnn_bench_scopes:
+            _cudnn_bench_base = bool(value)
+        else:
+            cudnn.benchmark = bool(value)
+
+
+@contextmanager
+def cudnn_benchmark_scope(value: bool) -> Iterator[None]:
+    """Hold ``cudnn.benchmark`` at ``value`` for the body, then restore the latest process value."""
+    global _cudnn_bench_base
+    import torch
+
+    cudnn = torch.backends.cudnn
+    token = object()
+    with _CUDNN_BENCH_LOCK:
+        if not _cudnn_bench_scopes:
+            _cudnn_bench_base = bool(cudnn.benchmark)
+        _cudnn_bench_scopes.append((token, bool(value)))
+        cudnn.benchmark = bool(value)
+    try:
+        yield
+    finally:
+        with _CUDNN_BENCH_LOCK:
+            _cudnn_bench_scopes[:] = [e for e in _cudnn_bench_scopes if e[0] is not token]
+            cudnn.benchmark = (
+                _cudnn_bench_scopes[-1][1] if _cudnn_bench_scopes else bool(_cudnn_bench_base)
+            )
+
+
 def snapshot_backend_flags() -> Optional[dict]:
     """Capture the process-wide torch backend flags this layer may mutate, for restore on unload. None
     without torch. Each flag is read defensively: a build missing one still captures the rest."""
@@ -126,7 +170,7 @@ def snapshot_backend_flags() -> Optional[dict]:
         if hasattr(cudnn, "allow_tf32"):
             state["cudnn_tf32"] = bool(cudnn.allow_tf32)
         if hasattr(cudnn, "benchmark"):
-            state["cudnn_benchmark"] = bool(cudnn.benchmark)
+            state["cudnn_benchmark"] = _read_cudnn_benchmark(cudnn)
     inductor_cfg = _inductor_config()
     if inductor_cfg is not None:
         for attr, key in _INDUCTOR_FLAGS:
@@ -183,7 +227,11 @@ def restore_backend_flags(state: Optional[dict]) -> None:
             pass
     cudnn = getattr(torch.backends, "cudnn", None)
     _set(cudnn, "allow_tf32", "cudnn_tf32")
-    _set(cudnn, "benchmark", "cudnn_benchmark")
+    if cudnn is not None and "cudnn_benchmark" in state and hasattr(cudnn, "benchmark"):
+        try:
+            _write_cudnn_benchmark(cudnn, state["cudnn_benchmark"])
+        except Exception:  # noqa: BLE001 - best-effort per-flag restore
+            pass
     inductor_cfg = _inductor_config()
     for attr, key in _INDUCTOR_FLAGS:
         _set(inductor_cfg, attr, key)
@@ -1130,7 +1178,7 @@ def _enable_cudnn_benchmark(logger: Any) -> bool:
         # On ROCm this is MIOpen's exhaustive search: a first VAE decode tuned for 10 to 23 minutes and crashed a gfx1030.
         if _module_is_rocm(torch):
             return False
-        torch.backends.cudnn.benchmark = True
+        _write_cudnn_benchmark(torch.backends.cudnn, True)
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "cudnn_benchmark", exc)
