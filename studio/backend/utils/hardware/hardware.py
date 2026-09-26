@@ -454,8 +454,7 @@ def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
     )
 
 
-# XPU-capable Intel PCI device IDs (include/drm/intel/pciids.h): DG2 Arc + ATS-M Flex, PVC Max, BMG Arc B.
-# An allowlist, not the PCI bus: DG1 Iris Xe MAX is discrete but unsupported, and setup.ps1 excludes Iris Xe.
+# XPU-capable Intel PCI IDs (pciids.h: DG2/ATS-M, PVC, BMG); an allowlist since DG1 Iris Xe MAX is discrete but unsupported.
 _INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0x0B69, 0x0BE5), (0xE200, 0xE2FF))
 
 
