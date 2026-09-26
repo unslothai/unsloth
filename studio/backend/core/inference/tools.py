@@ -17374,8 +17374,8 @@ def _check_signal_escape_patterns(code: str):
                             self.os_names.add(alias.asname or "os")
                 elif isinstance(imp, ast.ImportFrom) and imp.module == "os":
                     for alias in imp.names:
-                        if alias.name == "environ":
-                            self.environ_names.add(alias.asname or "environ")
+                        if alias.name in ("environ", "environb"):
+                            self.environ_names.add(alias.asname or alias.name)
 
         def _instance_key(self, target) -> "str | None":
             family = self.class_family.get(self.scope_stack[-1])
@@ -17964,7 +17964,7 @@ def _check_signal_escape_patterns(code: str):
                 return node.id in self.environ_names
             return (
                 isinstance(node, ast.Attribute)
-                and node.attr == "environ"
+                and node.attr in ("environ", "environb")  # `environb` shares `environ`'s data
                 and isinstance(node.value, ast.Name)
                 and node.value.id in self.os_names
             )
@@ -17973,6 +17973,8 @@ def _check_signal_escape_patterns(code: str):
             """requests, httpx and urllib honour the proxy environment by default."""
             if isinstance(key, ast.Constant):
                 names = [key.value] if isinstance(key.value, str) else []
+                if isinstance(key.value, bytes):
+                    names = [key.value.decode("latin-1")]  # `os.environb[b"HTTPS_PROXY"]`
             elif isinstance(key, ast.Name) and self.literal_names.get(key.id):
                 names = list(self.literal_names[key.id])  # `key = "HTTPS_PROXY"`
             else:
@@ -18418,6 +18420,17 @@ def _check_signal_escape_patterns(code: str):
                                 destinations.append((kw.value, True, "host"))
                             else:
                                 destinations.append((_UNREADABLE, True, "host"))
+                    if kw.arg == "connect_kwargs" and any(c.startswith("fabric.") for c in recognised):
+                        # Fabric passes these to `SSHClient.connect`, so a `sock` routes the session.
+                        dicts = [kw.value] if isinstance(kw.value, ast.Dict) else []
+                        if isinstance(kw.value, ast.Name):
+                            dicts = self.dict_literals.get(kw.value.id, [])
+                        if not dicts or any(
+                            not isinstance(k, ast.Constant) or k.value == "sock"
+                            for d in dicts
+                            for k in d.keys
+                        ):
+                            destinations.append((_UNREADABLE, True, "host"))
                 proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
                 if _reads_proxy_environment(node, recognised):
                     proxies += self.env_proxies

