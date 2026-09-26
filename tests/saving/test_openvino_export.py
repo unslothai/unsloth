@@ -86,6 +86,18 @@ def test_options_vlm_task_remote_code_token_and_missing_tokenizer(run, monkeypat
     assert len(warnings) == 1 and "openvino_tokenizer.xml" in warnings[0]
 
 
+def test_a_custom_tokenizer_alone_does_not_trust_the_model(run, monkeypatch):
+    # optimum-cli has one --trust-remote-code for both loads, so it follows the model: granting it
+    # for an approved custom tokenizer would let the reload run a built-in model's unvetted auto_map.
+    tokenizer = SimpleNamespace()
+    monkeypatch.setattr(save_mod, "_loaded_via_remote_code", lambda obj: obj is tokenizer)
+    monkeypatch.setattr(save_mod.logger, "warning_once", (warnings := []).append)
+    run(tokenizer = tokenizer)
+    (cmd,) = run.seen.cmds
+    assert "--trust-remote-code" not in cmd
+    assert len(warnings) == 1 and "tokenizer" in warnings[0]
+
+
 @pytest.mark.parametrize("case", [*_CASES, *_BOUNDS, "no optimum", "child fails", "no model"])
 def test_failures_come_before_the_merge_or_clean_up(run, monkeypatch, case):
     if case in _BOUNDS:  # optimum-intel's transformers bounds for this architecture

@@ -47,6 +47,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import {
+  HELP_GROUPS,
+  HELP_ITEMS,
+  helpActionAvailable,
+  runHelpAction,
+} from "@/components/help-actions";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -127,7 +133,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, ChevronUp, GitBranchIcon, Moon } from "lucide-react";
+import { ArrowRightIcon, ChevronDown, GitBranchIcon, Moon } from "lucide-react";
 import {
   Link,
   useNavigate,
@@ -210,7 +216,12 @@ import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { resolveNavRowState } from "@/components/nav-row-state";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
-import { AUTH_SESSION_ENDING_EVENT, clearAuthTokens, logout } from "@/features/auth";
+import {
+  AUTH_SESSION_ENDING_EVENT,
+  clearAuthTokens,
+  logout,
+  useIsAccountOwner,
+} from "@/features/auth";
 import { TOUR_OPEN_EVENT, getTourId, useTourAvailable } from "@/features/tour";
 import {
   deleteTrainingRun,
@@ -238,7 +249,6 @@ import {
 } from "react";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { useIsCoarsePointer } from "@/hooks/use-mobile";
 import {
   folderRingKey,
   sectionRingKey,
@@ -812,6 +822,8 @@ export function AppSidebar() {
   // leave the hint advertising a dead chord. Both already render in the platform's own notation.
   const searchShortcutLabel = useShortcutLabel("searchChats");
   const settingsShortcutLabel = useShortcutLabel("openSettings");
+  const keyboardShortcutsLabel = useShortcutLabel("openKeyboardShortcuts");
+  const isOwner = useIsAccountOwner();
   const { pathname, search, href } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -1920,8 +1932,6 @@ export function AppSidebar() {
   const chatMovesRef = useRef(
     new Map<string, { generation: number; chain: Promise<unknown> }>(),
   );
-  // A touch browser never fires dragstart, so its row menus keep Move up and Move down.
-  const coarsePointer = useIsCoarsePointer();
   const dnd = useSidebarDrag({
     context: dropContext,
     // A closed folder or section the pointer rests on opens.
@@ -2069,36 +2079,6 @@ export function AppSidebar() {
         reorderRowBy(item, orderedIds, sort, event.key === "ArrowDown" ? 1 : -1);
       },
     };
-  }
-
-  /** Move up and Move down in a row menu, for touch screens only: the browser starts no drag
-   *  there, and a list would be stuck in its order. */
-  function renderMoveRowItems(
-    item: SidebarDragItem,
-    orderedIds: string[],
-    sort: RowSort | undefined,
-    P: RowMenuParts,
-  ) {
-    if (!coarsePointer) return null;
-    const at = orderedIds.indexOf(item.id);
-    return (
-      <>
-        <P.Item
-          disabled={at <= 0}
-          onSelect={() => reorderRowBy(item, orderedIds, sort, -1)}
-        >
-          <ChevronUp strokeWidth={1.75} className="size-icon" />
-          <span>{t("shell.organize.moveUp")}</span>
-        </P.Item>
-        <P.Item
-          disabled={at === -1 || at >= orderedIds.length - 1}
-          onSelect={() => reorderRowBy(item, orderedIds, sort, 1)}
-        >
-          <ChevronDown strokeWidth={1.75} className="size-icon" />
-          <span>{t("shell.organize.moveDown")}</span>
-        </P.Item>
-      </>
-    );
   }
 
   useEffect(() => {
@@ -3217,14 +3197,11 @@ export function AppSidebar() {
 
   /** A folder row's right-click menu. One row gets the same menu its 3-dot opens; a real
    *  selection of several gets the bulk actions, which right-click is the only pointer way to. */
-  function renderProjectContextMenu(
-    project: ProjectRecord,
-    order: ProjectOrderContext,
-  ) {
+  function renderProjectContextMenu(project: ProjectRecord) {
     if (projectSelectionCount <= 1) {
       return (
         <ContextMenuContent className="unsloth-plus-menu sidebar-row-menu menu-flat-destructive w-52">
-          {renderProjectRowMenuItems(project, order, CONTEXT_ROW_MENU)}
+          {renderProjectRowMenuItems(project, CONTEXT_ROW_MENU)}
         </ContextMenuContent>
       );
     }
@@ -3344,18 +3321,6 @@ export function AppSidebar() {
               <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
               <span>{isPinned ? "Unpin" : "Pin"}</span>
             </P.Item>
-            {renderMoveRowItems(
-              {
-                kind: "chat",
-                id: item.id,
-                section: list.section,
-                scope: list.scope,
-                projectId: item.projectId ?? null,
-              },
-              list.orderIds ?? list.ids,
-              list.sort,
-              P,
-            )}
             {/* The dot a finished reply leaves, put back or taken off by hand. */}
             <P.Item
               onSelect={() =>
@@ -3821,7 +3786,6 @@ export function AppSidebar() {
   /** Every action a folder row offers, for its 3-dot menu and its right-click menu alike. */
   function renderProjectRowMenuItems(
     project: ProjectRecord,
-    order: ProjectOrderContext,
     P: RowMenuParts,
   ) {
     const isProjectPinned = pinnedProjectIdSet.has(project.id);
@@ -3841,18 +3805,6 @@ export function AppSidebar() {
             <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
             <span>Edit</span>
           </P.Item>
-          {renderMoveRowItems(
-            {
-              kind: "project",
-              id: project.id,
-              section: order.section,
-              scope: order.scope,
-              projectId: null,
-            },
-            order.orderedIds,
-            order.sort,
-            P,
-          )}
           <P.Separator />
           <P.Item
             variant="destructive"
@@ -4003,11 +3955,11 @@ export function AppSidebar() {
               </button>
             )}
           >
-            {renderProjectRowMenuItems(project, order, DROPDOWN_ROW_MENU)}
+            {renderProjectRowMenuItems(project, DROPDOWN_ROW_MENU)}
           </NonModalDropdownMenu>
         </SidebarMenuItem>
       </ContextMenuTrigger>
-      {renderProjectContextMenu(project, order)}
+      {renderProjectContextMenu(project)}
     </ContextMenu>
     {expanded &&
       visibleChats.map((chat) =>
@@ -5050,12 +5002,45 @@ export function AppSidebar() {
                 })}
               </DropdownMenuGroup>
               <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent! dark:border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))]" />
-              <DropdownMenuItem
-                onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
-              >
-                <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
-                <span>{t("common.help")}</span>
-              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>{t("common.help")}</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent
+                  sideOffset={8}
+                  alignOffset={-4}
+                  className="unsloth-plus-menu sidebar-row-menu w-56"
+                >
+                  {HELP_GROUPS.map((group, index) => (
+                    <DropdownMenuGroup key={group[0]}>
+                      {index > 0 && <DropdownMenuSeparator />}
+                      {group
+                        .filter((action) => helpActionAvailable(action, isOwner))
+                        .map((action) => (
+                        <DropdownMenuItem key={action} onSelect={() => runHelpAction(action)}>
+                          <HugeiconsIcon
+                            icon={HELP_ITEMS[action].icon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          <span>{t(HELP_ITEMS[action].label)}</span>
+                          {action === "help-keyboard-shortcuts" && keyboardShortcutsLabel && (
+                            <DropdownMenuShortcut>{keyboardShortcutsLabel}</DropdownMenuShortcut>
+                          )}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuGroup>
+                  ))}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
+                  >
+                    <HugeiconsIcon icon={BadgeInfoIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>{t("shell.helpMenu.about")}</span>
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               {!isTauri && (
                 <DropdownMenuItem
                   onSelect={async () => {

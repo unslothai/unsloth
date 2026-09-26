@@ -479,6 +479,70 @@ def _evaluate_local_snapshot(
     )
 
 
+def _modelscope_serves() -> bool:
+    try:
+        from utils.hub_settings import MODELSCOPE, active_source
+    except Exception:
+        return False
+    return active_source() == MODELSCOPE
+
+
+def _evaluate_unscanned_listing(
+    model_name: str,
+    hf_token: Optional[str],
+    load_subdirs = (),
+) -> FileSecurityDecision:
+    """ModelScope publishes no malware scan, so its "unavailable" is permanent, not transient:
+    fail closed on pickle weights, as the offline gate does for a cached snapshot."""
+    context = "ModelScope has no malware scan"
+    try:
+        from huggingface_hub import HfApi
+        files = HfApi().list_repo_files(model_name, token = hf_token or False)
+    except Exception:
+        logger.warning(
+            "Blocking load of '%s': %s and its files could not be listed.", model_name, context
+        )
+        return FileSecurityDecision(
+            model_name, True, reason = f"{context}; could not list the repository"
+        )
+    by_dir: dict[str, set] = {}
+    for path in files:
+        folder, _, name = _normalize_repo_path(str(path)).rpartition("/")
+        by_dir.setdefault(folder, set()).add(name)
+    blocked = []
+    roots = {"", *(_normalize_repo_path(str(d)).strip("/") for d in load_subdirs or ())}
+    for folder, names in sorted(by_dir.items()):
+        if folder not in roots:
+            continue
+        prefix = f"{folder}/" if folder else ""
+        has_base = bool(names & {"model.safetensors", "model.safetensors.index.json"})
+        has_adapter = "adapter_model.safetensors" in names
+        for name in sorted(names):
+            if _PICKLE_WEIGHT_RE.match(name):
+                if not (has_adapter if name.lower().startswith("adapter_model") else has_base):
+                    blocked.append(prefix + name)
+        # Its shards are named freely and torch.loaded unless they end in .safetensors.
+        if "pytorch_model.bin.index.json" in names and not has_base:
+            blocked.append(prefix + "pytorch_model.bin.index.json")
+    if not blocked:
+        return FileSecurityDecision(
+            model_name, False, reason = f"{context}; no pickle weights to load"
+        )
+    listed = ", ".join(blocked)
+    logger.warning(
+        "Blocking load of '%s': %s and it ships pickle weights (%s).", model_name, context, listed
+    )
+    return FileSecurityDecision(
+        model_name,
+        True,
+        unsafe_files = [{"path": path, "level": "unscanned"} for path in blocked],
+        reason = (
+            f"{context}; unscanned pickle weights with no safetensors alternative: {listed}. "
+            "Switch the model source to Hugging Face in Settings to load it."
+        ),
+    )
+
+
 def evaluate_file_security(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -522,6 +586,8 @@ def evaluate_file_security(
                 context = "Hub scan unavailable",
                 load_subdirs = load_subdirs,
             )
+        if _modelscope_serves():
+            return _evaluate_unscanned_listing(model_name, hf_token, load_subdirs)
         return FileSecurityDecision(
             model_name, False, reason = "scan unavailable; allowed (fail-open)"
         )
