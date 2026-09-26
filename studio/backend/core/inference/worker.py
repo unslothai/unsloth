@@ -117,17 +117,24 @@ def _decode_image(image_base64: str):
     return Image.open(BytesIO(image_data))
 
 
-def _resize_image(img, max_size: int = 800):
-    """Resize image while maintaining aspect ratio."""
-    if img is None:
-        return None
-    if img.size[0] > max_size or img.size[1] > max_size:
-        from PIL import Image
+def _resize_image(
+    img,
+    max_size: int | None = None,
+    model_limit: dict | None = None,
+):
+    """Resize image while maintaining aspect ratio: the loaded model's image limit, else 1024
+    (UNSLOTH_STUDIO_INFERENCE_IMAGE_MAX_SIDE overrides)."""
+    from utils.inference_image import resize_for_inference
+    return resize_for_inference(img, max_side = max_size, model_limit = model_limit)
 
-        ratio = min(max_size / img.size[0], max_size / img.size[1])
-        new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
-        return img.resize(new_size, Image.Resampling.LANCZOS)
-    return img
+
+def _active_image_limit(backend) -> dict | None:
+    """The loaded model's own image size, read from its processor (only the worker holds it)."""
+    from utils.inference_image import native_image_limit
+
+    models = getattr(backend, "models", {}) or {}
+    entry = models.get(getattr(backend, "active_model_name", None)) or {}
+    return native_image_limit(entry.get("processor"), entry.get("model"))
 
 
 def _send_response(resp_queue: Any, response: dict) -> None:
@@ -548,6 +555,14 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         model_info[_ctx_field] = int(_ctx_value)
                 except Exception as _ctx_exc:
                     logger.warning("%s forward failed: %s", _ctx_field, _ctx_exc)
+            # The model's own image size; the parent sizes request images by it before IPC.
+            try:
+                from utils.inference_image import native_image_limit
+                model_info["image_limit"] = native_image_limit(
+                    _entry.get("processor"), _entry.get("model")
+                )
+            except Exception as _img_exc:
+                logger.warning("image_limit forward failed: %s", _img_exc)
             # Tri-state, so it is forwarded as it is rather than coerced: None means the
             # backend does not answer, which is not the same as a confirmed False.
             if _entry.get("context_length_enforced") is not None:
@@ -710,11 +725,12 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
 
     try:
         image = None
+        image_limit = _active_image_limit(backend)
         image_b64 = cmd.get("image_base64")
         if image_b64:
-            image = _resize_image(_decode_image(image_b64))
+            image = _resize_image(_decode_image(image_b64), model_limit = image_limit)
         images = [
-            _resize_image(_decode_image(encoded))
+            _resize_image(_decode_image(encoded), model_limit = image_limit)
             for encoded in cmd.get("images_base64") or ()
             if encoded
         ]
