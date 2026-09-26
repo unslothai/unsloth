@@ -118,7 +118,6 @@ def test_int8_artifact_names_the_rotated_build_first_and_keeps_the_plain_one():
 
 
 def test_convrot_does_not_touch_the_exclusion_set():
-    # the published plain INT8 artifact validates against exclude_tokens_for_scheme; rotation must not move it
     assert tq.exclude_tokens_for_scheme(
         tq.TQ_INT8, "qwen-image-2.1"
     ) == tq._INT8_EXCLUDE_NAME_TOKENS + ("txt_in",)
@@ -234,7 +233,6 @@ def test_runtime_convrot_adds_no_recompile():
 
 
 def test_unreachable_hub_still_loads_the_plain_artifact_already_cached(monkeypatch, tmp_path):
-    # the ConvRot name now comes first; a user holding only the plain file from before must keep it offline
     from huggingface_hub.errors import LocalEntryNotFoundError
 
     from core.inference import diffusion_prequant as pq
