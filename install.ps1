@@ -8213,9 +8213,7 @@ exit 0
     }
 
     # ── BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) ──
-    # Both libraries by full path, never a bare name: a bare name also searches PATH, where ZLUDA
-    # puts its own nvcuda.dll and nvml.dll, and they answer as an NVIDIA driver on an AMD host.
-    # nvml.dll sits in System32 with current drivers and under NVSMI with older ones.
+    # Full paths only: a bare name searches PATH, where ZLUDA's nvcuda.dll and nvml.dll pass for NVIDIA.
     function Get-NvidiaNvmlLibraryPath {
         $dirs = @()
         if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
@@ -8236,7 +8234,7 @@ exit 0
     # not spawn csc.exe (New-StudioEmittedNativeType). $null when the type cannot be built. A
     # missing library throws at the first call, not here.
     function Get-NvidiaLibraryProbeType {
-        # V3: V2 bound bare names, and a session that emitted it would keep using them.
+        # V3: a session that emitted V2 would keep its bare-name bindings.
         $name = "UnslothNvidiaProbeV3"
         $existing = $name -as [type]
         if ($existing) { return $existing }

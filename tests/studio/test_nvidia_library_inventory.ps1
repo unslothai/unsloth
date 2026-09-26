@@ -78,7 +78,6 @@ New-Item -ItemType Directory -Path $sys32, $nvsmi -Force | Out-Null
 $savedRoot = $env:SystemRoot; $savedPf = $env:ProgramFiles
 try {
     $env:SystemRoot = Join-Path $pathRoot "root"; $env:ProgramFiles = Join-Path $pathRoot "pf"
-    # A bare name searches PATH, where ZLUDA's nvml.dll and nvcuda.dll pass for an NVIDIA driver.
     Check "no nvml.dll on disk still names the System32 path" ((Get-NvidiaNvmlLibraryPath) -eq (Join-Path $sys32 "nvml.dll"))
     Set-Content -Path (Join-Path $nvsmi "nvml.dll") -Value ""
     Check "an NVSMI-only nvml.dll is named by its path" ((Get-NvidiaNvmlLibraryPath) -eq (Join-Path $nvsmi "nvml.dll"))
