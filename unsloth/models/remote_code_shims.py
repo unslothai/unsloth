@@ -61,12 +61,7 @@ def _vocab_sizes(module):
 
 
 def find_embedding_module(module):
-    """The token embedding of `module` without going through its accessor.
-
-    Order: a conventionally named `nn.Embedding` attribute, then a child model
-    whose own accessor works (already repaired if it needed to be), then the
-    first `nn.Embedding` sized like the vocabulary.
-    """
+    """The token embedding of `module` without going through its accessor."""
     for name in _EMBEDDING_ATTRIBUTES:
         child = getattr(module, name, None)
         if isinstance(child, torch.nn.Embedding):
@@ -129,11 +124,7 @@ def find_output_head(module):
 
 
 def _repair_output_accessor(cls):
-    """`get_output_embeddings` that returns None while the class owns an `lm_head`.
-
-    Step-3.7 delegates it to the inner model, which has no head; everything that
-    resizes, ties or repairs the vocabulary then dereferences None.
-    """
+    """`get_output_embeddings` that returns None while the class owns an `lm_head` (Step-3.7 delegates to a headless inner model)."""
     original = cls.__dict__.get("get_output_embeddings")
     if original is None or "_unsloth_original_get_output_embeddings" in cls.__dict__:
         return False
@@ -165,10 +156,8 @@ def _output_accessor_is_broken(model):
 def _fill_missing_loss(cls):
     """Wrap `cls.forward` so a call with labels always yields a loss.
 
-    The first call with labels probes the original: if it returns a loss the
-    wrapper steps aside for good. If it raises or returns no loss, from then on
-    the labels are withheld from the original and the causal LM loss is
-    computed from its logits, the same formula transformers uses.
+    The first labelled call probes the original; if it gives no loss, labels are withheld
+    from then on and the causal LM loss is computed from its logits.
     """
     original = cls.__dict__.get("forward")
     # Own dict only: a subclass of an already repaired class has its own unwrapped forward.
@@ -236,7 +225,7 @@ def _fill_missing_loss(cls):
                 return args, kwargs
             else:
                 flat[name] = bound.arguments[name]
-        flat.pop(next(iter(signature.parameters)), None)  # self
+        flat.pop(next(iter(signature.parameters)), None)
         return (), flat
 
     @functools.wraps(original)
@@ -288,9 +277,7 @@ def _fill_missing_loss(cls):
 def _rebind_accelerate_hook(model):
     """Point an accelerate hook attached during loading at the repaired forward.
 
-    `device_map` loading wraps `model.forward` before the shims run and keeps the
-    bound original as `model._old_forward`, so a class-level repair would never
-    be reached from `model(...)`.
+    `device_map` loading keeps the bound original as `model._old_forward`, bypassing class repairs.
     """
     if getattr(type(model), "_unsloth_original_forward", None) is None:
         return

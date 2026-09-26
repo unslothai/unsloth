@@ -102,7 +102,6 @@ def test_accessor_serves_both_contracts_after_the_shim(model):
     assert model.model.get_input_embeddings() is model.model.embed_tokens
     ids = torch.tensor([[1, 2, 3]])
     torch.testing.assert_close(model.model.get_input_embeddings(ids), model.model.embed_tokens(ids))
-    # The training-side hook that failed on Step-3.7 now attaches.
     model.enable_input_require_grads()
 
 
@@ -130,7 +129,6 @@ def test_forward_gains_a_loss_when_the_original_has_none(model):
     torch.testing.assert_close(out.loss, ForCausalLMLoss(out.logits, ids, 32))
     out.loss.backward()
     assert model.lm_head.weight.grad is not None
-    # No labels: the original runs untouched.
     assert model(input_ids = ids).loss is None
 
 

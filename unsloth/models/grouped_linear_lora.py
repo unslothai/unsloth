@@ -13,10 +13,8 @@
 # limitations under the License.
 """LoRA for block-diagonal grouped linears (DeepSeek-V4 `o_a_proj`, `FP8GroupedLinear`).
 
-These subclass `nn.Linear` with one `(n_groups * out_per_group, in_per_group)` weight but a
-block-diagonal forward, so PEFT's dense LoRA sum has the wrong shape. `GroupedLinearLoRA`
-keeps PEFT's dense parameters, so saving, loading and merging are unchanged, and only
-changes the forward: group g uses rows `g * out_per_group : (g + 1) * out_per_group` of `lora_B`.
+PEFT's dense LoRA sum has the wrong shape for them; only the forward changes (group g uses
+its own row block of `lora_B`), so saving, loading and merging are unchanged.
 """
 
 import functools
@@ -90,7 +88,6 @@ def _grouped_lora_layer():
                 dropout = self.lora_dropout[active_adapter]
                 scaling = self.scaling[active_adapter]
                 x_cast = self._cast_input_dtype(x, lora_A.weight.dtype)
-                # (..., n_groups, r)
                 low_rank = lora_A(dropout(x_cast))
                 # lora_B.weight is (n_groups * out_per_group, r): block g is rows of group g.
                 weight_B = lora_B.weight.view(n_groups, out_per_group, -1)
@@ -145,8 +142,7 @@ def _preflight_peft_merges():
 def _targets_module(lora_config, name):
     """Whether `lora_config` selects the module called `name`, by PEFT's own matcher.
 
-    `target_modules = None` (PEFT resolves it later) or a config PEFT cannot read
-    counts as targeted: keep the grouped forward rather than drop it.
+    `target_modules = None` or an unreadable config counts as targeted.
     """
     target_modules = getattr(lora_config, "target_modules", None)
     if target_modules is None or target_modules == "all-linear":
@@ -172,11 +168,7 @@ def targeted_grouped_linear_classes(lora_config, model):
 
 
 def register_grouped_linear_lora(lora_config, model):
-    """Map every targeted grouped-linear class in `model` to `GroupedLinearLoRA` on `lora_config`.
-
-    Returns the classes registered, empty when `target_modules` selects no grouped
-    linear or PEFT predates custom module registration.
-    """
+    """Map every targeted grouped-linear class in `model` to `GroupedLinearLoRA` on `lora_config`; returns them."""
     classes = targeted_grouped_linear_classes(lora_config, model)
     if not classes or not hasattr(lora_config, "_register_custom_module"):
         return []
@@ -196,8 +188,7 @@ def register_grouped_linear_lora(lora_config, model):
 def register_grouped_linear_lora_for_adapter(model, adapter_path, **hub_kwargs):
     """The `PeftConfig` of a saved adapter with the grouped mapping registered, or None.
 
-    The custom module mapping holds class objects, so it is not in the saved adapter
-    config. None when nothing grouped is targeted or the config cannot be read.
+    The mapping holds class objects, so it is never in the saved adapter config.
     """
     if not grouped_linear_classes(model):
         return None

@@ -1179,8 +1179,7 @@ class FastLanguageModel(FastLlamaModel):
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
-            # A grouped linear (DeepSeek-V4's o_a_proj) needs its LoRA mapping registered again:
-            # the mapping holds class objects and is not part of the saved adapter config.
+            # Grouped linears (DeepSeek-V4 o_a_proj): the LoRA mapping is not saved, re-register it.
             _grouped_config = register_grouped_linear_lora_for_adapter(
                 model,
                 old_model_name,
