@@ -61,7 +61,9 @@ def test_message_removal_paths_sweep_chat_originals(monkeypatch):
     sweeps = []
     monkeypatch.setattr(chat_history, "get_chat_thread", lambda thread_id: {"id": thread_id})
     monkeypatch.setattr(chat_history, "sync_chat_messages", lambda *args, **kwargs: [])
-    monkeypatch.setattr(chat_history.chat_originals, "sweep", lambda force = False: sweeps.append(force))
+    monkeypatch.setattr(
+        chat_history.chat_originals, "sweep", lambda force = False: sweeps.append(force)
+    )
     for prune, deleted in ((False, []), (True, []), (False, ["msg-2"])):
         chat_history.replace_thread_messages(
             "thread-1",
