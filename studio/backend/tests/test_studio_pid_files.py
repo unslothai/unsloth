@@ -456,6 +456,18 @@ def test_windows_reuseaddr_listener_is_not_reported_as_a_free_port():
         assert run._is_port_free("127.0.0.1", port) is False
 
 
+def test_a_loopback_bind_is_not_free_while_another_process_holds_the_wildcard():
+    # Windows lets a 127.0.0.1 bind succeed while another process listens on
+    # 0.0.0.0, and the new listener then takes that process's localhost
+    # traffic. The probe has to see the listener so _resolve_port falls back.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("0.0.0.0", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+
+        assert run._is_port_free("127.0.0.1", port) is False
+
+
 def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
     # `localhost` binds 127.0.0.1 AND ::1. Recording only the first lets a later
     # launch on the other literal miss us and start a duplicate.
@@ -471,6 +483,7 @@ def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
 def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, occupied):
     monkeypatch.setattr(run, "sys", SimpleNamespace(platform = platform))
     bind_attempts = []
+    connect_attempts = []
     sockets = []
 
     class _ProbeSocket:
@@ -488,8 +501,21 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, oc
             if occupied and self.family == socket.AF_INET6:
                 raise OSError("address already in use")
 
+        def settimeout(self, _timeout):
+            pass
+
+        def connect_ex(self, sockaddr):
+            connect_attempts.append((self.family, sockaddr))
+            return errno.ECONNREFUSED
+
         def close(self):
             self.closed = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            self.close()
 
     monkeypatch.setattr(
         socket,
@@ -502,7 +528,7 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, oc
     monkeypatch.setattr(
         socket,
         "socket",
-        lambda family, _socktype, _proto: _ProbeSocket(family),
+        lambda family, *_args: _ProbeSocket(family),
     )
 
     assert run._is_port_free("dual-stack.test", 8888) is (not occupied)
@@ -510,8 +536,10 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, oc
         (socket.AF_INET, ("127.0.0.1", 8888)),
         (socket.AF_INET6, ("::1", 8888, 0, 0)),
     ]
+    # Once every bind succeeds, each resolved address is also checked for a listener.
+    assert connect_attempts == ([] if occupied else bind_attempts)
     assert all(probe.closed for probe in sockets)
-    for probe in sockets:
+    for probe in sockets[: len(bind_attempts)]:
         assert ((socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) in probe.options) is (
             platform != "win32"
         )

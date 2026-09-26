@@ -786,10 +786,13 @@ def _addresses_collide(recorded: "str | None", host: str, port: int) -> bool:
 def _is_port_free(host: str, port: int) -> bool:
     """Check if a port is available for binding. For a ``0.0.0.0`` wildcard host, also check whether anything
     is listening on ``127.0.0.1`` (and ``::1`` when IPv6 exists): an SSH tunnel may hold loopback while the
-    wildcard bind succeeds, making Unsloth unreachable via ``localhost``."""
+    wildcard bind succeeds, making Unsloth unreachable via ``localhost``. For a specific host, also check
+    whether anything already answers on the addresses it resolves to: Windows lets a ``127.0.0.1`` bind
+    succeed while another process listens on ``0.0.0.0``, and then takes that process's local traffic."""
     import socket
 
     sockets = []
+    bound = []
     try:
         addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
         seen = set()
@@ -798,6 +801,7 @@ def _is_port_free(host: str, port: int) -> bool:
             if key in seen:
                 continue
             seen.add(key)
+            bound.append((family, sockaddr))
             probe = socket.socket(family, socktype, proto)
             sockets.append(probe)
             # On Windows, SO_REUSEADDR lets a second socket bind a listening
@@ -819,20 +823,24 @@ def _is_port_free(host: str, port: int) -> bool:
         for probe in sockets:
             probe.close()
 
-    # On a wildcard bind, verify localhost is not already claimed by another process (e.g. an SSH -L
-    # tunnel); a successful connect means it is.
+    # A bind can succeed next to another process's listener: a wildcard bind while it holds localhost
+    # (e.g. an SSH -L tunnel), or on Windows a specific bind while it holds the wildcard. Either way the
+    # address is already served, so a successful connect means the port is taken.
     if is_wildcard_host(host):
-        for loopback, family in [
-            ("127.0.0.1", socket.AF_INET),
-            ("::1", socket.AF_INET6),
-        ]:
-            try:
-                with socket.socket(family, socket.SOCK_STREAM) as s:
-                    s.settimeout(1)
-                    if s.connect_ex((loopback, port)) == 0:
-                        return False
-            except OSError:
-                continue
+        targets = [
+            (socket.AF_INET, ("127.0.0.1", port)),
+            (socket.AF_INET6, ("::1", port)),
+        ]
+    else:
+        targets = bound
+    for family, sockaddr in targets:
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as s:
+                s.settimeout(1)
+                if s.connect_ex(sockaddr) == 0:
+                    return False
+        except OSError:
+            continue
 
     return True
 
