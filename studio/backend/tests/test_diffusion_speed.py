@@ -80,7 +80,9 @@ def _compile_runtime_independent_of_the_host(monkeypatch):
 def _stub_torch(monkeypatch):
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"  # _is_bfloat16 compares by identity then str fallback
+    torch.float16 = "float16"
     torch.channels_last = "channels_last"
+    torch.contiguous_format = "contiguous_format"
     torch.backends = types.SimpleNamespace(
         cuda = types.SimpleNamespace(matmul = types.SimpleNamespace(allow_tf32 = False)),
         cudnn = types.SimpleNamespace(allow_tf32 = False, benchmark = False),
@@ -450,7 +452,8 @@ def test_speed_default_dense_falls_back_to_regional_compile(monkeypatch):
     applied = apply_speed_optims(
         pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
     )
-    assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
+    # The VAE decode stays eager on a DiT's default tier, so its weights stay contiguous.
+    assert applied["channels_last"] is False and pipe.vae.mem_format == torch.contiguous_format
     assert applied["compiled"] is True and pipe.compiled is True
     # default compiles with dynamic=True and no autotune mode: fast cold start, resolution-robust, sidesteps the CUDA-graph crash.
     assert pipe.compile_kwargs == {"fullgraph": True, "dynamic": True}
@@ -486,7 +489,7 @@ def test_speed_default_gguf_compiles_only_dequant(monkeypatch):
     applied = apply_speed_optims(
         pipe, _target(), is_gguf = True, family = _family(), speed_mode = SPEED_DEFAULT
     )
-    assert applied["channels_last"] is True
+    assert applied["channels_last"] is False
     assert applied["compiled_dequant"] is True
     # The transformer block is NOT regionally compiled under GGUF default.
     assert applied["compiled"] is False and pipe.compiled is False
@@ -659,6 +662,55 @@ def test_dit_default_tier_keeps_fuse_off_and_leaves_the_vae_decode_eager(monkeyp
     assert torch.compile_calls == []
     assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_DEFAULT) is False
     assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_MAX) is True
+
+
+@pytest.mark.parametrize("tier", [SPEED_EAGER, SPEED_DEFAULT])
+def test_eager_vae_decode_keeps_contiguous_weights(monkeypatch, tier):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = tier)
+    assert applied["compiled_vae_decode"] is False
+    assert applied["channels_last"] is False and pipe.vae.mem_format == torch.contiguous_format
+
+
+def test_compiled_vae_decode_keeps_channels_last(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True)
+    pipe.vae.dtype = "torch.bfloat16"
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled_vae_decode"] is True
+    assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
+
+
+@pytest.mark.parametrize(
+    "dtype, force_upcast, expect_channels_last",
+    [
+        ("torch.float32", False, False),
+        ("float16", True, False),
+        ("float16", False, True),
+        ("bfloat16", True, True),
+    ],
+)
+def test_unet_compiled_decode_in_fp32_keeps_contiguous_weights(
+    monkeypatch, dtype, force_upcast, expect_channels_last
+):
+    # SDXL pipelines decode a force_upcast fp16 VAE in fp32, where channels_last measured 0.89x even compiled (T4).
+    torch = _stub_torch(monkeypatch)
+    pipe = _UNetPipe()
+    pipe.vae.dtype = dtype
+    pipe.vae.config = types.SimpleNamespace(force_upcast = force_upcast)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled_vae_decode"] is True
+    assert applied["channels_last"] is expect_channels_last
+    assert pipe.mem_format == (
+        torch.channels_last if expect_channels_last else torch.contiguous_format
+    )
 
 
 def test_dit_default_tier_vae_decode_compile_forced_on_by_env(monkeypatch):

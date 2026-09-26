@@ -444,6 +444,11 @@ def apply_speed_optims(
             eager_when_tiled = _vae_eager_when_tiled(pipe),
         )
 
+    if applied["channels_last"] and not _channels_last_decode_wins(
+        pipe, applied["compiled_vae_decode"]
+    ):
+        applied["channels_last"] = not _vae_contiguous(pipe, logger)
+
     if mode == SPEED_MAX:
         if on_cuda:
             applied["tf32"] = _enable_tf32(logger)
@@ -965,6 +970,38 @@ def _vae_eager_when_tiled(pipe: Any) -> bool:
     if pipe is not None and _denoiser_unet(pipe) is not None:
         return False
     return os.environ.get(COMPILE_VAE_ENV, "").strip().lower() not in _VAE_TRUE_TOKENS
+
+
+def _vae_contiguous(pipe: Any, logger: Any) -> bool:
+    try:
+        import torch
+        pipe.vae.to(memory_format = torch.contiguous_format)
+        return True
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "contiguous vae", exc)
+        return False
+
+
+def _channels_last_decode_wins(pipe: Any, compiled_decode: bool) -> bool:
+    """channels_last only pays off in a compiled 16-bit decode.
+
+    Eager CUDA GroupNorm has no NHWC kernel, so each norm copies NHWC -> NCHW and back: an eager channels_last decode
+    measured 0.56-0.78x (T4, A100, RTX PRO 6000, B200). Compiled, Inductor owns the layout and channels_last weights
+    measured 1.04-1.33x in bf16, 1.0x in fp16 and 0.89x in fp32 (T4)."""
+    if not compiled_decode:
+        return False
+    vae = getattr(pipe, "vae", None)
+    dtype = str(getattr(vae, "dtype", ""))
+    if dtype.endswith("float32"):
+        return False
+    # SDXL pipelines upcast a force_upcast fp16 VAE to fp32 for the decode.
+    config = getattr(vae, "config", None)
+    force_upcast = bool(getattr(config, "force_upcast", False))
+    return not (
+        force_upcast
+        and _is_float16(getattr(vae, "dtype", None))
+        and _denoiser_unet(pipe) is not None
+    )
 
 
 def _guard_compiled_decode(
