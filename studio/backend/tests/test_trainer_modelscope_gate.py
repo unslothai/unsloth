@@ -44,6 +44,9 @@ def _stub_if_missing(name, attrs):
         setattr(sys.modules[parent], child, mod)
 
 
+pytest.importorskip("torch")
+pytest.importorskip("transformers")
+
 _stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
 _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
