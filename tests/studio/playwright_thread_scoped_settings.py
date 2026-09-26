@@ -323,16 +323,19 @@ def unload_any_model(page, token):
 
 
 def _loaded_model(page, token):
-    status = page.evaluate(
-        """async ({ base, token }) => {
+    status = (
+        page.evaluate(
+            """async ({ base, token }) => {
             const res = await fetch(base + "/api/inference/status", {
                 headers: { Authorization: "Bearer " + token },
             });
             if (!res.ok) return null;
             return await res.json();
         }""",
-        {"base": BASE, "token": token},
-    ) or {}
+            {"base": BASE, "token": token},
+        )
+        or {}
+    )
     return status.get("model_identifier") or (status.get("loaded") or [None])[0]
 
 
