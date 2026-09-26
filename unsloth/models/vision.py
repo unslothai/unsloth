@@ -2831,8 +2831,7 @@ class FastBaseModel:
                 unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
                 model.generate = types.MethodType(unsloth_base_fast_generate, model)
         model._unsloth_trust_remote_code = trust_remote_code
-        # An export that re-reads the repo's config with its code pins it to this commit, never the
-        # branch head, which may have changed since the reviewed revision was loaded.
+        # Export's trusted config re-read pins to this commit, not a moved branch head.
         model._unsloth_trust_remote_code_commit = (
             _trusted_remote_code_commit(
                 model_name,

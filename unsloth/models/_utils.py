@@ -1523,12 +1523,10 @@ def _checkpoint_weight_names(
     variant = None,
     cache_dir = None,
 ):
-    # Tensor names stored in a checkpoint, read from a safetensors index or header, or a sharded .bin index. None when unknown.
-    # An unsharded pytorch_model.bin is never unpickled just to list its names.
+    # Checkpoint tensor names (safetensors index/header or sharded .bin index); None when unknown. Never unpickles a .bin.
     import json, os
 
     def _add_variant(name):
-        # from_pretrained(variant = "fp16") reads model.fp16.safetensors, model.safetensors.index.fp16.json.
         if not variant:
             return name
         stem, ext = name.rsplit(".", 1)
@@ -1538,7 +1536,6 @@ def _checkpoint_weight_names(
     single_name = _add_variant("model.safetensors")
     bin_index_name = _add_variant("pytorch_model.bin.index.json")
     if os.path.isdir(str(model_name)):
-        # from_pretrained(subfolder = ...) reads the weights there, whatever folder the config came from.
         model_name = os.path.join(model_name, subfolder) if subfolder else model_name
         index_path = os.path.join(model_name, index_name)
         if os.path.isfile(index_path):
@@ -1673,8 +1670,7 @@ def _resolve_text_causal_lm_class(
 
 
 def _meta_parameter_names(model_class, config):
-    # Parameter names of model_class(config), built on the meta device (no memory, no weights).
-    # Returns (names with tied weights counted once, every name including tied aliases such as lm_head.weight).
+    # Meta-device param names: (tied counted once, all names incl. tied aliases).
     import torch
 
     config = copy.deepcopy(config)
@@ -1716,9 +1712,7 @@ def _get_remote_composite_text_only(
         # vLLM loads the repo's own composite config and weights by name, with no prefix rewrite for a standalone text config.
         return None
     if Version(transformers_version) < Version("5.0.0"):
-        # transformers 4.x decides base-vs-task prefix handling from the UNMAPPED checkpoint keys, so key_mapping
-        # cannot strip a wrapper prefix: it raises "state dictionary ... corrupted", or with tied embeddings loads
-        # every weight as missing (random). Keep the full-model load there.
+        # transformers 4.x key_mapping cannot strip a wrapper prefix (corrupted state dict or random weights).
         return None
     try:
         text_config = model_config.get_text_config()
@@ -1739,7 +1733,6 @@ def _get_remote_composite_text_only(
     text_config = copy.copy(text_config)
     qc = getattr(model_config, "quantization_config", None)
     if qc is not None and getattr(text_config, "quantization_config", None) is None:
-        # Carried with the parent's own skip names; they are rebased on the text model once, below, from the found prefix.
         text_config.quantization_config = qc
     if getattr(text_config, "_commit_hash", None) is None:
         # A nested config carries no commit; the load runs the parent repo's code and weights, so pin to the parent's.
@@ -1761,7 +1754,6 @@ def _get_remote_composite_text_only(
             return None
         parent_class_names = set()
         for ref in (getattr(model_config, "auto_map", None) or {}).values():
-            # AutoTokenizer may be a [slow, fast] pair.
             parent_class_names.update(ref if isinstance(ref, (list, tuple)) else (ref,))
         if (
             f"{text_class.__module__.rsplit('.', 1)[-1]}.{text_class.__name__}"
@@ -1807,9 +1799,7 @@ def _strip_skip_module_prefix(qc, prefix):
 
 
 def _rebase_user_quantization_config(kwargs, key_mapping):
-    # A caller's quantization_config overrides the text config's, so its composite skip names
-    # (language_model.lm_head) get the same rebase as the weight keys, on a copy of the caller's object.
-    # The plan's mapping is {"^" + re.escape(prefix): ""}.
+    # Caller's quantization_config overrides the config's, so rebase its skip names too, on a copy.
     qc = kwargs.get("quantization_config", None)
     if qc is None:
         return
@@ -1855,20 +1845,17 @@ def _trusted_remote_code_commit(
             resolved = HfApi().model_info(model_name, revision = code_revision, token = token).sha
         except Exception:
             pass
-    # Unresolved: "" rather than None, which unsloth-zoo would replace with config._commit_hash (the
-    # weights' commit, whose code the caller did not select); an empty commit makes it refuse the re-read.
+    # Unresolved: "", not None, which unsloth-zoo would replace with the weights' commit.
     return resolved or ""
 
 
 def _merge_key_mapping(kwargs, mapping):
-    # Add mapping to from_pretrained kwargs, under any user mapping.
     user_mapping = kwargs.get("key_mapping", None)
     kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
 
 
 def _drop_text_only_key_mapping(model, mapping):
-    # transformers 5 keeps the load's key_mapping renames on the model and reverses them in save_pretrained,
-    # which would write the standalone decoder under the composite prefix. Drop only the plan's own entries.
+    # transformers 5 reverses key_mapping in save_pretrained; drop only the plan's own entries.
     conversions = getattr(model, "_weight_conversions", None)
     if not mapping or not isinstance(conversions, list):
         return
@@ -1895,9 +1882,7 @@ def _adapter_fits_text_model(
     cache_dir = None,
     text_names = None,
 ):
-    # False when a PEFT adapter was trained on the full composite (its weights sit under the wrapper prefix
-    # key_mapping strips, or under a wrapper-only module outside text_names such as vision_model.) or its
-    # weights cannot be read: PeftModel would drop them on the standalone decoder.
+    # False when the adapter targets the composite (wrapper prefix or wrapper-only module) or is unreadable.
     import os
 
     names = None

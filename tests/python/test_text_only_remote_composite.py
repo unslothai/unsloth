@@ -50,7 +50,6 @@ _CONSTANTS = ("_REMOTE_CODE_HUB_KWARGS",)
 
 
 def _ns():
-    # Exec the helpers without importing unsloth (which needs a GPU).
     from packaging.version import Version
 
     source = UTILS_PATH.read_text(encoding = "utf-8")
@@ -66,7 +65,6 @@ def _ns():
         "Version": Version,
         "transformers_version": transformers.__version__,
     }
-    # Module-level constants the helpers read.
     for n in tree.body:
         if isinstance(n, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id in _CONSTANTS for t in n.targets
@@ -78,8 +76,7 @@ def _ns():
     return ns
 
 
-# A repo-code composite shaped like Nemotron-3-Nano-Omni: parent config with llm_config (a stock text decoder
-# config), a vision config, and a wrapper that keeps the whole causal LM as `language_model` next to vision parts.
+# Nemotron-3-Nano-Omni shape: llm_config (stock text decoder), vision config, whole causal LM kept as `language_model`.
 _CONFIGURATION = """
 from transformers import PretrainedConfig, LlamaConfig
 
@@ -159,7 +156,6 @@ def _write_repo(
     alias = True,
     text_auto_map = None,
 ):
-    # Save a remote-code composite checkpoint whose text weights sit under `prefix` (sentinel-filled).
     from safetensors.torch import save_file
 
     repo = tmp_path / name
@@ -207,7 +203,6 @@ def _load_parent_config(repo):
     return transformers.AutoConfig.from_pretrained(repo, trust_remote_code = True)
 
 
-# ---------------------------------------------------------------- prefix inference (pure)
 
 
 def test_prefix_inference_finds_single_full_cover():
@@ -225,7 +220,6 @@ def test_prefix_inference_nested_prefix():
 
 
 def test_prefix_inference_rejects_partial_cover():
-    # A missing text weight would be randomly initialised, so no prefix is returned.
     ns = _ns()
     expected = ["model.embed_tokens.weight", "model.layers.0.w", "lm_head.weight"]
     ckpt = {"language_model.model.embed_tokens.weight", "language_model.lm_head.weight"}
@@ -235,7 +229,6 @@ def test_prefix_inference_rejects_partial_cover():
 def test_prefix_inference_rejects_unprefixed_and_ambiguous():
     ns = _ns()
     expected = ["a.weight", "b.weight"]
-    # Stored at the root: no wrapper prefix to strip, the full-model path is left alone.
     assert ns["_infer_text_submodel_prefix"](expected, set(expected)) is None
     ambiguous = {"x." + e for e in expected} | {"y." + e for e in expected}
     assert ns["_infer_text_submodel_prefix"](expected, ambiguous) is None
@@ -244,8 +237,7 @@ def test_prefix_inference_rejects_unprefixed_and_ambiguous():
 
 
 def test_prefix_inference_gemma_style_split_layout_is_rejected():
-    # Gemma 3 / LLaVA split the decoder (language_model.model.*) from the head (language_model.lm_head / lm_head):
-    # a CausalLM's names are NOT all under one prefix in the tf5 layout, so the new branch cannot claim it.
+    # Gemma 3 / LLaVA split decoder and head across prefixes, so no single prefix covers a CausalLM.
     ns = _ns()
     expected = ["model.embed_tokens.weight", "model.layers.0.w", "lm_head.weight"]
     ckpt = {
@@ -256,7 +248,6 @@ def test_prefix_inference_gemma_style_split_layout_is_rejected():
     assert ns["_infer_text_submodel_prefix"](expected, ckpt) is None
 
 
-# ---------------------------------------------------------------- gate on real configs
 
 
 @needs_tf5
@@ -271,7 +262,6 @@ def test_remote_composite_resolves_text_config_and_mapping(tmp_path):
     assert text_config.model_type == "llama"
     assert not hasattr(text_config, "vision_config")
     assert mapping == {r"^language_model\.": ""}
-    # The parent keeps its own llm_config object (the plan copies it).
     assert text_config is not parent.llm_config
 
 
@@ -280,7 +270,6 @@ def test_llm_config_without_text_config_alias(tmp_path):
     ns = _ns()
     repo, weights = _write_repo(tmp_path, alias = False, name = "no_alias")
     parent = _load_parent_config(repo)
-    # get_text_config() does not see llm_config here, so the family path had nothing to offer.
     assert parent.get_text_config() is parent
     text_config, mapping, _ = ns["_get_remote_composite_text_only"](
         parent, str(repo), trust_remote_code = True
@@ -314,7 +303,6 @@ def test_remote_composite_missing_text_weight_keeps_full_model(tmp_path):
 
 
 def test_native_composites_never_take_the_branch():
-    # Stock transformers configs (Gemma 3, LLaVA, Qwen2-VL, Mllama) are not repo code: unchanged behaviour.
     ns = _ns()
     for cfg in (
         transformers.Gemma3Config(),
@@ -357,7 +345,6 @@ def test_hardcoded_flash_attention_does_not_block_the_meta_build(tmp_path):
     assert parent.llm_config._attn_implementation == "flash_attention_2"
 
 
-# ---------------------------------------------------------------- end to end: the plan loads real weights
 
 
 @needs_tf5
@@ -384,7 +371,6 @@ def test_plan_loads_only_the_language_model_with_real_weights(tmp_path):
         if k.startswith("language_model."):
             assert torch.equal(loaded[k[len("language_model.") :]], v), k
     assert not any("vision" in n or "mlp1" in n for n, _ in model.named_modules())
-    # And it is a plain causal LM: text-only forward with logits_to_keep works.
     out = model(input_ids = torch.tensor([[1, 2, 3, 4]]), logits_to_keep = 2, use_cache = False)
     assert out.logits.shape == (1, 2, 64)
 
@@ -411,7 +397,6 @@ def test_tied_embeddings_do_not_need_a_stored_head(tmp_path):
     assert plan is not None
 
 
-# ---------------------------------------------------------------- wiring
 
 
 def test_loader_and_vision_call_the_remote_branch_only_after_the_family_gate():
@@ -419,7 +404,6 @@ def test_loader_and_vision_call_the_remote_branch_only_after_the_family_gate():
     vision = VISION_PATH.read_text(encoding = "utf-8")
     assert "_get_remote_composite_text_only(" in loader
     assert "_get_remote_composite_text_only(" in vision
-    # The family decoder test runs first; the new branch only fills the case that used to fall back to the full model.
     i_family = loader.index("family_decoder = text_class is not None and _is_family_text_decoder(")
     i_remote = loader.index("_get_remote_composite_text_only(")
     assert i_family < i_remote
@@ -427,7 +411,6 @@ def test_loader_and_vision_call_the_remote_branch_only_after_the_family_gate():
 
 
 def test_transformers_4_keeps_the_full_model(tmp_path, monkeypatch):
-    # On transformers 4.x the prefix strip cannot be expressed with key_mapping; the plan must decline.
     ns = _ns()
     repo, _ = _write_repo(tmp_path, name = "tf4")
     parent = _load_parent_config(repo)
@@ -436,9 +419,7 @@ def test_transformers_4_keeps_the_full_model(tmp_path, monkeypatch):
 
 
 def test_trusted_load_records_the_commit_its_repo_code_ran_at():
-    # The export pins its trusted config re-read and code copy to this commit (unsloth-zoo). Under
-    # text_only the model's own config is the nested text config, which carries no commit, so the
-    # composite config's commit is taken before the text-only remap.
+    # Nested text config has no commit, so the composite's is taken before the remap.
     vision = VISION_PATH.read_text(encoding = "utf-8")
     i_parent = vision.index("parent_config = auto_config\n")
     i_commit = vision.index('_trusted_code_commit = getattr(parent_config, "_commit_hash", None)')
@@ -451,7 +432,6 @@ def test_trusted_load_records_the_commit_its_repo_code_ran_at():
     assert "if trust_remote_code" in stamp and '"_commit_hash"' in stamp
 
 
-# ---------------------------------------------------------------- Hub-cached checkpoints
 
 
 def _cache_as_hub_repo(
@@ -461,7 +441,6 @@ def _cache_as_hub_repo(
     repo_id = "fake-org/tiny-omni",
     with_index = False,
 ):
-    # Lay the fixture out as a Hub cache snapshot at a fixed commit, so loads resolve a commit hash offline.
     import shutil
     import huggingface_hub.constants as hub_constants
 
@@ -487,8 +466,6 @@ def _cache_as_hub_repo(
 
 @needs_tf5
 def test_text_config_keeps_the_parent_commit(tmp_path, monkeypatch):
-    # FastModel hands FastBaseModel only the text config, so the trusted-code commit stamp falls back to
-    # model.config._commit_hash; a nested sub-config has none of its own.
     ns = _ns()
     repo, _ = _write_repo(tmp_path, name = "commit")
     repo_id, sha = _cache_as_hub_repo(tmp_path, monkeypatch, repo, with_index = True)
@@ -514,7 +491,6 @@ def test_text_config_keeps_the_parent_commit(tmp_path, monkeypatch):
 
 @needs_tf5
 def test_cached_single_file_checkpoint_is_read_offline(tmp_path, monkeypatch):
-    # local_files_only with an unsharded model.safetensors (no index) in the Hub cache.
     ns = _ns()
     repo, weights = _write_repo(tmp_path, name = "single")
     repo_id, _ = _cache_as_hub_repo(tmp_path, monkeypatch, repo, repo_id = "fake-org/single")
@@ -528,17 +504,14 @@ def test_cached_single_file_checkpoint_is_read_offline(tmp_path, monkeypatch):
     )
     assert plan is not None
     assert plan[1] == {r"^language_model\.": ""}
-    # Not cached at all: still declines (None) instead of downloading the weights to inspect them.
     assert ns["_checkpoint_weight_names"]("fake-org/absent", local_files_only = True) is None
 
 
-# ---------------------------------------------------------------- PEFT adapters on a repo-code composite
 
 
 @needs_tf5
 def test_adapter_trained_on_the_wrapper_keeps_the_full_model(tmp_path):
-    # Its tensors are named under language_model., which the standalone decoder does not have: PeftModel
-    # would silently keep fresh LoRA weights (or find no target for a language_model regex).
+    # Tensors under language_model. would not reach the standalone decoder.
     peft = pytest.importorskip("peft")
     from safetensors.torch import load_file
 
@@ -569,7 +542,6 @@ def test_adapter_trained_on_the_wrapper_keeps_the_full_model(tmp_path):
     text_adapter = tmp_path / "text_adapter"
     peft.get_peft_model(text_model(), peft.LoraConfig(**lora)).save_pretrained(text_adapter)
 
-    # The failure the gate prevents: none of the wrapper adapter's tensors reach the standalone decoder.
     saved = list(load_file(str(wrapper_adapter / "adapter_model.safetensors")).values())
     from real_accelerator import has_real_accelerator
 
@@ -582,14 +554,12 @@ def test_adapter_trained_on_the_wrapper_keeps_the_full_model(tmp_path):
     assert got and not any(any(torch.equal(v, s) for s in saved) for v in got)
 
     assert ns["_adapter_fits_text_model"](str(wrapper_adapter), mapping) is False
-    # An adapter trained on the text-only load (no wrapper prefix) keeps the fast path.
     assert ns["_adapter_fits_text_model"](str(text_adapter), mapping) is True
     assert ns["_adapter_fits_text_model"](str(text_adapter), mapping, text_names = text_names) is True
     assert (
         ns["_adapter_fits_text_model"](str(wrapper_adapter), mapping, text_names = text_names)
         is False
     )
-    # Unreadable (no safetensors adapter): decline.
     assert ns["_adapter_fits_text_model"](str(tmp_path / "missing"), mapping) is False
 
 
@@ -597,7 +567,6 @@ def test_loader_checks_the_adapter_before_taking_the_text_only_branch():
     loader = LOADER_PATH.read_text(encoding = "utf-8")
     i_plan = loader.index("remote_text_only = _get_remote_composite_text_only(")
     i_gate = loader.index("and not _adapter_fits_text_model(", i_plan)
-    # The decoder's own parameter names, so an adapter on vision_model. / mlp1. alone is caught too.
     assert (
         "text_names = remote_text_only[2],"
         in loader[i_gate : loader.index("\n                ):", i_gate)]
@@ -608,13 +577,11 @@ def test_loader_checks_the_adapter_before_taking_the_text_only_branch():
     assert "and is_peft" in gate and "old_model_name" in gate and "remote_text_only = None" in gate
 
 
-# ---------------------------------------------------------------- fast_inference (vLLM)
 
 
 @needs_tf5
 def test_fast_inference_keeps_the_full_model_path(tmp_path):
-    # vLLM reads the composite's own config.json and weights by repo name; a standalone text config with a
-    # prefix key_mapping has no meaning there, so the plan declines and the old VLM gate decides.
+    # vLLM loads the composite by repo name; a prefix key_mapping means nothing there.
     ns = _ns()
     repo, _ = _write_repo(tmp_path, name = "vllm")
     parent = _load_parent_config(repo)
@@ -660,8 +627,7 @@ def test_sequence_valued_auto_map_entry(tmp_path):
 )
 @pytest.mark.parametrize("alias", [True, False])
 def test_skip_modules_rebased_once_for_nested_prefixes(tmp_path, prefix, alias):
-    # The parent's names are stripped of the found prefix exactly once; the Gemma-layout remap
-    # (language_model.model. -> model.) must not run first and leave model.lm_head / model.model.*.
+    # Prefix strip must run once, before the Gemma-layout remap could leave model.lm_head.
     ns = _ns()
     repo, _ = _write_repo(tmp_path, prefix = prefix, alias = alias, name = "nested")
     parent = _load_parent_config(repo)
@@ -674,7 +640,6 @@ def test_skip_modules_rebased_once_for_nested_prefixes(tmp_path, prefix, alias):
     assert mapping == {"^" + re.escape(prefix): ""}
     skip = text_config.quantization_config["llm_int8_skip_modules"]
     assert skip[:2] == ["lm_head", "model.layers.0.mlp"]
-    # Every rebased name is a real module of the standalone text model.
     model = transformers.LlamaForCausalLM(text_config)
     modules = dict(model.named_modules())
     assert all(name in modules for name in skip[:2])
@@ -685,8 +650,7 @@ def test_skip_modules_rebased_once_for_nested_prefixes(tmp_path, prefix, alias):
 @pytest.mark.parametrize("prefix", ["language_model.", "model.language_model."])
 @pytest.mark.parametrize("as_dict", [True, False])
 def test_caller_quantization_config_skip_modules_are_rebased(tmp_path, prefix, as_dict):
-    # transformers prefers the caller's quantization_config over the config's own, so its composite
-    # skip names must be rebased too, or the standalone decoder quantizes modules the caller excluded.
+    # Caller's quantization_config wins over the config's, so its skip names need rebasing too.
     ns = _ns()
     repo, _ = _write_repo(tmp_path, prefix = prefix, name = "user_qc")
     parent = _load_parent_config(repo)
@@ -707,10 +671,8 @@ def test_caller_quantization_config_skip_modules_are_rebased(tmp_path, prefix, a
     assert type(out) is type(user_qc) and out is not user_qc
     if not as_dict:
         assert out.load_in_4bit and out.quant_method == user_qc.quant_method
-    # The caller's object is never mutated.
     orig = user_qc["llm_int8_skip_modules"] if as_dict else user_qc.llm_int8_skip_modules
     assert orig == names
-    # No caller config, or one without skip names: untouched.
     kw = {}
     ns["_rebase_user_quantization_config"](kw, mapping)
     assert "quantization_config" not in kw
@@ -721,7 +683,6 @@ def test_caller_quantization_config_skip_modules_are_rebased(tmp_path, prefix, a
 
 
 def test_loader_and_vision_rebase_the_caller_quantization_config():
-    # Both text-only paths rebase the caller's config right where they install the plan's key_mapping.
     for path in (LOADER_PATH, VISION_PATH):
         src = path.read_text(encoding = "utf-8")
         assert re.search(
@@ -740,7 +701,6 @@ def _from_pretrained_node(path, cls):
 
 
 def _qc_reads_after_rebase(fn, name):
-    # Line numbers where `name` is (re)bound from kwargs["quantization_config"] after the rebase call.
     rebase = min(
         n.lineno
         for n in ast.walk(fn)
@@ -762,9 +722,7 @@ def _qc_reads_after_rebase(fn, name):
 
 
 def test_post_load_quantization_config_stamp_uses_the_rebased_config():
-    # FastModel stamps its local quantization_config into model.config after the load. That local is read
-    # from kwargs before the text-only plan rebases the caller's skip names, so it must be re-read after the
-    # rebase, or a saved standalone decoder keeps composite skip names and quantizes excluded modules on reload.
+    # FastModel's local quantization_config must be re-read after the rebase, else a saved decoder keeps composite skip names.
     fn = _from_pretrained_node(LOADER_PATH, "FastModel")
     rebase, reads = _qc_reads_after_rebase(fn, "quantization_config")
     assert reads, "FastModel keeps the pre-rebase quantization_config for the post-load stamp"
@@ -777,7 +735,6 @@ def test_post_load_quantization_config_stamp_uses_the_rebased_config():
         )
     )
     assert rebase < min(reads) < stamp
-    # FastBaseModel reads the caller's config only after its own rebase.
     fn = _from_pretrained_node(VISION_PATH, "FastBaseModel")
     rebase, reads = _qc_reads_after_rebase(fn, "user_quantization_config")
     assert reads
@@ -795,8 +752,7 @@ def _saved_keys(directory):
 
 @needs_tf5
 def test_saved_text_only_decoder_keeps_standalone_names(tmp_path):
-    # transformers 5 keeps the load's key_mapping on the model and reverses it in save_pretrained, so the
-    # standalone decoder was written as language_model.* beside its standalone config and reloaded random.
+    # transformers 5 reverses key_mapping in save_pretrained, which wrote language_model.* and reloaded random.
     ns = _ns()
     repo, _ = _write_repo(tmp_path, name = "save_names")
     parent = _load_parent_config(repo)
@@ -816,7 +772,6 @@ def test_saved_text_only_decoder_keeps_standalone_names(tmp_path):
             local_files_only = True,
         )
 
-    # Without the drop the saved names are not the standalone ones.
     model = load()
     model.save_pretrained(tmp_path / "raw")
     assert "model.embed_tokens.weight" not in _saved_keys(tmp_path / "raw")
@@ -833,7 +788,6 @@ def test_saved_text_only_decoder_keeps_standalone_names(tmp_path):
     state = reloaded.state_dict()
     assert all(torch.equal(state[k], v) for k, v in model.state_dict().items())
 
-    # A merged LoRA export through save_pretrained keeps the standalone names too.
     from peft import LoraConfig, get_peft_model
 
     peft_model = get_peft_model(model, LoraConfig(r = 2, target_modules = ["q_proj", "v_proj"]))
@@ -860,7 +814,6 @@ def test_drop_keeps_every_other_weight_conversion():
     model._weight_conversions = [plan, user, other]
     ns["_drop_text_only_key_mapping"](model, {r"^language_model\.": ""})
     assert model._weight_conversions == [user, other]
-    # No plan, or no retained conversions (transformers 4.x): untouched.
     ns["_drop_text_only_key_mapping"](model, None)
     assert model._weight_conversions == [user, other]
     bare = Holder()
@@ -883,11 +836,9 @@ def test_loader_and_vision_drop_the_plan_mapping_after_the_load():
     )
 
 
-# ---------------------------------------------------------------- .bin checkpoints
 
 
 def _convert_to_sharded_bin(repo):
-    # Republish the fixture as pytorch_model shards plus pytorch_model.bin.index.json, no safetensors.
     from safetensors.torch import load_file
 
     weights = load_file(str(repo / "model.safetensors"))
@@ -921,7 +872,6 @@ def test_sharded_bin_checkpoint_is_probed_from_its_index(tmp_path, monkeypatch):
     )
     assert not info["missing_keys"]
     assert torch.equal(model.lm_head.weight, weights["language_model.lm_head.weight"])
-    # The same checkpoint from the Hub cache, offline.
     repo_id, _ = _cache_as_hub_repo(tmp_path, monkeypatch, repo, repo_id = "fake-org/bin-sharded")
     assert ns["_checkpoint_weight_names"](repo_id, local_files_only = True) == set(weights)
 
@@ -936,7 +886,6 @@ def test_unsharded_bin_is_never_unpickled_to_probe(tmp_path, monkeypatch):
     assert ns["_checkpoint_weight_names"](str(repo)) is None
 
 
-# ---------------------------------------------------------------- repo-code text decoders
 
 
 @needs_tf5
@@ -954,7 +903,6 @@ def test_nested_repo_code_class_lookup_honours_local_files_only(tmp_path, monkey
     parent = transformers.AutoConfig.from_pretrained(
         repo_id, trust_remote_code = True, local_files_only = True
     )
-    # Every Hub request lands on a local endpoint that records it.
     seen = []
 
     class _Handler(http.server.BaseHTTPRequestHandler):
@@ -1027,8 +975,7 @@ def test_bin_adapter_is_read_like_a_safetensors_one(tmp_path):
 
 @needs_tf5
 def test_probes_read_the_commit_the_config_was_resolved_at(tmp_path, monkeypatch):
-    # The config (and so the pinned load) came from an older commit; main has since moved to a
-    # checkpoint that no longer holds every text weight. The probe must read the pinned commit.
+    # main has moved to a checkpoint missing text weights; the probe must read the pinned commit.
     import shutil
 
     ns = _ns()
@@ -1095,12 +1042,10 @@ def test_nested_own_repo_code_still_takes_the_plan(tmp_path):
     assert not info["missing_keys"]
 
 
-# ---------------------------------------------------------------- subfolder checkpoints
 
 
 @needs_tf5
 def test_subfolder_checkpoint_is_probed_where_the_load_reads_it(tmp_path, monkeypatch):
-    # Config at the root, weights under subfolder = "weights" (what from_pretrained(subfolder = ...) reads).
     import shutil
 
     ns = _ns()
@@ -1125,7 +1070,6 @@ def test_subfolder_checkpoint_is_probed_where_the_load_reads_it(tmp_path, monkey
     )
     assert not info["missing_keys"]
     assert torch.equal(model.lm_head.weight, weights["language_model.lm_head.weight"])
-    # And from the Hub cache, offline.
     repo_id, _ = _cache_as_hub_repo(tmp_path, monkeypatch, repo, repo_id = "fake-org/sub")
     assert ns["_checkpoint_weight_names"](
         repo_id, local_files_only = True, subfolder = "weights"
@@ -1145,13 +1089,11 @@ def test_loader_and_vision_forward_subfolder_to_the_plan():
         assert 'subfolder = kwargs.get("subfolder"),' in src[i : j + 1], path.name
 
 
-# ---------------------------------------------------------------- caller device maps
 
 
 @needs_tf5
 def test_module_keyed_device_map_keeps_the_full_composite(tmp_path):
-    # {"language_model": 0, "vision_model": "cpu"} names the wrapper's modules; the standalone decoder
-    # has none of them, so from_pretrained refuses the map ("does not give any device").
+    # A composite device map names wrapper modules; from_pretrained refuses it on the standalone decoder.
     ns = _ns()
     repo, _ = _write_repo(tmp_path, name = "dmap")
     parent = _load_parent_config(repo)
@@ -1159,7 +1101,6 @@ def test_module_keyed_device_map_keeps_the_full_composite(tmp_path):
     plan = ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True)
     text_config, mapping, _ = plan
     model = transformers.LlamaForCausalLM(text_config)
-    # None of the standalone decoder's parameters falls under any key of the composite's map.
     assert not any(
         name == key or name.startswith(key + ".")
         for name, _ in model.named_parameters()
@@ -1171,7 +1112,6 @@ def test_module_keyed_device_map_keeps_the_full_composite(tmp_path):
         )
         is None
     )
-    # Maps that place the whole model keep the text-only plan.
     for device_map in ({"": "cpu"}, "cpu", "auto", "sequential", None):
         assert ns["_get_remote_composite_text_only"](
             parent, str(repo), trust_remote_code = True, device_map = device_map
@@ -1191,11 +1131,9 @@ def test_loader_and_vision_forward_device_map_to_the_plan():
         assert "device_map = device_map," in src[i : j + 1], path.name
 
 
-# ---------------------------------------------------------------- variant and cache_dir
 
 
 def _as_variant(repo, variant, layout):
-    # Rename the fixture's weights the way from_pretrained(variant = ...) looks for them.
     weights_file = repo / "model.safetensors"
     if layout == "single":
         weights_file.rename(repo / f"model.{variant}.safetensors")
@@ -1246,7 +1184,6 @@ def test_variant_checkpoint_is_probed_where_the_load_reads_it(tmp_path, monkeypa
     )
     assert not info["missing_keys"]
     assert torch.equal(model.lm_head.weight, weights["language_model.lm_head.weight"])
-    # And from the Hub cache, offline.
     repo_id, _ = _cache_as_hub_repo(tmp_path, monkeypatch, repo, repo_id = f"fake-org/v-{layout}")
     assert ns["_checkpoint_weight_names"](repo_id, local_files_only = True, variant = "fp16") == set(
         weights
@@ -1255,7 +1192,6 @@ def test_variant_checkpoint_is_probed_where_the_load_reads_it(tmp_path, monkeypa
 
 @needs_tf5
 def test_custom_cache_dir_is_probed(tmp_path, monkeypatch):
-    # The checkpoint and the nested repo code sit only in the caller's cache_dir, not the default Hub cache.
     import huggingface_hub.constants as hub_constants
 
     ns = _ns()
@@ -1294,13 +1230,11 @@ def test_loader_and_vision_forward_variant_and_cache_dir_to_the_plan():
             assert arg in src[i : j + 1], (path.name, arg)
 
 
-# ---------------------------------------------------------------- code_revision
 
 
 @needs_tf5
 def test_nested_text_class_is_resolved_at_code_revision(tmp_path, monkeypatch):
-    # The weights and config come from main, the repo code from code_revision (what from_pretrained runs);
-    # main's modeling file no longer defines the nested text class.
+    # Weights from main, code from code_revision; main's modeling file lacks the nested text class.
     import shutil
 
     ns = _ns()
@@ -1360,8 +1294,7 @@ def test_loader_and_vision_forward_code_revision_to_the_plan():
 
 
 def test_trusted_commit_names_the_code_revision_commit(tmp_path, monkeypatch):
-    # With code_revision the load ran repo code at that revision, so the export's trusted re-read must be
-    # pinned to its commit, never the weights' commit, whose code the caller did not select.
+    # Export re-read pins to the code_revision commit, never the weights' commit.
     import shutil
 
     ns = _ns()
@@ -1380,10 +1313,8 @@ def test_trusted_commit_names_the_code_revision_commit(tmp_path, monkeypatch):
         stamp(repo_id, weights_sha, code_revision = "code-branch", local_files_only = True) == code_sha
     )
     assert stamp(repo_id, weights_sha, code_revision = "d" * 40, local_files_only = True) == "d" * 40
-    # Unresolvable: an empty commit, which unsloth-zoo refuses, not None, which it would replace with
-    # the weights' commit.
+    # Unresolvable: "" (unsloth-zoo refuses), not None (it would fall back to the weights' commit).
     assert stamp(repo_id, weights_sha, code_revision = "gone", local_files_only = True) == ""
-    # A local directory has no commit to pin: unchanged.
     assert stamp(str(repo), None, code_revision = "code-branch") is None
 
 
@@ -1395,13 +1326,11 @@ def test_vision_stamp_uses_the_code_revision_commit():
     assert 'code_revision = kwargs.get("code_revision"),' in stamp
 
 
-# ---------------------------------------------------------------- adapters on wrapper-only modules
 
 
 @needs_tf5
 def test_adapter_on_wrapper_only_modules_keeps_the_full_model(tmp_path):
-    # LoRA on vision_model / mlp1 only: no key falls under language_model., yet the standalone decoder
-    # has neither module, so PeftModel finds no target on it.
+    # LoRA on vision_model / mlp1 only: the standalone decoder has no target for it.
     peft = pytest.importorskip("peft")
 
     ns = _ns()
