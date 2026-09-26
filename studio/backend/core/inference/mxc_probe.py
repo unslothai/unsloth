@@ -22,6 +22,12 @@ _cache: dict[tuple, tuple[float, bool, str]] = {}
 _inflight: dict[tuple, threading.Event] = {}
 POSITIVE_TTL = 300.0
 NEGATIVE_TTL = 30.0
+# Re-probing a shell that cannot start costs ~15s of DACL-tier launches; the key changes with the runtime or the shell.
+INCOMPATIBLE_TTL = 6 * 3600.0
+MSYS_NAMESPACE_REASON = (
+    "Git Bash (MSYS2) cannot start in the MXC container, which denies the global named-object "
+    "directory it creates (microsoft/mxc#1061)."
+)
 
 
 _host_prep_cache: dict[str, tuple[float, str | None]] = {}
@@ -111,6 +117,36 @@ def _terminal_probe(selected_executable: str, workdir: Path, canary: Path, outsi
         )
         return (selected_executable, "-c", command)
     raise ValueError(f"the selected Windows Terminal shell is not qualified for MXC: {name}")
+
+
+def _is_msys_namespace_failure(selected_executable: str, execution_kind: str, output) -> bool:
+    """msys-2.0.dll dies in DLL init when AppContainer denies its absolute \\BaseNamedObjects path."""
+    name = Path(selected_executable).name.casefold()
+    if execution_kind != "terminal" or name not in {"bash", "bash.exe"}:
+        return False
+    text = output or ""
+    return (
+        "NtCreateDirectoryObject" in text
+        and "\\BaseNamedObjects\\" in text
+        and "0xc0000022" in text.casefold()
+    )
+
+
+def _executable_signature(selected_executable: str) -> tuple:
+    """An in-place update (a Git for Windows upgrade) keeps the path, so a verdict also keys on the files."""
+    paths = [selected_executable]
+    if Path(selected_executable).name.casefold() in {"bash", "bash.exe"}:
+        bin_dir = Path(selected_executable).parent
+        paths += [bin_dir / "msys-2.0.dll", bin_dir.parent / "usr" / "bin" / "msys-2.0.dll"]
+    signature = []
+    for path in paths:
+        try:
+            stat = os.stat(path)
+        except OSError:
+            signature.append(None)
+        else:
+            signature.append((stat.st_mtime_ns, stat.st_size))
+    return tuple(signature)
 
 
 def _probe(
@@ -230,6 +266,10 @@ def _probe(
             or result.get("exitCode") != 0
             or result.get("cleanup") != "complete"
         ):
+            if result.get("cleanup") == "complete" and _is_msys_namespace_failure(
+                selected_executable, execution_kind, output
+            ):
+                return False, MSYS_NAMESPACE_REASON
             return False, "the live MXC probe did not complete cleanly"
         if execution_kind == "terminal":
             captured = workdir / "outside-read.txt"
@@ -286,6 +326,7 @@ def probe(
         mxc_runtime.PROFILE_ID,
         execution_kind,
         os.path.abspath(selected_executable),
+        _executable_signature(selected_executable),
         mxc_policy.dacl_fallback_enabled(),
     )
     while True:
@@ -307,6 +348,8 @@ def probe(
         with _lock:
             if cancel_event is None or not cancel_event.is_set():
                 ttl = POSITIVE_TTL if result[0] else NEGATIVE_TTL
+                if result[1] == MSYS_NAMESPACE_REASON:
+                    ttl = INCOMPATIBLE_TTL
                 _cache[key] = (time.monotonic() + ttl, *result)
         return result
     finally:

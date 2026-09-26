@@ -5380,6 +5380,26 @@ def _props_gfx_arch(props) -> str:
     return ""
 
 
+def _torch_ordinal_physical_ids(device_count: int) -> Optional[list[int]]:
+    """Map torch ordinals to physical GPU IDs, or return None if uncertain."""
+    visible_spec = _get_parent_visible_gpu_spec()
+    physical_ids = visible_spec["numeric_ids"]
+    if physical_ids is None:
+        return None
+    if device_count > len(physical_ids):
+        # Without a mask, torch ordinals include GPUs AMD SMI may miss (#8792).
+        if visible_spec["raw"] is None:
+            return list(range(device_count))
+        logger.debug(
+            "Skipping torch arch gate: %s torch devices but mask %r names %s ids",
+            device_count,
+            visible_spec["raw"],
+            len(physical_ids),
+        )
+        return None
+    return list(physical_ids)
+
+
 def rocm_gpu_ids_without_torch_kernels() -> set[int]:
     """PHYSICAL ids of visible ROCm GPUs the installed torch wheel has no kernels for. Compares what the device PRESENTS, not its silicon, so HSA_OVERRIDE_GFX_VERSION keeps working (#7624). Every uncertainty fails OPEN, the opposite of the bf16 gate: one unreadable device is skipped rather than voiding the probe, which would restore the known-uncovered card and re-break #8792."""
     try:
@@ -5415,26 +5435,10 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
             logger.debug("Skipping torch arch gate: torch ordinals are renumbered by a mask")
             return set()
 
-        # None means UUID/MIG entries: no ordinal to name a device back to.
-        visible_spec = _get_parent_visible_gpu_spec()
-        physical_ids = visible_spec["numeric_ids"]
+        device_count = torch.cuda.device_count()
+        physical_ids = _torch_ordinal_physical_ids(device_count)
         if physical_ids is None:
             return set()
-
-        device_count = torch.cuda.device_count()
-        if device_count > len(physical_ids):
-            # Unmasked, so ordinal IS physical id and a short list is only amd-smi missing the iGPU #8792 is about: EXTEND, or the gate dies on the reported host.
-            if visible_spec["raw"] is None:
-                physical_ids = list(range(device_count))
-            else:
-                # A real mask that device_count disagrees with: _device_count_amdsmi runs before init and cannot see the HIP layer, and naming the overflow into the physical namespace collides with ids other ordinals own.
-                logger.debug(
-                    "Skipping torch arch gate: %s torch devices but mask %r names %s ids",
-                    device_count,
-                    visible_spec["raw"],
-                    len(physical_ids),
-                )
-                return set()
 
         unsupported: set[int] = set()
         unsupported_ordinals = 0
@@ -5519,6 +5523,28 @@ def reject_gpu_ids_without_torch_kernels(gpu_ids) -> None:
         f"which has kernels for {built_for} only. Pick another GPU, or reinstall Unsloth "
         f"Studio for that card."
     )
+
+
+def gpu_ids_with_torch_kernels() -> Optional[list[int]]:
+    """Exclude GPUs with known missing torch kernels; None preserves visibility."""
+    uncovered = rocm_gpu_ids_without_torch_kernels()
+    if not uncovered:
+        return None
+    try:
+        import torch
+        visible = _torch_ordinal_physical_ids(torch.cuda.device_count())
+    except Exception as e:
+        logger.debug("Could not map torch devices to physical ids: %s", e)
+        return None
+    covered = [gpu_id for gpu_id in visible or () if gpu_id not in uncovered]
+    if not covered:
+        return None
+    logger.warning(
+        "Hiding GPU(s) %s from this worker: the installed PyTorch build has no kernels "
+        "for their architecture.",
+        sorted(uncovered),
+    )
+    return covered
 
 
 def auto_select_gpu_ids(
