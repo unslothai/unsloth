@@ -167,7 +167,7 @@ function fakeInsetDom(rowWidth: number, panelWidth: number) {
 
 test("the inset follows the panel while it is dragged wider", () => {
   const dom = fakeInsetDom(1400, 320);
-  watchChatSettingsInset(dom.root, dom.panel, 320, dom.Observer);
+  watchChatSettingsInset(dom.root, dom.panel, 320, 1, dom.Observer);
   assert.equal(dom.vars.get("--studio-chat-settings-inset"), "320px");
 
   // A drag paints the panel wider before settingsWidth commits.
@@ -178,7 +178,7 @@ test("the inset follows the panel while it is dragged wider", () => {
 
 test("the inset is dropped when the chat column cannot hold a corner card", () => {
   const dom = fakeInsetDom(1400, 320);
-  const stop = watchChatSettingsInset(dom.root, dom.panel, 320, dom.Observer);
+  const stop = watchChatSettingsInset(dom.root, dom.panel, 320, 1, dom.Observer);
   dom.row.clientWidth = 700;
   dom.resize(dom.row);
   assert.equal(dom.vars.has("--studio-chat-settings-inset"), false);
@@ -189,4 +189,15 @@ test("the inset is dropped when the chat column cannot hold a corner card", () =
 
   stop();
   assert.equal(dom.vars.has("--studio-chat-settings-inset"), false);
+});
+
+test("a larger UI scale needs a wider chat column before the inset applies", () => {
+  // 1100 - 320 = 780 holds a 448px card at scale 1 but not a 1.8x one (850px).
+  const plain = fakeInsetDom(1100, 320);
+  watchChatSettingsInset(plain.root, plain.panel, 320, 1, plain.Observer);
+  assert.equal(plain.vars.get("--studio-chat-settings-inset"), "320px");
+
+  const scaled = fakeInsetDom(1100, 320);
+  watchChatSettingsInset(scaled.root, scaled.panel, 320, 1.8, scaled.Observer);
+  assert.equal(scaled.vars.has("--studio-chat-settings-inset"), false);
 });

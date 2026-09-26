@@ -8,8 +8,13 @@ const DESKTOP_TITLEBAR_HEIGHT = 34;
 
 // Width of the open Run settings panel, published on <html> by ChatSettingsPanel.
 export const CHAT_SETTINGS_INSET_VAR = "--studio-chat-settings-inset";
-// Widest corner card (448px) plus its gutters; a narrower chat column cannot hold it.
-export const CHAT_SETTINGS_INSET_MIN_COLUMN = 480;
+// Widest corner card scales with --ui-space-scale; the rail's 28px + 16px gutters do not.
+const CORNER_CARD_MAX_WIDTH = 448;
+const CORNER_CARD_GUTTERS = 44;
+
+export function chatSettingsInsetMinColumn(uiSpaceScale = 1): number {
+  return CORNER_CARD_MAX_WIDTH * uiSpaceScale + CORNER_CARD_GUTTERS;
+}
 
 const HEADER_ROUTES = new Set(["/chat", "/images", "/video"]);
 
@@ -76,14 +81,16 @@ export function watchChatSettingsInset(
   root: { style: Pick<CSSStyleDeclaration, "setProperty" | "removeProperty"> },
   panel: InsetPanel | null,
   fallbackWidth: number,
+  uiSpaceScale = 1,
   Observer: InsetObserver = ResizeObserver,
 ): () => void {
   const row = panel?.parentElement ?? null;
+  const minColumn = chatSettingsInsetMinColumn(uiSpaceScale);
   let applied: string | null = null;
   const apply = () => {
     const width = panel?.offsetWidth || fallbackWidth;
     const fits =
-      !row || row.clientWidth - width >= CHAT_SETTINGS_INSET_MIN_COLUMN;
+      !row || row.clientWidth - width >= minColumn;
     const next = fits ? `${width}px` : null;
     if (next === applied) return;
     applied = next;
