@@ -8596,6 +8596,16 @@ exit 0
     function Test-OtherVendorAdapterPresent {
         param($Scan = $null)
         if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        # AMD evidence the AMD route finds without WMI (override, HIP SDK, opted-in amd-smi) vetoes too.
+        if ("$env:UNSLOTH_ROCM_GFX_ARCH".Trim()) { return $true }
+        try {
+            if (Get-Command hipinfo -CommandType Application -ErrorAction SilentlyContinue) { return $true }
+            foreach ($hipEnv in @($env:HIP_PATH, $env:HIP_PATH_57, $env:ROCM_PATH)) {
+                if ($hipEnv -and (Test-Path -LiteralPath (Join-Path $hipEnv "bin\hipinfo.exe"))) { return $true }
+            }
+            if ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$' -and
+                (Get-Command amd-smi -ErrorAction SilentlyContinue)) { return $true }
+        } catch {}
         # Same classification as the Intel route, which ignores PNP ID and status.
         if ($Scan.Ok) {
             $scanNames = @($Scan.Names | Where-Object { $_ } | ForEach-Object { "$_" })

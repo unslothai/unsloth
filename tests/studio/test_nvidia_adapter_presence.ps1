@@ -144,6 +144,41 @@ foreach ($case in @(
     Check "other-vendor gate sees $($case.N) as $($case.Want)" ((Test-OtherVendorAdapterPresent) -eq $case.Want)
 }
 
+# AMD evidence outside WMI: the AMD route queries HIP (or an override / opted-in amd-smi) even when WMI omits the card.
+$hipRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("hip-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path (Join-Path $hipRoot "bin") | Out-Null
+Set-Content -LiteralPath (Join-Path $hipRoot "bin\hipinfo.exe") -Value ""
+$savedAmdEnv = @{}
+foreach ($v in @("UNSLOTH_ROCM_GFX_ARCH", "HIP_PATH", "HIP_PATH_57", "ROCM_PATH", "UNSLOTH_ENABLE_AMD_SMI")) {
+    $savedAmdEnv[$v] = [Environment]::GetEnvironmentVariable($v)
+    [Environment]::SetEnvironmentVariable($v, $null)
+}
+$script:FakeCommands = @()
+function Get-Command { param([string]$Name, $CommandType, $ErrorAction) if ($script:FakeCommands -contains $Name) { [pscustomobject]@{ Source = $Name } } }
+$script:FakeAdapters = @($nv)
+try {
+    Check "no AMD evidence anywhere leaves the gate open" ((Test-OtherVendorAdapterPresent) -eq $false)
+    foreach ($case in @(
+        @{ N = "an UNSLOTH_ROCM_GFX_ARCH override"; Env = @{ UNSLOTH_ROCM_GFX_ARCH = "gfx1100" } },
+        @{ N = "hipinfo on PATH";                    Cmd = @("hipinfo") },
+        @{ N = "a HIP SDK under HIP_PATH";           Env = @{ HIP_PATH = $hipRoot } },
+        @{ N = "a HIP SDK under ROCM_PATH";          Env = @{ ROCM_PATH = $hipRoot } },
+        @{ N = "an opted-in amd-smi";                Env = @{ UNSLOTH_ENABLE_AMD_SMI = "1" }; Cmd = @("amd-smi") }
+    )) {
+        if ($case.Env) { foreach ($k in @($case.Env.Keys)) { [Environment]::SetEnvironmentVariable($k, $case.Env[$k]) } }
+        $script:FakeCommands = @($case.Cmd)
+        Check "WMI without the AMD card: $($case.N) vetoes the promotion" ((Test-OtherVendorAdapterPresent) -eq $true)
+        if ($case.Env) { foreach ($k in @($case.Env.Keys)) { [Environment]::SetEnvironmentVariable($k, $null) } }
+        $script:FakeCommands = @()
+    }
+    $script:FakeCommands = @("amd-smi")
+    Check "amd-smi without the opt-in does not veto (the AMD route would not run it)" ((Test-OtherVendorAdapterPresent) -eq $false)
+} finally {
+    Remove-Item Function:\Get-Command -ErrorAction SilentlyContinue
+    foreach ($v in $savedAmdEnv.Keys) { [Environment]::SetEnvironmentVariable($v, $savedAmdEnv[$v]) }
+    Remove-Item -LiteralPath $hipRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # NVIDIA plus one other adapter. UHD / Iris get no XPU wheels, so they must not block; a localized Arc is
 # reconciled through the registry names (R), as the Intel route does.
 $i4680 = "PCI\VEN_8086&DEV_4680"; $i56a0 = "PCI\VEN_8086&DEV_56A0"
