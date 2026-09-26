@@ -90,6 +90,9 @@ test("every action is handled in the app shell", () => {
   for (const action of rustActions) {
     assert.ok(ROOT.includes(`"${action}":`), `__root.tsx handles ${action}`);
   }
+  // Help items for owner-only pages are off for managed accounts, in both menus.
+  assert.match(ROOT, /isAuthFlowRoute \|\| !helpActionAvailable\(action, isOwner\)/);
+  assert.match(readSrc("components/app-sidebar.tsx"), /\.filter\(\(action\) => helpActionAvailable\(action, isOwner\)\)/);
 });
 
 test("both sides use the same event and command names", () => {

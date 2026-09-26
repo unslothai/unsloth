@@ -75,7 +75,7 @@ import {
 } from "react";
 import { AppProvider } from "../provider";
 import { useDesktopShellReady } from "../desktop-shell-ready";
-import { type HelpAction, runHelpAction } from "@/components/help-actions";
+import { type HelpAction, helpActionAvailable, runHelpAction } from "@/components/help-actions";
 import type { SettingsMenuAction } from "../app-menu-chords";
 import { useAppMenuActions } from "../use-app-menu-actions";
 
@@ -533,13 +533,14 @@ function RootLayout() {
     scale.setScale(stepInterfaceScale(scale.scale, direction));
   };
   // Help opens settings or a web page, so it works anywhere past sign-in.
+  // Pages this account cannot open stay disabled, as in Go > Settings.
+  const isOwner = useIsAccountOwner();
   const helpAction = (action: HelpAction) =>
-    isAuthFlowRoute ? null : () => runHelpAction(action);
+    isAuthFlowRoute || !helpActionAvailable(action, isOwner) ? null : () => runHelpAction(action);
   // Workspaces for the Go menu, gated like their chords below.
   const goTo = (to: string) => () => void navigate({ to });
   const goAction = (enabled: boolean, go: () => void) => (enabled ? go : null);
   // Go > Settings: the pages this account can open.
-  const isOwner = useIsAccountOwner();
   const settingsActions = Object.fromEntries(
     SETTINGS_TABS.map((tab) => [
       `settings-${tab}`,

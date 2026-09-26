@@ -46,7 +46,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
-import { HELP_GROUPS, HELP_ITEMS, runHelpAction } from "@/components/help-actions";
+import {
+  HELP_GROUPS,
+  HELP_ITEMS,
+  helpActionAvailable,
+  runHelpAction,
+} from "@/components/help-actions";
 import {
   Dialog,
   DialogContent,
@@ -211,7 +216,12 @@ import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { resolveNavRowState } from "@/components/nav-row-state";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
-import { AUTH_SESSION_ENDING_EVENT, clearAuthTokens, logout } from "@/features/auth";
+import {
+  AUTH_SESSION_ENDING_EVENT,
+  clearAuthTokens,
+  logout,
+  useIsAccountOwner,
+} from "@/features/auth";
 import { TOUR_OPEN_EVENT, getTourId, useTourAvailable } from "@/features/tour";
 import {
   deleteTrainingRun,
@@ -814,6 +824,7 @@ export function AppSidebar() {
   const searchShortcutLabel = useShortcutLabel("searchChats");
   const settingsShortcutLabel = useShortcutLabel("openSettings");
   const keyboardShortcutsLabel = useShortcutLabel("openKeyboardShortcuts");
+  const isOwner = useIsAccountOwner();
   const { pathname, search, href } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -5065,7 +5076,9 @@ export function AppSidebar() {
                   {HELP_GROUPS.map((group, index) => (
                     <DropdownMenuGroup key={group[0]}>
                       {index > 0 && <DropdownMenuSeparator />}
-                      {group.map((action) => (
+                      {group
+                        .filter((action) => helpActionAvailable(action, isOwner))
+                        .map((action) => (
                         <DropdownMenuItem key={action} onSelect={() => runHelpAction(action)}>
                           <HugeiconsIcon
                             icon={HELP_ITEMS[action].icon}

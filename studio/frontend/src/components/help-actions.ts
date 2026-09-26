@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useSettingsDialogStore } from "@/features/settings";
+import { type SettingsTab, settingsTabVisible, useSettingsDialogStore } from "@/features/settings";
 import type { TranslationKey } from "@/i18n";
 import { openLink } from "@/lib/open-link";
 import {
@@ -38,25 +38,33 @@ export const HELP_ITEMS: Record<HelpAction, { label: TranslationKey; icon: IconS
   "help-send-feedback": { label: "shell.helpMenu.sendFeedback", icon: MessageNotification01Icon },
 };
 
+/** The Settings page an action opens. */
+const HELP_SETTINGS_TABS: Partial<Record<HelpAction, SettingsTab>> = {
+  "help-keyboard-shortcuts": "keyboard-shortcuts",
+  // The server log, where a failed load or generation usually says why.
+  "help-troubleshooting": "debugging",
+  // Live hardware, memory and storage for this server.
+  "help-system-status": "resources",
+};
+
+/** False when the action's Settings page is owner-only and this account cannot open it. */
+export function helpActionAvailable(action: HelpAction, isOwner: boolean): boolean {
+  const tab = HELP_SETTINGS_TABS[action];
+  return !tab || settingsTabVisible(tab, isOwner);
+}
+
 export function runHelpAction(action: HelpAction): void {
-  const settings = useSettingsDialogStore.getState();
+  const tab = HELP_SETTINGS_TABS[action];
+  if (tab) {
+    useSettingsDialogStore.getState().openDialog(tab);
+    return;
+  }
   switch (action) {
     case "help-documentation":
       openLink("https://unsloth.ai/docs");
       return;
-    case "help-keyboard-shortcuts":
-      settings.openDialog("keyboard-shortcuts");
-      return;
     case "help-whats-new":
       openLink("https://unsloth.ai/docs/new/changelog");
-      return;
-    // The server log, where a failed load or generation usually says why.
-    case "help-troubleshooting":
-      settings.openDialog("debugging");
-      return;
-    // Live hardware, memory and storage for this server.
-    case "help-system-status":
-      settings.openDialog("resources");
       return;
     case "help-send-feedback":
       openLink("https://github.com/unslothai/unsloth/issues");
