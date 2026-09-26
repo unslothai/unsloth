@@ -2403,7 +2403,10 @@ with sync_playwright() as p:
     # 17. Persisted monitor auth boundary, then shutdown. A monitor left open
     # must stay dormant on /login and resume after successful authentication.
     # ─────────────────────────────────────────────────────
-    step("persisted monitor stays dormant on /login and resumes after auth", NO_STEP_CEILING)
+    # Its own step, with the UI budget: nothing here retries, and several of these calls
+    # (page.evaluate among them) have no timeout of their own. A main run was seen to wedge
+    # here and sit out the whole 720 s inactivity budget.
+    step("persisted monitor: reset the browser session and open a fresh page")
     # Start fresh after the CLI rotation invalidates this browser session.
     # Stay in the SAME context: it keeps the init script and costs nothing to reuse.
     try:
@@ -2434,6 +2437,7 @@ with sync_playwright() as p:
     page = _fresh_page
     login_system_request_count = len(system_requests)
 
+    step("persisted monitor stays dormant on /login and resumes after auth", NO_STEP_CEILING)
     # Re-login with NEW2 for a valid /api/shutdown token.
     _tolerated_nav = ("ERR_ABORTED", "interrupted by another navigation")
     # A slow CI runner can make this re-login navigation time out even with the server healthy, so retry the whole
