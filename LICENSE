@@ -187,8 +187,15 @@
       identification within third-party archives.
 
    Copyright [2024-] [Unsloth AI. Inc team, Daniel Han-Chen & Michael Han-Chen]
-   Files under unsloth/*, tests/*, scripts/* are Apache 2.0 licensed.
-   Files under studio/*, unsloth_cli/* which is optional to install are AGPLv3 licensed.
+   Files under unsloth/*, tests/*, scripts/* are Apache 2.0 licensed where they
+   do not carry a more-specific license notice.
+   Files under studio/* and unsloth_cli/* are AGPL-3.0-only licensed; see COPYING
+   and studio/LICENSE.AGPL-3.0.
+   The unsloth_cli and studio package trees are included in the base Python wheel;
+   the full Studio server dependency set is provided by the optional studio extra.
+   Applicable file-specific or nested license terms govern their covered
+   components, including bundled third-party components; applicable notices
+   remain in effect.
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
