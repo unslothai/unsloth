@@ -1267,22 +1267,6 @@ def _module_storage_bytes(module: Any, seen: set[int]) -> int:
     return storage_bytes
 
 
-def loaded_text_encoder_mib(pipe: Any) -> Optional[int]:
-    """MiB the pipe's text encoders hold as loaded (pre-cast fp8 counts at fp8 size), or None."""
-    try:
-        import torch
-
-        seen: set[int] = set()
-        storage_bytes = 0
-        for name, module in getattr(pipe, "components", {}).items():
-            if str(name).startswith("text_encoder") and isinstance(module, torch.nn.Module):
-                storage_bytes += _module_storage_bytes(module, seen)
-    except Exception:  # noqa: BLE001 - a sizing aid; the caller keeps the table figure
-        return None
-    mib = 1024 * 1024
-    return (storage_bytes + mib - 1) // mib if storage_bytes else None
-
-
 def largest_streamable_companion_mib(pipe: Any) -> Optional[int]:
     """MiB of the largest text encoder refinement could stream, as loaded, or None."""
     try:

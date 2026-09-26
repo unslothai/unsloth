@@ -33,7 +33,6 @@ from core.inference.diffusion_memory import (
     apply_memory_plan,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
-    loaded_text_encoder_mib,
     normalize_memory_mode,
     plan_diffusion_memory,
     refine_memory_plan_for_components,
@@ -792,23 +791,6 @@ def test_refine_model_offload_streams_only_when_a_component_exceeds_budget(monke
     assert refined.offload_policy == OFFLOAD_STREAMING
     assert refined.estimates["largest_component_mib"] == 7500
     assert any("text_encoder" in reason for reason in refined.reasons)
-
-
-def test_loaded_text_encoder_mib_counts_every_encoder_the_pipe_holds_once(monkeypatch):
-    Module = _install_sized_torch(monkeypatch)
-    shared = Module(300)
-    pipe = types.SimpleNamespace(
-        components = {
-            "transformer": Module(9000),
-            "text_encoder": Module(1200),
-            "text_encoder_2": shared,
-            "text_encoder_3": shared,
-            "vae": Module(100),
-            "tokenizer": object(),
-        }
-    )
-    assert loaded_text_encoder_mib(pipe) == 1500
-    assert loaded_text_encoder_mib(types.SimpleNamespace(components = {"vae": Module(100)})) is None
 
 
 def test_largest_streamable_companion_mib_measures_only_the_text_encoders(monkeypatch):

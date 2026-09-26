@@ -111,7 +111,6 @@ from .diffusion_memory import (
     estimate_safetensors_dense_mib,
     file_size_mib,
     largest_streamable_companion_mib,
-    loaded_text_encoder_mib,
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
@@ -6051,20 +6050,6 @@ class DiffusionBackend:
                                     if preview_scheme is not None
                                     else None
                                 )
-                                # Table encoder is bf16; a pre-cast fp8 one is ~half, so size what the pipe holds, capped.
-                                loaded_te_mib = loaded_text_encoder_mib(pipe)
-                                if (
-                                    estimate is not None
-                                    and loaded_te_mib is not None
-                                    and loaded_te_mib < estimate.text_encoders_mib
-                                ):
-                                    estimate = replace(
-                                        estimate,
-                                        companions_mib = estimate.companions_mib
-                                        - estimate.text_encoders_mib
-                                        + loaded_te_mib,
-                                        text_encoders_mib = loaded_te_mib,
-                                    )
                                 if estimate is not None:
                                     replanned = self._plan_memory(
                                         target,
