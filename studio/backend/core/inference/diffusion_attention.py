@@ -274,6 +274,56 @@ def _cudnn_attention_supported() -> bool:
     return have is None or have >= (8, 0)
 
 
+# SageAttention picks its kernel by an exact CUDA arch match and raises "Unsupported CUDA architecture" for any other
+# card, but the set depends on the build: the reference 2.2.0 dispatch covers sm80/86/89/90/120 while widely used
+# community builds add sm75, sm87 and sm100. diffusers checks only the package version at set time, so on an unsupported
+# card the backend sets fine and then fails every generation. A capability list would be wrong for one build or the
+# other, so ask the installed kernel once per device and dtype: (device, dtype) -> "" when it ran, else its error.
+_SAGE_PROBE_CACHE: dict[tuple[str, str], str] = {}
+
+
+def _run_sage_probe(device: str, dtype: Any) -> str:
+    """Run one tiny ``sageattn`` on ``device``: "" when it ran, else the error it raised. Raises
+    when the question cannot be asked (package not importable, no device, out of memory)."""
+    import torch
+    from sageattention import sageattn
+
+    if dtype not in (torch.float16, torch.bfloat16):
+        dtype = torch.float16
+    q = torch.zeros((1, 128, 2, 128), device = device, dtype = dtype)
+    try:
+        sageattn(q, q, q, tensor_layout = "NHD")
+        torch.cuda.synchronize(device)
+    except torch.cuda.OutOfMemoryError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - "Unsupported CUDA architecture" / no kernel image is the answer
+        return f"{type(exc).__name__}: {exc}"
+    return ""
+
+
+def _sage_kernel_runs(target: Any, logger: Any = None) -> Optional[bool]:
+    """True when SageAttention runs on ``target``, False when its kernel raised, None when the probe
+    could not be asked. Only False blocks, so an unanswerable probe keeps the requested backend."""
+    device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
+    if not device.startswith("cuda"):
+        return None
+    dtype = getattr(target, "dtype", None)
+    key = (device, str(dtype))
+    error = _SAGE_PROBE_CACHE.get(key)
+    if error is None:
+        try:
+            error = _run_sage_probe(device, dtype)
+        except Exception:  # noqa: BLE001 - not importable / no device / OOM: not an answer, not cached
+            return None
+        error = _SAGE_PROBE_CACHE.setdefault(key, error)
+    if error and logger is not None:
+        logger.warning(
+            "diffusion.attention: SageAttention does not run on this GPU (%s); using the default backend",
+            error,
+        )
+    return not error
+
+
 # Optional kernels installable on demand: dispatcher name -> (probe module, pip package). Wheels only
 # (--only-binary=:all:), since a source build needs a CUDA toolchain the host may lack.
 _INSTALLABLE_BACKENDS: dict[str, tuple[str, str]] = {
@@ -616,6 +666,9 @@ def apply_attention_backend(
         return None
     if backend is not None:
         _ensure_attention_backend_installed(backend, logger)
+        if backend == "sage" and target is not None and _sage_kernel_runs(target, logger) is False:
+            backend = None
+    if backend is not None:
         engaged = False
         for fn in setters:
             try:
