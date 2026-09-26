@@ -16,6 +16,13 @@ def cell_text(value):
     """
     if value is None:
         return ""
+    if isinstance(value, dict) and {"text", "answer_start"} <= value.keys():
+        # A SQuAD-style `answers` cell arrives as {"text": [...], "answer_start": [...]}.
+        # Train the answer, as AI Assist's mapping already does, not the dict's repr.
+        answer = value["text"]
+        if isinstance(answer, list):
+            answer = answer[0] if answer else None
+        return cell_text(answer)
     if isinstance(value, str):
         return value
     if isinstance(value, float) and value != value:
