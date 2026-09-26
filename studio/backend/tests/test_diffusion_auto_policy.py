@@ -613,7 +613,6 @@ def test_resolved_log_line_shows_engaged_values_and_their_source():
     )
     line = ap.format_resolved_for_log(record)
     assert "transformer_quant=int8(auto)" in line
-    # An applied explicit pick is the case that used to leave no trace in the log.
     assert "text_encoder_quant=nvfp4(requested nvfp4)" in line
     assert "memory_mode=none(requested fast)" in line
 

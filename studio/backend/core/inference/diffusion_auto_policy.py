@@ -531,7 +531,7 @@ def build_resolved_record(controls: dict[str, tuple]) -> dict[str, dict[str, Any
 
 
 def format_resolved_for_log(record: Optional[dict[str, dict[str, Any]]]) -> str:
-    """One-line ``name=value(...)`` view of a resolved record: what the Loaded build box shows, for the log."""
+    """Resolved record as one ``name=value(source)`` log line."""
     parts = []
     for name, entry in (record or {}).items():
         value = entry.get("value")
@@ -553,7 +553,7 @@ def format_generation_for_log(
     strength: Any = None,
     upscale: Any = None,
 ) -> str:
-    """One-line summary of a finished generation, from the dict the backend returns (its recipe fields)."""
+    """One-line log summary of a generate() result."""
     images = result.get("images") or ()
     size = getattr(images[0], "size", None) if images else None
     fields = {
