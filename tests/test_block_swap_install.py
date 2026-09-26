@@ -3,7 +3,7 @@
 
 """Block swap helpers from _utils.py, extracted with ast to avoid importing torch's CUDA stack."""
 
-import ast, os
+import ast, os, types
 import pytest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -16,6 +16,7 @@ def _load(
     moe = False,
     integrated = False,
     zoo = True,
+    cuda = True,
 ):
     src = open(UTILS, encoding = "utf-8").read()
     mod = ast.parse(src)
@@ -34,6 +35,7 @@ def _load(
         "BlockSwap": FakeSwap if zoo else None,
         "build_host_layers": object() if zoo else None,
         "find_decoder_layers": lambda m: m.layers,
+        "torch": types.SimpleNamespace(cuda = types.SimpleNamespace(is_available = lambda: cuda)),
     }
     for name in NAMES:
         exec(ast.get_source_segment(src, nodes[name]), ns)
@@ -306,3 +308,31 @@ def test_non_safetensors_formats_are_refused_before_the_prefix_loads():
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "trim_config_for_block_swap"
     ]
     assert refusal and trim and refusal[0] < trim[0]
+
+
+def test_refuses_without_a_cuda_or_rocm_gpu():
+    ns, calls = _load(cuda = False)
+    with pytest.raises(ValueError, match = "CUDA or ROCm"):
+        ns["install_block_swap"](_Model(), 4)
+    assert not calls
+
+
+def test_prewrapped_peft_and_quantized_checkpoints_are_covered():
+    src = open(os.path.join(HERE, "unsloth", "models", "llama.py"), encoding = "utf-8").read()
+    mod = ast.parse(src)
+    cls = next(n for n in mod.body if isinstance(n, ast.ClassDef) and n.name == "FastLlamaModel")
+    peft = next(
+        n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "get_peft_model"
+    )
+    installs = [
+        n
+        for n in ast.walk(peft)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "install_block_swap"
+    ]
+    assert len(installs) >= 2, "the pre-wrapped PEFT return path must install the swap too"
+    load = next(
+        n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
+    )
+    assert any(
+        isinstance(n, ast.Raise) and "_ckpt_quant_method" in ast.unparse(n) for n in ast.walk(load)
+    )

@@ -5180,6 +5180,9 @@ def _check_block_swap(model_or_config):
             "has to move across PCIe but only the active ones compute, so the copy "
             "cannot hide behind the work."
         )
+    if not torch.cuda.is_available():
+        # Prefetch runs on CUDA/HIP streams; XPU, NPU and CPU have none.
+        raise ValueError("Unsloth: block_swap_layers needs a CUDA or ROCm GPU.")
     if is_integrated_unified_memory_gpu():
         raise ValueError(
             "Unsloth: block_swap_layers has nothing to swap to on a unified-memory "

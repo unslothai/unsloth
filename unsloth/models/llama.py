@@ -2628,6 +2628,12 @@ class FastLlamaModel:
                 "local_files_only": kwargs.get("local_files_only", False),
             },
         )
+        if block_swap_layers and _ckpt_quant_method not in (None, "bitsandbytes"):
+            # The host tail is rebuilt as dense or bnb 4-bit layers; packed formats would not survive it.
+            raise ValueError(
+                f"Unsloth: from_pretrained(block_swap_layers = ...) does not support {_ckpt_quant_method} "
+                "checkpoints; use a bitsandbytes or 16-bit checkpoint."
+            )
         from .modelopt_fp8 import (
             keep_fp8_scale_names_on_save,
             move_config_overrides_onto_config,
@@ -3408,6 +3414,9 @@ class FastLlamaModel:
                 # apply_unsloth_gradient_checkpointing above already re-patched global state to match (#4735).
                 model._unsloth_gradient_checkpointing = use_gradient_checkpointing
                 model = _exclude_rope_inv_freq_from_ddp(model)
+                install_block_swap(
+                    model, block_swap_layers, use_gradient_checkpointing = use_gradient_checkpointing
+                )
                 return model
             else:
                 raise TypeError(
