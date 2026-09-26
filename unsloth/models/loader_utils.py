@@ -1315,6 +1315,136 @@ def _match_fp8_module(module_by_name, base):
     return None
 
 
+_CT_FP8_STRATEGIES = ("tensor", "channel", "block")
+
+
+def _compressed_tensors_fp8_block_size(module, weights):
+    """The (out, in) block of a compressed-tensors FP8 weight, or None when it cannot run on Unsloth's
+    FP8 kernels: 8-bit float weights still in FP8 with a per-tensor, per-channel or block scale."""
+    if getattr(weights, "type", None) != "float" or getattr(weights, "num_bits", None) != 8:
+        return None
+    strategy = getattr(weights, "strategy", None)
+    strategy = str(getattr(strategy, "value", strategy))
+    if (
+        strategy not in _CT_FP8_STRATEGIES
+        or getattr(weights, "dynamic", False)
+        or getattr(weights, "actorder", None)
+    ):
+        return None
+    weight = getattr(module, "weight", None)
+    scale = getattr(module, "weight_scale", None)
+    if weight is None or scale is None or weight.dtype != torch.float8_e4m3fn or weight.dim() != 2:
+        return None
+    zero_point = getattr(module, "weight_zero_point", None)
+    if zero_point is not None and bool(torch.any(zero_point != 0)):
+        return None
+    out_features, in_features = weight.shape
+    if strategy == "tensor":
+        return [128, 128] if scale.numel() == 1 else None
+    if strategy == "channel":
+        return (
+            [1, in_features] if tuple(scale.shape) in ((out_features, 1), (out_features,)) else None
+        )
+    block = list(getattr(weights, "block_structure", None) or ())
+    if len(block) != 2 or scale.dim() != 2:
+        return None
+    if tuple(scale.shape) != (-(-out_features // block[0]), -(-in_features // block[1])):
+        return None
+    return block
+
+
+def _unsloth_compressed_tensors_fp8_forward(self, input):
+    from unsloth.kernels.fp8 import can_use_fp8_rowwise_gemv, fp8_linear, fp8_rowwise_gemv
+
+    if can_use_fp8_rowwise_gemv(input, self.weight, self.weight_scale):
+        out = fp8_rowwise_gemv(input, self.weight, self.weight_scale)
+    else:
+        out = fp8_linear(input, self.weight, self.weight_scale)
+    if self.bias is not None:
+        out = out + self.bias.to(out.dtype)
+    return out
+
+
+@functools.lru_cache(maxsize = 1)
+def _zoo_peft_forward_keeps_fp8_inputs():
+    """Older unsloth_zoo compiled LoRA forwards cast `x` to the base weight dtype, which for an FP8 weight
+    turns the activations into FP8. Only route to the FP8 kernels when the installed zoo casts to float
+    dtypes alone; otherwise compressed-tensors keeps decompressing the model as before."""
+    try:
+        import inspect
+        from unsloth_zoo import compiler
+        source = inspect.getsource(compiler.patch_lora_forwards)
+    except Exception:
+        return False
+    return "x = x.to(self.base_layer.weight.dtype)" not in source or (
+        "self.base_layer.weight.dtype in (torch.float16, torch.bfloat16, torch.float32)" in source
+    )
+
+
+def _route_compressed_tensors_fp8_to_unsloth(model):
+    """Run compressed-tensors FP8 Linears on Unsloth's FP8 kernels instead of decompressing them.
+
+    Loaded without `dequantize`, transformers leaves these weights in FP8 and relies on compressed-tensors
+    to decompress the whole model on the first forward (a model pre-hook on transformers 5.x, a per-call
+    `CompressedLinear` on 4.x). That doubles the weight memory, is skipped when the outer forward calls
+    `.forward` directly, and its activation fake quantization runs under `no_grad`. The FP8 weight and
+    its scale are kept as they are and each forward goes through `fp8_linear`, which dequantizes on the
+    fly and passes the input gradient through, so LoRA adapters train. Non-FP8 schemes (INT8 W8A8, packed
+    INT4, NVFP4) keep the compressed-tensors path. Returns the number of modules converted."""
+    if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "1") == "0":
+        return 0
+    if getattr(getattr(model, "config", None), "quantization_config", None) is None:
+        return 0
+    if not _zoo_peft_forward_keeps_fp8_inputs():
+        return 0
+    # All or nothing: compressed-tensors decompresses the whole model, so a model mixing routable and
+    # unroutable weight schemes stays entirely on that path rather than decompressing routed weights.
+    routable = []
+    for module in model.modules():
+        scheme = getattr(module, "quantization_scheme", None)
+        if scheme is None or getattr(scheme, "weights", None) is None:
+            continue
+        block = None
+        # The FP8 kernels are triton: any other device keeps the compressed-tensors decompression.
+        weight = getattr(module, "weight", None)
+        on_gpu = isinstance(weight, torch.Tensor) and weight.device.type in ("cuda", "xpu")
+        if (
+            on_gpu
+            and isinstance(module, torch.nn.Linear)
+            and getattr(scheme, "output_activations", None) is None
+        ):
+            block = _compressed_tensors_fp8_block_size(module, scheme.weights)
+        if block is None:
+            return 0
+        routable.append((module, block))
+    converted = 0
+    for module, block in routable:
+        scale = module.weight_scale
+        if scale.dim() == 1 and scale.numel() > 1:
+            scale.data = scale.data.view(-1, 1)
+        module.weight.requires_grad_(False)
+        scale.requires_grad_(False)
+        if block != [1, module.weight.shape[1]]:
+            module.weight.block_size = block
+            scale.block_size = block
+            module.block_size = block
+        module.forward = _unsloth_compressed_tensors_fp8_forward.__get__(module)
+        module._unsloth_compressed_tensors_fp8 = True
+        converted += 1
+    if converted:
+        # The first-forward decompression would otherwise turn every converted weight back into 16 bit.
+        for owner in (model, getattr(model, "model", None), getattr(model, "base_model", None)):
+            hook = getattr(owner, "ct_decompress_hook", None)
+            if hook is not None:
+                hook.remove()
+                try:
+                    delattr(owner, "ct_decompress_hook")
+                except AttributeError:
+                    pass
+        model._unsloth_compressed_tensors_fp8 = converted
+    return converted
+
+
 _FP8_DEQUANT_DTYPES = (torch.bfloat16, torch.float16, torch.float32)
 
 
@@ -1554,6 +1684,89 @@ def _restore_dropped_fp8_scales(
         return (restored, skipped)
     except Exception:
         return (0, 0)
+
+
+def _remove_same_device_compressed_tensors_offload(model):
+    """compressed-tensors >= 0.19 `decompress_model` wraps every module's `_parameters` in an OffloadCache,
+    even when nothing is offloaded. Its `__getitem__` compares data pointers, which torch.compile cannot
+    trace, so every compiled Unsloth forward reading `self.weight` fails. Unwrap caches that keep tensors on
+    their onload device; real cpu / disk offloading is left alone. Returns the number unwrapped."""
+    try:
+        from compressed_tensors.offload.cache import OffloadCache
+        from compressed_tensors.offload.module import remove_module_offload
+    except Exception:
+        return 0
+    removed = 0
+    for module in model.modules():
+        cache = module._parameters
+        if not isinstance(cache, OffloadCache):
+            continue
+        onload = getattr(cache, "onload_device", None)
+        offload = getattr(cache, "offload_device", None)
+        if onload is None or offload is None or torch.device(onload) != torch.device(offload):
+            continue
+        remove_module_offload(module)
+        removed += 1
+    return removed
+
+
+def _decompress_compressed_tensors_model(model):
+    """Decompress a compressed-tensors checkpoint right after load, so training starts from one state.
+    Left alone, compressed-tensors decompresses on the first forward through a pre-hook on the top module:
+    PEFT's direct `.forward` calls skip it, and when the first forward is a `generate` the weights come out
+    as inference tensors that a LoRA backward cannot save. Returns True when it decompressed."""
+    if getattr(model, "_unsloth_compressed_tensors_fp8", 0):
+        return False
+    quant_config = getattr(getattr(model, "config", None), "quantization_config", None)
+    if isinstance(quant_config, dict):
+        method = quant_config.get("quant_method", None)
+    else:
+        method = getattr(quant_config, "quant_method", None)
+    if getattr(method, "value", method) != "compressed-tensors":
+        return False
+    if not any(
+        str(getattr(getattr(module, "quantization_status", None), "value", "")) == "compressed"
+        for module in model.modules()
+    ):
+        return False
+    compressor = getattr(getattr(model, "hf_quantizer", None), "compressor", None)
+    if compressor is None or not hasattr(compressor, "decompress_model"):
+        return False
+
+    def _decompress(module, *args):
+        # A first forward inside `generate` runs under inference_mode, which would make every
+        # decompressed weight an inference tensor that a later LoRA backward cannot save.
+        with torch.inference_mode(False), torch.no_grad():
+            compressor.decompress_model(module)
+        _remove_same_device_compressed_tensors_offload(module)
+
+    # Swap the lazy hook first, so the fallback below is safe too; decompress_model removes it by name.
+    hook = getattr(model, "ct_decompress_hook", None)
+    if hook is not None:
+        hook.remove()
+        model.ct_decompress_hook = model.register_forward_pre_hook(_decompress)
+    try:
+        _decompress(model)
+    except Exception as e:
+        # Keep the lazy first-forward path, now outside inference mode.
+        print(f"Unsloth: could not decompress the compressed-tensors checkpoint after load: {e}")
+        return False
+    # Older compressed-tensors has no hook removal inside decompress_model.
+    hook = getattr(model, "ct_decompress_hook", None)
+    if hook is not None:
+        hook.remove()
+        try:
+            delattr(model, "ct_decompress_hook")
+        except AttributeError:
+            pass
+    return True
+
+
+def _prepare_compressed_tensors_model(model):
+    """FP8 compressed-tensors weights run on Unsloth's FP8 kernels when every quantized layer can; any
+    other compressed-tensors checkpoint is decompressed once, here, instead of on its first forward."""
+    if not _route_compressed_tensors_fp8_to_unsloth(model):
+        _decompress_compressed_tensors_model(model)
 
 
 _FP8_SCALE_SUFFIXES = (".weight_scale_inv", "_scale_inv", ".weight_scale", "_scale")
