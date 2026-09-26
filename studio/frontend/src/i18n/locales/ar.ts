@@ -2111,6 +2111,7 @@ export const ar = {
         infoDisk: "القرص",
         infoFreeOf: "{free} متاحة من {total}",
         infoVramUsed: "{used} من {total}",
+        infoTotalVram: "إجمالي VRAM",
         infoRuntime: "بيئة التشغيل",
         infoPlatform: "المنصة",
         infoAccelerator: "المسرّع",

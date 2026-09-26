@@ -2084,6 +2084,7 @@ export const ja = {
         infoDisk: "ディスク",
         infoFreeOf: "{total} 中 {free} 空き",
         infoVramUsed: "{total} 中 {used}",
+        infoTotalVram: "合計 VRAM",
         infoRuntime: "ランタイム",
         infoPlatform: "プラットフォーム",
         infoAccelerator: "アクセラレータ",

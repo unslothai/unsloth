@@ -2104,6 +2104,7 @@ export const ko = {
         infoDisk: "디스크",
         infoFreeOf: "{total} 중 {free} 사용 가능",
         infoVramUsed: "{total} 중 {used}",
+        infoTotalVram: "총 VRAM",
         infoRuntime: "런타임",
         infoPlatform: "플랫폼",
         infoAccelerator: "가속기",

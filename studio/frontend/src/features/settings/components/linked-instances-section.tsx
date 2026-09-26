@@ -44,7 +44,7 @@ import {
   updateLinkedInstance,
 } from "../api/linked-instances";
 import { LinkedInstanceDetailsDialog } from "./linked-instance-details-dialog";
-import { acceleratorLabel, formatGb } from "./linked-instance-format";
+import { acceleratorLabel, formatGb, gpuPool } from "./linked-instance-format";
 
 const MODELS_SHOWN = 4;
 
@@ -70,17 +70,10 @@ function StatusDot({ status }: { status: Status }) {
 /** "Unsloth 2026.9.11 · NVIDIA L4 22.5 GB · CUDA 12.8" */
 function machineSummary(info: LinkedInstanceInfo | undefined): string | null {
   if (!info?.online) return null;
-  const gpu = info.gpus[0];
+  const pool = info.gpus.length > 0 ? gpuPool(info.gpus) : null;
   return [
     info.version ? `Unsloth ${info.version}` : null,
-    gpu
-      ? [
-          info.gpus.length > 1 ? `${info.gpus.length}× ${gpu.name}` : gpu.name,
-          formatGb(gpu.vram_total_gb),
-        ]
-          .filter(Boolean)
-          .join(" ")
-      : null,
+    pool ? [pool.label, formatGb(pool.total)].filter(Boolean).join(" ") : null,
     acceleratorLabel(info),
   ]
     .filter(Boolean)

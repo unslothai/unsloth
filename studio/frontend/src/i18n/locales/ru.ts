@@ -2123,6 +2123,7 @@ export const ru = {
         infoDisk: "Диск",
         infoFreeOf: "Свободно {free} из {total}",
         infoVramUsed: "{used} из {total}",
+        infoTotalVram: "Всего VRAM",
         infoRuntime: "Среда",
         infoPlatform: "Платформа",
         infoAccelerator: "Ускоритель",

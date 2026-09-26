@@ -2060,6 +2060,7 @@ export const zhCN = {
         infoDisk: "磁盘",
         infoFreeOf: "{total} 中可用 {free}",
         infoVramUsed: "{used} / {total}",
+        infoTotalVram: "总显存",
         infoRuntime: "运行环境",
         infoPlatform: "平台",
         infoAccelerator: "加速器",

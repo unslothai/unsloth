@@ -2126,6 +2126,7 @@ export const ptBR = {
         infoDisk: "Disco",
         infoFreeOf: "{free} livres de {total}",
         infoVramUsed: "{used} de {total}",
+        infoTotalVram: "VRAM total",
         infoRuntime: "Ambiente",
         infoPlatform: "Plataforma",
         infoAccelerator: "Acelerador",

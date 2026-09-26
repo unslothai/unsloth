@@ -15,6 +15,7 @@ import {
   acceleratorLabel,
   connectionKind,
   formatGb,
+  gpuPool,
 } from "@/features/settings/components/linked-instance-format";
 import type { useLinkedInstancesOverview } from "@/features/settings/hooks/use-linked-instances-overview";
 import { cn } from "@/lib/utils";
@@ -46,10 +47,11 @@ function InstanceCard({
   const prefix = `@${instance.name}/`;
   const serving = status?.loaded[0]?.slice(prefix.length);
   const ready = info?.online === true;
-  const gpu = ready ? info.gpus[0] : undefined;
+  const gpus = ready ? info.gpus : [];
+  const pool = gpus.length > 0 ? gpuPool(gpus) : null;
   const pct =
-    gpu?.vram_used_gb != null && gpu.vram_total_gb
-      ? Math.min(100, (gpu.vram_used_gb / gpu.vram_total_gb) * 100)
+    pool?.used != null && pool.total
+      ? Math.min(100, (pool.used / pool.total) * 100)
       : null;
   const footer = [
     ready && info.version ? `Unsloth ${info.version}` : null,
@@ -99,24 +101,16 @@ function InstanceCard({
         </div>
       ) : (
         <>
-          {gpu ? (
+          {pool ? (
             <div className="flex flex-col gap-1">
               <div className="flex flex-wrap items-baseline justify-between gap-x-2 text-ui-11">
                 <span className="text-foreground">
-                  {gpu.name}
-                  {info.gpus.length > 1 ? (
-                    <span className="text-muted-foreground">
-                      {" "}
-                      +{info.gpus.length - 1}
-                    </span>
-                  ) : null}
+                  {gpus.length > 1 ? `${gpus.length} GPUs` : gpus[0].name}
                 </span>
-                {gpu.vram_total_gb != null ? (
+                {pool.total != null ? (
                   <span className="tabular-nums text-muted-foreground">
-                    {gpu.vram_used_gb != null
-                      ? `${gpu.vram_used_gb.toFixed(1)} / `
-                      : ""}
-                    {formatGb(gpu.vram_total_gb)}
+                    {pool.used != null ? `${pool.used.toFixed(1)} / ` : ""}
+                    {formatGb(pool.total)}
                   </span>
                 ) : null}
               </div>
@@ -127,6 +121,23 @@ function InstanceCard({
                   indicatorClassName={cn(pct > 90 && "bg-amber-500")}
                 />
               ) : null}
+              {gpus.length > 1
+                ? gpus.map((gpu, i) => (
+                    <div
+                      // biome-ignore lint/suspicious/noArrayIndexKey: identical cards share a name
+                      key={i}
+                      className="flex flex-wrap items-baseline justify-between gap-x-2 text-ui-10 text-muted-foreground"
+                    >
+                      <span>{gpu.name}</span>
+                      <span className="tabular-nums">
+                        {gpu.vram_used_gb != null
+                          ? `${gpu.vram_used_gb.toFixed(1)} / `
+                          : ""}
+                        {formatGb(gpu.vram_total_gb)}
+                      </span>
+                    </div>
+                  ))
+                : null}
             </div>
           ) : (
             <span className="text-ui-11 text-muted-foreground">

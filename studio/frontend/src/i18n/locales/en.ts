@@ -2106,6 +2106,7 @@ export const en = {
         infoDisk: "Disk",
         infoFreeOf: "{free} free of {total}",
         infoVramUsed: "{used} of {total}",
+        infoTotalVram: "Total VRAM",
         infoRuntime: "Runtime",
         infoPlatform: "Platform",
         infoAccelerator: "Accelerator",

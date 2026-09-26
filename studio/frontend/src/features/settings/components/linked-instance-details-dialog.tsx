@@ -31,6 +31,7 @@ import {
   connectionKind,
   formatGb,
   formatUptime,
+  gpuPool,
   installLabel,
   platformLabel,
 } from "./linked-instance-format";
@@ -246,6 +247,16 @@ export function LinkedInstanceDetailsDialog({
                     {k("infoNoGpu")}
                   </span>
                 )}
+                {info.gpus.length > 1 ? (
+                  <GpuMeter
+                    gpu={{
+                      name: k("infoTotalVram"),
+                      vram_total_gb: gpuPool(info.gpus).total,
+                      vram_used_gb: gpuPool(info.gpus).used,
+                      utilization_pct: null,
+                    }}
+                  />
+                ) : null}
                 <Rows
                   rows={[
                     [

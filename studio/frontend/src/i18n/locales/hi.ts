@@ -2117,6 +2117,7 @@ export const hi = {
         infoDisk: "डिस्क",
         infoFreeOf: "{total} में से {free} खाली",
         infoVramUsed: "{total} में से {used}",
+        infoTotalVram: "कुल VRAM",
         infoRuntime: "रनटाइम",
         infoPlatform: "प्लेटफ़ॉर्म",
         infoAccelerator: "एक्सेलेरेटर",
