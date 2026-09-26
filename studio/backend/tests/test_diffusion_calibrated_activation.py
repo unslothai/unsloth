@@ -203,6 +203,8 @@ def test_only_measured_families_are_calibrated():
     assert calibrated_image_activation(None) is None
     assert calibrated_image_activation("hidream-i1") is None
     assert calibrated_image_activation("qwen-image-edit") is None
+    assert calibrated_image_activation("qwen-image") is None
+    assert calibrated_image_activation("sdxl") is None
     for family, tiers in dm._MEASURED_IMAGE_ACTIVATION_MIB.items():
         for max_speed, raw in zip((False, True), tiers):
             act = calibrated_image_activation(family, max_speed = max_speed)

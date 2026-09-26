@@ -942,21 +942,21 @@ class CalibratedImageActivation:
         )
 
 
-# Worst case over every measured build of the family (bf16, fp8, int8, GGUF), CFG on and off, and the first call at a
-# new size (cuDNN autotuning workspaces), one image at a time, on NVIDIA with a sub-quadratic attention kernel. The first
-# tuple covers the off / eager / default speed tiers (compile and CUDA graphs included); the second the max tier, whose
-# max-autotune compile holds far more for the denoise. Families not listed keep the flat estimate.
+# Worst case over every measured build of the family (bf16, fp8, int8, GGUF; FLUX.2 klein 4B and 9B), CFG on and off,
+# the first call at a new size (cuDNN autotuning workspaces) and a load that streams the text encoders, one image at a
+# time, on NVIDIA with a sub-quadratic attention kernel. The first tuple covers the off / eager / default speed tiers
+# (compile and CUDA graphs included); the second the max tier, whose max-autotune compile can hold far more for the
+# denoise. Families not listed keep the flat estimate: Qwen-Image's streamed text encoder is unmeasured, and a U-Net
+# pipeline cannot keep its denoiser resident while streaming the encoders.
 _ACTIVATION_MARGIN = 1.2
 _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     str, tuple[tuple[int, int, int, int, int], tuple[int, int, int, int, int]]
 ] = {
     # text encoder, denoise, untiled decode, tiled decode (all at 1024x1024), max(denoise, tiled decode) at 2048x2048
-    "qwen-image-2.1": ((1_812, 662, 7_644, 440, 2_467), (1_812, 2_489, 7_644, 440, 9_602)),
-    "qwen-image": ((1_103, 584, 4_334, 311, 1_715), (1_103, 584, 4_334, 311, 1_715)),
-    "flux.1": ((264, 503, 2_597, 1_797, 1_822), (264, 857, 2_601, 1_797, 2_673)),
-    "flux.2-klein": ((288, 739, 2_604, 1_803, 2_205), (288, 976, 2_677, 1_803, 2_993)),
-    "z-image": ((268, 1_199, 2_666, 1_833, 4_327), (268, 1_271, 2_669, 1_833, 4_327)),
-    "sdxl": ((8, 355, 2_561, 1_793, 3_050), (8, 444, 2_561, 1_793, 3_050)),
+    "qwen-image-2.1": ((1_849, 666, 7_648, 449, 2_479), (1_849, 2_489, 7_648, 449, 9_602)),
+    "flux.1": ((288, 892, 2_666, 1_797, 2_674), (288, 892, 2_666, 1_797, 2_674)),
+    "flux.2-klein": ((1_516, 1_160, 2_645, 1_808, 3_876), (1_516, 1_205, 2_677, 1_808, 3_924)),
+    "z-image": ((744, 1_199, 2_666, 1_833, 4_327), (744, 1_271, 2_669, 1_833, 4_327)),
 }
 
 
