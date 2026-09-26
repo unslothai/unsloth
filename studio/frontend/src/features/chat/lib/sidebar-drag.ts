@@ -524,7 +524,17 @@ function planChatDrop(
         },
       };
     }
-    if (zone.row?.kind !== "chat") return null;
+    if (zone.row?.kind !== "chat") {
+      // The end strip, and the empty sidebar below it: last. The rest of the section's own space
+      // stays nothing for its own rows, so a pointer beside a row does not send it to the end.
+      const ids = ctx.orders.recents;
+      const last = ids[ids.length - 1];
+      if (zone.row || zone.blockEnd?.scope !== SIDEBAR_TAIL_SCOPE || last === undefined) {
+        return null;
+      }
+      if (last === drag.id) return STAY;
+      return reorder(drag, RECENTS_ORDER_SCOPE, ids, last, "bottom", "chats", ctx);
+    }
     return reorder(
       drag,
       RECENTS_ORDER_SCOPE,
