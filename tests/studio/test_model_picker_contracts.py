@@ -3035,7 +3035,7 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
     assert "extract_quant_label(filename).casefold()" in backend, "the label rule"
     # Both sides accept the same quant vocabulary; the regex lives with the loader.
     quants = _read_backend("core/inference/llama_cpp.py")
-    for token in ("MXFP", "IQ", "TQ", "BF16", "F16", "F32"):
+    for token in ("MXFP", "IQ", "TQ", "P?Q", "_G[0-9]", "BF16", "F16", "F32"):
         assert token in quants and token in identity, token
     # The .gguf label helpers are ported too, or the two sides label a filename apart.
     gguf = _read_backend("hub/utils/gguf.py")
