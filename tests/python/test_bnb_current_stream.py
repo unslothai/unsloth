@@ -360,3 +360,28 @@ def test_early_returns_do_not_query_a_stream(monkeypatch, backend):
     assert module.fast_dequantize(weight, object()) is controls.fp8_result
     assert controls.stream_lookups == []
     assert controls.native_calls == []
+
+
+@pytest.mark.parametrize("backend", ("cuda", "hip", "xpu"))
+def test_scratch_first_allocated_under_inference_mode_stays_trainable(monkeypatch, backend):
+    # Unsloth's generate runs under torch.inference_mode(). When it is first to reach the
+    # per-device scratch pair, training must still be able to update that pair in place.
+    owner_stream = LIVE_STREAMS[0]
+    module, controls = _load_utils(
+        monkeypatch,
+        backend,
+        stream_values = (owner_stream,) * 6,
+        cached_stream = owner_stream,
+    )
+    module.torch_empty = lambda shape, dtype = None, device = None, **_kwargs: torch.empty(
+        shape, dtype = dtype
+    )
+    state = _quant_state(controls, controls.float16)
+
+    with torch.inference_mode():
+        _invoke("fast_dequantize", module, controls, state, use_global_buffer = True)
+
+    assert not module.WEIGHT_BUFFERS[DEVICE_INDEX].is_inference()
+    assert not module.ABSMAX_BUFFERS[DEVICE_INDEX].is_inference()
+    _invoke("fast_dequantize", module, controls, state, use_global_buffer = True)
+    assert _stream_values(controls.native_calls) == [owner_stream] * 4
