@@ -48,30 +48,82 @@ def _page(text: str, page_number: int | None) -> Page:
     return Page(text = text, page_number = page_number, char_count = len(text))
 
 
+_HTML_SKIP_TAGS = frozenset(("script", "style", "template"))
+_HTML_BLOCK_TAGS = frozenset(
+    "address article aside blockquote br caption center dd details dialog dir div dl dt"
+    " fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 header hgroup hr legend li"
+    " listing main menu nav ol optgroup option p plaintext pre search section summary table"
+    " td text textarea th title tr ul xmp".split()
+)
+_HTML_PRE_TAGS = frozenset(("listing", "plaintext", "pre", "textarea", "xmp"))
+# Atomic inline boxes: their text never runs into a neighbour's, but they do not break the line.
+_HTML_BOX_TAGS = frozenset(("button", "img", "input", "select"))
+
+
 class _Stripper(HTMLParser):
-    """Collect visible text, skipping <script>/<style>."""
+    """Collect visible text, one line per block element."""
 
     def __init__(self) -> None:
         super().__init__()
         self._skip = 0
+        self._pre = 0
+        self._templates: list[bool] = []
+        self._line: list[str] = []
         self.out: list[str] = []
 
+    def _flush(self) -> None:
+        text = "".join(self._line)
+        self._line = []
+        # Whitespace inside <pre>/<textarea> is content; elsewhere it is layout.
+        text = text.strip("\n") if self._pre else " ".join(text.split())
+        if text.strip():
+            self.out.append(text)
+
     def handle_starttag(self, tag, attrs):
-        if tag in ("script", "style"):
+        if tag == "template":
+            # A declarative shadow root (shadowrootmode=open|closed) is rendered; other templates are inert.
+            inert = (dict(attrs).get("shadowrootmode") or "").lower() not in ("open", "closed")
+            self._templates.append(inert)
+            self._skip += inert
+        elif tag in _HTML_SKIP_TAGS:
             self._skip += 1
+        elif tag in _HTML_BLOCK_TAGS and not self._skip:
+            self._flush()
+            if tag in _HTML_PRE_TAGS:
+                self._pre += 1
+        elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
+            self._line.append(" ")
+        elif tag == "tspan" and not self._skip and any(k in ("x", "y") for k, _ in attrs):
+            # An absolute x/y starts a new SVG text chunk (a separate label or line).
+            self._flush()
 
     def handle_endtag(self, tag):
-        if tag in ("script", "style") and self._skip:
-            self._skip -= 1
+        if tag == "template":
+            if self._templates and self._templates.pop() and self._skip:
+                self._skip -= 1
+        elif tag in _HTML_SKIP_TAGS:
+            if self._skip:
+                self._skip -= 1
+        elif tag in _HTML_BLOCK_TAGS and not self._skip:
+            self._flush()
+            if tag in _HTML_PRE_TAGS and self._pre:
+                self._pre -= 1
+        elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
+            self._line.append(" ")
 
     def handle_data(self, data):
-        if not self._skip and data.strip():
-            self.out.append(data.strip())
+        if not self._skip:
+            self._line.append(data)
+
+    def close(self):
+        super().close()
+        self._flush()
 
 
 def _html(raw: str) -> list[Page]:
     parser = _Stripper()
     parser.feed(raw)
+    parser.close()
     return [_page("\n".join(parser.out), 1)]
 
 
@@ -410,6 +462,79 @@ def render_pdf_pages(
         doc.close()
 
 
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+# Runs not shown as body text; text boxes are read as blocks of their own.
+_DOCX_SKIP_RUNS_UNDER = frozenset(
+    (_W + "del", _W + "moveFrom", _W + "rt", _W + "txbxContent", _MC_FALLBACK)
+)
+
+
+def _docx_placeholder(element) -> bool:
+    # An unfilled content control holds Word's prompt ("Click or tap here to enter text."), not a value.
+    if element.tag != _W + "sdt":
+        return False
+    flag = element.find(_W + "sdtPr/" + _W + "showingPlcHdr")
+    return flag is not None and flag.get(_W + "val", "true") not in ("0", "false", "off")
+
+
+def _docx_inside(element, stop, tags) -> bool:
+    node = element.getparent()
+    while node is not stop:
+        if node.tag in tags or _docx_placeholder(node):
+            return True
+        node = node.getparent()
+    return False
+
+
+def _docx_unwrap_table_controls(body) -> None:
+    # python-docx skips w:tr / w:tc wrapped in content controls (cover pages, repeating sections).
+    for wrapper in list(body.iter(_W + "sdt", _W + "customXml")):
+        parent = wrapper.getparent()
+        if parent is None or parent.tag not in (_W + "tbl", _W + "tr"):
+            continue
+        content = wrapper.find(_W + "sdtContent") if wrapper.tag == _W + "sdt" else wrapper
+        keep = (_W + "tr", _W + "tc", _W + "sdt", _W + "customXml")
+        placeholder = _docx_placeholder(wrapper)
+        idx = parent.index(wrapper)
+        for i, child in enumerate(
+            [c for c in (content if content is not None else ()) if c.tag in keep]
+        ):
+            if placeholder:  # keep the cells so columns line up, drop the prompt text
+                for tc in child.iter(_W + "tc"):
+                    for el in [e for e in tc if e.tag != _W + "tcPr"]:
+                        tc.remove(el)
+            parent.insert(idx + i, child)
+        parent.remove(wrapper)
+
+
+def _docx_blocks(element, parent):
+    """Paragraphs and tables in document order, including content controls and text boxes."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    for child in element:
+        if child.tag == _W + "p":
+            yield Paragraph(child, parent)
+            for box in child.iter(_W + "txbxContent"):
+                # Nested boxes are read with their outer box; fallback copies repeat the real one.
+                if not _docx_inside(box, child, _DOCX_SKIP_RUNS_UNDER):
+                    yield from _docx_blocks(box, parent)
+        elif child.tag == _W + "tbl":
+            yield Table(child, parent)
+        elif child.tag in (_W + "sdt", _W + "customXml") and not _docx_placeholder(child):
+            content = child.find(_W + "sdtContent")
+            yield from _docx_blocks(child if content is None else content, parent)
+
+
+def _docx_paragraph_text(paragraph) -> str:
+    """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag."""
+    p = paragraph._p
+    return "".join(
+        run.text for run in p.iter(_W + "r") if not _docx_inside(run, p, _DOCX_SKIP_RUNS_UNDER)
+    )
+
+
 def _docx_table_rows(table) -> list[str]:
     """Each row as pipe-joined cell text (the locator splits anchors on pipes).
     Columns stay aligned to the layout grid (merged cells fill their spanned slots,
@@ -434,12 +559,12 @@ def _docx_table_rows(table) -> list[str]:
             # after it flatten below the row.
             field: list[str] = []
             after_table = False
-            for item in cell.iter_inner_content():
+            for item in _docx_blocks(cell._tc, cell):
                 if isinstance(item, Table):
                     after_table = True
                     trailing.extend(_docx_table_rows(item))
                 elif isinstance(item, Paragraph):
-                    text = " ".join(item.text.split())
+                    text = " ".join(_docx_paragraph_text(item).split())
                     if text:
                         (trailing if after_table else field).append(text)
             cells.append(" ".join(field))  # empty cells kept so columns line up
@@ -457,14 +582,54 @@ def _docx(path: str) -> list[Page]:
 
     document = docx.Document(path)
     lines: list[str] = []
+    _docx_unwrap_table_controls(document.element.body)
     # Walk body content in document order: paragraphs alone drop tables entirely.
-    for block in document.iter_inner_content():
+    for block in _docx_blocks(document.element.body, document):
         if isinstance(block, Paragraph):
-            if block.text.strip():
-                lines.append(block.text)
+            text = _docx_paragraph_text(block)
+            if text.strip():
+                lines.append(text)
         elif isinstance(block, Table):
             lines.extend(_docx_table_rows(block))
     return [_page("\n".join(lines), None)]
+
+
+def _declared_charset(data: bytes) -> str | None:
+    # Lazy: tools is heavy, and only HTML that is not UTF-8 gets here.
+    from ..inference.tools import _META_CHARSET_SCAN_BYTES, _sniff_meta_charset
+    return _sniff_meta_charset(data[:_META_CHARSET_SCAN_BYTES], "text/html")
+
+
+def _decode_text(data: bytes, *, html: bool = False) -> str:
+    # Check UTF-32 before its overlapping UTF-16 prefix.
+    for bom, codec in (
+        (codecs.BOM_UTF32_LE, "utf-32"),
+        (codecs.BOM_UTF32_BE, "utf-32"),
+        (codecs.BOM_UTF16_LE, "utf-16"),
+        (codecs.BOM_UTF16_BE, "utf-16"),
+        (codecs.BOM_UTF8, "utf-8-sig"),
+    ):
+        if data.startswith(bom):
+            return data.decode(codec, errors = "replace")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    else:
+        # ISO-2022-JP is 7-bit, so it always passes as UTF-8; its escapes give it away.
+        if html and "\x1b$" in text and _declared_charset(data) == "iso2022_jp":
+            return data.decode("iso2022_jp", errors = "replace")
+        return text
+    declared = _declared_charset(data) if html else None
+    # WHATWG reads UTF-16 labels as UTF-8, which these bytes already failed.
+    if declared and declared != "utf-8":
+        return data.decode(declared, errors = "replace")
+    text = data.decode("utf-8", errors = "replace")
+    # Ties stay UTF-8 (truncated file); cp1252 can form a stray valid sequence ("à\xa0»").
+    non_ascii = len(text) - len(text.encode("ascii", "ignore"))
+    if non_ascii >= 2 * text.count("\ufffd"):
+        return text
+    return data.decode("cp1252", errors = "replace")
 
 
 def parse(path: str, *, want_images: bool = False):
@@ -482,22 +647,12 @@ def parse(path: str, *, want_images: bool = False):
         return (pages, []) if want_images else pages
 
     if ext in (".html", ".htm", ".txt", ".md", ".markdown"):
-        # Honor Unicode BOMs; check UTF-32 before its overlapping UTF-16 prefix.
+        is_html = ext in (".html", ".htm")
         with open(path, "rb") as f:
-            prefix = f.read(4)
-        encoding = "utf-8-sig"
-        for bom, codec in (
-            (codecs.BOM_UTF32_LE, "utf-32"),
-            (codecs.BOM_UTF32_BE, "utf-32"),
-            (codecs.BOM_UTF16_LE, "utf-16"),
-            (codecs.BOM_UTF16_BE, "utf-16"),
-        ):
-            if prefix.startswith(bom):
-                encoding = codec
-                break
-        with open(path, encoding = encoding, errors = "replace") as f:
-            raw = f.read()
-        pages = _html(raw) if ext in (".html", ".htm") else [_page(raw, None)]
+            raw = _decode_text(f.read(), html = is_html)
+        # Universal newlines, as text-mode open() gave: the chunker splits on "\n\n".
+        raw = raw.replace("\r\n", "\n").replace("\r", "\n")
+        pages = _html(raw) if is_html else [_page(raw, None)]
         return (pages, []) if want_images else pages
 
     raise ValueError(f"unsupported file type: {ext}")

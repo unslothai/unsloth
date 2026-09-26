@@ -4402,6 +4402,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         gguf_only = False,
         audio_preflight = None,
         image_preflight = None,
+        tool_images_only = False,
     ):
         captured.update(
             require_vision = require_vision,
@@ -9239,6 +9240,125 @@ def test_an_invalidated_index_rebuilds_on_a_host_that_just_booted(monkeypatch):
         assert built == [1], kwargs
 
 
+def _settable_resolver_clock(monkeypatch):
+    """Advance resolver time by assigning ``clock.now``."""
+    clock = types.SimpleNamespace(now = 1000.0)
+    monkeypatch.setattr(resolver, "time", types.SimpleNamespace(monotonic = lambda: clock.now))
+    return clock
+
+
+def _counted_scans(monkeypatch, index = None):
+    scans = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or dict(index or {}))
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+    return scans
+
+
+@pytest.mark.parametrize(
+    "loaded, requested",
+    [
+        ("unsloth/A-GGUF", "claude-haiku-4-5"),
+        ("/elsewhere/unscanned.gguf", "/elsewhere/unscanned.gguf"),
+        ("/elsewhere/unscanned.gguf", "unscanned"),
+    ],
+)
+def test_a_name_that_is_not_on_disk_rescans_once_not_per_request(monkeypatch, loaded, requested):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    warmed = []
+
+    def _warm_lands():
+        # Simulate a background scan without counting it as blocking.
+        warmed.append(1)
+        resolver._scan = (clock.now, {})
+
+    monkeypatch.setattr(resolver, "warm_index_soon", _warm_lands)
+    real_resolve = resolver.resolve_local_gguf
+    backend, rec = _wired(monkeypatch, _FakeBackend(loaded, "Q4_K_M"), None)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", real_resolve)
+
+    for _ in range(4):
+        clock.now += resolver._CACHE_TTL_S + 1
+        _run_hook(requested)
+
+    assert scans == [1]
+    assert warmed
+    assert rec.calls == []
+    assert backend.model_identifier == loaded
+
+
+def test_a_remembered_miss_still_finds_a_model_that_appears_later(monkeypatch):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1]
+
+    # Simulate background discovery without invalidation.
+    added = {"org/b": _entry("org/b", "Q4_K_M")}
+    clock.now += resolver._CACHE_TTL_S + 1
+    monkeypatch.setattr(resolver, "_scan", (clock.now, added))
+    assert resolver.resolve_local_gguf_for_switch("org/b") is not None
+
+    # Stale hits must rescan before switching.
+    clock.now += resolver._CACHE_TTL_S + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1, 1]
+
+
+def test_an_invalidation_forgets_a_remembered_miss(monkeypatch):
+    # Download completion must make the new model discoverable immediately.
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+
+    monkeypatch.setattr(
+        resolver, "_build_index", lambda: scans.append(1) or {"org/b": _entry("org/b")}
+    )
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is not None
+    assert scans == [1, 1]
+
+
+def test_a_remembered_miss_expires_and_a_failed_scan_proves_nothing(monkeypatch):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+
+    # Misses expire if background refresh never completes.
+    clock.now += 2 * resolver._duty_window() + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1, 1]
+
+    def _fail():
+        scans.append(1)
+        raise OSError("scan root vanished")
+
+    monkeypatch.setattr(resolver, "_build_index", _fail)
+    monkeypatch.setattr(resolver, "_misses", {})
+    clock.now += resolver._CACHE_TTL_S + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    clock.now += resolver._CACHE_TTL_S + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1, 1, 1, 1]
+
+
+def test_an_oversized_name_is_not_remembered(monkeypatch):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("x" * (resolver._MAX_MISS_NAME + 1)) is None
+    assert resolver.resolve_local_gguf_for_switch("x" * resolver._MAX_MISS_NAME) is None
+    assert [len(name) for _scope, name in resolver._misses] == [resolver._MAX_MISS_NAME]
+
+
 # The resident short circuit is the one path that answers without consulting the
 # index, so it must never say yes where the pre-existing resident check says no.
 # Anything it accepts, main would have accepted too: a miss only costs the scan.
@@ -9505,6 +9625,7 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         require_video = False,
         audio_preflight = None,
         image_preflight = None,
+        tool_images_only = False,
     ):
         captured.update(
             require_vision = require_vision,
