@@ -1381,9 +1381,6 @@ def _mxfp4_lora_keeps_experts_packed(
                 )
             else:
                 devices = list(range(backend.device_count())) if probed else []
-            # balanced_low_0 keeps the first card nearly empty for generate(), so it adds no room.
-            if device_map == "balanced_low_0" and len(devices) > 1:
-                devices = devices[1:]
             free_bytes = 0
             for index in devices:
                 try:

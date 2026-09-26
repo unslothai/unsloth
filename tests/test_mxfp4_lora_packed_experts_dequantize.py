@@ -589,9 +589,10 @@ def test_an_explicit_max_memory_budget_is_used_whole(zoo, sizes):
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is False
 
 
-def test_balanced_low_0_does_not_count_the_first_card(zoo, sizes):
+def test_balanced_low_0_still_counts_the_first_card(zoo, sizes):
+    # accelerate's get_balanced_memory(low_zero = True) caps GPU 0 at what the other cards
+    # cannot hold, so the overflow lands there before any CPU offload.
     sizes["checkpoint"], sizes["free"] = 60, [80, 40]
-    assert _helper()("mxfp4", False, "balanced", "openai/gpt-oss-120b") is True
-    assert _helper()("mxfp4", False, "balanced_low_0", "openai/gpt-oss-120b") is False
-    sizes["free"] = [80]
     assert _helper()("mxfp4", False, "balanced_low_0", "openai/gpt-oss-120b") is True
+    sizes["free"] = [30, 30]
+    assert _helper()("mxfp4", False, "balanced_low_0", "openai/gpt-oss-120b") is False
