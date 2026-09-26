@@ -270,3 +270,20 @@ def test_key_filter_is_inert_when_off_or_on_5x(monkeypatch):
     skip, cls, _ = _load_key_filter(monkeypatch, has_method = False)
     skip({"num_hidden_layers": 4}, 2)()
     assert "_get_key_renaming_mapping" not in cls.__dict__
+
+
+def test_checkpoint_tensors_reads_the_requested_variant(tmp_path):
+    torch = pytest.importorskip("torch")
+    safetensors_torch = pytest.importorskip("safetensors.torch")
+    mod = ast.parse(open(UTILS, encoding = "utf-8").read())
+    fn = next(
+        n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name == "_checkpoint_tensors"
+    )
+    ns = {"os": os}
+    exec(compile(ast.Module(body = [fn], type_ignores = []), UTILS, "exec"), ns)
+    safetensors_torch.save_file({"w": torch.zeros(2)}, str(tmp_path / "model.safetensors"))
+    safetensors_torch.save_file({"w": torch.ones(2)}, str(tmp_path / "model.fp16.safetensors"))
+    tensors, _ = ns["_checkpoint_tensors"](str(tmp_path), variant = "fp16")
+    assert torch.equal(tensors["w"](), torch.ones(2))
+    tensors, _ = ns["_checkpoint_tensors"](str(tmp_path))
+    assert torch.equal(tensors["w"](), torch.zeros(2))

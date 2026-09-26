@@ -5226,9 +5226,17 @@ def _checkpoint_tensors(
     cache_dir = None,
     local_files_only = False,
     subfolder = None,
+    variant = None,
 ):
     from safetensors import safe_open
     import json
+
+    def _named(filename):
+        # transformers' _add_variant: model.safetensors -> model.<variant>.safetensors.
+        if variant is None:
+            return filename
+        stem, ext = filename.rsplit(".", 1)
+        return f"{stem}.{variant}.{ext}"
 
     def _get(filename):
         if os.path.isdir(model_name):
@@ -5248,12 +5256,12 @@ def _checkpoint_tensors(
         except Exception:
             return None
 
-    index = _get("model.safetensors.index.json")
+    index = _get(_named("model.safetensors.index.json"))
     if index is not None:
         with open(index, "r", encoding = "utf-8") as f:
             shards = sorted(set(json.load(f)["weight_map"].values()))
     else:
-        shards = ["model.safetensors"]
+        shards = [_named("model.safetensors")]
     handles, tensors = [], {}
     for shard in shards:
         path = _get(shard)
@@ -5338,6 +5346,10 @@ def attach_block_swap_layers(
         setattr(config, key, value)
     count = config.num_hidden_layers - first
     layer_cls = type(layers[0])
+    # The tail runs where the resident prefix landed (device_map = {"": 1}), not the current device.
+    device = next(layers[first - 1].parameters()).device
+    if device.type != "cuda":
+        device = torch.device("cuda", torch.cuda.current_device())
     tensors, handles = _checkpoint_tensors(model_name, **hub_kwargs)
     try:
         new = build_host_layers(
@@ -5345,7 +5357,7 @@ def attach_block_swap_layers(
             first,
             count,
             tensors,
-            device = torch.device("cuda", torch.cuda.current_device()),
+            device = device,
             compute_dtype = dtype,
             quantize_4bit = load_in_4bit,
             skip_modules = skip_modules,
@@ -5365,7 +5377,7 @@ def attach_block_swap_layers(
                 if not isinstance(value, (torch.Tensor, torch.nn.Module)):
                     setattr(module, key, value)
         layers.append(layer)
-    swapper = BlockSwap(layers, count)
+    swapper = BlockSwap(layers, count, device = device)
     layers._unsloth_block_swap = swapper
     model._unsloth_block_swap = swapper
     return swapper

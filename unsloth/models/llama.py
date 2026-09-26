@@ -2985,12 +2985,14 @@ class FastLlamaModel:
             model_name,
             dtype,
             load_in_4bit,
-            skip_modules = SKIP_QUANTIZATION_MODULES,
+            # The load's own skip list: Falcon-H1 adds out_proj, which its mamba kernels need unquantized.
+            skip_modules = llm_int8_skip_modules if load_in_4bit else SKIP_QUANTIZATION_MODULES,
             token = token,
             revision = revision,
             cache_dir = kwargs.get("cache_dir"),
             local_files_only = kwargs.get("local_files_only", False),
             subfolder = kwargs.get("subfolder"),
+            variant = kwargs.get("variant"),
         )
 
         for idx, layer in enumerate(model.model.layers):
