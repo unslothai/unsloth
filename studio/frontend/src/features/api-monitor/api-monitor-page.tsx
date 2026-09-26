@@ -706,7 +706,8 @@ export function ApiMonitorPage(): ReactElement {
   const linked = useLinkedInstancesOverview(isOwner);
   const hasLinked = isOwner && linked.instances.length > 0;
   const logRef = useRef<HTMLElement>(null);
-  const logHeight = useFitToViewport(logRef);
+  const savedSettingsRef = useRef<HTMLDivElement>(null);
+  const logHeight = useFitToViewport(logRef, { trailing: savedSettingsRef });
   const exampleModel =
     data?.active_model ??
     Object.values(linked.statuses).find((s) => s.loaded.length > 0)
@@ -1086,7 +1087,9 @@ export function ApiMonitorPage(): ReactElement {
         </div>
       </div>
 
-      <SavedModelSettingsPanel />
+      <div ref={savedSettingsRef}>
+        <SavedModelSettingsPanel />
+      </div>
     </main>
   );
 }

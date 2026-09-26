@@ -12,12 +12,22 @@ function scrollParent(el: HTMLElement): HTMLElement | null {
 }
 
 /**
- * Height that ends `gap` above the bottom of the visible area. It grows as the element
- * scrolls up, until it fills the view with `gap` on both ends. Null below `query`.
+ * Height that leaves room for `trailing` (and `gap`) above the bottom of the visible area.
+ * It grows as the element scrolls up, until it reaches the top gap. Null below `query`.
  */
 export function useFitToViewport(
   ref: RefObject<HTMLElement | null>,
-  { gap = 24, min = 360, query = "(min-width: 1024px)" } = {},
+  {
+    trailing,
+    gap = 24,
+    min = 360,
+    query = "(min-width: 1024px)",
+  }: {
+    trailing?: RefObject<HTMLElement | null>;
+    gap?: number;
+    min?: number;
+    query?: string;
+  } = {},
 ): number | null {
   const [height, setHeight] = useState<number | null>(null);
 
@@ -39,7 +49,9 @@ export function useFitToViewport(
         bottom: window.innerHeight,
       };
       const top = Math.max(el.getBoundingClientRect().top, view.top + gap);
-      setHeight(Math.round(Math.max(min, view.bottom - top - gap)));
+      const after = trailing?.current?.offsetHeight ?? 0;
+      const reserved = after > 0 ? after + gap : 0;
+      setHeight(Math.round(Math.max(min, view.bottom - top - gap - reserved)));
     };
     const schedule = () => {
       if (!frame) frame = requestAnimationFrame(measure);
@@ -53,6 +65,7 @@ export function useFitToViewport(
     // Content above (cards loading, an error banner) moves the element.
     const observer = new ResizeObserver(schedule);
     if (el.parentElement) observer.observe(el.parentElement);
+    if (trailing?.current) observer.observe(trailing.current);
     return () => {
       if (frame) cancelAnimationFrame(frame);
       target.removeEventListener("scroll", schedule);
@@ -60,7 +73,7 @@ export function useFitToViewport(
       media.removeEventListener("change", schedule);
       observer.disconnect();
     };
-  }, [ref, gap, min, query]);
+  }, [ref, trailing, gap, min, query]);
 
   return height;
 }
