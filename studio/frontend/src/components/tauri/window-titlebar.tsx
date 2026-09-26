@@ -123,6 +123,8 @@ function WindowControlButton({
       title={label}
       onClick={onClick}
       className={cn(
+        // The hit area runs up to the window edge, where a pointer thrown at the controls lands.
+        "after:absolute after:inset-x-0 after:bottom-0 after:top-[calc(13px-var(--studio-titlebar-row-center,17px))]",
         "relative z-[80] inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground dark:hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
         className,
       )}
@@ -474,7 +476,8 @@ export function WindowTitlebar({
             // answer it before the user does. The wait this covers is the reap, and Rust's
             // app-closing arrives well ahead of that.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
-            className="hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20 dark:hover:text-destructive"
+            // Close also owns the corner, as on a native Windows titlebar.
+            className="after:right-[calc(-4px*var(--ui-space-scale,1))] hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20 dark:hover:text-destructive"
           >
             <X
               aria-hidden="true"
@@ -485,60 +488,65 @@ export function WindowTitlebar({
           </WindowControlButton>
         </div>
       </header>
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed inset-x-2 top-0 h-1 cursor-n-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-        onPointerDown={handleResizePointerDown("North")}
-      />
-      {/* resize grips stay above dialogs and notifications. */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-        onPointerDown={handleResizePointerDown("South")}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed inset-y-2 left-0 w-1 cursor-w-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-        onPointerDown={handleResizePointerDown("West")}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed inset-y-2 right-0 w-1 cursor-e-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-        onPointerDown={handleResizePointerDown("East")}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed left-0 top-0 size-3 cursor-nw-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-        onPointerDown={handleResizePointerDown("NorthWest")}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed right-0 top-0 size-3 cursor-ne-resize"
-        style={{
-          zIndex: Z_LAYER.WINDOW_RESIZE_EDGE,
-          // keep the resize corner outside the close button.
-          clipPath:
-            "polygon(0 0, 100% 0, 100% 100%, calc(100% - 0.25rem) 100%, calc(100% - 0.25rem) 0.25rem, 0 0.25rem)",
-        }}
-        onPointerDown={handleResizePointerDown("NorthEast")}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed bottom-0 left-0 size-3 cursor-sw-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-        onPointerDown={handleResizePointerDown("SouthWest")}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed bottom-0 right-0 size-3 cursor-se-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-        onPointerDown={handleResizePointerDown("SouthEast")}
-      />
+      {/* A maximized window has no edges to resize, and the corner belongs to Close. */}
+      {!maximized && (
+        <>
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed inset-x-2 top-0 h-1 cursor-n-resize"
+            style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+            onPointerDown={handleResizePointerDown("North")}
+          />
+          {/* resize grips stay above dialogs and notifications. */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
+            style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+            onPointerDown={handleResizePointerDown("South")}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed inset-y-2 left-0 w-1 cursor-w-resize"
+            style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+            onPointerDown={handleResizePointerDown("West")}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed inset-y-2 right-0 w-1 cursor-e-resize"
+            style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+            onPointerDown={handleResizePointerDown("East")}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed left-0 top-0 size-3 cursor-nw-resize"
+            style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+            onPointerDown={handleResizePointerDown("NorthWest")}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed right-0 top-0 size-3 cursor-ne-resize"
+            style={{
+              zIndex: Z_LAYER.WINDOW_RESIZE_EDGE,
+              // keep the resize corner outside the close button.
+              clipPath:
+                "polygon(0 0, 100% 0, 100% 100%, calc(100% - 0.25rem) 100%, calc(100% - 0.25rem) 0.25rem, 0 0.25rem)",
+            }}
+            onPointerDown={handleResizePointerDown("NorthEast")}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed bottom-0 left-0 size-3 cursor-sw-resize"
+            style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+            onPointerDown={handleResizePointerDown("SouthWest")}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed bottom-0 right-0 size-3 cursor-se-resize"
+            style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+            onPointerDown={handleResizePointerDown("SouthEast")}
+          />
+        </>
+      )}
     </>
   );
 }
