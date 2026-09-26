@@ -412,7 +412,7 @@ def required_companion_bases(
     ignored = {_normalise(r) for r in ignore_repo_ids}
     links = read_companion_links()
     pick_names = _cached_checkpoint_pick_names(cache_scans)
-    # A repo with no denoiser cannot be loaded, so it needs nothing. Gating on that rather than on the curated component ids also covers a hosted prequant repo the native engine borrows a VAE from (``unsloth/Qwen-Image-2.1-FP8``): it detects as its family and pinned ``Qwen/Qwen-Image-2.1`` from a row the On Device list cannot show, so the delete was refused with nothing on screen to remove first.
+    # Denoiser-gated, not id-gated: a VAE-only fetch from a prequant repo (unsloth/Qwen-Image-2.1-FP8) cannot load, so it pins nothing (#11825).
     checkpoints = _denoiser_holding_repo_ids(cache_scans)
     required: dict[str, set[str]] = {}
     for repo_id in _cached_model_repo_ids(cache_scans):

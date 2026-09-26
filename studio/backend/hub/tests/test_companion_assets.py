@@ -614,11 +614,7 @@ def test_a_component_repo_holding_a_checkpoint_is_still_a_checkpoint(monkeypatch
 
 
 def test_a_vae_only_prequant_fetch_is_not_a_dependent(monkeypatch):
-    """The native engine takes Qwen-Image-2.1's VAE from ``unsloth/Qwen-Image-2.1-FP8``, which
-    also hosts the family's prequant checkpoints and so is not a curated component id. The
-    VAE-only row detects as qwen-image-2.1 and was read as an installed checkpoint needing
-    ``Qwen/Qwen-Image-2.1``, from a snapshot the On Device list hides: the base could not be
-    deleted and nothing on screen said what to remove first."""
+    """#11825: a VAE-only fetch from a prequant repo must not pin the base."""
     gguf = "unsloth/Qwen-Image-2.1-GGUF"
     prequant = "unsloth/Qwen-Image-2.1-FP8"
     base = "Qwen/Qwen-Image-2.1"
@@ -635,8 +631,7 @@ def test_a_vae_only_prequant_fetch_is_not_a_dependent(monkeypatch):
 
 
 def test_a_prequant_repo_holding_its_checkpoint_still_pins_the_base(monkeypatch):
-    """A base pick with ``transformer_quant = "fp8"`` lands the checkpoint at that repo's root,
-    which is an installed model: the exclusion above is denoiser-gated, not id-gated."""
+    """A root prequant checkpoint in the same repo is an installed model and still pins it."""
     prequant = "unsloth/Qwen-Image-2.1-FP8"
     base = "Qwen/Qwen-Image-2.1"
     _install(
