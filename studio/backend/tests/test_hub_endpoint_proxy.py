@@ -103,3 +103,13 @@ def test_without_a_session_nothing_reaches_the_endpoint(proxy):
     hidden = client.get(f"{lan}/org/m/resolve/main/a.png")
     assert (hidden.status_code, "location" in hidden.headers) == (401, False)
     assert seen == []
+
+
+def test_the_relay_tag_is_not_a_bare_hash_of_the_endpoint():
+    import hashlib
+    from hub import endpoint_proxy
+
+    endpoint = "https://10.0.0.5:8443"
+    tag = endpoint_proxy._tag(endpoint)
+    assert tag == endpoint_proxy._tag(endpoint) and len(tag) == 12
+    assert tag != hashlib.sha256(endpoint.encode()).hexdigest()[:12]

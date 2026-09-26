@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
+import secrets
 import threading
 import weakref
 from http.cookiejar import CookieJar, DefaultCookiePolicy
@@ -71,8 +73,12 @@ def _client() -> httpx.AsyncClient:
         return http
 
 
+# Keyed per process: /api/health is unauthenticated, and a bare hash of a private host:port is brute-forceable.
+_TAG_KEY = secrets.token_bytes(32)
+
+
 def _tag(upstream: str) -> str:
-    return hashlib.sha256(upstream.encode()).hexdigest()[:12]
+    return hmac.new(_TAG_KEY, upstream.encode(), hashlib.sha256).hexdigest()[:12]
 
 
 def relay_path(prefix: str, upstream: str, default: str) -> Optional[str]:
