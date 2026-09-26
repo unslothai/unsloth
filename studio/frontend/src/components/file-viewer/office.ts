@@ -481,10 +481,23 @@ export function formatNumber(value: number, rawCode: string | undefined, date190
   // No digit placeholders: literal text, with the value wherever "General" stands.
   if (kind === "literal") return `${sign}${code.replace(/general/i, generalText(Math.abs(value)))}`.trim();
   if (kind === "scientific") return `${sign}${formatScientific(Math.abs(value), tagged).trim()}`;
-  const fraction = formatFraction(value, code);
-  if (fraction !== null) return fraction;
+  // The magnitude: the section's own sign, as in the other branches. (# ?/?;(# ?/?) shows (1 1/2).)
+  const fraction = formatFraction(Math.abs(value), code);
+  if (fraction !== null) return `${sign}${fraction}`;
   const number = Math.abs(percent ? value * 100 : value) / scale;
   return `${sign}${placeDigits(number, tagged).trim()}`;
+}
+
+/** A string cell in its format's text section: the fourth, or a lone section with @.
+ *  `0;0;0;"SKU-"@` shows ABC as SKU-ABC. */
+function formatText(text: string, rawCode: string | undefined): string {
+  if (!rawCode || rawCode === "@" || rawCode === "General") return text;
+  const sections = splitSections(rawCode);
+  const tokens: string[] = readSection(sections[3] ?? sections[0]!).tagged.match(/"[^"]*"|\\.|[\s\S]/g) ?? [];
+  if (sections.length < 4 && (sections.length > 1 || !tokens.includes("@"))) return text;
+  return tokens
+    .map((token) => (token === "@" ? text : token.startsWith('"') ? token.slice(1, -1) : token.startsWith("\\") ? token.slice(1) : token))
+    .join("");
 }
 
 function columnIndex(ref: string): number {
@@ -692,9 +705,9 @@ function readSheet(
       let numeric = false;
       // A formula with no cached result, as openpyxl and similar writers save them.
       if (raw === "" && formula) value = `=${formula}`;
-      else if (type === "s") value = string(Number(raw));
-      else if (type === "inlineStr") value = stringText(body);
-      else if (type === "b") value = raw === "1" ? "TRUE" : "FALSE";
+      else if (type === "s" || type === "inlineStr" || type === "str") {
+        value = formatText(type === "s" ? string(Number(raw)) : type === "inlineStr" ? stringText(body) : raw, style.format);
+      } else if (type === "b") value = raw === "1" ? "TRUE" : "FALSE";
       else if (type !== "str" && type !== "e" && raw !== "" && Number.isFinite(Number(raw))) {
         value = formatNumber(Number(raw), style.format, date1904);
         numeric = true;
@@ -746,8 +759,51 @@ function sheetText(bytes: Uint8Array, rows: number): { text: string; cut: boolea
   return { text: strFromU8(bytes.subarray(0, end)), cut: more };
 }
 
-const SHARED_STRING_OPEN = openTag("si");
-const SHARED_STRING_CLOSE = closeTag("si");
+/** The next start (or `closing` end) tag with local name `name`, any prefix, from byte `from`:
+ *  where it starts, where it ends (after `>`), and whether it closes itself. */
+function findTag(bytes: Uint8Array, from: number, name: string, closing: boolean) {
+  for (let i = bytes.indexOf(0x3c, from); i !== -1; i = bytes.indexOf(0x3c, i + 1)) {
+    let j = i + 1;
+    if ((bytes[j] === 0x2f) !== closing) continue;
+    if (closing) j++;
+    // The name runs to whitespace, / or >; a prefix ends at its colon.
+    let k = j;
+    while (k < bytes.length && bytes[k]! > 0x20 && bytes[k] !== 0x3e && bytes[k] !== 0x2f) {
+      if (bytes[k] === 0x3a) j = k + 1;
+      k++;
+    }
+    if (k - j !== name.length) continue;
+    let same = true;
+    for (let n = 0; n < name.length && same; n++) same = bytes[j + n] === name.charCodeAt(n);
+    if (!same) continue;
+    const end = bytes.indexOf(0x3e, k);
+    if (end === -1) return null;
+    return { start: i, end: end + 1, empty: bytes[end - 1] === 0x2f };
+  }
+  return null;
+}
+
+/** Shared strings as cells ask for them: the part is scanned only up to the highest index used,
+ *  and each string decoded alone, so a large or stale table costs little. */
+function sharedStrings(bytes: Uint8Array | undefined): (index: number) => string {
+  const ranges: [number, number][] = [];
+  const texts: (string | undefined)[] = [];
+  let at = bytes ? 0 : -1;
+  return (index) => {
+    while (bytes && at !== -1 && ranges.length <= index) {
+      const open = findTag(bytes, at, "si", false);
+      const close = open && !open.empty ? findTag(bytes, open.end, "si", true) : null;
+      if (!open || (!open.empty && !close)) at = -1;
+      else {
+        ranges.push([open.end, close ? close.start : open.end]);
+        at = close ? close.end : open.end;
+      }
+    }
+    const range = ranges[index];
+    if (!bytes || !range) return "";
+    return (texts[index] ??= stringText(strFromU8(bytes.subarray(range[0], range[1]))));
+  };
+}
 
 export function readXlsx(bytes: Uint8Array): Sheet[] {
   const read = archive(bytes);
@@ -761,16 +817,7 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
   const stringsPath = partOf("sharedStrings", "xl/sharedStrings.xml");
   const stylesPath = partOf("styles", "xl/styles.xml");
   const support = read((name) => name === stringsPath || name === stylesPath);
-  // Shared strings are decoded lazily, as cells use them.
-  const sharedPart = support[stringsPath];
-  const items = sharedPart
-    ? Array.from(elements(strFromU8(sharedPart), SHARED_STRING_OPEN, SHARED_STRING_CLOSE), ([, body]) => body)
-    : [];
-  const strings: (string | undefined)[] = [];
-  const string = (index: number) => {
-    const item = items[index];
-    return item === undefined ? "" : (strings[index] ??= stringText(item));
-  };
+  const string = sharedStrings(support[stringsPath]);
   const styles = readStyles(xml(support, stylesPath));
   const date1904 = ["1", "true"].includes(first(workbook, "workbookPr")?.getAttribute("date1904") ?? "");
   const paths = new Map(rels.map((rel) => [rel.id, rel.path]));
