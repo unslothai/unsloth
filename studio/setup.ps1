@@ -141,12 +141,6 @@ $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
 $DefaultLlamaForceCompileRef = "master"
 
-# UNSLOTH_NPM_REGISTRY: opt-in --registry splat past the frontend .npmrc lock (corporate proxies).
-$NpmRegistryArgs = @()
-if ($env:UNSLOTH_NPM_REGISTRY) {
-    $NpmRegistryArgs = @('--registry', $env:UNSLOTH_NPM_REGISTRY)
-}
-
 # Verbose can be enabled either by CLI flag or by UNSLOTH_VERBOSE=1.
 $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
 foreach ($a in $args) {
@@ -894,6 +888,244 @@ function Invoke-ManagedLlamaCppPreflight {
     substep "Fix access, then run the same install, setup, or update command again" "Yellow"
     Write-StudioLine ""
     return "$reason Nothing was installed."
+}
+
+function Test-MirrorConfigured {
+    param([ValidateSet('uv', 'pip')][string]$Tool)
+    if ($Tool -eq 'uv') {
+        if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
+        $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
+        $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml", "$env:ProgramData\uv\uv.toml")
+        $dir = (Get-Location -PSProvider FileSystem).ProviderPath
+        while ($dir) {
+            $pyproject = Join-Path $dir 'pyproject.toml'
+            if (Test-Path -LiteralPath (Join-Path $dir 'uv.toml') -PathType Leaf) { $files += Join-Path $dir 'uv.toml'; break }
+            if ((Test-Path -LiteralPath $pyproject -PathType Leaf) -and
+                (Select-String -LiteralPath $pyproject -Pattern '^\s*\[+tool\.uv(\.|\])' -Quiet -ErrorAction SilentlyContinue)) { $files += $pyproject; break }
+            $dir = Split-Path -Parent $dir
+        }
+    } else {
+        if ("$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_NO_INDEX") { return $true }
+        $pattern = '^\s*(index[-_]url|extra[-_]index[-_]url|no[-_]index)\s*[=:]'
+        $files = @($env:PIP_CONFIG_FILE, $(if ($venv = Get-Variable VenvDir -ValueOnly -ErrorAction SilentlyContinue) { Join-Path $venv 'pip.ini' }), "$env:APPDATA\pip\pip.ini", "$env:USERPROFILE\pip\pip.ini", "$env:ProgramData\pip\pip.ini")
+    }
+    foreach ($file in $files) {
+        if ($file -and (Test-Path -LiteralPath $file -PathType Leaf) -and
+            (Select-String -LiteralPath $file -Pattern $pattern -Quiet -ErrorAction SilentlyContinue)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Start-MirrorProbe {
+    param([string[]]$Urls, [double]$Seconds, [long]$LastByte)
+    $state = @{ Urls = $Urls; Seconds = $Seconds; LastByte = $LastByte; Clock = [System.Diagnostics.Stopwatch]::StartNew(); Requests = @{}; Heads = @{}; InTime = @{}; Bodies = @{}; Buffers = @{} }
+    $deadline = [System.Threading.Tasks.Task]::Delay([int]($Seconds * 1000))
+    foreach ($url in $Urls) {
+        $state.Requests[$url] = [System.Net.WebRequest]::Create($url)
+        # The CERNET mirrors answer 403 to a request without a User-Agent; a fresh connection keeps every probe cold, as curl's are.
+        $state.Requests[$url].UserAgent = 'unsloth-installer'
+        $state.Requests[$url].KeepAlive = $false
+        $state.Requests[$url].AddRange(0, $LastByte)
+        $state.Heads[$url] = $state.Requests[$url].GetResponseAsync()
+        $state.InTime[$url] = [System.Threading.Tasks.Task]::WhenAny([System.Threading.Tasks.Task[]]@($state.Heads[$url], $deadline))
+    }
+    return $state
+}
+
+function Wait-MirrorProbe {
+    param($Probe)
+    $results = @{}
+    $measure = { param($url) @([int]$Probe.Heads[$url].Result.StatusCode, [long]($Probe.Buffers[$url].Position / $Probe.Clock.Elapsed.TotalSeconds)) }
+    try {
+        while ($true) {
+            foreach ($url in $Probe.Urls) {
+                if ($results.ContainsKey($url) -or -not $Probe.InTime[$url].IsCompleted) { continue }
+                if (-not [object]::ReferenceEquals($Probe.InTime[$url].Result, $Probe.Heads[$url])) {
+                    $results[$url] = @(0, [long]0)
+                } elseif ($Probe.Heads[$url].Status -ne 'RanToCompletion') {
+                    $failure = $Probe.Heads[$url].Exception.InnerException -as [System.Net.WebException]
+                    $results[$url] = @($(if ($failure -and $failure.Response) { [int]$failure.Response.StatusCode } else { 0 }), [long]0)
+                } elseif (-not $Probe.Bodies.ContainsKey($url)) {
+                    $Probe.Buffers[$url] = [System.IO.MemoryStream]::new([byte[]]::new($Probe.LastByte + 65537))
+                    $Probe.Bodies[$url] = $Probe.Heads[$url].Result.GetResponseStream().CopyToAsync($Probe.Buffers[$url], 65536)
+                } elseif ($Probe.Bodies[$url].IsCompleted) {
+                    $results[$url] = & $measure $url
+                }
+            }
+            $pending = @($Probe.Urls | Where-Object { -not $results.ContainsKey($_) } | ForEach-Object { if ($Probe.Bodies.ContainsKey($_)) { $Probe.Bodies[$_] } else { $Probe.InTime[$_] } })
+            $left = [int](($Probe.Seconds - $Probe.Clock.Elapsed.TotalSeconds) * 1000)
+            if ($pending.Count -eq 0 -or $left -le 0) { break }
+            [void][System.Threading.Tasks.Task]::WaitAny([System.Threading.Tasks.Task[]]$pending, $left)
+        }
+        foreach ($url in $Probe.Urls) {
+            if ($results.ContainsKey($url)) { continue }
+            $results[$url] = if ($Probe.Buffers.ContainsKey($url)) { & $measure $url } else { @(0, [long]0) }
+        }
+    } finally {
+        foreach ($url in @($Probe.Requests.Keys)) {
+            $Probe.Requests[$url].Abort()
+            if ($Probe.Heads[$url].Status -eq 'RanToCompletion') { $Probe.Heads[$url].Result.Dispose() }
+        }
+    }
+    return $results
+}
+
+function Get-MirrorDnsServers {
+    try {
+        [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object { $_.OperationalStatus -eq 'Up' } |
+            ForEach-Object { $_.GetIPProperties().DnsAddresses } | ForEach-Object { "$_" }
+    } catch {}
+}
+
+# No network call: a mainland China time zone, or a resolver from a mainland public DNS or cloud, as _mirror_in_china in install.sh.
+function Test-MirrorInChina {
+    try { if ((Get-TimeZone).Id -in 'China Standard Time', 'Asia/Shanghai', 'Asia/Chongqing', 'Asia/Chungking', 'Asia/Harbin', 'Asia/Urumqi', 'Asia/Kashgar', 'PRC') { return $true } } catch {}
+    return [bool](@(Get-MirrorDnsServers) -match '^(223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[0459]|182\.254\.116\.116|119\.28\.28\.28|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98))$')
+}
+
+function Invoke-MirrorFallback {
+    param([switch]$SpareOnly)
+    $optIn = "$env:UNSLOTH_MIRROR_FALLBACK".Trim()
+    # When off, a retry state inherited from a parent is dropped so nothing downstream acts on it.
+    if ($optIn -match '^(0|false|no|off)$' -or ($optIn -notmatch '^(1|true|yes|on)$' -and -not (Test-MirrorInChina))) {
+        Remove-Item Env:_UNSLOTH_MIRROR_SPARE -ErrorAction SilentlyContinue
+        return
+    }
+    if ($env:_UNSLOTH_MIRROR_PROBED) { return }
+    if (-not $SpareOnly) { $env:_UNSLOTH_MIRROR_PROBED = '1' }
+    $cernet = 'https://tuna.mirrors.cernet.edu.cn'
+    $npmMirror = 'https://registry.npmmirror.com'
+    $pypiMirror = "$cernet/pypi/web/simple"
+    $minBps = 1MB
+    $useUv = -not (Test-MirrorConfigured -Tool uv)
+    $usePip = -not (Test-MirrorConfigured -Tool pip)
+    $uvWheel = 'packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl'
+    $torchWheel = 'whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl'
+    $nodeTarball = 'v24.18.0/node-v24.18.0-linux-x64.tar.gz'
+    $artifact = @{
+        'pypi' = "https://files.pythonhosted.org/$uvWheel"; 'cernet-pypi' = "$cernet/pypi/web/$uvWheel"
+        'torch' = "https://download-r2.pytorch.org/$torchWheel"; 'cernet-torch' = "$cernet/pytorch/$torchWheel"
+        'node' = "https://nodejs.org/dist/$nodeTarball"; 'npmmirror-node' = "$npmMirror/-/binary/node/$nodeTarball"
+        'npm' = 'https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz'; 'npmmirror' = "$npmMirror/typescript/-/typescript-5.9.3.tgz"
+        'astral' = 'https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz'
+    }
+    $hosts = [ordered]@{}
+    if ($useUv -or $usePip) { $hosts['pypi'] = @('pypi', 'cernet-pypi', $pypiMirror, 'https://pypi.org/simple/uv/', "$pypiMirror/uv/") }
+    if (-not "$env:UNSLOTH_PYTORCH_MIRROR$env:UNSLOTH_TORCH_INDEX_URL") {
+        $hosts['torch'] = @('torch', 'cernet-torch', "$cernet/pytorch/whl", 'https://download.pytorch.org/whl/cpu/torch/', "$cernet/pytorch/whl/cpu/torch/")
+    }
+    if (-not $env:UNSLOTH_NODE_MIRROR) { $hosts['node'] = @('node', 'npmmirror-node', "$npmMirror/-/binary/node", $null, $null) }
+    if (-not "$env:UNSLOTH_NPM_REGISTRY$env:NPM_CONFIG_REGISTRY") { $hosts['npm'] = @('npm', 'npmmirror', $npmMirror, $null, $null) }
+    if (-not "$env:UNSLOTH_UV_WHEEL_MIRROR$env:UV_DOWNLOAD_URL$env:INSTALLER_DOWNLOAD_URL$env:UV_INSTALLER_GHE_BASE_URL$env:UV_INSTALLER_GITHUB_BASE_URL") {
+        $hosts['uvbin'] = @('astral', 'cernet-pypi', "$cernet/pypi/web", $null, $null)
+    }
+    if ($hosts.Count -eq 0) { return }
+    $varsOf = {
+        param($name)
+        $to = if ($hosts.Contains($name)) { $hosts[$name][2] }
+        switch ($name) {
+            'pypi' {
+                if ($useUv) { "UV_DEFAULT_INDEX=$to" }
+                if ($usePip) { "PIP_INDEX_URL=$to" }
+            }
+            'unsynced' {
+                # Only for one rerun: uv's unsafe-first-match fetches every package from every index, and fails outright when one is unreachable.
+                if ($useUv) {
+                    'UV_DEFAULT_INDEX=https://pypi.org/simple'; "UV_INDEX=$pypiMirror"
+                    "UV_INDEX_STRATEGY=$(if ($env:UV_INDEX_STRATEGY) { $env:UV_INDEX_STRATEGY } else { 'unsafe-first-match' })"
+                }
+                if ($usePip) { 'PIP_EXTRA_INDEX_URL=https://pypi.org/simple'; "PIP_INDEX_URL=$pypiMirror" }
+            }
+            'torch' { "UNSLOTH_PYTORCH_MIRROR=$to" }
+            'node' { "UNSLOTH_NODE_MIRROR=$to" }
+            'npm' { "UNSLOTH_NPM_REGISTRY=$to" }
+            'uvbin' { "UNSLOTH_UV_WHEEL_MIRROR=$to" }
+        }
+    }
+    $env:_UNSLOTH_MIRROR_SPARE = @($hosts.Keys | ForEach-Object { (@($_) + @(& $varsOf $_)) -join '|' }) -join ' '
+    if ($SpareOnly -or (Test-UvEnvFlag 'UV_OFFLINE')) { return }
+    $answered = @{}
+    $codeOf = { param($index, $result) if ($index -and "$($answered[$index][0])" -notmatch '^2\d\d$') { 0 } else { $result[0] } }
+    # PS 5.1 may pin TLS 1.0/1.1 (every probed host refuses it; Tls|Tls12 still fails) and queues past 2 connections per host.
+    $savedProtocol = [System.Net.ServicePointManager]::SecurityProtocol
+    $savedLimit = [System.Net.ServicePointManager]::DefaultConnectionLimit
+    if ([int]$savedProtocol -ne 0) { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 }
+    [System.Net.ServicePointManager]::DefaultConnectionLimit = [Math]::Max($savedLimit, 16)
+    try {
+        $defaults = @($hosts.Values | ForEach-Object { $_[0] } | Select-Object -Unique)
+        $indexes = Start-MirrorProbe -Urls @($hosts.Values | ForEach-Object { $_[3] } | Where-Object { $_ }) -Seconds 4 -LastByte 1023
+        $timed = @{}
+        foreach ($name in $defaults) { $timed[$name] = (Wait-MirrorProbe (Start-MirrorProbe -Urls $artifact[$name] -Seconds 1.5 -LastByte 1048575))[$artifact[$name]] }
+        $answered = Wait-MirrorProbe $indexes
+        $slow = @($hosts.Keys | Where-Object {
+            $code = & $codeOf $hosts[$_][3] $timed[$hosts[$_][0]]
+            $code -eq 0 -or ($code -ge 300 -and $code -lt 400) -or ($code -ge 200 -and $code -lt 300 -and $timed[$hosts[$_][0]][1] -lt $minBps)
+        })
+        if ($slow.Count -eq 0) { return }
+        $sources = @($slow | ForEach-Object { $hosts[$_][1] } | Select-Object -Unique)
+        $indexes = Start-MirrorProbe -Urls @($slow | ForEach-Object { $hosts[$_][3]; $hosts[$_][4] } | Where-Object { $_ }) -Seconds 4 -LastByte 1023
+        $race = Wait-MirrorProbe (Start-MirrorProbe -Urls @($slow | ForEach-Object { $artifact[$hosts[$_][0]] }; $sources | ForEach-Object { $artifact[$_] }) -Seconds 4 -LastByte 1048575)
+        $sourceIndexes = Wait-MirrorProbe $indexes
+        foreach ($url in $sourceIndexes.Keys) { $answered[$url] = $sourceIndexes[$url] }
+    } finally {
+        [System.Net.ServicePointManager]::SecurityProtocol = $savedProtocol
+        [System.Net.ServicePointManager]::DefaultConnectionLimit = $savedLimit
+    }
+    $used = $false
+    foreach ($name in $slow) {
+        $default = $race[$artifact[$hosts[$name][0]]]
+        $mirror = $race[$artifact[$hosts[$name][1]]]
+        $how = if ("$(& $codeOf $hosts[$name][3] $default)" -match '^2\d\d$') { 'slow' } else { 'blocked' }
+        $defaultBps = if ($how -eq 'slow') { $default[1] } else { [long]0 }
+        if ("$(& $codeOf $hosts[$name][4] $mirror)" -notmatch '^2\d\d$' -or $defaultBps -ge $minBps -or $mirror[1] -le $defaultBps) { continue }
+        Set-MirrorEnv @(& $varsOf $name)
+        $env:_UNSLOTH_MIRROR_SPARE = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -notlike "$name|*" }) -join ' '
+        if ($name -eq 'pypi' -and $how -eq 'slow') { $env:_UNSLOTH_MIRROR_SPARE = (@(-split $env:_UNSLOTH_MIRROR_SPARE) + ((@('unsynced') + @(& $varsOf 'unsynced')) -join '|')) -join ' ' }
+        step "mirror" "$(Get-MirrorName $name) is $how ($($defaultBps -shr 10) KB/s, mirror $($mirror[1] -shr 10) KB/s); using $($hosts[$name][2])" "Yellow"
+        $used = $true
+    }
+    if ($used) { substep "Set UNSLOTH_MIRROR_FALLBACK=0 to always use the default hosts." }
+}
+
+function Get-MirrorName {
+    param([string]$Name)
+    @{ pypi = 'PyPI'; unsynced = 'The PyPI mirror'; torch = 'download.pytorch.org'; node = 'nodejs.org'; npm = 'registry.npmjs.org'; uvbin = 'releases.astral.sh (uv)' }[$Name]
+}
+
+function Set-MirrorEnv {
+    param([string[]]$Pairs)
+    foreach ($pair in $Pairs) { Set-Item "Env:$($pair.Split('=', 2)[0])" $pair.Split('=', 2)[1] }
+}
+
+function Pop-MirrorSpare {
+    param([string]$Name)
+    $entry = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -like "$Name|*" })
+    if (-not $entry) { return }
+    $env:_UNSLOTH_MIRROR_SPARE = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -notlike "$Name|*" }) -join ' '
+    $pairs = @($entry[0].Split('|') | Select-Object -Skip 1)
+    step "mirror" "$(Get-MirrorName $Name) failed; retrying through $($pairs[0].Split('=', 2)[1])" "Yellow"
+    return $pairs
+}
+
+function Use-MirrorSpare {
+    param([string]$Name)
+    $pairs = @(Pop-MirrorSpare $Name)
+    Set-MirrorEnv $pairs
+    return $pairs.Count -gt 0
+}
+
+function Get-MirrorFailedHost {
+    param([string]$Output, [string]$Ran)
+    if ($Output -notmatch 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up') {
+        if ($Output -match 'only \S+ (.* )?(is|are) available|no versions? of|not found in the package registry|could not find a version that satisfies|no matching distribution found') { 'unsynced' }
+        return
+    }
+    if ($Output -match 'download(-r2)?\.pytorch\.org') { 'torch' }
+    elseif ($Output -match 'registry\.npmjs\.org') { 'npm' }
+    elseif ($Output -match 'pypi\.org|pythonhosted\.org') { 'pypi' }
+    elseif ($Ran -and $Output -notmatch 'https?://') { $Ran }
 }
 
 # Stop every install path consistently when its destination is unreadable.
@@ -2509,9 +2741,17 @@ function Invoke-SetupCommand {
         $global:LASTEXITCODE = 0
         if ($script:UnslothVerbose -and -not $AlwaysQuiet) {
             # PS 5.1 turns stderr records into $? = $false even on exit 0; redact per record.
-            & $Command 2>&1 | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+            if ($env:_UNSLOTH_MIRROR_SPARE) {
+                $lines = @()
+                & $Command 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable lines | ForEach-Object { Redact-InstallOutput $_ } | Out-Host
+                $script:SetupCommandOutput = $lines -join "`n"
+            } else {
+                & $Command 2>&1 | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+                $script:SetupCommandOutput = ''
+            }
         } else {
             $output = & $Command 2>&1 | Out-String
+            $script:SetupCommandOutput = $output
             if ($LASTEXITCODE -ne 0) {
                 Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red
             }
@@ -2621,6 +2861,18 @@ function substep {
         }
         Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
     }
+}
+
+function Invoke-NpmMirrorRetry {
+    if (-not $env:_UNSLOTH_MIRROR_SPARE) { return $false }
+    if ((Get-MirrorFailedHost -Output $script:SetupCommandOutput -Ran npm) -ne 'npm') { return $false }
+    $pairs = @(Pop-MirrorSpare npm)
+    if (-not $pairs) { return $false }
+    $registry = $pairs[0].Split('=', 2)[1]
+    if ((Invoke-SetupCommand { npm install --registry $registry }) -ne 0) { return $false }
+    Set-MirrorEnv $pairs
+    $script:NpmRegistryArgs = @('--registry', $registry)
+    return $true
 }
 
 function Show-NpmRegistryHint {
@@ -4831,6 +5083,14 @@ Write-StudioLine ""
 step "system" "prerequisites ready"
 Write-StudioLine ""
 
+Invoke-MirrorFallback -SpareOnly
+
+# UNSLOTH_NPM_REGISTRY: opt-in --registry splat past the frontend .npmrc lock (corporate proxies).
+$NpmRegistryArgs = @()
+if ($env:UNSLOTH_NPM_REGISTRY) {
+    $NpmRegistryArgs = @('--registry', $env:UNSLOTH_NPM_REGISTRY)
+}
+
 # ==========================================================================
 #  PHASE 2: Frontend build (skip if pip-installed -- already bundled)
 # ==========================================================================
@@ -4926,6 +5186,11 @@ if ($NeedNodeForSetup) {
         $NodeInstallPython = if ($ValidatedSetupPython) { $ValidatedSetupPython } else { "python" }
         $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
         $nodeExit = $LASTEXITCODE
+        # A failed download gets one retry through the mirror; 3 is another install holding the lock and 4 an unwritable directory, which no mirror fixes.
+        if ($nodeExit -notin 0, 3, 4 -and (Use-MirrorSpare node)) {
+            $nodeOut += & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
+            $nodeExit = $LASTEXITCODE
+        }
         if ($nodeExit -eq 3) {
             Write-StudioLine $nodeOut -ForegroundColor DarkGray
             step "node" "install blocked by another active Unsloth install" "Red"
@@ -5049,6 +5314,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     }
     if (-not $UseBun) {
         $npmExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
+        if ($npmExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $npmExit = 0 }
         if ($npmExit -ne 0) {
             Pop-Location
             $ErrorActionPreference = $prevEAP_npm
@@ -5092,6 +5358,7 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
     $oxcInstallExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
+    if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
     if ($oxcInstallExit -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
@@ -6632,13 +6899,16 @@ function Assert-VenvActivated {
 # prepend as astral's installer, but it fetches a data file with a pinned SHA-256 instead of
 # running remote script text in-process.
 # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-# Bumping the version means bumping all 3 hashes:
+# Bumping the version means bumping all 3 hashes, and each Wheel/WheelSha256 as in install.ps1:
 #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
 $UvPinnedVersion = "0.12.1"
 $UvPinnedAssets = @{
-    "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A" }
-    "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568" }
-    "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97" }
+    "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A"
+                  Wheel = "packages/0d/a4/467c99c76fefa8b1259a1d382a5e49f73068f38a2d58db401504a783ed2c/uv-0.12.1-py3-none-win_amd64.whl"; WheelSha256 = "BD02F2DA212E6A983115DC64A6FC94E9256C2D60E056D6B669DE0A6025AAEC05" }
+    "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568"
+                  Wheel = "packages/68/80/ec1acbf8e22dc4866f9070c30b064728cc0da73bedc30f2fbfdc0c5901a7/uv-0.12.1-py3-none-win_arm64.whl"; WheelSha256 = "EAD7AD064F291A5DF358C3FFA8FFAB347A32BD5A75A6A068CA22254C2539A829" }
+    "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97"
+                  Wheel = "packages/fd/02/f73e4867c0748eaa3dea90cdfeb73d15bab0f04802c5c20bb37fc14918fe/uv-0.12.1-py3-none-win32.whl"; WheelSha256 = "173EE216F17D89FC39F65339D311A53584FC7DE4918D27C0F3C7EDAFABC6B54D" }
 }
 
 # Not Get-HostMachineArch: it answers arm64/other for the VC++ and prebuilt probes, and "other"
@@ -6735,6 +7005,7 @@ function Get-UvInstallDir {
 }
 
 function Install-UvFromPinnedRelease {
+    $script:UvPinnedUnfetched = $false
     $arch = Get-UvHostArch
     if (-not $UvPinnedAssets.ContainsKey($arch)) {
         Write-Output "No uv build is published for this architecture ($arch)."
@@ -6742,6 +7013,8 @@ function Install-UvFromPinnedRelease {
     }
     $asset  = $UvPinnedAssets[$arch].Asset
     $wanted = $UvPinnedAssets[$arch].Sha256
+    $remote = $asset
+    $wheelDir = $null
 
     # astral's destination priority, so an existing uv is replaced in place and the Get-Command
     # probe after Refresh-Environment still finds it.
@@ -6763,6 +7036,11 @@ function Install-UvFromPinnedRelease {
         @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
     } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
         @("$($env:UV_INSTALLER_GITHUB_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
+    } elseif ($env:UNSLOTH_UV_WHEEL_MIRROR) {
+        $remote = $UvPinnedAssets[$arch].Wheel
+        $wanted = $UvPinnedAssets[$arch].WheelSha256
+        $wheelDir = "uv-$UvPinnedVersion.data/scripts"
+        @("$($env:UNSLOTH_UV_WHEEL_MIRROR.TrimEnd('/'))")
     } else {
         @("https://releases.astral.sh/github/uv/releases/download/$UvPinnedVersion",
           "https://github.com/astral-sh/uv/releases/download/$UvPinnedVersion")
@@ -6775,14 +7053,16 @@ function Install-UvFromPinnedRelease {
         # Digest per mirror, as install.ps1 does: a proxy answering 200 with its own body is a
         # successful download by every measure Invoke-WebRequest has.
         $downloaded = $false
+        $script:UvPinnedUnfetched = $true
         foreach ($base in $uvBase) {
             Write-Output "downloading uv $UvPinnedVersion ($arch) from $base..."
             try {
-                Invoke-WebRequest -UseBasicParsing -OutFile $zip -Uri "$base/$asset"
+                Invoke-WebRequest -UseBasicParsing -OutFile $zip -Uri "$base/$remote"
             } catch {
                 Write-Output "uv download failed: $($_.Exception.Message)"
                 continue
             }
+            $script:UvPinnedUnfetched = $false
             $actual = ""
             try { $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash } catch {}
             if ($actual -eq $wanted) {
@@ -6795,10 +7075,10 @@ function Install-UvFromPinnedRelease {
         }
         if (-not $downloaded) { return $false }
 
-        # The Windows archives are flat: uv.exe, uvx.exe, uvw.exe at the root.
         Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
         [System.IO.Directory]::CreateDirectory($destDir) | Out-Null
-        $stagedUv = Join-Path $work "uv.exe"
+        $srcRoot = if ($wheelDir) { Join-Path $work $wheelDir } else { $work }
+        $stagedUv = Join-Path $srcRoot "uv.exe"
         if (-not (Test-Path -LiteralPath $stagedUv)) {
             Write-Output "uv.exe was not present in $asset."
             return $false
@@ -6816,7 +7096,7 @@ function Install-UvFromPinnedRelease {
         # than leaving half a set behind quietly.
         $haveUv = $true
         foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
-            $src = Join-Path $work $exe
+            $src = Join-Path $srcRoot $exe
             if (-not (Test-Path -LiteralPath $src)) { continue }
             $dst = Join-Path $destDir $exe
             try {
@@ -6981,6 +7261,9 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
     try {
         $script:UvPinnedInstalled = $false
         Invoke-SetupCommand { Install-UvFromPinnedRelease } | Out-Null
+        if (-not $script:UvPinnedInstalled -and $script:UvPinnedUnfetched -and (Use-MirrorSpare uvbin)) {
+            Invoke-SetupCommand { Install-UvFromPinnedRelease } | Out-Null
+        }
         # The merge base ran astral's installer here, so a failed pinned install needs somewhere
         # to go: with no fallback the setup drops to pip for torch, bitsandbytes and Triton, which
         # is a different resolver rather than a different download. winget, not the remote script,
@@ -7438,6 +7721,8 @@ function Clear-UnparseableTorchCacheEnv {
 Clear-UnparseableTorchCacheEnv
 
 if (-not $SkipPythonDeps) {
+
+if (-not ($env:STUDIO_LOCAL_INSTALL -eq '1' -and (Test-Path -LiteralPath (Join-Path $VenvDir 'Scripts\python.exe') -PathType Leaf))) { Invoke-MirrorFallback }
 
 # Recover what a fresh shell lost, BEFORE the manifest is dropped below: recovery reads that file.
 $WinArm64Venv = Test-WinArm64Venv
@@ -8431,10 +8716,24 @@ $SidecarCommonPins = @("huggingface_hub==1.8.0", "hf_xet==1.4.2")
 function Fast-Install-Sidecar {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
     $savedOverride = $env:UV_OVERRIDE
+    $savedUnsynced = @{}
     try {
         Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue
         Fast-Install @Args_
+        # A pin the PyPI mirror has not synced yet: one rerun with pypi.org behind it, armed only after a slow pypi.org was switched.
+        $unsynced = @(-split "$env:_UNSLOTH_MIRROR_SPARE" | Where-Object { $_ -like 'unsynced|*' })
+        if ($LASTEXITCODE -ne 0 -and $unsynced) {
+            foreach ($pair in @($unsynced[0].Split('|') | Select-Object -Skip 1)) {
+                $name, $value = $pair.Split('=', 2)
+                $savedUnsynced[$name] = [Environment]::GetEnvironmentVariable($name)
+                Set-Item "Env:$name" $value
+            }
+            Fast-Install @Args_
+        }
     } finally {
+        foreach ($name in $savedUnsynced.Keys) {
+            if ($null -eq $savedUnsynced[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue } else { Set-Item "Env:$name" $savedUnsynced[$name] }
+        }
         if ($null -ne $savedOverride) { $env:UV_OVERRIDE = $savedOverride }
     }
 }
@@ -8486,6 +8785,7 @@ function Repair-SidecarTiktoken {
     # Dropping the metadata is what makes uv reinstall instead of calling the pin satisfied.
     Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    Invoke-MirrorFallback
     # Cleared first: an install that runs no native command would retire the sidecar on a stale
     # nonzero (unresolvable uv is non-terminating under "Continue").
     $global:LASTEXITCODE = 0
@@ -8557,6 +8857,7 @@ function Install-T5Sidecar {
         [Parameter(Mandatory = $true)][string]$Reason
     )
     substep "pre-installing transformers $Version $Reason..."
+    Invoke-MirrorFallback
     Assert-StudioOwnedOrAbsent -Path $TargetDir -Label "transformers $Label sidecar venv"
     if (Test-Path -LiteralPath $TargetDir) { Remove-Item -LiteralPath $TargetDir -Recurse -Force }
     [System.IO.Directory]::CreateDirectory($TargetDir) | Out-Null

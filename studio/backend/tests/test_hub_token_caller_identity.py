@@ -2009,7 +2009,7 @@ def test_an_anonymous_caller_keeps_a_public_cached_dataset_and_loses_a_private_o
     monkeypatch.setattr(
         hf_tokens,
         "_probe_repo_access",
-        lambda _repo, _token, repo_type: public and repo_type == "dataset",
+        lambda _repo, _token, repo_type, **_k: public and repo_type == "dataset",
     )
     _hub_reachable(monkeypatch)
     monkeypatch.setattr(dataset_cache, "dataset_cache_can_answer", lambda *_a, **_k: True)

@@ -197,7 +197,6 @@ def _drop_pool_if_unused() -> None:
 
 
 def _nvfp4_flashinfer_linears(module: Any) -> list:
-    """Lazy import, so a build without the backend does not lose CUDA graphs over it."""
     try:
         from .diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
     except Exception:  # noqa: BLE001 - no backend module, no NVFP4 layers to find
@@ -213,7 +212,7 @@ def _nvfp4_flashinfer_linears(module: Any) -> list:
 
 
 def _protect_keyed(module: Any) -> bool:
-    """Only when the lever is armed AND this module holds NVFP4 layers, so fp8 keeps its graph count."""
+    """Whether the graph key needs the precision branch: lever armed AND the module holds NVFP4 layers."""
     try:
         from .diffusion_nvfp4_protect import module_controller
         if not module_controller(module).armed:
@@ -229,12 +228,11 @@ def protect_graph_key(controller: Any = None) -> tuple:
 
 
 def _unbaked_nvfp4_layers(layers: list) -> list:
-    """A scale still being learned would be frozen by capture. Fail closed: no answer is unbaked."""
     return [name for name, layer in layers if not getattr(layer, "activation_scales_baked", False)]
 
 
 def _prewarm_token_counts(live: list) -> tuple:
-    """Candidate GEMM row counts (M), read off the warm-up's shapes; generous but bounded."""
+    """Candidate GEMM row counts (M) from the warm-up's shapes, smallest first; bounded."""
     counts = {1}
     for tensor in live:
         try:

@@ -2305,7 +2305,7 @@ def test_a_gated_row_is_inert_without_a_record_and_leads_with_one(monkeypatch, t
 
 
 def test_the_gated_head_stands_on_any_backend_a_passing_record_names(monkeypatch, tmp_path):
-    """One policy can hold records on both backends; neither device may lose nvfp4 to row order."""
+    """One policy can hold artifacts gated on either backend; neither may lose nvfp4 to row order."""
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
     _gate(

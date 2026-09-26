@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Eager bias add for the NVFP4 output, bit-identical to ``add_`` (compile defers to ``add_``). CUTLASS's
-fused FP4 bias epilogue is WRONG here: it adds into the fp32 accumulator before the rounding."""
+"""Eager bias add for the NVFP4 output, bit-identical to ``add_``; CUTLASS's fused epilogue rounds wrong."""
 
 from __future__ import annotations
 
@@ -64,7 +63,7 @@ def _eligible(out: Any, bias: Any) -> bool:
 
 
 def fused_bias_add_(out: Any, bias: Any):
-    """The device guard is load-bearing: Triton takes its device from the CURRENT context."""
+    """``out += bias``, bit-identical to ``add_``; the device guard matters (Triton uses the CURRENT device)."""
     import torch
 
     if torch.compiler.is_compiling() or not fast_bias_enabled() or not _eligible(out, bias):

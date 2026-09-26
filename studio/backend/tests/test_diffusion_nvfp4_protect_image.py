@@ -329,7 +329,6 @@ def _cuda_or_skip():
 
 
 def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monkeypatch):
-    """Two tuned captures, each replay bit-identical to its branch's un-graphed forward."""
     torch = _cuda_or_skip()
     import torch.nn as nn
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig

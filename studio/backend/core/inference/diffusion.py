@@ -36,6 +36,7 @@ from core._torchao_stub import (
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
 )
+from hub.utils.hf_errors import modelscope_missing
 from loggers import get_logger
 from utils.account_context import account_thread, current_account_id
 from utils.hardware import clear_gpu_cache
@@ -146,6 +147,7 @@ from .diffusion_speed import (
     restore_backend_flags,
     settle_compile_fallback,
     snapshot_backend_flags,
+    vae_decode_compile_allowed,
 )
 from .diffusion_attention import (
     apply_attention_backend,
@@ -914,7 +916,9 @@ def _assert_base_repo_accessible(
         # 404, or an error carrying no response, raises.
         if _is_auth_error(exc) and _already_downloaded():
             return other_root_snapshot
-        raise ValueError(_repo_access_message(repo, gated = False)) from None
+        raise ValueError(
+            modelscope_missing(exc) or _repo_access_message(repo, gated = False)
+        ) from None
     except HfHubHTTPError as exc:
         if not _is_auth_error(exc):
             return None  # a 5xx or rate limit is not an access verdict
@@ -1386,8 +1390,7 @@ def _planned_quant_scheme(
     base_repo: Optional[str],
     prequant_path: Optional[str],
 ) -> Optional[str]:
-    """The scheme the load will resolve: without the base and the checkpoint probe, plan and load
-    pick different schemes and a second denoiser is fetched inline."""
+    """The scheme the load will resolve, asked with the same base and hosted-checkpoint probe as the load."""
     return select_transformer_quant_scheme(
         target,
         requested,
@@ -3057,7 +3060,8 @@ class DiffusionBackend:
 
             try:
                 text = (
-                    hub_access_message(exc, had_token = _hf_token_in_play(kwargs.get("hf_token")))
+                    modelscope_missing(exc)
+                    or hub_access_message(exc, had_token = _hf_token_in_play(kwargs.get("hf_token")))
                     or dynamo_partial_init_message(exc)
                     or str(exc)
                 )
@@ -6361,6 +6365,7 @@ class DiffusionBackend:
                                 "mode": "max-autotune-no-cudagraphs"
                                 if effective_speed == SPEED_MAX
                                 else "default",
+                                "vae_decode": vae_decode_compile_allowed(pipe, effective_speed),
                             },
                             logger = logger,
                         )
@@ -6770,7 +6775,6 @@ class DiffusionBackend:
                 check_cancelled()
                 if transformer is not None:
                     if scheme == TQ_NVFP4:
-                        # Only M = 1 is knowable here; other shapes tune on their first eager GEMM.
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
                         nvfp4_prewarm(transformer, (1,), logger = logger)
                     pipe = self._assemble_pipe(
@@ -8019,6 +8023,7 @@ class DiffusionBackend:
                     and state.offload_policy == OFFLOAD_NONE,
                     "dynamic": compile_dynamic(getattr(state.pipe, "transformer", None), True),
                     "mode": "default",
+                    "vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT),
                 },
                 logger = logger,
             )
@@ -9015,7 +9020,7 @@ class DiffusionBackend:
 
 
 def _transformer_quant_backend(state: Any) -> Optional[str]:
-    """The NVFP4 kernel path read from the MODULE TREE, not the load's intent. Never raises."""
+    """Which NVFP4 kernel path the loaded denoiser runs, read from the MODULE TREE, or None. Never raises."""
     if getattr(state, "transformer_quant", None) != TQ_NVFP4:
         return None
     try:
