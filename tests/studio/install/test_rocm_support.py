@@ -2152,7 +2152,6 @@ class TestGfx1102Rocm64Floor:
         assert "whl/rocm6.1" in torch_call
         assert "repo.amd.com" not in torch_call
 
-
     def test_kernel_unaffected_arch_is_still_repaired_below_the_bnb_floor(self, monkeypatch):
         """An installed +rocm6.1 wheel is repaired even where the kernel floor is silent.
 
