@@ -318,9 +318,9 @@ def test_studio_load_unload_and_training_methods_invalidate():
     ]
     for method in methods:
         code = method.__code__
-        assert code is gpu_memory_events.invalidates_gpu_memory("x")(lambda: None).__code__, (
-            method.__qualname__
-        )
+        assert (
+            code is gpu_memory_events.invalidates_gpu_memory("x")(lambda: None).__code__
+        ), method.__qualname__
 
 
 def test_invalidation_happens_even_when_the_load_fails():
