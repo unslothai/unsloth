@@ -8,8 +8,7 @@ from utils.datasets import apply_chat_template_to_dataset, format_dataset
 
 
 def test_chat_mapping_keeps_a_zero_label_and_blanks_a_missing_one():
-    # The chat-format twin of test_alpaca_mapping_keeps_a_zero_label_and_blanks_a_missing_one:
-    # a label of 0 is an answer, not an empty cell, and a missing label must not train "nan".
+    # A label of 0 is an answer, not an empty cell; a missing label must not train "nan".
     result = format_dataset(
         Dataset.from_dict({"text": ["a", "b", "c"], "label": [1, 0, None]}),
         format_type = "auto",
@@ -87,7 +86,6 @@ _PATHS = [
 @pytest.mark.parametrize("path", _PATHS)
 @pytest.mark.parametrize("kind", list(_ORDINARY_ROWS))
 def test_chat_mapping_renders_ordinary_cells_as_before(path, kind):
-    # Only empty and NaN cells change: an ordinary cell still renders exactly str(cell), as it did before.
     columns = _ORDINARY_ROWS[kind]
     assert _render(path, columns, _ROLES) == [
         f"<system>{p}<user>{q}<assistant>{r}" for p, q, r in zip(*columns.values())
