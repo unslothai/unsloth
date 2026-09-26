@@ -454,7 +454,9 @@ def _attachment_items() -> list[dict]:
         if sha256:
             text_bytes = attachment.get("textBytes") or 0
             first = attachment.get("hasOriginal") and sha256 not in counted
-            items[-1]["storageBytes"] = text_bytes + ((attachment.get("sizeBytes") or 0) if first else 0)
+            items[-1]["storageBytes"] = text_bytes + (
+                (attachment.get("sizeBytes") or 0) if first else 0
+            )
             counted.add(sha256)
     return items
 
