@@ -567,6 +567,8 @@ def test_nvidia_smi_is_resolved_from_the_standard_windows_locations(monkeypatch)
 def test_path_resolution_is_a_no_op_off_windows_and_when_path_has_it(monkeypatch):
     monkeypatch.setattr(nvidia.platform, "system", lambda: "Linux")
     monkeypatch.setattr(nvidia.shutil, "which", lambda _name: None)
+    # Not a WSL host: the /usr/lib/wsl/lib fallback has its own tests.
+    monkeypatch.setattr(nvidia.os.path, "isfile", lambda _p: False)
     assert nvidia._nvidia_smi_executable() == "nvidia-smi"
 
     monkeypatch.setattr(nvidia.platform, "system", lambda: "Windows")
