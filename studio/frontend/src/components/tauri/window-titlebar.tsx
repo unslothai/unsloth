@@ -449,12 +449,13 @@ export function WindowTitlebar({
             }
           >
             {maximized ? (
+              // Mirrored, not rotated: Windows puts the front window bottom-left.
               <Copy
                 aria-hidden="true"
                 absoluteStrokeWidth
                 strokeWidth={1.5}
                 size={14}
-                className="rotate-180"
+                className="-scale-x-100"
               />
             ) : (
               <Square
