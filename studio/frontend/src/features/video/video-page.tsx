@@ -1042,7 +1042,7 @@ function VideoGenerator({
 
   const [busy, setBusy] = useState<Busy>(null);
   const [stopping, setStopping] = useState(false);
-  // A run ends through several paths (poll completion, refusal, reload), so clear it on any of them.
+  // A run ends via several paths (poll, refusal, reload): clear on any.
   useEffect(() => {
     if (busy !== "generating") setStopping(false);
   }, [busy]);
