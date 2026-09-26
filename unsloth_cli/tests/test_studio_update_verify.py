@@ -16,8 +16,9 @@ directly, and only shrinkage counts) are exactly the things a mock would hide.
 
 from __future__ import annotations
 
+import shlex
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import pytest
@@ -545,7 +546,9 @@ def test_a_custom_root_is_carried_into_the_reinstall_command(monkeypatch, capsys
     monkeypatch.setattr(
         studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["x: y is missing"]
     )
-    monkeypatch.setattr(studio, "STUDIO_HOME", Path("/srv/studios/a"))
+    # PurePosixPath: the printed command only str()s this, and Path would
+    # respell /srv as \srv on a Windows host, breaking both expectations.
+    monkeypatch.setattr(studio, "STUDIO_HOME", PurePosixPath("/srv/studios/a"))
     monkeypatch.setattr(studio, "_STUDIO_HOME_IS_CUSTOM", True)
     monkeypatch.setattr(_platform, "system", lambda: system)
     with pytest.raises(typer.Exit):
@@ -562,7 +565,8 @@ def test_a_root_with_spaces_is_quoted(monkeypatch, capsys):
     monkeypatch.setattr(
         studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["x: y is missing"]
     )
-    monkeypatch.setattr(studio, "STUDIO_HOME", Path("/srv/my studios/a"))
+    # PurePosixPath: str() only; Path would respell the root on Windows.
+    monkeypatch.setattr(studio, "STUDIO_HOME", PurePosixPath("/srv/my studios/a"))
     monkeypatch.setattr(studio, "_STUDIO_HOME_IS_CUSTOM", True)
     monkeypatch.setattr(_platform, "system", lambda: "Linux")
     with pytest.raises(typer.Exit):
@@ -682,16 +686,24 @@ def test_the_message_covers_packages_the_installer_will_not_repair(monkeypatch, 
 
 
 @pytest.mark.parametrize(
-    "system, exe, expected",
+    "system, exe",
     [
-        ("Linux", "/srv/my studios/a/bin/python", "'/srv/my studios/a/bin/python' -m pip"),
-        ("Windows", r"C:\my studios\a\python.exe", "& 'C:\\my studios\\a\\python.exe' -m pip"),
+        ("Linux", "/srv/my studios/a/bin/python"),
+        ("Windows", r"C:\my studios\a\python.exe"),
     ],
 )
-def test_the_repair_command_quotes_the_interpreter(monkeypatch, capsys, system, exe, expected):
-    # Custom roots with spaces are supported, so an unquoted sys.executable would split into several shell tokens.
+def test_the_repair_command_quotes_the_interpreter(monkeypatch, capsys, system, exe):
+    # Custom roots with spaces are supported, so an unquoted sys.executable
+    # would split into several shell tokens and the command would not run.
+    # Expected is built through the same str(Path(...)) round-trip production
+    # applies, since a Windows host respells the POSIX fixture path.
     import platform as _platform
     import typer
+
+    if system == "Windows":
+        expected = "& '{}' -m pip".format(str(Path(exe)).replace("'", "''"))
+    else:
+        expected = f"{shlex.quote(str(Path(exe)))} -m pip"
 
     studio = _studio()
     monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
