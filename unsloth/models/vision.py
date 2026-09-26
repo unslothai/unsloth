@@ -1241,6 +1241,218 @@ def _construct_vlm_processor_fallback(
     return None, _fb_err
 
 
+def _mxfp4_lora_keeps_experts_packed(
+    quant_method,
+    full_finetuning = False,
+    device_map = None,
+    model_name = None,
+    max_memory = None,
+    revision = None,
+    variant = None,
+    cache_dir = None,
+    subfolder = None,
+    local_files_only = False,
+    token = None,
+    use_safetensors = None,
+):
+    """Whether an MXFP4 LoRA load should use unsloth_zoo's packed experts (dequantize = True).
+
+    Native matmul_ogs has no backward (transformers silently detaches LoRA grads below MoE layers).
+    Off for full finetuning, UNSLOTH_MXFP4_KEEP_PACKED=0, or CPU / disk offload (zoo would then
+    dequantize every expert to 16 bit); "auto"-style maps count as offload if the checkpoint does
+    not fit in free accelerator memory / max_memory."""
+    # In-memory configs carry the QuantizationMethod enum; str() is "QuantizationMethod.MXFP4".
+    quant_method = getattr(quant_method, "value", quant_method)
+    if full_finetuning or str(quant_method).lower() != "mxfp4":
+        return False
+    if device_map is not None and not isinstance(device_map, (dict, str)):
+        device_map = str(device_map)
+    if device_map is None:
+        try:
+            import torch
+            device_map = str(getattr(torch, "get_default_device", lambda: "cpu")())
+        except Exception:
+            device_map = "cpu"
+    # unsloth_zoo only sees offload after this config is built, so check explicit maps here.
+    if isinstance(device_map, dict) and any(
+        str(value).split(":")[0] in ("cpu", "disk") for value in device_map.values()
+    ):
+        return False
+    if isinstance(device_map, str) and device_map.split(":")[0] in ("cpu", "disk"):
+        return False
+    try:
+        from unsloth_zoo.temporary_patches.mxfp4 import keep_mxfp4_experts_packed
+    except Exception:
+        return False
+    try:
+        if not keep_mxfp4_experts_packed():
+            return False
+    except Exception:
+        return False
+    if isinstance(device_map, str) and device_map in (
+        "auto",
+        "balanced",
+        "balanced_low_0",
+        "sequential",
+    ):
+        # infer_auto_device_map spills to CPU / disk when full; unknown sizes stay packed.
+        try:
+            import json
+            import os
+            import torch
+
+            prefix = subfolder.strip("/") + "/" if subfolder else ""
+
+            def with_variant(name):
+                # Mirrors transformers' _add_variant.
+                if not variant:
+                    return name
+                parts = name.split(".")
+                return ".".join(parts[:-1] + [variant, parts[-1]])
+
+            def weight_bytes(
+                files,
+                read_index,
+                size_of = None,
+            ):
+                # Only files from_pretrained reads, in its order (not stale shards / original/).
+                files = {name.replace(os.sep, "/"): size or 0 for name, size in files}
+                formats = [
+                    ("model.safetensors", "model.safetensors.index.json"),
+                    ("pytorch_model.bin", "pytorch_model.bin.index.json"),
+                ]
+                for single, index in formats[1:] if use_safetensors is False else formats:
+                    single, index = prefix + with_variant(single), prefix + with_variant(index)
+                    if single in files:
+                        return files[single]
+                    if index in files:
+                        shards = set(json.loads(read_index(index))["weight_map"].values())
+                        # Shards may sit in nested folders a listing does not reach.
+                        return sum(
+                            files.get(prefix + shard) or (size_of(prefix + shard) if size_of else 0)
+                            for shard in shards
+                        )
+                return 0
+
+            def folder_files(folder):
+                root = os.path.join(folder, prefix) if prefix else folder
+                if not os.path.isdir(root):
+                    return []
+                return [
+                    (prefix + name, os.path.getsize(os.path.join(root, name)))
+                    for name in os.listdir(root)
+                    if os.path.isfile(os.path.join(root, name))
+                ]
+
+            def folder_size(folder):
+                def size(name):
+                    path = os.path.join(folder, name)
+                    return os.path.getsize(path) if os.path.isfile(path) else 0
+
+                return size
+
+            def folder_index(folder):
+                def read(name):
+                    with open(os.path.join(folder, name), encoding = "utf-8") as file:
+                        return file.read()
+
+                return read
+
+            if os.path.isdir(str(model_name)):
+                folder = str(model_name)
+                checkpoint_bytes = weight_bytes(
+                    folder_files(folder), folder_index(folder), folder_size(folder)
+                )
+            else:
+                try:
+                    from huggingface_hub import HfApi, hf_hub_download
+
+                    if local_files_only:
+                        raise OSError("local_files_only: no Hub lookup")
+                    info = HfApi().model_info(
+                        str(model_name), revision = revision, files_metadata = True, token = token
+                    )
+
+                    def hub_index(name):
+                        path = hf_hub_download(
+                            str(model_name),
+                            name,
+                            revision = revision,
+                            cache_dir = cache_dir,
+                            token = token,
+                        )
+                        with open(path, encoding = "utf-8") as file:
+                            return file.read()
+
+                    checkpoint_bytes = weight_bytes(
+                        [(sibling.rfilename, sibling.size) for sibling in (info.siblings or ())],
+                        hub_index,
+                    )
+                except Exception:
+                    # Offline or unreachable: size the cached snapshot.
+                    # Not snapshot_download: its tree check fails on files a load never fetches (metal/, original/).
+                    from huggingface_hub import try_to_load_from_cache
+
+                    folder = None
+                    for name in (
+                        "model.safetensors",
+                        "model.safetensors.index.json",
+                        "pytorch_model.bin",
+                        "pytorch_model.bin.index.json",
+                    ):
+                        name = prefix + with_variant(name)
+                        path = try_to_load_from_cache(
+                            str(model_name), name, cache_dir = cache_dir, revision = revision
+                        )
+                        if isinstance(path, str):
+                            folder = path[: -len(name)]
+                            break
+                    if folder is None:
+                        raise OSError("checkpoint not in the local cache")
+                    checkpoint_bytes = weight_bytes(
+                        folder_files(folder), folder_index(folder), folder_size(folder)
+                    )
+            backend = torch.cuda
+            if not torch.cuda.is_available() and getattr(torch, "xpu", None) is not None:
+                if torch.xpu.is_available():
+                    backend = torch.xpu
+            probed = backend.is_available() and backend.device_count() > 0
+            if max_memory:
+                devices = (
+                    sorted(
+                        {
+                            int(key)
+                            for key in max_memory
+                            if str(key).isdigit() and int(key) < backend.device_count()
+                        }
+                    )
+                    if probed
+                    else []
+                )
+            else:
+                devices = list(range(backend.device_count())) if probed else []
+            free_bytes = 0
+            for index in devices:
+                try:
+                    free = backend.mem_get_info(index)[0]
+                except Exception:
+                    continue
+                budget = max_memory.get(index, max_memory.get(str(index))) if max_memory else None
+                if isinstance(budget, str):
+                    from accelerate.utils import convert_file_size_to_int
+                    budget = convert_file_size_to_int(budget)
+                if isinstance(budget, int):
+                    free = min(free, budget)
+                free_bytes += free
+            # max_memory is used as given; measured free memory keeps a margin for activations.
+            limit = free_bytes if max_memory else 0.9 * free_bytes
+            if checkpoint_bytes and probed and checkpoint_bytes > limit:
+                return False
+        except Exception:
+            pass
+    return True
+
+
 def _get_total_transformer_layers(model):
     """Best-effort total transformer block count across HF model shapes; None if not determinable, in which case the caller skips the conversion."""
     cfg = getattr(model, "config", None)
@@ -2263,7 +2475,24 @@ class FastBaseModel:
                     pass
                 else:
                     # Cannot dequantize, since gpt-oss-20b MXFP4 would become gpt-oss-20b-BF16.
-                    if load_in_16bit and "dequantize" in inspect.signature(quantizer).parameters:
+                    # Except LoRA with zoo's packed experts: stays MXFP4 and has a backward.
+                    if (
+                        load_in_16bit
+                        or _mxfp4_lora_keeps_experts_packed(
+                            quant_method,
+                            full_finetuning,
+                            device_map,
+                            model_name,
+                            kwargs.get("max_memory", None),
+                            _revision,
+                            kwargs.get("variant", None),
+                            kwargs.get("cache_dir", None),
+                            kwargs.get("subfolder", None),
+                            kwargs.get("local_files_only", False),
+                            token,
+                            kwargs.get("use_safetensors", None),
+                        )
+                    ) and "dequantize" in inspect.signature(quantizer).parameters:
                         quantizer_kwargs["dequantize"] = True
                     try:
                         quantization_config = quantizer.from_dict(
