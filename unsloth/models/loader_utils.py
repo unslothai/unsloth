@@ -2070,6 +2070,9 @@ def warn_if_bitsandbytes_quantized_nothing(
         for module in model.modules():
             if type(module).__name__ in _BNB_QUANTIZED_TYPES:
                 return False
+            # compressed-tensors INT4 kept packed (compressed_tensors_int4.py) is 4-bit too.
+            if getattr(module, "_unsloth_int4_packed_linear", False):
+                return False
             for param in module.parameters(recurse = False):
                 if type(param).__name__ in _BNB_QUANTIZED_TYPES:
                     return False

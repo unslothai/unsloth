@@ -756,6 +756,9 @@ def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(
 
     if variant == "mxfp4":
         monkeypatch.setenv("UNSLOTH_MXFP4_KEEP_PACKED", "0")
+    # The NF4 re-quantization route; the default keeps INT4 packed (test_compressed_tensors_int4.py).
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_INT4", "nf4")
+
     packed_dir, bf16_dir = _write_tiny_packed_llama(
         str(tmp_path),
         asymmetric = variant == "asymmetric",
@@ -784,8 +787,11 @@ def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
-def test_packed_checkpoint_trains_with_lora(tmp_path):
+@pytest.mark.parametrize("route", ["nf4", "packed"])
+def test_packed_checkpoint_trains_with_lora(tmp_path, monkeypatch, route):
     from unsloth import FastLanguageModel
+
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_INT4", route)
 
     packed_dir, _ = _write_tiny_packed_llama(str(tmp_path))
     _tokenizer_free_load(packed_dir, str(tmp_path))

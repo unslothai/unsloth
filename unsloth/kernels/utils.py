@@ -1045,6 +1045,40 @@ else:
     pass
 
 
+# compressed-tensors integer weights kept packed (models/compressed_tensors_int4.py) carry an
+# Int4QuantState; everything else goes to the bitsandbytes / fp8 paths above unchanged.
+from .int4_packed import (
+    Int4QuantState,
+    int4_dequantize_weight as _int4_dequantize_weight,
+    int4_matmul as _int4_matmul,
+)
+
+_fast_dequantize_bnb = fast_dequantize
+_fast_gemv_bnb = fast_gemv
+
+
+def fast_dequantize(
+    W,
+    quant_state = None,
+    out = None,
+    use_global_buffer = False,
+):
+    if type(quant_state) is Int4QuantState:
+        return _int4_dequantize_weight(W, quant_state)
+    return _fast_dequantize_bnb(W, quant_state, out = out, use_global_buffer = use_global_buffer)
+
+
+def fast_gemv(
+    X,
+    W,
+    quant_state,
+    out = None,
+):
+    if type(quant_state) is Int4QuantState:
+        return _int4_matmul(X, W, quant_state, out = out)
+    return _fast_gemv_bnb(X, W, quant_state, out = out)
+
+
 def fast_linear_forward(
     proj,
     X,
@@ -1060,6 +1094,8 @@ def fast_linear_forward(
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant, bias)
+    elif type(W_quant) is Int4QuantState:
+        out = _int4_matmul(X, W, W_quant, out = out)
     elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
     else:
@@ -1118,6 +1154,9 @@ def matmul_lora(
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
+    elif type(W_quant) is Int4QuantState and W.stride(-1) == 1:
+        # Forward orientation: few rows use the fused kernel, the rest decode once + cuBLAS.
+        out = _int4_matmul(X, W, W_quant, out = out)
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = True)
         out = torch_matmul(X, W.t(), out = out)
