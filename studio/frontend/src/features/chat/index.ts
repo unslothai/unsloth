@@ -27,6 +27,7 @@ export {
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
+  revealFineTunedModel,
   validateModel,
   type BrowseFoldersResponse,
   type CachedGgufRepo,
