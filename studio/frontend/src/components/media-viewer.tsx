@@ -170,7 +170,7 @@ export function MediaViewer({
           returnFocus.current = null;
           if (target?.isConnected) target.focus({ preventScroll: true });
         }}
-        className="flex h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] w-[min(92vw,1200px)] max-w-none flex-col gap-0 overflow-hidden rounded-[1.75rem] p-0 sm:max-w-none"
+        className="flex h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] w-[min(92vw,1200px)] max-w-none flex-col gap-0 overflow-hidden rounded-[1.5rem] p-0 sm:max-w-none"
       >
         <div className="flex items-center gap-2 py-3 pl-6 pr-4">
           <div className="min-w-0 flex-1">
