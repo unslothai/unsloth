@@ -1197,7 +1197,7 @@ function ModelRow({
   const nameRef = useRef<HTMLSpanElement>(null);
   const nameHoverTimer = useRef<number | undefined>(undefined);
   const [tooltipOpen, setTooltipOpen] = useState(false);
-  // Touch has no hover, so a tap on the name toggles it and a tap elsewhere closes it.
+  // Touch has no hover, so a tap on the name opens it and a tap elsewhere closes it.
   const [tappedOpen, setTappedOpen] = useState(false);
   useEffect(() => () => window.clearTimeout(nameHoverTimer.current), []);
   useEffect(() => {
@@ -1222,13 +1222,21 @@ function ModelRow({
     setTappedOpen(false);
     setTooltipOpen(false);
   };
+  // Read at pointerdown: the trigger closes an open tooltip before the click lands.
+  const openAtTap = useRef(false);
+  const onNameDown = (event: React.PointerEvent) => {
+    if (event.pointerType === "touch") openAtTap.current = tooltipOpen;
+  };
+  // Like hover on iOS: the first tap shows the details, the next one picks the row.
   const onNameClick = (event: React.MouseEvent) => {
     if ((event.nativeEvent as Partial<PointerEvent>).pointerType !== "touch") return;
-    // Keeps the tooltip's own close-on-click from undoing the tap. The row click still runs.
-    event.preventDefault();
-    const next = !tooltipOpen;
-    setTappedOpen(next);
-    setTooltipOpen(next);
+    if (openAtTap.current) {
+      onNameLeave();
+      return;
+    }
+    event.stopPropagation();
+    setTappedOpen(true);
+    setTooltipOpen(true);
   };
   const onTooltipOpenChange = (next: boolean) => {
     if (!next) {
@@ -1301,6 +1309,7 @@ function ModelRow({
             <span
               ref={nameRef}
               onPointerEnter={onNameEnter}
+              onPointerDown={onNameDown}
               onPointerLeave={(event) => {
                 if (event.pointerType !== "touch") onNameLeave();
               }}
