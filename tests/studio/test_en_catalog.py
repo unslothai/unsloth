@@ -46,6 +46,9 @@ export const en = {
       upper: "context".toUpperCase(),
       picked: flag ? "short" : "long",
       separated: "a\\\u2028b",
+      annotated /* translator note */: "Annotated",
+      lineNoted // translator note
+        : "Line noted",
       last: "Last" // trailing comment
     },
     overridden: {
@@ -83,6 +86,8 @@ def sample(tmp_path):
         ("settings.chat.codePoint", "Smile \U0001f600"),
         ("settings.chat.continued", "one two"),
         ("settings.chat.last", "Last"),
+        ("settings.chat.annotated", "Annotated"),
+        ("settings.chat.lineNoted", "Line noted"),
         ("settings.chat.separated", "ab"),
         ("settings.overridden.after", "After"),
     ],
@@ -212,10 +217,17 @@ COMPOSER_WORKFLOW = HERE.parents[1] / ".github" / "workflows" / "studio-composer
 # Where each catalog driver runs, pinned literally: the step's `if:` and the matrix leg it
 # needs. A new driver, or a restructured workflow, updates this table with it.
 DRIVER_STEPS = {
-    "playwright_composer_settings.py": ("matrix.suite == 'browsers'", {"suite": "browsers"}),
+    "playwright_composer_settings.py": (
+        "matrix.suite == 'browsers'",
+        {"suite": "browsers"},
+        # Continues `run_driver "<log>" \`, whose failure the loop turns into the exit status.
+        "python tests/studio/playwright_composer_settings.py || status=1",
+    ),
     "selenium_composer_safari.py": (
         "${{ !cancelled() && matrix.suite == 'safari' }}",
         {"os": "macos-latest", "suite": "safari"},
+        # Last command of a bash -e step, so its exit status is the step's.
+        "python tests/studio/selenium_composer_safari.py",
     ),
 }
 
@@ -227,8 +239,9 @@ def test_the_composer_workflow_runs_on_a_catalog_only_change():
     Deliberately literal rather than an evaluator of Actions expressions and shell: the reader
     is listed by name in `pull_request.paths` with no other filter; every catalog driver is
     in `DRIVER_STEPS`; and each runs from a step whose `if:` is exactly the pinned one, on a
-    matrix leg that exists, as a line that starts with `python tests/studio/<driver>`. A
-    workflow restructured some other way updates this test with it.
+    matrix leg that exists, as exactly the pinned command line (so `|| true`, an `echo` of it,
+    or any other respelling fails). A workflow restructured some other way updates this test
+    with it.
     """
     import yaml
 
@@ -245,17 +258,14 @@ def test_the_composer_workflow_runs_on_a_catalog_only_change():
     assert drivers, "no browser driver reads the catalog any more"
     assert set(drivers) <= set(DRIVER_STEPS), f"pin where these drivers run: {drivers}"
     for name in drivers:
-        condition, leg = DRIVER_STEPS[name]
+        condition, leg, command = DRIVER_STEPS[name]
         found = [
             (job, step)
             for job in (workflow.get("jobs") or {}).values()
             for step in job.get("steps") or []
-            if any(
-                line.strip().startswith(f"python tests/studio/{name}")
-                for line in str(step.get("run") or "").splitlines()
-            )
+            if command in (line.strip() for line in str(step.get("run") or "").splitlines())
         ]
-        assert found, f"no step runs python tests/studio/{name}"
+        assert found, f"no step runs exactly {command!r}"
         assert any(
             "if" not in job
             and str(step.get("if")) == condition

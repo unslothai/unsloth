@@ -35,10 +35,14 @@ EN_LOCALE_TS = (
 
 _QUOTED = r"""(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)"""
 
+# Whitespace and comments between tokens. A block comment stops at its own `*/`: a lazy
+# `.*?` would stretch to a later comment's close and swallow the code between.
+_TRIVIA = r"(?:\s|//[^\n]*|/\*(?:[^*]|\*(?!/))*\*/)*"
+
 _TOKEN = re.compile(
     rf"""
       (?P<comment>//[^\n]*|/\*.*?\*/)
-    | (?P<key>(?:[A-Za-z_$][\w$]*|{_QUOTED}))\s*:
+    | (?P<key>(?:[A-Za-z_$][\w$]*|{_QUOTED})){_TRIVIA}:
     | (?P<string>{_QUOTED})
     | (?P<open>\{{)
     | (?P<close>\}})
@@ -47,8 +51,8 @@ _TOKEN = re.compile(
     re.VERBOSE | re.DOTALL,
 )
 
-_STARTS_VALUE = re.compile(r"(?:\s|//[^\n]*|/\*.*?\*/)*[\"'`{]", re.S)
-_ENDS_PROPERTY = re.compile(r"(?:\s|//[^\n]*|/\*.*?\*/)*(?:,|\}|$)", re.S)
+_STARTS_VALUE = re.compile(rf"{_TRIVIA}[\"'`{{]", re.S)
+_ENDS_PROPERTY = re.compile(rf"{_TRIVIA}(?:,|\}}|$)", re.S)
 
 _ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "0": "\0"}
 
