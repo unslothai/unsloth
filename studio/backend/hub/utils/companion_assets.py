@@ -152,12 +152,31 @@ def repo_holds_denoiser(repo) -> bool:
     repo_id = str(getattr(repo, "repo_id", "") or "")
     if _normalise(repo_id) in _component_only_repo_ids():
         return False
+    encoder_casts = _te_prequant_names(repo_id)
     for name in names:
         if "/" in name or not name.lower().endswith(_WEIGHT_SUFFIXES):
+            continue
+        # A pre-cast text encoder (``Qwen-Image-2.1-text_encoder-FP8.safetensors``) also sits at the root of a prequant repo and is a companion, not a checkpoint.
+        if name.lower() in encoder_casts:
             continue
         if _detect_family(repo_id, name) is not None:
             return True
     return False
+
+
+def _te_prequant_names(repo_id: str) -> set[str]:
+    """Lowercased root file names the loader uses for a pre-cast text encoder hosted in *repo_id*."""
+    try:
+        from core.inference.diffusion_families import _FAMILIES
+        from core.inference.diffusion_te_prequant import te_prequant_repo_filenames
+        pairs = {(c, s) for fam in _FAMILIES for s, c, _r in fam.te_prequant_repos}
+        pairs |= {(c, s) for c, _s in pairs for s in ("fp8", "int8")}
+        return {
+            n.lower() for c, s in pairs for n in te_prequant_repo_filenames(repo_id, c, s)
+        }
+    except Exception as exc:  # noqa: BLE001 -- no table means no exclusions, as before
+        logger.debug("te prequant names unavailable: %s", exc)
+        return set()
 
 
 def _component_only_repo_ids() -> set[str]:

@@ -648,6 +648,37 @@ def test_a_prequant_repo_holding_its_checkpoint_still_pins_the_base(monkeypatch)
     assert companion_cleanup.companion_dependents(base) == [prequant]
 
 
+def test_a_pre_cast_encoder_fetch_is_not_a_dependent(monkeypatch):
+    """Qwen-Image-2.1 defaults to the pre-cast fp8 encoder, fetched to the prequant repo's root."""
+    prequant = "unsloth/Qwen-Image-2.1-FP8"
+    base = "Qwen/Qwen-Image-2.1"
+    _install(
+        monkeypatch,
+        _repo(prequant, [("Qwen-Image-2.1-text_encoder-FP8.safetensors", 9_400_000_000)]),
+        _base_repo(base),
+    )
+    assert companion_cleanup.companion_dependents(base) == []
+    impact = asyncio.run(companion_cleanup.delete_impact_response(base))
+    assert impact["blocked_by"] == []
+
+
+def test_a_prequant_repo_holding_its_checkpoint_and_encoder_still_pins_the_base(monkeypatch):
+    prequant = "unsloth/Qwen-Image-2.1-FP8"
+    base = "Qwen/Qwen-Image-2.1"
+    _install(
+        monkeypatch,
+        _repo(
+            prequant,
+            [
+                ("Qwen-Image-2.1-FP8.safetensors", 7_120_000_000),
+                ("Qwen-Image-2.1-text_encoder-FP8.safetensors", 9_400_000_000),
+            ],
+        ),
+        _base_repo(base),
+    )
+    assert companion_cleanup.companion_dependents(base) == [prequant]
+
+
 def test_a_borrowed_chat_repo_is_never_advertised_as_freeable(monkeypatch):
     """The delete preview must point only at rows Free up space will really show. A borrowed chat
     GGUF repo is a curated companion id but holds a denoiser, so the orphan listing skips it;
