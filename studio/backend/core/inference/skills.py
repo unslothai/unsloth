@@ -7,6 +7,7 @@ import errno
 import json
 import logging
 import os
+import shutil
 import stat
 import tempfile
 import threading
@@ -56,6 +57,10 @@ class SkillError(ValueError):
 
 
 class SkillNotFoundError(SkillError):
+    pass
+
+
+class SkillExistsError(SkillError):
     pass
 
 
@@ -260,14 +265,15 @@ def _read_limited(
     return raw
 
 
-def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict:
+def _split_skill_markdown(raw: bytes) -> tuple[dict, str]:
+    """The frontmatter mapping and the Markdown body, the body with its bytes untouched."""
     if len(raw) > MAX_SKILL_MD_BYTES:
         raise SkillError("SKILL.md exceeds the 512 KB limit.")
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise SkillError("SKILL.md must be UTF-8 text.") from exc
-    lines = text.splitlines()
+    lines = text.splitlines(keepends = True)
     if not lines or lines[0].strip() != "---":
         raise SkillError("SKILL.md must start with YAML frontmatter.")
     # Exact match: an indented `---` inside a block scalar is YAML content, not the closer.
@@ -277,7 +283,7 @@ def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict
     if closing is None:
         raise SkillError("SKILL.md YAML frontmatter is not closed.")
     try:
-        frontmatter = yaml.safe_load("\n".join(lines[1:closing]))
+        frontmatter = yaml.safe_load("".join(lines[1:closing]))
     except (
         yaml.YAMLError,
         AttributeError,
@@ -290,6 +296,11 @@ def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict
         raise SkillError("SKILL.md contains invalid YAML frontmatter.") from exc
     if not isinstance(frontmatter, dict):
         raise SkillError("SKILL.md frontmatter must be a mapping.")
+    return frontmatter, "".join(lines[closing + 1 :])
+
+
+def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict:
+    frontmatter, _ = _split_skill_markdown(raw)
 
     name = _normalize_skill_name(frontmatter.get("name"))
     if parent_name is not None and name != parent_name:
@@ -499,6 +510,7 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
                         "enabled": False,
                         "valid": False,
                         "shadowed": False,
+                        "linked": False,
                         "error": str(exc),
                     },
                     None,
@@ -514,6 +526,8 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
                 "enabled": False,
                 "valid": False,
                 "shadowed": False,
+                # A linked entry is followed for reading but never rewritten or deleted.
+                "linked": _is_linked_path(candidate),
             }
             try:
                 metadata, skill_dir = _validate_skill_dir(candidate)
@@ -595,14 +609,7 @@ def set_skill_enabled(
         return {**record, "enabled": enabled}
 
 
-def create_skill(
-    name: str,
-    description: str,
-    instructions: str,
-    *,
-    home: Optional[Path] = None,
-) -> dict:
-    normalized = _normalize_skill_name(name)
+def _validate_draft(description: str, instructions: str) -> str:
     if not isinstance(description, str) or not description.strip() or len(description) > 1024:
         raise SkillError("Skill description must be 1-1024 characters.")
     if not isinstance(instructions, str) or not instructions.strip():
@@ -613,13 +620,24 @@ def create_skill(
         raise SkillError("Skill instructions must be valid UTF-8 text.") from exc
     if len(instruction_bytes) > MAX_SKILL_INSTRUCTIONS_BYTES:
         raise SkillError("Skill instructions exceed the 256 KB limit.")
+    return description.strip()
 
-    frontmatter = yaml.safe_dump(
-        {"name": normalized, "description": description.strip()},
-        allow_unicode = True,
-        sort_keys = False,
-    )
-    manifest = f"---\n{frontmatter}---\n\n{instructions.strip()}\n".encode("utf-8")
+
+def _render_manifest(frontmatter: dict, instructions: str) -> bytes:
+    dumped = yaml.safe_dump(frontmatter, allow_unicode = True, sort_keys = False)
+    return f"---\n{dumped}---\n\n{instructions.strip()}\n".encode("utf-8")
+
+
+def create_skill(
+    name: str,
+    description: str,
+    instructions: str,
+    *,
+    home: Optional[Path] = None,
+) -> dict:
+    normalized = _normalize_skill_name(name)
+    description = _validate_draft(description, instructions)
+    manifest = _render_manifest({"name": normalized, "description": description}, instructions)
     metadata = _parse_skill_markdown(manifest, normalized)
 
     if home is not None:
@@ -645,7 +663,7 @@ def create_skill(
             try:
                 _write_new_skill_manifest(base, normalized, manifest, root = root)
             except FileExistsError as exc:
-                raise SkillError(f"Skill '{normalized}' already exists.") from exc
+                raise SkillExistsError(f"Skill '{normalized}' already exists.") from exc
             except OSError as exc:
                 raise SkillError(f"Could not create skill '{normalized}'.") from exc
         except Exception:
@@ -666,6 +684,122 @@ def create_skill(
         "shadowed": False,
         "path": f"{display}/{normalized}/SKILL.md",
     }
+
+
+def _editable_skill(
+    name: str, *, home: Optional[Path]
+) -> tuple[dict, Path, Optional[os.stat_result]]:
+    """A skill the dialog may rewrite or delete: a plain directory in the Agents root.
+    ~/.claude and bundled skills, and linked entries (a dotfiles checkout, an `npx skills`
+    install), stay read-only here so a write never lands outside that root."""
+    record, skill_dir, identity = _selected_skill(name, home = home)
+    if record["source"] != "agents":
+        raise SkillError(
+            f"Skill '{record['name']}' is not in the Agents folder, so it cannot be changed here."
+        )
+    root = next(root for source, root in _skill_roots(home) if source == "agents")
+    try:
+        entry = root.expanduser().resolve(strict = True) / record["name"]
+    except OSError as exc:
+        raise SkillError("Agent Skills directory is missing or unsafe.") from exc
+    if record["linked"] or _is_linked_path(entry) or skill_dir != entry:
+        raise SkillError(f"Skill '{record['name']}' is a link, so it cannot be changed here.")
+    if identity is not None and not os.path.samestat(
+        os.stat(skill_dir, follow_symlinks = False), identity
+    ):
+        raise SkillError("Skill directory changed after it was selected.")
+    return record, skill_dir, identity
+
+
+def _replace_skill_manifest(skill_dir: Path, manifest: bytes, identity) -> None:
+    target = skill_dir / "SKILL.md"
+    if _is_linked_path(target):
+        raise SkillError("Skill resources cannot use symbolic links or reparse points.")
+    fd, temporary = tempfile.mkstemp(prefix = ".SKILL-", suffix = ".md", dir = skill_dir)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(manifest)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if identity is not None and not os.path.samestat(
+            os.stat(skill_dir, follow_symlinks = False), identity
+        ):
+            raise SkillError("Skill directory changed while the manifest was being written.")
+        os.replace(temporary, target)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def read_skill_manifest(name: str, *, home: Optional[Path] = None) -> dict:
+    """A skill plus its Markdown body, for the dialog's editor. Any selectable skill can be
+    read here, enabled or not; whether it can be written is the record's source and link."""
+    with _LOCK:
+        record, skill_dir, identity = _selected_skill(name, home = home)
+        raw = _read_limited(
+            skill_dir / "SKILL.md", MAX_SKILL_MD_BYTES, contained_in = skill_dir, identity = identity
+        )
+        _, body = _split_skill_markdown(raw)
+        # The path as the user would name it; a bundled skill has none worth showing.
+        display = {
+            "agents": "~/.agents/skills" if is_owner_context() else _MANAGED_SKILLS_DIR,
+            "claude": "~/.claude/skills",
+        }.get(record["source"])
+        return {
+            **record,
+            "instructions": body.strip(),
+            **({"path": f"{display}/{record['name']}/SKILL.md"} if display else {}),
+        }
+
+
+def update_skill(
+    name: str,
+    description: str,
+    instructions: str,
+    *,
+    home: Optional[Path] = None,
+) -> dict:
+    description = _validate_draft(description, instructions)
+    with _LOCK:
+        record, skill_dir, identity = _editable_skill(name, home = home)
+        raw = _read_limited(
+            skill_dir / "SKILL.md", MAX_SKILL_MD_BYTES, contained_in = skill_dir, identity = identity
+        )
+        frontmatter, _ = _split_skill_markdown(raw)
+        # Only the two edited fields change; license, compatibility and metadata are kept.
+        manifest = _render_manifest(
+            {**frontmatter, "name": record["name"], "description": description}, instructions
+        )
+        metadata = _parse_skill_markdown(manifest, record["name"])
+        try:
+            _replace_skill_manifest(skill_dir, manifest, identity)
+        except OSError as exc:
+            raise SkillError(f"Could not save skill '{record['name']}'.") from exc
+        return {**record, **metadata}
+
+
+def delete_skill(name: str, *, home: Optional[Path] = None) -> dict:
+    with _LOCK:
+        record, skill_dir, _ = _editable_skill(name, home = home)
+        try:
+            shutil.rmtree(skill_dir)
+        except OSError as exc:
+            raise SkillError(f"Could not delete skill '{record['name']}'.") from exc
+        # A stale disable would otherwise apply to the next skill made by hand under this name.
+        overrides = _load_overrides()
+        if overrides.pop(record["name"], None) is not None:
+            try:
+                _save_overrides(overrides)
+            except OSError as exc:
+                logger.warning(
+                    "Deleted skill %s but could not clear its enable override: %s",
+                    record["name"],
+                    exc,
+                )
+        return record
 
 
 def format_skill_catalog(

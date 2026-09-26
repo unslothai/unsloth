@@ -15,7 +15,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
-import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { useStackedLayout } from "./hooks/use-stacked-layout";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
   BotIcon,
@@ -49,7 +49,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import {
   SETTINGS_SEARCH_KEYWORDS,
@@ -271,26 +270,6 @@ const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
       clientPlatform.includes("windows") ||
       clientPlatform.includes("linux")),
 });
-
-/**
- * Stack the tab rail over the pane when the dialog is narrower than it is at
- * sm (608px, 640px less its 2rem margin) scaled by the UI. At 100% that is
- * max-sm exactly; at 200% the 960px cap is always too narrow.
- */
-function useStackedLayout(): boolean {
-  const width = 608 * useUiSpaceScale();
-  const query = `(width < ${width + 32}px)`;
-  const narrow = useSyncExternalStore(
-    (onChange) => {
-      const list = window.matchMedia(query);
-      list.addEventListener("change", onChange);
-      return () => list.removeEventListener("change", onChange);
-    },
-    () => window.matchMedia(query).matches,
-    () => false,
-  );
-  return width > 960 || narrow;
-}
 
 export function SettingsDialog() {
   const t = useT();

@@ -16,6 +16,7 @@ import {
   ComposerPrimitive,
   unstable_useMentionAdapter,
   unstable_useTriggerPopoverScopeContext,
+  useAui,
 } from "@assistant-ui/react";
 import { Scroll01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -32,6 +33,11 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  type MentionToken,
+  mentionTokenAt,
+  replaceMentionToken,
+} from "./skill-mention-token";
 
 function enabled(records: readonly SkillRecord[]): readonly SkillRecord[] {
   return records.filter(
@@ -125,6 +131,40 @@ function MentionOpenSignal({
   return null;
 }
 
+// Mounted under the popover. The library's own insert replaces the text from the @ up to the
+// caret, so accepting a skill with the caret moved back inside the word left the rest of the
+// word behind ("@calculator tor"). This swaps the whole token under the caret instead, and
+// steps aside when the input is not the plain textarea the token was read from.
+function MentionTokenReplacer(): null {
+  const aui = useAui();
+  const { registerSelectItemOverride, setCursorPosition } =
+    unstable_useTriggerPopoverScopeContext();
+  useEffect(
+    () =>
+      registerSelectItemOverride((item) => {
+        const input = document.activeElement;
+        if (!(input instanceof HTMLTextAreaElement)) return false;
+        const text = aui.composer().getState().text;
+        if (input.value !== text) return false;
+        const token = mentionTokenAt(text, input.selectionStart);
+        if (!token) return false;
+        const next = replaceMentionToken(
+          text,
+          token,
+          skillMentionFormatter.serialize(item),
+        );
+        aui.composer().setText(next.text);
+        setCursorPosition(next.caret);
+        requestAnimationFrame(() => {
+          input.setSelectionRange(next.caret, next.caret);
+        });
+        return true;
+      }),
+    [aui, registerSelectItemOverride, setCursorPosition],
+  );
+  return null;
+}
+
 export function SkillMentionPopover({
   enabled: mentionsEnabled,
   onConsumesEnterChange,
@@ -176,6 +216,7 @@ export function SkillMentionPopover({
         {...mention.directive}
       />
       <MentionOpenSignal onChange={onOpenChange} />
+      <MentionTokenReplacer />
       <ComposerPrimitive.Unstable_TriggerPopoverItems>
         {(results) => (
           <>
@@ -219,15 +260,7 @@ export function SkillMentionPopover({
   );
 }
 
-type MentionRange = { start: number; end: number; query: string } | null;
-
-function mentionAtCaret(text: string, caret: number): MentionRange {
-  const prefix = text.slice(0, caret);
-  const match = /(?:^|\s)@([a-z0-9-]*)$/i.exec(prefix);
-  if (!match) return null;
-  const at = prefix.lastIndexOf("@");
-  return { start: at, end: caret, query: match[1] ?? "" };
-}
+type MentionRange = MentionToken | null;
 
 export function useTextareaSkillMentions({
   text,
@@ -294,7 +327,7 @@ export function useTextareaSkillMentions({
         setRange(null);
         return;
       }
-      const next = mentionAtCaret(nextText, caret);
+      const next = mentionTokenAt(nextText, caret);
       // A fresh @ re-reads the folders, so a skill written since page load is offered.
       if (next?.query === "") refreshSkillsCatalog();
       setRange(next);
@@ -311,13 +344,12 @@ export function useTextareaSkillMentions({
         type: "skill",
         label: skill.name,
       });
-      const next = `${text.slice(0, range.start)}${directive} ${text.slice(range.end)}`;
-      const caret = range.start + directive.length + 1;
-      setText(next);
+      const next = replaceMentionToken(text, range, directive);
+      setText(next.text);
       setRange(null);
       requestAnimationFrame(() => {
         inputRef.current?.focus();
-        inputRef.current?.setSelectionRange(caret, caret);
+        inputRef.current?.setSelectionRange(next.caret, next.caret);
       });
     },
     [inputRef, range, setText, text],
