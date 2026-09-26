@@ -224,6 +224,80 @@ class PadToMinM(nn.Module):
         return f"min_m = {self.min_m}, pad_to = {self.pad_to}"
 
 
+class ZeroRowSafeLinear(nn.Module):
+    """Answer an EMPTY activation here: torchao NVFP4's whole-input ``max()`` raises on it."""
+
+    def __init__(self, inner: nn.Linear) -> None:
+        super().__init__()
+        self.inner = inner
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.numel() == 0:
+            # The bias add broadcasts over zero elements, kept so the result matches F.linear's.
+            out = x.new_zeros((*x.shape[:-1], self.inner.out_features))
+            bias = getattr(self.inner, "bias", None)
+            return out if bias is None else out + bias
+        return self.inner(x)
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            if name == "inner":
+                raise
+            inner = self._modules.get("inner")
+            if inner is None:
+                raise
+            return getattr(inner, name)
+
+    def state_dict(self, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+        """Emit the inner Linear's tensors under the wrapper's prefix, loadable unwrapped."""
+        destination = kwargs.pop("destination", args[0] if args else None)
+        prefix = kwargs.pop("prefix", args[1] if len(args) > 1 else "")
+        keep_vars = kwargs.pop("keep_vars", args[2] if len(args) > 2 else False)
+        if destination is None:
+            return self.inner.state_dict(prefix = prefix, keep_vars = keep_vars)
+        self.inner.state_dict(destination = destination, prefix = prefix, keep_vars = keep_vars)
+        return destination
+
+    def _load_from_state_dict(
+        self,
+        state_dict: Any,
+        prefix: str,
+        local_metadata: Any,
+        strict: bool,
+        missing_keys: list,
+        unexpected_keys: list,
+        error_msgs: list,
+    ) -> None:
+        """Accept the unwrapped key names ``state_dict`` above writes, and hand them to ``inner``."""
+        for key in [k for k in state_dict if k.startswith(prefix)]:
+            leaf = key[len(prefix) :]
+            if not leaf or leaf.startswith("inner."):
+                continue
+            state_dict[prefix + "inner." + leaf] = state_dict.pop(key)
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )
+
+
+def wrap_zero_row_linears(model: nn.Module, fqns: Iterable[str]) -> tuple[str, ...]:
+    """Wrap each quantized Linear in ``fqns`` with ``ZeroRowSafeLinear`` (idempotent)."""
+    done: list[str] = []
+    for fqn in sorted(set(fqns)):
+        parent_name, _, leaf = fqn.rpartition(".")
+        try:
+            parent = model.get_submodule(parent_name) if parent_name else model
+            module = getattr(parent, leaf)
+        except AttributeError:
+            continue
+        if not is_quantized_linear(module):
+            continue
+        setattr(parent, leaf, ZeroRowSafeLinear(module))
+        done.append(fqn)
+    return tuple(done)
+
+
 def padding_is_bitwise_exact(
     module: Any,
     m: int,
