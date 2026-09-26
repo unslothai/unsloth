@@ -36,7 +36,7 @@ import os
 import time
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 # Run as a plain script (not via pytest), so prepend the dir to sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -49,8 +49,12 @@ from _playwright_robust import (  # noqa: E402
     install_wall_clock_watchdog,
     is_benign_page_error,
     recover_or_replace_page,
+    report_failing_step,
     robust_evaluate,
+    step_budget_s,
+    wait_for_first,
     wait_for_health,
+    wait_until,
 )
 
 BASE = os.environ["BASE_URL"]
@@ -84,7 +88,19 @@ WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
 LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"))
 
+# Per-step ceilings. A step that overruns its own stops the run there, named, instead of the
+# steps after it each waiting out their own timeouts; WALL_TIMEOUT_S stays the bound on the
+# whole run, as it always was. A step that clicks Load waits on a model load, so it gets the
+# load budget on top. Both stretch with the slow-lane knobs (STUDIO_UI_TURN_TIMEOUT_MS,
+# STUDIO_PW_STEP_BUDGET_SCALE).
+_SLOW_LANE = max(1.0, TURN_TIMEOUT_MS / 180_000)
+UI_STEP_BUDGET_S = step_budget_s(180 * _SLOW_LANE)
+LOAD_STEP_BUDGET_S = step_budget_s((LOAD_FETCH_TIMEOUT_MS / 1000 + 180) * _SLOW_LANE)
+# The setup step retries itself; it has no ceiling of its own beyond the run's.
+NO_STEP_CEILING = 0
+
 _n = [0]
+_watchdog = None
 _failed: list[str] = []
 
 
@@ -126,8 +142,11 @@ def _normalize_model_identity(model_id: str) -> str:
     return trimmed
 
 
-def step(s: str) -> None:
+def step(s: str, budget_s: float | None = None) -> None:
+    """Start step `s`; it may run `budget_s` (default UI_STEP_BUDGET_S) before the run stops."""
     print(f"[ui-modelcfg] STEP {s}", flush = True)
+    if _watchdog is not None:
+        _watchdog.begin_step(s, UI_STEP_BUDGET_S if budget_s is None else budget_s)
 
 
 def info(s: str) -> None:
@@ -193,11 +212,15 @@ def _login_token_via_api(base: str, user: str, pw: str) -> str:
 
 
 with sync_playwright() as p:
+    # WALL_TIMEOUT_S is also the total: this watchdog was never kicked, so it bounded the
+    # whole run, and named steps (which kick) must not turn that into a per-step bound.
     _watchdog = install_wall_clock_watchdog(
         WALL_TIMEOUT_S,
         label = "ui-modelcfg",
         info = info,
+        total_deadline_s = WALL_TIMEOUT_S,
     )
+    report_failing_step(_watchdog, label = "ui-modelcfg")
     # Health pre-flight: bash-side health wait can pass before the auth DB migrates.
     wait_for_health(BASE, timeout = 30.0, info = info)
     if PLAYWRIGHT_BROWSER not in ("chromium", "firefox", "webkit"):
@@ -242,6 +265,68 @@ with sync_playwright() as p:
             pass
 
     page.on("request", _on_request)
+
+    # Settings-committing requests (the load POST, the per-model override mirror PUT, the VRAM
+    # budget PUT), so a click that commits settings is waited out rather than slept on. On the
+    # context, so a replacement page is covered too.
+    _commits = {"started": 0, "inflight": set()}
+
+    def _is_commit(req) -> bool:
+        return req.method != "GET" and (
+            "/api/inference/load" in req.url or "/api/settings/" in req.url
+        )
+
+    def _commit_started(req):
+        try:
+            if _is_commit(req):
+                _commits["started"] += 1
+                _commits["inflight"].add(req)
+        except Exception:
+            pass
+
+    def _commit_ended(req):
+        _commits["inflight"].discard(req)
+
+    ctx.on("request", _commit_started)
+    ctx.on("requestfinished", _commit_ended)
+    ctx.on("requestfailed", _commit_ended)
+
+    def click_and_wait_for_commit(btn, what: str) -> None:
+        """Click a Load/Save button and return once what it sent has been answered.
+
+        Replaces a fixed 1.5-2.5 s pause. The click writes localStorage synchronously, then
+        mirrors the override to the server and (for Load/Reload) loads the model; this waits
+        for those requests to start and for none to be in flight for three polls in a row
+        (a staged VRAM budget PUT runs before the load, so one quiet poll is not enough).
+        Never raises: a click that sends nothing is logged after 10 s and the assertions after
+        it decide, as they did after the fixed pause.
+        """
+        started = _commits["started"]
+        clicked_at = time.monotonic()
+        btn.click()
+        quiet = [0]
+
+        def settled():
+            if _commits["started"] == started:
+                return "nothing sent" if time.monotonic() - clicked_at > 10 else None
+            if _commits["inflight"]:
+                quiet[0] = 0
+                return None
+            quiet[0] += 1
+            return "answered" if quiet[0] >= 3 else None
+
+        try:
+            outcome = wait_until(
+                settled,
+                timeout_s = LOAD_FETCH_TIMEOUT_MS / 1000,
+                what = f"{what}: settings requests answered",
+                interval_s = 0.25,
+                page = page,
+            )
+            if outcome == "nothing sent":
+                info(f"WARN {what}: the click sent no load or settings request within 10s")
+        except TimeoutError as exc:
+            info(f"WARN {exc}")
 
     def shoot(name: str) -> None:
         _n[0] += 1
@@ -316,7 +401,7 @@ with sync_playwright() as p:
     if LOGIN_PW:
         # Attach mode: log in via the API and seed the token before navigation, skipping the first-boot change-password
         # dance.
-        step("setup: API login + token seed (attach to running Unsloth)")
+        step("setup: API login + token seed (attach to running Unsloth)", NO_STEP_CEILING)
         _tok = _login_token_via_api(BASE, LOGIN_USER, LOGIN_PW)
         ctx.add_init_script(
             f"try{{localStorage.setItem('unsloth_auth_token', {json.dumps(_tok)});}}"
@@ -324,7 +409,7 @@ with sync_playwright() as p:
         )
         page.goto(BASE, wait_until = "domcontentloaded", timeout = 60_000)
     else:
-        step("setup: change-password")
+        step("setup: change-password", NO_STEP_CEILING)
         # 3-attempt retry: the form can re-render mid-fill on slow runners and detach the password fields; each retry
         # re-navigates with a fresh page.
         form_err: Exception | None = None
@@ -367,6 +452,7 @@ with sync_playwright() as p:
                 )
                 if _form_attempt < 2:
                     if "ERR_NO_BUFFER_SPACE" in str(e):
+                        # Kept: ENOBUFS is the OS out of socket buffers; there is nothing to poll, only time to give it.
                         backoff_s = 5 if _form_attempt == 0 else 15
                         time.sleep(backoff_s)
                     page = recover_or_replace_page(
@@ -488,17 +574,17 @@ with sync_playwright() as p:
         popover = page.locator(POPOVER).first
         if _count(popover) == 0 or not popover.is_visible():
             page.locator(TRIGGER).first.click()
-            page.wait_for_timeout(900)
             popover = page.locator(POPOVER).first
+        # The visible wait is the condition the old 900 ms pause before it was padding.
         popover.wait_for(state = "visible", timeout = 30_000)
         return popover
 
     def close_picker():
         try:
             page.keyboard.press("Escape")
-            page.wait_for_timeout(400)
+            page.locator(POPOVER).first.wait_for(state = "hidden", timeout = 10_000)
         except Exception:
-            pass
+            pass  # best-effort, as the fixed pause was
 
     def reveal_on_device_row(popover, hint):
         """Bring the row into view without clicking it.
@@ -510,14 +596,20 @@ with sync_playwright() as p:
         od = page.get_by_role("tab", name = "On Device").first
         if _count(od):
             od.click()
-            page.wait_for_timeout(700)
+        # Rows, not 700 ms: until the cache scan lands the tab renders no rows at all. Returns
+        # at once when the tab is populated; same wait as playwright_memory_estimate.py.
+        wait_for_first(popover.locator("[data-model-picker-option]"), timeout_ms = 20_000)
         row = popover.locator("[data-model-picker-option]", has_text = hint).first
         if _count(row) == 0:
             search = popover.locator("[data-model-picker-search-input]").first
             if _count(search):
                 search.click()
                 search.fill(hint)
-                page.wait_for_timeout(700)
+                # The filtered row itself, not 700 ms after typing.
+                wait_for_first(
+                    popover.locator("[data-model-picker-option]", has_text = hint),
+                    timeout_ms = 10_000,
+                )
                 row = popover.locator("[data-model-picker-option]", has_text = hint).first
         return row if _count(row) else None
 
@@ -526,7 +618,18 @@ with sync_playwright() as p:
         if row is None:
             return None
         row.click()
-        page.wait_for_timeout(800)
+        # The click either loads a collapsed sole-quant row (the picker closes) or expands a
+        # multi-quant one (its gears appear). Wait for whichever happens, not 800 ms.
+        try:
+            wait_until(
+                lambda: not popover.is_visible() or _count(popover.locator(GEAR_ANY)) > 0,
+                timeout_s = 10,
+                what = "the row click to close the picker or show its gears",
+                interval_s = 0.1,
+                page = page,
+            )
+        except TimeoutError as exc:
+            info(f"WARN {exc}")
         return row
 
     def config_is_open(popover):
@@ -600,11 +703,13 @@ with sync_playwright() as p:
         gear.click()
         # Gate on the page itself rather than a sleep, so a slow mount is waited out and a failed open is not mistaken
         # for a missing Context Length input below.
-        for _ in range(20):
-            if config_is_open(popover):
-                page.wait_for_timeout(CONFIG_SETTLE_MS)
-                return popover
-            page.wait_for_timeout(250)
+        if wait_for_first(
+            popover.get_by_role("button", name = "Back to model list"), timeout_ms = 5_000
+        ) is not None:
+            # Kept: CONFIG_SETTLE_MS is a bounded wait because the panel exposes no readiness
+            # signal to poll (see its definition).
+            page.wait_for_timeout(CONFIG_SETTLE_MS)
+            return popover
         diagnose("open-config-not-open", 'button[name="Back to model list"]')
         return None
 
@@ -641,7 +746,6 @@ with sync_playwright() as p:
     od_tab = page.get_by_role("tab", name = "On Device").first
     if _count(od_tab):
         od_tab.click()
-        page.wait_for_timeout(400)
     # Waited for, not counted once: until cachedReady flips the picker renders the loading state with no rows at all,
     # so a fixed pause turns a slow cache scan into a hard failure. A populated picker attaches a row as soon as it has
     # one, so this returns immediately in the normal case and only spends the timeout when there is genuinely nothing.
@@ -664,14 +768,32 @@ with sync_playwright() as p:
                 continue
             try:
                 tab.click()
-                page.wait_for_timeout(400)
+                expect(tab).to_have_attribute("aria-selected", "true", timeout = 5_000)
             except Exception:
                 continue
             search = popover.locator("[data-model-picker-search-input]").first
             if _count(search):
                 search.click()
                 search.fill(needle)
-                page.wait_for_timeout(600)
+                # An absence check, so it must read the list the query produced, not the one
+                # before it: wait until every row on screen matches the needle (none left is
+                # fine), which is the debounced filter having applied. Replaces a fixed 600 ms,
+                # and like it never fails by itself; the count below decides.
+                try:
+                    page.wait_for_function(
+                        """([sel, needle]) => {
+                            const root = document.querySelector(sel);
+                            if (!root) return true;
+                            const rows = root.querySelectorAll("[data-model-picker-option]");
+                            return Array.from(rows).every(
+                                (r) => (r.innerText || "").toLowerCase().includes(needle)
+                            );
+                        }""",
+                        arg = [POPOVER, needle.lower()],
+                        timeout = 5_000,
+                    )
+                except Exception as exc:
+                    info(f"WARN filter for {needle!r} in '{tab_name}' did not settle: {type(exc).__name__}")
             hit = popover.locator(
                 "[data-model-picker-option]",
                 has_text = re.compile(re.escape(needle), re.I),
@@ -681,8 +803,8 @@ with sync_playwright() as p:
                 hidden_ok = False
                 fail(f"infra model {needle!r} visible in picker '{tab_name}' tab ({c} rows)")
             if _count(search):
+                # The next tab's own filter wait covers the reset; nothing reads the list here.
                 search.fill("")
-                page.wait_for_timeout(300)
     if hidden_ok:
         info("OK hidden: bge-small-en-v1.5 + stories260K absent from every picker tab")
     shoot("03-hidden-check")
@@ -691,7 +813,7 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     # 2. Context Length persists (load + request + reload) (HARD).
     # ─────────────────────────────────────────────────────
-    step(f"context length {DISTINCT_CTX} persists")
+    step(f"context length {DISTINCT_CTX} persists", LOAD_STEP_BUDGET_S)
     popover = open_picker()
     if open_config(popover, MODEL_HINT) is None:
         fail(f"could not open run-settings for a model matching {MODEL_HINT!r}")
@@ -713,15 +835,14 @@ with sync_playwright() as p:
                 fail("'Remember for this model' checkbox not found")
             ctx_in.click()
             ctx_in.fill(str(DISTINCT_CTX))
-            page.wait_for_timeout(300)
+            expect(ctx_in).to_have_value(str(DISTINCT_CTX), timeout = 5_000)
             shoot("05-ctx-set")
             btn = primary_button(popover)
             if btn is None:
                 fail("primary Load/Save button not found in run-settings")
             else:
                 # Keep the input focused. The button click must commit the draft and use it in the same load request.
-                btn.click()
-                page.wait_for_timeout(2500)
+                click_and_wait_for_commit(btn, "context length Load")
                 shoot("06-after-load")
 
                 cfg = read_configs()
@@ -795,14 +916,18 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     # 3. Reset clears the override (never pins context) (HARD).
     # ─────────────────────────────────────────────────────
-    step("reset clears the per-model override")
+    step("reset clears the per-model override", LOAD_STEP_BUDGET_S)
     reset_btn = popover.get_by_role("button", name = "Reset").first
     if _count(reset_btn) == 0:
         fail("Reset button not found in run-settings")
     else:
         try:
             reset_btn.click()
-            page.wait_for_timeout(500)
+            # Reset is disabled once the draft is back at the defaults: wait for that, not 500 ms.
+            try:
+                expect(reset_btn).to_be_disabled(timeout = 5_000)
+            except AssertionError:
+                info("WARN Reset did not report the defaults restored within 5s")
         except Exception as e:
             fail(f"Reset click failed: {e}")
         # The input after Reset is informational only: a live-loaded model can still echo its context even with the
@@ -814,8 +939,7 @@ with sync_playwright() as p:
         # Commit the reset so the stored override is dropped, then assert storage.
         btn = primary_button(popover)
         if btn is not None and btn.is_enabled():
-            btn.click()
-            page.wait_for_timeout(1500)
+            click_and_wait_for_commit(btn, "reset commit")
         cfg = read_configs()
         pinned = any(
             _as_int(e.get("customContextLength")) == DISTINCT_CTX for e in entries_for_model(cfg)
@@ -834,7 +958,7 @@ with sync_playwright() as p:
     # Reset, recreates a phantom context pin. The box shows "Auto" while nothing is
     # pinned, so the number it edits is read from the focused input below.
     # ─────────────────────────────────────────────────────
-    step("re-typing the shown context does not pin an override")
+    step("re-typing the shown context does not pin an override", LOAD_STEP_BUDGET_S)
     # Own its state instead of inheriting the step above: the previous step commits a
     # Reset, which can close the picker, and inheriting turned that into a silent skip
     # that let this regression go unchecked.
@@ -850,7 +974,17 @@ with sync_playwright() as p:
         # nothing numeric to re-type and the step skips the regression it guards.
         if ctx_in is not None:
             ctx_in.click()
-            page.wait_for_timeout(200)
+            # The focused box swaps "Auto" for the number it would edit; wait for the number.
+            try:
+                wait_until(
+                    lambda: _as_int(ctx_in.input_value()) is not None,
+                    timeout_s = 5,
+                    what = "Context Length to show a number once focused",
+                    interval_s = 0.05,
+                    page = page,
+                )
+            except TimeoutError as exc:
+                info(f"WARN {exc}")
         native_default = _as_int(ctx_in.input_value()) if ctx_in else None
     if ctx_in is None or native_default is None:
         # A skip here is not a pass: this step is the only guard on the phantom-pin
@@ -865,13 +999,12 @@ with sync_playwright() as p:
                 remember.click()
         ctx_in.click()
         ctx_in.fill(str(native_default))
-        page.wait_for_timeout(200)
+        expect(ctx_in).to_have_value(str(native_default), timeout = 5_000)
         btn = primary_button(popover)
         if btn is not None and btn.is_enabled():
             # Same-click Load: the button click must commit the draft, but a draft equal to the shown value carries
             # no override, so the click must still commit the reset and leave no stored `customContextLength`.
-            btn.click()
-            page.wait_for_timeout(1500)
+            click_and_wait_for_commit(btn, "re-typed context Load")
         cfg = read_configs()
         entries = entries_for_model(cfg)
         pinned = [e for e in entries if _as_int(e.get("customContextLength")) == native_default]
@@ -920,7 +1053,7 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     # 4. Advanced settings persist (best-effort, never gates).
     # ─────────────────────────────────────────────────────
-    step("advanced (KV cache dtype / tensor parallel) persists")
+    step("advanced (KV cache dtype / tensor parallel) persists", LOAD_STEP_BUDGET_S)
     try:
         popover = open_picker()
         if open_config(popover, MODEL_HINT) is not None:
@@ -930,7 +1063,11 @@ with sync_playwright() as p:
                     adv.check()
                 except Exception:
                     adv.click()
-                page.wait_for_timeout(500)
+                # The Advanced section renders with the switch's state; wait for the state.
+                try:
+                    expect(adv).to_be_checked(timeout = 5_000)
+                except AssertionError:
+                    pass  # best-effort step: the persistence read below reports what happened
             # The Tensor Parallelism Radix Switch has no aria-label, so target the first switch after the
             # "Tensor Parallelism" text.
             tp = popover.locator(
@@ -952,8 +1089,7 @@ with sync_playwright() as p:
                     remember.click()
             btn = primary_button(popover)
             if btn is not None and btn.is_enabled():
-                btn.click()
-                page.wait_for_timeout(1500)
+                click_and_wait_for_commit(btn, "advanced settings Load")
             cfg = read_configs()
             has_adv = any(
                 e.get("tensorParallel") or e.get("kvCacheDtype") for e in entries_for_model(cfg)
@@ -977,7 +1113,7 @@ with sync_playwright() as p:
     #    reload with a fresh legacy seed and confirm the migration does not re-run, duplicate, or clobber. Re-running
     #    on every reload was the regression that reverted the predecessor PR.
     # ─────────────────────────────────────────────────────
-    step("legacy unsloth_load_settings migrates once and stays idempotent")
+    step("legacy unsloth_load_settings migrates once and stays idempotent", LOAD_STEP_BUDGET_S)
 
     _seed_marks = [0]
 
@@ -1115,6 +1251,7 @@ with sync_playwright() as p:
         # before hydration reads it. The window is only a window if it is sampled to the end.
         left: list[str] | None = []
         for _ in range(4):
+            # Kept: this samples a window on purpose (see above); it is not waiting for a state.
             page.wait_for_timeout(250)
             seen_now = rows_for_model()
             if seen_now is None:

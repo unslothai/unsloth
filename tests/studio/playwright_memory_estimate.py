@@ -64,7 +64,11 @@ from _playwright_robust import (  # noqa: E402
     install_wall_clock_watchdog,
     is_benign_page_error,
     recover_or_replace_page,
+    report_failing_step,
+    step_budget_s,
+    wait_for_first,
     wait_for_health,
+    wait_until,
 )
 
 BASE = os.environ["BASE_URL"]
@@ -110,6 +114,14 @@ WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "600"))
 # The hook debounces at 250ms and the fetch is intercepted in-process, so a re-price
 # lands in well under a second; this is the "it is never coming" bound.
 ESTIMATE_WAIT_MS = int(os.environ.get("STUDIO_UI_ESTIMATE_WAIT_MS", "20000"))
+# Per-step ceiling. A step that overruns it stops the run there, named, instead of every later
+# step waiting out its own timeouts; WALL_TIMEOUT_S stays the bound on the whole run. No step
+# here loads a model: the longest legitimate one is a re-price that retries three times at
+# ESTIMATE_WAIT_MS each, so the budget is sized from that and stretches with it and with
+# STUDIO_PW_STEP_BUDGET_SCALE.
+STEP_BUDGET_S = step_budget_s(max(180.0, 4 * ESTIMATE_WAIT_MS / 1000 + 60))
+# The setup step retries itself; it has no ceiling of its own beyond the run's.
+NO_STEP_CEILING = 0
 
 TRANSCRIPT_NAME = "memory-estimate-exchanges.json"
 
@@ -143,10 +155,14 @@ def _gib(num_bytes: int) -> str:
 
 _n = [0]
 _failed: list[str] = []
+_watchdog = None
 
 
-def step(s: str) -> None:
+def step(s: str, budget_s: float | None = None) -> None:
+    """Start step `s`; it may run `budget_s` (default STEP_BUDGET_S) before the run stops."""
     print(f"[ui-memest] STEP {s}", flush = True)
+    if _watchdog is not None:
+        _watchdog.begin_step(s, STEP_BUDGET_S if budget_s is None else budget_s)
 
 
 def info(s: str) -> None:
@@ -334,7 +350,12 @@ def write_transcript() -> None:
 
 
 with sync_playwright() as p:
-    _watchdog = install_wall_clock_watchdog(WALL_TIMEOUT_S, label = "ui-memest", info = info)
+    # WALL_TIMEOUT_S is also the total: this watchdog was never kicked, so it bounded the
+    # whole run, and named steps (which kick) must not turn that into a per-step bound.
+    _watchdog = install_wall_clock_watchdog(
+        WALL_TIMEOUT_S, label = "ui-memest", info = info, total_deadline_s = WALL_TIMEOUT_S
+    )
+    report_failing_step(_watchdog, label = "ui-memest")
     # Health pre-flight: a bash-side health wait can pass before the auth DB migrates.
     wait_for_health(BASE, timeout = 30.0, info = info)
     if PLAYWRIGHT_BROWSER not in ("chromium", "firefox", "webkit"):
@@ -412,14 +433,14 @@ with sync_playwright() as p:
 
     # ─────────────────────────────────────────────────────
     if LOGIN_PW:
-        step("setup: API login + token seed (attach to running Unsloth)")
+        step("setup: API login + token seed (attach to running Unsloth)", NO_STEP_CEILING)
         _tok = _login_token_via_api(BASE, LOGIN_USER, LOGIN_PW)
         ctx.add_init_script(
             f"try{{localStorage.setItem('unsloth_auth_token', {json.dumps(_tok)});}}catch(e){{}}"
         )
         page.goto(BASE, wait_until = "domcontentloaded", timeout = 60_000)
     else:
-        step("setup: change-password")
+        step("setup: change-password", NO_STEP_CEILING)
         form_err: Exception | None = None
         for _attempt in range(3):
             try:
@@ -509,17 +530,17 @@ with sync_playwright() as p:
         popover = page.locator(POPOVER).first
         if _count(popover) == 0 or not popover.is_visible():
             page.locator(TRIGGER).first.click()
-            page.wait_for_timeout(900)
             popover = page.locator(POPOVER).first
+        # The visible wait is the condition the old 900 ms pause before it was padding.
         popover.wait_for(state = "visible", timeout = 30_000)
         return popover
 
     def close_picker():
         try:
             page.keyboard.press("Escape")
-            page.wait_for_timeout(400)
+            page.locator(POPOVER).first.wait_for(state = "hidden", timeout = 10_000)
         except Exception:
-            pass
+            pass  # best-effort, as the fixed pause was
 
     def reveal_on_device_row(popover, hint):
         """Bring the row into view without clicking it: a single-quant row loads its
@@ -527,7 +548,7 @@ with sync_playwright() as p:
         od = page.get_by_role("tab", name = "On Device").first
         if _count(od):
             od.click()
-            page.wait_for_timeout(700)
+        # The row wait below is the condition; the 700 ms pause before it only padded it.
         try:
             popover.locator("[data-model-picker-option]").first.wait_for(
                 state = "attached", timeout = 20_000
@@ -540,7 +561,11 @@ with sync_playwright() as p:
             if _count(search):
                 search.click()
                 search.fill(hint)
-                page.wait_for_timeout(700)
+                # The filtered row itself, not 700 ms after typing.
+                wait_for_first(
+                    popover.locator("[data-model-picker-option]", has_text = hint),
+                    timeout_ms = 10_000,
+                )
                 row = popover.locator("[data-model-picker-option]", has_text = hint).first
         return row if _count(row) else None
 
@@ -549,7 +574,19 @@ with sync_playwright() as p:
         if row is None:
             return None
         row.click()
-        page.wait_for_timeout(800)
+        # The click either loads a collapsed sole-quant row (the picker closes) or expands a
+        # multi-quant one (its gears appear). Wait for whichever happens, not 800 ms.
+        try:
+            wait_until(
+                lambda: not popover.is_visible()
+                or _count(popover.locator('button[aria-label^="Inference settings for" i]')) > 0,
+                timeout_s = 10,
+                what = "the row click to close the picker or show its gears",
+                interval_s = 0.1,
+                page = page,
+            )
+        except TimeoutError as exc:
+            info(f"WARN {exc}")
         return row
 
     def row_gear(
@@ -604,11 +641,13 @@ with sync_playwright() as p:
             diagnose("no-row-gear", f"Inference settings for ...{hint}")
             return None
         gear.click()
-        for _ in range(40):
-            if config_is_open(popover):
-                page.wait_for_timeout(CONFIG_SETTLE_MS)
-                return popover
-            page.wait_for_timeout(250)
+        if wait_for_first(
+            popover.get_by_role("button", name = "Back to model list"), timeout_ms = 10_000
+        ) is not None:
+            # Kept: CONFIG_SETTLE_MS is a bounded wait because the panel exposes no readiness
+            # signal to poll (see playwright_model_config.py).
+            page.wait_for_timeout(CONFIG_SETTLE_MS)
+            return popover
         diagnose("config-not-open", 'button[name="Back to model list"]')
         return None
 
@@ -669,7 +708,16 @@ with sync_playwright() as p:
     def estimate_visible() -> bool:
         return estimate_button() is not None
 
+    # Set once the row has failed to render within ESTIMATE_WAIT_MS in step 1. After that,
+    # every later "wait for the row to show" would only spend the same 20 s again before
+    # reporting the same miss, so it answers at once instead; the failure is still recorded
+    # by each step that needed the row.
+    _row_never_rendered = [False]
+
     def wait_for_row(present: bool, timeout_ms: int = ESTIMATE_WAIT_MS) -> bool:
+        if present and _row_never_rendered[0] and not estimate_visible():
+            info("not waiting for the row again: it never rendered in the first step")
+            return False
         deadline = time.monotonic() + timeout_ms / 1000
         while time.monotonic() < deadline:
             if estimate_visible() == present:
@@ -759,7 +807,18 @@ with sync_playwright() as p:
         for _try in range(3):
             try:
                 box.click()
-                page.wait_for_timeout(200)
+                # The focused box swaps "Auto" for the number it would edit; wait for the number
+                # instead of 200 ms. A box that never shows one falls through with its text, as before.
+                try:
+                    wait_until(
+                        lambda: re.fullmatch(r"[\d,\s]+", box.input_value() or "") is not None,
+                        timeout_s = 5,
+                        what = "Context Length to show a number once focused",
+                        interval_s = 0.05,
+                        page = page,
+                    )
+                except TimeoutError as exc:
+                    info(f"WARN {label}: {exc}")
                 shown = box.input_value()
             except Exception as exc:
                 fail(f"{label}: could not focus the Context Length control: {exc}")
@@ -829,6 +888,7 @@ with sync_playwright() as p:
     shoot("03-config-open")
 
     if not wait_for_row(True):
+        _row_never_rendered[0] = True
         fail(
             "the Estimated Memory Usage row never appeared for a GGUF target whose "
             f"estimate was stubbed available (exchanges={len(exchanges)}, "
@@ -929,7 +989,12 @@ with sync_playwright() as p:
             if expander is None:
                 raise RuntimeError("the row is no longer on screen")
             expander.click()
-            page.wait_for_timeout(400)
+            # The breakdown panel's text, not 400 ms: breakdown_text() is what is asserted next,
+            # and an expand that never renders one still fails below exactly as before.
+            try:
+                wait_until(breakdown_text, timeout_s = 5, what = "the breakdown panel", page = page)
+            except TimeoutError as exc:
+                info(f"WARN {exc}")
         except Exception as exc:
             fail(f"could not expand the Estimated Memory Usage row: {exc}")
         detail = breakdown_text()
