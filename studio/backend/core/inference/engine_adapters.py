@@ -140,6 +140,9 @@ class EngineAdapter:
                 if options.get("disable_cuda_graph")
                 else ["--quantization", "fp8"]
             )
+        if self.name == "sglang" and "--torchao-config" in precision_args:
+            # SGLang's Blackwell default (cutedsl TGV GEMM) has no TorchAO tensor-subclass dispatch.
+            precision_args.extend(["--bf16-gemm-backend", "torch"])
         if options.get("disable_cuda_graph"):
             precision_args.extend(
                 ["--enforce-eager"]
@@ -228,11 +231,24 @@ def launch_arguments(
     return adapter.command(python, model, port, key, context, memory_fraction, tensor_parallel_size)
 
 
-def gpu_memory_fraction(gpu_ids: list[int]) -> float:
+def memory_reserve_mib(engine: str, options: dict | None) -> int:
+    """MiB left outside the engine's budget. vLLM with TorchAO weights exceeds its own
+    reservation in sampler warmup (2.4-4.8 GiB measured on an idle B200 at 0.97), so it
+    gets 6 GiB more; every other load keeps the 512 MiB driver reserve."""
+    options = options or {}
+    precision = options.get("precision", "auto")
+    torchao = engine == "vllm" and (
+        precision in ("int8", "fp8")
+        or (precision == "int4" and options.get("parallelism", "tensor") == "pipeline")
+    )
+    return 512 + (6144 if torchao else 0)
+
+
+def gpu_memory_fraction(gpu_ids: list[int], reserve_mib: int = 512) -> float:
     """Budget every selected physical GPU after the previous resident is stopped.
 
-    Reserve at least 512 MiB for driver allocations. An unreadable device is an
-    actionable failure, never permission to fall back to a larger engine default.
+    Reserve at least ``reserve_mib`` for allocations the engine does not budget. An unreadable
+    device is an actionable failure, never permission to fall back to a larger engine default.
     """
     from utils.vram_budget_settings import get_vram_budget_fraction
     try:
@@ -257,10 +273,10 @@ def gpu_memory_fraction(gpu_ids: list[int]) -> float:
         fraction = get_vram_budget_fraction()
         for row in rows:
             total, free = (float(value.strip()) for value in row.split(","))
-            if total <= 0 or free <= 512 or free > total:
+            if total <= 0 or free <= reserve_mib or free > total:
                 raise ValueError("Insufficient available GPU memory")
             # One fraction for all ranks: the most constrained GPU bounds it.
-            fraction = min(fraction, (free - 512) / total)
+            fraction = min(fraction, (free - reserve_mib) / total)
         if fraction < 0.05:
             raise ValueError("Insufficient available GPU memory")
         return int(fraction * 1000) / 1000

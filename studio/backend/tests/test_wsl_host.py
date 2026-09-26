@@ -225,7 +225,7 @@ def test_runner_stops_the_engine_when_studio_is_killed(tmp_path):
 def test_wsl_launch_command(wsl, monkeypatch):
     # Windows GPU 1 and 3 are guest GPUs 0 and 2.
     monkeypatch.setattr(wsl_host, "guest_gpu_indices", lambda ids: [{1: 0, 3: 2}[i] for i in ids])
-    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda ids: 0.5)
+    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.5)
     monkeypatch.setattr(wsl_host, "to_guest_path", lambda path: "/mnt/c/" + Path(path).name)
     guest = Path(wsl_host.GUEST_ROOT) / "engines" / "vllm" / "env-abc" / "bin"
     guest.mkdir(parents = True)
@@ -263,7 +263,7 @@ def test_wsl_launch_command(wsl, monkeypatch):
 
 def test_sglang_launcher_is_read_through_mnt(wsl, monkeypatch):
     monkeypatch.setattr(wsl_host, "guest_gpu_indices", lambda ids: [0])
-    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda ids: 0.5)
+    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.5)
     monkeypatch.setattr(wsl_host, "to_guest_path", lambda path: "/mnt/c/" + Path(path).name)
     guest = Path(wsl_host.GUEST_ROOT) / "engines" / "sglang" / "env-abc" / "bin"
     guest.mkdir(parents = True)
