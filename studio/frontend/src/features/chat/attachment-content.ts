@@ -788,7 +788,10 @@ export async function extractOfficeAttachmentText(
       const lines = [`Sheet: ${sheet.name}`];
       for (const row of sheet.rows) {
         if (!row || budget.cut) continue;
-        const line = Array.from(row, (cell) => budget.take(cell?.text ?? "")).join("\t").trimEnd();
+        const line = Array.from(row, (cell) => budget.take(cell?.text ?? ""))
+          .filter((_, index) => !sheet.hidden?.columns.has(index))
+          .join("\t")
+          .trimEnd();
         if (line) lines.push(line);
       }
       // Said outright, so the model does not answer as if it read the whole sheet.

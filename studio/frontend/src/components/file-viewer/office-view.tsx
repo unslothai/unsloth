@@ -133,16 +133,20 @@ function SheetGrid({
     sheet.rows.reduce((max, row) => Math.max(max, row?.length ?? 0), sheet.widths.length),
   );
   const rowCount = Math.max(sheet.rows.length, 1);
-  const widths = Array.from(
-    { length: columns },
-    (_, index) => (sheet.widths[index] ?? DEFAULT_COLUMN_WIDTH) * uiScale,
+  // Hidden rows and columns are skipped but keep their labels, as Excel shows them (A, C).
+  const visibleColumns = Array.from({ length: columns }, (_, index) => index).filter(
+    (index) => !sheet.hidden?.columns.has(index),
   );
+  const visibleRows = sheet.hidden?.rows.size
+    ? Array.from({ length: rowCount }, (_, index) => index).filter((index) => !sheet.hidden!.rows.has(index))
+    : null;
+  const widths = visibleColumns.map((index) => (sheet.widths[index] ?? DEFAULT_COLUMN_WIDTH) * uiScale);
   const headerWidth = ROW_HEADER_WIDTH * uiScale;
   // A fixed layout only honours the column widths when the table has a width of its own.
   const tableWidth = widths.reduce((sum, width) => sum + width, headerWidth);
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
-    count: rowCount,
+    count: visibleRows?.length ?? rowCount,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => rowHeight,
     // The sticky column header sits above the first row.
@@ -169,7 +173,7 @@ function SheetGrid({
         <thead>
           <tr>
             <th className={cn(cell, header, "top-0 left-0 z-20")} />
-            {Array.from({ length: columns }, (_, index) => (
+            {visibleColumns.map((index) => (
               <th key={index} className={cn(cell, header, "top-0 z-10")}>
                 {columnName(index)}
               </th>
@@ -179,11 +183,12 @@ function SheetGrid({
         <tbody>
           {before > 0 && <tr style={{ height: before }} />}
           {items.map((item) => {
-            const row = sheet.rows[item.index];
+            const r = visibleRows?.[item.index] ?? item.index;
+            const row = sheet.rows[r];
             return (
-              <tr key={item.index}>
-                <th className={cn(cell, header, "left-0 z-10")}>{item.index + 1}</th>
-                {Array.from({ length: columns }, (_, index) => {
+              <tr key={r}>
+                <th className={cn(cell, header, "left-0 z-10")}>{r + 1}</th>
+                {visibleColumns.map((index) => {
                   const value = row?.[index];
                   return (
                     <td

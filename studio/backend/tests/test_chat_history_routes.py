@@ -49,6 +49,32 @@ def test_async_delete_handlers_dispatch_sqlite_to_the_threadpool():
         assert "run_in_threadpool" in inspect.getsource(handler)
 
 
+def test_message_removal_paths_sweep_chat_originals(monkeypatch):
+    """A removed message can drop the last reference to a kept original, so every path sweeps."""
+    for handler in (
+        chat_history.clear_history,
+        chat_history.delete_project,
+        chat_history.delete_threads,
+    ):
+        assert "chat_originals.sweep" in inspect.getsource(handler)
+
+    sweeps = []
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda thread_id: {"id": thread_id})
+    monkeypatch.setattr(chat_history, "sync_chat_messages", lambda *args, **kwargs: [])
+    monkeypatch.setattr(chat_history.chat_originals, "sweep", lambda force = False: sweeps.append(force))
+    for prune, deleted in ((False, []), (True, []), (False, ["msg-2"])):
+        chat_history.replace_thread_messages(
+            "thread-1",
+            chat_history.ChatMessageSyncRequest(
+                messages = [_message("msg-1", "thread-1")],
+                pruneMissing = prune,
+                deletedMessageIds = deleted,
+            ),
+            current_subject = "test-user",
+        )
+    assert sweeps == [False, False]
+
+
 def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
     called = False
 

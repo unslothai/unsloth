@@ -1272,6 +1272,7 @@ async def delete_project(
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
     # The project's chats go with it, so their archives and documents have to as well.
     await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff = cutoff)
+    await run_in_threadpool(chat_originals.sweep)
     if project.get("sandboxPath"):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
@@ -1469,16 +1470,11 @@ def replace_thread_messages(
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     messages = [message.model_dump() for message in payload.messages]
     try:
-        return ChatMessageListResponse(
-            messages = [
-                ChatMessage(**m)
-                for m in sync_chat_messages(
-                    thread_id,
-                    messages,
-                    prune_missing = payload.pruneMissing,
-                    deleted_message_ids = payload.deletedMessageIds,
-                )
-            ]
+        synced = sync_chat_messages(
+            thread_id,
+            messages,
+            prune_missing = payload.pruneMissing,
+            deleted_message_ids = payload.deletedMessageIds,
         )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
@@ -1493,6 +1489,10 @@ def replace_thread_messages(
             log = logger,
             headers = _conflict_headers(exc),
         ) from exc
+    # A removed message can take the last reference to a kept original with it.
+    if payload.pruneMissing or payload.deletedMessageIds:
+        chat_originals.sweep()
+    return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced])
 
 
 @router.get("/count", response_model = ChatCountResponse)
@@ -1614,6 +1614,7 @@ async def clear_history(
     await run_in_threadpool(
         _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
     )
+    await run_in_threadpool(chat_originals.sweep)
     # "Clear all chats" is the common bulk delete.
     # delete_files matches DELETE /threads: off by default, since the files are the user's.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
@@ -861,10 +861,17 @@ export async function uploadChatAttachmentOriginal(
 ): Promise<{ sha256: string; sizeBytes: number }> {
   const form = new FormData();
   form.append("file", file, file.name);
-  const response = await authFetch("/api/chat/attachment-originals", {
-    method: "POST",
-    body: form,
-  });
+  // Kept by the account that sent it: a retry after an account switch would carry the next one's token.
+  const epoch = getAuthSessionEpoch();
+  const sameAccount = () => {
+    if (getAuthSessionEpoch() !== epoch) throw new Error("The account changed during the upload.");
+  };
+  const response = await authFetch(
+    "/api/chat/attachment-originals",
+    { method: "POST", body: form },
+    { beforeRetry: sameAccount },
+  );
+  sameAccount();
   return parseJsonOrThrow<{ sha256: string; sizeBytes: number }>(response);
 }
 

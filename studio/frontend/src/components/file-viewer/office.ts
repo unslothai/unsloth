@@ -22,6 +22,8 @@ export interface Sheet {
   /** Column widths in pixels, where the file sets them. */
   widths: (number | undefined)[];
   truncated: boolean;
+  /** Rows and columns the workbook hides, by index. Their cells are not read. */
+  hidden?: { rows: Set<number>; columns: Set<number> };
 }
 
 function unpack(bytes: Uint8Array, wanted: (name: string) => boolean): Unzipped {
@@ -112,32 +114,63 @@ const BUILTIN_FORMATS: Record<number, string> = {
   38: "#,##0 ;[Red](#,##0)",
   39: "#,##0.00;(#,##0.00)",
   40: "#,##0.00;[Red](#,##0.00)",
+  45: "mm:ss",
+  46: "[h]:mm:ss",
+  47: "mm:ss.0",
   49: "@",
 };
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const DATE_TOKEN = /"[^"]*"|\\.|y+|m+|d+|h+|s+|am\/pm|a\/p|\.0+|./gi;
 
+/** A date or time, token by token as the format writes it. `m` is minutes after an hour or before
+ *  a second, otherwise the month. */
 function formatDate(serial: number, code: string): string {
-  const date = new Date(Math.round((serial - 25569) * 86400000));
-  const y = date.getUTCFullYear();
-  const m = date.getUTCMonth();
-  const d = date.getUTCDate();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  let time = "";
-  if (/h/.test(code)) {
-    const hours = date.getUTCHours();
-    const twelve = /am\/pm/.test(code);
-    time = `${twelve ? hours % 12 || 12 : hours}:${pad(date.getUTCMinutes())}`;
-    if (/:ss/.test(code)) time += `:${pad(date.getUTCSeconds())}`;
-    if (twelve) time += hours < 12 ? " AM" : " PM";
-  }
-  // A time of day alone (h:mm) has no date part to show.
-  if (time && !/[dy]/.test(code)) return time;
-  let out = `${m + 1}/${d}/${y}`;
-  if (/mmm/.test(code)) out = `${d}-${MONTHS[m]}-${String(y).slice(-2)}`;
-  else if (/^y/.test(code)) out = `${y}-${pad(m + 1)}-${pad(d)}`;
-  else if (/^d/.test(code)) out = `${d}/${m + 1}/${y}`;
-  return time ? `${out} ${time}` : out;
+  const fraction = /s\.(0+)/i.exec(code)?.[1]?.length ?? 0;
+  const unit = 1000 / 10 ** fraction;
+  const date = new Date(Math.round(((serial - 25569) * 86400000) / unit) * unit);
+  const tokens = code.match(DATE_TOKEN) ?? [];
+  const kinds = tokens.map((token) => /^[ymdhs]/i.test(token) && !token.startsWith("\\") ? token[0]!.toLowerCase() : "");
+  const twelve = tokens.some((token) => /^(am\/pm|a\/p)$/i.test(token));
+  const pad = (n: number, width = 2) => String(n).padStart(width, "0");
+  const hours = date.getUTCHours();
+  return tokens
+    .map((token, index) => {
+      const n = token.length;
+      switch (kinds[index]) {
+        case "y":
+          return n <= 2 ? pad(date.getUTCFullYear() % 100) : String(date.getUTCFullYear());
+        case "d":
+          if (n >= 4) return DAYS[date.getUTCDay()]!;
+          if (n === 3) return DAYS[date.getUTCDay()]!.slice(0, 3);
+          return n === 2 ? pad(date.getUTCDate()) : String(date.getUTCDate());
+        case "h": {
+          const h = twelve ? hours % 12 || 12 : hours;
+          return n >= 2 ? pad(h) : String(h);
+        }
+        case "s":
+          return n >= 2 ? pad(date.getUTCSeconds()) : String(date.getUTCSeconds());
+        case "m": {
+          const previous = kinds.slice(0, index).reverse().find(Boolean);
+          const next = kinds.slice(index + 1).find(Boolean);
+          if (n <= 2 && (previous === "h" || next === "s")) {
+            return n === 2 ? pad(date.getUTCMinutes()) : String(date.getUTCMinutes());
+          }
+          const month = date.getUTCMonth();
+          if (n >= 5) return MONTHS[month]![0]!;
+          if (n === 4) return MONTHS[month]!;
+          if (n === 3) return MONTHS[month]!.slice(0, 3);
+          return n === 2 ? pad(month + 1) : String(month + 1);
+        }
+      }
+      if (/^am\/pm$/i.test(token)) return hours < 12 ? "AM" : "PM";
+      if (/^a\/p$/i.test(token)) return hours < 12 ? "A" : "P";
+      if (/^\.0+$/.test(token)) return `.${pad(date.getUTCMilliseconds(), 3).slice(0, n - 1)}`;
+      if (token.startsWith('"')) return token.slice(1, -1);
+      return token.startsWith("\\") ? token.slice(1) : token;
+    })
+    .join("");
 }
 
 /** An elapsed-time format ([h]:mm:ss, [mm]:ss, [ss]): the bracketed unit counts past its usual range. */
@@ -161,18 +194,18 @@ export function formatNumber(value: number, rawCode: string | undefined, date190
     return String(Number.isInteger(value) ? value : Number(value.toPrecision(15)));
   }
   const section = rawCode.split(";")[value < 0 && rawCode.includes(";") ? 1 : 0] ?? rawCode;
-  // Quoted text, escapes and [$€-407]-style currency tags keep their symbol; [Red] and the like go,
-  // but not the elapsed-time units [h], [m] and [s].
-  const code = section
+  // [$€-407]-style currency tags keep their symbol; [Red] and the like go, but not the
+  // elapsed-time units [h], [m] and [s]. Padding (_x) and fill (*x) go too.
+  const tagged = section
     .replace(/\[\$([^\]-]*)[^\]]*\]/g, "$1")
     .replace(/\[(?![hms]+\])[^\]]*\]/gi, "")
-    .replace(/"([^"]*)"/g, "$1")
-    .replace(/\\(.)/g, "$1")
     .replace(/_.|\*./g, "");
-  if (!/[0#?]/.test(code) && /\[[hms]+\]/i.test(code)) return formatElapsed(value, code.toLowerCase());
-  if (!/[0#?]/.test(code) && /[dmyhs]/i.test(code)) {
-    return formatDate(date1904 ? value + 1462 : value, code.toLowerCase());
-  }
+  // Quoted text and escapes are literal.
+  const code = tagged.replace(/"([^"]*)"/g, "$1").replace(/\\(.)/g, "$1");
+  // Fractional seconds (ss.0) are a time, not a number.
+  const dateLike = !/[0#?]/.test(code.replace(/s\.0+/gi, "s"));
+  if (dateLike && /\[[hms]+\]/i.test(code)) return formatElapsed(value, code.toLowerCase());
+  if (dateLike && /[dmyhs]/i.test(code)) return formatDate(date1904 ? value + 1462 : value, tagged);
   if (/E\+/i.test(code)) {
     // Excel's form: 1.23E+03, a two-digit exponent and an upper-case E.
     const digits = (code.split(/E/i)[0]!.split(".")[1]?.match(/0/g) ?? []).length;
@@ -259,6 +292,18 @@ function readSheet(
   date1904: boolean,
 ): Sheet {
   const rows: (SheetCell | undefined)[][] = [];
+  const widths: (number | undefined)[] = [];
+  const hidden = { rows: new Set<number>(), columns: new Set<number>() };
+  const isHidden = (node: Element) => ["1", "true"].includes(node.getAttribute("hidden") ?? "");
+  for (const col of all(doc, "col")) {
+    const min = Number(col.getAttribute("min") ?? 1);
+    const max = Math.min(Number(col.getAttribute("max") ?? min), MAX_SHEET_COLUMNS);
+    const width = Number(col.getAttribute("width"));
+    for (let i = min; i <= max; i++) {
+      if (isHidden(col)) hidden.columns.add(i - 1);
+      else if (width) widths[i - 1] = Math.round(width * 7 + 5);
+    }
+  }
   let truncated = false;
   let nextRow = 0;
   for (const row of all(doc, "row")) {
@@ -267,6 +312,11 @@ function readSheet(
     if (r >= MAX_SHEET_ROWS) {
       truncated = true;
       break;
+    }
+    // Hidden, as Excel shows it: neither in the grid nor in the text sent to the model.
+    if (isHidden(row)) {
+      hidden.rows.add(r);
+      continue;
     }
     const cells: (SheetCell | undefined)[] = [];
     let nextColumn = 0;
@@ -278,6 +328,7 @@ function readSheet(
         truncated = true;
         continue;
       }
+      if (hidden.columns.has(col)) continue;
       const type = c.getAttribute("t");
       const raw = first(c, "v")?.textContent ?? "";
       const formula = first(c, "f")?.textContent ?? "";
@@ -298,15 +349,7 @@ function readSheet(
     }
     rows[r] = cells;
   }
-  const widths: (number | undefined)[] = [];
-  for (const col of all(doc, "col")) {
-    const width = Number(col.getAttribute("width"));
-    if (!width || col.getAttribute("hidden") === "1") continue;
-    const min = Number(col.getAttribute("min") ?? 1);
-    const max = Math.min(Number(col.getAttribute("max") ?? min), MAX_SHEET_COLUMNS);
-    for (let i = min; i <= max; i++) widths[i - 1] = Math.round(width * 7 + 5);
-  }
-  return { name, rows, widths, truncated };
+  return { name, rows, widths, truncated, hidden };
 }
 
 export function readXlsx(bytes: Uint8Array): Sheet[] {
@@ -444,7 +487,8 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   for (const id of all(presentation, "sldId")) {
     const path = rels.get(relId(id, "id") ?? "");
     const doc = path ? xml(files, path) : null;
-    if (!path || !doc) continue;
+    // A hidden slide is left out of the show, so out of the viewer and the model's text too.
+    if (!path || !doc || ["0", "false"].includes(doc.documentElement.getAttribute("show") ?? "")) continue;
     const slideRels = relationships(files, path);
     const boxes: SlideBox[] = [];
     for (const shape of all(doc, "sp")) {
