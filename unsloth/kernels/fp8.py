@@ -311,8 +311,8 @@ def w8a8_block_fp8_matmul_triton(
             BLOCK_SIZE_N = BLOCK_SIZE_N,
             BLOCK_SIZE_K = BLOCK_SIZE_K,
             GROUP_SIZE_M = 8,
-            # 4 warps (the default) spill on 128x128 fp8 tiles: 8 is 1.7-2.5x faster at training M, never slower.
-            num_warps = 8,
+            # Default 4 warps starve 128x128 tiles (8 is 1.3-2.1x faster from M >= 128); smaller decode tiles gain nothing.
+            num_warps = 8 if BLOCK_SIZE_M == 128 else 4,
         )
     return C
 
