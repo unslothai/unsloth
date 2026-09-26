@@ -93,7 +93,16 @@ export type SidebarDropAction =
 /** What to paint: a line on one edge of a row, or a ring around a whole target. Row keys are
  *  `scope:id`, since one chat can be drawn in two lists. */
 export type SidebarDropCue =
-  | { line: { rowKey: string; edge: DropEdge } }
+  | {
+      line: {
+        rowKey: string;
+        edge: DropEdge;
+        /** The folder the row lands inside, when the line is between its chats. Unset for a
+         *  line under a folder's last chat that lands below the folder, beside it in its list:
+         *  the two sit in the same place and would otherwise read the same. */
+        folderId?: string;
+      };
+    }
   | { ring: string };
 
 /** Where a chat from another list lands: its slot against a row of that list. Kept beside the
@@ -187,8 +196,16 @@ function leavingSection(
 export const folderRingKey = (projectId: string): string =>
   `folder:${projectId}`;
 
+const FOLDER_SCOPE_PREFIX = projectOrderScope("");
 const line = (scope: string, id: string, edge: DropEdge): SidebarDropCue => ({
-  line: { rowKey: rowKey(scope, id), edge },
+  line: {
+    rowKey: rowKey(scope, id),
+    edge,
+    // A line against a folder's chats lands among them.
+    ...(scope.startsWith(FOLDER_SCOPE_PREFIX)
+      ? { folderId: scope.slice(FOLDER_SCOPE_PREFIX.length) }
+      : {}),
+  },
 });
 const ring = (key: string): SidebarDropCue => ({ ring: key });
 
@@ -303,7 +320,8 @@ function folderLine(
   zone: SidebarDropZone,
 ): SidebarDropCue {
   if (edge === "bottom" && zone.blockEnd) {
-    return line(zone.blockEnd.scope, zone.blockEnd.id, "bottom");
+    // Drawn under the folder's last chat, but the row lands below the folder, in `scope`.
+    return { line: { rowKey: rowKey(zone.blockEnd.scope, zone.blockEnd.id), edge: "bottom" } };
   }
   return line(scope, folderId, edge);
 }
@@ -666,6 +684,8 @@ function reorder(
 export function litRingKey(plan: SidebarDropPlan | null): string | null {
   if (!plan) return null;
   if ("ring" in plan.cue) return plan.cue.ring;
+  // A line among a folder's chats lands in that folder, a reorder inside it included.
+  if (plan.cue.line.folderId !== undefined) return folderRingKey(plan.cue.line.folderId);
   if (plan.action.kind === "move" && plan.action.projectId) {
     return folderRingKey(plan.action.projectId);
   }
@@ -695,7 +715,7 @@ export function planKey(plan: SidebarDropPlan | null): string {
   if (!plan) return "";
   const cue =
     "line" in plan.cue
-      ? `line:${plan.cue.line.rowKey}:${plan.cue.line.edge}`
+      ? `line:${plan.cue.line.rowKey}:${plan.cue.line.edge}:${plan.cue.line.folderId ?? ""}`
       : `ring:${plan.cue.ring}`;
   const action =
     plan.action.kind === "move"

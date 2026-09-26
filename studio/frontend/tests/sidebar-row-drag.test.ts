@@ -303,6 +303,7 @@ test("a chat dropped on a folder, its chats or its empty line is filed there", (
             line: {
               rowKey: rowKey(zone.row.scope, zone.row.id),
               edge: zone.edge ?? "top",
+              folderId: zone.folderId,
             },
           }
         : { ring: folderRingKey(zone.folderId!) },
@@ -339,7 +340,7 @@ test("a chat filed into a folder on Manual order lands in the slot it dropped on
     ),
   );
   assert.deepEqual(plan.cue, {
-    line: { rowKey: rowKey(projectOrderScope("work"), "c2"), edge: "top" },
+    line: { rowKey: rowKey(projectOrderScope("work"), "c2"), edge: "top", folderId: "work" },
   });
   // The slot travels with the snapshot, so a move that lands late can re-aim it.
   assert.deepEqual(plan.effects.orders, [
@@ -1288,7 +1289,7 @@ test("a carried row lifts a copy that follows the pointer", () => {
   }
   assert.match(CSS, /\.sidebar-row-ghost \* \{\n\s*pointer-events: none;/);
   // Every way a drag ends takes it down: clear() is the one exit.
-  assert.match(HOOK, /const clear = useCallback\(\(\) => \{[^]*?ghost\.current\?\.element\.remove\(\);\n\s*ghost\.current\?\.cue\.remove\(\);\n\s*ghost\.current = null;/);
+  assert.match(HOOK, /const clear = useCallback\(\(\) => \{[^]*?ghost\.current\?\.element\.remove\(\);\n\s*for \(const overlay of ghost\.current\?\.cues \?\? \[\]\) overlay\.remove\(\);\n\s*ghost\.current = null;/);
   // The row it came from dims as a section does, bare of its pressed look.
   assert.equal(APP_SIDEBAR.match(/draggingRow\?\.id === (item|project)\.id && "opacity-40"/g)?.length, 2);
   assert.match(CSS, /body\.sidebar-row-dragging \[data-sidebar="menu-button"\]:active \{\n\s*background-color: transparent;/);
@@ -1366,7 +1367,7 @@ test("a chat can be dropped at the bottom of a pinned project", () => {
     ),
   );
   assert.deepEqual(arriving.cue, {
-    line: { rowKey: rowKey(workScope, "p2"), edge: "bottom" },
+    line: { rowKey: rowKey(workScope, "p2"), edge: "bottom", folderId: "work" },
   });
   assert.equal(arriving.effects.switchSort, "chats");
   assert.deepEqual(arriving.effects.orders[0]?.ids, ["p1", "p2", "r1"]);
@@ -1392,7 +1393,7 @@ test("a chat can be dropped at the bottom of a pinned project", () => {
   );
   assert.deepEqual(tail.action, { kind: "reorder" });
   assert.deepEqual(tail.cue, {
-    line: { rowKey: rowKey(workScope, "p2"), edge: "bottom" },
+    line: { rowKey: rowKey(workScope, "p2"), edge: "bottom", folderId: "work" },
   });
   assert.deepEqual(tail.effects.orders[0]?.ids, ["p2", "p1", "p3"]);
 
@@ -1536,8 +1537,49 @@ test("the drop cue is drawn again above the carried row's copy", () => {
   }
   // Painted each frame after the plan is tracked, and removed with the copy.
   assert.match(HOOK, /track\(at\.x, at\.y\);\n\s*if \(ghost\.current\) placeCue\(ghost\.current\);/);
-  assert.match(HOOK, /ghost\.current\?\.cue\.remove\(\);/);
+  assert.match(HOOK, /for \(const overlay of ghost\.current\?\.cues \?\? \[\]\) overlay\.remove\(\);/);
+  // Every cue on screen, the line and the folder it lands in both.
+  assert.match(HOOK, /for \(const cue of document\.querySelectorAll<HTMLElement>\(`\.\$\{DROP_CUE_CLASS\}`\)\)/);
   // Its border only: the tint under the copy would double.
   assert.doesNotMatch(HOOK.slice(HOOK.indexOf("function placeCue"), HOOK.indexOf("function zoneOf")), /background/);
   assert.match(CSS, /\.sidebar-drop-cue-overlay \{\n\tposition: fixed;[\s\S]*?z-index: 61;[\s\S]*?pointer-events: none;/);
+});
+
+// Under a folder's last chat, a line can mean "into the folder, last" or "below the folder, in
+// its list". They sit in the same place, so the cue says which: a line inside the folder names
+// it, which indents the line to its chats and lights the folder; one below it does neither.
+test("a line under a folder's last chat says whether the row lands in the folder or below it", () => {
+  const workScope = projectOrderScope("work");
+  const lastChat: SidebarDropZone = {
+    ...chatRow("pinned", workScope, "c2", "work", { index: 1, count: 2 }),
+    blockEnd: { scope: workScope, id: "c2" },
+  };
+  // A chat lands in the folder, after its last chat.
+  const into = plannedDrop(
+    planSidebarDrop(chat("r1", "recents", RECENTS_ORDER_SCOPE, null), lastChat, "bottom", context()),
+  );
+  assert.deepEqual(into.cue, { line: { rowKey: rowKey(workScope, "c2"), edge: "bottom", folderId: "work" } });
+  assert.equal(litRingKey(into), folderRingKey("work"));
+  // A folder lands below it, in Pinned: the same spot, but nothing names or lights the folder.
+  const below = plannedDrop(
+    planSidebarDrop(folder("home", "projects", PROJECT_ORDER_SCOPE), lastChat, "bottom", context()),
+  );
+  assert.deepEqual(below.cue, { line: { rowKey: rowKey(workScope, "c2"), edge: "bottom" } });
+  assert.equal(litRingKey(below), null);
+  // A reorder among a folder's own chats is inside it too.
+  const within = plannedDrop(
+    planSidebarDrop(
+      chat("c1", "projects", projectOrderScope("work"), "work"),
+      lastChat,
+      "bottom",
+      context({ chatSort: "manual" }),
+    ),
+  );
+  assert.equal(litRingKey(within), folderRingKey("work"));
+  // The painted line: indented to the folder's chats inside it, full width below it.
+  assert.match(HOOK, /return key === rowKey\(scope, id\) \? \{ edge, inFolder: folderId !== undefined \} : undefined;/);
+  assert.match(APP_SIDEBAR, /const DROP_CUE_IN_FOLDER = "before:left-\[calc\(39px\*var\(--ui-space-scale,1\)\)\]";/);
+  assert.match(APP_SIDEBAR, /cue\.inFolder && DROP_CUE_IN_FOLDER,/);
+  // The folder's chats start there too, so the line lines up with their names.
+  assert.match(APP_SIDEBAR, /variant === "project" \? "pl-\[calc\(39px\*var\(--ui-space-scale,1\)\)\]" : "pl-3"/);
 });

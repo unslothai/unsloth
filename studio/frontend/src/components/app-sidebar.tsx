@@ -378,6 +378,9 @@ const DROP_CUE_BASE = `${DROP_CUE_CLASS} before:pointer-events-none before:absol
 const DROP_CUE_TOP = `${DROP_CUE_BASE} before:top-0`;
 // bottom-px: on the last row, DROP_ROW_HIT's extra pixel is clipped by the list.
 const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-px`;
+// A line that lands inside a folder starts where its chats' names do, so a drop into the folder
+// reads apart from one below it, whose line runs the full width in the same place.
+const DROP_CUE_IN_FOLDER = "before:left-[calc(39px*var(--ui-space-scale,1))]";
 // A row dropped onto a folder or section joins it, so the whole target is tinted and outlined,
 // with the same border as the line. Kept inside the box for the same clipping reason.
 const DROP_INTO_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
@@ -2354,9 +2357,12 @@ export function AppSidebar() {
 
   /** The insertion line for a row, on the landing edge. */
   function dropCueClass(scope: string, rowId: string): string | undefined {
-    const edge = dnd.lineEdge(scope, rowId);
-    if (!edge) return undefined;
-    return edge === "bottom" ? DROP_CUE_BOTTOM : DROP_CUE_TOP;
+    const cue = dnd.lineAt(scope, rowId);
+    if (!cue) return undefined;
+    return cn(
+      cue.edge === "bottom" ? DROP_CUE_BOTTOM : DROP_CUE_TOP,
+      cue.inFolder && DROP_CUE_IN_FOLDER,
+    );
   }
 
   /** Moves a row one slot without a pointer, under the same sort rule as a drop. */

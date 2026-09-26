@@ -179,8 +179,8 @@ interface RowGhost {
   grab: number;
   /** The box the copy stays inside: the list it scrolls in. */
   view: Element;
-  /** The cue drawn over the copy. */
-  cue: HTMLElement;
+  /** The cues drawn over the copy: the line, and the outline of the folder it lands in. */
+  cues: HTMLElement[];
 }
 
 /** A copy of the row's face on a raised pill, over the row it came from. */
@@ -209,43 +209,48 @@ function liftRow(row: HTMLElement, pressY: number, view: Element): RowGhost | nu
   // The icon size is the sidebar's own variable, which the copy leaves behind on the body.
   const iconSize = style.getPropertyValue("--icon-size");
   if (iconSize) element.style.setProperty("--icon-size", iconSize);
-  const cue = document.createElement("div");
-  cue.setAttribute("aria-hidden", "true");
-  cue.className = CUE_OVERLAY_CLASS;
-  document.body.append(element, cue);
-  return { element, grab: pressY - rect.top, view, cue };
+  document.body.append(element);
+  return { element, grab: pressY - rect.top, view, cues: [] };
 }
 
-/** Draws the cue painted under the copy again over it: its border only, since the tint under the
- *  copy would otherwise double where the two meet. Clipped to the list, as the cue is. */
+/** Draws each cue painted under the copy again over it: its border only, since the tint under
+ *  the copy would otherwise double where the two meet. Clipped to the list, as the cue is. */
 function placeCue(ghost: RowGhost) {
-  const overlay = ghost.cue;
-  const cue = document.querySelector<HTMLElement>(`.${DROP_CUE_CLASS}`);
-  const style = cue ? getComputedStyle(cue, "::before") : null;
-  if (!cue || !style || style.content === "none" || cue.offsetHeight === 0) {
-    overlay.style.display = "none";
-    return;
-  }
-  const box = cue.getBoundingClientRect();
-  // border-box, so the width and height read here include the border.
-  const left = box.left + (parseFloat(style.left) || 0);
-  const top = box.top + (parseFloat(style.top) || 0);
-  const height = parseFloat(style.height) || 0;
   const view = ghost.view.getBoundingClientRect();
-  Object.assign(overlay.style, {
-    display: "block",
-    width: style.width,
-    height: `${height}px`,
-    borderStyle: style.borderStyle,
-    borderColor: style.borderColor,
-    borderTopWidth: style.borderTopWidth,
-    borderRightWidth: style.borderRightWidth,
-    borderBottomWidth: style.borderBottomWidth,
-    borderLeftWidth: style.borderLeftWidth,
-    borderRadius: style.borderRadius,
-    transform: `translate3d(${left}px, ${top}px, 0)`,
-    clipPath: `inset(${Math.max(0, view.top - top)}px 0 ${Math.max(0, top + height - view.bottom)}px 0)`,
-  });
+  let shown = 0;
+  for (const cue of document.querySelectorAll<HTMLElement>(`.${DROP_CUE_CLASS}`)) {
+    const style = getComputedStyle(cue, "::before");
+    if (style.content === "none" || cue.offsetHeight === 0) continue;
+    let overlay = ghost.cues[shown];
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.setAttribute("aria-hidden", "true");
+      overlay.className = CUE_OVERLAY_CLASS;
+      document.body.append(overlay);
+      ghost.cues.push(overlay);
+    }
+    shown += 1;
+    const box = cue.getBoundingClientRect();
+    // border-box, so the width and height read here include the border.
+    const left = box.left + (parseFloat(style.left) || 0);
+    const top = box.top + (parseFloat(style.top) || 0);
+    const height = parseFloat(style.height) || 0;
+    Object.assign(overlay.style, {
+      display: "block",
+      width: style.width,
+      height: `${height}px`,
+      borderStyle: style.borderStyle,
+      borderColor: style.borderColor,
+      borderTopWidth: style.borderTopWidth,
+      borderRightWidth: style.borderRightWidth,
+      borderBottomWidth: style.borderBottomWidth,
+      borderLeftWidth: style.borderLeftWidth,
+      borderRadius: style.borderRadius,
+      transform: `translate3d(${left}px, ${top}px, 0)`,
+      clipPath: `inset(${Math.max(0, view.top - top)}px 0 ${Math.max(0, top + height - view.bottom)}px 0)`,
+    });
+  }
+  for (const overlay of ghost.cues.slice(shown)) overlay.style.display = "none";
 }
 
 /** Keeps the copy under the pointer, inside the list it came from. */
@@ -366,8 +371,9 @@ export interface SidebarDragApi {
     zone: SidebarDropZone,
     options?: { closed?: boolean },
   ) => Record<string, string>;
-  /** The edge the insertion line is drawn on for this row in this list, if any. */
-  lineEdge: (scope: string, id: string) => DropEdge | undefined;
+  /** The insertion line drawn on this row in this list, if any: its edge, and whether it lands
+   *  inside a folder, among its chats, rather than beside the folder in its list. */
+  lineAt: (scope: string, id: string) => { edge: DropEdge; inFolder: boolean } | undefined;
   /** Whether the whole target under this key is lit. */
   ringLit: (key: string) => boolean;
 }
@@ -409,7 +415,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
     cancelSpring();
     scroller.current = null;
     ghost.current?.element.remove();
-    ghost.current?.cue.remove();
+    for (const overlay of ghost.current?.cues ?? []) overlay.remove();
     ghost.current = null;
     document.body.classList.remove(DRAGGING_BODY_CLASS);
     setDrag(null);
@@ -687,12 +693,11 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
     [],
   );
 
-  const lineEdge = useCallback(
-    (scope: string, id: string): DropEdge | undefined => {
+  const lineAt = useCallback(
+    (scope: string, id: string) => {
       if (!plan || !("line" in plan.cue)) return undefined;
-      return plan.cue.line.rowKey === rowKey(scope, id)
-        ? plan.cue.line.edge
-        : undefined;
+      const { rowKey: key, edge, folderId } = plan.cue.line;
+      return key === rowKey(scope, id) ? { edge, inFolder: folderId !== undefined } : undefined;
     },
     [plan],
   );
@@ -707,7 +712,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
     plan,
     dragHandleProps,
     dropZoneProps,
-    lineEdge,
+    lineAt,
     ringLit,
   };
 }
