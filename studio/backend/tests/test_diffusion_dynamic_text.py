@@ -102,7 +102,6 @@ def test_fingerprint_only_for_automatic_dynamic():
 
 
 def test_first_segment_start_stays_static():
-    # A symbol for segments[0][0] (always 0) trips torchao's CantSplit.
     builder = pytest.importorskip("torch._dynamo.variables.builder")
     is_dynamic = getattr(builder, "is_dynamic_source", None)
     if is_dynamic is None:

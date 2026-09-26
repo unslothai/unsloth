@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Mark a regionally compiled DiT's prompt-length inputs dynamic from its FIRST forward via
-``torch.compiler.config.dynamic_sources``, so a new prompt length never recompiles. Only prompt-sized inputs are
-named: a blanket ``dynamic=True`` hits torchao CantSplit. The allowlist is process-global, so it is scoped to the
-forward by hooks; that needs torch 2.8+ (2.7 reads it once per process, so scoping is ignored or leaks).
-"""
+"""Compile a DiT's prompt-length inputs dynamic from its first forward (``dynamic_sources``, scoped to the forward
+by hooks), so a new prompt length never recompiles. Only prompt-sized inputs: blanket ``dynamic=True`` hits torchao
+CantSplit."""
 
 from __future__ import annotations
 
@@ -52,7 +50,7 @@ def _compiler_config() -> Any:
         getattr(cfg, "dynamic_sources")
     except Exception:  # noqa: BLE001 - knob absent on this build
         return None
-    # 2.8+ only (is_dynamic_source): 2.7 caches its first read per process, breaking per-forward scoping.
+    # 2.8+ only (is_dynamic_source): 2.7 caches its first read per process, so per-forward scoping leaks.
     if not callable(getattr(builder, "is_dynamic_source", None)):
         return None
     return cfg
