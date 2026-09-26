@@ -295,6 +295,9 @@ def test_both_entrypoints_resolve_and_reuse_the_same_managed_directory() -> None
     assert "$LlamaCppDir =" not in phase
 
 
+_LABELS_OUR_OWN_DIRECTORY = re.compile(r'icacls\.exe "\$dir"(?: /setintegritylevel\b| 2>&1)')
+
+
 def test_the_installer_never_repairs_permissions_by_itself() -> None:
     """Print ACL repair commands but never run them."""
     # Match direct, chained, captured, and delegated invocation forms.
@@ -306,7 +309,31 @@ def test_the_installer_never_repairs_permissions_by_itself() -> None:
             code = line.split("#", 1)[0].strip()
             if "takeown" not in code and "icacls" not in code:
                 continue
+            if _LABELS_OUR_OWN_DIRECTORY.search(code):
+                continue
             assert not invocation.search(code), f"{label}: {line.strip()}"
+
+
+def test_the_label_exemption_is_narrow() -> None:
+    """The exemption must not cover an ACL change on anything but our own new directory.
+
+    Without this, widening it to `icacls` would read as a passing test while the rule it is
+    carved out of stopped applying at all.
+    """
+    forbidden = (
+        'icacls.exe "$LlamaCppDir" /setintegritylevel (OI)(CI)H',
+        'icacls.exe "$dir" /grant "$env:USERNAME:(F)"',
+        'takeown.exe /f "$dir"',
+        '& icacls "$StudioHome" /reset',
+    )
+    for line in forbidden:
+        assert not _LABELS_OUR_OWN_DIRECTORY.search(line), line
+    assert _LABELS_OUR_OWN_DIRECTORY.search(
+        '$null = & icacls.exe "$dir" /setintegritylevel "(OI)(CI)H" 2>&1'
+    )
+    assert _LABELS_OUR_OWN_DIRECTORY.search(
+        '$labelled = ("$(& icacls.exe "$dir" 2>&1)" -match "S-1-16-12288")'
+    )
 
 
 def test_setup_sh_reports_a_denied_default_home_cache() -> None:

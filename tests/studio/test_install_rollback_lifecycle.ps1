@@ -87,7 +87,7 @@ function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) Wr
 # not recognized" inside whichever case happened to reach it first. The closure above
 # makes an install.ps1-defined callee unreachable by construction; this catches the rest,
 # including a helper that calls a sink this file forgot to stub.
-$windowsOnlyCommands = @("Get-CimInstance")
+$windowsOnlyCommands = @("Get-CimInstance", "Get-Acl")
 $unresolved = [System.Collections.Generic.List[string]]::new()
 foreach ($name in $extracted) {
     foreach ($call in $definitions[$name].Body.FindAll({ param($n)

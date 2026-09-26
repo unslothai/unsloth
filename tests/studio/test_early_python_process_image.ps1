@@ -19,7 +19,14 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [r
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 foreach ($name in @(
     "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython", "Get-StudioEarlyPython",
-    "Get-StudioPythonProcessImageTable", "Get-StudioProcessImagePath"
+    "New-StudioChildScriptDirectory", "Test-StudioChildScriptDirectoryElevated",
+    "Get-StudioPythonProcessImageTable", "Get-StudioProcessImagePath",
+    # What Get-StudioEarlyPython reaches on Windows: the elevation gate and its helpers. Off
+    # Windows it never calls them, which is how a missing one once passed here and failed CI.
+    "Get-StudioSystem32Tool", "Test-StudioPathUnderAdminRoot",
+    "Test-StudioSddlRightsAreWrite", "Test-StudioSddlPrincipalIsAdminOnly",
+    "Test-StudioSddlWritableByNonAdmin", "Test-StudioDirectoryIsAdminOnly", "Test-StudioInterpreterFileIsAdminOnly",
+    "Get-StudioLexicalParent", "Write-StudioFinalPathDegraded"
 )) {
     $fn = $ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
@@ -28,8 +35,8 @@ foreach ($name in @(
     Invoke-Expression $fn[0].Extent.Text
 }
 
-function Initialize-StudioProcessImageNativeType { return $false }
-function Get-StudioNativeProcessImagePath { param([int]$ProcessId) return $null }
+if ($env:OS -eq "Windows_NT") { function Test-StudioChildScriptDirectoryElevated { return $false } }
+
 function Get-Process { param($Id, $ErrorAction) throw "no such process" }
 function Get-CimInstance { param($ClassName, $ErrorAction) throw "WMI is unavailable" }
 function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
@@ -49,24 +56,43 @@ $script:StudioEarlyPythonProbed = $false
 $script:StudioEarlyPython = $null
 $exe = Get-StudioEarlyPython
 if (-not $exe) {
-    # A runnable python on PATH means a broken extraction, not a host without Python.
-    $onPath = $null
+    # "No interpreter" is a real and supported state, so it is a skip. But it is also what a
+    # BROKEN EXTRACTION looks like from here: a helper this file forgot to pull out of
+    # install.ps1 makes Get-StudioEarlyPython fail, the probe finds nothing, and the suite exits 0
+    # having tested nothing. That happened once and CI recorded it as a pass. Tell the two apart.
+    # The documented opt-out first. UNSLOTH_EARLY_PYTHON_PROBE=0 means "do not spawn an interpreter
+    # on this host", so discovery returning nothing is the switch working, not a broken extraction.
+    if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") {
+        Write-Host "  SKIP  UNSLOTH_EARLY_PYTHON_PROBE=0, so this rung is switched off by request" -ForegroundColor Yellow
+        exit 0
+    }
+    $elevatedHost = $false
+    if ($env:OS -eq "Windows_NT") { try { $elevatedHost = [bool](Test-StudioChildScriptDirectoryElevated) } catch { $elevatedHost = $true } }
+    $usable = $null
     foreach ($n in @("python3", "python")) {
-        foreach ($cmd in @(Get-Command $n -All -CommandType Application -ErrorAction SilentlyContinue)) {
-            if ($onPath -or -not $cmd.Source) { continue }
-            $job = Start-Job -ArgumentList $cmd.Source -ScriptBlock {
-                param($exe)
-                $o = & $exe -I -S -c "import os,sys;sys.stdout.write(os.path.realpath('.') if sys.version_info >= (3, 8) else '')" 2>$null
-                [pscustomobject]@{ Out = "$o"; Code = $LASTEXITCODE }
+        foreach ($src in @(Get-Command $n -All -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue)) {
+            if ($usable) { break }
+            if ([string]::IsNullOrWhiteSpace($src)) { continue }
+            if ("$src" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]') { continue }
+            # The installer's own elevated rule: an elevated run refuses an interpreter a standard user
+            # can replace, so such a candidate is not one discovery should have found.
+            if ($elevatedHost -and -not (Test-StudioPathUnderAdminRoot -Path $src)) { continue }
+            $here = Split-Path -Parent $src
+            if ([string]::IsNullOrWhiteSpace($here)) { continue }
+            # In a job with a deadline: a shim that starts and never exits must be a skip, not a hang.
+            $job = Start-Job -ArgumentList $src, $here -ScriptBlock {
+                param($exe, $dir)
+                "$(& $exe -I -S -c "import pathlib,sys`nsys.exit(2) if sys.version_info < (3,8) else None`nsys.stdout.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)))" $dir 2>$null)"
             }
-            $ran = $null
-            if (Wait-Job $job -Timeout 30) { $ran = Receive-Job $job -ErrorAction SilentlyContinue } else { Stop-Job $job }
+            $answer = ""
+            if (Wait-Job $job -Timeout 30) { $answer = "$(Receive-Job $job -ErrorAction SilentlyContinue)".Trim() } else { Stop-Job $job }
             Remove-Job $job -Force
-            if ($ran -and $ran.Code -eq 0 -and -not [string]::IsNullOrWhiteSpace($ran.Out)) { $onPath = $cmd }
+            if (-not [string]::IsNullOrWhiteSpace($answer)) { $usable = $src }
         }
     }
-    if ($onPath) {
-        Write-Host "  FAIL  Get-StudioEarlyPython found nothing, yet $($onPath.Source) is on PATH." -ForegroundColor Red
+    if ($usable) {
+        Write-Host "  FAIL  Get-StudioEarlyPython found nothing, yet $usable answers the same probe." -ForegroundColor Red
         Write-Host "        That is a broken extraction in this file, not a host without Python." -ForegroundColor Red
         exit 1
     }
@@ -178,6 +204,24 @@ try {
     Check "an access error validating the answer declines instead of throwing" (
         $null -eq $threw -and $null -eq $answer)
 
+    # Without the table only WMI is left, which the shell must say rather than scan silently.
+    Reset-RungState
+    $script:StudioProcessImageWarned = $false
+    $script:RunnerOutput = ""
+    $script:Warnings = @()
+    function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") $script:Warnings += $Line }
+    $null = Get-StudioProcessImagePath -ProcessId 1
+    $null = Get-StudioProcessImagePath -ProcessId 2
+    Check "a missing process-image table is reported, once" (
+        @($script:Warnings | Where-Object { $_ -match "may go unnoticed" }).Count -eq 1)
+    Reset-RungState
+    $script:StudioProcessImageWarned = $false
+    $script:RunnerOutput = "77|C:\d\python.exe"
+    $script:Warnings = @()
+    $null = Get-StudioProcessImagePath -ProcessId 77
+    Check "a working table says nothing" ($script:Warnings.Count -eq 0)
+    function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
+
     $env:OS = "Linux"
     Reset-RungState
     $script:RunnerCalls = 0
@@ -202,20 +246,16 @@ Check "the probe declares CloseHandle's argument type" (
     $probeText -match "CloseHandle\.argtypes")
 # 0x400 is refused by protected and cross-session processes; 0x1000 is not.
 Check "the probe asks for the limited-information right only" ($probeText -match "OpenProcess\(0x1000,")
-# Both rungs must return the same string or Test-StudioProtectedPathMatch sees false differences.
-$nativeInit = ($ast.FindAll({ param($n)
-    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-    $n.Name -eq "Get-StudioNativeProcessImagePath" }, $true)[0]).Extent.Text
-$nativeRight = if ($nativeInit -match '\$queryLimitedInformation\s*=\s*\[uint32\](0x[0-9a-fA-F]+)') { $Matches[1] } else { "" }
-Check "the native rung asks for the same access right the probe does" (
-    $nativeRight -eq "0x1000" -and
-    $nativeInit -match "OpenProcess\(\s*\r?\n?\s*\`$queryLimitedInformation," -and
+Check "the probe asks for PROCESS_QUERY_LIMITED_INFORMATION, as the native rung did" (
     $probeText -match "OpenProcess\(0x1000,")
-Check "both pass flags 0, so both get the Win32 path form and not the device form" (
-    $nativeInit -match "QueryFullProcessImageNameW\(\s*\`$handle,\s*\[uint32\]0," -and
+Check "it passes flags 0, so it gets the Win32 path form and not the device form" (
     $probeText -match "QueryFullProcessImageNameW\(h,0,")
-Check "both size the buffer the same" (
-    $nativeInit -match "32768" -and $probeText -match "create_unicode_buffer\(32768\)")
+Check "it sizes the buffer as the native rung did" (
+    $probeText -match "create_unicode_buffer\(32768\)")
+$installWhole = [System.IO.File]::ReadAllText($installPs1)
+Check "no emitted process-image type remains" ($installWhole -notmatch "UnslothStudioProcessImageV1")
+Check "no native process-image helper remains" (
+    $installWhole -notmatch "Get-StudioNativeProcessImagePath|Initialize-StudioProcessImageNativeType")
 
 # EnumProcesses filling the buffer exactly may mean truncation; only a smaller count is complete.
 Check "the probe grows its buffer until the enumeration is provably complete" (
