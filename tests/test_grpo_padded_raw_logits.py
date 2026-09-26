@@ -285,12 +285,7 @@ def _build_namespace(
         (
             data.input_ids[i : i + 1],
             data.attention_mask[i : i + 1],
-            torch.zeros(1, 3) if is_vlm else None,  # pixel_values_chunk (the stub ignores it)
-            None,  # image_grid_thw_chunk
-            None,  # pixel_attention_mask_chunk
-            None,  # image_sizes_chunk
-            None,  # token_type_ids_chunk
-            None,  # mm_token_type_ids_chunk
+            {"pixel_values": torch.zeros(1, 3)} if is_vlm else {},
         )
         for i in range(_BATCH)
     ]
@@ -301,6 +296,8 @@ def _build_namespace(
         "chunked_hidden_states_selective_log_softmax": _HELPER_HIDDEN,
         "chunked_selective_log_softmax": _HELPER_RAW,
         "device_synchronize": lambda *a, **k: None,
+        # The generated trainer gets this from rl.py's preamble, so the block resolves it here too.
+        "DEVICE_TYPE_TORCH": "cuda",
         "_get_inference_mode_context_manager": lambda _model: contextlib.nullcontext(),
         "model": stub,
         "unwrapped_model": stub,

@@ -63,7 +63,7 @@ export const ContextUsageBar: FC<
         >
           <span>{state.face}</span>
           {percent !== null ? (
-            <div className="h-1.5 w-16 rounded-full bg-black/10 dark:bg-white/15 overflow-hidden">
+            <div className="h-1.5 w-16 rounded-full bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))] overflow-hidden">
               <div
                 className={cn("h-full rounded-full transition-all", severity.bar)}
                 style={{ width: `${percent}%` }}

@@ -281,6 +281,9 @@ on:
       - 'tests/kaggle/**'
       - '.github/scripts/kaggle_t4_ci/**'
       - '.github/workflows/kaggle-t4-notebook-ci.yml'
+      # When the kernel is built with Studio, the gated t4-smoke job runs
+      # kaggle_studio_ci/collect_evidence.py and kaggle_studio_ci/report.py by path.
+      - '.github/scripts/kaggle_studio_ci/**'
       # The payloads install the commit under test as a distribution, so the
       # file saying how it is built and what it needs is part of what this
       # workflow tests. BUDGET.md counted it as a watched path already.
@@ -292,6 +295,9 @@ on:
       - 'tests/kaggle/**'
       - '.github/scripts/kaggle_t4_ci/**'
       - '.github/workflows/kaggle-t4-notebook-ci.yml'
+      # When the kernel is built with Studio, the gated t4-smoke job runs
+      # kaggle_studio_ci/collect_evidence.py and kaggle_studio_ci/report.py by path.
+      - '.github/scripts/kaggle_studio_ci/**'
       - 'pyproject.toml'
   # NIGHTLY, for the legs that cannot be per-PR. The GRPO leg is the whole
   # reason this trigger exists: measured over nine T4 sessions it hits an
@@ -392,7 +398,7 @@ jobs:
       matrix: ${{ steps.decide.outputs.matrix }}
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -675,7 +681,7 @@ jobs:
         run: echo "JOB_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 

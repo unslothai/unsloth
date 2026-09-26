@@ -39,6 +39,8 @@ import {
   markChatThreadsDeleted,
 } from "./chat-thread-tombstones";
 import { ThreadRecordWriteCoordinator } from "./thread-record-write-coordinator";
+// eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
+import { setForkBoundary } from "../stores/fork-boundary-store";
 
 // Thread ids belonging to a temporary/incognito session. A thread is tagged once at creation
 // and stays tagged for life; readers and writers consult this set, never the live toggle.
@@ -48,6 +50,11 @@ const incognitoThreadIds = new Set<string>();
 
 export function markThreadIncognito(threadId: string): void {
   incognitoThreadIds.add(threadId);
+}
+
+/** Saving a temporary chat: from here on it persists like any other thread. */
+export function unmarkThreadIncognito(threadId: string): void {
+  incognitoThreadIds.delete(threadId);
 }
 
 /** True for a temporary-session thread, which is deliberately never persisted. */
@@ -250,12 +257,20 @@ function sortMessages(messages: MessageRecord[]): MessageRecord[] {
 }
 
 export function isExpectedBackgroundChatStorageError(error: unknown): boolean {
+  // The transport marker rather than the copy, which is how a merely busy backend came to
+  // be reported as an unexpected error when the copy changed.
+  if (
+    error instanceof Error &&
+    (error as { unslothTransportFailure?: boolean }).unslothTransportFailure ===
+      true
+  ) {
+    return true;
+  }
   return (
     error instanceof Error &&
     (error.message === "Invalid or expired token" ||
       error.message === "Not authenticated" ||
-      error.message === "Request failed (401)" ||
-      error.message === "Unsloth isn't running -- please relaunch it.")
+      error.message === "Request failed (401)")
   );
 }
 
@@ -715,6 +730,80 @@ async function retryFailedThreadRecord(
   return (await getChatThread(threadId)) ?? undefined;
 }
 
+/**
+ * The backend's own record for this chat: the row, null when it holds none, or undefined when
+ * it could not say.
+ *
+ * Not `getStoredChatThread`, which answers with this browser's legacy row when the backend has
+ * none. That fallback is right for opening a chat and wrong for asking whether one is still
+ * there, which is the question a chat deleted on another device turns on. Undefined is kept
+ * distinct from null so an unreachable backend is not reported as a deletion.
+ */
+export async function readBackendChatThread(
+  threadId: string,
+): Promise<ThreadRecord | null | undefined> {
+  if (isThreadIncognito(threadId)) return null;
+  if (isChatThreadDeleted(threadId)) return null;
+  try {
+    return await getChatThread(threadId);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Hand the "Continued from chat" divider where it sits, from a thread just read. */
+async function publishForkBoundary(
+  thread: ThreadRecord,
+  messages: readonly MessageRecord[],
+): Promise<void> {
+  let inherited = inheritedMessageIds(thread.forkBoundaryMessageId, messages);
+  if (thread.forkBoundaryMessageId && inherited.size > 0) {
+    // The anchor placed against these messages, which is the ordinary case.
+  } else if (thread.forkBoundaryMessageId) {
+    // An anchor this list cannot place is not an anchor that is gone. The thread and the
+    // messages are read in parallel, so a delete landing between them leaves the thread
+    // naming a row the messages no longer carry. Re-reading the thread now puts it no
+    // earlier than the messages, so a reseated anchor places; if it still does not, the
+    // messages are the older half and the next load settles it. Either way, do not blank a
+    // divider on the strength of two reads that disagree.
+    const fresh = await getChatThread(thread.id).catch(() => undefined);
+    if (!fresh) return;
+    inherited = inheritedMessageIds(fresh.forkBoundaryMessageId, messages);
+    if (fresh.forkBoundaryMessageId && inherited.size === 0) return;
+  }
+  setForkBoundary(
+    thread.id,
+    inherited,
+    // A deleted source cannot be opened, so the divider drops its link rather than its text.
+    thread.forkedFromThreadId && !isChatThreadDeleted(thread.forkedFromThreadId)
+      ? thread.forkedFromThreadId
+      : null,
+  );
+}
+
+/**
+ * Every message the fork inherited: the anchor and its ancestors.
+ *
+ * The anchor alone cannot place the divider, because editing an inherited message starts a
+ * branch that leaves the anchor off screen while earlier inherited messages stay on it. The
+ * chain is derived here rather than stored, since the parent links are already in hand.
+ */
+function inheritedMessageIds(
+  anchorId: string | null | undefined,
+  messages: readonly MessageRecord[],
+): Set<string> {
+  const ids = new Set<string>();
+  if (!anchorId) return ids;
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  let cursor = byId.get(anchorId);
+  // Stops on a repeat as well as at the root: a corrupt chain must not spin.
+  while (cursor !== undefined && !ids.has(cursor.id)) {
+    ids.add(cursor.id);
+    cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined;
+  }
+  return ids;
+}
+
 export async function listStoredChatMessages(
   threadId: string,
 ): Promise<MessageRecord[]> {
@@ -733,6 +822,12 @@ export async function listStoredChatMessages(
       throw error;
     }),
   ]);
+  // The backend's own rows, which are the ones the anchor's parent chain runs through. No list
+  // at all means nothing to place the anchor against, so the divider keeps what it has rather
+  // than reading a failed read as an empty thread. Not awaited: the chat renders either way.
+  if (backendThread && backendMessages) {
+    void publishForkBoundary(backendThread, backendMessages);
+  }
   if (backendMessages && (backendThread || backendMessages.length > 0)) {
     const merged = mergeMessages(backendMessages, legacyMessages, {
       includeLegacyOnly:
@@ -1042,6 +1137,11 @@ export async function syncStoredChatMessages(
   // actual deletion: an ordinary sync runs constantly and would undo the whole cache.
   if (options.pruneMissing || (options.deletedMessageIds?.length ?? 0) > 0) {
     clearServerOwnedChatMessages();
+    // Deleting the message the divider sits under moves it, in the same transaction that prunes.
+    // Nothing else reads the thread again, so without this the divider stays gone until the chat
+    // is reopened. Only on a delete, which is rare and already the user waiting on a round trip.
+    const thread = await getChatThread(threadId).catch(() => undefined);
+    if (thread) await publishForkBoundary(thread, synced);
   }
   return synced;
 }

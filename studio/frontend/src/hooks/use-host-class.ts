@@ -9,10 +9,7 @@ import {
 import { useMemo } from "react";
 import { useGpuInfo } from "./use-gpu-info";
 
-/** What this host can run, for the media pickers.
- *
- * The two inputs live in different places -- the OS in the platform store, the resolved torch
- * backend in system info -- so every caller reads them the same way from here. */
+/** Combine platform and backend state into a media-picker host class. */
 export function useHostClass(): HostClass {
   const gpu = useGpuInfo();
   const deviceType = usePlatformStore((s) => s.deviceType);
@@ -22,7 +19,22 @@ export function useHostClass(): HostClass {
         deviceType,
         deviceBackend: gpu.backend,
         budgetKnown: gpu.budgetKnown,
+        denseQuantSupported: gpu.denseQuantSupported,
       }),
-    [deviceType, gpu.backend, gpu.budgetKnown],
+    [deviceType, gpu.backend, gpu.budgetKnown, gpu.denseQuantSupported],
   );
+}
+
+export function useNvfp4Diffusion(): boolean {
+  return useGpuInfo().nvfp4Diffusion;
+}
+
+/** Whether `/api/system` answered, so a false `useNvfp4Diffusion()` is not just the unloaded default. */
+export function useNvfp4DiffusionKnown(): boolean {
+  return useGpuInfo().budgetKnown;
+}
+
+/** The dense quant schemes this host can run, best first. */
+export function useDenseQuantSchemes(): readonly string[] {
+  return useGpuInfo().denseQuantSchemes;
 }

@@ -17,7 +17,10 @@ from utils.paths import (
     resolve_output_dir,
     resolve_export_dir,
 )
+from contextlib import nullcontext
+
 from hub.utils.hf_tokens import (
+    recording_a_request_token_fetch,
     ANONYMOUS_CACHE_IDENTITY,
     cached_read_refused,
     qualify_cache_identity,
@@ -563,9 +566,20 @@ def load_model_config(
         # `False` is falsy: without this it falls past both branches to the ambient call.
         # Passed as the sentinel rather than via without_hf_auth(), which mutates HF_TOKEN
         # process-wide and would strip a concurrent download's credential.
-        # token=False denies auth, not the cache, so offline it would read a cached private
-        # config.json anyway; with no network this caller gets nothing instead.
-        if local_files_only or _env_offline():
+        # token=False denies auth, not the cache: AutoConfig serves a cached config.json without
+        # consulting the credential, so the read is gated here. One condition, not two: an
+        # "online, so only an ANSWERED refusal refuses" clause used to sit beside it, and it
+        # discarded the unaskable verdict this gate exists for -- a Hub that cannot be asked
+        # fails the metadata request too, and transformers then serves the private config.json
+        # off disk. Public repos are not the cost: `cached_read_refused` refuses only where a
+        # credential could have filled that cache in the first place.
+        if not is_local_path(model_name) and cached_read_refused(
+            token,
+            repo_id = model_name,
+            is_cached = lambda: _config_json_already_cached(model_name, revision),
+            # The caller's own cache-only contract, as in the explicit-token gate below.
+            offline = bool(local_files_only),
+        ):
             raise OSError(
                 f"config.json for {model_name} is not available to an unauthorized caller"
             )
@@ -595,14 +609,26 @@ def load_model_config(
         raise OSError(f"config.json for {model_name} is not available to an unauthorized caller")
 
     if token:
-        return AutoConfig.from_pretrained(
-            model_name,
-            trust_remote_code = trust_remote_code,
-            token = token,
-            local_files_only = local_files_only,
-            cache_dir = active_hf_hub_cache(),
-            **revision_kwargs,
+        # config.json lands in the hub cache under what may be a one-off token; unrecorded it
+        # reads later as "nothing here needed one". Only when this call can actually fetch:
+        # recording an already-cached resolve would mark a repo the cache may have held
+        # anonymously, withholding it from the tokenless offline caller this path exists for.
+        # Written BEFORE the call, since a fetch that dies half way has still filled the cache,
+        # and taken back by the context manager when the call raised leaving nothing on disk.
+        recording = (
+            recording_a_request_token_fetch(token, model_name, "model")
+            if not local_files_only and not _config_json_already_cached(model_name, revision)
+            else nullcontext()
         )
+        with recording:
+            return AutoConfig.from_pretrained(
+                model_name,
+                trust_remote_code = trust_remote_code,
+                token = token,
+                local_files_only = local_files_only,
+                cache_dir = active_hf_hub_cache(),
+                **revision_kwargs,
+            )
 
     if not use_auth:
         # No auth, for public model checks
@@ -1780,14 +1806,15 @@ def _is_imatrix_path(path: str) -> bool:
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS. dflash/ holds real weights, so it is a drafter by prefix only.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
 def _is_mtp_drafter(path: str) -> bool:
     """True for a separate-file drafter, a companion to the main model rather
     than a selectable quant: the repo-root ``mtp-*.gguf``, the ``MTP/`` subdir
-    copies (Gemma 4) or the ``dspark/`` drafters (DeepSeek V4 Flash).
+    copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash) or the
+    ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss).
 
     Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub). Must be
     excluded everywhere mmproj is, or the drafter leaks into variant menus (a
@@ -2078,7 +2105,11 @@ def detect_mmproj_file(
                         break
             elif allow_disjoint_search_root:
                 _add(root_resolved)
-            if allow_disjoint_search_root:
+            # Only a root that does NOT hold the weights: for the one that does, the
+            # ancestor walk above IS this function's guard and rglob defeats it, so a
+            # sibling QUANT's projector becomes a candidate and wins the shorter-stem
+            # tiebreak. A disjoint revision still recurses, which #10210 needs.
+            if allow_disjoint_search_root and not root_contains_start:
                 recursive_root = root_resolved
         except OSError:
             pass
@@ -2546,7 +2577,7 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
             is_dir = False  # stat() unavailable in the lock window
         if not is_dir:
             return str(_local_gguf_load_path(p))
-        # Directory named "*.gguf": fall through to the dir scan below.
+    # Directory named "*.gguf": fall through to the dir scan below.
 
     # Case 2: directory containing .gguf files (skip mmproj / MTP drafter)
     if p.is_dir():
@@ -3623,7 +3654,13 @@ def scan_exported_models(
                     not is_appledouble_metadata(f)
                     for f in (*checkpoint_dir.glob("*.safetensors"), *checkpoint_dir.glob("*.bin"))
                 )
-                has_gguf = any(_iter_gguf_files(checkpoint_dir))
+                # Same filter as the flat layout: mmproj and imatrix files are not main models.
+                gguf_list = [
+                    f
+                    for f in _iter_gguf_files(checkpoint_dir)
+                    if not _is_mmproj(f.name) and not _is_imatrix_path(f.name)
+                ]
+                has_gguf = bool(gguf_list)
 
                 base_model = None
                 export_type = None
@@ -3646,7 +3683,6 @@ def scan_exported_models(
                         pass
                 elif has_gguf:
                     export_type = "gguf"
-                    gguf_list = list(_iter_gguf_files(checkpoint_dir))
                     # checkpoint_dir first, then run_dir (export.py writes metadata to the top-level dir)
                     for meta_dir in (checkpoint_dir, run_dir):
                         export_meta = meta_dir / "export_metadata.json"
@@ -3660,7 +3696,7 @@ def scan_exported_models(
                             pass
 
                     display_name = f"{run_dir.name} / {checkpoint_dir.name}"
-                    model_path = str(gguf_list[0]) if gguf_list else str(checkpoint_dir)
+                    model_path = str(gguf_list[0])
                     results.append((display_name, model_path, export_type, base_model))
                     logger.debug(f"Found GGUF export: {display_name}")
                     continue

@@ -8,6 +8,7 @@ handlers explicitly send their database transaction through Starlette's threadpo
 """
 
 import asyncio
+import re
 import sqlite3
 from typing import Annotated, Any, Literal, Optional, Union
 
@@ -38,6 +39,7 @@ from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
+    ChatForkActiveGenerationError,
     ChatMessageConflictError,
     ChatMessageProtectedError,
     ChatThreadDeletedError,
@@ -69,6 +71,7 @@ from storage.studio_db import (
     list_chat_messages,
     list_chat_messages_for_threads,
     list_chat_threads,
+    remap_chat_thread_document_ids,
     sync_chat_messages,
     update_chat_project,
     update_chat_thread,
@@ -178,6 +181,8 @@ class ChatThread(BaseModel):
     anthropicCodeExecContainerId: Optional[str] = None
     forkedFromThreadId: Optional[str] = None
     forkedFromMessageId: Optional[str] = None
+    forkBoundaryMessageId: Optional[str] = None
+    forkTitleBase: Optional[str] = None
     settings: Optional[ChatThreadSettings] = None
 
     @field_serializer("settings")
@@ -477,7 +482,7 @@ class ChatSettingsPayload(BaseModel):
     searchImages: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
-    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
+    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 0)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
 
     # Composer and RAG toggles. They describe the installation, not the browser that set them, so a
@@ -524,13 +529,12 @@ class ChatSettingsPayload(BaseModel):
     contextPolicy: Optional[Literal["inherit", "checkpoint", "rolling"]] = None
     compactionHeadroomRatio: Optional[float] = Field(default = None, ge = 0.0, le = 0.9)
 
-    @field_validator("researchModelTimeoutSeconds", mode = "before")
+    @field_validator("researchModelTimeoutSeconds", "maxToolCallsPerMessage", mode = "before")
     @classmethod
     def _not_a_boolean(cls, value: Any) -> Any:
-        # bool subclasses int, so False coerces to the 0 sentinel and would persist as
-        # unlimited for every later run. The run route rejects booleans for the same reason.
+        # bool subclasses int, so False would persist as the 0 sentinel for every later run.
         if isinstance(value, bool):
-            raise ValueError("researchModelTimeoutSeconds must be an integer, not a boolean")
+            raise ValueError("Expected an integer, got a boolean.")
         return value
 
     @field_validator("researchModelTimeoutSeconds")
@@ -824,9 +828,9 @@ async def delete_threads(
     # Keyed by thread id, so the folder is unreachable once the thread is gone; done in a worker because the
     # post-upgrade legacy move can be a cross-filesystem copy.
     removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
-    # Archived turns are keyed by thread id and unreferenced once the thread is gone, so
-    # drop them rather than leaking a scope per deleted chat.
-    await run_in_threadpool(_remove_conversation_archives, payload.ids, cutoff = cutoff)
+    # Archived turns and uploaded documents are keyed by thread id and unreferenced once the thread
+    # is gone, so drop them rather than leaking scopes per deleted chat.
+    await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff = cutoff)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
 
 
@@ -836,25 +840,59 @@ def _archive_cutoff() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _remove_conversation_archives(thread_ids, *, cutoff: "str | None" = None) -> None:
-    """Drop each deleted thread's archived turns. Never raises."""
+def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
+    """Drop each deleted thread's archived turns and uploaded documents. Never raises."""
     try:
         from core.rag import conversation_archive
     except Exception:
         return
     for thread_id in thread_ids or []:
         # Cut at the instant the delete was accepted, not on recreation: another tab can have recreated this
-        # id, and skipping the scope left the deleted conversation recallable. Everything archived before
+        # id, and skipping the scope left the deleted conversation recallable. Everything stored before
         # that instant belongs to the deleted conversation, everything after to the new one.
         recreated = get_chat_thread(str(thread_id)) is not None
         if recreated and not cutoff:
             continue
+        created_before = cutoff if recreated else None
         try:
-            conversation_archive.delete_for_thread(
-                str(thread_id), created_before = cutoff if recreated else None
-            )
+            conversation_archive.delete_for_thread(str(thread_id), created_before = created_before)
         except Exception:
             logger.warning("Could not remove the conversation archive for %s", thread_id)
+        try:
+            conversation_archive.delete_thread_documents(
+                str(thread_id), created_before = created_before
+            )
+        except Exception:
+            logger.warning("Could not remove the uploaded documents for %s", thread_id)
+
+
+def _copy_thread_rag_documents(source_thread_id: str, thread_id: str) -> bool:
+    """Copy the source's uploads into the fork. False when the fork should warn that some were
+    left behind."""
+    try:
+        from core.rag import conversation_archive
+        from storage import rag_db
+
+        if not rag_db.rag_available():
+            return not conversation_archive.thread_has_documents(source_thread_id)
+        document_ids, missed = conversation_archive.copy_thread_documents(
+            source_thread_id, thread_id
+        )
+        if get_chat_thread(thread_id) is None:
+            conversation_archive.delete_thread_documents(thread_id)
+            return False
+        if not document_ids and get_chat_thread(source_thread_id) is None:
+            return False
+        remap_chat_thread_document_ids(thread_id, document_ids)
+        return not missed
+    except Exception:
+        logger.warning(
+            "Could not copy the uploaded documents of %s to %s",
+            source_thread_id,
+            thread_id,
+            exc_info = True,
+        )
+        return False
 
 
 async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[str]]":
@@ -929,6 +967,9 @@ def _decode_attachment_base64(payload: str) -> bytes:
     corrupted bytes, so raise 422."""
     import base64
 
+    # An imported file part can keep its data URL; base64 has no ':', so this never cuts a payload.
+    if payload[:5].lower() == "data:" and "," in payload:
+        payload = payload.split(",", 1)[1]
     normalized = "".join(payload.split())
     altchars = b"-_" if ("-" in normalized or "_" in normalized) else None
     normalized += "=" * (-len(normalized) % 4)
@@ -963,7 +1004,7 @@ def get_attachment_file(
     attachment_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Serve one attachment's stored content: image or audio bytes, or
+    """Serve one attachment's stored content: image, audio or video bytes, or
     extracted text."""
     import urllib.parse
 
@@ -1011,6 +1052,16 @@ def get_attachment_file(
                     )
                 )
                 return Response(content = data, media_type = media_type)
+        file_data = part.get("data")
+        mime_type = str(part.get("mimeType") or attachment_content_type or "")
+        mime_type = mime_type.split(";", 1)[0].strip().lower()
+        if (
+            part.get("type") == "file"
+            and isinstance(file_data, str)
+            and file_data
+            and re.fullmatch(r"video/[a-z0-9.+-]+", mime_type)
+        ):
+            return Response(content = _decode_attachment_base64(file_data), media_type = mime_type)
         text = part.get("text")
         if isinstance(text, str) and text:
             texts.append(text)
@@ -1175,8 +1226,8 @@ async def delete_project(
         await run_in_threadpool(_delete_project_rag_sources, project_id)
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
-    # The project's chats go with it, so their archives have to as well.
-    await run_in_threadpool(_remove_conversation_archives, member_ids, cutoff = cutoff)
+    # The project's chats go with it, so their archives and documents have to as well.
+    await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff = cutoff)
     if project.get("sandboxPath"):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
@@ -1514,10 +1565,10 @@ async def clear_history(
     # By id: the rows went with the threads, so nothing can look them up now.
     _cancel_research_runs(request, cleared_runs)
     _cancel_chat_generation_runs(request, cleared_chat_runs)
-    # Same archive cleanup as DELETE /threads. Without it "Clear all chats" leaves every
-    # conversation searchable in rag.db, and a reused thread id reads the old archive.
+    # Same cleanup as DELETE /threads. Without it "Clear all chats" leaves every conversation
+    # searchable in rag.db, and a reused thread id reads the old archive.
     await run_in_threadpool(
-        _remove_conversation_archives, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
+        _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
     )
     # "Clear all chats" is the common bulk delete.
     # delete_files matches DELETE /threads: off by default, since the files are the user's.
@@ -1595,7 +1646,8 @@ def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_cur
 
 
 class ChatForkRequest(BaseModel):
-    messageId: str
+    # an omitted message selects the tip within the fork transaction.
+    messageId: Optional[str] = None
     newThreadId: str
     createdAt: int
 
@@ -1629,36 +1681,51 @@ def fork_thread(
     """
     import uuid
 
+    from hub.services.models import account_access
+    from state import active_generations
+
     source = get_chat_thread(thread_id)
     if source is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    if get_chat_message(thread_id, payload.messageId) is None:
+    # A generation in flight leaves the tip unsettled: the last message is a prompt with no
+    # answer yet, or a reply still being written, and a fork taken now would end there. A
+    # client check cannot close this on its own, since another tab can start a generation
+    # between its snapshot and this request.
+    if thread_id in active_generations.active_thread_ids(account_access.account_scope()):
+        raise HTTPException(
+            status_code = 409,
+            detail = "This chat is still generating. Fork it once it finishes.",
+        )
+    if payload.messageId is not None and get_chat_message(thread_id, payload.messageId) is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Message {payload.messageId} not found in thread {thread_id}",
         )
-    base_title = source.get("title") or "New Chat"
-    new_title = f"fork · {base_title}"
     try:
         forked = fork_chat_thread(
             source_thread_id = thread_id,
             branch_message_id = payload.messageId,
             new_thread_id = payload.newThreadId,
-            new_title = new_title,
             created_at = payload.createdAt,
             id_factory = lambda: str(uuid.uuid4()),
         )
+    except ChatForkActiveGenerationError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except ChatThreadDeletedError as exc:
         raise _deleted_thread_error(payload.newThreadId) from exc
     if forked is None:
         # The source can be deleted between the reads above and the fork transaction, which the
         # threadpool lets run concurrently. Report it gone rather than as a server fault.
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    messages = list_chat_messages(payload.newThreadId)
+        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} or fork message not found")
     # Stub: v1 always starts a fresh container and surfaces the same warning for every provider.
     warning: Optional[str] = None
     if source.get("openaiCodeExecContainerId") or source.get("anthropicCodeExecContainerId"):
         warning = "Sandbox starts fresh in fork; files from parent are not carried over."
+    if not _copy_thread_rag_documents(thread_id, payload.newThreadId):
+        warning = " ".join(
+            filter(None, [warning, "Documents attached to the parent chat were not copied."])
+        )
+    messages = list_chat_messages(payload.newThreadId)
     return ChatForkResponse(
         thread = thread_from_row(forked),
         messages = [ChatMessage(**m) for m in messages],

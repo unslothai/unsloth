@@ -4,20 +4,19 @@
 """Opt-in low-precision quantisation of the diffusion DiT transformer.
 
 The default GGUF path stores weights 4-bit but DEQUANTISES to bf16 on every matmul, so it runs at
-bf16 tensor-core rate: a memory win that costs speed. This module is the opt-in alternative: load
-the DENSE bf16 transformer and torchao-quantise it with a DYNAMIC-ACTIVATION scheme so the matmul
-runs on low-precision tensor cores. Measured on B200 (Z-Image-Turbo, 1024px/8 steps) vs GGUF+compile
-(0.802s, LPIPS 0.083): fp8 0.585s (1.37x), int8 0.603s (1.33x), both at LOWER LPIPS than GGUF --
-faster and slightly more accurate, at a higher-memory dense load. Strictly opt-in; GGUF stays the
-low-memory default and fallback.
+bf16 tensor-core rate: a memory win that costs speed. The opt-in alternative here loads the DENSE
+bf16 transformer and torchao-quantises it with a DYNAMIC-ACTIVATION scheme, so the matmul runs on
+low-precision tensor cores. Measured on B200 (Z-Image-Turbo, 1024px/8 steps) against GGUF+compile
+(0.802s, LPIPS 0.083): fp8 0.585s (1.37x), int8 0.603s (1.33x), both at LOWER LPIPS, at a
+higher-memory dense load. GGUF stays the low-memory default and fallback.
 
-Scheme by architecture (``auto`` picks the best supported, best first): nvfp4 / mxfp8 for Blackwell
-sm_100+ FP4 / MX tensor cores (biggest win; prototype), fp8 for Ada / Hopper / Blackwell (sm_89+),
-int8 for Ampere+ (sm_80+), the broadest-hardware lever.
+Scheme by architecture (``auto`` takes the best supported): int8 leads every tier, then fp8 on
+Ada / Hopper / Blackwell (sm_89+) and mxfp8 on Blackwell (sm_100+); Ampere (sm_80+) has int8 alone.
+nvfp4 is explicit opt-in, outside the auto ladder. ``_AUTO_LADDER`` is what ships.
 
 Every scheme needs ``torch.compile`` for the speedup (dynamic quant is ~30x slower eager); the
 loader compiles the repeated block after this. torch / torchao imported lazily; every probe is
-best-effort: an unsupported scheme yields None and the caller loads GGUF.
+best-effort, yielding None so the caller loads GGUF.
 """
 
 from __future__ import annotations
@@ -27,10 +26,18 @@ import os as _os
 import re as _re
 import sys as _sys
 import threading as _threading
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from core._torchao_stub import is_stubbed, torch_is_rocm
+from .diffusion_native_quant import int8_act_disabled, int8_act_requested, is_native_linear
+from .diffusion_nvfp4_flag import (
+    nvfp4_blocked,
+    nvfp4_diffusion_enabled,
+    nvfp4_disabled_message,
+    without_nvfp4,
+)
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 
 # Also runs in the spawned smoke-probe child, which imports this module and nothing else of the backend.
@@ -125,6 +132,13 @@ _LTX2_INT8_EXCLUDES = ("audio", "av_cross_attn", "adaln")
 _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
     "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
+    # 2.1 is a 32-block SINGLE-stream DiT: no add_* projections, no txt_mlp, so the 20B MMDiT's
+    # exclusion list does not apply and this one was measured rather than inherited. ``txt_in`` is
+    # here as a QUALITY lever, not the small-M crash guard it is on qwen-image: all four policy arms
+    # rendered a deliberately 2-token prompt without tripping ``_int_mm``'s M floor, so nothing
+    # crashes either way. Excluding it scored LPIPS 0.0642 against 0.1032 with the generic tokens
+    # alone, paired over 16 calibration prompts, -0.0390 CI95 [-0.0708, -0.0072], better on 14/16.
+    "qwen-image-2.1": ("txt_in",),
     "hunyuanvideo-1.5": _HUNYUAN15_INT8_EXCLUDES,
     "hunyuanvideo-1.5-720p": _HUNYUAN15_INT8_EXCLUDES,
     "minimax-h3": _MINIMAX_H3_INT8_EXCLUDES,
@@ -190,6 +204,44 @@ def apply_small_m_padding(
     return wrapped
 
 
+# nvfp4 raises on an empty activation; HunyuanVideo-1.5's attention trim hits it every t2v render.
+_HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
+_NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
+    "hunyuanvideo-1.5": _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
+    "hunyuanvideo-1.5-720p": _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
+}
+
+
+def zero_row_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
+    if scheme != TQ_NVFP4:
+        return ()
+    return _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS.get(str(family or "").strip().lower(), ())
+
+
+def apply_zero_row_guard(
+    transformer: Any,
+    scheme: str,
+    family: Optional[str] = None,
+    *,
+    logger: Any = None,
+) -> tuple[str, ...]:
+    """Guard zero-row-reachable quantized Linears; call AFTER quantization (else the first t2v render crashes)."""
+    tokens = zero_row_tokens_for_scheme(scheme, family)
+    if not tokens:
+        return ()
+    from .diffusion_quant_pad import matching_linear_fqns, wrap_zero_row_linears
+
+    wrapped = wrap_zero_row_linears(transformer, matching_linear_fqns(transformer, tokens))
+    if wrapped and logger is not None:
+        logger.info(
+            "diffusion.transformer_quant: zero-row guarded %d %s linears on %s",
+            len(wrapped),
+            scheme,
+            family,
+        )
+    return wrapped
+
+
 def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
     """Name tokens to exclude from quantisation for ``scheme`` (optionally family-specific). int8
     (M>16) skips the M=1 modulation / conditioning-embedder projections
@@ -205,17 +257,23 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     return ()
 
 
-# Per-arch preference for ``auto``, best first. On Blackwell fp8 leads: on B200 plain fp8 dynamic is faster AND more
-# accurate at DiT shapes, while mxfp8 block scaling only adds overhead. nvfp4's FP4 GEMM is real with torch>=2.11 but
-# wins only on very large GEMMs (0.81x on Z-Image 1024px, LPIPS 0.166 vs fp8 0.044), so it is kept OUT of the ladder
-# below and stays an explicit opt-in (transformer_quant="nvfp4"): auto must never silently drop to a scheme that is
-# both slower and less accurate. Restore the commented Blackwell tier to re-enable it once the FP4 tensor-core GEMM
-# wins at the DiT's real shapes (hidden ~3072, MLP ~12288, M ~4096) and its accuracy is validated by the prequant
-# gate. Consumer / workstation GPUs move int8 first: they halve fp8/fp16 FP32-accumulate.
+_SCHEME_DIVISIBLE: dict[str, int] = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}
+
+
+def divisible_for_scheme(scheme: str) -> int:
+    """The in/out feature alignment ``scheme``'s GEMM requires, 0 when it has none."""
+    return _SCHEME_DIVISIBLE.get(scheme, 0)
+
+
+# Per-arch preference for ``auto``, best first. int8 leads every tier: it runs full-rate on consumer and
+# workstation cards (which halve fp8 FP32 accumulate) and is within a few percent of fp8 elsewhere.
+# nvfp4 stays OUT of this arch-wide table and reaches auto only via ``_FAMILY_AUTO_PREFER``.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
-    ((10, 0), (TQ_FP8, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+ (nvfp4 is explicit opt-in only)
-    # ((10, 0), (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8)),  # restore to re-enable nvfp4 under auto
-    ((8, 9), (TQ_FP8, TQ_INT8)),  # Ada sm_89 / Hopper sm_90
+    (
+        (10, 0),
+        (TQ_INT8, TQ_FP8, TQ_MXFP8),
+    ),  # Blackwell sm_100+
+    ((8, 9), (TQ_INT8, TQ_FP8)),  # Ada sm_89 / Hopper sm_90
     ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
 )
 
@@ -236,6 +294,37 @@ _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
 }
 
 
+@dataclass(frozen = True)
+class _AutoPrefer:
+    """A family's head of the ``auto`` order, ahead of ``_AUTO_LADDER``; off below ``floor`` or on consumer GPUs
+    (unless ``consumer_ok``), and ``gated`` / ``backend`` need a passing record / backend for THIS device."""
+
+    floor: tuple[int, int]
+    schemes: tuple[str, ...]
+    consumer_ok: bool = False
+    gated: bool = False
+    backend: Optional[str] = None
+
+
+_FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {
+    "z-image": _AutoPrefer(
+        floor = (10, 0), schemes = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8), gated = True
+    ),
+    "flux.1": _AutoPrefer(floor = (10, 0), schemes = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8), gated = True),
+    "qwen-image": _AutoPrefer(
+        floor = (10, 0), schemes = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8), gated = True
+    ),
+    "qwen-image-2.1": _AutoPrefer(
+        floor = (10, 0), schemes = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8), gated = True
+    ),
+    "wan2.2-t2v-a14b": _AutoPrefer(
+        floor = (10, 0),
+        schemes = (TQ_NVFP4, TQ_INT8, TQ_FP8, TQ_MXFP8),
+        backend = "flashinfer",
+    ),
+}
+
+
 # Schemes denied for TRAINING on top of the inference table. Training holds a stricter bar because the evidence above
 # is rendering evidence: it says a frozen fp8 forward reconstructs the bf16 image, not that a LoRA converges when its
 # frozen linears are fp8. Nobody has run that, so qwen fp8 stays out of the Train UI until someone does. Delete the
@@ -250,36 +339,134 @@ _FAMILY_TRAIN_SCHEME_DENY: dict[str, frozenset[str]] = {
 }
 
 
-def _family_denied(family, scheme: str) -> bool:
-    return scheme in _FAMILY_SCHEME_DENY.get(str(family or "").strip().lower(), ())
+def _nvfp4_gate_passed(family, base_repo) -> bool:
+    """Lazy import: the stdlib-only smoke-probe child imports this module whole."""
+    if not nvfp4_diffusion_enabled():
+        return False
+    try:
+        from .diffusion_nvfp4_gate import nvfp4_gate_passed
+        return bool(nvfp4_gate_passed(family, base_repo))
+    except Exception:  # noqa: BLE001 -- see the docstring: an unanswerable gate keeps the deny
+        return False
 
 
-def _family_train_denied(family, scheme: str) -> bool:
-    """``_family_denied`` plus the training-only additions. Every inference deny also applies to
-    training (a scheme that cannot render cannot train), so this is a superset, never a bypass."""
+def _nvfp4_gate_backend_ok(family, base_repo, device: Any) -> bool:
+    """Whether a passing gate record was measured on the backend this device selects; failure keeps the deny."""
+    if not nvfp4_diffusion_enabled():
+        return False
+    try:
+        from .diffusion_nvfp4_gate import nvfp4_gate_backends
+        from .diffusion_nvfp4_ops import select_nvfp4_backend
+        return str(select_nvfp4_backend(device)).strip().lower() in nvfp4_gate_backends(
+            family, base_repo
+        )
+    except Exception:  # noqa: BLE001 -- see the docstring: an unanswerable probe keeps the deny
+        return False
+
+
+def _nvfp4_backend_is(device: Any, name: str) -> bool:
+    """Whether ``select_nvfp4_backend`` picks ``name`` for ``device``; failure drops the head."""
+    if not nvfp4_diffusion_enabled():
+        return False
+    try:
+        from .diffusion_nvfp4_ops import select_nvfp4_backend
+        return str(select_nvfp4_backend(device)) == str(name)
+    except Exception:  # noqa: BLE001 -- see the docstring: an unanswerable probe drops the head
+        return False
+
+
+def _family_denied(
+    family,
+    scheme: str,
+    base_repo: Optional[str] = None,
+) -> bool:
+    """Whether the deny table rules ``scheme`` out; a gate record lifts nvfp4 per BASE, not per family."""
+    if scheme not in _FAMILY_SCHEME_DENY.get(str(family or "").strip().lower(), ()):
+        return False
+    if scheme == TQ_NVFP4 and _nvfp4_gate_passed(family, base_repo):
+        return False
+    return True
+
+
+_TRAIN_DENY_NVFP4_REASON = (
+    "nvfp4 is inference-only: the accuracy gate behind it measures a frozen forward at a "
+    "per-layer policy, and no training run has been measured on 4-bit frozen linears"
+)
+
+
+def _family_train_denied(
+    family,
+    scheme: str,
+    base_repo: Optional[str] = None,
+) -> bool:
+    """``_family_denied`` plus training-only denies (always a superset); nvfp4 is denied for every family."""
+    if scheme == TQ_NVFP4:
+        return True
     key = str(family or "").strip().lower()
-    return _family_denied(family, scheme) or scheme in _FAMILY_TRAIN_SCHEME_DENY.get(key, ())
+    return _family_denied(family, scheme, base_repo) or scheme in _FAMILY_TRAIN_SCHEME_DENY.get(
+        key, ()
+    )
 
 
-def family_denies_scheme(family: Optional[str], scheme: str) -> bool:
-    """Whether the measured deny list rules ``scheme`` out for ``family``, regardless of hardware.
-    Public so the refusal message can tell the two "no" answers apart:
-    ``select_transformer_quant_scheme`` folds a family deny and a missing kernel into the same
-    ``None``, and an EXPLICIT scheme now fails closed, so that single answer is the whole
-    explanation the user gets."""
-    return _family_denied(family, scheme)
+def nvfp4_gated_base(family: Optional[str]) -> Optional[str]:
+    """A base of ``family`` whose passing NVFP4 gate record lifts the family deny, or None. For a load whose base is
+    not known yet (a GGUF pick resolves it from its card tag at load time), so a network-free check can judge the
+    scheme the way the loader will if the pick turns out to be that base."""
+    if not family:
+        return None
+    try:
+        from .diffusion_nvfp4_gate import load_gate_records
+        records = load_gate_records()
+    except Exception:  # noqa: BLE001 -- no readable record means nothing is lifted
+        return None
+    name = str(family).strip().lower()
+    for record in records:
+        base = record.get("base_repo")
+        if (
+            str(record.get("family", "")).strip().lower() == name
+            and base
+            and _nvfp4_gate_passed(name, base)
+        ):
+            return str(base)
+    return None
 
 
-def explain_unusable_scheme(family: Optional[str], scheme: str) -> str:
-    """Why ``select_transformer_quant_scheme`` answered None for an EXPLICIT ``scheme``. One
-    ``None`` covers three different faults, and the caller turns it into a 409, so the message
-    has to separate them: a family the scheme is measured to break, a torchao that cannot run at
-    all in this install, and a GPU without the kernels. Only the last is a hardware limit, and
-    only the last is what the message used to say."""
-    if family_denies_scheme(family, scheme):
+def family_denies_scheme(
+    family: Optional[str],
+    scheme: str,
+    base_repo: Optional[str] = None,
+) -> bool:
+    """Whether the deny list rules ``scheme`` out for ``family``, so a refusal can tell it from a missing kernel."""
+    return _family_denied(family, scheme, base_repo)
+
+
+def explain_unusable_scheme(
+    family: Optional[str],
+    scheme: str,
+    base_repo: Optional[str] = None,
+    *,
+    prequant_missing: bool = False,
+) -> str:
+    """Why an EXPLICIT ``scheme`` got None: family deny, unusable torchao, or a GPU without the kernels."""
+    if nvfp4_blocked(scheme):
+        return nvfp4_disabled_message()
+    if family_denies_scheme(family, scheme, base_repo):
+        if scheme == TQ_NVFP4:
+            return (
+                f"'{scheme}' is ruled out for family '{family}'"
+                + (f" on base '{base_repo}'" if base_repo else "")
+                + ": no reviewed NVFP4 accuracy-gate record (core/inference/"
+                "nvfp4_gate_record.json) covers this base at the policy this build resolves, so "
+                "nothing has measured what those per-layer precisions do to the render"
+            )
         return (
             f"'{scheme}' is ruled out for family '{family}' by the measured accuracy gate (it "
             "renders black frames or fails the quality bar on this DiT), whatever the GPU"
+        )
+    if prequant_missing:
+        return (
+            f"'{scheme}' needs a pre-quantized checkpoint for family '{family}' and none is "
+            "available for this model (no hosted repo for this base and no transformer_prequant_path)"
         )
     unavailable = torchao_unavailable_reason()
     if unavailable is not None:
@@ -395,10 +582,9 @@ _PROFESSIONAL_GPU_MARKERS = ("RTX PRO 6000", "RTX 6000 ADA")
 
 def _is_consumer_gpu(device: Any = None) -> bool:
     """Whether the active GPU is consumer-class (GDDR), where fp8 FP32 accumulate is halved so fast
-    (FP16) accumulate is a ~2x win. Data-center HBM and professional parts are not nerfed (return
-    False -> precise accumulate, fp8 first). Heuristic on the device name: GeForce / TITAN ->
-    consumer; a data-center token or professional marker -> not; anything else defaults to
-    consumer (fast accumulate is free on data-center, a win on consumer). True on any failure."""
+    (FP16) accumulate is a ~2x win. Data-center HBM and professional parts are not nerfed and return
+    False. Heuristic on the device name, defaulting to consumer, which is free on data-center parts
+    and a win on consumer ones. True on any failure."""
     try:
         import re
 
@@ -426,7 +612,212 @@ def normalize_transformer_quant(value: Optional[str]) -> Optional[str]:
         raise ValueError(
             f"Unsupported transformer_quant '{value}'. Use one of: {', '.join(TQ_MODES)}."
         )
+    if nvfp4_blocked(normalized):
+        raise ValueError(nvfp4_disabled_message("transformer_quant"))
     return normalized
+
+
+# GGUF substitutes dense base weights; pipeline rewrites its loaded weights in place; single-file
+# artifacts keep their stored precision. ``dense_quant_blocker`` checks pipeline eligibility later.
+DENSE_QUANT_KINDS: tuple[str, ...] = ("gguf", "pipeline")
+
+
+def dense_quant_supported_kind(model_kind: Optional[str]) -> bool:
+    """Whether ``model_kind`` can reach the dense transformer-quant path at all."""
+    return (model_kind or "").strip().lower() in DENSE_QUANT_KINDS
+
+
+def dense_quant_unsupported_kind_reason(model_kind: Optional[str]) -> str:
+    return (
+        f"the dense transformer-quant path applies to GGUF and pipeline picks, and this is a "
+        f"'{model_kind}' load, which runs the precision its checkpoint carries"
+    )
+
+
+# Both Ideogram branches must use the same precision.
+DENOISER_ATTRS: tuple[str, ...] = ("transformer", "unconditional_transformer")
+
+# Some dense DiTs retain norms or embedders in fp32. Other parameter dtypes are not dense sources.
+_DENSE_PARAM_DTYPE_NAMES = ("bfloat16", "float32")
+
+
+class DenoiserView:
+    """Expose ``pipe.<attr>`` as ``pipe.transformer`` for the quantisation helpers."""
+
+    def __init__(self, pipe: Any, attr: str) -> None:
+        object.__setattr__(self, "_pipe", pipe)
+        object.__setattr__(self, "_attr", attr)
+
+    @property
+    def transformer(self) -> Any:
+        return getattr(
+            object.__getattribute__(self, "_pipe"), object.__getattribute__(self, "_attr")
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(object.__getattribute__(self, "_pipe"), name)
+
+
+def denoiser_modules(pipe: Any) -> tuple[tuple[str, Any], ...]:
+    """The ``(attribute, module)`` denoisers present on ``pipe``, in conversion order."""
+    found = []
+    for attr in DENOISER_ATTRS:
+        module = getattr(pipe, attr, None)
+        if module is not None:
+            found.append((attr, module))
+    return tuple(found)
+
+
+# Records a quantised source that a loader widened to a dense dtype.
+SOURCE_PRECISION_ATTR = "_unsloth_source_precision"
+
+
+def mark_source_precision(module: Any, precision: str) -> Any:
+    """Record the precision from which a loader dequantised ``module``."""
+    try:
+        setattr(module, SOURCE_PRECISION_ATTR, precision)
+    except Exception:  # noqa: BLE001 -- a marker must never fail the load it describes
+        pass
+    return module
+
+
+# safetensors header dtype strings narrower than bf16, mapped to the name the refusal uses. Header
+# strings, not torch dtypes: this is read before anything is instantiated.
+_NARROW_STORED_DTYPES: dict[str, str] = {
+    "F8_E4M3": "fp8",
+    "F8_E5M2": "fp8",
+    "F8_E8M0": "fp8",
+    "I8": "int8",
+    "U8": "uint8",
+    "I4": "int4",
+    "U4": "uint4",
+    "F4": "fp4",
+}
+
+
+def _cached_snapshot_dir(repo_id: str) -> Any:
+    """``repo_id``'s already-cached snapshot, Studio's live cache first (the loaders pass it as ``cache_dir``)."""
+    from pathlib import Path
+
+    from huggingface_hub import snapshot_download
+
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+        roots = (active_hf_hub_cache(), None)
+    except Exception:  # noqa: BLE001 -- the smoke-probe child has no Studio settings
+        roots = (None,)
+    for cache_dir in roots:
+        try:
+            return Path(snapshot_download(repo_id, cache_dir = cache_dir, local_files_only = True))
+        except Exception:  # noqa: BLE001 -- not cached there
+            continue
+    return None
+
+
+def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
+    """The narrow precision a LOCAL snapshot's denoiser shards are stored at, or None.
+
+    ``from_pretrained(torch_dtype = bfloat16)`` widens a raw fp8 checkpoint as it loads, so by the
+    time ``dense_quant_blocker`` walks parameters every tensor reads bf16 and the evidence is gone.
+    Quantising it again compounds a loss already taken. Ideogram's loader records this itself with
+    ``mark_source_precision``; every other family reaches the generic loader, where the shard header
+    is the only place left to look.
+
+    Headers only, and only under a directory we already have: no download, no tensor read, and no
+    verdict without a local snapshot, which is the behaviour without this check. A hub id resolves to
+    its already-cached snapshot (``local_files_only``: an offline load stages nothing), else None."""
+    if not local_dir:
+        return None
+    try:
+        from pathlib import Path
+
+        import safetensors
+
+        root = Path(local_dir).expanduser()
+        if not root.is_dir():
+            root = _cached_snapshot_dir(str(local_dir))
+            if root is None:
+                return None
+        for attr in DENOISER_ATTRS:
+            sub = root / attr
+            if not sub.is_dir():
+                continue
+            # EVERY shard: a narrow checkpoint keeps its norms and embeddings wide (why
+            # _DENSE_PARAM_DTYPE_NAMES admits float32), and shards are cut by size, so the first
+            # file can be entirely wide while a later one holds the fp8 linears.
+            for shard in sorted(sub.glob("*.safetensors")):
+                with safetensors.safe_open(str(shard), "pt") as handle:
+                    for key in handle.keys():
+                        dtype = str(handle.get_slice(key).get_dtype()).upper()
+                        narrow = _NARROW_STORED_DTYPES.get(dtype)
+                        if narrow is not None:
+                            return narrow
+    except Exception:  # noqa: BLE001 -- an unreadable header is not evidence of anything
+        return None
+    return None
+
+
+def _module_quantised_marker(module: Any) -> Optional[str]:
+    """Explain why ``module`` is not a dense bf16 source, or return None."""
+    if getattr(module, "_unsloth_runtime_quant", None):
+        return "it is already quantised by this loader"
+    source = getattr(module, SOURCE_PRECISION_ATTR, None)
+    if source:
+        return (
+            f"its published weights are {source} and were widened to bf16 on load, so quantising "
+            "them again would compound that loss"
+        )
+    for flag, what in (("is_loaded_in_4bit", "4-bit"), ("is_loaded_in_8bit", "8-bit")):
+        if getattr(module, flag, False):
+            return f"it was loaded {what} (bitsandbytes)"
+    config = getattr(module, "config", None)
+    if getattr(config, "quantization_config", None) is not None:
+        return "its checkpoint declares a quantization_config"
+    try:
+        for param in module.parameters(recurse = True):
+            name = str(getattr(param, "dtype", "")).rsplit(".", 1)[-1]
+            if name not in _DENSE_PARAM_DTYPE_NAMES:
+                return f"its weights are stored as {name}, not dense bfloat16"
+    except Exception:  # noqa: BLE001 -- an unwalkable module is not evidence of anything
+        return None
+    return None
+
+
+def dense_quant_blocker(pipe: Any) -> Optional[str]:
+    """Explain why a pipeline cannot be quantised in place, or return None."""
+    denoisers = denoiser_modules(pipe)
+    if not denoisers:
+        return (
+            "this pipeline has no transformer to quantise (its denoiser is a UNet, which the "
+            "dense torchao schemes do not cover)"
+        )
+    for attr, module in denoisers:
+        marker = _module_quantised_marker(module)
+        if marker is not None:
+            where = "its transformer" if attr == "transformer" else f"its {attr}"
+            return f"{where} is not a dense bf16 source: {marker}"
+    return None
+
+
+def transformer_is_quantised(module: Any) -> bool:
+    """Whether any Linear weight has been replaced by a torchao tensor subclass, or any Linear by a
+    torchao-free weight-only twin (``diffusion_native_quant``)."""
+    try:
+        import torch
+        for sub in module.modules():
+            if is_native_linear(sub):
+                return True
+            if not isinstance(sub, torch.nn.Linear):
+                continue
+            weight = getattr(sub, "weight", None)
+            data = getattr(weight, "data", None)
+            if data is not None and type(data) is not torch.Tensor:
+                return True
+            if weight is not None and type(weight) not in (torch.nn.Parameter, torch.Tensor):
+                return True
+    except Exception:  # noqa: BLE001 -- a probe must never replace the failure it is describing
+        return False
+    return False
 
 
 def dense_transformer_supported(target: Any) -> bool:
@@ -462,50 +853,168 @@ def dense_transformer_unsupported_reason(target: Any) -> str:
     return "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
 
 
+# ``auto`` never lands here: weight-only measured no speed win on gfx1151, only memory.
+NATIVE_QUANT_SCHEMES = (TQ_INT8, TQ_FP8)
+
+
+def native_quant_host(target: Any) -> bool:
+    """Whether ``target`` is a bf16 GPU whose torchao path is closed for a platform reason: a ROCm torch
+    (the NVIDIA-shaped capability ladder misclassifies it, and gfx1151 refuses fp8 ``_scaled_mm``) or the
+    Windows-ROCm torchao stub. False on every NVIDIA, MPS, XPU and CPU host, which keep the torchao path."""
+    if getattr(target, "device", None) != "cuda":
+        return False
+    if not (torch_is_rocm() or is_stubbed("torchao")):
+        return False
+    try:
+        import torch
+        return getattr(target, "dtype", None) is torch.bfloat16
+    except Exception:
+        return False
+
+
+NATIVE_OFFLOAD_SCHEMES = (TQ_INT8,)
+
+
+def native_offload_host(target: Any) -> bool:
+    if getattr(target, "device", None) != "cuda":
+        return False
+    if torch_is_rocm() or is_stubbed("torchao"):
+        return False
+    try:
+        import torch
+        return getattr(target, "dtype", None) is torch.bfloat16
+    except Exception:
+        return False
+
+
+def native_quant_scheme(
+    target: Any,
+    requested: Optional[str],
+    family: Optional[str] = None,
+    *,
+    offload: bool = False,
+) -> Optional[str]:
+    """Not ``select_transformer_quant_scheme``: that also feeds hosted prequant planners (torchao checkpoints)."""
+    scheme = normalize_transformer_quant(requested)
+    if scheme not in NATIVE_QUANT_SCHEMES:
+        return None
+    if not native_quant_host(target) and not (
+        offload and scheme in NATIVE_OFFLOAD_SCHEMES and native_offload_host(target)
+    ):
+        return None
+    if _family_denied(family, scheme):
+        return None
+    return scheme
+
+
+def native_int8_act(target: Any) -> bool:
+    if native_quant_host(target):
+        return int8_act_requested()
+    return not int8_act_disabled()
+
+
 def select_transformer_quant_scheme(
     target: Any,
     requested: Optional[str],
     family: Optional[str] = None,
     *,
     unproven_ok: bool = False,
+    base_repo: Optional[str] = None,
+    require_prequant: frozenset[str] = frozenset({TQ_NVFP4}),
+    has_prequant: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
     """The concrete scheme to apply, or None to fall back to GGUF.
 
     ``auto`` walks the per-arch ladder and returns the first scheme passing a real quantise+matmul
     smoke test, so an unavailable Blackwell fp4/mx kernel lands on fp8/int8 with no error. An
     explicit scheme is honored only if supported (else None), never swapped. ``family`` applies the
-    measured deny list (``_FAMILY_SCHEME_DENY``): schemes that produce black frames / out-of-bar
-    drift are skipped by ``auto`` and refused when explicit.
-
-    ``unproven_ok`` is for the PRE-EVICTION route gate. The smoke test allocates, so a resident
-    chat/image/video model can make it fail for want of VRAM rather than for want of a kernel; the
-    gate runs before the arbiter has evicted that model, so treating "could not tell" as "not
-    supported" refuses a load the very next moment would have run. It answers "is this scheme
-    provably unusable here", and the real selection still happens after the handoff.
+    measured deny list; ``base_repo`` keys its per-base nvfp4 lift. ``require_prequant``: schemes AUTO
+    offers only with a hosted checkpoint (the gate measured that artifact, not an on-the-fly build).
+    ``unproven_ok`` is for the PRE-EVICTION gate, where a resident model can fail the smoke test for VRAM.
     """
     requested = normalize_transformer_quant(requested)
     if requested is None or not dense_transformer_supported(target):
         return None
     device = str(getattr(target, "device", "cuda"))
     if requested != TQ_AUTO:
-        if _family_denied(family, requested):
+        if _family_denied(family, requested, base_repo):
             return None
         return requested if _scheme_supported(requested, device, unproven_ok = unproven_ok) else None
     cap = _capability()
     if cap is None:
         return None
-    for floor, schemes in _AUTO_LADDER:
-        if cap >= floor:
-            for scheme in _prefer_consumer_scheme(schemes, device):
-                if _family_denied(family, scheme):
-                    continue
-                if _scheme_supported(scheme, device):
-                    return scheme
-            return None
+    for scheme in _auto_scheme_order(family, device, cap, base_repo):
+        if not _auto_offers_scheme(scheme, family, base_repo, require_prequant, has_prequant):
+            continue
+        if _scheme_supported(scheme, device):
+            return scheme
     return None
 
 
-def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[str, ...]:
+def dense_quant_host_capable(target: Any) -> bool:
+    """Whether an ``auto`` request could engage a dense scheme on this host.
+
+    One bit, because that is all the picker can honestly act on. A load's actual scheme depends on
+    the request (precision, speed, memory), the family deny list and the smoke probe, none of which
+    belong on an unclicked row; ``resolved`` reports what ran once there is a load.
+
+    Cheap and non-allocating, so a polled status route can ask it: the arch floors come from
+    ``_AUTO_LADDER`` and the probe is only READ from ``_SMOKE_CACHE``, where the load path already
+    paid for it. An unprobed scheme counts as usable, like the ``unproven_ok`` path; a probed
+    failure does not.
+
+    ``auto``, not "any scheme": the ladder leaves nvfp4 out, so a host that can only run nvfp4
+    honours an explicit request and has nothing automatic to offer."""
+    if not dense_transformer_supported(target):
+        return False
+    # The loader keeps a pipeline dense when nothing can compile the result, so a host without
+    # inductor has no fast path to advertise. Host-level only: the per-family and per-request
+    # halves of that decision belong to the load, not to a row.
+    from .diffusion_speed import compile_eligible
+
+    if not compile_eligible(target, is_gguf = False, family = None):
+        return False
+    # Not redundant with the arch floor: `_scheme_supported` rejects every scheme when the torchao
+    # import fails, so an ABI skew would advertise a fast path every load then falls back from.
+    if torchao_unavailable_reason() is not None:
+        return False
+    cap = _capability()
+    if cap is None:
+        return False
+    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
+    for floor, schemes in _AUTO_LADDER:
+        if cap >= floor:
+            return any(_SMOKE_CACHE.get((scheme, card), True) for scheme in without_nvfp4(schemes))
+    return False
+
+
+def _auto_offers_scheme(
+    scheme: str,
+    family: Optional[str],
+    base_repo: Optional[str],
+    require_prequant: frozenset[str],
+    has_prequant: Optional[Callable[[str], bool]],
+) -> bool:
+    if _family_denied(family, scheme, base_repo):
+        return False
+    if scheme in (require_prequant or ()):
+        if has_prequant is None:
+            return False
+        try:
+            return bool(has_prequant(scheme))
+        except Exception:  # noqa: BLE001 -- see the docstring: unanswerable means not offered
+            return False
+    return True
+
+
+def auto_scheme_candidates(
+    target: Any,
+    family: Optional[str] = None,
+    *,
+    base_repo: Optional[str] = None,
+    require_prequant: frozenset[str] = frozenset({TQ_NVFP4}),
+    has_prequant: Optional[Callable[[str], bool]] = None,
+) -> tuple[str, ...]:
     """Every scheme ``auto`` would accept on this device, best first.
     ``select_transformer_quant_scheme`` returns only the winner, which is all the load needs
     until the winner turns out to have no hosted prequant AND not to fit dense. The caller then
@@ -518,23 +1027,69 @@ def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[s
     cap = _capability()
     if cap is None:
         return ()
+    return tuple(
+        scheme
+        for scheme in _auto_scheme_order(family, device, cap, base_repo)
+        if _auto_offers_scheme(scheme, family, base_repo, require_prequant, has_prequant)
+        and _scheme_supported(scheme, device)
+    )
+
+
+def _auto_scheme_order(
+    family: Optional[str],
+    device: Any,
+    cap: tuple[int, int],
+    base_repo: Optional[str] = None,
+) -> tuple[str, ...]:
+    """Schemes ``auto`` would try here, best first, before deny list and smoke probe; empty below every tier."""
+    tier: tuple[str, ...] = ()
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
-            return tuple(
-                scheme
-                for scheme in _prefer_consumer_scheme(schemes, device)
-                if not _family_denied(family, scheme) and _scheme_supported(scheme, device)
-            )
-    return ()
+            tier = schemes
+            break
+    if not tier:
+        return ()
+    prefer = _FAMILY_AUTO_PREFER.get(str(family or "").strip().lower())
+    if prefer is not None and (prefer.gated or prefer.backend) and not nvfp4_diffusion_enabled():
+        # Switch off: drop gated/backend rows before their gate record or backend probe (imports flashinfer).
+        prefer = None
+    head: tuple[str, ...] = ()
+    if prefer is not None and cap >= prefer.floor:
+        if prefer.consumer_ok or not _is_consumer_gpu(device):
+            if not prefer.gated or (
+                _nvfp4_gate_passed(family, base_repo)
+                and _nvfp4_gate_backend_ok(family, base_repo, device)
+            ):
+                if prefer.backend is None or _nvfp4_backend_is(device, prefer.backend):
+                    head = prefer.schemes
+    order: list[str] = []
+    # Filtered here so the NVFP4 switch reaches every reader of the order.
+    for scheme in without_nvfp4(head + tier):
+        if scheme not in order:
+            order.append(scheme)
+    return tuple(order)
 
 
-def _prefer_consumer_scheme(schemes: tuple[str, ...], device: Any) -> tuple[str, ...]:
-    """Reorder an arch tier's schemes for the GPU class. On consumer / workstation cards move int8
-    first: they halve fp8/fp16 FP32-accumulate while int8 runs full-rate, so int8 is as fast or
-    faster (and the only path on pre-Ada consumer). Data-center parts keep fp8 first."""
-    if TQ_INT8 in schemes and schemes[0] != TQ_INT8 and _is_consumer_gpu(device):
-        return (TQ_INT8,) + tuple(s for s in schemes if s != TQ_INT8)
-    return schemes
+def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> tuple[str, ...]:
+    """``auto_scheme_candidates`` answered from ``_SMOKE_CACHE`` alone, for a polled status route.
+
+    Same ladder and deny list, but no probe: ``_scheme_supported`` can spawn the child smoke probe
+    or allocate in this process, and neither belongs on a route polled every few seconds. Unprobed
+    counts as usable and a probed failure does not, as in ``dense_quant_host_capable``, so the
+    published ladder sharpens as loads record verdicts instead of paying for them here."""
+    if not dense_transformer_supported(target):
+        return ()
+    cap = _capability()
+    if cap is None:
+        return ()
+    device = str(getattr(target, "device", "cuda"))
+    card = _smoke_cache_device_key(device)
+    return tuple(
+        scheme
+        for scheme in _auto_scheme_order(family, device, cap)
+        if _auto_offers_scheme(scheme, family, None, frozenset({TQ_NVFP4}), None)
+        and _SMOKE_CACHE.get((scheme, card), True)
+    )
 
 
 def _capability() -> Optional[tuple[int, int]]:
@@ -553,6 +1108,8 @@ def _scheme_supported(
     unproven_ok: bool = False,
 ) -> bool:
     """CUDA + (for fp8) the fp8 dtype + a cached quantise+matmul smoke test for ``scheme``."""
+    if nvfp4_blocked(scheme):
+        return False
     try:
         import torch
         if not torch.cuda.is_available():
@@ -650,7 +1207,14 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
             # and binds the child to this process's lifetime, so a wedged probe cannot outlive the backend.
             proc = ctx.Process(
                 target = run_without_native_path_secret,
-                args = (__name__, "_child_probe_entry", {}, device, TQ_SCHEMES, queue),
+                args = (
+                    __name__,
+                    "_child_probe_entry",
+                    {},
+                    device,
+                    without_nvfp4(TQ_SCHEMES),
+                    queue,
+                ),
                 daemon = True,
             )
             proc.start()
@@ -1111,16 +1675,27 @@ def quantize_transformer(
     *,
     mode: Optional[str],
     family: Optional[str] = None,
+    base_repo: Optional[str] = None,
     min_features: int = DEFAULT_MIN_LINEAR_FEATURES,
     fast_accum: Optional[bool] = None,
     logger: Any = None,
+    offload: bool = False,
+    act_int8: Optional[bool] = None,
 ) -> Optional[str]:
-    """Quantise ``pipe.transformer``'s FLOP-heavy linears in place with the arch-chosen scheme.
-    Returns the scheme engaged, or None when disabled / unsupported / failed (caller loads GGUF).
-    Best-effort: never raises for an unsupported environment (failure leaves it dense).
-    ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None auto-detects,
-    True/False force it."""
-    scheme = select_transformer_quant_scheme(target, mode, family = family)
+    """Quantise ``pipe.transformer`` in place, returning the scheme or None (GGUF); ``base_repo`` picks the NVFP4 policy."""
+    native = native_quant_scheme(target, mode, family = family, offload = offload)
+    if native is not None:
+        if act_int8 is None:
+            act_int8 = native_int8_act(target)
+        return _quantize_native(
+            pipe,
+            native,
+            family = family,
+            min_features = min_features,
+            act_int8 = bool(act_int8) and native == TQ_INT8,
+            logger = logger,
+        )
+    scheme = select_transformer_quant_scheme(target, mode, family = family, base_repo = base_repo)
     if scheme is None:
         return None
     transformer = getattr(pipe, "transformer", None)
@@ -1129,13 +1704,35 @@ def quantize_transformer(
     try:
         from torchao.quantization import quantize_
 
+        policy = None
+        if scheme == TQ_NVFP4:
+            from .diffusion_nvfp4_policy import quantize_with_policy, resolve_policy
+            policy = resolve_policy(family, base_repo)
+        if policy is not None:
+            quantize_with_policy(
+                transformer,
+                policy,
+                min_features = min_features,
+                fast_accum = fast_accum,
+                logger = logger,
+            )
+            apply_small_m_padding(transformer, scheme, family, logger = logger)
+            apply_zero_row_guard(transformer, scheme, family, logger = logger)
+            for attr, value in (
+                ("_unsloth_runtime_quant", scheme),
+                ("_unsloth_nvfp4_policy", policy.policy_id),
+            ):
+                try:
+                    setattr(transformer, attr, value)
+                except Exception:  # noqa: BLE001 - markers are best-effort
+                    pass
+            return scheme
+
         # int8 skips the M=1 projections; fp8/mxfp8 assert a bf16 weight, so on a mixed-precision DiT they must skip
         # non-bf16 ones. "lora_" keeps a baked adapter's side path high precision. Runtime only: NOT part of
         # exclude_tokens_for_scheme, whose list is baked into prequant metadata.
         exclude = exclude_tokens_for_scheme(scheme, family) + ("lora_",)
-        # GEMM tiling floors per scheme: scaled_mm needs 16-aligned dims, MX block scaling 32. int8's _int_mm has no
-        # such floor and keeps the historical filter.
-        divisible = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}.get(scheme, 0)
+        divisible = divisible_for_scheme(scheme)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),
@@ -1150,6 +1747,7 @@ def quantize_transformer(
         # here means the transformer is quantized but not safely compilable, so it falls into the except below and the
         # caller loads GGUF.
         apply_small_m_padding(transformer, scheme, family, logger = logger)
+        apply_zero_row_guard(transformer, scheme, family, logger = logger)
         try:
             transformer._unsloth_runtime_quant = scheme
         except Exception:  # noqa: BLE001 - marker is best-effort
@@ -1157,6 +1755,35 @@ def quantize_transformer(
         return scheme
     except Exception as exc:  # noqa: BLE001 - leave the transformer dense -> GGUF fallback
         _warn(logger, scheme, exc)
+        return None
+
+
+def _quantize_native(
+    pipe: Any, scheme: str, *, family: Optional[str], min_features: int, act_int8: bool, logger: Any
+) -> Optional[str]:
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None:
+        return None
+    try:
+        from .diffusion_native_quant import apply_native_weight_quant
+
+        # require_bf16 keeps the fp32 linears some DiTs deliberately hold (Wan, Hunyuan) at full precision.
+        filter_fn = make_filter_fn(
+            min_features,
+            exclude_name_tokens = exclude_tokens_for_scheme(scheme, family) + ("lora_",),
+            require_bf16 = True,
+        )
+        if not apply_native_weight_quant(
+            transformer, scheme, filter_fn = filter_fn, act_int8 = act_int8, logger = logger
+        ):
+            return None
+        try:
+            transformer._unsloth_runtime_quant = scheme
+        except Exception:  # noqa: BLE001 - marker is best-effort
+            pass
+        return scheme
+    except Exception as exc:  # noqa: BLE001 - a partial swap is reported by transformer_is_quantised
+        _warn(logger, f"{scheme} (weight-only)", exc)
         return None
 
 

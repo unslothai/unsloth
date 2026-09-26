@@ -77,6 +77,13 @@ on:
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_windows_installer_native_type_fallback.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
+      # The deliberate unreadable-directory and traversal-limit cases for the
+      # no-compiler detector's temp scan live in this job, and only here. The
+      # no-compiler workflow runs the scanner's positive control but never creates
+      # those conditions, so without both lines a PR touching only the scanner
+      # could regress the error handling with nothing red.
+      - '.github/scripts/Watch-ForCompiler.ps1'
+      - 'tests/python/test_compiler_watch_temp_scan.py'
       # Every PowerShell test in this job shells out through it, so a change here can break
       # all of them. It was in no path filter, so it triggered nothing.
       - 'tests/_shared/unsloth_pwsh_runner.py'
@@ -97,6 +104,8 @@ on:
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
       - 'tests/studio/test_nvidia_library_inventory.ps1'
+      - 'tests/studio/test_nvidia_smi_discovery.ps1'
+      - 'tests/studio/test_install_lock_excludes_aliases.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
@@ -106,6 +115,30 @@ on:
       - 'tests/sh/test_setup_xpu_posix_summary.sh'
       - 'studio/setup.sh'
       - '.github/workflows/cross-platform-parity-ci.yml'
+      # Read or executed by the parity tests above but not matched by any entry:
+      # test_install_rollback_lifecycle.sh sources _harness.sh and _ps1_source.sh;
+      # test_windows_setup_output_encoding.py dot-sources Get-FunctionSource.ps1 and
+      # asserts on install.rs and update.rs next to process.rs;
+      # test_installer_skip_autostart.py asserts on README.md;
+      # test_installer_profile_hardening.py imports unsloth_cli.commands, which imports
+      # every command module; prebuilt_core.py imports auth_safe.py and llama_backend.py
+      # needs its package init. The pytest step runs from the repo root, so the root
+      # conftest, tests/_shared and the pytest config in pyproject.toml apply on all
+      # three operating systems.
+      - 'tests/sh/_harness.sh'
+      - 'tests/sh/_ps1_source.sh'
+      - 'tests/studio_setup_ps1/Get-FunctionSource.ps1'
+      - 'studio/src-tauri/src/install.rs'
+      - 'studio/src-tauri/src/update.rs'
+      - 'README.md'
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'pyproject.toml'
   push:
     branches: [main]
     paths:
@@ -156,6 +189,13 @@ on:
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_windows_installer_native_type_fallback.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
+      # The deliberate unreadable-directory and traversal-limit cases for the
+      # no-compiler detector's temp scan live in this job, and only here. The
+      # no-compiler workflow runs the scanner's positive control but never creates
+      # those conditions, so without both lines a PR touching only the scanner
+      # could regress the error handling with nothing red.
+      - '.github/scripts/Watch-ForCompiler.ps1'
+      - 'tests/python/test_compiler_watch_temp_scan.py'
       # Every PowerShell test in this job shells out through it, so a change here can break
       # all of them. It was in no path filter, so it triggered nothing.
       - 'tests/_shared/unsloth_pwsh_runner.py'
@@ -176,6 +216,8 @@ on:
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
       - 'tests/studio/test_nvidia_library_inventory.ps1'
+      - 'tests/studio/test_nvidia_smi_discovery.ps1'
+      - 'tests/studio/test_install_lock_excludes_aliases.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
@@ -185,6 +227,30 @@ on:
       - 'tests/sh/test_setup_xpu_posix_summary.sh'
       - 'studio/setup.sh'
       - '.github/workflows/cross-platform-parity-ci.yml'
+      # Read or executed by the parity tests above but not matched by any entry:
+      # test_install_rollback_lifecycle.sh sources _harness.sh and _ps1_source.sh;
+      # test_windows_setup_output_encoding.py dot-sources Get-FunctionSource.ps1 and
+      # asserts on install.rs and update.rs next to process.rs;
+      # test_installer_skip_autostart.py asserts on README.md;
+      # test_installer_profile_hardening.py imports unsloth_cli.commands, which imports
+      # every command module; prebuilt_core.py imports auth_safe.py and llama_backend.py
+      # needs its package init. The pytest step runs from the repo root, so the root
+      # conftest, tests/_shared and the pytest config in pyproject.toml apply on all
+      # three operating systems.
+      - 'tests/sh/_harness.sh'
+      - 'tests/sh/_ps1_source.sh'
+      - 'tests/studio_setup_ps1/Get-FunctionSource.ps1'
+      - 'studio/src-tauri/src/install.rs'
+      - 'studio/src-tauri/src/update.rs'
+      - 'README.md'
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'pyproject.toml'
   workflow_dispatch:
 
 concurrency:
@@ -193,7 +259,7 @@ concurrency:
   # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
   # the moment a newer one is queued, so a merge burst still leaves only the tip.
   # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -254,6 +320,7 @@ jobs:
           tests/python/test_windows_setup_output_encoding.py
           tests/python/test_windows_installer_native_type_fallback.py
           tests/python/test_pwsh_runner_encoding.py
+          tests/python/test_compiler_watch_temp_scan.py
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py
@@ -308,6 +375,25 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -File tests\studio\test_nvidia_library_inventory.ps1
+      # Both legs, and both matter: the candidate list is what decides whether a real GPU is
+      # seen at all, and 5.1 is the host the Desktop app launches the installer in.
+      - name: nvidia-smi discovery tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_nvidia_smi_discovery.ps1
+      - name: nvidia-smi discovery tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_nvidia_smi_discovery.ps1
+      # Spawns a real holder process and takes the lock through a junction (Windows) or a
+      # symbolic link (Linux), so it needs both legs: the alias mechanisms differ per OS and
+      # .NET enforces FileShare.None through a different mechanism on each.
+      - name: Install lock alias-exclusion tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_install_lock_excludes_aliases.ps1
+      - name: Install lock alias-exclusion tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_install_lock_excludes_aliases.ps1
       # AST-extracted helpers plus a real .cmd written to a temp dir, so no venv and no
       # Windows needed. The 1260 classification is exercised against crafted exceptions:
       # a hosted runner has no Application Control policy to be denied by. The enforced

@@ -159,7 +159,14 @@ try {
     $iTrack = $src.IndexOf('$script:TorchOverridesFile = $f')
     $iWrite = $src.IndexOf('[System.IO.File]::WriteAllText(')
     Check "the path is tracked BEFORE the write that can throw" (($iTrack -ge 0) -and ($iTrack -lt $iWrite))
-    Check "a failed write removes the file it created" ($src -match 'catch \{\s*\r?\n\s*Remove-Item -LiteralPath \$f')
+    Check "a failed write removes the file it created" ($src -match 'catch \{\s*\r?\n\s*Remove-UnslothTempFileQuietly -Path \$f')
+    # Space-free is not sufficient for an 8.3 alias: a volume can hand back a name that does not
+    # resolve, and this alias is both uv's --overrides argument and the caller's delete target, so
+    # an unresolvable one fails the install and then throws on the way out (#11290).
+    Check "the 8.3 alias is accepted only once it resolves" (
+        $src -match 'Test-Path -LiteralPath \$short -PathType Leaf')
+    Check "the give-up branch clears the path it just deleted" (
+        ([regex]::Matches($src, '\$script:TorchOverridesFile = \$null')).Count -eq 2)
 
     # Get-Content decodes a BOM-less file with the ANSI code page on PS 5.1, which is where the
     # mojibake came from. pwsh on Linux defaults to UTF-8, so the round trip cannot fail here

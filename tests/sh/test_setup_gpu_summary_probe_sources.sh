@@ -15,11 +15,32 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 SKIP=0
 
+
 {
+    # A helper the sed lines above never pulled in is not a missing binary, it is an
+    # extraction that fell behind studio/setup.sh. #11437 added _amd_prefer_discrete_gfx
+    # to the selection block and nothing extracted it, so 29 cases each died on a bare
+    # "command not found" and none of them named the cause. Say it once, plainly, the
+    # first time such a call is actually reached. Reached, not merely present: setup.sh
+    # arms this test never takes call helpers it never extracts (the NVIDIA banner, the
+    # step/substep printers), and those are not defects to fail on.
+    cat <<'GUARD'
+command_not_found_handle() {
+    printf '%s\n' "FATAL: the extracted block called '$1', which studio/setup.sh defines" >&2
+    printf '%s\n' "       but no sed line in this test pulled in. Add:" >&2
+    printf '%s\n' "         sed -n '/^$1()/,/^}/p' \"\$SETUP_SH\"" >&2
+    exit 127
+}
+GUARD
     sed -n '/^_setup_run_smi()/,/^}/p'              "$SETUP_SH"
     sed -n '/^_setup_rocminfo_gpu_records()/,/^}/p' "$SETUP_SH"
     sed -n '/^_setup_amd_smi_gpu_records()/,/^}/p'  "$SETUP_SH"
     sed -n '/^_setup_amd_smi_hip_order()/,/^}/p'  "$SETUP_SH"
+    # Called from the selection block below, so they have to come with it: without them
+    # the block runs with the helpers undefined and every case that reaches a
+    # discrete-vs-iGPU choice dies on "command not found" rather than answering.
+    sed -n '/^_amd_gfx_is_shadowing_integrated()/,/^}/p'  "$SETUP_SH"
+    sed -n '/^_amd_prefer_discrete_gfx()/,/^}/p'  "$SETUP_SH"
     # The real initialiser group, not a restated one. Seeding these here would hide the
     # thing that matters under `set -u`: a variable the selection block reads but no arm
     # assigns aborts `unsloth studio update` outright.
@@ -37,11 +58,34 @@ grep -q '_setup_amd_smi_gpu_records' "$WORK/block.sh" || {
     echo "FATAL: the amd-smi record parser is not wired into the block" >&2; exit 1; }
 grep -q '_setup_amd_smi_hip_order' "$WORK/block.sh" || {
     echo "FATAL: the amd-smi HIP reorder is not wired into the block" >&2; exit 1; }
+grep -q '^_amd_prefer_discrete_gfx()' "$WORK/block.sh" || {
+    echo "FATAL: the discrete-GPU preference helper is not in the block" >&2; exit 1; }
+grep -q '^_amd_gfx_is_shadowing_integrated()' "$WORK/block.sh" || {
+    echo "FATAL: the integrated-GPU test the preference reads is not in the block" >&2
+    exit 1; }
 bash -n "$WORK/block.sh" || { echo "FATAL: extracted block does not parse" >&2; exit 1; }
 
 # The same two halves, split, for the arms that reach selection without probing anything.
 sed -n '/^_setup_amd_detected=false$/,/^_setup_amd_records=""$/p' "$SETUP_SH" > "$WORK/init.sh"
 {
+    # A helper the sed lines above never pulled in is not a missing binary, it is an
+    # extraction that fell behind studio/setup.sh. #11437 added _amd_prefer_discrete_gfx
+    # to the selection block and nothing extracted it, so 29 cases each died on a bare
+    # "command not found" and none of them named the cause. Say it once, plainly, the
+    # first time such a call is actually reached. Reached, not merely present: setup.sh
+    # arms this test never takes call helpers it never extracts (the NVIDIA banner, the
+    # step/substep printers), and those are not defects to fail on.
+    cat <<'GUARD'
+command_not_found_handle() {
+    printf '%s\n' "FATAL: the extracted block called '$1', which studio/setup.sh defines" >&2
+    printf '%s\n' "       but no sed line in this test pulled in. Add:" >&2
+    printf '%s\n' "         sed -n '/^$1()/,/^}/p' \"\$SETUP_SH\"" >&2
+    exit 127
+}
+GUARD
+    # The same helpers, for the same reason: this half holds the selection too.
+    sed -n '/^_amd_gfx_is_shadowing_integrated()/,/^}/p'  "$SETUP_SH"
+    sed -n '/^_amd_prefer_discrete_gfx()/,/^}/p'  "$SETUP_SH"
     awk '/^if \[ "\$_setup_nvidia_usable" = true \]; then/ {on=1}
          on && /UNSLOTH_ROCM_GFX_ARCH env override/ {exit}
          on {print}' "$SETUP_SH"
@@ -51,6 +95,8 @@ grep -q '_setup_nvidia_usable=false' "$WORK/init.sh" || {
     echo "FATAL: initialiser group not found in $SETUP_SH" >&2; exit 1; }
 grep -q '_setup_amd_record=' "$WORK/select.sh" || {
     echo "FATAL: selection block not found in $SETUP_SH" >&2; exit 1; }
+grep -q '^_amd_prefer_discrete_gfx()' "$WORK/select.sh" || {
+    echo "FATAL: the discrete-GPU preference helper is not in the split half" >&2; exit 1; }
 bash -n "$WORK/init.sh" && bash -n "$WORK/select.sh" || {
     echo "FATAL: extracted halves do not parse" >&2; exit 1; }
 
@@ -85,7 +131,7 @@ chmod +x "$WORK/roc/rocminfo" "$WORK/smi/amd-smi"
 # $1 rocminfo fixture ("-" = not installed), $2 amd-smi fixture, $3 visible-device mask.
 # Prints "gfx|name". The probe log is left in $WORK/probes for the call-count asserts.
 summary() {
-    _path="$WORK/base"
+    _path="${PREPATH:+$PREPATH:}$WORK/base"
     [ "$1" != "-" ] && _path="$WORK/roc:$_path"
     [ "$2" != "-" ] && _path="$WORK/smi:$_path"
     : > "$WORK/probes"
@@ -415,6 +461,22 @@ assert_eq "every variable the selection block reads is initialised up front" \
           | while read -r _v; do grep -q "^$_v=" "$WORK/init.sh" || echo "$_v"; done | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "amd-smi answers list but not static --asic" \
     "|" "$(STUB_AMDSMI_MUTE_STATIC=1 summary "$WORK/empty" "$WORK/smi_three")"
+
+echo "=== the index-space line is read without SIGPIPE ==="
+mkdir -p "$WORK/head1"
+cat > "$WORK/head1/head" <<'STUB'
+#!/bin/sh
+IFS= read -r _l && printf '%s\n' "$_l"
+STUB
+chmod +x "$WORK/head1/head"
+# Doubling, not sprintf("%200000s"): mawk 1.3.4 caps sprintf at 8192 bytes.
+awk '/MARKET_NAME: AMD Radeon RX 7900 XTX/ { s = "X"; while (length(s) < 200000) s = s s; sub(/AMD Radeon RX 7900 XTX/, substr(s, 1, 200000)) } { print }' \
+    "$WORK/smi_three" > "$WORK/smi_three_long"
+assert_eq "an amd-smi answer larger than a pipe does not abort the block" \
+    "gfx1100|200000" \
+    "$(PREPATH="$WORK/head1" STUB_AMDSMI_E="$WORK/smi_e_reversed" \
+        summary "$WORK/empty" "$WORK/smi_three_long" 1 2>/dev/null \
+        | awk -F'|' '{ print $1 "|" length($2) }')"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

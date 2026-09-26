@@ -11,7 +11,11 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 
+import type { CapabilityKey } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
+// eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { useNpuStatus } from "@/features/npu";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
@@ -53,7 +57,10 @@ import {
   missingExternalModel,
 } from "./model-selector/missing-external-model";
 import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy";
-import type { CatalogGroup } from "./model-selector/model-catalog";
+import {
+  artifactForRepoId,
+  type CatalogGroup,
+} from "./model-selector/model-catalog";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
 import { loraOptionLabel } from "./model-selector/row-meta";
@@ -128,6 +135,8 @@ interface ModelSelectorProps {
   /** Also list community (non-unsloth) models for `task`. Opt-in: only pages whose runtime loads
    *  arbitrary publishers. */
   communityModelPolicy?: CommunityModelPolicy;
+  /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
+  hubCapability?: CapabilityKey;
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
@@ -166,11 +175,11 @@ function ModelSelectorTrigger({
           "unsloth-model-selector-trigger group/trigger flex min-w-0 items-center gap-2 transition-colors",
           // Suppress the pill's hover background while the eject hit area is hovered.
           variant === "outline" &&
-            "rounded-full border border-border/60 hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
+            "rounded-full border border-border hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "ghost" &&
             "rounded-full hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "muted" &&
-            "rounded-full bg-muted hover:bg-muted/80 has-[[data-eject-hit]:hover]:!bg-muted",
+            "rounded-full bg-muted hover:bg-muted has-[[data-eject-hit]:hover]:!bg-muted",
           // More left padding than right; the chevron is pulled close to the label so the trigger reads
           // balanced around the text. Height stays pinned to --studio-chat-control-height.
           size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
@@ -195,7 +204,7 @@ function ModelSelectorTrigger({
                 onEject();
               }}
               // Hit area larger than the icon, with a hover circle; negative margin keeps the icon in place.
-              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-black/10 dark:hover:bg-white/10 [@media(hover:none)]:pointer-events-none"
+              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
             >
               <HugeiconsIcon
                 icon={CheckmarkCircle02Icon}
@@ -216,30 +225,46 @@ function ModelSelectorTrigger({
             {currentModel.icon}
           </span>
         ) : null}
+        {/* No vertical offset, so the caps line up with the project switcher. */}
         <span className="flex min-w-0 flex-1 items-baseline">
-          <span
-            className={cn(
-              "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white",
-              triggerLabelClassName,
-            )}
-          >
-            {currentModel?.name ?? placeholder}
-            {showCloudIndicator ? (
-              <HugeiconsIcon
-                icon={CloudIcon}
-                strokeWidth={1.75}
-                className="relative top-[0.15625rem] ml-1.5 mr-[0.36rem] size-3.5 shrink-0 text-muted-foreground"
-              />
-            ) : null}
-          </span>
-          {currentModel?.description && (
+          {/* Name and quant stay whole; only the description truncates. The suffix sits outside this
+              group, so even an over-long name leaves room for it. */}
+          <span className="flex min-w-0 items-baseline">
             <span
               className={cn(
-                "shrink-0 text-xs leading-none text-muted-foreground",
-                showCloudIndicator ? "" : "ml-2",
+                "flex max-w-full shrink-0 items-baseline whitespace-nowrap font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
+                triggerLabelClassName,
               )}
             >
-              {currentModel.description}
+              <span className="min-w-0 truncate">{currentModel?.name ?? placeholder}</span>
+              {showCloudIndicator ? (
+                <HugeiconsIcon
+                  icon={CloudIcon}
+                  strokeWidth={1.75}
+                  className="relative top-[0.15625rem] ml-1.5 mr-[calc(0.36rem*var(--ui-space-scale,1))] size-3.5 shrink-0 text-muted-foreground"
+                />
+              ) : null}
+            </span>
+            {currentModel?.description && (
+              <span
+                className={cn(
+                  "min-w-0 truncate text-xs leading-tight text-muted-foreground",
+                  showCloudIndicator ? "" : "ml-2",
+                )}
+              >
+                {currentModel.description}
+              </span>
+            )}
+          </span>
+          {currentModel?.descriptionSuffix && (
+            <span
+              className={cn(
+                "shrink-0 whitespace-nowrap text-xs leading-none text-muted-foreground",
+                !currentModel.description && !showCloudIndicator && "ml-2",
+              )}
+            >
+              {currentModel.description ? " - " : ""}
+              {currentModel.descriptionSuffix}
             </span>
           )}
         </span>
@@ -320,6 +345,7 @@ function ModelSelectorContent({
   onEject,
   onFoldersChange,
   onBrowseHub,
+  onConfigureConnection,
   onModelsChange,
   deleteDisabled,
   className,
@@ -348,6 +374,7 @@ function ModelSelectorContent({
   onEject?: () => void;
   onFoldersChange?: () => void;
   onBrowseHub?: () => void;
+  onConfigureConnection?: (providerId: string) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   className?: string;
@@ -365,6 +392,11 @@ function ModelSelectorContent({
     [loraModels],
 
   );
+  const [npuStatus, setNpuStatus] = useNpuStatus(open && !task);
+  const npu =
+    !task && npuStatus?.supported === true
+      ? { status: npuStatus, onStatusChange: setNpuStatus }
+      : undefined;
   // Connected sits in the section toggle, shown only with external providers.
   const hubSectionTabs = useMemo(
     () =>
@@ -610,6 +642,7 @@ function ModelSelectorContent({
               resolveDownloadFootprint={resolveDownloadFootprint}
               onFoldersChange={onFoldersChange}
               onBrowseHub={onBrowseHub}
+              onConfigureConnection={onConfigureConnection}
               onModelsChange={onModelsChange}
               onConfigure={openConfigPage}
               deleteDisabled={deleteDisabled}
@@ -617,12 +650,13 @@ function ModelSelectorContent({
               task={task}
               catalog={catalog}
               communityModelPolicy={communityModelPolicy}
+              npu={npu}
               section={effectiveHubSection}
               sectionToggle={
                 <PillTabs
                   // Wider tabs than the shared default. The panel reserves
                   // --picker-tab-pad a pill, so keep the two in step.
-                  className="[&_[role=tab]]:px-[calc(0.75rem_+_var(--picker-tab-pad)/2)]"
+                  className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
                   ariaLabel={t("picker.hubSectionAriaLabel")}
                   tabs={hubSectionTabs}
                   value={effectiveHubSection}
@@ -677,6 +711,7 @@ export function ModelSelector({
   task,
   catalog,
   communityModelPolicy = "none",
+  hubCapability,
   placeholder,
   loaded,
 }: ModelSelectorProps) {
@@ -740,7 +775,12 @@ export function ModelSelector({
 
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
-    const found = optionById.get(selected);
+    // A cached vendor copy loads for its unsloth mirror; name it by the mirror's option.
+    const mirrorId =
+      catalog && artifactForRepoId(selected, catalog)?.artifact.repoId;
+    const found =
+      optionById.get(selected) ??
+      (mirrorId ? optionById.get(mirrorId) : undefined);
     // A pick whose connection no longer offers it takes its option away and leaves the id in the
     // checkpoint, and the generic fallback cannot shorten an `external::` id. Name the model the
     // user picked and say why it is unusable, or a tidy name would hide the failure until the
@@ -753,10 +793,11 @@ export function ModelSelector({
     // not the namespaced public id (#7966), matches the catalog row that later replaces this one.
     const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
     if (activeGgufVariant) {
+      // The variant is the quant, so it goes in the suffix.
       const desc = `GGUF · ${activeGgufVariant}`;
       return found
-        ? { ...found, description: desc }
-        : { id: selected, name: fallbackName, description: desc };
+        ? { ...found, description: undefined, descriptionSuffix: desc }
+        : { id: selected, name: fallbackName, descriptionSuffix: desc };
     }
     if (missingExternal) {
       const disabled = missingExternal.state === "disabled";
@@ -777,6 +818,7 @@ export function ModelSelector({
   }, [
     selected,
     optionById,
+    catalog,
     activeGgufVariant,
     externalModels,
     externalConnections,
@@ -799,7 +841,17 @@ export function ModelSelector({
 
   function handleBrowseHub() {
     setOpen(false);
-    void navigate({ to: "/hub", search: { tab: "discover" } });
+    void navigate({
+      to: "/hub",
+      search: { tab: "discover", capability: hubCapability },
+    });
+  }
+
+  // A Connected group's gear. What is configurable about a remote model lives on its connection,
+  // so open that form rather than ModelConfigPage's local load settings.
+  function handleConfigureConnection(providerId: string) {
+    setOpen(false);
+    useSettingsDialogStore.getState().openConnectionSettings(providerId);
   }
 
   return (
@@ -836,11 +888,13 @@ export function ModelSelector({
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
-        // A curated task picker (Images / Video) is self-contained, so it omits this. A
-        // community-enabled one (Audio) already lists past unsloth, so it keeps it.
+        // Curated task pickers show it only with a Hub filter; community-enabled ones always do.
         onBrowseHub={
-          task && communityModelPolicy === "none" ? undefined : handleBrowseHub
+          task && communityModelPolicy === "none" && !hubCapability
+            ? undefined
+            : handleBrowseHub
         }
+        onConfigureConnection={handleConfigureConnection}
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         className={contentClassName}

@@ -11,6 +11,10 @@ export {
   usePinnedModelsStore,
 } from "./components/model-selector/pinned-models";
 export {
+  pinnedReasoningEffort,
+  useModelReasoningEffortStore,
+} from "./components/model-selector/model-reasoning-effort";
+export {
   hfModelFitsDevice,
   loadScopedGpu,
 } from "./components/model-selector/recommended-fit";
@@ -65,6 +69,7 @@ export {
   type PerModelConfig,
   PER_MODEL_CONFIG_STORAGE_KEY,
   PER_MODEL_CONFIG_UPDATED_EVENT,
+  adoptCachedRepoConfig,
   adoptLegacyConfigKey,
   isServedByLlamaCpp,
   contextPinPatch,

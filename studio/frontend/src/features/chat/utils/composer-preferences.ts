@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export type ComposerSendShortcut = "enter" | "mod-enter";
+// "mod-enter-multiline" is Enter until the draft has a line break, then "mod-enter".
+export type ComposerSendShortcut = "enter" | "mod-enter-multiline" | "mod-enter";
 export type ComposerFollowUpBehavior = "queue" | "steer";
 export type ComposerSubmitIntent = "default" | "opposite";
 
@@ -16,11 +17,22 @@ export type ComposerKeyEvent = {
   keyCode?: number;
 };
 
+/** The rule in force for `draft`. */
+export function effectiveSendShortcut(
+  shortcut: ComposerSendShortcut,
+  draft?: string | null,
+): "enter" | "mod-enter" {
+  if (shortcut !== "mod-enter-multiline") return shortcut;
+  return draft?.includes("\n") ? "mod-enter" : "enter";
+}
+
 /** Only called for the focused composer, after its IME and mention-picker guards. */
 export function composerSubmitIntent(
   event: ComposerKeyEvent,
-  shortcut: ComposerSendShortcut,
+  preference: ComposerSendShortcut,
+  draft?: string | null,
 ): ComposerSubmitIntent | null {
+  const shortcut = effectiveSendShortcut(preference, draft);
   if (
     event.key !== "Enter" ||
     event.altKey ||
@@ -46,10 +58,20 @@ export function composerFollowUpBehavior(
   return preference === "queue" ? "steer" : "queue";
 }
 
+/** Intent that lands a submit on `behavior` from either preference. */
+export function followUpSubmitIntent(
+  preference: ComposerFollowUpBehavior,
+  behavior: ComposerFollowUpBehavior,
+): ComposerSubmitIntent {
+  return preference === behavior ? "default" : "opposite";
+}
+
 export function composerShortcutLabels(
-  shortcut: ComposerSendShortcut,
+  preference: ComposerSendShortcut,
   mac: boolean,
+  draft?: string | null,
 ) {
+  const shortcut = effectiveSendShortcut(preference, draft);
   const mod = mac ? "⌘" : "Ctrl+";
   return {
     send: shortcut === "enter" ? "Enter" : `${mod}Enter`,
@@ -73,10 +95,10 @@ export function normalizeComposerPreferences(value: unknown) {
       typeof saved?.showContextWindowUsage === "boolean"
         ? saved.showContextWindowUsage
         : true,
-    sendShortcut:
-      saved?.sendShortcut === "mod-enter"
-        ? ("mod-enter" as const)
-        : ("enter" as const),
+    sendShortcut: (saved?.sendShortcut === "mod-enter" ||
+    saved?.sendShortcut === "mod-enter-multiline"
+      ? saved.sendShortcut
+      : "enter") as ComposerSendShortcut,
     followUpBehavior:
       saved?.followUpBehavior === "steer"
         ? ("steer" as const)

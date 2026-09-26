@@ -43,6 +43,7 @@ def saving(monkeypatch, tmp_path):
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     records = {
         "merges": [],
+        "adapter_saves": [],
         "uploads": [],
         "repos": [],
         "directories": [],
@@ -139,7 +140,9 @@ def saving(monkeypatch, tmp_path):
             records["uploads"].append({**kwargs, "files": files, "token": self.token})
             if records.get("fail_upload"):
                 raise OSError("upload failed")
-            return "commit-info"
+            # Overridable so a test can hand back a real-shaped CommitInfo, whose `pr_url` is
+            # the only place the pull request's own address exists.
+            return records.get("commit_info", "commit-info")
 
     env = dict(
         os = os,
@@ -163,15 +166,30 @@ def saving(monkeypatch, tmp_path):
         _normalize_torchao_method = lambda method: None,
         _is_qwen3_5_vlm = lambda model: False,
         logger = SimpleNamespace(warning_once = lambda *args: None),
+        # save_method="lora" leaves this module for the adapter save rather than the merge,
+        # so record the handover instead of re-implementing it.
+        unsloth_save_model = lambda *args, **kwargs: (
+            records["adapter_saves"].append({"args": args, "kwargs": kwargs}),
+            (kwargs.get("save_directory"), None),
+        )[1],
     )
     names = {
         "_push_merged_to_hub_revision",
         "unsloth_generic_save",
         "unsloth_generic_push_to_hub_merged",
+        # Real code, not stubs: these two decide what save_method="lora" and
+        # safe_serialization=None mean, which is what several tests below assert on.
+        "_normalize_safe_serialization",
+        "_is_adapter_save_method",
+        "_honours_safe_serialization",
+        "_assert_export_target_is_not_base_with_lora_layers",
+        "_refuse_unsaveable_text_core",
     }
     nodes = []
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in names:
+            # _normalize_safe_serialization must be defined before the functions that call
+            # it, which the source order already gives; only the decorators go.
             node.decorator_list = []
             nodes.append(node)
         elif isinstance(node, ast.Assign) and any(
@@ -440,3 +458,221 @@ def test_card_download_failure_does_not_overwrite_remote_card(saving, error):
         env["unsloth_generic_push_to_hub_merged"](FullModel(), "owner/model", create_pr = True)
     assert records["uploads"] == []
     assert not any(directory.exists() for directory in records["directories"])
+
+
+class Transformers5Model(FullModel):
+    def __init__(self):
+        self.saved = []
+
+    def save_pretrained(self, directory, **kwargs):
+        self.saved.append(kwargs)
+        super().save_pretrained(directory)
+
+    def push_to_hub(
+        self,
+        repo_id,
+        *,
+        commit_message = None,
+        commit_description = None,
+        private = None,
+        token = None,
+        revision = None,
+        create_pr = False,
+        max_shard_size = "50GB",
+        tags = None,
+    ):
+        raise AssertionError("Model files must join the single staged commit")
+
+
+class Tokenizer:
+    padding_side = "right"
+
+    def save_pretrained(self, directory):
+        assert self.padding_side == "left"
+        (Path(directory) / "tokenizer.json").write_text("{}")
+
+    def push_to_hub(self, *args, **kwargs):
+        raise AssertionError("Tokenizer files must join the single staged commit")
+
+
+def test_default_full_finetune_push_stages_one_commit(saving):
+    env, records, _ = saving
+    model, tokenizer = Transformers5Model(), Tokenizer()
+    env["unsloth_generic_push_to_hub_merged"](
+        model, "owner/model", tokenizer, token = "fixture", datasets = ["owner/data"]
+    )
+    assert len(records["uploads"]) == 1
+    upload = records["uploads"][0]
+    assert upload["repo_id"] == "owner/model"
+    assert upload["revision"] is None and upload["create_pr"] is False
+    assert set(upload["files"]) == {
+        "config.json",
+        "model.safetensors",
+        "tokenizer.json",
+        "README.md",
+    }
+    assert ModelCard(upload["files"]["README.md"]).data.datasets == ["owner/data"]
+    assert "state_dict" in model.saved[0] and model.saved[0]["safe_serialization"] is True
+    assert tokenizer.padding_side == "right"
+    assert records["merges"] == []
+
+
+def test_default_full_finetune_push_uploads_16bit_safetensors(monkeypatch):
+    pytest.importorskip("unsloth", reason = "unsloth is not importable on this runner")
+    try:
+        import unsloth.save as save
+    except ImportError as error:
+        pytest.skip(f"unsloth.save is not importable on this runner: {error}")
+    import torch
+    import transformers
+    from safetensors.torch import load_file
+
+    commits = []
+
+    class Api:
+        def __init__(self, token):
+            self.token = token
+
+        def create_repo(self, **kwargs):
+            pass
+
+        def create_commit(self, **kwargs):
+            commits.append(
+                {
+                    operation.path_in_repo: (
+                        load_file(operation.path_or_fileobj)
+                        if operation.path_in_repo.endswith(".safetensors")
+                        else None
+                    )
+                    for operation in kwargs["operations"]
+                }
+            )
+
+    def download(*args, **kwargs):
+        raise EntryNotFoundError("No README at destination")
+
+    monkeypatch.setattr(save, "HfApi", Api)
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", download)
+    config = transformers.LlamaConfig(
+        vocab_size = 32,
+        hidden_size = 16,
+        intermediate_size = 32,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+    )
+    model = transformers.LlamaForCausalLM(config).float()
+    save.unsloth_generic_push_to_hub_merged(
+        model, "owner/model", token = "fixture", tags = ["fine-tuned"]
+    )
+    assert len(commits) == 1
+    assert {"config.json", "model.safetensors", "README.md"} <= set(commits[0])
+    target = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    assert {tensor.dtype for tensor in commits[0]["model.safetensors"].values()} == {target}
+    assert next(model.parameters()).dtype == torch.float32
+
+
+def test_the_push_names_the_destination_and_not_the_staging_folder(saving, capsys):
+    """The staged save reports the temp folder it wrote, which is deleted moments later.
+
+    A caller asked for a repository, so the repository is what the output has to name; otherwise
+    the last thing printed is a success line pointing at a path that no longer exists.
+    """
+    env, records, _ = saving
+    env["unsloth_generic_push_to_hub_merged"](FullModel(), "owner/model", token = "fixture")
+    printed = capsys.readouterr().out
+    assert "owner/model" in printed
+    assert "https://huggingface.co/owner/model" in printed
+
+
+@pytest.mark.parametrize(
+    "kwargs,expected",
+    [
+        ({}, "https://huggingface.co/owner/model"),
+        # A branch upload is not on the repository's default branch.
+        ({"revision": "my-branch"}, "https://huggingface.co/owner/model/tree/my-branch"),
+        # An existing pull request, addressed the way the Hub spells it.
+        ({"revision": "refs/pr/3"}, "https://huggingface.co/owner/model/discussions/3"),
+        # A fresh pull request: the repository page can hold no model files at all.
+        ({"create_pr": True}, "https://huggingface.co/owner/model/discussions"),
+        # `create_pr` wins over the branch it was opened against.
+        (
+            {"create_pr": True, "revision": "my-branch"},
+            "https://huggingface.co/owner/model/discussions",
+        ),
+    ],
+)
+def test_the_printed_destination_is_where_the_files_landed(saving, capsys, kwargs, expected):
+    """A branch or pull-request upload does not appear on the repository page."""
+    env, records, _ = saving
+    env["unsloth_generic_push_to_hub_merged"](FullModel(), "owner/model", token = "fixture", **kwargs)
+    printed = capsys.readouterr().out
+    assert f"Saved model to {expected}\n" in printed, printed
+
+
+def test_the_pull_requests_own_url_is_preferred_when_the_hub_returns_one(saving, capsys):
+    """`CommitInfo.pr_url` names the exact pull request; nothing local can reconstruct it."""
+    env, records, _ = saving
+    records["commit_info"] = SimpleNamespace(
+        pr_url = "https://huggingface.co/owner/model/discussions/7"
+    )
+    env["unsloth_generic_push_to_hub_merged"](
+        FullModel(), "owner/model", token = "fixture", create_pr = True
+    )
+    printed = capsys.readouterr().out
+    assert "Saved model to https://huggingface.co/owner/model/discussions/7\n" in printed, printed
+
+
+def test_a_pickle_request_this_transformers_cannot_honour_is_reported(saving):
+    """transformers 5 removed `safe_serialization`, so `False` silently yields safetensors."""
+    env, records, _ = saving
+    said = []
+    env["logger"] = SimpleNamespace(warning_once = lambda message, *a, **kw: said.append(message))
+
+    class NoSafeSerialization(FullModel):
+        """transformers 5's shape: named parameters, but nothing that honours the request."""
+
+        def save_pretrained(
+            self,
+            directory,
+            max_shard_size = "50GB",
+            variant = None,
+            **kwargs,
+        ):
+            super().save_pretrained(directory)
+
+    class HonoursIt(FullModel):
+        def save_pretrained(
+            self,
+            directory,
+            safe_serialization = True,
+            **kwargs,
+        ):
+            super().save_pretrained(directory)
+
+    class Patched(FullModel):
+        """`patch_saving_functions` wraps the real method in a passthrough that tells us nothing,
+        and keeps the original, which is what has to be probed."""
+
+        def save_pretrained(self, *args, **kwargs):
+            FullModel.save_pretrained(self, args[0])
+
+        original_model_save_pretrained = HonoursIt.save_pretrained
+
+    honours = env["_honours_safe_serialization"]
+    assert honours(NoSafeSerialization().save_pretrained) is False
+    assert honours(HonoursIt().save_pretrained) is True
+    # Cannot tell, so it must not warn: a wrong warning is worse than none.
+    assert honours(Patched().save_pretrained) is True
+
+    def push(model, **kwargs):
+        said.clear()
+        env["unsloth_generic_push_to_hub_merged"](model, "owner/model", token = "fixture", **kwargs)
+        return [message for message in said if "not a pickle" in message]
+
+    assert push(NoSafeSerialization(), safe_serialization = False)
+    # A transformers that still takes it, a patched model whose original does, and the default
+    # `True`, are all silent.
+    assert push(HonoursIt(), safe_serialization = False) == []
+    assert push(Patched(), safe_serialization = False) == []
+    assert push(NoSafeSerialization()) == []

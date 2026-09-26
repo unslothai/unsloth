@@ -78,6 +78,11 @@ _URL_BLOCK = re.compile(
     r"Title:\s*(?P<title>[^\n]*)\nURL:\s*(?P<url>https?://[^\s]+)\nSnippet:\s*(?P<snippet>.*?)(?=\n\n---|\Z)",
     re.DOTALL,
 )
+_OPENAI_RESPONSES_FIXED_SAMPLING_MODEL = re.compile(
+    r"^(?:gpt-6-astra(?:[-.]|$)|gpt-5(?:[-.]|$)|gpt-4\.5(?:[-.]|$)|"
+    r"o\d+(?:[-.]|$)|codex-mini(?:[-.]|$))"
+)
+_OPENAI_NON_REASONING_CHAT_ALIAS = re.compile(r"-chat(?:-latest)?$")
 _WALL_CLOCK_TIMEOUT_CANCEL_MESSAGE = "research-wall-clock-timeout"
 _MAX_ERROR_CHARS = 500
 _MAX_CONTEXT_CHARS = 12_000
@@ -535,6 +540,30 @@ def _saved_connection_cap(provider_id: object) -> int | None | object:
             return _CAP_UNREADABLE
         return _positive_int_or_none(provider.get("max_output_tokens"))
     return _CAP_UNREADABLE
+
+
+def _custom_responses_rejects_sampling(inference: dict[str, Any]) -> bool:
+    """Whether this research hop targets fixed-sampling OpenAI Responses semantics."""
+    if inference.get("providerType") != "custom":
+        return False
+    provider_id = inference.get("providerId")
+    if not isinstance(provider_id, str) or not provider_id:
+        return False
+    try:
+        provider = providers_db.get_provider(provider_id) or {}
+    except Exception:
+        logger.debug("research.provider_api_type_probe_failed", exc_info = True)
+        return False
+    if provider.get("provider_type") != "custom" or provider.get("api_type") != "responses":
+        return False
+
+    model = str(inference.get("externalModel") or inference.get("model") or "").strip().lower()
+    if _OPENAI_NON_REASONING_CHAT_ALIAS.search(model):
+        return False
+    # Sampling support is an upstream model contract, independent of the UI's reasoning
+    # toggle metadata. In particular, codex-mini and gpt-4.5 reject these fields without
+    # necessarily being marked reasoning-capable by the client that created a durable run.
+    return _OPENAI_RESPONSES_FIXED_SAMPLING_MODEL.match(model) is not None
 
 
 def _normalize_completion_usage(raw: Any) -> dict[str, int] | None:
@@ -1631,6 +1660,9 @@ class ResearchSupervisor:
         )
         config = run["config"]
         inference = config.get("inferenceRequest") or {}
+        omit_sampling = inference.get("providerType") == "custom" and await asyncio.to_thread(
+            _custom_responses_rejects_sampling, inference
+        )
         payload: dict[str, Any] = {
             "model": inference.get("model") or config.get("model") or "",
             "messages": messages,
@@ -1643,8 +1675,9 @@ class ResearchSupervisor:
             # enabled_tools resolves to every built-in, python and terminal included.
             "tool_choice": "none",
             "enabled_tools": [],
-            "temperature": inference.get("temperature", 0.2),
         }
+        if not omit_sampling:
+            payload["temperature"] = inference.get("temperature", 0.2)
 
         # The route's _sanitize_config already refused anything but an enabled saved connection of a studio-
         # tools-capable provider type.
@@ -1656,8 +1689,23 @@ class ResearchSupervisor:
                     "external_model": inference["externalModel"],
                 }
             )
-        if inference.get("topP") is not None:
+        if not omit_sampling and inference.get("topP") is not None:
             payload["top_p"] = inference["topP"]
+        if inference.get("providerType") in ("deepseek", "huggingface", "qwen", "mistral"):
+            # These providers forward reasoning fields verbatim, and a strict upstream rejects one the model lacks.
+            # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, so the
+            # planner opt-out must not reach mistral-large and the other non-reasoning models.
+            # `is not True`, not `is False`: a run from before these flags carries neither, and a
+            # thinking planner call on a resumed run beats a request the model rejects.
+            if inference.get("supportsReasoning") is not True:
+                enable_thinking = None
+                inference = {
+                    key: value
+                    for key, value in inference.items()
+                    if key not in ("enableThinking", "reasoningEffort")
+                }
+            elif enable_thinking is False and inference.get("supportsReasoningOff") is False:
+                enable_thinking = None
         if enable_thinking is not None:
             payload["enable_thinking"] = enable_thinking
         elif inference.get("enableThinking") is not None:

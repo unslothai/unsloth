@@ -22,6 +22,8 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_has_usable_nvidia_gpu()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_rocm_torch_explicitly_requested()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_ensure_rocm_probe_env()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_probe_amd_gfx_arch()/,/^}/p' "$INSTALL_SH"
@@ -310,7 +312,7 @@ assert_contains "same-family pair still announces the per-arch route"     "routi
 assert_contains "same-family pair names the family, not a card" "gfx120X-all" "$_w"
 
 assert_eq "the export is guarded on a single named card" "yes"     "$(grep -q 'export UNSLOTH_ROCM_GFX_ARCH="\$_linux_inferred_gfx"' "$INSTALL_SH" &&        grep -c 'if \[ -n "\$_linux_inferred_gfx" \]; then' "$INSTALL_SH" >/dev/null &&        echo yes || echo no)"
-assert_eq "the torch constraint is chosen off the family" "yes"     "$(grep -q 'gfx120X-all|gfx1151|gfx1150|gfx1152)' "$INSTALL_SH" && echo yes || echo no)"
+assert_eq "the torch constraint is chosen off the family" "yes"     "$(grep -q 'gfx120X-all|gfx1151|gfx1150|gfx1152|gfx103X-all|gfx110X-all)' "$INSTALL_SH" && echo yes || echo no)"
 
 # HIP reports gfx1201:sramecc+:xnack-, which no arm of the index case table matches; get_torch_index_url strips the suffix
 # and then promises per-arch wheels, so anything downstream that does not strip it strands the host on CPU.

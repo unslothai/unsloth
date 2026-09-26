@@ -39,7 +39,7 @@ export const CAPABILITY_FILTER_OPTIONS: ReadonlyArray<{
   { value: "vision", label: "Vision" },
   { value: "audio", label: "Audio" },
   { value: "embedding", label: "Embeddings" },
-  { value: "diffusion", label: "Image generation" },
+  { value: "diffusion", label: "Image/video gen" },
 ];
 
 export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
@@ -205,6 +205,11 @@ export function buildDiscoverRows(
     const partial = Boolean(
       resource.cachedRow?.partial ?? resource.localRow?.partial ?? false,
     );
+    const downloading =
+      partial &&
+      Boolean(
+        resource.cachedRow?.downloading ?? resource.localRow?.downloading,
+      );
     return {
       id: result.id,
       owner: ownerOf(result.id),
@@ -212,6 +217,7 @@ export function buildDiscoverRows(
       result,
       isAvailableOnDevice: Boolean(resource.cachedRow || resource.localRow),
       isPartialOnDevice: partial,
+      isDownloadingOnDevice: downloading,
       summary: buildSummary(result),
       capabilities: detectCapabilities(
         result.tags,

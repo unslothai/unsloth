@@ -29,6 +29,7 @@ from typing import Iterator, Optional
 
 from loggers import get_logger
 
+from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import normalize_token
 from utils.process_lifetime import (
     adopt_pid,
@@ -523,12 +524,12 @@ class _MtmdDownloadState:
             detail = stderr.decode("utf-8", "replace").strip()
             logger.warning("mtmd STT download failed for %s: %s", model_id, detail)
             with self._lock:
-                self._error = f"Download failed for '{model_id}'."
+                self._error = modelscope_missing(detail) or f"Download failed for '{model_id}'."
         except Exception as exc:
             with self._lock:
                 if not self._cancelled:
                     logger.warning("mtmd STT download failed for %s: %s", model_id, exc)
-                    self._error = f"Download failed for '{model_id}'."
+                    self._error = modelscope_missing(exc) or f"Download failed for '{model_id}'."
         finally:
             # Release first: it is the half that would wedge the repository.
             if registry is not None and owner is not None:
@@ -938,7 +939,7 @@ class MtmdSttSidecar:
             # step-7 sweep has already passed by.
             if is_process_shutting_down():
                 raise SttLoadCancelledError(
-                    "Studio is shutting down; not starting the MTMD server."
+                    "Unsloth is shutting down; not starting the MTMD server."
                 )
             process = subprocess.Popen(
                 cmd,
@@ -963,7 +964,7 @@ class MtmdSttSidecar:
             if is_process_shutting_down():
                 _reap(process)
                 raise SttLoadCancelledError(
-                    "Studio is shutting down; not starting the MTMD server."
+                    "Unsloth is shutting down; not starting the MTMD server."
                 )
             if not self._wait_for_server(process, port, cancel_event):
                 # Reap it here: _process was never assigned, so unload() cannot reach a child that ignores SIGTERM and

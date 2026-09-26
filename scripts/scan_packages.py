@@ -56,6 +56,7 @@ Exit codes:
 import argparse
 import atexit
 import bisect
+import collections
 import contextlib
 import hashlib
 import io
@@ -1771,13 +1772,56 @@ _MARKER_ENV_VARS = (
 )
 
 
+def _marker_can_hold_without_extras(parsed) -> bool:
+    """Can a parsed PEP 508 marker be true on SOME target with no extra requested?
+
+    Markers have no negation, only ``and``/``or`` over comparisons, so the formula is monotone in
+    its atoms: it can be true somewhere iff it is true with every non-``extra`` comparison set to
+    True and every ``extra`` comparison evaluated against the empty extra. That keeps
+    ``sys_platform == 'win32'`` and ``python_version >= '3.8' or extra == 'dev'`` (true on some
+    target) and drops ``extra == 'dev' and python_version >= '3.9'``, which no target installs
+    without the extra. Raises on a shape it does not know, so the caller keeps the dep.
+    """
+    groups: list[list[bool]] = [[]]
+    for item in parsed:
+        if isinstance(item, list):
+            groups[-1].append(_marker_can_hold_without_extras(item))
+        elif isinstance(item, tuple) and len(item) == 3:
+            lhs, op, rhs = item
+            names = {type(lhs).__name__, type(rhs).__name__}
+            if names != {"Variable", "Value"}:
+                raise ValueError(f"unexpected marker atom {item!r}")
+            variable = lhs if type(lhs).__name__ == "Variable" else rhs
+            if variable.value != "extra":
+                groups[-1].append(True)
+                continue
+            from packaging.markers import Marker
+
+            env = {"extra": ""}
+            text = f"{lhs.serialize()} {op.serialize()} {rhs.serialize()}"
+            groups[-1].append(bool(Marker(text).evaluate(env)))
+        elif item == "or":
+            groups.append([])
+        elif item == "and":
+            continue
+        else:
+            raise ValueError(f"unexpected marker token {item!r}")
+    return any(all(group) for group in groups)
+
+
 def _marker_holds_by_default(marker: str) -> bool:
-    """Keep (scan) a dep unless its marker is purely ``extra``-gated. The scanner runs on one OS/Python but a package may be installed on another, so a marker that can be true on a different target is always kept; only a marker depending solely on ``extra`` and false with no extra requested is dropped. Conservative: on any uncertainty, keep."""
+    """Keep (scan) a dep unless no install reaches it without an extra. The scanner runs on one OS/Python but a package may be installed on another, so a marker that can be true on a different target is always kept; a marker false on every target once no extra is requested (``extra == 'dev'``, ``extra == 'dev' and python_version >= '3.9'``) is dropped. Conservative: on any uncertainty, keep."""
     m = marker.strip()
     if not m or "extra" not in m:
         return True  # no extra gate: installed by default on some target -> scan
     if any(v in m for v in _MARKER_ENV_VARS):
-        return True  # also platform/python gated: true on some target -> scan
+        # Also platform/python gated. Those atoms can each be true on some target, but an extra
+        # still has to be requested when it is AND-ed with them.
+        try:
+            from packaging.markers import Marker
+            return _marker_can_hold_without_extras(Marker(m)._markers)
+        except Exception:
+            return True  # an unknown shape: keep, and scan it
     # Pure extra marker: decide by evaluating with no extra requested.
     try:
         from packaging.markers import Marker, default_environment
@@ -2380,7 +2424,12 @@ def update_req_line(raw_line: str, safe_ver: str, old_ver: str | None) -> str:
 
 def update_req_file(filepath: str, updates: dict[int, str]) -> None:
     """Apply line-level updates ({1-indexed line_num: new_line_text}) to a requirements file. Writes atomically (sibling tmp file, fsync, os.replace) so a crash mid-write never leaves a half-written file that re-introduces a malicious pin."""
-    with open(filepath) as f:
+    # encoding is explicit on both halves: open() without it takes the locale codec, so the same
+    # requirements file round-trips differently on a runner with LANG=C than on one with a UTF-8
+    # locale, and a non-ASCII comment is mangled or raises. studio/backend has a guard for exactly
+    # this (tests/test_text_io_encoding.py) but it scans BACKEND_ROOT only, so scripts/ was never
+    # covered by it.
+    with open(filepath, encoding = "utf-8") as f:
         lines = f.readlines()
 
     for line_num, new_text in updates.items():
@@ -2395,7 +2444,12 @@ def update_req_file(filepath: str, updates: dict[int, str]) -> None:
         dir = dirpath,
     )
     try:
-        with os.fdopen(fd, "w") as f:
+        # newline = "\n" so the line endings the loop above went to the trouble of preserving
+        # survive the write. readlines() above is universal-newline, so a CRLF file arrives as LF
+        # in memory, and the default newline then translates it back to os.linesep -- which on
+        # Windows rewrites every line of a tracked requirements file and makes the "preserve line
+        # ending" above a no-op.
+        with os.fdopen(fd, "w", encoding = "utf-8", newline = "\n") as f:
             f.writelines(lines)
             f.flush()
             os.fsync(f.fileno())
@@ -2615,6 +2669,145 @@ def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | Non
     return keys
 
 
+def _evidence_spans(evidence: str) -> list[str]:
+    """Canonical matched lines of one finding, in discovery order."""
+    canon = _canon_evidence(evidence)
+    return canon.split("\n") if canon else []
+
+
+def _load_baseline_evidence(
+    path: "str | None",
+) -> "dict[tuple[str, str, str], list[tuple[str, list[str]]]]":
+    """Load the baseline's own evidence, grouped by site, as {(package, relpath, check): [(evidence_hash, spans)]}.
+
+    `_load_baseline` deliberately reduces every entry to a key and its pins, which is all
+    the gate needs. Saying *why* a reviewed site reopened needs the entry's matched lines
+    as well, so this reads them separately rather than widening the suppression loader.
+    """
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding = "utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        return {}
+    sites: dict[tuple[str, str, str], list[tuple[str, list[str]]]] = {}
+    for e in data["entries"]:
+        if not isinstance(e, dict):
+            continue
+        try:
+            site = (_norm_pkg(e["package"]), _relpath_in_package(e["file"]), e["check"])
+        except (KeyError, TypeError):
+            continue
+        evidence = e.get("evidence") or ""
+        digest = e.get("evidence_hash") or _evidence_hash(evidence)
+        sites.setdefault(site, []).append((digest, _evidence_spans(evidence)))
+    return sites
+
+
+def _span_delta(active_spans: list[str], baseline_spans: list[str]) -> tuple[int, int]:
+    """(added, removed) matched lines, as a multiset difference against one baseline entry."""
+    added = collections.Counter(active_spans)
+    removed = collections.Counter(baseline_spans)
+    shared = added & removed
+    added -= shared
+    removed -= shared
+    return sum(added.values()), sum(removed.values())
+
+
+def _classify_reviewed_site(f: Finding, entries: list[tuple[str, list[str]]]) -> tuple[str, str]:
+    """Say what actually differs between a reopened finding and the baseline entries at its site.
+
+    Three cases reach the report identically and want different reviews:
+
+    * the same matched code under a pin that no longer matches -- nothing flagged changed,
+      something else in that file did, and the pin is doing exactly its job;
+    * new matched lines inside a reviewed file -- a genuinely new occurrence, which wants
+      the same read a brand new site would get, not a glance at a diff;
+    * matched lines edited, removed or reordered -- the narrow "did known metaprogramming
+      move" question.
+
+    Membership of `(package, file, check)` alone cannot tell them apart, because a file's
+    matches are aggregated into one finding: an added `exec` reopens the same key an edited
+    one does.
+    """
+    spans = _evidence_spans(f.evidence)
+    digest = _evidence_hash(f.evidence)
+    if any(digest == h for h, _ in entries):
+        return ("pin", "same matched code, file digest outside the pin")
+    best = min((_span_delta(spans, b) for _, b in entries), key = lambda d: (d[0] + d[1], d[0]))
+    added, removed = best
+    if added and not removed:
+        return ("unread", f"{added} matched line(s) appended to a reviewed file, none gone")
+    if added:
+        # A multiset diff cannot tell "this line was rewritten" from "one went, an unrelated
+        # one arrived", and it does not need to: both leave matched code that was never read
+        # in its current form, which is the same position a new occurrence puts you in.
+        # Narrowing the full read to strict additions would route exec(compile(src, path,
+        # "exec")) -> exec(payload) -- an edit, by the diff -- to the "did it just move" path.
+        return (
+            "unread",
+            f"{added} matched line(s) added and {removed} gone: the flagged code was rewritten",
+        )
+    if removed:
+        return ("edited", f"{removed} matched line(s) gone, none added")
+    return ("edited", "matched lines reordered")
+
+
+def _report_reviewed_sites(
+    active: list[Finding],
+    baseline: "dict[tuple[str, str, str, str], set[str] | None]",
+    baseline_path: "str | None",
+) -> None:
+    """Separate "this reviewed site changed" from "this site is new", and say which kind of change.
+
+    Both reach the report as an identical CRITICAL/HIGH line, and they need different
+    reviews: the first asks whether known metaprogramming moved, the second asks whether
+    something dangerous just appeared. A file's matches are aggregated into a single
+    finding, though, so a reviewed site also reopens when a *new* occurrence is appended to
+    it -- that one wants the full read, not a diff -- and a pinned entry reopens on an edit
+    elsewhere in the file with its matched code untouched. Each line below says which it
+    is. The gate is unchanged: every finding above still fails the run.
+    """
+    if not baseline or not active:
+        return
+    site_evidence = _load_baseline_evidence(baseline_path)
+    reviewed_sites = {(pkg, path, check) for pkg, path, check, _ in baseline}
+    moved = [
+        f
+        for f in active
+        if (_norm_pkg(f.package), _relpath_in_package(f.filename), f.check) in reviewed_sites
+    ]
+    if not moved:
+        return
+    print(
+        f"\n  {len(moved)} of the {len(active)} finding(s) above are at a site already "
+        f"reviewed in {baseline_path}. What differs from the reviewed entry:"
+    )
+    verdicts = []
+    for f in sorted(moved, key = lambda f: (f.package, _relpath_in_package(f.filename))):
+        rel = _relpath_in_package(f.filename)
+        entries = site_evidence.get((_norm_pkg(f.package), rel, f.check), [])
+        kind, why = (
+            _classify_reviewed_site(f, entries)
+            if entries
+            else ("unknown", "baseline entry carries no evidence")
+        )
+        verdicts.append(kind)
+        print(f"    {f.severity}  {f.package}  {rel}  ({f.check})\n        {why}")
+    if "unread" in verdicts:
+        print(
+            "  A site reporting added or rewritten matched lines carries flagged code that "
+            "was never reviewed in its current form: read it as you would a new site."
+        )
+    print(
+        "  Re-review, then regenerate with --write-baseline. A finding with no line here "
+        "is at a site that was never reviewed and wants a full read of the file."
+    )
+
+
 def _write_baseline(
     path: str,
     findings: list[Finding],
@@ -2657,7 +2850,11 @@ def _write_baseline(
         "version": 1,
         "entries": entries,
     }
-    with open(path, "w", encoding = "utf-8") as fh:
+    # newline = "\n" for the same reason as update_req_file above: the default translates every
+    # "\n" json.dump emits to os.linesep, and --write-baseline rewrites the tracked
+    # scripts/scan_packages_baseline.json in place, so on Windows a one-entry review turned into a
+    # whole-file CRLF diff over several thousand lines.
+    with open(path, "w", encoding = "utf-8", newline = "\n") as fh:
         json.dump(doc, fh, indent = 2, sort_keys = False)
         fh.write("\n")
     print(f"  Wrote {len(entries)} baseline entr(y/ies) to {path}")
@@ -2866,6 +3063,7 @@ def main() -> int:
     active, suppressed = _partition_baseline(all_findings, baseline)
 
     print_findings(active)
+    _report_reviewed_sites(active, baseline, baseline_path)
     if suppressed:
         crit_s = sum(1 for f in suppressed if f.severity == CRITICAL)
         high_s = sum(1 for f in suppressed if f.severity == HIGH)

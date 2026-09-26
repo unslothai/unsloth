@@ -177,6 +177,7 @@ BACKEND_ISOLATED = [
     ),
     ("tests/test_web_fetch_extraction.py", "compares parse time at two input sizes"),
     ("tests/test_tool_call_parser_strict.py", "compares parse time at two nesting depths"),
+    ("tests/test_pr5624_regressions.py", "R1 parser's 1s bound exceeded under CPU contention"),
     # Found by staging rather than by the scan, and the scan cannot find it: see below.
     (
         "tests/test_tunnel_safe_long_post.py",
@@ -264,6 +265,13 @@ BENIGN_TIMING = {
     (
         "test_openai_codex_subscription.py",
         "test_account_claim_and_token_response_are_validated_without_returning_raw_body",
+    ),
+    # A precondition, not a measurement: the snapshot is back-dated by _CACHE_TTL_S + 1s and the window is
+    # max(_CACHE_TTL_S, 0.0 * duty) because the last scan duration is pinned to 0.0, so the age starts a whole second
+    # past the bound and a descheduled worker only makes it older.
+    (
+        "test_account_local_model_resolver.py",
+        "test_a_warm_scan_queues_behind_another_accounts_scan",
     ),
 }
 

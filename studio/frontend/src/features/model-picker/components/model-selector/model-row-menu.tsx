@@ -11,7 +11,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { usePlatformStore } from "@/config/env";
 import { revealCachedModel } from "@/features/chat";
 import {
   DeleteConfirmDialog,
@@ -21,6 +20,7 @@ import {
   subscribeJobListeners,
   useDeleteImpact,
 } from "@/features/hub";
+import { useRevealLabel } from "@/features/library";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -39,6 +39,15 @@ import {
   useRef,
   useState,
 } from "react";
+
+/** A caller-supplied entry. Rendered under the pin and above cache/update, so delete stays last. */
+export interface ModelRowMenuItem {
+  key: string;
+  label: string;
+  icon: ReactNode;
+  onSelect: () => void;
+  disabled?: boolean;
+}
 
 interface ModelRowMenuPin {
   pinned: boolean;
@@ -64,7 +73,7 @@ interface ModelRowMenuDelete {
   description: ReactNode;
   /** Repo (and quant) to preview the delete for, so the dialog can state what it actually reclaims
    *  and what shared assets it leaves behind. Omit to keep the plain wording. */
-  impact?: { repoId: string; variant?: string | null };
+  impact?: { repoId: string; variant?: string | null; cachePath?: string | null };
   successMessage: string;
   disabled?: boolean;
   onConfirm: () => Promise<void> | void;
@@ -82,7 +91,9 @@ export function ModelRowMenu({
   buttonClassName,
   iconClassName,
   cachePath,
+  onReveal,
   pin,
+  items,
   update,
   del,
 }: {
@@ -91,19 +102,23 @@ export function ModelRowMenu({
   iconClassName?: string;
   /** Enables "Reveal in Finder" for cached repos. */
   cachePath?: ModelRowMenuCachePath;
+  /** Enables "Reveal in Finder" for paths outside the cache. */
+  onReveal?: () => Promise<void>;
   pin?: ModelRowMenuPin;
+  /** Extra entries for actions this menu has no shape of its own for. */
+  items?: readonly ModelRowMenuItem[];
   update?: ModelRowMenuUpdate;
   del?: ModelRowMenuDelete;
 }) {
-  const deviceType = usePlatformStore((s) => s.deviceType);
-  const revealLabel =
-    deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
+  // Null unless this is the owner on the backend's own machine with a file manager.
+  const revealLabel = useRevealLabel();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const deleteImpact = useDeleteImpact(
     deleteOpen && Boolean(del?.impact),
     del?.impact?.repoId ?? "",
     del?.impact?.variant,
+    del?.impact?.cachePath,
   );
   const [updateOpen, setUpdateOpen] = useState(false);
 
@@ -163,15 +178,20 @@ export function ModelRowMenu({
   const cachePathRepoId = cachePath?.repoId;
   const cachePathVariant = cachePath?.variant;
   const handleReveal = useCallback(() => {
-    if (!cachePathRepoId) return;
-    revealCachedModel(cachePathRepoId, cachePathVariant).catch((err) => {
+    const reveal = onReveal
+      ? onReveal()
+      : cachePathRepoId
+        ? revealCachedModel(cachePathRepoId, cachePathVariant)
+        : null;
+    reveal?.catch((err) => {
       toast.error(
         err instanceof Error ? err.message : "Failed to open file manager",
       );
     });
-  }, [cachePathRepoId, cachePathVariant]);
+  }, [onReveal, cachePathRepoId, cachePathVariant]);
 
-  if (!pin && !update && !del && !cachePath) return null;
+  const canReveal = Boolean(revealLabel && (cachePath || onReveal));
+  if (!pin && !update && !del && !canReveal && !items?.length) return null;
 
   return (
     <>
@@ -183,7 +203,7 @@ export function ModelRowMenu({
             aria-label={ariaLabel}
             className={cn(
               // Fixed box, matching ModelLoadSettingsAction beside it.
-              "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10",
+              "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
               buttonClassName,
             )}
           >
@@ -215,7 +235,20 @@ export function ModelRowMenu({
               <span>{pin.pinned ? pin.unpinLabel : pin.pinLabel}</span>
             </DropdownMenuItem>
           )}
-          {cachePath && (
+          {items?.map((item) => (
+            <DropdownMenuItem
+              key={item.key}
+              disabled={item.disabled}
+              onSelect={(e) => {
+                e.stopPropagation();
+                item.onSelect();
+              }}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </DropdownMenuItem>
+          ))}
+          {canReveal && (
             <DropdownMenuItem
               onSelect={(e) => {
                 e.stopPropagation();
@@ -244,7 +277,9 @@ export function ModelRowMenu({
           )}
           {del && (
             <>
-              {(cachePath || pin || update) && <DropdownMenuSeparator />}
+              {(canReveal || pin || update || items?.length) && (
+                <DropdownMenuSeparator />
+              )}
               <DropdownMenuItem
                 variant="destructive"
                 disabled={del.disabled}

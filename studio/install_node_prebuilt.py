@@ -4,7 +4,8 @@
 
 """Cross-platform Node.js prebuilt installer for Unsloth Studio.
 
-Downloads an official Node.js archive from nodejs.org into an isolated
+Downloads an official Node.js archive from nodejs.org (or the dist mirror in
+``UNSLOTH_NODE_MIRROR``) into an isolated
 ``<UNSLOTH_HOME>/node`` and never touches the system Node/npm. Pinning Node 24+
 LTS clears the Unsloth frontend build floor (Vite 8: Node ^20.19 || >=22.12,
 npm >= 11) with the npm it bundles.
@@ -13,14 +14,16 @@ Archives are verified against sha256 digests pinned in ``node_prebuilt_pins.json
 (committed in-tree), not a checksum re-fetched from the same origin as the archive.
 
 Mirrors ``install_llama_prebuilt.py`` so the setup scripts drive it the same way.
-Exit codes: 0 success, 1 error, 2 fallback, 3 busy. A re-run that already matches
+Exit codes: 0 success, 1 error, 2 fallback, 3 busy, 4 access denied. A re-run that already matches
 logs "already matches" and returns 0 without downloading (the scripts grep it).
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
+import http.client
 import json
 import os
 import stat
@@ -53,13 +56,27 @@ EXIT_SUCCESS = 0
 EXIT_ERROR = 1
 EXIT_FALLBACK = 2
 EXIT_BUSY = 3
+# The install directory cannot be written. Separate from EXIT_ERROR because the
+# caller's advice for that one is "install Node yourself or check your network",
+# which is wrong here and sends people to look at the wrong thing.
+EXIT_DENIED = 4
+# setup.ps1 reads these back out to diagnose the object that was actually
+# refused. The install lock and the .staging root live in the install
+# directory's parent, so "delete or rename the Node cache" is the wrong advice
+# for half of the denials that reach exit 4, and the directory it names may not
+# even exist. Classified here, where the install directory is known, rather than
+# re-derived from a path string on the PowerShell side.
+DENIED_PATH_MARKER = "denied-path: "
+DENIED_SCOPE_MARKER = "denied-scope: "
+DENIED_SCOPE_INSTALL_DIR = "install-dir"
+DENIED_SCOPE_PARENT = "parent"
 
 # Node 24 LTS bundles npm 11, clearing Vite 8's floor (Node ^20.19 || >=22.12, npm >= 11).
 NODE_MIN_LTS_MAJOR = 24
 NPM_MIN_MAJOR = 11
 
 NODE_DIST_BASE = "https://nodejs.org/dist"
-NODE_DIST_INDEX = f"{NODE_DIST_BASE}/index.json"
+NODE_MIRROR_ENV = "UNSLOTH_NODE_MIRROR"
 
 RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
 HTTP_FETCH_ATTEMPTS = 4
@@ -158,12 +175,20 @@ def node_asset_name(version: str, host: HostInfo) -> str:
     return f"{node_asset_stem(version, host)}{host.archive_ext}"
 
 
+def node_dist_base() -> str:
+    return (os.environ.get(NODE_MIRROR_ENV, "").strip() or NODE_DIST_BASE).rstrip("/")
+
+
+def node_dist_index_url() -> str:
+    return f"{node_dist_base()}/index.json"
+
+
 def node_download_url(version: str, asset_name: str) -> str:
-    return f"{NODE_DIST_BASE}/v{version}/{asset_name}"
+    return f"{node_dist_base()}/v{version}/{asset_name}"
 
 
 def node_shasums_url(version: str) -> str:
-    return f"{NODE_DIST_BASE}/v{version}/SHASUMS256.txt"
+    return f"{node_dist_base()}/v{version}/SHASUMS256.txt"
 
 
 def expected_sha256_for(shasums_text: str, asset_name: str) -> str | None:
@@ -195,7 +220,7 @@ def _meets_node_floor(version: str) -> bool:
 
 
 def select_node_version(index: list[dict], *, channel: str, min_major: int) -> str:
-    """Pick a concrete Node version from nodejs.org index.json.
+    """Pick a concrete Node version from the Node dist index.json.
 
     channel='lts'    -> newest LTS release line whose major >= min_major.
     channel='latest' -> newest release overall whose major >= min_major.
@@ -218,7 +243,7 @@ def select_node_version(index: list[dict], *, channel: str, min_major: int) -> s
             best_version = version
     if best_version is None:
         raise PrebuiltFallback(
-            f"no Node '{channel}' release found at or above major {min_major} in {NODE_DIST_INDEX}"
+            f"no Node '{channel}' release found at or above major {min_major} in {node_dist_index_url()}"
         )
     return best_version
 
@@ -233,6 +258,9 @@ def is_retryable_url_error(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code in RETRYABLE_HTTP_STATUS
     if isinstance(exc, (urllib.error.URLError, TimeoutError, socket.timeout)):
+        return True
+    # A dropped connection or a body cut short is not wrapped in URLError; see prebuilt_core.
+    if isinstance(exc, (ConnectionError, http.client.IncompleteRead)):
         return True
     return False
 
@@ -1041,15 +1069,14 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         version = pinned_default_version(pins)
     elif channel in {"lts", "latest"}:
         try:
-            index = fetch_json(NODE_DIST_INDEX)
+            index = fetch_json(node_dist_index_url())
         except Exception as exc:  # noqa: BLE001
-            # nodejs.org unreachable: keep a working isolated Node instead of aborting.
             if not force and existing_install_usable(install_dir, host):
                 log(f"Node dist index unreachable ({exc}); keeping existing isolated Node")
                 return EXIT_SUCCESS
             raise
         if not isinstance(index, list):
-            raise PrebuiltFallback(f"unexpected index.json payload from {NODE_DIST_INDEX}")
+            raise PrebuiltFallback(f"unexpected index.json payload from {node_dist_index_url()}")
         version = select_node_version(index, channel = channel, min_major = min_major)
     else:
         version = channel.lstrip("v")
@@ -1201,9 +1228,63 @@ def main(argv: list[str] | None = None) -> int:
     except PrebuiltFallback as exc:
         log(f"prebuilt unavailable: {exc}")
         return EXIT_FALLBACK
+    except PermissionError as exc:
+        return _report_access_denied(exc, install_dir)
+    except OSError as exc:
+        # Windows reports the ACL and filter-driver denials that matter here as
+        # winerror 5, which does not always arrive as PermissionError.
+        if getattr(exc, "winerror", None) == 5 or exc.errno == errno.EACCES:
+            return _report_access_denied(exc, install_dir)
+        log(f"unexpected error: {exc}")
+        return EXIT_ERROR
     except Exception as exc:  # noqa: BLE001
         log(f"unexpected error: {exc}")
         return EXIT_ERROR
+
+
+def _report_access_denied(exc: OSError, install_dir: Path) -> int:
+    """Log the denial, and say which object was refused so the caller can name it."""
+    path = getattr(exc, "filename", None) or ""
+    if path:
+        log(f"{DENIED_PATH_MARKER}{path}")
+        scope = DENIED_SCOPE_INSTALL_DIR if _within(path, install_dir) else DENIED_SCOPE_PARENT
+        log(f"{DENIED_SCOPE_MARKER}{scope}")
+    log(_access_denied_message(exc))
+    return EXIT_DENIED
+
+
+def _within(path: str, root: Path) -> bool:
+    """Whether path is root or sits under it, by spelling alone.
+
+    Both sides come from the same --install-dir string, so normalizing without
+    resolving links keeps them comparable; resolving would need the very access
+    that was just denied.
+    """
+    normalized = os.path.normcase(os.path.abspath(path))
+    base = os.path.normcase(os.path.abspath(root))
+    return normalized == base or normalized.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def _access_denied_message(exc: OSError) -> str:
+    """Say that this is a permission problem, and that elevation may not fix it.
+
+    Reported as "unexpected error" before, which the caller then followed with
+    "install Node yourself, or check your network". Neither is the fix, and a
+    user whose antivirus is holding the folder can spend a long time on the
+    second one. Antivirus ransomware protection and Controlled folder access
+    both deny regardless of privilege, so running elevated is not the answer
+    either.
+    """
+    path = getattr(exc, "filename", None) or ""
+    where = f" writing {path}" if path else ""
+    return (
+        f"access denied{where}. This is a permissions or security-software block, "
+        "not a download problem. Antivirus ransomware protection (Bitdefender Safe Files, "
+        "Defender Controlled folder access and the like) denies this whatever your "
+        "privileges are, so running elevated may not clear it. Allow or exclude the "
+        "Unsloth folder in your antivirus, or delete or rename it (it is a managed cache "
+        "and setup reinstalls it), then re-run setup."
+    )
 
 
 if __name__ == "__main__":

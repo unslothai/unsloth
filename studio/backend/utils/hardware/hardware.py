@@ -931,6 +931,38 @@ def _torch_reports_a_hip_runtime() -> bool:
         return False
 
 
+def _torch_reports_another_vendors_runtime() -> bool:
+    """Whether the installed torch is a CUDA or XPU build, whatever its label says.
+
+    The mirror of _torch_reports_a_hip_runtime, and needed for the same reason in reverse.
+    A conda or locally built CUDA wheel carries no +cu tag, so the label names no vendor,
+    and the intent fallback then reads a stale recorded ROCm flavor as "this wheel targets
+    AMD" -- on a host whose real repair is reinstalling ROCm torch. torch.version.cuda is
+    written by the build itself and settles it.
+
+    An import failure is answered from disk, as _torch_reports_a_hip_runtime and
+    _torch_reports_an_xpu_runtime already answer it: torch/version.py records the runtime
+    whether or not the package imports. Returning False there made the clearing above inert
+    on the path it exists for, letting a stale ROCm flavor speak for a CUDA or XPU wheel.
+    """
+    if TORCH_IMPORT_ERROR is not None:
+        # A ROCm build records hip and may record cuda besides.
+        if _torch_reports_a_hip_runtime():
+            return False
+        _markers = _installed_torch_markers_on_disk()
+        return bool(_markers["cuda"]) or bool(_markers["xpu"])
+    try:
+        import torch
+
+        _version = getattr(torch, "version", None)
+        # A ROCm build sets hip and can carry cuda besides, so hip is read first.
+        if getattr(_version, "hip", None) is not None:
+            return False
+        return bool(getattr(_version, "cuda", None)) or bool(getattr(_version, "xpu", None))
+    except Exception:
+        return False
+
+
 # Marketing name -> gfx, mirroring setup.ps1's $nameArchTable and install_python_stack._WIN_GPU_NAME_ARCH_TABLE. Only names those two route to a wheel family, since this decides whether a repair could change anything. Most specific first.
 _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
     (r"9070|9080|R9700", "gfx1201"),
@@ -1563,6 +1595,11 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
     return (reason, detail) if frozen_but_measurable else ("no_gpu", None)
 
 
+# A wheel label naming another vendor's accelerator: +cu128, +xpu. Matched on the local
+# part so a version like 2.9.0 can never look like one.
+_WHEEL_LABEL_OTHER_VENDOR_RE = re.compile(r"\+[a-z]*(?:cu\d|xpu)")
+
+
 def _gpu_present_but_unusable_message(
     feature: str, verdict: Optional[tuple[Optional[str], Optional[str]]] = None
 ) -> Optional[str]:
@@ -1572,18 +1609,62 @@ def _gpu_present_but_unusable_message(
     if reason not in ("torch_cpu_build", "torch_cuda_unavailable"):
         return None
     installed = f" (installed {detail})" if detail else ""
+    # No reinstall changes group membership (#10466), so a closed node is not a mismatch.
+    # Recording AMD is necessary but not sufficient: a hybrid host on CUDA torch records
+    # both vendors, and there the verdict is about the NVIDIA card.
+    vendors = {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}
+    # Worth MENTIONING is about the hardware; REPLACES the reinstall advice is about the
+    # wheel, and only a ROCm one is repaired by opening a node. Conflating them was the bug.
+    _label = (detail or "").lower()
+    # Intent is the LAST resort: it outlives the wheel, so a venv that recorded ROCm and
+    # then had CUDA installed over it still answers yes. Label and live runtime describe
+    # what is installed NOW; a bare +cpu names no vendor, so intent still gets its say.
+    wheel_targets_amd = (
+        "rocm" in _label
+        or "hip" in _label
+        or _torch_reports_a_hip_runtime()
+        or (
+            not _WHEEL_LABEL_OTHER_VENDOR_RE.search(_label)
+            # An untagged CUDA build (conda, or local) names no vendor, so the regex
+            # clears it and stale intent would speak for a wheel that is not AMD's.
+            and not _torch_reports_another_vendors_runtime()
+            and _expected_rocm_flavor_was_chosen()
+        )
+    )
+    amd_is_the_target = vendors == {"amd"} or wheel_targets_amd
+    node_hint = None
+    if "amd" in vendors and amd_is_the_target:
+        try:
+            from utils.hardware.amd import (
+                amd_closed_nodes_block_the_runtime,
+                amd_node_permission_hint,
+            )
+
+            # Only when the closed set leaves the runtime no way in: an open sibling
+            # render node means ROCm had a complete path and failed anyway.
+            if amd_closed_nodes_block_the_runtime():
+                node_hint = amd_node_permission_hint()
+        except Exception:
+            node_hint = None
+    # Replaces the reinstall advice only for a ROCm wheel, which the closed node fully
+    # explains. A CPU-only or other-vendor wheel needs BOTH repairs and is given both.
+    if node_hint and reason == "torch_cuda_unavailable" and wheel_targets_amd:
+        return f"This host has a GPU, but {feature} cannot use it. {node_hint}"
     # Both routes, always. The repair row exists only in the desktop app and only for a backend it manages, so a browser-hosted Studio, or a desktop attached to a server someone started from a terminal, was being sent to a control that is not on the page.
     if reason == "torch_cpu_build":
         return (
             f"This host has a GPU, but the installed PyTorch is a CPU-only build{installed}, "
             f"so {feature} cannot use it. Reinstall the GPU build: use Repair installation "
             f"in Settings in the desktop app, or re-run the Unsloth installer."
+            + (f" {node_hint}" if node_hint else "")
         )
     return (
         f"This host has a GPU, but the installed PyTorch{installed} cannot initialise it, so "
         f"{feature} cannot use it. This is usually a driver or runtime mismatch; reinstalling "
         f"a matching PyTorch build fixes it. Use Repair installation in Settings in the "
-        f"desktop app, or re-run the Unsloth installer."
+        f"desktop app, or re-run the Unsloth installer." + (f" {node_hint}" if node_hint else "")
+        # Appended, not substituted: the wheel is still the repair, but the node is
+        # still closed and the matching ROCm build will need it.
     )
 
 
@@ -3813,58 +3894,167 @@ def _integrated_cuda_inventory(
     return {td["index"]: td for td in inventory}, "index"
 
 
-def _reconcile_cuda_integrated_memory(
-    utilization: Dict[str, Any], device_indices: Optional[list[int]]
-) -> None:
-    """Fill the VRAM columns nvidia-smi leaves at ``[N/A]`` on an integrated CUDA SoC.
+# props.total_memory is exact bytes, nvidia-smi rounds to whole MiB, so agreeing
+# sources still differ by a hair. 1% floored at 64 MiB separates that from a carve-out,
+# which is small by a multiple (8128 against 46477 MiB, measured).
+_INTEGRATED_TOTAL_ADOPT_FRACTION = 0.01
+_INTEGRATED_TOTAL_ADOPT_FLOOR_GB = 0.0625
 
-    The monitor names a Spark's GB10 and prints "Unknown / 0.00 GiB" beside it (#10691).
 
-    NOT _torch_get_per_device_info, which the ROCm twin above can afford and this cannot:
-    this is the /api/system poll, and mem_get_info pins a ~612 MiB primary context for
-    the life of the process (test_system_poll_no_cuda_context.py). Both figures here are
-    context-free. Host counters are not an approximation of the used half on one shared
-    pool, they are the same measurement.
+def _integrated_total_is_understated(
+    cli_total_gb: Optional[float], torch_total_gb: Optional[float]
+) -> bool:
+    """Whether an integrated part's CLI total is smaller than the pool torch can reach.
 
-    Writes only what the CLI could not answer, only on a confirmed integrated device.
+    ``None`` from the CLI is the DGX Spark shape: nvidia-smi answers ``[N/A]`` for
+    memory.total, which NVIDIA documents, and anything is wider than nothing. A NUMBER
+    from the CLI is the Windows RTX Spark N1X shape, where the figure is real, readable
+    and scoped to the dedicated carve-out rather than to the CUDA budget.
+
+    Only ever True for a LARGER torch total, which is what makes every caller below a
+    widening and never a shrink.
     """
-    missing = [dev for dev in utilization.get("devices", []) if dev.get("vram_total_gb") is None]
-    if not missing:
-        return
+    if torch_total_gb is None or torch_total_gb <= 0:
+        return False
+    if cli_total_gb is None:
+        return True
+    return torch_total_gb - cli_total_gb > max(
+        cli_total_gb * _INTEGRATED_TOTAL_ADOPT_FRACTION, _INTEGRATED_TOTAL_ADOPT_FLOOR_GB
+    )
+
+
+def _integrated_cuda_rows(
+    device_indices: Optional[list[int]],
+) -> tuple[Dict[Any, Dict[str, Any]], str]:
+    """``_integrated_cuda_inventory`` reduced to the rows torch calls integrated.
+
+    Deliberately NOT cached. The old check was "is a total missing", which a discrete
+    host answers no to without touching torch; widening a total nvidia-smi DID answer
+    cannot be decided without asking torch, and this runs on the 3-5 s /api/system poll,
+    so the cost was measured rather than assumed: 7 microseconds, because
+    get_device_properties is answered from the driver's device list and creates no
+    primary context (0 MiB on an RTX Spark N1X, against 116 MiB for mem_get_info). A
+    memo would buy nothing at that price and would have to be invalidated correctly.
+
+    Empty on a discrete host, and on any host the two sources cannot be joined, so every
+    caller keeps whatever the CLI reported.
+    """
+    inventory, key_field = _integrated_cuda_inventory(device_indices)
+    return {k: td for k, td in inventory.items() if td.get("_cuda_integrated")}, key_field
+
+
+def _cgroup_available_memory_gb() -> Optional[float]:
+    """What this process can still charge to an enforcing cgroup, or None.
+
+    Reuses the llama.cpp reader rather than a second copy: it walks the process's
+    cgroup AND its ancestors, since an ancestor slice can be the binding limit and
+    carries sibling usage a leaf never sees, and it handles v2 and legacy v1.
+    Imported lazily and only from the widening branch, so a discrete host, which
+    returns before ever reaching here, pays nothing for it.
+    """
     try:
-        inventory, key_field = _integrated_cuda_inventory(device_indices)
-    except Exception as e:  # noqa: BLE001 - reached on a host that HAS nvidia-smi
-        logger.debug("torch inventory unavailable while sizing an integrated GPU: %s", e)
-        return
-    integrated = {key: td for key, td in inventory.items() if td.get("_cuda_integrated")}
-    if not integrated:
-        return
-    used_gb = None
+        from core.inference.llama_cpp import LlamaCppBackend
+        mib = LlamaCppBackend._cgroup_available_memory_mib()
+        return None if mib is None else mib / 1024.0
+    except Exception as e:  # noqa: BLE001 - no readable limit means keep the host reading
+        logger.debug("cgroup budget probe failed while sizing an integrated GPU: %s", e)
+        return None
+
+
+def _host_memory_used_gb() -> Optional[float]:
+    """Host memory in use, or None. On one shared pool this is not an approximation of
+    the GPU's used half, it is the same measurement."""
     try:
         import psutil
         vm = psutil.virtual_memory()
-        used_gb = round((int(vm.total) - int(vm.available)) / (1024**3), 2)
+        return round((int(vm.total) - int(vm.available)) / (1024**3), 2)
     except Exception as e:  # noqa: BLE001 - a total alone still beats Unknown / 0.00
         logger.debug("host memory probe failed while sizing an integrated GPU: %s", e)
-    for dev in missing:
+        return None
+
+
+def _reconcile_cuda_integrated_memory(
+    utilization: Dict[str, Any], device_indices: Optional[list[int]]
+) -> None:
+    """Publish the pool an integrated CUDA SoC can reach, not its dedicated carve-out.
+
+    Two shapes of one fault. On a DGX Spark nvidia-smi answers ``[N/A]`` for
+    memory.total and the monitor printed "Unknown / 0.00 GiB" beside a 121 GiB part
+    (#10691). On a Windows RTX Spark N1X it answers a number, 8128 MiB, which is the
+    carve-out and not the 46477 MiB budget the same device reports through
+    ``props.total_memory``: an under-report of about 5.7x, which judged a 270M model
+    not to fit. Filling only the blanks repaired the first and left the second standing,
+    because a wrong number is not a missing one.
+
+    NOT _torch_get_per_device_info, which the ROCm twin above can afford and this
+    cannot: this is the /api/system poll, and mem_get_info pins a primary context for
+    the life of the process (test_system_poll_no_cuda_context.py). Both figures here
+    are context-free.
+
+    Widens only, in both directions it could be read: a total the CLI reported LARGER
+    than torch's is left alone, and the free bytes published here are floored at the
+    free bytes the row already promised, so no device loses capacity it was trusted
+    with before this ran.
+    """
+    devices = utilization.get("devices", [])
+    if not devices:
+        return
+    try:
+        integrated, key_field = _integrated_cuda_rows(device_indices)
+    except Exception as e:  # noqa: BLE001 - reached on a host that HAS nvidia-smi
+        logger.debug("torch inventory unavailable while sizing an integrated GPU: %s", e)
+        return
+    if not integrated:
+        # Every discrete host leaves here, having paid one memoised classification.
+        return
+
+    host_used_gb = _host_memory_used_gb()
+
+    for dev in devices:
         td = integrated.get(dev.get(key_field))
         if td is None:
+            # A row torch does not enumerate. An NVIDIA NPU is one: it runs under MCDM
+            # rather than WDDM and the driver publishes no memory telemetry for it at
+            # all, so "unknown" is the only honest answer and nothing here invents one.
             continue
         total_gb = td["total_gb"]
+        cli_total_gb = dev.get("vram_total_gb")
+        cli_used_gb = dev.get("vram_used_gb")
+        if not _integrated_total_is_understated(cli_total_gb, total_gb):
+            continue
+        # What the row promised before this ran, so widening cannot cost free bytes.
+        cli_free_gb = (
+            max(cli_total_gb - cli_used_gb, 0.0)
+            if cli_total_gb is not None and cli_used_gb is not None
+            else None
+        )
         dev["vram_total_gb"] = total_gb
-        # The CLI's own used figure wins where it has one: memory.used can be readable
-        # on a row whose memory.total is [N/A], and filling the total is exactly what
-        # makes the percentage computable. Host counters stand in only where it is not.
-        pool_used_gb = dev.get("vram_used_gb")
-        if pool_used_gb is None:
-            if used_gb is None:
-                continue
-            pool_used_gb = min(used_gb, total_gb)
-            dev["vram_used_gb"] = pool_used_gb
-        if dev.get("vram_utilization_pct") is None:
-            dev["vram_utilization_pct"] = (
-                round((min(pool_used_gb, total_gb) / total_gb) * 100, 1) if total_gb > 0 else None
-            )
+
+        # A pool total needs a pool-scoped numerator (_rocm_windows_unified_used_bytes
+        # states the same rule). memory.used is carve-out scoped, so it is a lower bound
+        # like the host counter is: take the larger, neither dominates.
+        numerators = [n for n in (host_used_gb, cli_used_gb) if n is not None]
+        if not numerators:
+            continue
+        pool_used_gb = min(max(numerators), total_gb)
+        if host_used_gb is None and cli_free_gb is not None:
+            # No pool-scoped occupancy left, so pairing the carve-out's used with the
+            # pool total would invent free bytes (45.39/5.73 reads as 39.66 free where
+            # the CLI vouched for 2.21). Widen the total, keep the budget.
+            pool_used_gb = max(pool_used_gb, total_gb - cli_free_gb)
+        if cli_free_gb is not None:
+            # The floor. A host whose RAM is nearly full would otherwise publish a pool
+            # emptier of free bytes than the carve-out reading it replaced.
+            pool_used_gb = min(pool_used_gb, max(total_gb - cli_free_gb, 0.0))
+        # Last, so it beats the floor: psutil reads host-wide counters in most
+        # containers while the allocations are charged to memory.max.
+        cgroup_free_gb = _cgroup_available_memory_gb()
+        if cgroup_free_gb is not None:
+            pool_used_gb = min(max(pool_used_gb, total_gb - cgroup_free_gb), total_gb)
+        dev["vram_used_gb"] = round(pool_used_gb, 2)
+        dev["vram_utilization_pct"] = (
+            round((pool_used_gb / total_gb) * 100, 1) if total_gb > 0 else None
+        )
 
 
 def _reconcile_primary_rocm_unified_memory(
@@ -3990,8 +4180,44 @@ def _rocm_linux_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) -> D
             continue
         _used, sysfs_total = entry
         torch_total = dev.get("total_gb") or 0.0
-        if sysfs_total > 0 and torch_total - sysfs_total > 0.1 * torch_total:
-            shared[index] = round(torch_total - sysfs_total, 2)
+        if sysfs_total <= 0:
+            # sysfs could not be read for this card, so the split is genuinely
+            # UNKNOWN and the index stays absent. WSL reaches here.
+            continue
+        excess = torch_total - sysfs_total
+        # A readable sysfs total that torch does not exceed means the whole torch
+        # budget IS the driver's dedicated heap, i.e. the host-backed part is a
+        # measured ZERO. Omitting the index said "unknown" instead, and the tile
+        # renders unknown as "all of it is host memory": on a gfx1151 whose
+        # mem_info_vram_total is the full 64 GiB carve-out, Settings > System read
+        # `0.00 GiB VRAM + 64.00 GiB shared`. Measured on the AMD CI Strix Halo
+        # against main; unsloth#7449 defect 1.
+        #
+        # The 0.1 band is the threshold for BELIEVING an excess, not for publishing a
+        # figure at all. It is NOT a rounding allowance: both totals carry 0.01 GiB, so
+        # rounding cannot reach a whole GiB, and a 4 GiB gap on a 64 GiB part is a real
+        # disagreement between two sources that count different things.
+        #
+        # Inside the band the split is genuinely undecided, and all three answers are
+        # imperfect. Publishing the excess would call the budget shared (see the caller:
+        # host_gb > 0 sets shared_memory, which collapses several rows into one pool) on
+        # a difference we do not trust. Omitting the index renders as "all of it is host
+        # memory", which IS unsloth#7449 defect 1 and the thing this function exists to
+        # stop. Zero attributes the disagreement to the dedicated heap, which is the
+        # smallest error of the three: at 64 vs 60 GiB it overstates dedicated memory by
+        # 4 GiB, where omitting understates it by all 64.
+        #
+        # Not settled on hardware: neither AMD CI runner has a small BIOS carve-out, so
+        # the in-band case was never measured, only reasoned about.
+        # sysfs far ABOVE torch is not a small disagreement, it is a different scope:
+        # a partitioned device where sysfs reports the whole card and torch reports one
+        # partition. `_rocm_system_wide_vram_by_index` treats a mismatch over the same
+        # 10% as a scope change in EITHER direction, and publishing 0.0 here would call
+        # the whole partition dedicated, overstating independent capacity in the
+        # direction that admits a load. Leave the index absent, which means unknown.
+        if -excess > 0.1 * torch_total:
+            continue
+        shared[index] = round(excess, 2) if excess > 0.1 * torch_total else 0.0
     return shared
 
 
@@ -4873,7 +5099,13 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
         except Exception:
             continue
 
-    return resolve_attention_implementation(model_class, config_copy)
+    impl = resolve_attention_implementation(model_class, config_copy)
+    # A per-sub-config mapping collapses to the decoder's name for the frozenset lookup. Inlined
+    # because callers stub the unsloth import.
+    if isinstance(impl, dict):
+        named = [value for key, value in impl.items() if key != "" and value is not None]
+        impl = named[0] if named else impl.get("", "eager")
+    return impl
 
 
 def _estimate_fp16_model_size_bytes_from_config(config) -> Optional[int]:
@@ -5092,6 +5324,15 @@ def estimate_required_model_memory_gb(
 _CONCRETE_GFX_ARCH = re.compile(r"^gfx[0-9][0-9a-f]{2,4}$")
 
 
+def _props_gfx_arch(props) -> str:
+    # gcnArchName alone leaves the map empty on AMD SDK / Radeon wheels.
+    for attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+        arch = (getattr(props, attr, "") or "").split(":")[0].strip().lower()
+        if arch:
+            return arch
+    return ""
+
+
 def rocm_gpu_ids_without_torch_kernels() -> set[int]:
     """PHYSICAL ids of visible ROCm GPUs the installed torch wheel has no kernels for. Compares what the device PRESENTS, not its silicon, so HSA_OVERRIDE_GFX_VERSION keeps working (#7624). Every uncertainty fails OPEN, the opposite of the bf16 gate: one unreadable device is skipped rather than voiding the probe, which would restore the known-uncovered card and re-break #8792."""
     try:
@@ -5156,12 +5397,7 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
                 props = torch.cuda.get_device_properties(ordinal)
             except Exception:
                 continue
-            # gcnArchName alone leaves the map empty on AMD SDK / Radeon wheels.
-            arch = ""
-            for attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
-                arch = (getattr(props, attr, "") or "").split(":")[0].strip().lower()
-                if arch:
-                    break
+            arch = _props_gfx_arch(props)
             if not arch:
                 logger.debug("Torch arch gate: device %s reports no arch; not gating it", ordinal)
                 continue
@@ -5182,6 +5418,60 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
     except Exception as e:
         logger.debug("torch arch coverage probe failed: %s", e)
         return set()
+
+
+def _torch_kernel_arch_tokens() -> list[str]:
+    try:
+        import torch
+        return sorted(
+            {
+                str(arch).split(":")[0].strip().lower()
+                for arch in (torch.cuda.get_arch_list() or ())
+                if str(arch).strip()
+            }
+        )
+    except Exception:
+        return []
+
+
+def _describe_rocm_gpus(gpu_ids) -> list[str]:
+    """Best-effort labels keyed by PHYSICAL id, for an error message only; never a gate."""
+    wanted = {int(gpu_id) for gpu_id in gpu_ids}
+    labels: Dict[int, str] = {}
+    try:
+        import torch
+
+        count = torch.cuda.device_count()
+        physical_ids = _get_parent_visible_gpu_spec()["numeric_ids"]
+        if physical_ids is None or count > len(physical_ids):
+            physical_ids = list(range(count))
+        for ordinal, physical in enumerate(physical_ids[:count]):
+            if physical not in wanted:
+                continue
+            props = torch.cuda.get_device_properties(ordinal)
+            arch = _props_gfx_arch(props)
+            detail = ", ".join(
+                part for part in (str(getattr(props, "name", "") or ""), arch) if part
+            )
+            labels[physical] = f"GPU {physical} ({detail})" if detail else f"GPU {physical}"
+    except Exception as e:
+        logger.debug("Could not describe GPUs %s: %s", sorted(wanted), e)
+    return [labels.get(gpu_id, f"GPU {gpu_id}") for gpu_id in sorted(wanted)]
+
+
+def reject_gpu_ids_without_torch_kernels(gpu_ids) -> None:
+    """Explicit picks bypass the #8792 auto-select skip; without this the worker dies with hipErrorInvalidImage."""
+    uncovered = sorted(
+        set(int(gpu_id) for gpu_id in gpu_ids) & rocm_gpu_ids_without_torch_kernels()
+    )
+    if not uncovered:
+        return
+    built_for = ", ".join(_torch_kernel_arch_tokens()) or "other GPU architectures"
+    raise ValueError(
+        f"{', '.join(_describe_rocm_gpus(uncovered))} cannot run the PyTorch build this Unsloth Studio installed, "
+        f"which has kernels for {built_for} only. Pick another GPU, or reinstall Unsloth "
+        f"Studio for that card."
+    )
 
 
 def auto_select_gpu_ids(
@@ -5373,6 +5663,7 @@ def prepare_gpu_selection(
 
     if gpu_ids:
         resolved = resolve_requested_gpu_ids(gpu_ids)
+        reject_gpu_ids_without_torch_kernels(resolved)
         metadata = {
             "selection_mode": "explicit",
             "selected_gpu_ids": resolved,
@@ -5519,32 +5810,41 @@ def _repair_smi_visible_devices(
     The integrated flag rides along because the reason the capacity is unreadable is that
     this part has no memory of its own, and a total published without it is counted twice.
 
-    A host whose nvidia-smi CAN answer returns above without touching torch, so the 3-5s
-    poll is unchanged and a readable part is never reclassified as unified.
+    A readable total is not a right one. nvidia-smi answers 8128 MiB on a Windows RTX
+    Spark N1X, the dedicated carve-out of a part whose CUDA budget is 46477 MiB, so the
+    old shortcut here -- return early whenever every row carried a number -- published a
+    45 GiB device as a 7.94 GiB one on the System tab while the About tab, which reads
+    torch, showed 45.39 GiB for the same machine. So a BLANK total is still filled on any
+    part, as it always was, and a READABLE one is additionally widened on a confirmed
+    integrated part, and on nothing else.
     """
     if not devices:
         return False
-    if all(dev.get("memory_total_gb") is not None for dev in devices):
-        return True
     try:
         inventory, key_field = _integrated_cuda_inventory(parent_visible_ids)
     except Exception as e:  # noqa: BLE001 - the caller keeps the rows nvidia-smi found
         logger.debug("torch inventory unavailable while repairing a GPU capacity: %s", e)
-        return False
+        return all(dev.get("memory_total_gb") is not None for dev in devices)
     for dev in devices:
         td = inventory.get(dev.get(key_field))
         if td is None:
             continue
+        # A BLANK total is filled whatever the part is, as this function always did:
+        # dropping that sent MIG and vGPU rows down the torch fallback instead.
         if dev.get("memory_total_gb") is None:
             dev["memory_total_gb"] = td["total_gb"]
-        if td.get("_cuda_integrated"):
-            dev["unified_memory"] = True
-            # `shared_memory` as well, not just the host-backed figure: gpu-vram.ts
-            # splits the pools on THAT flag alone and only then reads the figure, so a
-            # row carrying one without the other is added to the dedicated total and
-            # counted a second time beside the same system RAM.
-            dev["shared_memory"] = True
-            dev["shared_memory_host_backed_gb"] = dev["memory_total_gb"]
+        if not td.get("_cuda_integrated"):
+            continue
+        # A READABLE total is only widened on a confirmed integrated part.
+        if _integrated_total_is_understated(dev.get("memory_total_gb"), td["total_gb"]):
+            dev["memory_total_gb"] = td["total_gb"]
+        dev["unified_memory"] = True
+        # `shared_memory` as well, not just the host-backed figure: gpu-vram.ts splits
+        # the pools on THAT flag alone and only then reads the figure, so a row carrying
+        # one without the other is added to the dedicated total and counted a second
+        # time beside the same system RAM.
+        dev["shared_memory"] = True
+        dev["shared_memory_host_backed_gb"] = dev["memory_total_gb"]
     return all(dev.get("memory_total_gb") is not None for dev in devices)
 
 
@@ -5607,8 +5907,19 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                 shared_host_gb = _rocm_linux_shared_pool_host_gb_by_index(torch_devices)
                 for td in torch_devices:
                     if td["index"] in shared_host_gb:
-                        td["shared_memory"] = True
-                        td["shared_memory_host_backed_gb"] = shared_host_gb[td["index"]]
+                        host_gb = shared_host_gb[td["index"]]
+                        # A measured ZERO is an answer, not a miss: it says the whole
+                        # budget is the driver's dedicated heap. Publish it either way,
+                        # because the consumer renders an ABSENT figure as "all of it is
+                        # host memory" and that is how a 64 GiB carve-out came out as
+                        # `0.00 GiB VRAM + 64.00 GiB shared` (unsloth#7449 defect 1).
+                        td["shared_memory_host_backed_gb"] = host_gb
+                        # But only call the budget shared when some of it really is.
+                        # `shared_memory` additionally means "several rows are views of
+                        # ONE pool", which collapses them; a two-socket MI300A with no
+                        # host-backed part must stay additive.
+                        if host_gb > 0:
+                            td["shared_memory"] = True
             elif IS_ROCM and platform.system() == "Windows":
                 shared_host_gb = _windows_rocm_shared_pool_host_gb_by_index(torch_devices)
                 for td in torch_devices:

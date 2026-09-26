@@ -26,7 +26,9 @@ def _assume_the_restricted_load_is_available(monkeypatch):
     Without this, a machine with no (or a skewed) torchao turns every hosted-prequant decision
     below into "keep the dense weights". The capability is covered in test_diffusion_prequant.py."""
     import core.inference.diffusion_prequant as _pq
-    monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+    monkeypatch.setattr(
+        _pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
 
 
 from core.inference.diffusion_auto_policy import (
@@ -150,6 +152,40 @@ def test_estimate_nvfp4_is_smaller_than_int8():
     assert nvfp4.steady_transformer_mib < int8.steady_transformer_mib
 
 
+def test_an_nvfp4_policy_base_is_sized_by_the_policy_not_by_whole_model_nvfp4():
+    from core.inference.diffusion_auto_policy import (
+        _MIB_PER_GB,
+        _POLICY_STEADY_FACTOR,
+        _QUANT_STEADY_FACTOR,
+        policy_steady_factor,
+    )
+
+    transformer_gb = ap._FAMILY_BF16_GB["z-image"][0]
+    policy = estimate_dense_quant(_fam("z-image"), "nvfp4", base_repo = "Tongyi-MAI/Z-Image-Turbo")
+    assert policy is not None
+    assert policy.steady_transformer_mib == int(
+        transformer_gb * _POLICY_STEADY_FACTOR["zimg_rg76_v1"] * _MIB_PER_GB
+    )
+    whole_model = int(transformer_gb * _QUANT_STEADY_FACTOR["nvfp4"] * _MIB_PER_GB)
+    assert policy.steady_transformer_mib > whole_model
+    for base in (None, "some-org/Z-Image-Fork"):
+        plain = estimate_dense_quant(_fam("z-image"), "nvfp4", base_repo = base)
+        assert plain is not None and plain.steady_transformer_mib == whole_model, base
+    kontext = estimate_dense_quant(
+        _fam("flux.1-kontext"), "nvfp4", base_repo = "black-forest-labs/FLUX.1-Kontext-dev"
+    )
+    assert kontext is not None
+    assert kontext.steady_transformer_mib == int(
+        ap._FAMILY_BF16_GB["flux.1-kontext"][0] * _QUANT_STEADY_FACTOR["nvfp4"] * _MIB_PER_GB
+    )
+    assert policy_steady_factor("flux.1-kontext", "black-forest-labs/FLUX.1-Kontext-dev") is None
+    fp8 = estimate_dense_quant(_fam("z-image"), "fp8", base_repo = "Tongyi-MAI/Z-Image-Turbo")
+    assert fp8 is not None
+    assert fp8.steady_transformer_mib == int(
+        transformer_gb * _QUANT_STEADY_FACTOR["fp8"] * _MIB_PER_GB
+    )
+
+
 def test_estimate_unknown_family_or_scheme_returns_none():
     assert estimate_dense_quant(_fam("not-a-family"), "int8") is None
     assert estimate_dense_quant(_fam("z-image"), "q4_k") is None
@@ -167,7 +203,9 @@ def _patch_selector(
 
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: supported)
     monkeypatch.setattr(
-        tq, "select_transformer_quant_scheme", lambda target, req, family = None: scheme
+        tq,
+        "select_transformer_quant_scheme",
+        lambda target, req, family = None, **_kw: scheme,
     )
     import core.inference.diffusion_prequant as pq
 
@@ -519,3 +557,47 @@ def test_the_refusal_only_offers_auto_where_auto_exists():
     )
     assert "Auto" not in te
     assert te.endswith("Leave it unset to keep the dense bf16 encoder.")
+
+
+def test_every_family_with_a_hosted_prequant_can_be_sized():
+    """A family the size table does not know cannot use its own hosted checkpoints.
+
+    ``resolve_dense_quant_candidate`` returns None without a size entry, so
+    ``_pipeline_planned_denoiser_scheme`` has nothing to seed from and the loader keeps the dense
+    transformer, which is precisely the download the prequant rows exist to avoid. The family
+    looks complete from its own entry, so the miss is only visible from here.
+    """
+    from core.inference.diffusion_auto_policy import _FAMILY_BF16_GB
+    from core.inference.diffusion_families import _FAMILIES
+
+    unsizable = [
+        f.name
+        for f in _FAMILIES
+        if (getattr(f, "prequant_repos", ()) or ()) and f.name not in _FAMILY_BF16_GB
+    ]
+    assert not unsizable, (
+        f"these families declare hosted pre-quant checkpoints the auto policy cannot size, so "
+        f"the seed is never chosen and the dense transformer is downloaded instead: {unsizable}"
+    )
+
+
+def test_qwen_image_21_sizes_a_dense_quant_candidate():
+    """The concrete case, with the numbers, so a wrong entry is as visible as a missing one."""
+    from core.inference.diffusion_auto_policy import _FAMILY_BF16_GB, estimate_dense_quant
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    transformer, encoders, vae = _FAMILY_BF16_GB[fam.name]
+    # From Qwen/Qwen-Image-2.1's own sibling metadata: 14.23 / 17.53 / 1.35 GB, bf16 on disk.
+    assert 13.5 < transformer < 15.0, transformer
+    assert 17.0 < encoders < 18.0, encoders
+    assert 1.0 < vae < 2.0, vae
+    # And it is NOT Qwen-Image's row: a different architecture, with a smaller DiT and a larger
+    # encoder, so copying that entry would misplan in both directions at once.
+    assert (transformer, encoders, vae) != _FAMILY_BF16_GB["qwen-image"]
+    assert transformer < _FAMILY_BF16_GB["qwen-image"][0]
+    assert encoders > _FAMILY_BF16_GB["qwen-image"][1]
+
+    est = estimate_dense_quant(fam, "fp8", base_repo = fam.base_repo, prequant_available = True)
+    assert est is not None, "no estimate means the pipeline seed is never chosen"
+    assert est.prequant and est.steady_transformer_mib > 0
