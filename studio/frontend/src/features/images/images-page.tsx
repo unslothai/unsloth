@@ -5120,6 +5120,7 @@ export function ImagesPage({
 
             <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
               <Textarea
+                data-type-to-activate="prompt"
                 rows={4}
                 placeholder={
                   examplesDismissed[workflow] ? undefined : WORKFLOW_EXAMPLE_PROMPTS[workflow]
