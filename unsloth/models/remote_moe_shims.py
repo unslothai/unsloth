@@ -18,7 +18,12 @@ import functools
 
 import torch
 
-__all__ = ["prepare_remote_moe_for_training", "is_remote_deepseek_gate", "is_remote_deepseek_moe"]
+__all__ = [
+    "prepare_remote_moe_for_training",
+    "is_remote_deepseek_gate",
+    "is_remote_deepseek_moe",
+    "packed_expert_target_parameters",
+]
 
 
 def _is_remote_code(cls) -> bool:
@@ -80,12 +85,19 @@ def _has_own_training_dispatch(body) -> bool:
             return [branch.body, branch.orelse]
         return [branch.body] if value else [branch.orelse]
 
+    def only_raises(branch):
+        return all(
+            isinstance(stmt, (ast.Raise, ast.Pass))
+            or (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))
+            for stmt in branch
+        )
+
     for node in body:
         for sub in ast.walk(node):
             if not isinstance(sub, ast.If):
                 continue
             for branch in training_branches(sub):
-                if branch and not _calls_moe_infer(branch):
+                if branch and not only_raises(branch) and not _calls_moe_infer(branch):
                     return True
     return False
 
@@ -109,9 +121,10 @@ def _forward_has_no_training_branch(cls) -> bool:
 def is_remote_deepseek_moe(module) -> bool:
     # Structural match: derived code renames the block (sarvam's `SarvamMLAMoE`).
     cls = type(module)
+    experts = getattr(module, "experts", None)
     return (
         _is_remote_code(cls)
-        and isinstance(getattr(module, "experts", None), torch.nn.ModuleList)
+        and (isinstance(experts, torch.nn.ModuleList) or _is_packed_experts(experts))
         and hasattr(module, "moe_infer")
         and hasattr(module, "gate")
         and _forward_has_no_training_branch(cls)
@@ -132,6 +145,20 @@ def _gate_forward_without_training_assert(original):
 
     forward._unsloth_remote_moe_shim = True
     return forward
+
+
+_MISSING = object()
+
+
+def _is_packed_experts(experts) -> bool:
+    while hasattr(experts, "base_layer"):
+        experts = experts.base_layer
+    return getattr(type(experts), "_unsloth_mxfp4_stacked_experts", False) is True
+
+
+def _packed_moe_dispatch(block, x, topk_idx, topk_weight):
+    # Through the experts module so a PEFT expert LoRA wrapper still applies.
+    return block.experts(x, topk_idx, topk_weight)
 
 
 def _moe_train_dispatch(block, x, topk_idx, topk_weight):
@@ -162,20 +189,34 @@ def _moe_train_dispatch(block, x, topk_idx, topk_weight):
 
 
 def _moe_forward_with_training_path(original):
+    # Reuse the port's forward (eval flags, swapped moe_infer): rebuilding it would skip Kimi-K3's latent projections.
     @functools.wraps(original)
     def forward(self, hidden_states):
-        if not self.training or getattr(self, "ep_size", 1) > 1:
+        if getattr(self, "ep_size", 1) > 1:
             return original(self, hidden_states)
-        identity = hidden_states
-        orig_shape = hidden_states.shape
-        topk_idx, topk_weight = self.gate(hidden_states)
-        flat = hidden_states.view(-1, hidden_states.shape[-1])
-        y = _moe_train_dispatch(self, flat, topk_idx, topk_weight).view(*orig_shape)
-        # Config key varies (sarvam: `num_shared_experts`); the module decides.
-        shared = getattr(self, "shared_experts", None)
-        if shared is not None:
-            y = y + shared(identity)
-        return y
+        packed = _is_packed_experts(getattr(self, "experts", None))
+        if not self.training and not packed:
+            return original(self, hidden_states)
+        was_training = self.training
+        gate = getattr(self, "gate", None)
+        gate_was_training = isinstance(gate, torch.nn.Module) and gate.training
+        own = self.__dict__.get("moe_infer", _MISSING)
+        # Plain attribute flip: children keep their train-mode flags.
+        self.training = False
+        if gate_was_training:
+            gate.training = False
+        dispatch = _packed_moe_dispatch if packed else _moe_train_dispatch
+        self.__dict__["moe_infer"] = functools.partial(dispatch, self)
+        try:
+            return original(self, hidden_states)
+        finally:
+            self.training = was_training
+            if gate_was_training:
+                gate.training = True
+            if own is _MISSING:
+                self.__dict__.pop("moe_infer", None)
+            else:
+                self.__dict__["moe_infer"] = own
 
     forward._unsloth_remote_moe_shim = True
     return forward
@@ -231,3 +272,51 @@ def prepare_remote_moe_for_training(model, verbose = True):
             + "."
         )
     return patched
+
+
+def _names_a_packed_expert(entry, stack, leaf):
+    parts = entry.split(".")
+    template = stack.split(".") + [None, leaf]
+    if len(parts) > len(template):
+        return False
+    return all(
+        part.isdigit() if want is None else part == want
+        for part, want in zip(parts, template[len(template) - len(parts) :])
+    )
+
+
+def packed_expert_target_parameters(model, target_parameters, requested_leaves):
+    """Packed MXFP4 expert LoRA stays opt in: keep a stack's gate_up_proj (w1/w3) / down_proj (w2) only if
+    the request named its pre-stacking expert Linears, matched as PEFT would (regex fullmatch / dotted suffix)."""
+    counts = {}
+    for name, m in model.named_modules():
+        if _is_packed_experts(m):
+            while hasattr(m, "base_layer"):
+                m = m.base_layer
+            counts[name] = max(int(getattr(m, "num_experts", 1) or 1), 1)
+    stacks = list(counts)
+    if not stacks:
+        return target_parameters
+    names = ("experts.gate_up_proj", "experts.down_proj")
+    kept = [p for p in (target_parameters or []) if not p.endswith(names)]
+    if isinstance(requested_leaves, str):
+        import re
+        def named(stack, leaf):
+            return any(
+                re.fullmatch(requested_leaves, f"{stack}.{e}.{leaf}") for e in range(counts[stack])
+            )
+    else:
+
+        def named(stack, leaf):
+            return any(
+                _names_a_packed_expert(str(entry), stack, leaf) for entry in requested_leaves or ()
+            )
+
+    for leaves, projection in ((("w1", "w3"), "gate_up_proj"), (("w2",), "down_proj")):
+        chosen = [stack for stack in stacks if any(named(stack, leaf) for leaf in leaves)]
+        # PEFT suffix-matches target_parameters, so a request scoped to some layers stays scoped.
+        if len(chosen) == len(stacks):
+            kept.append(f"experts.{projection}")
+        else:
+            kept.extend(f"{stack}.{projection}" for stack in chosen)
+    return kept or None

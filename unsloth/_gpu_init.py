@@ -263,6 +263,7 @@ from .import_fixes import (
     fix_transformers_config_only_remote_code,
     fix_transformers_remote_rope_scaling_none,
     fix_transformers_is_torch_fx_available,
+    fix_transformers5_remote_code_model_api,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
@@ -335,6 +336,7 @@ fix_transformers_is_torch_fx_available()
 # modules are imported and patched when a checkpoint's own modeling file runs,
 # not on every `import unsloth`.
 fix_transformers5_image_processing_reexports()
+fix_transformers5_remote_code_model_api()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
 # BEFORE models/_utils.py imports xformers.ops.
@@ -392,6 +394,7 @@ del fix_transformers_validate_rope_ignore_keys
 del fix_transformers_longcat_lsa_config
 del fix_transformers_remote_rope_scaling_none
 del fix_transformers_is_torch_fx_available
+del fix_transformers5_remote_code_model_api
 del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue

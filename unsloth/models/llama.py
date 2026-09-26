@@ -105,6 +105,7 @@ from unsloth.models._attn_mask_compat import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 from ..kernels import *
+from ..kernels.utils import has_mxfp4_base
 from ..tokenizer_utils import *
 from .vision import FastBaseModel
 
@@ -3596,6 +3597,12 @@ class FastLlamaModel:
                 target_modules,
                 moe_module_targets = _moe_module_targets,
             )
+            from .remote_moe_shims import packed_expert_target_parameters
+            target_parameters = packed_expert_target_parameters(
+                model,
+                target_parameters,
+                target_modules if isinstance(target_modules, (list, tuple, str)) else None,
+            )
 
         if _moe_module_targets:
             _added = [t for t in _moe_module_targets if t not in final_modules]
@@ -3893,6 +3900,7 @@ class FastLlamaModel:
                         and (len(getattr(gate_proj, "lora_magnitude_vector", []) or []) == 0)
                         and (len(getattr(up_proj, "lora_magnitude_vector", []) or []) == 0)
                         and (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0)
+                        and not has_mxfp4_base(gate_proj, up_proj, down_proj)
                     ):
                         # See stackoverflow.com/questions/50599045 on replacing a function within a class of a module.
                         if hasattr(mlp_module, "_unsloth_forward"):
@@ -3922,6 +3930,7 @@ class FastLlamaModel:
                     and (len(getattr(q_proj, "lora_magnitude_vector", []) or []) == 0)
                     and (len(getattr(k_proj, "lora_magnitude_vector", []) or []) == 0)
                     and (len(getattr(v_proj, "lora_magnitude_vector", []) or []) == 0)
+                    and not has_mxfp4_base(q_proj, k_proj, v_proj)
                 ):
                     layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
@@ -3939,6 +3948,7 @@ class FastLlamaModel:
                     hasattr(o_proj, "lora_A")
                     and (getattr(o_proj, "base_layer", o_proj).bias is None)
                     and (len(getattr(o_proj, "lora_magnitude_vector", []) or []) == 0)
+                    and not has_mxfp4_base(o_proj)
                 ):
                     layer.self_attn.apply_o = apply_lora_o
                     n_o += 1

@@ -2116,6 +2116,10 @@ def check_and_disable_bitsandbytes_loading(
     if quant_method is None or quant_method == "bitsandbytes":
         return load_in_4bit, load_in_8bit, quant_method
 
+    if str(quant_method).lower() in ("compressed-tensors", "compressed_tensors", "sparseml"):
+        from .mxfp4_compressed_linear import install_compressed_tensors_keep_packed
+        install_compressed_tensors_keep_packed()
+
     # Packed compressed-tensors: drop its quant config here and keep load_in_4bit for on-the-fly bnb re-quantization.
     if (
         requantize_packed

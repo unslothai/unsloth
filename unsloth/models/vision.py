@@ -1280,6 +1280,9 @@ def _architecture_skip_modules(model_types):
     # LongCat-Flash MLA: NF4 on q_b_proj / kv_b_proj badly hurts loss; both are small.
     if any(mt in ("longcat_flash", "longcat_flash_lsa") for mt in model_types):
         skip.extend(("q_b_proj", "kv_b_proj"))
+    # Kimi-K3's attention residuals read the Linear(hidden, 1) projections' .weight as a score vector, which a packed Params4bit cannot be.
+    if any(mt in ("kimi_k3", "kimi_linear") for mt in model_types):
+        skip.extend(("self_attention_res_proj", "mlp_res_proj", "output_attn_res_proj"))
     return skip
 
 
@@ -2931,6 +2934,8 @@ class FastBaseModel:
                 ]
         # Remember the caller's ORIGINAL explicit leaf list for MoE expert detection: routing it through get_peft_regex adds the full "mlp|feed_forward|ffn|dense" block even for attention-only leaves, so keying on that regex would train the experts. Only the auto path relies on the regex.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
+        # Auto regex is built after MXFP4 expert stacking, so it no longer names per-expert Linears.
+        _auto_targets = target_modules is None or target_modules == "all-linear"
 
         # get_peft_regex drops these (no attention/MLP ancestor) and LoRA on them never trains, so redirect before scoping, matching FastLanguageModel.
         target_modules, modules_to_save, _moved = _redirect_embedding_targets(
@@ -3080,6 +3085,17 @@ class FastBaseModel:
                         for name, _ in _core.named_parameters()
                         if any(name == t or name.endswith("." + t) for t in _core_parameters)
                     ] or None
+            from .remote_moe_shims import packed_expert_target_parameters
+
+            if _auto_targets and finetune_mlp_modules and finetune_language_layers:
+                _packed_leaves = ("w1", "w2", "w3")
+            elif isinstance(_moe_module_detect, (list, tuple, str)):
+                _packed_leaves = _moe_module_detect
+            else:
+                _packed_leaves = None
+            target_parameters = packed_expert_target_parameters(
+                model, target_parameters, _packed_leaves
+            )
 
         if _moe_module_targets:
             if isinstance(target_modules, (list, tuple)):

@@ -104,6 +104,29 @@ def test_plan_accepts_w4a16_pack_quantized():
     assert compressed_tensors_bnb_plan(_Config(quantization_config = _w4a16())) is not None
 
 
+def _mxfp4(**weights):
+    """moonshotai/Kimi-K3's layout: MXFP4 routed experts, everything else left in bf16."""
+    quant = _w4a16(
+        format = "mxfp4-pack-quantized",
+        weights = {"type": "float", "num_bits": 4, "group_size": 32, "scale_dtype": "torch.uint8"},
+    )
+    quant["config_groups"]["group_0"]["format"] = "mxfp4-pack-quantized"
+    quant["config_groups"]["group_0"]["weights"].update(weights)
+    return quant
+
+
+def test_plan_accepts_mxfp4_pack_quantized():
+    plan = compressed_tensors_bnb_plan(_Config(quantization_config = _mxfp4()))
+    assert plan is not None and plan["format"] == "mxfp4-pack-quantized"
+
+
+def test_plan_declines_mxfp4_with_a_layout_it_cannot_decode():
+    for weights in ({"group_size": 16}, {"type": "int"}, {"num_bits": 8}):
+        assert (
+            compressed_tensors_bnb_plan(_Config(quantization_config = _mxfp4(**weights))) is None
+        ), weights
+
+
 def test_plan_accepts_int8_and_asymmetric_and_actorder():
     for weights in (
         {"num_bits": 8},
@@ -601,6 +624,7 @@ def _write_tiny_packed_llama(
     actorder = False,
     num_bits = 4,
     group_size = 32,
+    mxfp4 = False,
 ):
     """A 2-layer Llama with every Linear but lm_head packed by compressed-tensors' compressor.
     Returns (packed_dir, bf16_dir) where bf16_dir holds the exact decompressed weights."""
@@ -634,9 +658,11 @@ def _write_tiny_packed_llama(
             "actorder": "weight" if actorder else None,
         }
     )
+    if mxfp4:
+        quant = _mxfp4()
     ctc = QuantizationConfig.model_validate(quant)
     scheme = list(ctc.config_groups.values())[0]
-    comp = BaseCompressor.get_value_from_registry("pack-quantized")
+    comp = BaseCompressor.get_value_from_registry(quant["format"])
     linears = {n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)}
     packed, plain = {}, {}
     for k, w in sd.items():
@@ -655,7 +681,12 @@ def _write_tiny_packed_llama(
             grouped = wf[:, torch.argsort(g_idx)].reshape(out_f, in_f // group_size, group_size)
         else:
             grouped = wf.reshape(out_f, in_f // group_size, group_size)
-        scale, zp = calculate_qparams(grouped.amin(-1), grouped.amax(-1), scheme.weights)
+        if mxfp4:
+            # One power-of-two scale per 32 so the group maximum lands in E2M1's top binade.
+            amax = grouped.abs().amax(-1).clamp_min(2**-126)
+            scale, zp = 2.0 ** (torch.floor(torch.log2(amax)) - 2), None
+        else:
+            scale, zp = calculate_qparams(grouped.amin(-1), grouped.amax(-1), scheme.weights)
         state = {"weight": wf, "weight_scale": scale.to(torch.bfloat16)}
         if asymmetric:
             state["weight_zero_point"] = zp.to(torch.int8)
@@ -717,12 +748,14 @@ def _tokenizer_free_load(path, root):
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
-@pytest.mark.parametrize("variant", ["symmetric", "asymmetric", "actorder", "int8"])
+@pytest.mark.parametrize("variant", ["symmetric", "asymmetric", "actorder", "int8", "mxfp4"])
 def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(
     variant, tmp_path, monkeypatch
 ):
     from unsloth import FastLanguageModel
 
+    if variant == "mxfp4":
+        monkeypatch.setenv("UNSLOTH_MXFP4_KEEP_PACKED", "0")
     # The NF4 re-quantization route; the default keeps INT4 packed (test_compressed_tensors_int4.py).
     monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_INT4", "nf4")
 
@@ -731,6 +764,7 @@ def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(
         asymmetric = variant == "asymmetric",
         actorder = variant == "actorder",
         num_bits = 8 if variant == "int8" else 4,
+        mxfp4 = variant == "mxfp4",
     )
     for d in (packed_dir, bf16_dir):
         _tokenizer_free_load(d, str(tmp_path))
