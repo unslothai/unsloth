@@ -328,13 +328,16 @@ def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
         dtype,
         device,
         sliding_window = None,
+        is_causal = True,
     ):
+        assert is_causal is True
         captured["window"] = sliding_window
         return original_builder(
             seq_info_arg,
             dtype = dtype,
             device = device,
             sliding_window = sliding_window,
+            is_causal = is_causal,
         )
 
     monkeypatch.setattr(
@@ -404,7 +407,9 @@ def test_run_attention_xformers_passes_sliding_window(monkeypatch):
         *,
         sliding_window = None,
         base_mask = None,
+        is_causal = True,
     ):
+        assert is_causal is True
         captured["window"] = sliding_window
         captured["base"] = base_mask
         return _FakeBias()
