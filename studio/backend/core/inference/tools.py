@@ -18253,7 +18253,7 @@ def _check_signal_escape_patterns(code: str):
                 ):
                     if func.attr in ("setdefault", "putenv", "__setitem__") and len(node.args) >= 2:
                         self._record_env_proxy(node.args[0], node.args[1])
-                    elif func.attr == "update":
+                    elif func.attr in ("update", "__ior__"):
                         for arg in node.args:
                             self._record_env_mapping(arg)
                         for kw in node.keywords:

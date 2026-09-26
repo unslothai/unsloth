@@ -5410,6 +5410,11 @@ class TestEgressHostParsingAndTracking:
                 id = "paramiko_positional_sock",
             ),
             pytest.param(
+                f"import os, requests\nos.environ.__ior__({{'https_proxy': 'http://{_H}:8080'}})\n"
+                "requests.get('https://pypi.org/')",
+                id = "environ_explicit_ior",
+            ),
+            pytest.param(
                 f"from fabric import Connection\nConnection('pypi.org', 'u', 22, None, Connection('{_H}'))",
                 id = "fabric_positional_gateway",
             ),
