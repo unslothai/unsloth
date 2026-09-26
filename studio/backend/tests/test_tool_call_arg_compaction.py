@@ -996,12 +996,10 @@ def test_the_unparseable_receipt_is_recognised_too():
         {"path": "a.py", "edits": [{"old_string": "a", "new_string": "b"}]},
         {"code": "print('<3 chars of arguments you sent, quoted>')"},
         {"note": "12 chars of arguments you sent,\nacross lines"},
-        # Allow text after a closed receipt.
         {
             "new_string": "<410 chars of arguments you sent, elided to save room; the call already "
             "ran. Not tool output> return value"
         },
-        # A shared prefix alone is not a receipt.
         {"new_string": "<12 chars of arguments you sent, see the notes>"},
         {"count": 3, "flags": [True, None]},
     ],

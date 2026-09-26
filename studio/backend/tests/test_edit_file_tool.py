@@ -893,7 +893,6 @@ class TestReplayedReceipt:
 
     @staticmethod
     def _replayed(path: str, old: str, new: str) -> dict:
-        """Return an earlier call's compacted arguments."""
         from core.inference.context_window import compact_completed_tool_arguments
 
         arguments = {"path": path, "edits": [{"old_string": old, "new_string": new}]}
@@ -931,7 +930,6 @@ class TestReplayedReceipt:
         assert target.read_text() == original
 
     def test_one_receipt_in_a_batch_of_real_edits_stops_the_whole_batch(self, workdir):
-        """The reported call mixed real `new_string` values with copied receipts."""
         target = workdir / "a.py"
         target.write_text("a = 1\nb = 2\n")
 
@@ -952,7 +950,6 @@ class TestReplayedReceipt:
         assert target.read_text() == "a = 1\nb = 2\n"
 
     def test_text_that_only_quotes_a_receipt_is_still_written(self, workdir):
-        """Source code quoting a receipt must remain editable."""
         target = workdir / "t.py"
         target.write_text("RECEIPT = None\n")
         quoted = (
@@ -966,7 +963,6 @@ class TestReplayedReceipt:
         assert target.read_text() == quoted + "\n"
 
     def test_a_file_the_receipt_already_damaged_can_be_repaired(self, workdir):
-        """Allow matching an on-disk receipt to replace it with real code."""
         receipt = (
             "<1081 chars of arguments you sent, already written to PortalManager.java; "
             "elided to save room. Not tool output; the file on disk holds it.>"
