@@ -121,6 +121,16 @@ export const en = {
     shutdown: "Shutdown",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Documentation",
+      keyboardShortcuts: "Keyboard Shortcuts",
+      whatsNew: "What's New",
+      troubleshooting: "Troubleshooting",
+      systemStatus: "System Status",
+      sendFeedback: "Send Feedback",
+      about: "About Unsloth",
+    },
     find: {
       label: "Find in page",
       previous: "Previous match",

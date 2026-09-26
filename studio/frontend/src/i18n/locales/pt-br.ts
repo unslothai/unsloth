@@ -122,6 +122,16 @@ export const ptBR = {
     shutdown: "Desligar",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Documentação",
+      keyboardShortcuts: "Atalhos de teclado",
+      whatsNew: "Novidades",
+      troubleshooting: "Solução de problemas",
+      systemStatus: "Status do sistema",
+      sendFeedback: "Enviar feedback",
+      about: "Sobre o Unsloth",
+    },
     find: {
       label: "Localizar na página",
       previous: "Ocorrência anterior",

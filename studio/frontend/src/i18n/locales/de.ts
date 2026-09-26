@@ -123,6 +123,16 @@ export const de = {
     shutdown: "Herunterfahren",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Dokumentation",
+      keyboardShortcuts: "Tastenkürzel",
+      whatsNew: "Neuigkeiten",
+      troubleshooting: "Fehlerbehebung",
+      systemStatus: "Systemstatus",
+      sendFeedback: "Feedback senden",
+      about: "Über Unsloth",
+    },
     find: {
       label: "Auf der Seite suchen",
       previous: "Vorheriger Treffer",

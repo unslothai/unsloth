@@ -122,6 +122,16 @@ export const ja = {
     shutdown: "シャットダウン",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "ドキュメント",
+      keyboardShortcuts: "キーボードショートカット",
+      whatsNew: "新機能",
+      troubleshooting: "トラブルシューティング",
+      systemStatus: "システムの状態",
+      sendFeedback: "フィードバックを送信",
+      about: "Unsloth について",
+    },
     find: {
       label: "ページ内検索",
       previous: "前の一致",
