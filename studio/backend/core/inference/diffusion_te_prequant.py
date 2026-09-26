@@ -218,9 +218,9 @@ def te_candidate_is_readable(name: Optional[str]) -> bool:
     """
     if not name:
         return False
-    from .prequant_safetensors import is_safetensors_checkpoint, safetensors_prequant_supported
+    from .prequant_safetensors import is_safetensors_checkpoint, safetensors_importable
 
-    return safetensors_prequant_supported() if is_safetensors_checkpoint(name) else True
+    return safetensors_importable() if is_safetensors_checkpoint(name) else True
 
 
 def family_te_prequant_repo(fam: Any, scheme: str, component: str) -> Optional[str]:

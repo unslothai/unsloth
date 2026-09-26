@@ -952,6 +952,19 @@ def test_the_te_capability_question_is_not_the_transformers_one():
     assert tpq.te_candidate_is_readable(None) is False
 
 
+def test_the_te_safetensors_gate_does_not_require_torchao(monkeypatch):
+    """A published text-encoder safetensors artifact can be plain tensors, so the readability
+    gate must not make Windows ROCm ask for torchao and then 404 the missing ``.pt`` fallback."""
+    from core.inference import prequant_safetensors as ps
+
+    monkeypatch.setattr(ps, "safetensors_importable", lambda: True)
+    monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: False)
+    assert tpq.te_candidate_is_readable("X-text_encoder-FP8.safetensors") is True
+
+    monkeypatch.setattr(ps, "safetensors_importable", lambda: False)
+    assert tpq.te_candidate_is_readable("X-text_encoder-FP8.safetensors") is False
+
+
 def test_the_candidate_accessor_tolerates_a_planner_stand_in():
     """Planners pass lightweight objects carrying only ``filename``; reading the chain off one
     must not raise, or the whole pre-cast plan is swallowed into a silent dense fallback."""
