@@ -642,7 +642,8 @@ def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
 
 
 def test_training_runs_map_only_folders_directly_under_outputs(monkeypatch):
-    """A newer run in an external folder of the same name must not claim the managed model."""
+    """A newer run in an external folder of the same name, or a newer failed one in the same
+    folder, must not claim the managed model."""
     import sqlite3
 
     from storage import studio_db
@@ -650,13 +651,14 @@ def test_training_runs_map_only_folders_directly_under_outputs(monkeypatch):
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE training_runs (id TEXT, output_dir TEXT, started_at TEXT)")
+    conn.execute("CREATE TABLE training_runs (id TEXT, output_dir TEXT, started_at TEXT, status TEXT)")
     conn.executemany(
-        "INSERT INTO training_runs VALUES (?, ?, ?)",
+        "INSERT INTO training_runs VALUES (?, ?, ?, ?)",
         [
-            ("managed", str(outputs_root() / "my-run"), "2026-01-01"),
-            ("external", "/tmp/elsewhere/my-run", "2026-02-01"),
-            ("nested", str(outputs_root() / "group" / "other"), "2026-03-01"),
+            ("managed", str(outputs_root() / "my-run"), "2026-01-01", "completed"),
+            ("external", "/tmp/elsewhere/my-run", "2026-02-01", "completed"),
+            ("nested", str(outputs_root() / "group" / "other"), "2026-03-01", "completed"),
+            ("failed", str(outputs_root() / "my-run"), "2026-04-01", "error"),
         ],
     )
     monkeypatch.setattr(studio_db, "get_connection", lambda: conn)

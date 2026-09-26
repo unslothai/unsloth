@@ -500,6 +500,8 @@ const splitSections = memo((code) => {
 
 type SectionKind = "elapsed" | "date" | "literal" | "scientific" | "number";
 
+const SCALE_COMMAS = /([0#?])(,+)(?=\.|[^0#?]*$)/;
+
 /** A section's kind, with tags dropped (`tagged`) and quotes undone (`code`). */
 const readSection = memo((section) => {
   // [$€-407]-style currency tags keep their symbol, quoted; [Red] and the like go, but not the
@@ -529,7 +531,7 @@ const readSection = memo((section) => {
             ? "scientific"
             : "number";
   // Commas after the last digit placeholder scale by a thousand each: #,##0,, shows millions.
-  const scale = 1000 ** (bare.match(/[0#?](,+)(?:\.|[^0#?]*$)/)?.[1]?.length ?? 0);
+  const scale = 1000 ** (bare.match(SCALE_COMMAS)?.[2]?.length ?? 0);
   return { tagged, code, kind, percent: bare.includes("%"), scale };
 });
 
@@ -569,11 +571,14 @@ export function formatNumber(value: number, rawCode: string | undefined, date190
   if (kind === "date") return formatDate(date1904 ? value + 1462 : value, tagged);
   // No digit placeholders: literal text, with the value wherever "General" stands.
   if (kind === "literal") return `${sign}${code.replace(/general/i, generalText(Math.abs(value)))}`.trim();
-  if (kind === "scientific") return `${sign}${formatScientific(Math.abs(percent ? value * 100 : value), tagged).trim()}`;
-  // The magnitude: the section's own sign, as in the other branches. (# ?/?;(# ?/?) shows (1 1/2).)
-  const fraction = formatFraction(Math.abs(percent ? value * 100 : value), code);
-  if (fraction !== null) return `${sign}${fraction}`;
+  // The magnitude, percent and thousands scaling applied whatever its shape; the section writes its
+  // own sign, as in the other branches. (# ?/?;(# ?/?) shows (1 1/2), # ?/?, shows thousands.)
   const number = Math.abs(percent ? value * 100 : value) / scale;
+  // The scaling commas go, or the fraction and exponent would show them as text.
+  const unscaled = (format: string) => (scale === 1 ? format : format.replace(SCALE_COMMAS, "$1"));
+  if (kind === "scientific") return `${sign}${formatScientific(number, unscaled(tagged)).trim()}`;
+  const fraction = formatFraction(number, unscaled(code));
+  if (fraction !== null) return `${sign}${fraction}`;
   return `${sign}${placeDigits(number, tagged).trim()}`;
 }
 
@@ -723,10 +728,21 @@ const PHONETIC = /<(?:[\w.-]+:)?rPh(?=[\s/>])[^>]*?(?:\/>|>[\s\S]*?<\/(?:[\w.-]+
 const TEXT_RUN = /<(?:[\w.-]+:)?t(?:\s[^>]*)?>([\s\S]*?)<\/(?:[\w.-]+:)?t\s*>/g;
 const SHEET_DATA = /<(?:[\w.-]+:)?sheetData[\s/>]/;
 
+const MARKUP = /<!\[CDATA\[([\s\S]*?)\]\]>|<!--[\s\S]*?-->/g;
+
+/** CDATA as escaped text and comments dropped, so neither can hold a tag the scan would match.
+ *  decodeXml undoes the escapes. */
+function flattenMarkup(text: string): string {
+  if (!text.includes("<!")) return text;
+  return text.replace(MARKUP, (_, cdata?: string) =>
+    cdata === undefined ? "" : cdata.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"),
+  );
+}
+
 /** A string's text (<si>, <is>), runs joined, phonetic runs (<rPh>) dropped. */
 function stringText(xmlText: string): string {
   let out = "";
-  for (const match of xmlText.replace(PHONETIC, "").matchAll(TEXT_RUN)) out += decodeXml(match[1]!);
+  for (const match of flattenMarkup(xmlText).replace(PHONETIC, "").matchAll(TEXT_RUN)) out += decodeXml(match[1]!);
   return out;
 }
 
@@ -743,6 +759,7 @@ function readSheet(
   const rows: (SheetCell | undefined)[][] = [];
   const widths: (number | undefined)[] = [];
   const hidden = { rows: new Set<number>(), columns: new Set<number>() };
+  text = flattenMarkup(text);
   const dataAt = text.search(SHEET_DATA);
   const head = dataAt === -1 ? text : text.slice(0, dataAt);
   for (const [attrs] of elements(head, COL_OPEN, COL_CLOSE)) {
@@ -830,6 +847,12 @@ function rowsEnd(bytes: Uint8Array, rows: number): { end: number; capped: boolea
   let last = -1;
   for (let i = bytes.indexOf(0x3c); i !== -1; i = bytes.indexOf(0x3c, i + 1)) {
     if (i > MAX_SHEET_XML_BYTES) return { end: last, capped: true };
+    const skipped = skipMarkup(bytes, i);
+    if (skipped === -1) break;
+    if (skipped !== i) {
+      i = skipped;
+      continue;
+    }
     if (bytes[i + 1] !== 0x2f) continue;
     // The local name, after a prefix if the writer gave one.
     let name = i + 2;
@@ -861,10 +884,36 @@ function sheetText(bytes: Uint8Array, rows: number): { text: string; cut: boolea
   return { text: strFromU8(bytes.subarray(0, end)), cut: more };
 }
 
+const CDATA_END = [0x5d, 0x5d, 0x3e]; // ]]>
+const COMMENT_END = [0x2d, 0x2d, 0x3e]; // -->
+
+function indexOfBytes(bytes: Uint8Array, seq: number[], from: number): number {
+  for (let i = bytes.indexOf(seq[0]!, from); i !== -1; i = bytes.indexOf(seq[0]!, i + 1)) {
+    if (seq.every((byte, n) => bytes[i + n] === byte)) return i;
+  }
+  return -1;
+}
+
+/** Past a CDATA section or comment opening at `i`, whose text may look like a tag: where its
+ *  closing `>` is; `i` when neither opens there, -1 when it never closes. */
+function skipMarkup(bytes: Uint8Array, i: number): number {
+  if (bytes[i + 1] !== 0x21) return i;
+  const close = bytes[i + 2] === 0x5b ? CDATA_END : bytes[i + 2] === 0x2d ? COMMENT_END : null;
+  if (!close) return i;
+  const at = indexOfBytes(bytes, close, i + 3);
+  return at === -1 ? -1 : at + 2;
+}
+
 /** The next start (or `closing` end) tag with local name `name`, any prefix, from byte `from`:
  *  where it starts, where it ends (after `>`), and whether it closes itself. */
 function findTag(bytes: Uint8Array, from: number, name: string, closing: boolean) {
   for (let i = bytes.indexOf(0x3c, from); i !== -1; i = bytes.indexOf(0x3c, i + 1)) {
+    const skipped = skipMarkup(bytes, i);
+    if (skipped === -1) return null;
+    if (skipped !== i) {
+      i = skipped;
+      continue;
+    }
     let j = i + 1;
     if ((bytes[j] === 0x2f) !== closing) continue;
     if (closing) j++;
@@ -1145,17 +1194,36 @@ function paragraphText(p: Element): string {
     .join("");
 }
 
+/** An xfrm child's two numbers (off x/y, ext cx/cy); undefined when it has none. */
+function point(xfrm: Element | undefined, name: string, a: string, b: string): [number, number] | undefined {
+  const node = xfrm && children(xfrm, name)[0];
+  return node ? [Number(node.getAttribute(a)) || 0, Number(node.getAttribute(b)) || 0] : undefined;
+}
+
 function readFrame(shape: Element, cx: number, cy: number): SlideBox["frame"] {
   const xfrm = first(shape, "xfrm");
-  const off = xfrm && first(xfrm, "off");
-  const ext = xfrm && first(xfrm, "ext");
+  const off = point(xfrm, "off", "x", "y");
+  const ext = point(xfrm, "ext", "cx", "cy");
   if (!off || !ext) return undefined;
-  return {
-    x: Number(off.getAttribute("x")) / cx,
-    y: Number(off.getAttribute("y")) / cy,
-    w: Number(ext.getAttribute("cx")) / cx,
-    h: Number(ext.getAttribute("cy")) / cy,
-  };
+  let [x, y] = off;
+  let [w, h] = ext;
+  // In a group, a frame is in the group's child space (chOff, chExt): map it out through each
+  // group to the slide.
+  for (let group = shape.parentElement; group; group = group.parentElement) {
+    if (group.localName !== "grpSp") continue;
+    const box = children(group, "grpSpPr").flatMap((props) => children(props, "xfrm"))[0];
+    const [gx, gy] = point(box, "off", "x", "y") ?? [0, 0];
+    const [gw, gh] = point(box, "ext", "cx", "cy") ?? [0, 0];
+    const [ox, oy] = point(box, "chOff", "x", "y") ?? [0, 0];
+    const [ow, oh] = point(box, "chExt", "cx", "cy") ?? [0, 0];
+    const sx = gw && ow ? gw / ow : 1;
+    const sy = gh && oh ? gh / oh : 1;
+    x = gx + (x - ox) * sx;
+    y = gy + (y - oy) * sy;
+    w *= sx;
+    h *= sy;
+  }
+  return { x: x / cx, y: y / cy, w: w / cx, h: h / cy };
 }
 
 /** `images: false` reads text only, leaving slide media unpacked. Only the parts visible slides
@@ -1171,39 +1239,35 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   const cy = Number(size?.getAttribute("cy")) || 6858000;
   const rels = relationships(head, main);
   const slidePaths = all(presentation, "sldId").map((id) => rels.get(relId(id, "id") ?? ""));
-  const slideFiles: Unzipped = {};
-  const visible: { path: string; rels: ReturnType<typeof relationshipList> }[] = [];
-  let truncated = false;
-  for (const path of slidePaths) {
-    if (!path) continue;
-    // One slide at a time, so a deck past the cap inflates no more than it shows.
-    const part = read([path, relsPath(path)]);
-    const slide = part[path];
-    // A hidden slide is left out of the show, so out of the viewer and the model's text too. Read
-    // from the root tag, so each slide is parsed only when its turn comes.
-    if (!slide || HIDDEN_SLIDE.test(strFromU8(slide.subarray(0, 16384)))) continue;
-    if (visible.length === MAX_SLIDES) {
-      truncated = true;
-      break;
-    }
-    slideFiles[path] = slide;
-    visible.push({ path, rels: relationshipList(part, path) });
-  }
-  const used = new Set(
-    visible.flatMap((slide) =>
-      slide.rels
-        .filter((rel) => /\/(chart|diagramData)$/.test(rel.type) || (images && rel.type.endsWith("/image")))
-        .map((rel) => rel.path),
-    ),
-  );
-  const files = read(used);
   const slides: Slide[] = [];
   // One Blob per picture, however many slides use it.
   const pictures = new Map<string, Blob>();
-  for (const { path, rels: slideRelList } of visible) {
-    const doc = xml(slideFiles, path);
-    delete slideFiles[path];
+  let truncated = false;
+  for (const path of slidePaths) {
+    if (!path) continue;
+    // One slide at a time, parsed before the next is read: a long deck holds one slide's XML and
+    // inflates no more than it shows.
+    const part = read([path, relsPath(path)]);
+    const slideXml = part[path];
+    // A hidden slide is left out of the show, so out of the viewer and the model's text too. Read
+    // from the root tag, so it is never parsed.
+    if (!slideXml || HIDDEN_SLIDE.test(strFromU8(slideXml.subarray(0, 16384)))) continue;
+    if (slides.length === MAX_SLIDES) {
+      truncated = true;
+      break;
+    }
+    const doc = xml(part, path);
     if (!doc) continue;
+    const slideRelList = relationshipList(part, path);
+    const files = read(
+      slideRelList
+        .filter(
+          (rel) =>
+            /\/(chart|diagramData)$/.test(rel.type) ||
+            (images && rel.type.endsWith("/image") && !pictures.has(rel.path)),
+        )
+        .map((rel) => rel.path),
+    );
     const slideRels = new Map(slideRelList.map((rel) => [rel.id, rel.path]));
     const boxes: SlideBox[] = [];
     let left = MAX_SLIDE_ITEMS;
@@ -1272,15 +1336,15 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
     for (const pic of images ? all(doc, "pic") : []) {
       const blip = first(pic, "blip");
       const target = blip && slideRels.get(relId(blip, "embed") ?? "");
-      const data = target && files[target];
       const type = target && imageType(target);
-      if (!data || !type) continue;
+      const data = target && files[target];
+      const image = target && (pictures.get(target) ?? (data && type ? new Blob([data as Uint8Array<ArrayBuffer>], { type }) : null));
+      if (!image) continue;
       if (left <= 0) {
         cut = true;
         break;
       }
       left--;
-      const image = pictures.get(target) ?? new Blob([data as Uint8Array<ArrayBuffer>], { type });
       pictures.set(target, image);
       boxes.unshift({ frame: readFrame(pic, cx, cy), image });
     }

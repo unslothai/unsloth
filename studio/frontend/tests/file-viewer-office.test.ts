@@ -76,6 +76,7 @@ test("number formats", () => {
     [1 / 24, '[h]:mm "hours"', "1:00 hours"],
     [1 / 24, "[h]:m:s", "1:0:0"],
     [0.125, "# ?/?%", "12 1/2%"],
+    [125000, "# ?/?,", "125"],
   ];
   for (const [value, format, expected] of cases) assert.equal(formatNumber(value, format), expected, format);
 });
@@ -97,14 +98,14 @@ test("xlsx: reads only the parts and rows it keeps", () => {
 test("xlsx: sheet XML read as text", () => {
   const [sheet] = readXlsx(
     workbook(`<worksheet xmlns="${MAIN}"><cols><col min='2' max='2' hidden='1'/></cols><sheetData>
-<row r="1"><c r="A1" t="inlineStr"><is><r><t>a &amp; &#x42;</t></r><r><t><![CDATA[<c>]]></t></r><rPh><t>ruby</t></rPh></is></c><c r="B1"><v>9</v></c></row>
+<row r="1"><c r="A1" t="inlineStr"><is><r><t>a &amp; &#x42;</t></r><r><t><![CDATA[<c></row>]]></t></r><rPh><t>ruby</t></rPh></is></c><c r="B1"><v>9</v></c></row>
 <row r="2"><c r="A2"><f t="shared" ref="A2:A3" si="0">B2*2+$C$1</f><v>7</v></c></row>
 <row r="3"><c r="A3"><f t="shared" si="0"/></c></row>
 </sheetData></worksheet>`),
   );
   assert.deepEqual(
     sheet?.rows.map((row) => row.map((cell) => cell?.text)),
-    [["a & B<c>"], ["7"], ["=B3*2+$C$1"]],
+    [["a & B<c></row>"], ["7"], ["=B3*2+$C$1"]],
   );
 });
 

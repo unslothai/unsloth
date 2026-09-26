@@ -587,7 +587,8 @@ _EXPORT_SUFFIX_RE = re.compile(r"[-_](gguf|adapter|merged|finetune)$", re.IGNORE
 
 def _training_runs_by_dir() -> dict[str, str]:
     """Folder name under outputs/ to the id of the newest training run that wrote it. A run that wrote
-    anywhere else is left out, so an external folder of the same name never claims a managed model."""
+    anywhere else is left out, so an external folder of the same name never claims a managed model.
+    A finished run outranks a running or failed one reusing the folder, which may have written nothing."""
     from storage.studio_db import get_connection
     from utils.paths.storage_roots import outputs_root, resolve_output_dir
 
@@ -595,7 +596,7 @@ def _training_runs_by_dir() -> dict[str, str]:
     try:
         rows = conn.execute(
             "SELECT id, output_dir FROM training_runs WHERE output_dir IS NOT NULL"
-            " ORDER BY started_at"
+            " ORDER BY status IN ('completed', 'stopped'), started_at"
         ).fetchall()
     except Exception:
         logger.debug("library.training_runs_unavailable", exc_info = True)
