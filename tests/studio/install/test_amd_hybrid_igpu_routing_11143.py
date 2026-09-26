@@ -98,10 +98,14 @@ def test_rocminfo_output_is_not_masked_by_rocr_twice(unmasked):
 
 def test_the_rocminfo_probe_says_its_output_is_rocr_filtered():
     import ast
+
     tree = ast.parse(Path(ILP.__file__).read_text(encoding = "utf-8"))
-    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "detect_host")
+    fn = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "detect_host"
+    )
     calls = [
-        c for c in ast.walk(fn)
+        c
+        for c in ast.walk(fn)
         if isinstance(c, ast.Call) and getattr(c.func, "id", "") == "_pick_rocm_gfx_target"
     ]
     assert any(k.arg == "rocr_filtered" for c in calls for k in c.keywords)

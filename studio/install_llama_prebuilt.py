@@ -2786,8 +2786,10 @@ def _pick_rocm_gfx_target(out: str, rocr_filtered: bool = False) -> str | None:
     _vis_raw = None
     # AMD's HIP runtime honours all three env vars with identical semantics. rocminfo output is
     # already ROCr-filtered and renumbered, so only the HIP-layer masks index it (as install.sh).
-    _masks = ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES") if rocr_filtered else (
-        "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"
+    _masks = (
+        ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+        if rocr_filtered
+        else ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
     )
     for _env in _masks:
         _val = os.environ.get(_env)
