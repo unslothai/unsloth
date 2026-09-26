@@ -27,14 +27,18 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+POSIX_ONLY = pytest.mark.skipif(
+    os.name == "nt", reason = "the library names below are the POSIX ones"
+)
+LINUX_NVML = "libnvidia-ml.so.1"
+LINUX_CUDA = "libcuda.so.1"
+NVML_OUT = "nvml;12;6;8.9,8.9"
+CUDA_OUT = "cuda;12;6;9.0,9.0"
 
 
 def _embedded(path: Path) -> str:
-    """The here-string body inside Read-NvidiaLibraryRawViaPython.
-
-    Anchored on the function: both files carry other here-strings, and matching the first one
-    silently returns a different probe.
-    """
+    # Anchored on the function: both files carry other here-strings, and the first one is a
+    # different probe.
     text = path.read_text(encoding = "utf-8")
     at = text.index("function Read-NvidiaLibraryRawViaPython")
     match = re.search(r"\$probeSource = @'\n(.*?)\n'@\n", text[at:], re.S)
@@ -61,12 +65,9 @@ def test_the_probe_compiles():
 
 
 class _Fn:
-    """A fake exported function. Carries .restype / .argtypes because the probe sets them."""
-
+    # The probe sets .restype / .argtypes on every export.
     def __init__(self, impl):
-        self._impl = impl
-        self.restype = None
-        self.argtypes = None
+        self._impl, self.restype, self.argtypes = impl, None, None
 
     def __call__(self, *args):
         return self._impl(*args)
@@ -80,28 +81,22 @@ class _Lib:
     def __getattr__(self, name):
         if name not in self._table:
             raise AttributeError(name)
-
-        def record(*args, _name = name):
-            self.calls.append(_name)
-            return self._table[_name](*args)
-
-        return _Fn(record)
+        return _Fn(lambda *args: (self.calls.append(name), self._table[name](*args))[1])
 
 
 def _run(
-    probe_source: str,
-    libs: dict[str, _Lib | None],
-    hints: tuple[str, str] = ("", ""),
+    libs,
+    hints = ("", ""),
+    loaded = None,
 ) -> str:
     """Execute the probe with ctypes.CDLL replaced, and return what it wrote to stdout."""
-    loaded: list[str] = []
 
     def fake_cdll(name):
-        loaded.append(name)
-        lib = libs.get(name)
-        if lib is None:
+        if loaded is not None:
+            loaded.append(name)
+        if libs.get(name) is None:
             raise OSError(f"cannot load {name}")
-        return lib
+        return libs[name]
 
     shim = types.ModuleType("ctypes")
     for attr in ("c_int", "c_uint", "c_void_p", "POINTER"):
@@ -109,27 +104,21 @@ def _run(
     shim.CDLL = fake_cdll
     # Identity byref, so a fake export can write through to the caller's c_int.
     shim.byref = lambda obj: obj
-
-    namespace: dict = {}
-    saved_module = sys.modules.get("ctypes")
-    saved_hints = {k: os.environ.get(k) for k in ("UNSLOTH_NVML_HINT", "UNSLOTH_CUDA_HINT")}
-    sys.modules["ctypes"] = shim
-    os.environ["UNSLOTH_NVML_HINT"], os.environ["UNSLOTH_CUDA_HINT"] = hints
     buffer = io.StringIO()
-    try:
-        with redirect_stdout(buffer):
-            exec(compile(probe_source, "embedded_probe.py", "exec"), namespace)
-    finally:
-        for key, value in saved_hints.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-        if saved_module is None:
-            del sys.modules["ctypes"]
-        else:
-            sys.modules["ctypes"] = saved_module
+    with pytest.MonkeyPatch.context() as mp, redirect_stdout(buffer):
+        mp.setitem(sys.modules, "ctypes", shim)
+        mp.setenv("UNSLOTH_NVML_HINT", hints[0])
+        mp.setenv("UNSLOTH_CUDA_HINT", hints[1])
+        exec(compile(INSTALL_PROBE, "embedded_probe.py", "exec"), {})
     return buffer.getvalue()
+
+
+def _put(value):
+    def write(out):
+        out.value = value
+        return 0
+
+    return write
 
 
 def _nvml(
@@ -141,14 +130,6 @@ def _nvml(
     init = 0,
 ):
     """A fake libnvidia-ml. bad_handle / bad_cap make that device index fail."""
-
-    def get_count(out):
-        out.value = count
-        return 0
-
-    def get_version(out):
-        out.value = packed
-        return 0
 
     def get_handle(index, out):
         if index == bad_handle:
@@ -167,8 +148,8 @@ def _nvml(
         {
             "nvmlInit_v2": lambda: init,
             "nvmlShutdown": lambda: 0,
-            "nvmlDeviceGetCount_v2": get_count,
-            "nvmlSystemGetCudaDriverVersion_v2": get_version,
+            "nvmlDeviceGetCount_v2": _put(count),
+            "nvmlSystemGetCudaDriverVersion_v2": _put(packed),
             "nvmlDeviceGetHandleByIndex_v2": get_handle,
             "nvmlDeviceGetCudaComputeCapability": get_cap,
         }
@@ -181,6 +162,7 @@ def _cuda(
     caps = ((9, 0), (9, 0)),
     init = 0,
     seen = None,
+    attrs = None,
 ):
     def cu_init(flags):
         if seen is not None:
@@ -188,212 +170,116 @@ def _cuda(
             seen.append(os.environ.get("CUDA_VISIBLE_DEVICES"))
         return init
 
-    def get_count(out):
-        out.value = count
-        return 0
-
-    def get_version(out):
-        out.value = packed
-        return 0
-
     def get_device(out, index):
         out.value = index
         return 0
 
     def get_attr(out, attr, device):
+        if attrs is not None:
+            attrs.append(attr)
         out.value = caps[device.value][0 if attr == 75 else 1]
         return 0
 
     return _Lib(
         {
             "cuInit": cu_init,
-            "cuDriverGetVersion": get_version,
-            "cuDeviceGetCount": get_count,
+            "cuDriverGetVersion": _put(packed),
+            "cuDeviceGetCount": _put(count),
             "cuDeviceGet": get_device,
             "cuDeviceGetAttribute": get_attr,
         }
     )
 
 
-LINUX_NVML = "libnvidia-ml.so.1"
-LINUX_CUDA = "libcuda.so.1"
-
-
-@pytest.mark.skipif(os.name == "nt", reason = "the library names below are the POSIX ones")
-class TestNvmlRung:
-    def test_a_healthy_two_gpu_host_reports_version_and_both_capabilities(self):
-        out = _run(INSTALL_PROBE, {LINUX_NVML: _nvml()})
-        assert out == "nvml;12;6;8.9,8.9"
-
-    def test_the_version_is_unpacked_as_major_1000_plus_minor_10(self):
-        out = _run(INSTALL_PROBE, {LINUX_NVML: _nvml(packed = 13010)})
-        assert out.startswith("cuda;") is False
-        assert out == "nvml;13;1;8.9,8.9"
-
-    def test_one_unreadable_handle_voids_the_whole_source(self):
+@POSIX_ONLY
+@pytest.mark.parametrize(
+    "nvml, cuda, expected",
+    [
+        pytest.param({}, None, NVML_OUT, id = "healthy_two_gpu_nvml"),
+        pytest.param(
+            {"packed": 13010}, None, "nvml;13;1;8.9,8.9", id = "version_is_major_1000_minor_10"
+        ),
         # A partial list would misreport the lowest capability and so the pre-Turing cap.
-        lib = _nvml(count = 2, bad_handle = 1)
-        out = _run(INSTALL_PROBE, {LINUX_NVML: lib, LINUX_CUDA: None})
-        assert out == ""
-
-    def test_one_unreadable_capability_voids_the_whole_source(self):
-        lib = _nvml(count = 2, bad_cap = 1)
-        out = _run(INSTALL_PROBE, {LINUX_NVML: lib, LINUX_CUDA: None})
-        assert out == ""
-
-    def test_a_partial_read_still_shuts_nvml_down(self):
-        lib = _nvml(count = 2, bad_cap = 1)
-        _run(INSTALL_PROBE, {LINUX_NVML: lib, LINUX_CUDA: None})
-        assert "nvmlShutdown" in lib.calls
-
-    def test_no_devices_is_no_answer(self):
-        out = _run(INSTALL_PROBE, {LINUX_NVML: _nvml(count = 0), LINUX_CUDA: None})
-        assert out == ""
-
-    def test_a_nonsense_driver_version_is_rejected(self):
+        pytest.param({"bad_handle": 1}, None, "", id = "unreadable_handle_voids_source"),
+        pytest.param({"bad_cap": 1}, None, "", id = "unreadable_capability_voids_source"),
+        pytest.param({"count": 0}, None, "", id = "no_devices"),
         # Below 1000 the packed form cannot encode a real CUDA version.
-        out = _run(INSTALL_PROBE, {LINUX_NVML: _nvml(packed = 999), LINUX_CUDA: None})
-        assert out == ""
+        pytest.param({"packed": 999}, None, "", id = "nonsense_driver_version"),
+        pytest.param({"init": 1}, {}, CUDA_OUT, id = "failed_nvml_init_falls_through"),
+        pytest.param(None, {}, CUDA_OUT, id = "nvml_absent_uses_driver_api"),
+        pytest.param({}, {}, NVML_OUT, id = "nvml_preferred_when_both_answer"),
+        pytest.param(None, None, "", id = "neither_library"),
+        pytest.param(None, {"init": 1}, "", id = "failed_cuinit"),
+    ],
+)
+def test_probe_output(nvml, cuda, expected):
+    libs = {
+        LINUX_NVML: None if nvml is None else _nvml(**nvml),
+        LINUX_CUDA: None if cuda is None else _cuda(**cuda),
+    }
+    assert _run(libs) == expected
 
-    def test_a_failed_init_falls_through_rather_than_raising(self):
-        out = _run(INSTALL_PROBE, {LINUX_NVML: _nvml(init = 1), LINUX_CUDA: _cuda()})
-        assert out == "cuda;12;6;9.0,9.0"
+
+@POSIX_ONLY
+def test_a_partial_read_still_shuts_nvml_down():
+    lib = _nvml(bad_cap = 1)
+    _run({LINUX_NVML: lib, LINUX_CUDA: None})
+    assert "nvmlShutdown" in lib.calls
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the library names below are the POSIX ones")
-class TestCudaRung:
-    def test_nvml_absent_falls_to_the_driver_api(self):
-        out = _run(INSTALL_PROBE, {LINUX_NVML: None, LINUX_CUDA: _cuda()})
-        assert out == "cuda;12;6;9.0,9.0"
-
-    def test_the_skip_switch_goes_straight_to_the_driver_api(self):
-        # The CUDA-only retry after a child NVML held past its deadline: NVML is never loaded or
-        # initialised, and the driver API is.
-        nvml, cuda = _nvml(), _cuda()
-        saved = os.environ.get("UNSLOTH_NVIDIA_PROBE_SKIP_NVML")
-        os.environ["UNSLOTH_NVIDIA_PROBE_SKIP_NVML"] = "1"
-        try:
-            out = _run(INSTALL_PROBE, {LINUX_NVML: nvml, LINUX_CUDA: cuda})
-        finally:
-            if saved is None:
-                os.environ.pop("UNSLOTH_NVIDIA_PROBE_SKIP_NVML", None)
-            else:
-                os.environ["UNSLOTH_NVIDIA_PROBE_SKIP_NVML"] = saved
-        assert "nvmlInit_v2" not in nvml.calls
+@POSIX_ONLY
+@pytest.mark.parametrize("value, nvml_first", [("1", False), ("0", True)])
+def test_the_skip_nvml_switch(monkeypatch, value, nvml_first):
+    # "1" is the CUDA-only retry after a child NVML held past its deadline: NVML is never loaded
+    # or initialised, and the driver API is. Any other value still reads NVML first.
+    monkeypatch.setenv("UNSLOTH_NVIDIA_PROBE_SKIP_NVML", value)
+    nvml, cuda = _nvml(), _cuda()
+    out = _run({LINUX_NVML: nvml, LINUX_CUDA: cuda})
+    assert ("nvmlInit_v2" in nvml.calls) is nvml_first
+    assert out == (NVML_OUT if nvml_first else CUDA_OUT)
+    if not nvml_first:
         assert "cuInit" in cuda.calls and "cuDriverGetVersion" in cuda.calls
-        assert out == "cuda;12;6;9.0,9.0"
-
-    def test_any_other_switch_value_still_reads_nvml_first(self):
-        nvml = _nvml()
-        saved = os.environ.get("UNSLOTH_NVIDIA_PROBE_SKIP_NVML")
-        os.environ["UNSLOTH_NVIDIA_PROBE_SKIP_NVML"] = "0"
-        try:
-            out = _run(INSTALL_PROBE, {LINUX_NVML: nvml, LINUX_CUDA: _cuda()})
-        finally:
-            if saved is None:
-                os.environ.pop("UNSLOTH_NVIDIA_PROBE_SKIP_NVML", None)
-            else:
-                os.environ["UNSLOTH_NVIDIA_PROBE_SKIP_NVML"] = saved
-        assert "nvmlInit_v2" in nvml.calls and out.startswith("nvml;")
-
-    def test_nvml_is_preferred_when_both_answer(self):
-        out = _run(INSTALL_PROBE, {LINUX_NVML: _nvml(), LINUX_CUDA: _cuda()})
-        assert out.startswith("nvml;")
-
-    def test_neither_library_is_an_empty_answer_not_an_error(self):
-        out = _run(INSTALL_PROBE, {LINUX_NVML: None, LINUX_CUDA: None})
-        assert out == ""
-
-    def test_cuinit_sees_no_visible_device_mask(self):
-        # The inventory must be PHYSICAL: a hidden pre-Turing card still caps the family.
-        seen: list = []
-        os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-        try:
-            _run(INSTALL_PROBE, {LINUX_NVML: None, LINUX_CUDA: _cuda(seen = seen)})
-        finally:
-            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-        assert seen == [None]
-
-    def test_the_mask_is_restored_afterwards(self):
-        os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-        try:
-            _run(INSTALL_PROBE, {LINUX_NVML: None, LINUX_CUDA: _cuda()})
-            assert os.environ.get("CUDA_VISIBLE_DEVICES") == "1"
-        finally:
-            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-
-    def test_an_absent_mask_is_not_invented(self):
-        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-        _run(INSTALL_PROBE, {LINUX_NVML: None, LINUX_CUDA: _cuda()})
-        assert "CUDA_VISIBLE_DEVICES" not in os.environ
-
-    def test_a_failed_cuinit_is_no_answer(self):
-        out = _run(INSTALL_PROBE, {LINUX_NVML: None, LINUX_CUDA: _cuda(init = 1)})
-        assert out == ""
-
-    def test_the_capability_attributes_are_75_and_76(self):
-        # A wrong attribute number returns a plausible integer rather than an error.
-        recorded: list = []
-
-        lib = _cuda()
-        original = lib._table["cuDeviceGetAttribute"]
-
-        def spy(out, attr, device):
-            recorded.append(attr)
-            return original(out, attr, device)
-
-        lib._table["cuDeviceGetAttribute"] = spy
-        _run(INSTALL_PROBE, {LINUX_NVML: None, LINUX_CUDA: lib})
-        assert set(recorded) == {75, 76}
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the library names below are the POSIX ones")
+@POSIX_ONLY
+@pytest.mark.parametrize(
+    "mask", ["1", None], ids = ["mask_hidden_then_restored", "absent_mask_not_invented"]
+)
+def test_cuinit_sees_the_physical_inventory(monkeypatch, mask):
+    # A hidden pre-Turing card still caps the family, so cuInit must see no mask.
+    if mask is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    seen: list = []
+    _run({LINUX_NVML: None, LINUX_CUDA: _cuda(seen = seen)})
+    assert seen == [None]
+    assert os.environ.get("CUDA_VISIBLE_DEVICES") == mask
+
+
+@POSIX_ONLY
+def test_the_capability_attributes_are_75_and_76():
+    # A wrong attribute number returns a plausible integer rather than an error.
+    attrs: list = []
+    _run({LINUX_NVML: None, LINUX_CUDA: _cuda(attrs = attrs)})
+    assert set(attrs) == {75, 76}
+
+
+@POSIX_ONLY
 def test_the_output_matches_what_the_powershell_side_parses():
     """Get-NvidiaLibraryInventory splits on ';' and wants exactly four fields."""
-    out = _run(INSTALL_PROBE, {LINUX_NVML: _nvml()})
-    parts = out.split(";")
+    parts = _run({LINUX_NVML: _nvml()}).split(";")
     assert len(parts) == 4
     assert parts[0] in ("nvml", "cuda")
     assert int(parts[1]) >= 1
     assert all(re.match(r"^\d+\.\d+$", cap) for cap in parts[3].split(","))
 
 
-def test_the_windows_hint_is_tried_before_the_bare_library_name():
-    """On Windows the installer passes the nvml.dll it already located."""
+def test_the_windows_hint_is_tried_before_the_bare_library_name(monkeypatch):
     order: list[str] = []
-
-    def fake_cdll(name):
-        order.append(name)
-        raise OSError(name)
-
-    shim = types.ModuleType("ctypes")
-    for attr in ("c_int", "c_uint", "c_void_p", "POINTER"):
-        setattr(shim, attr, getattr(ctypes, attr))
-    shim.CDLL = fake_cdll
-    shim.byref = lambda obj: obj
-
-    saved_module = sys.modules.get("ctypes")
-    saved_hints = {k: os.environ.get(k) for k in ("UNSLOTH_NVML_HINT", "UNSLOTH_CUDA_HINT")}
-    saved_name = os.name
-    sys.modules["ctypes"] = shim
-    os.environ["UNSLOTH_NVML_HINT"] = r"C:\Windows\System32\nvml.dll"
-    os.environ["UNSLOTH_CUDA_HINT"] = "nvcuda.dll"
-    try:
-        os.name = "nt"  # type: ignore[misc]
-        with redirect_stdout(io.StringIO()):
-            exec(compile(INSTALL_PROBE, "embedded_probe.py", "exec"), {})
-    finally:
-        os.name = saved_name  # type: ignore[misc]
-        for key, value in saved_hints.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-        if saved_module is None:
-            del sys.modules["ctypes"]
-        else:
-            sys.modules["ctypes"] = saved_module
-
+    monkeypatch.setattr(os, "name", "nt")
+    _run({}, hints = (r"C:\Windows\System32\nvml.dll", "nvcuda.dll"), loaded = order)
+    monkeypatch.undo()
     assert order[0] == r"C:\Windows\System32\nvml.dll"
     assert "nvml.dll" in order
     assert "nvcuda.dll" in order
