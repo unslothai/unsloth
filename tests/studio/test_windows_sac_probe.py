@@ -2498,7 +2498,5 @@ exit 0
 """,
         encoding = "utf-8",
     )
-    proc = run_pwsh(
-        [pwsh, "-NoProfile", "-File", str(script)], capture_output = True, text = True
-    )
+    proc = run_pwsh([pwsh, "-NoProfile", "-File", str(script)], capture_output = True, text = True)
     assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]
