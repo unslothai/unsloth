@@ -1,14 +1,14 @@
 # Optional Linux x86_64, Python 3.13, CUDA 13.0 serving environment. The torch, torchvision,
 # torchaudio and CUDA pins match a default Studio install, so the engine can share them.
-sglang==0.5.12
+sglang==0.5.17
 torch==2.11.0
 torchvision==0.26.0
 torchaudio==2.11.0
-transformers==5.6.0
+transformers==5.12.1
 # Transformers 5.6 uses LayerRepository without the revision required in kernels 0.15+.
 kernels==0.14.1
 # SGLang requires this beta dependency; other packages use stable releases.
-flash-attn-4==4.0.0b15
+flash-attn-4==4.0.0b18
 
 # Load-time 4-bit and prequantized BitsAndBytes checkpoints.
 bitsandbytes==0.49.2

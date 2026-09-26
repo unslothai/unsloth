@@ -34,17 +34,15 @@ from pathlib import Path
 
 PROFILES = {
     "vllm": {
-        "version": "0.20.0",
+        "version": "0.26.0",
         "module": "vllm",
         "cuda": "cu130",
         "driver": 580,
-        # The vllm wheel is manylinux_2_35.
-        "glibc": (2, 35),
         # FlashInfer fetches the trtllm kernels it uses on demand rather than the whole cubin wheel.
         "omit": ("flashinfer-cubin",),
     },
     "sglang": {
-        "version": "0.5.12",
+        "version": "0.5.17",
         "module": "sglang",
         "cuda": "cu130",
         "driver": 580,
