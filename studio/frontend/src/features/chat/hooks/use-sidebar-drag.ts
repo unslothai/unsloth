@@ -48,9 +48,9 @@ export const DRAGGING_BODY_CLASS = "sidebar-row-dragging";
 /** Controls that own their own press. A drag never starts from the pin or the kebab. */
 const NO_DRAG_SELECTOR = ".sidebar-row-action";
 
-/** How near an edge of the scroller the pointer scrolls the list, and by how much per move. */
-const EDGE_PX = 48;
-const EDGE_STEP_PX = 12;
+/** How near an edge of the scroller the pointer scrolls the list, and by how much per frame. */
+export const EDGE_PX = 48;
+export const EDGE_STEP_PX = 12;
 
 interface ZoneHit {
   zone: SidebarDropZone;
@@ -118,7 +118,7 @@ function rowNextTo(key: string, side: "below" | "above"): ZoneHit | null {
 }
 
 /** The list the row scrolls while it is carried: the nearest ancestor that actually scrolls. */
-function scrollerOf(element: Element | null): HTMLElement | null {
+export function scrollerOf(element: Element | null): HTMLElement | null {
   for (let node = element; node; node = node.parentElement) {
     if (!(node instanceof HTMLElement)) continue;
     const overflow = getComputedStyle(node).overflowY;

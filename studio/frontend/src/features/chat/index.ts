@@ -143,6 +143,11 @@ export {
   DRAG_THRESHOLD_PX,
   DRAGGING_BODY_CLASS,
 } from "./hooks/use-sidebar-drag";
+export {
+  useSectionDrag,
+  SECTION_ATTR,
+  type SectionLanding,
+} from "./hooks/use-section-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {

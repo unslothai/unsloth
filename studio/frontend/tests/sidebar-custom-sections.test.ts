@@ -595,24 +595,27 @@ test("a section's header starts a chat that is filed there on its first send", (
   assert.equal(store.pendingNewChatSection, null);
 });
 
-test("sections above Recents drag by their headers, and Recents stays last", () => {
+test("sections above Recents drag by their headers, and Recents stays last", async () => {
   // Drawn in the saved order; Recents is drawn after them and is no key of it.
   assert.match(
     APP_SIDEBAR,
     /\{orderedSectionKeys\.map\(\(key\) => \(\n\s*<Fragment key=\{key\}>\{renderOrderedSection\(key\)\}<\/Fragment>/,
   );
-  const drag = APP_SIDEBAR.slice(
-    APP_SIDEBAR.indexOf("function startSectionDrag("),
-    APP_SIDEBAR.indexOf("function renderOrderedSection("),
+  assert.match(APP_SIDEBAR, /data-sidebar-section=\{key\}\n\s*onPointerDown=\{\(event\) => startSectionDrag\(event, key\)\}/);
+  assert.match(
+    APP_SIDEBAR,
+    /useSectionDrag\(\{\n\s*onDrop: \(key, landing\) => moveSection\(key, landing\.target, landing\.edge\),/,
   );
+  const drag = await readSrcAsync("features/chat/hooks/use-section-drag.ts");
   // Only from the header, never from its buttons, and not by touch, which scrolls.
   assert.match(drag, /event\.pointerType === "touch"/);
-  assert.match(drag, /closest\('\[data-sidebar="group-label"\]'\)/);
-  assert.match(drag, /closest\("\.sidebar-header-action"\)/);
-  // A click ends the drag on the header, which must not fold the section it moved.
-  assert.match(drag, /window\.addEventListener\("click", swallow, \{ capture: true, once: true \}\)/);
-  assert.match(drag, /if \(commit && landing\) moveSection\(key, landing\.target, landing\.edge\)/);
+  assert.match(drag, /const HEADER_SELECTOR = '\[data-sidebar="group-label"\]';/);
+  assert.match(drag, /if \(pressed\.closest\(HEADER_ACTION_SELECTOR\)\) return;/);
+  // The release lands on the header, which must not fold the section it moved.
+  assert.match(drag, /window\.addEventListener\("click", stop, \{ capture: true, once: true \}\)/);
+  assert.match(drag, /optionsRef\.current\.onDrop\(key, dropped\);/);
 });
+
 
 test("the sidebar and account menus share one flat surface and type; other menus keep theirs", async () => {
   const css = await readSrcAsync("index.css");
@@ -628,7 +631,7 @@ test("the sidebar and account menus share one flat surface and type; other menus
   assert.match(
     css,
     new RegExp(
-      `\\.dark ${tagged} \\{\\n\\s*background-color: color-mix\\(in srgb, var\\(--card\\), white 4%\\);\\n\\s*color: color-mix\\(in srgb, var\\(--foreground\\), white 45%\\);`,
+      `\\.dark ${tagged} \\{\\n\\s*background-color: color-mix\\(in srgb, var\\(--card\\), white 7%\\);\\n\\s*color: #fff;`,
     ),
   );
   // The system face at 14px, scaled, on sidebar rows and account rows alike.
@@ -665,15 +668,67 @@ test("a custom section's menu edits it, acts on its chats, and removes it", () =
   assert.doesNotMatch(menu, /variant="destructive"|renderSortSubmenu/);
 });
 
-test("a section header drag re-renders the sidebar only when its landing changes", () => {
-  const start = APP_SIDEBAR.indexOf("function startSectionDrag(");
-  const body = APP_SIDEBAR.slice(start, APP_SIDEBAR.indexOf("function renderOrderedSection(", start));
-  // Every pointer move redrawing the whole sidebar is what made the drag lag.
-  assert.match(
-    body,
-    /if \(drawn && next\?\.target === landing\?\.target && next\?\.edge === landing\?\.edge\) return;\n\s*drawn = true;\n\s*landing = next;\n\s*setSectionDrag\(\{ key, landing \}\);/,
-  );
+test("a section drag draws itself, so the sidebar re-renders only on the drop", async () => {
+  const drag = await readSrcAsync("features/chat/hooks/use-section-drag.ts");
+  // No React state in the hook: the lifted copy, the line and the dimming are DOM, redrawn per frame.
+  assert.doesNotMatch(drag, /useState|setState/);
+  assert.match(drag, /block\.setAttribute\(SECTION_DRAGGING_ATTR, ""\);/);
+  assert.match(drag, /document\.body\.append\(ghost, line\);/);
+  assert.doesNotMatch(APP_SIDEBAR, /sectionDrag\b|setSectionDrag/);
+  // As the row drag: pointer capture, edge scroll from the frame loop, and a gesture per pointer.
+  assert.match(drag, /document\.body\.setPointerCapture\(pointerId\);/);
+  assert.match(drag, /frame = requestAnimationFrame\(onFrame\);\n\s*edgeScroll\(\);\n\s*place\(\);/);
+  assert.match(drag, /if \(moved\.pointerId !== pointerId \|\| escaped\) return;/);
+  // Escape puts it down but keeps listening, so the release still cannot fold the section.
+  assert.match(drag, /escaped = true;\n\s*putDown\(\);/);
+  const css = await readSrcAsync("index.css");
+  assert.match(css, /\[data-sidebar-section\]\[data-section-dragging\] \{\n\s*opacity: 0\.4;/);
+  assert.match(css, /\.sidebar-section-drop-line \{[\s\S]*?border-top: 1\.5px solid var\(--primary\);/);
 });
+
+test("a carried section lands against the nearest gap, and only a real move draws a line", async () => {
+  const { sectionLandingAt, landingMoves } = await import("../src/features/chat/hooks/use-section-drag.ts");
+  const blocks = [
+    { key: "pinned", top: 0, bottom: 100 },
+    { key: "a", top: 100, bottom: 400 },
+    { key: "projects", top: 400, bottom: 500 },
+  ];
+  assert.deepEqual(sectionLandingAt(blocks, 40), { target: "pinned", edge: "top" });
+  assert.deepEqual(sectionLandingAt(blocks, 240), { target: "a", edge: "top" });
+  assert.deepEqual(sectionLandingAt(blocks, 260), { target: "projects", edge: "top" });
+  assert.deepEqual(sectionLandingAt(blocks, 480), { target: "projects", edge: "bottom" });
+  assert.equal(sectionLandingAt([], 10), null);
+  const drawn = ["pinned", "b", "a", "projects"];
+  // Above its own neighbour below is where it already is; anywhere else moves it.
+  assert.equal(landingMoves(drawn, "b", { target: "a", edge: "top" }), false);
+  assert.equal(landingMoves(drawn, "b", { target: "pinned", edge: "bottom" }), false);
+  assert.equal(landingMoves(drawn, "b", { target: "pinned", edge: "top" }), true);
+  assert.equal(landingMoves(drawn, "b", { target: "projects", edge: "bottom" }), true);
+});
+
+test("sidebar and account submenus open clear of their menu, first rows level", () => {
+  // Radix measures sideOffset from the trigger row, which sits inside the menu's padding.
+  assert.match(
+    APP_SIDEBAR,
+    /sideOffset: Math\.round\(SIDEBAR_MENU_PAD_X \* uiSpaceScale \+ SUBMENU_GAP_PX\),\n\s*alignOffset: -Math\.round\(SIDEBAR_MENU_PAD_Y \* uiSpaceScale \+ MENU_ROW_MARGIN_PX\),/,
+  );
+  assert.match(APP_SIDEBAR, /sideOffset: ACCOUNT_MENU_PAD_X \+ SUBMENU_GAP_PX,/);
+  assert.equal((APP_SIDEBAR.match(/\{\.\.\.sidebarSubmenuOffsets\}/g) ?? []).length, 6);
+  assert.equal((APP_SIDEBAR.match(/\{\.\.\.accountSubmenuOffsets\}/g) ?? []).length, 1);
+  // No sidebar submenu keeps a hand-set offset that would overlap its menu.
+  assert.doesNotMatch(APP_SIDEBAR, /SubContent[^>]*sideOffset=\{[0-9]+\}[^>]*sidebar-menu/);
+});
+
+test("sidebar and account menus read white on a lighter surface in dark mode", async () => {
+  const css = await readSrcAsync("index.css");
+  assert.match(
+    css,
+    /\.dark \.app-user-menu\.sidebar-menu :is\([\s\S]*?\):is\(:focus, \[data-state="open"\]\) \{\n\s*background-color: rgb\(255 255 255 \/ calc\(0\.1 \* var\(--contrast-wash-gain, 1\)\)\);\n\s*color: #fff;/,
+  );
+  // Tick rows hover as the rows beside them, and their tick sits as far in as the text.
+  assert.match(css, /\[data-slot="dropdown-menu-radio-item-indicator"\]\n\s*\) \{\n\s*@apply right-2;/);
+});
+
 
 test("undoing a removed section puts it back where it was drawn", () => {
   const start = APP_SIDEBAR.indexOf("function removeCustomSection(");

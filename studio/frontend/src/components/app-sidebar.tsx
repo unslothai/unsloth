@@ -83,6 +83,7 @@ import { cn } from "@/lib/utils";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import {
   Archive03Icon,
   Cancel01Icon,
@@ -130,6 +131,7 @@ import {
   LeftToRightListBulletIcon,
   ArrowUpDownIcon,
   Layers01Icon,
+  MinusSignCircleIcon,
 } from "@hugeicons/core-free-icons";
 import {
   MessageCircleIcon,
@@ -207,6 +209,7 @@ import {
   recentChatItemAtSlot,
   useChatNavigationStore,
   SectionNameDialog,
+  useSectionDrag,
 } from "@/features/chat";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import {
@@ -222,6 +225,7 @@ import {
   Shortcut,
   type ShortcutId,
   useShortcut,
+  prefersReducedMotion,
 } from "@/features/settings";
 import type {
   SidebarNavItemId,
@@ -345,6 +349,15 @@ const PROJECT_CHAT_LIMIT = 4;
 const SIDEBAR_PROJECT_LIMIT = 5;
 
 // The shared radio item ticks on the right; these read as settings, so tick first.
+// A sidebar or account menu's side and top padding (.sidebar-row-menu in index.css, before the
+// UI scale), the 2px margin every menu row keeps, and the gap a submenu keeps from its menu.
+const SIDEBAR_MENU_PAD_X = 8;
+const SIDEBAR_MENU_PAD_Y = 6;
+const MENU_ROW_MARGIN_PX = 2;
+// px-2.5 and the 1px transparent border the account menu draws its edge with.
+const ACCOUNT_MENU_PAD_X = 11;
+const SUBMENU_GAP_PX = 6;
+
 // Whether cmd or ctrl adds a row to the selection. This is the user's own keyboard, not the host
 // Unsloth runs on, so it reads the browser rather than the platform store: a Mac browser on a Linux
 // host still uses cmd. Ctrl is left alone on macOS, where ctrl click is the right click chord.
@@ -1150,11 +1163,25 @@ export function AppSidebar() {
     [savedSectionOrder, customSections],
   );
   const moveSection = useSidebarOrganizationStore((s) => s.moveSection);
-  // A section header being dragged, and the edge of the section it would land against.
-  const [sectionDrag, setSectionDrag] = useState<{
-    key: string;
-    landing: { target: string; edge: "top" | "bottom" } | null;
-  } | null>(null);
+  // Pinned, Projects and custom sections drag by their headers. The hook draws the drag itself,
+  // so the sidebar re-renders once, on the drop.
+  // Radix measures a submenu's sideOffset from its trigger row, which sits inside the menu's side
+  // padding, so the offset is that padding plus the gap wanted between the two menus. The
+  // submenu is pulled up by its top padding and row margin so its first row meets the trigger.
+  const uiSpaceScale = useUiSpaceScale();
+  const sidebarSubmenuOffsets = {
+    sideOffset: Math.round(SIDEBAR_MENU_PAD_X * uiSpaceScale + SUBMENU_GAP_PX),
+    alignOffset: -Math.round(SIDEBAR_MENU_PAD_Y * uiSpaceScale + MENU_ROW_MARGIN_PX),
+  };
+  // The account menu pads its rows by a fixed amount, unscaled.
+  const accountSubmenuOffsets = {
+    sideOffset: ACCOUNT_MENU_PAD_X + SUBMENU_GAP_PX,
+    alignOffset: -Math.round(SIDEBAR_MENU_PAD_Y * uiSpaceScale + MENU_ROW_MARGIN_PX),
+  };
+  const startSectionDrag = useSectionDrag({
+    onDrop: (key, landing) => moveSection(key, landing.target, landing.edge),
+    reducedMotion: prefersReducedMotion,
+  });
   const pendingNewChatSection = useSidebarOrganizationStore((s) => s.pendingNewChatSection);
   const setPendingNewChatSection = useSidebarOrganizationStore(
     (s) => s.setPendingNewChatSection,
@@ -3485,7 +3512,7 @@ export function AppSidebar() {
           <HugeiconsIcon icon={ArrowUpDownIcon} strokeWidth={1.75} className="size-icon" />
           <span className="min-w-0 flex-1 truncate">{config.label}</span>
         </DropdownMenuSubTrigger>
-        <DropdownMenuSubContent sideOffset={6} className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-44">
+        <DropdownMenuSubContent {...sidebarSubmenuOffsets} className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-44">
           <DropdownMenuRadioGroup
             value={config.value}
             onValueChange={(value) => config.onChange(value as T)}
@@ -3520,7 +3547,7 @@ export function AppSidebar() {
             {t("shell.organize.sidebarHeading")}
           </span>
         </DropdownMenuSubTrigger>
-        <DropdownMenuSubContent sideOffset={6} className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-44">
+        <DropdownMenuSubContent {...sidebarSubmenuOffsets} className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-44">
           <DropdownMenuRadioGroup
             value={organizeBy}
             onValueChange={(value) => setOrganizeBy(value as SidebarOrganizeBy)}
@@ -3666,89 +3693,6 @@ export function AppSidebar() {
     );
   }
 
-  /**
-   * Drags a section by its header, as rows drag: past a few pixels of travel the header lifts,
-   * and a line shows which edge of which section it will land on. Recents is not a target and
-   * does not move; anything dropped below the last section lands at the bottom of them. Mouse
-   * and pen only, since a finger on a header is scrolling the sidebar.
-   */
-  function startSectionDrag(event: React.PointerEvent<HTMLDivElement>, key: string) {
-    if (event.button !== 0 || event.pointerType === "touch") return;
-    const target = event.target as HTMLElement;
-    if (!target.closest('[data-sidebar="group-label"]') || target.closest(".sidebar-header-action")) {
-      return;
-    }
-    const list = event.currentTarget.parentElement;
-    if (!list) return;
-    const order = orderedSectionKeys;
-    const startY = event.clientY;
-    let dragging = false;
-    // Whether the lifted header has been drawn yet, and the landing it was drawn with.
-    let drawn = false;
-    let landing: { target: string; edge: "top" | "bottom" } | null = null;
-    const locate = (y: number) => {
-      const blocks = [...list.querySelectorAll<HTMLElement>(":scope > [data-sidebar-section]")].filter(
-        (block) => block.dataset.sidebarSection !== key && block.offsetHeight > 0,
-      );
-      for (const block of blocks) {
-        const rect = block.getBoundingClientRect();
-        if (y < rect.top + rect.height / 2) {
-          return { target: block.dataset.sidebarSection!, edge: "top" as const };
-        }
-      }
-      const last = blocks.at(-1);
-      return last ? { target: last.dataset.sidebarSection!, edge: "bottom" as const } : null;
-    };
-    const move = (moveEvent: PointerEvent) => {
-      if (!dragging) {
-        if (Math.abs(moveEvent.clientY - startY) < 4) return;
-        dragging = true;
-        document.body.style.cursor = "grabbing";
-        document.body.style.userSelect = "none";
-      }
-      const hit = locate(moveEvent.clientY);
-      // A landing that leaves the order as it is draws no line.
-      const next =
-        hit && placeIdAt(order, key, hit.target, hit.edge).some((id, index) => id !== order[index])
-          ? hit
-          : null;
-      // Only a new landing re-renders the sidebar; every pointer move would redraw it all.
-      if (drawn && next?.target === landing?.target && next?.edge === landing?.edge) return;
-      drawn = true;
-      landing = next;
-      setSectionDrag({ key, landing });
-    };
-    const finish = (commit: boolean) => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", drop);
-      window.removeEventListener("pointercancel", cancel);
-      window.removeEventListener("keydown", escape, true);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      setSectionDrag(null);
-      if (!dragging) return;
-      // The drag ends in a click on the header, which would fold the section it just moved.
-      const swallow = (click: MouseEvent) => {
-        click.preventDefault();
-        click.stopPropagation();
-      };
-      window.addEventListener("click", swallow, { capture: true, once: true });
-      setTimeout(() => window.removeEventListener("click", swallow, { capture: true }), 0);
-      if (commit && landing) moveSection(key, landing.target, landing.edge);
-    };
-    const drop = () => finish(true);
-    const cancel = () => finish(false);
-    const escape = (keyEvent: KeyboardEvent) => {
-      if (keyEvent.key !== "Escape") return;
-      keyEvent.stopPropagation();
-      finish(false);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", drop);
-    window.addEventListener("pointercancel", cancel);
-    window.addEventListener("keydown", escape, true);
-  }
-
   /** One section above Recents, in the box a section drag reads and draws its line on. */
   function renderOrderedSection(key: string): ReactNode {
     let content: ReactNode = null;
@@ -3759,16 +3703,11 @@ export function AppSidebar() {
       if (section) content = renderCustomSection(section);
     }
     if (content === null) return null;
-    const landing = sectionDrag?.landing?.target === key ? sectionDrag.landing : null;
     return (
       <div
         data-sidebar-section={key}
         onPointerDown={(event) => startSectionDrag(event, key)}
-        className={cn(
-          "relative",
-          sectionDrag?.key === key && "opacity-50",
-          landing && (landing.edge === "top" ? DROP_CUE_TOP : DROP_CUE_BOTTOM),
-        )}
+        className="relative"
       >
         {content}
       </div>
@@ -4140,8 +4079,7 @@ export function AppSidebar() {
           <span>{config.label}</span>
         </P.SubTrigger>
         <P.SubContent
-          sideOffset={0}
-          alignOffset={-4}
+          {...sidebarSubmenuOffsets}
           className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-52"
         >
           <P.Item
@@ -4162,6 +4100,7 @@ export function AppSidebar() {
               disabled={!config.anyFiled}
               onSelect={() => fileSectionTarget(target, null)}
             >
+              <HugeiconsIcon icon={MinusSignCircleIcon} strokeWidth={1.75} className="size-icon" />
               <span>{t("shell.sections.noSection")}</span>
             </P.Item>
           )}
@@ -4399,8 +4338,7 @@ export function AppSidebar() {
                 <span>Project</span>
               </P.SubTrigger>
               <P.SubContent
-                sideOffset={0}
-                alignOffset={-4}
+                {...sidebarSubmenuOffsets}
                 className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-48"
               >
                 {/* Actions above the rule, destinations below it. */}
@@ -4418,7 +4356,7 @@ export function AppSidebar() {
                     <HugeiconsIcon icon={FolderAttachmentIcon} strokeWidth={1.75} className="size-icon" />
                     <span>Project sources</span>
                   </P.SubTrigger>
-                  <P.SubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-48">
+                  <P.SubContent {...sidebarSubmenuOffsets} className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-48">
                     {projects.length === 0 && (
                       <P.Item disabled>No projects yet</P.Item>
                     )}
@@ -4469,7 +4407,7 @@ export function AppSidebar() {
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
                 <span>Export</span>
               </P.SubTrigger>
-              <P.SubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-48">
+              <P.SubContent {...sidebarSubmenuOffsets} className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-48">
                 {chatExportOptions().map(({ label, format }) => (
                   <P.Item
                     key={label}
@@ -5829,8 +5767,7 @@ export function AppSidebar() {
                   <span>{t("common.help")}</span>
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent
-                  sideOffset={8}
-                  alignOffset={-4}
+                  {...accountSubmenuOffsets}
                   className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-56"
                 >
                   {HELP_GROUPS.map((group, index) => (

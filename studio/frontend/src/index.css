@@ -2778,10 +2778,11 @@ html[data-chat-font] .aui-root {
 		color: inherit;
 	}
 
-	/* Dark: a step above the sidebar, from the palette so other themes keep their hue. */
+	/* Dark: a step above the sidebar, from the palette so other themes keep their hue, with the
+	   rows in full white. Muted labels and shortcuts keep their own color. */
 	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
-		background-color: color-mix(in srgb, var(--card), white 4%);
-		color: color-mix(in srgb, var(--foreground), white 45%);
+		background-color: color-mix(in srgb, var(--card), white 7%);
+		color: #fff;
 		--destructive: #ed716a;
 	}
 
@@ -2789,7 +2790,24 @@ html[data-chat-font] .aui-root {
 			[data-slot="dropdown-menu-separator"],
 			[data-slot="context-menu-separator"]
 		) {
-		background-color: color-mix(in srgb, var(--card), white 13%);
+		background-color: color-mix(in srgb, var(--card), white 16%);
+	}
+
+	/* The account menu's own hover is the accent with foreground text; here it takes the same
+	   overlay and white as the sidebar menus beside it. */
+	.dark .app-user-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:focus, [data-state="open"]) {
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
+		color: #fff;
+	}
+
+	.dark .app-user-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:focus, [data-state="open"]) *:not([data-slot="dropdown-menu-shortcut"]) {
+		color: #fff !important;
 	}
 
 	/* Compact items; also applied to portaled sub-content. */
@@ -2853,11 +2871,38 @@ html[data-chat-font] .aui-root {
 		border-radius: 10px;
 	}
 
+	/* Tick rows hover like the rows beside them, not with the component's accent. */
+	.unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-checkbox-item"],
+			[data-slot="dropdown-menu-radio-item"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted]) {
+		background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1))) !important;
+	}
+
+	.dark .unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-checkbox-item"],
+			[data-slot="dropdown-menu-radio-item"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted]) {
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1))) !important;
+	}
+
+	.unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-checkbox-item"],
+			[data-slot="dropdown-menu-radio-item"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted]),
+	.unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-checkbox-item"],
+			[data-slot="dropdown-menu-radio-item"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted]) * {
+		color: inherit !important;
+	}
+
+	/* The tick's ink sits as far from the right edge as the row's text from the left. */
 	.unsloth-plus-menu.sidebar-menu :is(
 			[data-slot="dropdown-menu-checkbox-item-indicator"],
 			[data-slot="dropdown-menu-radio-item-indicator"]
 		) {
-		@apply right-2.5;
+		@apply right-2;
 	}
 
 	.unsloth-plus-menu.sidebar-menu :is(
@@ -3631,6 +3676,60 @@ body.sidebar-row-dragging * {
 	-webkit-user-select: none;
 	user-select: none;
 	cursor: grabbing !important;
+}
+
+/* A sidebar section carried by its header: it stays in place, dimmed, while a raised copy of the
+   header follows the pointer and one line marks the gap it would land in. */
+[data-sidebar-section][data-section-dragging] {
+	opacity: 0.4;
+	transition: opacity 120ms ease-out;
+}
+
+.sidebar-section-ghost {
+	position: fixed;
+	top: 0;
+	z-index: 60;
+	display: flex;
+	align-items: center;
+	border-radius: 10px;
+	background: var(--sidebar-accent);
+	box-shadow:
+		0 0 0 1px color-mix(in oklab, var(--foreground) 8%, transparent),
+		0 8px 24px -8px rgb(0 0 0 / 0.35);
+	pointer-events: none;
+	will-change: transform;
+}
+
+.sidebar-section-ghost > * {
+	pointer-events: none;
+}
+
+/* The name alone: the header's fold chevron means nothing on a header in flight. */
+.sidebar-section-ghost svg {
+	display: none;
+}
+
+.sidebar-section-drop-line {
+	position: fixed;
+	top: -0.75px;
+	z-index: 60;
+	height: 0;
+	border-top: 1.5px solid var(--primary);
+	border-radius: 1px;
+	opacity: 0;
+	pointer-events: none;
+	transition: transform 90ms ease-out;
+	will-change: transform;
+}
+
+html.force-reduced-motion .sidebar-section-drop-line {
+	transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	html:not(.force-motion) .sidebar-section-drop-line {
+		transition: none;
+	}
 }
 
 /* Flat scrollbar chrome */
