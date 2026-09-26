@@ -184,7 +184,7 @@ def test_quantize_transformer_rotates_before_quantize(monkeypatch, family, expec
     seen = []
     _stub_torchao(monkeypatch, seen)
     monkeypatch.setattr(
-        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: tq.TQ_INT8
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None, **_: tq.TQ_INT8
     )
     pipe = types.SimpleNamespace(transformer = _Tiny())
     assert tq.quantize_transformer(pipe, object(), mode = "int8", family = family) == tq.TQ_INT8
@@ -195,7 +195,7 @@ def test_quantize_transformer_leaves_fp8_unrotated(monkeypatch):
     seen = []
     _stub_torchao(monkeypatch, seen)
     monkeypatch.setattr(
-        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: tq.TQ_FP8
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None, **_: tq.TQ_FP8
     )
     pipe = types.SimpleNamespace(transformer = _Tiny())
     assert tq.quantize_transformer(pipe, object(), mode = "fp8", family = "qwen-image-2.1") == tq.TQ_FP8
