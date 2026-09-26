@@ -219,6 +219,24 @@ try {
     Check "an access error validating the answer declines instead of throwing" (
         $null -eq $threw -and $null -eq $answer)
 
+    # Without the table only WMI is left, which the shell must say rather than scan silently.
+    Reset-RungState
+    $script:StudioProcessImageWarned = $false
+    $script:RunnerOutput = ""
+    $script:Warnings = @()
+    function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") $script:Warnings += $Line }
+    $null = Get-StudioProcessImagePath -ProcessId 1
+    $null = Get-StudioProcessImagePath -ProcessId 2
+    Check "a missing process-image table is reported, once" (
+        @($script:Warnings | Where-Object { $_ -match "may go unnoticed" }).Count -eq 1)
+    Reset-RungState
+    $script:StudioProcessImageWarned = $false
+    $script:RunnerOutput = "77|C:\d\python.exe"
+    $script:Warnings = @()
+    $null = Get-StudioProcessImagePath -ProcessId 77
+    Check "a working table says nothing" ($script:Warnings.Count -eq 0)
+    function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
+
     $env:OS = "Linux"
     Reset-RungState
     $script:RunnerCalls = 0

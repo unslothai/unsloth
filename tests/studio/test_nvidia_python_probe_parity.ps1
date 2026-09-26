@@ -426,8 +426,12 @@ foreach ($file in @($installPs1, $setupPs1)) {
     # And every launcher in the file uses it, rather than naming the shared root itself. The
     # shared-root spelling is what the finding was about, so its absence is the check.
     $whole = [System.IO.File]::ReadAllText($file)
+    # The shared root may hold the ANSWER when the private directory declines (the program then
+    # travels in the environment), never the program: the only write of the script is gated.
     Check "$leaf writes no child program straight into the shared temp root" (
-        $whole -notmatch '\$stem = Join-Path \$tempRoot')
+        ($whole -notmatch '\$stem = Join-Path \$tempRoot') -or
+        ($whole -match 'if \(-not \$inline\) \{ Set-Content -LiteralPath \$scriptFile' -and
+         @([regex]::Matches($whole, 'Set-Content -LiteralPath \$scriptFile')).Count -eq 1))
 }
 # A temp root with wildcard characters in it. "C:\Users\Mike [work]" is a legal profile path, and
 # New-Item takes -Path with no -LiteralPath on 5.1, so the create there reads the brackets as a
@@ -607,6 +611,11 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
     $fakeLog = Join-Path $fakeDir "calls.log"
     $fakeBody = @(
         '#!/bin/sh'
+        'if [ "$UNSLOTH_FAKE_PY_MODE" = "inline" ]; then'
+        '  echo "argv4=$4 src=${UNSLOTH_NVIDIA_PROBE_SOURCE:+present}" >> "$UNSLOTH_FAKE_PY_LOG"'
+        '  if [ "$4" = "-c" ] && [ -n "$UNSLOTH_NVIDIA_PROBE_SOURCE" ]; then printf "nvml;12;8;8.9"; fi'
+        '  exit 0'
+        'fi'
         'cat > /dev/null'
         'echo "skip=${UNSLOTH_NVIDIA_PROBE_SKIP_NVML:-unset}" >> "$UNSLOTH_FAKE_PY_LOG"'
         'if [ "$UNSLOTH_NVIDIA_PROBE_SKIP_NVML" = "1" ]; then printf "cuda;12;8;8.9"; exit 0; fi'
@@ -643,6 +652,20 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
         $env:UNSLOTH_FAKE_PY_MODE = "hang"
         $null = Read-NvidiaLibraryRaw -TimeoutMs 2000
         Check "live: an unset switch is left unset" ($null -eq $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML)
+
+        # The private directory declines when icacls is missing, whoami is blocked, or %TEMP% takes
+        # no label. The program then travels in the environment rather than as a file, and a working
+        # card must still get an inventory: declining here used to leave it with CPU wheels.
+        $env:UNSLOTH_FAKE_PY_MODE = "inline"
+        $savedDirFn = ${function:New-StudioChildScriptDirectory}
+        function New-StudioChildScriptDirectory { return "" }
+        Remove-Item -LiteralPath $fakeLog -ErrorAction SilentlyContinue
+        try { $got = Read-NvidiaLibraryRawViaPython -TimeoutMs 5000 }
+        finally { ${function:New-StudioChildScriptDirectory} = $savedDirFn }
+        $seen = @(Get-Content -LiteralPath $fakeLog -ErrorAction SilentlyContinue)
+        Check "live: a declined private directory still yields the inventory" ($got -eq "nvml;12;8;8.9")
+        Check "live: the program came through the environment, not a file" (($seen -join ",") -eq "argv4=-c src=present")
+        Check "live: the program variable does not outlive the child" ($null -eq $env:UNSLOTH_NVIDIA_PROBE_SOURCE)
     } finally {
         $script:PythonExe = $savedPy
         if ($null -eq $savedSkipEnv) { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -ErrorAction SilentlyContinue }

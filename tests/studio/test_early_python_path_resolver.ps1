@@ -377,6 +377,7 @@ try {
     Check "a hit is not probed again" ($script:ReprobeCount -eq 0)
     # A candidate that cannot be inspected (an unreadable directory throws under Stop) is skipped,
     # and nothing escapes into the lock-name hash that calls this before the install lock.
+    $savedEarly = @($script:StudioEarlyPython, $script:StudioEarlyPythonProbed, $script:StudioEarlyPythonProbedWithoutVenv)
     function Test-Path { param($LiteralPath, $PathType, $ErrorAction)
         throw [System.UnauthorizedAccessException]::new("Access to the path '$LiteralPath' is denied.") }
     $script:StudioEarlyPythonProbed = $false
@@ -392,6 +393,9 @@ try {
     Check "a discovery failure declines to the lexical rung instead of throwing" ($null -eq $threw -and $null -eq $none)
     ${function:Get-StudioEarlyPython} = $savedFinder2
     Remove-Item Function:Test-Path -ErrorAction SilentlyContinue
+    # Later checks rely on the interpreter found earlier.
+    $script:StudioEarlyPython, $script:StudioEarlyPythonProbed, $script:StudioEarlyPythonProbedWithoutVenv = $savedEarly
+    $script:StudioPythonFinalPathCache = $null
     Remove-Item Function:Get-Command -ErrorAction SilentlyContinue
     Remove-Variable -Name VenvDir -Scope Global -ErrorAction SilentlyContinue
     $script:ResolveCalls = 0

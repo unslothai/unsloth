@@ -6249,6 +6249,7 @@ exit 0
     # in this script. $null leaves the WMI rung exactly as it was.
     $script:StudioPythonProcessImageTable = $null
     $script:StudioPythonProcessImageProbed = $false
+    $script:StudioProcessImageWarned = $false
 
     function Get-StudioPythonProcessImageTable {
         $exe = Get-StudioEarlyPython
@@ -6319,6 +6320,13 @@ exit 0
             # Optional: a failure here falls through to the WMI rung below, never past it.
             try { $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable } catch {
                 $script:StudioPythonProcessImageTable = $null
+            }
+            # This rung is what reads an image Get-Process cannot (an elevated Studio seen from a
+            # standard shell). Without it only WMI is left, so say the scan may miss one, once.
+            if ($env:OS -eq "Windows_NT" -and $null -eq $script:StudioPythonProcessImageTable -and
+                -not $script:StudioProcessImageWarned) {
+                $script:StudioProcessImageWarned = $true
+                Write-StudioLine "[WARN] Scanning for running Unsloth processes without the process-image helper; a process this shell cannot inspect may go unnoticed." -ForegroundColor Yellow
             }
         }
         if ($script:StudioPythonProcessImageTable -and
@@ -8834,14 +8842,24 @@ main()
         # [Process]::Start, and CLM is one of the policies that used to leave a locked-down host with
         # no GPU detection at all, so this launcher has to work on the hosts that need it most.
         $probeDir = New-StudioChildScriptDirectory
-        if (-not $probeDir) { return "" }
-        $stem = Join-Path $probeDir "nvprobe"
+        # The labelled directory protects the program FILE from a same-user swap, nothing else. When it
+        # declines (icacls missing, whoami blocked, an elevated run whose %TEMP% will not take a label) the
+        # program travels in this process's environment instead, so no file is executed and there is
+        # nothing to swap; only the answer lands in %TEMP%, as it did before the directory existed.
+        # Declining here used to leave a working NVIDIA card without an inventory.
+        $inline = (-not $probeDir)
+        if ($inline) {
+            $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+            $stem = Join-Path $tempRoot ("unsloth-nvprobe-" + [guid]::NewGuid().ToString("N"))
+        } else {
+            $stem = Join-Path $probeDir "nvprobe"
+        }
         $scriptFile = "$stem.py"
         $outFile = "$stem.out"
         $errFile = "$stem.err"
         $raw = ""
         try {
-            Set-Content -LiteralPath $scriptFile -Value $probeSource -Encoding UTF8 -ErrorAction Stop
+            if (-not $inline) { Set-Content -LiteralPath $scriptFile -Value $probeSource -Encoding UTF8 -ErrorAction Stop }
             # Whole seconds, rounded up, without [math]::Ceiling: CLM blocks it. PowerShell's / is
             # floating point and [int] rounds to nearest, so 10000ms must not become 11s.
             $seconds = ($TimeoutMs - ($TimeoutMs % 1000)) / 1000
@@ -8856,15 +8874,26 @@ main()
             $savedNvml = $env:UNSLOTH_NVML_HINT
             $savedCuda = $env:UNSLOTH_CUDA_HINT
             $savedSkip = $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML
+            $savedSource = $env:UNSLOTH_NVIDIA_PROBE_SOURCE
             $env:UNSLOTH_NVML_HINT = $nvmlHint
             $env:UNSLOTH_CUDA_HINT = $cudaHint
             # The switch reaches this child only. An inherited value must not make a first child skip NVML.
             if ($SkipNvml) { $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = "1" }
             else { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -ErrorAction SilentlyContinue }
             try {
-                $proc = Start-Process -FilePath $exe -ArgumentList @("-I", "-S", "-B", "-") -NoNewWindow -PassThru `
-                    -RedirectStandardInput $scriptFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+                if ($inline) {
+                    # No space and no double quote in the -c argument, for the same 5.1 reason as above.
+                    $env:UNSLOTH_NVIDIA_PROBE_SOURCE = $probeSource
+                    $proc = Start-Process -FilePath $exe -NoNewWindow -PassThru `
+                        -ArgumentList @("-I", "-S", "-B", "-c", "exec(__import__('os').environ['UNSLOTH_NVIDIA_PROBE_SOURCE'])") `
+                        -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+                } else {
+                    $proc = Start-Process -FilePath $exe -ArgumentList @("-I", "-S", "-B", "-") -NoNewWindow -PassThru `
+                        -RedirectStandardInput $scriptFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+                }
             } finally {
+                if ($null -eq $savedSource) { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SOURCE -ErrorAction SilentlyContinue }
+                else { $env:UNSLOTH_NVIDIA_PROBE_SOURCE = $savedSource }
                 if ($null -eq $savedNvml) { Remove-Item Env:UNSLOTH_NVML_HINT -ErrorAction SilentlyContinue }
                 else { $env:UNSLOTH_NVML_HINT = $savedNvml }
                 if ($null -eq $savedCuda) { Remove-Item Env:UNSLOTH_CUDA_HINT -ErrorAction SilentlyContinue }
@@ -8890,7 +8919,7 @@ main()
         finally {
             # The directory, not just the three files: it is ours, nothing else may be in it, and
             # leaving an empty one behind per probe would litter %TEMP% on every run.
-            Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue
+            if ($probeDir) { Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue }
             foreach ($stale in @($scriptFile, $outFile, $errFile)) {
                 Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
             }
