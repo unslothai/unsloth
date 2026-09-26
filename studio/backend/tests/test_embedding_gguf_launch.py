@@ -244,6 +244,56 @@ class TestLoadModelEmitsTheFlag:
             assert f'"{name}"' in src
 
 
+class TestEmbeddingBatchSizedToContext:
+    """MEAN/CLS pooling cannot split a sequence across micro-batches, so llama-server
+    500s on any input past --ubatch-size (512 by default) unless it covers the context."""
+
+    def test_unset_pair_is_raised_to_the_context(self):
+        assert llama_cpp_module._embedding_batch_ubatch(2048, None, None, None, env = {}) == (
+            2048,
+            2048,
+        )
+
+    @pytest.mark.parametrize(
+        "n_batch, n_ubatch, extra_args, env, expected",
+        [
+            (1024, 256, None, {}, (1024, 256)),
+            (1024, None, None, {}, (1024, 8192)),
+            (None, 256, None, {}, (8192, 256)),
+            (None, None, ["-ub", "1024"], {}, (8192, None)),
+            (None, None, ["--batch-size=4096"], {}, (None, 8192)),
+            (None, None, None, {"LLAMA_ARG_UBATCH": "768"}, (8192, None)),
+        ],
+    )
+    def test_user_batch_sizes_are_kept(self, n_batch, n_ubatch, extra_args, env, expected):
+        # A named side is kept; the unset side is still sized, or its default caps the named one.
+        assert (
+            llama_cpp_module._embedding_batch_ubatch(8192, n_batch, n_ubatch, extra_args, env = env)
+            == expected
+        )
+
+    @pytest.mark.parametrize("n_ctx", [0, 256, 512])
+    def test_context_within_the_default_micro_batch_is_left_alone(self, n_ctx):
+        assert llama_cpp_module._embedding_batch_ubatch(n_ctx, None, None, None, env = {}) == (
+            None,
+            None,
+        )
+
+    def test_load_model_applies_it_before_the_fit_for_non_last_pooling(self):
+        src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
+        call = src.find("n_batch, n_ubatch = _embedding_batch_ubatch(")
+        assert call != -1, "load_model must size the embedding batch pair to the context"
+        assert (
+            src.find("if self._pooling_type in (1, 2):", call - 100, call) != -1
+        ), "only MEAN/CLS pooling needs the single micro-batch; LAST splits and NONE is refused"
+        assert call < src.find(
+            "n_batch, n_ubatch = _batch_ubatch_for_mmproj("
+        ), "a projector-raised micro-batch must not read as a user-set one"
+        assert call < src.find(
+            "_effective_ubatch = _ubatch_for_slots(n_parallel)"
+        ), "the raise must land before the fit prices the compute buffer"
+
+
 @pytest.mark.parametrize("flag", ["--embedding", "--embeddings", "--pooling"])
 def test_user_extra_args_still_cannot_pass_the_flag(flag):
     # The denylist keeps a user-supplied --embedding off the chat server; the

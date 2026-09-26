@@ -6401,6 +6401,21 @@ def _batch_ubatch_for_mmproj(
     return n_batch, target
 
 
+def _embedding_batch_ubatch(
+    n_ctx: int,
+    n_batch: Optional[int],
+    n_ubatch: Optional[int],
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+) -> tuple[Optional[int], Optional[int]]:
+    """Size an unset batch pair to the context for pooling that needs one micro-batch."""
+    _, _, batch_named, ubatch_named = _named_batch_sizes(extra_args, env, n_batch, n_ubatch)
+    if (batch_named and ubatch_named) or n_ctx <= _DEFAULT_LLAMA_N_UBATCH:
+        return n_batch, n_ubatch
+    # Only the unset side: llama.cpp caps the micro-batch at the batch, so a named one still limits.
+    return (n_batch if batch_named else n_ctx), (n_ubatch if ubatch_named else n_ctx)
+
+
 def _build_ngram_mod_flags(
     caps: Optional[dict],
     n_match: int = 24,
@@ -23423,6 +23438,17 @@ class LlamaCppBackend:
             if _load_cancelled():
                 logger.info("Load cancelled after download phase")
                 return False
+
+            # llama-server rejects MEAN/CLS inputs over one micro-batch; only LAST splits, and an
+            # undeclared pooling runs as NONE, which /v1/embeddings refuses. Before the projector
+            # raise, so that raise is not read as a user-set micro-batch.
+            if self._pooling_type in (1, 2):
+                n_batch, n_ubatch = _embedding_batch_ubatch(
+                    resolve_requested_ctx(extra_args, n_ctx) or self._context_length or 0,
+                    n_batch,
+                    n_ubatch,
+                    extra_args,
+                )
 
             # Decide after downloading the projector and before pricing the load.
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
