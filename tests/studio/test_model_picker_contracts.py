@@ -14,9 +14,10 @@ backend pytest checks (which prove the backend logic).
 from __future__ import annotations
 
 import ast
+import itertools
 import re
 from pathlib import Path
-from tests.studio._js_source import assert_guard_holds
+from tests.studio._js_source import assert_guard_holds, blank_literals_and_comments
 
 WORKDIR = Path(__file__).resolve().parents[2]
 FRONTEND = WORKDIR / "studio" / "frontend" / "src"
@@ -841,12 +842,103 @@ def test_model_load_guard_uses_shared_store_state():
     assert "loadingModelPick" in eject_body.split("ejectModel,", 1)[0]
 
 
+# The managed-repo check in front of the safetensors menu, read as one boolean input. A
+# changed pattern is an unknown token below, which fails loudly rather than being skipped.
+_LOCAL_PATH_TEST = r"/^([/\\~.]|[A-Za-z]:)/.test(repoId)"
+
+
+def _menu_guard_truth(src):
+    """The JSX guard in front of `<QuantOptionsMenu`, as a function of its boolean inputs.
+
+    Evaluated rather than matched: regrouping, a widened `isPartial`, or a new condition
+    anywhere in the guard all change or keep the answer exactly as the browser would.
+    Comments are blanked first, so a commented-out alternative cannot count.
+    """
+    blanked = blank_literals_and_comments(src)
+    before_menu = blanked.split("<QuantOptionsMenu", 1)[0]
+    guard = before_menu[before_menu.rindex("{") + 1 :].strip()
+    assert guard.endswith("&& ("), guard
+    guard = guard[: -len("&& (")].replace(_LOCAL_PATH_TEST, " localPath ")
+    tokens = re.findall(r"\|\||&&|!|\(|\)|[A-Za-z_]\w*|\S", guard)
+    names = sorted({t for t in tokens if re.fullmatch(r"[A-Za-z_]\w*", t)} - {"true", "false"})
+
+    def evaluate(env):
+        # Recursive descent with JavaScript's precedence: `||` < `&&` < `!` < atoms.
+        position = 0
+
+        def take(expected = None):
+            nonlocal position
+            assert position < len(tokens), f"guard ended early: {guard}"
+            token = tokens[position]
+            assert (
+                expected is None or token == expected
+            ), f"expected {expected!r}, got {token!r}: {guard}"
+            position += 1
+            return token
+
+        def peek():
+            return tokens[position] if position < len(tokens) else None
+
+        def either():
+            value = both()
+            while peek() == "||":
+                take()
+                value = both() or value
+            return value
+
+        def both():
+            value = negated()
+            while peek() == "&&":
+                take()
+                value = negated() and value
+            return value
+
+        def negated():
+            if peek() == "!":
+                take()
+                return not negated()
+            token = take()
+            if token == "(":
+                value = either()
+                take(")")
+                return value
+            if token in ("true", "false"):
+                return token == "true"
+            assert token in names, f"unexpected {token!r} in the menu guard: {guard}"
+            return env[token]
+
+        value = either()
+        assert position == len(tokens), f"unparsed {tokens[position:]} in the menu guard: {guard}"
+        return value
+
+    return names, evaluate
+
+
 def test_partial_safetensors_download_keeps_delete_menu():
     """A stopped partial safetensors download must keep its options menu (the Delete
     affordance) like the GGUF card does, or partial downloads can only be cleaned up by
     finishing or leaving them."""
     src = _read("features/hub/catalog/safetensors-download-card.tsx")
-    assert "(isDownloaded || (isPartial && !downloading))" in src
+    names, shows_menu = _menu_guard_truth(src)
+    for required in ("isDownloaded", "isPartial", "downloading", "localPath"):
+        assert required in names, (required, names)
+
+    def every(**fixed):
+        free = [name for name in names if name not in fixed]
+        for values in itertools.product((False, True), repeat = len(free)):
+            yield {**dict(zip(free, values)), **fixed}
+
+    # Downloaded or a stopped partial, in the managed cache: the menu is there whatever else holds.
+    for env in every(isDownloaded = True, localPath = False):
+        assert shows_menu(env), env
+    for env in every(isDownloaded = False, isPartial = True, downloading = False, localPath = False):
+        assert shows_menu(env), env
+    # A download still running is not a partial to clean up yet.
+    for env in every(isDownloaded = False, downloading = True):
+        assert not shows_menu(env), env
+    # Nothing cached and nothing running: no menu. Every input false also turns off any cache
+    # source added later (like companionPrefetch), so it stays free to widen the guard.
+    assert not shows_menu(dict.fromkeys(names, False)), names
 
 
 def test_pinned_validation_uses_cached_local_variant_listing():
