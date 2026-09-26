@@ -5042,6 +5042,30 @@ class TestGgufVisionToolRouting:
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
         assert "".join(d.get("content", "") for d in deltas) == "done"
 
+    def test_a_tool_heartbeat_is_not_sent_as_a_stall_keepalive(self, monkeypatch):
+        # A durable run renews its lease on the tool heartbeat and never on `: keep-alive`, so a
+        # silent tool relayed as a keep-alive is reaped at the lease timeout.
+        import routes.inference as inf_mod
+
+        def _tools(**_kwargs):
+            yield {"type": "heartbeat"}
+            yield {"type": "content", "text": "done"}
+            yield _stop_metadata()
+
+        result = self._run_gguf_case(
+            monkeypatch,
+            tool_generate = _tools,
+            payload_kwargs = {
+                "stream": True,
+                "enable_tools": True,
+                "enabled_tools": ["terminal"],
+                "messages": [{"role": "user", "content": "run something"}],
+            },
+            request = self._Request(ui_events = True),
+        )
+        assert inf_mod._OPENAI_TOOL_HEARTBEAT_SSE in result.chunks
+        assert inf_mod._OPENAI_PASSTHROUGH_SSE_KEEPALIVE not in result.chunks
+
     def test_an_empty_selection_is_not_refused_for_a_prompt_it_can_never_show(self, monkeypatch):
         # mcp_enabled arms _confirm_gate_needs_stream on intent, but discovery finds no MCP
         # tool here, so the selection is empty and the loop is skipped. Refusing on intent
