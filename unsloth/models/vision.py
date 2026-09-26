@@ -1824,7 +1824,7 @@ class FastBaseModel:
                 getattr(text_config, "model_type", ""),
             )
             remote_text_only = None
-            # get_text_config() returns the repo-code parent itself when it only has llm_config (InternVL), so the family check compares the wrapper with itself.
+            # InternVL: get_text_config() is the wrapper itself, so the family check always passes.
             if not family_decoder or type(text_config) is type(parent_config):
                 remote_text_only = _get_remote_composite_text_only(
                     parent_config,
