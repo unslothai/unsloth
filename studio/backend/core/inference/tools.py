@@ -35,7 +35,7 @@ import threading
 from contextvars import ContextVar
 
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
-from .context_window import _RESULT_NOTICE_RESERVE
+from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
 
 # The window of the model THIS request is served by, set by execute_tool for the call's duration. Left unset it falls
 # back to the process-global probe, which is wrong for an external-provider request: that runs Unsloth's tool loop
@@ -13059,6 +13059,17 @@ def execute_tool(
         return (
             f"Error: {name} arguments {cause}, so nothing ran. Resend as complete JSON, "
             "split across smaller calls if the content is long."
+        )
+    # Block placeholders copied from compacted history before any tool can write them (#11839).
+    receipt_field = compaction_receipt_field(
+        arguments,
+        match_only = frozenset({"old_string"}) if name == "edit_file" else frozenset(),
+    )
+    if receipt_field is not None:
+        return (
+            f"Error: {name} '{receipt_field}' is a placeholder that stood in for earlier "
+            "arguments to save room, not content, so nothing ran. Write the actual content "
+            "out in full."
         )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "create_skill":

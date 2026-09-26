@@ -30,3 +30,15 @@ export function shouldReportGenerateError(input: {
   }
   return !input.message.toLowerCase().includes("cancelled");
 }
+
+/** A cancel lands only at the end of the current (possibly long) denoise step, so show it was heard. */
+export function stopButtonLabel(input: {
+  stopping: boolean;
+  done: number | null;
+  count: number;
+  idle?: string;
+}): string {
+  if (input.stopping) return "Stopping…";
+  const idle = input.idle ?? "Stop";
+  return input.done != null && input.count > 1 ? `${idle} (${input.done}/${input.count})` : idle;
+}
