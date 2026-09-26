@@ -6068,6 +6068,13 @@ class VideoBackend:
             speed_optims = speed_optims + tuple(f"h3_vae_{name}" for name in vae_levers)
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
+        if "cudnn_benchmark" in speed_optims:
+            try:
+                from .video_minimax_h3_vae import install_audio_decode_without_cudnn_benchmark
+                if install_audio_decode_without_cudnn_benchmark(getattr(pipe, "audio_vae", None)):
+                    logger.info("video.h3_audio_vae: decoding with cudnn.benchmark off")
+            except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
+                logger.warning("video.h3_audio_vae: keeping the stock decode: %s", exc)
 
         resolved = build_resolved_record(
             {

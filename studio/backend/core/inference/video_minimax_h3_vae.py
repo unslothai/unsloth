@@ -1178,6 +1178,27 @@ def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
     return True
 
 
+def install_audio_decode_without_cudnn_benchmark(audio_vae: Any) -> bool:
+    """Run the audio VAE decode with ``cudnn.benchmark`` held off. Its 1D convs gain nothing from the search at
+    steady state (0.03-0.04 s per decode either way), but the search itself costs seconds to minutes of host time on
+    the first decode of every shape on every thread. Idempotent; False when there is nothing to wrap."""
+    if audio_vae is None or getattr(audio_vae, "_unsloth_no_cudnn_benchmark", False):
+        return False
+    stock = getattr(audio_vae, "decode", None)
+    if not callable(stock):
+        return False
+
+    from .diffusion_speed import cudnn_benchmark_scope
+
+    def decode(self, *args, **kwargs):
+        with cudnn_benchmark_scope(False):
+            return stock(*args, **kwargs)
+
+    audio_vae.decode = types.MethodType(decode, audio_vae)
+    audio_vae._unsloth_no_cudnn_benchmark = True
+    return True
+
+
 @lru_cache(maxsize = 4)
 def _triton_version_ok(version: Optional[str] = None) -> bool:
     if version is None:
