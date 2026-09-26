@@ -343,6 +343,8 @@ def test_regex_naming_the_prefix_keeps_the_full_model(tmp_path):
         "ignore": [r"re:.*language_model\.backbone\.layers\.\d+\.mixer\.in_proj$"],
     }
     assert ns["_strip_skip_module_prefix"](qc, "language_model.") is None
+    nested = {"ignore": [r"re:.*model\.language_model\.backbone\.layers\.\d+\.mixer\.in_proj$"]}
+    assert ns["_strip_skip_module_prefix"](nested, "model.language_model.") is None
     # An unrelated name that merely contains the stem is not a reason to decline.
     assert (
         ns["_strip_skip_module_prefix"](

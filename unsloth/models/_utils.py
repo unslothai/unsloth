@@ -1796,7 +1796,10 @@ def _strip_skip_module_prefix(qc, prefix):
     # Module names given from the wrapper root -> names relative to the text model.
     # None when an entry names the prefix in a form that cannot be rebased (a `re:` regex), so the caller keeps the full model.
     is_dict = isinstance(qc, dict)
-    stem = re.compile(r"(?:^|[^A-Za-z0-9_])" + re.escape(prefix.rstrip(".")) + r"\\?\.")
+    dot = r"\\?\."  # a regex entry may escape any of the prefix's dots
+    stem = re.compile(
+        r"(?:^|[^A-Za-z0-9_])" + dot.join(map(re.escape, prefix.rstrip(".").split("."))) + dot
+    )
     updates = {}
     for field in _QC_MODULE_NAME_FIELDS:
         names = qc.get(field) if is_dict else getattr(qc, field, None)
