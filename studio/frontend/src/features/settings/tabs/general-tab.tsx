@@ -34,6 +34,10 @@ import {
   useShowLlamaUpdateBanner,
   useShowWhisperUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
+import {
+  setShowUnslothUpdateBanner,
+  useShowUnslothUpdateBanner,
+} from "@/hooks/use-unsloth-update-pref";
 import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -202,6 +206,7 @@ export function GeneralTab() {
   const hfTokenPersistenceError = useHfTokenStore(
     (s) => s.persistenceError,
   );
+  const showUnslothUpdates = useShowUnslothUpdateBanner();
   const showLlamaUpdates = useShowLlamaUpdateBanner();
   const showWhisperUpdates = useShowWhisperUpdateBanner();
   const showLoadedModels = useShowLoadedModels();
@@ -658,6 +663,17 @@ export function GeneralTab() {
       ) : null}
 
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.notifications.showUnslothUpdates")}
+          description={t(
+            "settings.general.notifications.showUnslothUpdatesDescription",
+          )}
+        >
+          <Switch
+            checked={showUnslothUpdates}
+            onCheckedChange={setShowUnslothUpdateBanner}
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.general.notifications.showLoadedModels")}
           description={t(

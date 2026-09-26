@@ -1054,6 +1054,8 @@ export const fr = {
         showWhisperUpdates: "Notifications de mise à jour de whisper.cpp",
         showWhisperUpdatesDescription:
           "Notifier lorsqu'une nouvelle version de whisper.cpp est disponible pour les modèles de transcription vocale. Désactivez si vous ne transcrivez jamais d'audio.",
+        showUnslothUpdates: "Vérifications automatiques des mises à jour",
+        showUnslothUpdatesDescription: "Vérifier automatiquement l'existence de versions plus récentes de l'application et du backend Unsloth. Les vérifications manuelles restent disponibles dans À propos.",
       },
       startup: {
         sectionTitle: "Démarrage",

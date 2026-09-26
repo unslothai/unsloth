@@ -3,6 +3,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { isTauri } from "@/lib/api-base";
+import { useShowUnslothUpdateBanner } from "@/hooks/use-unsloth-update-pref";
 import {
   copySupportDiagnostics,
   type CopySupportDiagnosticsResult,
@@ -316,9 +317,10 @@ export function useTauriUpdate(isExternalServer = false) {
   }
 
   const scheduledCheckRef = useRef(checkForUpdateWhenSafe);
+  const autoChecksEnabled = useShowUnslothUpdateBanner();
 
   useEffect(() => {
-    if (!isTauri) return;
+    if (!isTauri || !autoChecksEnabled) return;
 
     const startupTimer = setTimeout(() => {
       if (checkedRef.current) return;
@@ -349,7 +351,7 @@ export function useTauriUpdate(isExternalServer = false) {
       window.removeEventListener("focus", checkWhenVisibleAndDue);
       document.removeEventListener("visibilitychange", checkWhenVisibleAndDue);
     };
-  }, []);
+  }, [autoChecksEnabled]);
 
   async function ensureBundleDownloaded(): Promise<void> {
     setUpdatePhase("shell_download");

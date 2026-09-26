@@ -1032,6 +1032,8 @@ export const ko = {
         showWhisperUpdates: "whisper.cpp 업데이트 알림",
         showWhisperUpdatesDescription:
           "음성 인식 모델을 위한 최신 whisper.cpp 빌드가 있으면 알립니다. 오디오를 전사하지 않는다면 끄세요.",
+        showUnslothUpdates: "자동 업데이트 확인",
+        showUnslothUpdatesDescription: "새 Unsloth 앱과 백엔드 릴리스가 있는지 자동으로 확인합니다. 수동 확인은 정보 화면에서 계속 사용할 수 있습니다.",
       },
       startup: {
         sectionTitle: "시작",

@@ -1056,6 +1056,8 @@ export const de = {
         showWhisperUpdates: "whisper.cpp-Update-Benachrichtigungen",
         showWhisperUpdatesDescription:
           "Benachrichtigt, wenn ein neuerer whisper.cpp-Build für Speech-to-Text-Modelle verfügbar ist. Deaktivieren Sie dies, wenn Sie nie Audio transkribieren.",
+        showUnslothUpdates: "Automatische Update-Prüfungen",
+        showUnslothUpdatesDescription: "Automatisch prüfen, ob neuere Unsloth-App- und Backend-Versionen verfügbar sind. Manuelle Prüfungen bleiben unter „Über“ verfügbar.",
       },
       startup: {
         sectionTitle: "Autostart",

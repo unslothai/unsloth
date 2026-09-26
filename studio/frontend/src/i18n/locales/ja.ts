@@ -1024,6 +1024,8 @@ export const ja = {
         showLoadedModelsDescription: "現在メモリ上にあるすべてのモデル（チャット、音声、画像、動画）を一覧表示する小さなカードを右下に表示します。各モデルを解放するボタンが付いています。",
         showWhisperUpdates: "whisper.cpp のアップデート通知",
         showWhisperUpdatesDescription: "音声認識モデル向けの新しい whisper.cpp ビルドが利用可能になったときに通知します。音声を文字起こししない場合はオフにしてください。",
+        showUnslothUpdates: "アップデートの自動確認",
+        showUnslothUpdatesDescription: "新しい Unsloth アプリとバックエンドのリリースを自動的に確認します。手動確認は「バージョン情報」から引き続き利用できます。",
       },
       startup: {
         sectionTitle: "起動",

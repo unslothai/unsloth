@@ -28,6 +28,8 @@ interface HookHarnessOptions {
   failCheckAt?: number;
   noUpdateAt?: number;
   tauri?: boolean;
+  /** Whether the Unsloth update-check preference allows scheduled checks. */
+  autoChecksEnabled?: boolean;
   /** Whether `start_backend_update` resolves; the shell steps only run if it does. */
   backendUpdate?: "completes" | "fails";
   /** One entry per `desktopUpdateBundleStatus` poll; the last one repeats. */
@@ -238,6 +240,7 @@ function hookHarness(
     failCheckAt,
     noUpdateAt,
     tauri = true,
+    autoChecksEnabled = true,
     backendUpdate = "fails",
     bundleStates = [{ version: null, downloaded: false, downloading: false }],
   }: HookHarnessOptions = {},
@@ -310,6 +313,9 @@ function hookHarness(
       },
       sameUpdateVersion: (left: string | null | undefined, right: string) =>
         Boolean(left) && left === right,
+    },
+    "@/hooks/use-unsloth-update-pref": {
+      useShowUnslothUpdateBanner: () => autoChecksEnabled,
     },
     "@/lib/toast": { toast: { error: () => undefined } },
     "@tauri-apps/api/core": {
@@ -391,6 +397,22 @@ test("the desktop hook checks at startup and every hour", async (t) => {
   hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
   await settle();
   assert.equal(hook.checks(), 2);
+});
+
+test("a disabled preference suppresses scheduled checks but not a manual check", async (t) => {
+  const hook = hookHarness(t, { autoChecksEnabled: false });
+
+  assert.equal(hook.checks(), 0);
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+  hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
+  hook.browser.fireWindow("focus");
+  await settle();
+  assert.equal(hook.checks(), 0);
+
+  await hook.controller.checkForUpdate();
+  await settle();
+  assert.equal(hook.checks(), 1);
 });
 
 test("a manual check suppresses only the startup check", async (t) => {
