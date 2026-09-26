@@ -259,3 +259,77 @@ export function importMcpServers(
     mcpRequest("/import", { method: "POST", body: { config } }),
   );
 }
+
+/** A ui:// template and the sandbox settings it declared in _meta.ui. */
+export interface McpUiResource {
+  uri: string;
+  mime_type: string;
+  text: string;
+  ui: {
+    csp?: {
+      connectDomains?: string[];
+      resourceDomains?: string[];
+      frameDomains?: string[];
+      baseUriDomains?: string[];
+    };
+    prefersBorder?: boolean;
+    domain?: string;
+  };
+}
+
+export interface McpUiToolCallResult {
+  content: { type?: string; text?: string; [key: string]: unknown }[];
+  structured_content: Record<string, unknown> | null;
+  is_error: boolean;
+  meta: Record<string, unknown> | null;
+}
+
+/** Fetch the widget template a tool result points at. */
+export function readMcpUiResource(
+  serverId: string,
+  uri: string,
+  scope?: { threadId?: string; sessionId?: string },
+): Promise<McpUiResource> {
+  const query = new URLSearchParams({ uri });
+  if (scope?.threadId) query.set("thread_id", scope.threadId);
+  if (scope?.sessionId) query.set("session_id", scope.sessionId);
+  return mcpRequest(`/${serverId}/ui-resource?${query.toString()}`);
+}
+
+/** The call has to be allowed by the user first; retry it with `approved`. */
+export class McpUiApprovalRequired extends Error {}
+
+const UI_TOOL_APPROVAL_REQUIRED = "approval_required";
+
+/**
+ * Relay a tool call a widget asked for. `serverId` comes from the tool part that
+ * drew the frame, never from the widget's own message.
+ */
+export function callMcpUiTool(
+  serverId: string,
+  payload: {
+    toolName: string;
+    arguments?: Record<string, unknown>;
+    threadId?: string;
+    sessionId?: string;
+    permissionMode: string;
+    approved: boolean;
+  },
+): Promise<McpUiToolCallResult> {
+  return mcpRequest<McpUiToolCallResult>(`/${serverId}/ui-tool-call`, {
+    method: "POST",
+    body: {
+      tool_name: payload.toolName,
+      arguments: payload.arguments ?? {},
+      thread_id: payload.threadId ?? null,
+      session_id: payload.sessionId ?? null,
+      permission_mode: payload.permissionMode,
+      approved: payload.approved,
+    },
+  }).catch((err: unknown) => {
+    if (err instanceof Error && err.message === UI_TOOL_APPROVAL_REQUIRED) {
+      throw new McpUiApprovalRequired(err.message);
+    }
+    throw err;
+  });
+}

@@ -833,6 +833,27 @@ def is_tool_error(result: str) -> bool:
     return isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
 
 
+def _strip_mcp_ui_suffix(result: str) -> str:
+    """Drop a trailing __MCP_UI__ envelope, and only a well-formed one. The
+    payload is one JSON line, so the scan stops there; images may follow."""
+    marker = "\n__MCP_UI__:"
+    start = result.rfind(marker)
+    if start == -1:
+        return result
+    payload_start = start + len(marker)
+    end = result.find("\n", payload_start)
+    if end == -1:
+        end = len(result)
+    try:
+        payload = json.loads(result[payload_start:end])
+    except (ValueError, RecursionError):
+        return result
+    # A tool that merely printed the marker keeps its text.
+    if not isinstance(payload, dict) or not isinstance(payload.get("resourceUri"), str):
+        return result
+    return (result[:start] + result[end:]).rstrip()
+
+
 def _strip_files_sentinel(result: str) -> str:
     """Drop a trailing ``__FILES__`` envelope, and only that.
 
@@ -933,6 +954,10 @@ def _strip_rag_sources_sentinel(result: str) -> str:
 # well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 
+# Same rule for the widget envelope: mcp_client writes it, and defuses any a
+# tool wrote itself, so only an MCP result can be carrying one.
+_MCP_TOOL_PREFIX = "mcp__"
+
 # Same rule for the other two envelopes. The image one is emitted by the sandbox tools
 # through `_created_file_sentinels` and by Gemini's hosted code_execution through the
 # provider; the source map by the retrieval tools that append `RAG_SOURCES_SENTINEL`. A
@@ -987,6 +1012,9 @@ def strip_result_for_model(
     # never be shown them as text. Provenance decides whether they become IMAGE
     # input, which is a separate question answered in mcp_images._promote.
     result = split_mcp_images(result)[0]
+    # After the image strip, which leaves the UI envelope as the tail.
+    if tool_name is None or tool_name.startswith(_MCP_TOOL_PREFIX):
+        result = _strip_mcp_ui_suffix(result)
     if tool_name is None or tool_name in _SANDBOX_TOOLS:
         result = _strip_files_sentinel(result)
     if tool_name is None or tool_name in _IMAGE_SENTINEL_TOOLS:
