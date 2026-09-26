@@ -287,3 +287,17 @@ def test_no_largest_context_claimed_at_the_native_ceiling(tmp_path, monkeypatch)
     backend._estimate_compute_buffer_bytes = lambda **k: 1
     _launch(backend, gguf, n_ctx = 131072)
     assert "The largest that fits is 32,768" not in (backend.last_load_warning or "")
+
+
+@pytest.mark.parametrize("extra_args, warned", [(["--fit", "off"], False), (["--fit=on"], True)])
+def test_a_user_fit_override_decides_the_notice(tmp_path, monkeypatch, extra_args, warned):
+    from test_llama_cpp_placement import _backend as _placement_backend, _launch
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    backend, gguf = _placement_backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
+    backend._get_gguf_size_bytes = lambda _path: 18 * GIB
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 64 * 1024
+    backend._estimate_compute_buffer_bytes = lambda **k: 1
+    _launch(backend, gguf, n_ctx = 131072, extra_args = extra_args)
+    assert ("does not fit in this GPU's memory" in (backend.last_load_warning or "")) is warned

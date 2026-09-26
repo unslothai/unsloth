@@ -25307,6 +25307,11 @@ class LlamaCppBackend:
                                 and not _device_selection_is_cpu(extra_args, os.environ)
                                 and not _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
                                 and not _env_fixes_gpu_layers()
+                                # A trailing user --fit off disables the fitter that would offload.
+                                and (
+                                    fit_is_enabled_in(extra_args)
+                                    or not _extra_args_set_any_flag(extra_args, {"-fit", "--fit"})
+                                )
                                 # At the native ceiling the true max above it was never searched.
                                 and max_available_ctx < native_ctx_for_cap
                             ):
