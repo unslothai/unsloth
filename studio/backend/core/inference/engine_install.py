@@ -38,6 +38,8 @@ PROFILES = {
         "module": "vllm",
         "cuda": "cu130",
         "driver": 580,
+        # The vllm wheel is manylinux_2_35.
+        "glibc": (2, 35),
         # FlashInfer fetches the trtllm kernels it uses on demand rather than the whole cubin wheel.
         "omit": ("flashinfer-cubin",),
     },
@@ -437,8 +439,9 @@ def support_reason(
 ) -> str | None:
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         return "Managed engines currently require Linux x86_64."
-    if tuple(int(x) for x in (platform.libc_ver()[1] or "0.0").split(".")[:2]) < (2, 34):
-        return "Managed engines require glibc 2.34 or newer."
+    glibc = profile(engine).get("glibc", (2, 34))
+    if tuple(int(x) for x in (platform.libc_ver()[1] or "0.0").split(".")[:2]) < glibc:
+        return f"{engine} requires glibc {glibc[0]}.{glibc[1]} or newer."
     rows = _driver_rows(gpu_id, wait = wait)
     if rows is _PENDING:
         return "Checking for a supported NVIDIA GPU."

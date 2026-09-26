@@ -216,6 +216,18 @@ def test_engine_cuda_home_is_the_locked_pip_nvcc(tmp_path, monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_glibc_floor_matches_the_newest_locked_wheel(engine, monkeypatch):
+    monkeypatch.setattr(install.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(install.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(install.platform, "libc_ver", lambda: ("glibc", "2.34"))
+    reason = install.support_reason(engine, wait = False)
+    if engine == "vllm":
+        assert reason == "vllm requires glibc 2.35 or newer."
+    else:
+        assert reason is None or "glibc" not in reason
+
+
 def fake_dist(site, name, version, *requires):
     info = site / f"{name.replace('-', '_')}-{version}.dist-info"
     info.mkdir(parents = True)
