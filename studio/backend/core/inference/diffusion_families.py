@@ -1697,11 +1697,7 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
 
 
 def prequant_only_repo_ids() -> frozenset[str]:
-    """Lowercased ids of repos that exist ONLY to host pre-quantised checkpoints (``prequant_repos``,
-    ``prequant_variant_repos``, ``te_prequant_repos``) and are no family's base, train base, deploy
-    base or mirror. None of them carries a ``model_index.json``, so a pipeline pick of one passes
-    validation, stages its checkpoints, then 404s in ``from_pretrained``; the loader reaches them
-    through a base pick and the precision knobs instead."""
+    """Repos hosting only prequant checkpoints (no model_index.json), never a base or mirror."""
     hosted: set[str] = set()
     bases: set[str] = set()
     for fam in _FAMILIES:
@@ -1720,8 +1716,6 @@ def prequant_only_repo_ids() -> frozenset[str]:
 def prequant_repo_role(
     fam: DiffusionFamily, repo_id: str
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
-    """``(base repos, transformer schemes, text-encoder schemes)`` through which *fam*'s tables reach
-    *repo_id*, so a refusal can name the pick to make instead. Bases come back in table case."""
     key = (repo_id or "").strip().lower()
     known = {
         b.lower(): b

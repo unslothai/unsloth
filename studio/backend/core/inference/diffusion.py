@@ -2567,10 +2567,7 @@ class DiffusionBackend:
                 f"pass family_override with that family name. (Video models and image models "
                 f"whose diffusers transformer has no single-file loader are not supported.)"
             )
-        # A hosted prequant repo is a checkpoint store, not a pipeline: it has no model_index.json, so a pipeline pick of
-        # it passed every check here, staged its checkpoints (14 GB for Qwen-Image-2.1-FP8), then 404d in
-        # from_pretrained. Table-driven and network-free, so both routes refuse it before anything is staged.
-        # A local dir cloned to that exact relative name is a real pipeline, though; let the local manifest check below rule.
+        # Prequant repos have no model_index.json (a pipeline pick staged GBs, then 404d); a same-named local dir is a real pipeline.
         if (
             kind == "pipeline"
             and repo_id.strip().lower() in prequant_only_repo_ids()
