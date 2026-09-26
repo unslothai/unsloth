@@ -5580,6 +5580,21 @@ _detect_rocm_version_tag() {
     printf '%s\n' "$_rt_best"
 }
 
+# The generic bitsandbytes ROCm wheel is built for the rocm6.4 ABI. Keep the
+# published ROCm leaf mapping in get_torch_index_url intact for explicit and
+# legacy callers, but floor automatic generic selections to this compatible tag.
+_ROCM_BNB_GENERIC_FLOOR_TAG="rocm6.4"
+_rocm_bnb_compatible_generic_tag() {
+    case "$1" in
+        rocm6.0|rocm6.0.*|rocm6.1|rocm6.1.*|rocm6.2|rocm6.2.*|rocm6.3|rocm6.3.*)
+            printf '%s\n' "$_ROCM_BNB_GENERIC_FLOOR_TAG"
+            ;;
+        *)
+            printf '%s\n' "$1"
+            ;;
+    esac
+}
+
 # ── Detect GPU and choose PyTorch index URL ──
 # Mirrors Get-TorchIndexUrl in install.ps1.
 # On CPU-only machines this returns the cpu index, avoiding the solver
@@ -5722,20 +5737,44 @@ get_torch_index_url() {
                     echo "[WARN]   UNSLOTH_TORCH_INDEX_URL=<full index URL>   (takes precedence, used verbatim)" >&2
                     echo "$_base/cpu"; return ;;
             esac
-            # Normalise to major.minor; 6.5+ clips to rocm6.4, 7.3+ caps to rocm7.2.
+            # Supported tags; automatic generic 6.0-6.3 selections floor to rocm6.4
+            # for bitsandbytes compatibility, 6.5+ clips to rocm6.4, and 7.3+
+            # caps to rocm7.2.
+            # PyTorch publishes major.minor URLs only (no patch level), so
+            # rocm7.2.1 / rocm6.0.2 / etc. must normalise to rocm7.2 / rocm6.0.
             case "$_rocm_tag" in
-                rocm6.0|rocm6.0.*) echo "$_base/rocm6.0" ;;
-                rocm6.1|rocm6.1.*) echo "$_base/rocm6.1" ;;
-                rocm6.2|rocm6.2.*) echo "$_base/rocm6.2" ;;
-                rocm6.3|rocm6.3.*) echo "$_base/rocm6.3" ;;
-                rocm6.4|rocm6.4.*) echo "$_base/rocm6.4" ;;
-                rocm7.0|rocm7.0.*) echo "$_base/rocm7.0" ;;
-                rocm7.1|rocm7.1.*) echo "$_base/rocm7.1" ;;
-                rocm7.2|rocm7.2.*) echo "$_base/rocm7.2" ;;
+                rocm6.0|rocm6.0.*) _rocm_selected_tag=rocm6.0 ;;
+                rocm6.1|rocm6.1.*) _rocm_selected_tag=rocm6.1 ;;
+                rocm6.2|rocm6.2.*) _rocm_selected_tag=rocm6.2 ;;
+                rocm6.3|rocm6.3.*) _rocm_selected_tag=rocm6.3 ;;
+                rocm6.4|rocm6.4.*) _rocm_selected_tag=rocm6.4 ;;
+                rocm7.0|rocm7.0.*) _rocm_selected_tag=rocm7.0 ;;
+                rocm7.1|rocm7.1.*) _rocm_selected_tag=rocm7.1 ;;
+                rocm7.2|rocm7.2.*) _rocm_selected_tag=rocm7.2 ;;
                 rocm6.*)
-                    echo "$_base/rocm6.4" ;;
+                    # ROCm 6.5+ (no published PyTorch wheels): clip down
+                    # to the last supported 6.x wheel set.
+                    _rocm_selected_tag=rocm6.4 ;;
                 *)
-                    echo "$_base/rocm7.2" ;;
+                    # ROCm 7.3+ (future): cap to rocm7.2 (latest known)
+                    _rocm_selected_tag=rocm7.2 ;;
+            esac
+            # gfx906 deliberately stays on the literal rocm6.0-6.3 selection: its
+            # later legacy block (when the chosen tag is newer than rocm6.3) and
+            # its prebuilt-BNB skip must remain unchanged. Other automatic generic
+            # targets use the shared BNB ABI floor.
+            # Normalize first, exactly as _is_gfx906_bnb_skip and the legacy reroute
+            # block do: _probe_amd_gfx_arch emits one token per rocminfo match and
+            # rocminfo names each agent twice, so a real MI50 reads "gfx906\ngfx906";
+            # an UNSLOTH_ROCM_GFX_ARCH override keeps its ISA suffix
+            # (gfx906:sramecc-:xnack-). Comparing the raw probe missed both and floored
+            # the very hosts this exemption exists for. Deduping also gives the
+            # sole-distinct-arch rule for free: a mixed host keeps the generic floor.
+            _bnb_floor_gfx=$(printf '%s\n' "$_amd_gfx_probe" \
+                | sed 's/:.*$//' | tr -d '[:blank:]' | awk 'NF && !seen[$0]++')
+            case "$_bnb_floor_gfx" in
+                gfx906) echo "$_base/$_rocm_selected_tag" ;;
+                *) echo "$_base/$(_rocm_bnb_compatible_generic_tag "$_rocm_selected_tag")" ;;
             esac
             return
         fi
@@ -6169,6 +6208,23 @@ _pick_radeon_wheel() {
         http*) printf '%s\n' "$_href" ;;
         *)     printf '%s\n' "${_RADEON_BASE_URL%/}/${_href#/}" ;;
     esac
+}
+
+# True when torch $1 (X.Y) can run torch.compile, which Unsloth needs to train, on the Python named by the Radeon wheel tag $2 (cpXY). Dynamo reached Python 3.13 in torch 2.6 and 3.14 in torch 2.10; older tags are covered by the torch floor already. The Radeon repo can still carry an older torch for a newer Python: rocm-rel-6.4 has torch 2.5.1 as its only cp313 build, and installing that leaves a venv that imports but fails "Dynamo is not supported on Python 3.13+" on the first training step.
+_radeon_torch_compiles_for_pytag() {
+    case "$2" in
+        cp313) _rtc_need=6 ;;
+        cp314) _rtc_need=10 ;;
+        *) return 0 ;;
+    esac
+    _rtc_major="${1%%.*}"
+    _rtc_minor="${1#*.}"
+    _rtc_minor="${_rtc_minor%%.*}"
+    case "$_rtc_major$_rtc_minor" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$_rtc_major" -gt 2 ] && return 0
+    [ "$_rtc_major" -eq 2 ] && [ "$_rtc_minor" -ge "$_rtc_need" ]
 }
 
 # ── ROCm-on-WSL bootstrap for AMD Strix Halo (gfx1151) ───────────────────────
@@ -7803,6 +7859,15 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                         _target_minor=$((_target_minor - 1))
                         _attempts=$((_attempts + 1))
                     done
+                fi
+
+                # A matched set can still be unusable for training on this Python; the ROCm index
+                # carries newer builds for it (rocm6.4 has torch 2.9.1 for cp313).
+                _sel_torch_ver=$(_extract_version "$_torch_whl" "torch")
+                if [ "$_radeon_versions_match" = true ] && [ -n "$_sel_torch_ver" ] && \
+                   ! _radeon_torch_compiles_for_pytag "$_sel_torch_ver" "$_RADEON_PYTAG"; then
+                    substep "[WARN] Radeon repo's newest $_RADEON_PYTAG PyTorch is $_sel_torch_ver, which cannot run torch.compile on this Python" "$C_WARN"
+                    _radeon_versions_match=false
                 fi
 
                 if [ -z "$_torch_whl" ] || [ -z "$_tv_whl" ] || [ -z "$_ta_whl" ] || \
