@@ -46,20 +46,29 @@ def test_explicit_flash_request_is_scoped_too(monkeypatch):
 def test_scoped_mapping_constructs_the_model(monkeypatch):
     _flash_available(monkeypatch)
     import torch
+    from transformers import modeling_utils
 
+    if not hasattr(modeling_utils, "lazy_import_flash_attention") or not hasattr(
+        modeling_utils.PreTrainedModel, "_flash_attn_import_error"
+    ):
+        pytest.skip(reason = "flash_attn package checks not stubbable on this Transformers")
+    # Stub only the package / kernel import so the per-class support check runs without flash_attn.
+    monkeypatch.setattr(
+        modeling_utils.PreTrainedModel, "_flash_attn_import_error", lambda self, **kwargs: None
+    )
+    monkeypatch.setattr(modeling_utils, "lazy_import_flash_attention", lambda *a, **k: None)
     model_class, config = _lfm2_vl()
     config.text_config.num_hidden_layers = 2
     config.text_config.layer_types = ["full_attention", "conv"]
     config.vision_config.num_hidden_layers = 1
     impl = _utils.resolve_attention_implementation(model_class, config, supports_sdpa = True)
     with torch.device("meta"):
-        try:
-            model_class._from_config(config, attn_implementation = impl)
-        except ImportError as e:  # flash_attn missing or no CUDA device: nothing left to construct
-            pytest.skip(f"flash attention unavailable here: {e}")
+        model_class._from_config(config, attn_implementation = impl, dtype = torch.bfloat16)
     with torch.device("meta"), pytest.raises(ValueError, match = "Flash Attention 2"):
         model_class._from_config(
-            transformers.Lfm2VlConfig(), attn_implementation = "flash_attention_2"
+            transformers.Lfm2VlConfig(),
+            attn_implementation = "flash_attention_2",
+            dtype = torch.bfloat16,
         )
 
 
