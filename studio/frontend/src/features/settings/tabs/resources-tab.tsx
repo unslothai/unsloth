@@ -38,6 +38,7 @@ import {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
+import { InferenceEnginesSection } from "@/features/model-picker/components/inference-engines";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { CacheStorageRows } from "../components/cache-storage-rows";
 import { LlamaBackendSection } from "../components/llama-backend-section";
@@ -815,6 +816,7 @@ export function ResourcesTab() {
       {/* Below the GPU section it describes, above the memory settings that
           apply to whichever backend is selected. */}
       <LlamaBackendSection />
+      <InferenceEnginesSection />
 
       <ModelMemorySection />
 

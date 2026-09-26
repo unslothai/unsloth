@@ -54,6 +54,13 @@ def resolve_inventory_handle(value: str) -> str:
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
+    engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
+    engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine: Literal["auto", "vllm", "sglang"] = Field(
+        "auto",
+        description = "Inference engine to use. 'auto' selects Studio's default backend; "
+        "'vllm' and 'sglang' require an installed optional engine.",
+    )
     model_path: str = Field(..., description = "Model identifier or local path")
     _gguf_companion_roots: tuple[str, ...] = PrivateAttr(default = ())
     # `()` is both the default and auto-switch's deliberate "do not widen", so only this
@@ -492,6 +499,9 @@ class SttLoadRequest(BaseModel):
 class ValidateModelRequest(BaseModel):
     """Check whether an identifier resolves to a ModelConfig; does NOT load weights."""
 
+    engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
+    engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine: Literal["auto", "vllm", "sglang"] = "auto"
     model_path: str = Field(..., description = "Model identifier or local path")
     # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
@@ -1175,6 +1185,13 @@ class GenerateRequest(BaseModel):
 class _InferenceRuntimeFields(BaseModel):
     """Runtime fields shared by load and status responses."""
 
+    engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
+    engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine: Literal["auto", "vllm", "sglang"] = Field(
+        "auto",
+        description = "Active inference engine. 'auto' denotes Studio's default backend; "
+        "'vllm' and 'sglang' denote optional managed engines.",
+    )
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"

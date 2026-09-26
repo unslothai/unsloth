@@ -561,7 +561,12 @@ def test_no_torchao_config_is_constructed_outside_quiet_config():
     from pathlib import Path
 
     backend = Path(__file__).resolve().parents[1]
-    files = sorted((backend / "core" / "inference").glob("*.py")) + [
+    # sglang_server.py runs in the SGLang engine's own Python and never imports Studio.
+    files = [
+        path
+        for path in sorted((backend / "core" / "inference").glob("*.py"))
+        if path.name != "sglang_server.py"
+    ] + [
         backend / "core" / "training" / "diffusion_dit_trainer.py",
     ]
     offenders: list[str] = []

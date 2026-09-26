@@ -134,7 +134,7 @@ import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
 import { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
-import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
+import { defaultEngineGpuIds, ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   type CpuFallbackReason,
   type MmprojFallbackReason,
@@ -1477,6 +1477,7 @@ export function useChatModelRuntime() {
         // swap the resident model, which this one is never told about.
         const adoptable = (status: InferenceStatusResponse) =>
           (status.loading?.length ?? 0) === 0 &&
+          (status.engine ?? "auto") === (comparedConfig.engine ?? "auto") &&
           residentModelMatchesPick(status, {
             id: modelId,
             loadPath,
@@ -1551,6 +1552,7 @@ export function useChatModelRuntime() {
                 savedIndexKind,
                 status.is_diffusion ?? false,
               ),
+            defaultEngineGpuIds: defaultEngineGpuIds(),
             normalizeSpeculative: normalizeSpeculativeType,
           });
         if (
@@ -1851,7 +1853,28 @@ export function useChatModelRuntime() {
       const postLoadRefresh = { needed: false };
       let progressModelIds = [modelId];
       let mlxLoadProgress = false;
-      let downloadComplete = isDownloaded || isCachedLora;
+      const liveBeforeLoad = useChatRuntimeStore.getState();
+      // A switch without a saved config starts on the default engine, as the dedupe above assumes.
+      if (
+        (typeof selection === "string" || !selection.config) &&
+        !keepSpeculative &&
+        liveBeforeLoad.params.checkpoint &&
+        (liveBeforeLoad.params.checkpoint !== modelId ||
+          (liveBeforeLoad.activeGgufVariant ?? null) !== (ggufVariant ?? null)) &&
+        (liveBeforeLoad.params.engine ?? "auto") !== "auto"
+      ) {
+        liveBeforeLoad.setParams({
+          ...liveBeforeLoad.params,
+          engine: "auto",
+          enginePrecision: "auto",
+          engineParallelism: "tensor",
+        });
+      }
+      const requestedEngine =
+        (typeof selection !== "string" ? selection.config?.engine : undefined) ??
+        useChatRuntimeStore.getState().params.engine ?? "auto";
+      const managedLoad = !isGguf && requestedEngine !== "auto";
+      let downloadComplete = isDownloaded || isCachedLora || managedLoad;
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
       try {
@@ -2048,13 +2071,17 @@ export function useChatModelRuntime() {
           ) {
             await ensureGpuDeviceCache();
           }
-          let loadSelectedGpuIds =
+          const stagedGpuIds =
             pendingLoadConfig?.selectedGpuIds !== undefined
               ? reconcilePersistedGpuIds(
                   pendingLoadConfig.selectedGpuIds,
                   pendingLoadConfig.selectedGpuIndexKind,
                   targetIsDiffusion,
                 )
+              : null;
+          let loadSelectedGpuIds =
+            pendingLoadConfig?.selectedGpuIds !== undefined
+              ? stagedGpuIds
               : reconcilePersistedGpuIds(
                   stateBeforeUnload.selectedGpuIds,
                   stateBeforeUnload.selectedGpuIndexKind,
@@ -2111,7 +2138,7 @@ export function useChatModelRuntime() {
               ? null
               : loadCustomContextLength;
             const validateGpuIds = resetsPerModelSettings
-              ? null
+              ? stagedGpuIds
               : loadSelectedGpuIds;
             // The reset below re-baselines gpuLayers to Auto; mirror it here.
             const validateGpuLayers = resetsPerModelSettings
@@ -2168,10 +2195,13 @@ export function useChatModelRuntime() {
             );
             const validation = await validateModel({
               model_path: loadPath,
+              engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
+              engine_parallelism: stateBeforeUnload.params.engineParallelism ?? "tensor",
+              engine: isGguf ? "auto" : (stateBeforeUnload.params.engine ?? "auto"),
               nativePathLease: validateNativePathLease,
               hf_token: hfToken,
               max_seq_length: validateMaxSeqLength,
-              load_in_4bit: true,
+              load_in_4bit: (stateBeforeUnload.params.engine ?? "auto") === "auto",
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               cache_type_kv: loadKvCacheDtype,
@@ -2377,14 +2407,7 @@ export function useChatModelRuntime() {
               // cleared per-model knobs. An explicit staged config from run-settings still wins.
               loadCustomContextLength =
                 pendingLoadConfig?.customContextLength ?? null;
-              loadSelectedGpuIds =
-                pendingLoadConfig?.selectedGpuIds !== undefined
-                  ? reconcilePersistedGpuIds(
-                      pendingLoadConfig.selectedGpuIds,
-                      pendingLoadConfig.selectedGpuIndexKind,
-                      targetIsDiffusion,
-                    )
-                  : null;
+              loadSelectedGpuIds = stagedGpuIds;
               loadGpuLayers = pendingLoadConfig?.gpuLayers ?? GPU_LAYERS_AUTO;
               loadNCpuMoe = pendingLoadConfig?.nCpuMoe ?? 0;
               loadSplitRatio = null;
@@ -2454,11 +2477,14 @@ export function useChatModelRuntime() {
 
             const loadResponse = await loadModel({
               model_path: loadPath,
+              engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
+              engine_parallelism: stateBeforeUnload.params.engineParallelism ?? "tensor",
+              engine: isGguf ? "auto" : (stateBeforeUnload.params.engine ?? "auto"),
               load_request_id: loadRun.requestId,
               nativePathLease: loadNativePathLease,
               hf_token: hfToken,
               max_seq_length: loadMaxSeqLength,
-              load_in_4bit: true,
+              load_in_4bit: (stateBeforeUnload.params.engine ?? "auto") === "auto",
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: trustRemoteCode,
@@ -2780,6 +2806,11 @@ export function useChatModelRuntime() {
               (loadResponse.is_gguf || isGguf || ggufVariant) &&
                 !isExternalModelId(modelId),
             );
+            useChatRuntimeStore.setState({
+              loadedEngine: loadResponse.engine ?? "auto",
+              loadedEnginePrecision: loadResponse.engine_precision ?? "auto",
+              loadedEngineParallelism: loadResponse.engine_parallelism ?? "tensor",
+            });
             // Remembered so auto-load re-picks what the user ran, not the smallest. Native file-picker paths
             // need a signed, expiring lease, so they stay out.
             const indexedLocalPick =
@@ -2827,10 +2858,13 @@ export function useChatModelRuntime() {
                 const rollbackResponse = await loadModel({
                   // The pin it loaded from: without it this retries the ref that needed pinning.
                   model_path: previousActiveLoadId || previousCheckpoint,
+                  engine: stateBeforeUnload.loadedEngine,
+                  engine_precision: stateBeforeUnload.loadedEnginePrecision,
+                  engine_parallelism: stateBeforeUnload.loadedEngineParallelism,
                   nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,
-                  load_in_4bit: true,
+                  load_in_4bit: stateBeforeUnload.loadedEngine === "auto",
                   is_lora: previousIsLora,
                   gguf_variant: previousVariant,
                   trust_remote_code:
@@ -3059,7 +3093,7 @@ export function useChatModelRuntime() {
   // backend re-fetches a blob it judged unsafe to resume. MOVEMENT is the only proof accepted,
   // since bytes below the expected total is the ordinary state of a partial revision.
         const watchForCacheMiss =
-          isDownloaded && !isLocal && nativePathToken == null && !isOllamaModelId(modelId);
+          !managedLoad && isDownloaded && !isLocal && nativePathToken == null && !isOllamaModelId(modelId);
         const cacheMissDescription = [
           currentCheckpoint ? "Switching models." : null,
           extraLoadingDescription ?? null,
@@ -3235,6 +3269,19 @@ export function useChatModelRuntime() {
             if (prog.phase === "ready") {
               // Loaded. The chat flow will flip loadingModelRef shortly; just stop polling.
               if (progressInterval) clearInterval(progressInterval);
+              return;
+            }
+            if (managedLoad && prog.bytes_total <= 0) {
+              const label = prog.phase === "warming_up"
+                ? "Warming up inference kernels. The first load can take several minutes."
+                : prog.phase === "loading_weights"
+                  ? "Loading model weights into GPU memory."
+                  : "Starting the inference engine and preparing model files.";
+              if (loadToastDismissedRef.current) {
+                setLoadProgress({ percent: 0, label, phase: "starting" });
+              } else {
+                toast(null, { id: toastId, ...modelLoadToastOptions(renderLoadDescription("Starting model...", label)) });
+              }
               return;
             }
             if (prog.bytes_total <= 0) return; // nothing useful to render

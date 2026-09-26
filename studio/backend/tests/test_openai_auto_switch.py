@@ -7147,6 +7147,26 @@ def test_model_override_load_kwargs_gates_gpu_placement_on_gguf():
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
 
 
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("mode", ["tensor", "pipeline", "data"])
+def test_optional_engine_override_preserves_precision_and_gpu_order(engine, mode):
+    kwargs = settings.model_override_load_kwargs(
+        {
+            "engine": engine,
+            "engine_precision": "int4",
+            "engine_parallelism": mode,
+            "gpu_ids": [1, 0],
+        },
+        is_gguf = False,
+    )
+    request = LoadRequest(model_path = "unsloth/Qwen2.5-0.5B-Instruct", **kwargs)
+    assert request.engine == engine
+    assert request.engine_precision == "int4"
+    assert request.engine_parallelism == mode
+    assert request.gpu_ids == [1, 0]
+    assert request.load_in_4bit is False
+
+
 def test_a_carried_ctx_flag_cannot_outrank_a_freshly_saved_context(monkeypatch):
     # The settings page has no control for pass-through flags, so a save carries over the
     # ones already stored while writing the field the user just edited, leaving one entry
@@ -7245,6 +7265,19 @@ def test_a_saved_ctx_flag_sets_only_the_context_fields_sent(
         key: entry[key] for key in ("max_seq_length", "custom_context_length") if key in entry
     }
     assert stored == expected
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_context_save_preserves_managed_engine_settings(monkeypatch, engine):
+    _mock_override_store(monkeypatch)
+    model = "unsloth/model"
+    _put(model, engine = engine, engine_parallelism = "pipeline", engine_precision = "fp8")
+    saved = _put(model, llama_extra_args = ["-c", "65536"], custom_context_length = 4096)
+    entry = saved.overrides[model]
+    assert entry["custom_context_length"] == 65536
+    assert entry["engine"] == engine
+    assert entry["engine_parallelism"] == "pipeline"
+    assert entry["engine_precision"] == "fp8"
 
 
 def test_a_fill_keeps_the_sent_context_when_it_does_not_store_the_flag(monkeypatch):
@@ -11738,3 +11771,64 @@ def test_preset_reasoning_budget_rejects_booleans():
     with pytest.raises(ValueError, match = "Expected a number, got a boolean"):
         ChatPresetLoadConfig(reasoningBudget = True)
     assert ChatPresetLoadConfig(reasoningBudget = 0).reasoningBudget == 0
+
+
+@pytest.mark.parametrize(
+    "image_preflight",
+    [{"b64": None, "multiple": True}, {"b64": None, "multiple": False, "remote": True}],
+    ids = ["multiple images", "remote url"],
+)
+def test_a_saved_managed_engine_target_skips_the_default_image_preflight(
+    monkeypatch, image_preflight
+):
+    from utils import openai_auto_switch_settings as settings
+
+    llama = _FakeBackend("org/A-GGUF")
+
+    class _FakeOrchestrator:
+        active_model_name = None
+        models: dict = {}
+
+    orchestrator = _FakeOrchestrator()
+    calls = []
+
+    async def _load(request, *_args, **_kwargs):
+        calls.append(request)
+        orchestrator.active_model_name = request.model_path
+
+    _wire_on(
+        monkeypatch,
+        resolves_to = ("/srv/models/Vision", None, "org/Vision"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
+    monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *_a: True)
+    monkeypatch.setattr(
+        settings,
+        "resolve_override_for_load",
+        lambda *_a: ("org/Vision", {"engine": "vllm", "engine_precision": "auto"}),
+    )
+
+    try:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/Vision",
+                object(),
+                "tester",
+                require_vision = True,
+                image_preflight = image_preflight,
+            )
+        )
+    except HTTPException as exc:
+        assert exc.status_code != 400 or "image" not in str(exc.detail).lower(), exc.detail
+    assert calls and calls[0].engine == "vllm"
+
+
+def test_the_legacy_bare_delete_clears_a_managed_engine_choice(override_store):
+    settings.set_model_override("org/Model", engine = "vllm", engine_precision = "int4")
+
+    _put("org/Model")
+    assert settings.get_model_override("org/Model") == {}

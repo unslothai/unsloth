@@ -14,9 +14,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
-import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import { ApiProviderLogo } from "@/features/chat";
-import { normalizeGgufVisionCapability } from "@/features/chat/utils/model-vision-capability";
 import {
   type ScanFolderInfo,
   addScanFolder,
@@ -42,6 +40,7 @@ import type {
   LocalModelInfo,
 } from "@/features/chat";
 import type { ProviderApiType } from "@/features/chat/api/providers-api";
+import { normalizeGgufVisionCapability } from "@/features/chat/utils/model-vision-capability";
 import {
   DotTag,
   type HubOption,
@@ -65,13 +64,14 @@ import {
   isHiddenModelId,
   jobKeyOf,
   partialSetFromRows,
+  pendingDrafterPresentation,
   scanFolderStatusCopy,
   useDownloadManagerStore,
   useHfTokenStore,
   useOnlineStatus,
-  pendingDrafterPresentation,
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
+import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import {
   type NpuModel,
   type NpuPickerSource,
@@ -114,8 +114,8 @@ import {
   FlimSlateIcon,
   Folder02Icon,
   HelpCircleIcon,
-  InformationCircleIcon,
   Image03Icon,
+  InformationCircleIcon,
   PinIcon,
   RemoveCircleIcon,
   Search01Icon,
@@ -144,13 +144,13 @@ import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventor
 import {
   type CommunityModelPolicy,
   allowedHiddenModelIdMatches,
-  audioPipelineTagFor,
   audioPickIsRoutable,
-  localAudioRowIsUndecodableGguf,
+  audioPipelineTagFor,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
+  localAudioRowIsUndecodableGguf,
   macTtsHubRowIsRunnable,
   nativeAudioCheckpointIsLoadable,
   shouldDiscoverCommunityModels,
@@ -165,6 +165,8 @@ import {
 } from "./connected-model-meta";
 import { ConnectedModelSettingsDialog } from "./connected-model-settings-dialog";
 import { FolderBrowser } from "./folder-browser";
+import { curatedArtifactIsOfferable } from "./host-artifact-policy";
+import { localGgufKindFor } from "./local-gguf-policy";
 import {
   type ModelCapabilities,
   detectCapabilities,
@@ -181,11 +183,9 @@ import {
   curatedRowLabelFor,
   curatedSizeBytesFor,
   curatedTotalParamsFor,
-  recommendedQuantForDevice,
   groupForRepoId,
+  recommendedQuantForDevice,
 } from "./model-catalog";
-import { curatedArtifactIsOfferable } from "./host-artifact-policy";
-import { localGgufKindFor } from "./local-gguf-policy";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
@@ -202,9 +202,11 @@ import {
   pinnedQuantEntries,
   usePinnedModelsStore,
 } from "./pinned-models";
-import { usePinnedRowDrag, type PinnedDropEdge } from "./use-pinned-row-drag";
 import {
+  type CuratedBudget,
   type FormatFilter,
+  curatedBudget,
+  curatedBudgetText,
   estimateQuantBytes,
   hfModelFitsDevice,
   isMlxId,
@@ -216,9 +218,6 @@ import {
   paramsFromId,
   searchRowFitsDevice,
   searchableRecommendedIds,
-  type CuratedBudget,
-  curatedBudget,
-  curatedBudgetText,
 } from "./recommended-fit";
 import {
   ggufVariantsMatchForPicker,
@@ -245,10 +244,11 @@ import type {
   DeletedModelRef,
   ExternalModelOption,
   LoraModelOption,
-  ModelOption,
   ModelDownloadFootprintResolver,
+  ModelOption,
   ModelSelectorChangeMeta,
 } from "./types";
+import { type PinnedDropEdge, usePinnedRowDrag } from "./use-pinned-row-drag";
 import { describeVariantListingError } from "./variant-listing-error";
 import {
   ggufQuantChipLabel,
@@ -5596,6 +5596,29 @@ export function HubModelPicker({
       selected && "bg-sidebar-accent",
     );
 
+  const renderHubModelRow = (id: string, row: ReactNode) => {
+    if (isKnownGgufRepo(id) || !onConfigure) return row;
+    return (
+      <div className={downloadedRowShellClassName(isValueRow(id))}>
+        <div className="min-w-0 flex-1">{row}</div>
+        <span className={ROW_ACTIONS_CLASS}>
+          <ModelLoadSettingsAction
+            ariaLabel={`Inference settings for ${id}`}
+            onConfigure={() =>
+              onConfigure(cachedIdFor(id) ?? id, {
+                source: "hub",
+                isLora: false,
+                isGguf: false,
+                isDownloaded: cachedIdFor(id) !== null,
+                pipelineTag: pipelineTagById.get(id) ?? null,
+              })
+            }
+          />
+        </span>
+      </div>
+    );
+  };
+
   // A draggable Pinned row: faded while carried, lined where it would land.
   const renderPinnedDragRow = (
     drag: ReturnType<typeof usePinnedRowDrag>,
@@ -7546,56 +7569,58 @@ export function HubModelPicker({
                         const optionKey = makeModelOptionKey("recommended", id);
                         return (
                           <div key={id}>
-                            <ModelRow
-                              label={curatedRow(id).name}
-                              tags={curatedRow(id).tags}
-                              hubUrl={hubRepoUrl(id)}
-                              alignMeta="hub"
-                              showSize={hubRowsShowSize}
-                              // A community row without its owner reads as an unsloth upload, and two
-                              // publishers would collide.
-                              hideOwner={isUnslothOwned(id)}
-                              downloaded={cachedIdFor(id) !== null}
-                              partial={isPartialRow(id)}
-                              partialResumable={partialResumableSet.has(
-                                id.toLowerCase(),
-                              )}
-                              capabilities={capsById.get(id)}
-                              meta={
-                                info?.meta ??
-                                (isG ? "GGUF" : extractParamLabel(id))
-                              }
-                              selected={isValueRow(id)}
-                              loaded={isRuntimeLoadedModel(
-                                loadedModelId,
-                                activeGgufVariant,
-                                id,
-                                isG ? "required" : "none",
-                                aliasesOf(id),
-                              )}
-                              optionProps={hubModelList.getOptionProps(
-                                optionKey,
-                                isValueRow(id),
-                              )}
-                              onClick={() => {
-                                if (isG) {
-                                  setExpandedGguf((prev) =>
-                                    prev === id ? null : id,
-                                  );
-                                } else {
-                                  handleModelClick(id);
+                            {renderHubModelRow(
+                              id,
+                              <ModelRow
+                                label={curatedRow(id).name}
+                                tags={curatedRow(id).tags}
+                                hubUrl={hubRepoUrl(id)}
+                                alignMeta="hub"
+                                showSize={hubRowsShowSize}
+                                // Without the owner a community row reads as an unsloth upload.
+                                hideOwner={isUnslothOwned(id)}
+                                downloaded={cachedIdFor(id) !== null}
+                                partial={isPartialRow(id)}
+                                partialResumable={partialResumableSet.has(
+                                  id.toLowerCase(),
+                                )}
+                                capabilities={capsById.get(id)}
+                                meta={
+                                  info?.meta ??
+                                  (isG ? "GGUF" : extractParamLabel(id))
                                 }
-                              }}
-                              vramStatus={info?.status ?? null}
-                              vramEst={info?.est}
-                              vramBudget={info?.budget}
-                              gpuGb={isG ? expanderGpuGb : expanderSystemGpuGb}
-                              onArrowDownIntoChildren={
-                                expandedGguf === id
-                                  ? () => focusFirstChildOption(optionKey)
-                                  : undefined
-                              }
-                            />
+                                selected={isValueRow(id)}
+                                loaded={isRuntimeLoadedModel(
+                                  loadedModelId,
+                                  activeGgufVariant,
+                                  id,
+                                  isG ? "required" : "none",
+                                  aliasesOf(id),
+                                )}
+                                optionProps={hubModelList.getOptionProps(
+                                  optionKey,
+                                  isValueRow(id),
+                                )}
+                                onClick={() => {
+                                  if (isG) {
+                                    setExpandedGguf((prev) =>
+                                      prev === id ? null : id,
+                                    );
+                                  } else {
+                                    handleModelClick(id);
+                                  }
+                                }}
+                                vramStatus={info?.status ?? null}
+                                vramEst={info?.est}
+                                vramBudget={info?.budget}
+                                gpuGb={isG ? expanderGpuGb : expanderSystemGpuGb}
+                                onArrowDownIntoChildren={
+                                  expandedGguf === id
+                                    ? () => focusFirstChildOption(optionKey)
+                                    : undefined
+                                }
+                              />,
+                            )}
                             {expandedGguf === id && (
                               <GgufVariantExpander
                                 diffusionLoad={diffusionLoad}
@@ -7661,72 +7686,73 @@ export function HubModelPicker({
                       );
                       return (
                         <div key={id}>
-                          <ModelRow
-                            label={curatedRow(id).name}
-                            tags={curatedRow(id).tags}
-                            hubUrl={hubRepoUrl(id)}
-                            alignMeta="hub"
-                            showSize={hubRowsShowSize}
-                            downloaded={cachedIdFor(id) !== null}
-                            partial={isPartialRow(id)}
-                            partialResumable={partialResumableSet.has(
-                              id.toLowerCase(),
-                            )}
-                            capabilities={capsById.get(id)}
-                            // Same meta the unfiltered Recommended row shows, so a model keeps its size chip when reached by
-                            // typing.
-                            meta={
-                              isKnownGgufRepo(id)
-                                ? (recommendedMeta.get(id)?.meta ?? "GGUF")
-                                : (vram?.detail ?? extractParamLabel(id))
-                            }
-                            selected={isValueRow(id)}
-                            loaded={isRuntimeLoadedModel(
-                              loadedModelId,
-                              activeGgufVariant,
-                              id,
-                              isKnownGgufRepo(id) ? "required" : "none",
-                              aliasesOf(id),
-                            )}
-                            optionProps={hubModelList.getOptionProps(
-                              optionKey,
-                              isValueRow(id),
-                            )}
-                            onClick={() => {
-                              if (isKnownGgufRepo(id)) {
-                                setExpandedGguf((prev) =>
-                                  prev === id ? null : id,
-                                );
-                              } else {
-                                handleModelClick(id);
+                          {renderHubModelRow(
+                            id,
+                            <ModelRow
+                              label={curatedRow(id).name}
+                              tags={curatedRow(id).tags}
+                              hubUrl={hubRepoUrl(id)}
+                              alignMeta="hub"
+                              showSize={hubRowsShowSize}
+                              downloaded={cachedIdFor(id) !== null}
+                              partial={isPartialRow(id)}
+                              partialResumable={partialResumableSet.has(
+                                id.toLowerCase(),
+                              )}
+                              capabilities={capsById.get(id)}
+                              meta={
+                                isKnownGgufRepo(id)
+                                  ? (recommendedMeta.get(id)?.meta ?? "GGUF")
+                                  : (vram?.detail ?? extractParamLabel(id))
                               }
-                            }}
-                            vramStatus={
-                              isKnownGgufRepo(id)
-                                ? null
-                                : (vram?.status ?? null)
-                            }
-                            vramEst={
-                              isKnownGgufRepo(id) ? undefined : vram?.est
-                            }
-                            vramBudget={
-                              isKnownGgufRepo(id) ? undefined : vram?.budget
-                            }
-                            gpuGb={
-                              isKnownGgufRepo(id)
-                                ? expanderGpuGb
-                                : expanderSystemGpuGb
-                            }
-                            onArrowDownIntoChildren={
-                              expandedGguf === id
-                                ? () => {
-                                    const focused =
-                                      focusFirstChildOption(optionKey);
-                                    return focused;
-                                  }
-                                : undefined
-                            }
-                          />
+                              selected={isValueRow(id)}
+                              loaded={isRuntimeLoadedModel(
+                                loadedModelId,
+                                activeGgufVariant,
+                                id,
+                                isKnownGgufRepo(id) ? "required" : "none",
+                                aliasesOf(id),
+                              )}
+                              optionProps={hubModelList.getOptionProps(
+                                optionKey,
+                                isValueRow(id),
+                              )}
+                              onClick={() => {
+                                if (isKnownGgufRepo(id)) {
+                                  setExpandedGguf((prev) =>
+                                    prev === id ? null : id,
+                                  );
+                                } else {
+                                  handleModelClick(id);
+                                }
+                              }}
+                              vramStatus={
+                                isKnownGgufRepo(id)
+                                  ? null
+                                  : (vram?.status ?? null)
+                              }
+                              vramEst={
+                                isKnownGgufRepo(id) ? undefined : vram?.est
+                              }
+                              vramBudget={
+                                isKnownGgufRepo(id) ? undefined : vram?.budget
+                              }
+                              gpuGb={
+                                isKnownGgufRepo(id)
+                                  ? expanderGpuGb
+                                  : expanderSystemGpuGb
+                              }
+                              onArrowDownIntoChildren={
+                                expandedGguf === id
+                                  ? () => {
+                                      const focused =
+                                        focusFirstChildOption(optionKey);
+                                      return focused;
+                                    }
+                                  : undefined
+                              }
+                            />,
+                          )}
                           {expandedGguf === id && (
                             <GgufVariantExpander
                               diffusionLoad={diffusionLoad}
@@ -7787,71 +7813,71 @@ export function HubModelPicker({
                         const optionKey = makeModelOptionKey("search-hf", id);
                         return (
                           <div key={id}>
-                            <ModelRow
-                              label={curatedRow(id).name}
-                              tags={curatedRow(id).tags}
-                              hubUrl={hubRepoUrl(id)}
-                              alignMeta="hub"
-                              showSize={hubRowsShowSize}
-                              // Typed results are Hub rows like any other, so a repo left
-                              // half-downloaded is marked here too. Without it the row reads
-                              // as never fetched while the click resumes a download.
-                              partial={isPartialRow(id)}
-                              partialResumable={partialResumableSet.has(
-                                id.toLowerCase(),
-                              )}
-                              capabilities={capsById.get(id)}
-                              meta={
-                                isSearchGguf
-                                  ? "GGUF"
-                                  : [
-                                      metricsById.get(id) ??
-                                        extractParamLabel(id),
-                                      isMlxId(id) ? "MLX" : "Safetensors",
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" · ")
-                              }
-                              selected={isValueRow(id)}
-                              loaded={isRuntimeLoadedModel(
-                                loadedModelId,
-                                activeGgufVariant,
-                                id,
-                                isSearchGguf ? "required" : "none",
-                                aliasesOf(id),
-                              )}
-                              optionProps={hubModelList.getOptionProps(
-                                optionKey,
-                                isValueRow(id),
-                              )}
-                              onClick={() => {
-                                if (isSearchGguf) {
-                                  setExpandedGguf((prev) =>
-                                    prev === id ? null : id,
-                                  );
-                                } else {
-                                  handleModelClick(id);
+                            {renderHubModelRow(
+                              id,
+                              <ModelRow
+                                label={curatedRow(id).name}
+                                tags={curatedRow(id).tags}
+                                hubUrl={hubRepoUrl(id)}
+                                alignMeta="hub"
+                                showSize={hubRowsShowSize}
+                                partial={isPartialRow(id)}
+                                partialResumable={partialResumableSet.has(
+                                  id.toLowerCase(),
+                                )}
+                                capabilities={capsById.get(id)}
+                                meta={
+                                  isSearchGguf
+                                    ? "GGUF"
+                                    : [
+                                        metricsById.get(id) ??
+                                          extractParamLabel(id),
+                                        isMlxId(id) ? "MLX" : "Safetensors",
+                                      ]
+                                        .filter(Boolean)
+                                        .join(" · ")
                                 }
-                              }}
-                              vramStatus={
-                                isSearchGguf ? null : (vram?.status ?? null)
-                              }
-                              vramEst={isSearchGguf ? undefined : vram?.est}
-                              gpuGb={
-                                isSearchGguf
-                                  ? expanderGpuGb
-                                  : expanderSystemGpuGb
-                              }
-                              onArrowDownIntoChildren={
-                                expandedGguf === id
-                                  ? () => {
-                                      const focused =
-                                        focusFirstChildOption(optionKey);
-                                      return focused;
-                                    }
-                                  : undefined
-                              }
-                            />
+                                selected={isValueRow(id)}
+                                loaded={isRuntimeLoadedModel(
+                                  loadedModelId,
+                                  activeGgufVariant,
+                                  id,
+                                  isSearchGguf ? "required" : "none",
+                                  aliasesOf(id),
+                                )}
+                                optionProps={hubModelList.getOptionProps(
+                                  optionKey,
+                                  isValueRow(id),
+                                )}
+                                onClick={() => {
+                                  if (isSearchGguf) {
+                                    setExpandedGguf((prev) =>
+                                      prev === id ? null : id,
+                                    );
+                                  } else {
+                                    handleModelClick(id);
+                                  }
+                                }}
+                                vramStatus={
+                                  isSearchGguf ? null : (vram?.status ?? null)
+                                }
+                                vramEst={isSearchGguf ? undefined : vram?.est}
+                                gpuGb={
+                                  isSearchGguf
+                                    ? expanderGpuGb
+                                    : expanderSystemGpuGb
+                                }
+                                onArrowDownIntoChildren={
+                                  expandedGguf === id
+                                    ? () => {
+                                        const focused =
+                                          focusFirstChildOption(optionKey);
+                                        return focused;
+                                      }
+                                    : undefined
+                                }
+                              />,
+                            )}
                             {expandedGguf === id && (
                               <GgufVariantExpander
                                 diffusionLoad={diffusionLoad}

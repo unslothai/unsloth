@@ -1771,7 +1771,9 @@ class ExternalProviderClient:
 
                 # Manual __anext__ (not `async for`) so we can close the response BEFORE lines_gen, avoiding the
                 # httpcore 1.0 GeneratorExit -> RuntimeError path on Python 3.13.
-                lines_gen = response.aiter_lines().__aiter__()
+                from .http_stream import closing_response_lines
+
+                lines_gen = closing_response_lines(response)
                 # Diagnostic counters for the OAI-compat path; surface OpenRouter mid-stream errors otherwise
                 # invisible server-side.
                 event_counts: dict[str, int] = {}

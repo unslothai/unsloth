@@ -92,3 +92,39 @@ test("a hidden tab's throttled samples never become a published rate", () => {
     Date.now = realNow;
   }
 });
+
+test("package installation activity stays indeterminate and keeps cancellation", async () => {
+  const { updateExternalActivity, cancelExternalJob, finishExternalJob } =
+    await import("../src/features/hub/download-manager/external-jobs.ts");
+  Object.assign(globalThis.window, {
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+  });
+  let cancelled = false;
+  const key = "engine:vllm";
+  startExternalJob({
+    key,
+    repoId: "vLLM",
+    variant: "0.20.0",
+    expectedBytes: 0,
+    cancel: () => {
+      cancelled = true;
+    },
+  });
+  updateExternalActivity(key, "Downloading torch (900 MiB)", [
+    "Downloading torch (900 MiB)",
+  ]);
+  const job = getState().jobs[key];
+  assert.equal(job.activity, "Downloading torch (900 MiB)");
+  assert.deepEqual(job.details, ["Downloading torch (900 MiB)"]);
+  assert.equal(job.expectedBytes, 0);
+  assert.equal(job.fraction, 0);
+  assert.equal(job.etaSeconds, 0);
+  await cancelExternalJob(key);
+  assert.equal(cancelled, true);
+  assert.equal(getState().jobs[key].state, "cancelling");
+  finishExternalJob(key, "cancelled");
+  updateExternalActivity(key, "stale update", []);
+  assert.equal(getState().jobs[key].state, "cancelled");
+  assert.notEqual(getState().jobs[key].activity, "stale update");
+});

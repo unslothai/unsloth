@@ -317,6 +317,16 @@ export function useInferenceGpuInfo(): GpuInfo {
   return useGpuInfoSource("inference_gpu");
 }
 
+export function isEngineGpuDevice(device: SystemGpuDevice): boolean {
+  return device.indexKind === "physical" && /nvidia/i.test(device.name);
+}
+
+/** Where the backend puts an optional engine given no GPUs: the first one Studio sees. */
+export function defaultEngineGpuIds(): number[] {
+  const first = toGpuDevices(getCachedSystemInfo()).find(isEngineGpuDevice);
+  return first ? [first.index] : [0];
+}
+
 /** All backend-visible GPUs (index, name, total VRAM); shares the same fetch. */
 export function useGpuDevices(forDiffusion = false): SystemGpuDevice[] {
   const cachedSystem = getCachedSystemInfo();

@@ -19,6 +19,9 @@ export interface ActiveModelConfigState {
 export function useActiveModelConfig(): ActiveModelConfigState {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint) || null;
   const maxSeqLength = useChatRuntimeStore((s) => s.params.maxSeqLength);
+  const engine = useChatRuntimeStore((s) => s.params.engine ?? "auto");
+  const engineParallelism = useChatRuntimeStore((s) => s.params.engineParallelism ?? "tensor");
+  const enginePrecision = useChatRuntimeStore((s) => s.params.enginePrecision ?? "auto");
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
@@ -87,6 +90,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       return null;
     }
     const base: PerModelConfig = {
+      engine,
+      enginePrecision,
+      engineParallelism,
       customContextLength: customContextLength ?? null,
       // A self-sizing backend carries no pin here, exactly as the GGUF path does: this
       // is the runtime's resolved length, and reading it back as the user's choice would
@@ -110,7 +116,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       chatTemplateOverride: chatTemplateOverride ?? null,
     };
     if (!isGguf) {
-      return base;
+      return engine === "vllm" || engine === "sglang"
+        ? { ...base, selectedGpuIds, selectedGpuIndexKind }
+        : base;
     }
     return {
       ...base,
@@ -125,6 +133,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     isGguf,
     isMlx,
     maxSeqLength,
+    engine,
+    enginePrecision,
+    engineParallelism,
     customContextLength,
     kvCacheDtype,
     effectiveMlxKvBits,
