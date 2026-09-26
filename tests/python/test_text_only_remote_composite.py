@@ -206,8 +206,6 @@ def _load_parent_config(repo):
     return transformers.AutoConfig.from_pretrained(repo, trust_remote_code = True)
 
 
-
-
 def test_prefix_inference_finds_single_full_cover():
     ns = _ns()
     expected = ["model.embed_tokens.weight", "model.layers.0.w", "lm_head.weight"]
@@ -249,8 +247,6 @@ def test_prefix_inference_gemma_style_split_layout_is_rejected():
         "lm_head.weight",
     }
     assert ns["_infer_text_submodel_prefix"](expected, ckpt) is None
-
-
 
 
 @needs_tf5
@@ -348,8 +344,6 @@ def test_hardcoded_flash_attention_does_not_block_the_meta_build(tmp_path):
     assert parent.llm_config._attn_implementation == "flash_attention_2"
 
 
-
-
 @needs_tf5
 def test_plan_loads_only_the_language_model_with_real_weights(tmp_path):
     ns = _ns()
@@ -400,8 +394,6 @@ def test_tied_embeddings_do_not_need_a_stored_head(tmp_path):
     assert plan is not None
 
 
-
-
 def test_loader_and_vision_call_the_remote_branch_only_after_the_family_gate():
     loader = LOADER_PATH.read_text(encoding = "utf-8")
     vision = VISION_PATH.read_text(encoding = "utf-8")
@@ -433,8 +425,6 @@ def test_trusted_load_records_the_commit_its_repo_code_ran_at():
     assert i_trust < i_stamp
     stamp = vision[i_stamp : vision.index("\n        )\n", i_stamp)]
     assert "if trust_remote_code" in stamp and '"_commit_hash"' in stamp
-
-
 
 
 def _cache_as_hub_repo(
@@ -510,8 +500,6 @@ def test_cached_single_file_checkpoint_is_read_offline(tmp_path, monkeypatch):
     assert ns["_checkpoint_weight_names"]("fake-org/absent", local_files_only = True) is None
 
 
-
-
 @needs_tf5
 def test_adapter_trained_on_the_wrapper_keeps_the_full_model(tmp_path):
     # Tensors under language_model. would not reach the standalone decoder.
@@ -578,8 +566,6 @@ def test_loader_checks_the_adapter_before_taking_the_text_only_branch():
     assert i_plan < i_gate < i_take
     gate = loader[loader.rindex("if (", 0, i_gate) : i_take]
     assert "and is_peft" in gate and "old_model_name" in gate and "remote_text_only = None" in gate
-
-
 
 
 @needs_tf5
@@ -839,8 +825,6 @@ def test_loader_and_vision_drop_the_plan_mapping_after_the_load():
     )
 
 
-
-
 def _convert_to_sharded_bin(repo):
     from safetensors.torch import load_file
 
@@ -887,8 +871,6 @@ def test_unsharded_bin_is_never_unpickled_to_probe(tmp_path, monkeypatch):
     (repo / "pytorch_model-00001-of-00001.bin").rename(repo / "pytorch_model.bin")
     monkeypatch.setattr(torch, "load", lambda *a, **k: pytest.fail("torch.load called"))
     assert ns["_checkpoint_weight_names"](str(repo)) is None
-
-
 
 
 @needs_tf5
@@ -1045,8 +1027,6 @@ def test_nested_own_repo_code_still_takes_the_plan(tmp_path):
     assert not info["missing_keys"]
 
 
-
-
 @needs_tf5
 def test_subfolder_checkpoint_is_probed_where_the_load_reads_it(tmp_path, monkeypatch):
     import shutil
@@ -1092,8 +1072,6 @@ def test_loader_and_vision_forward_subfolder_to_the_plan():
         assert 'subfolder = kwargs.get("subfolder"),' in src[i : j + 1], path.name
 
 
-
-
 @needs_tf5
 def test_module_keyed_device_map_keeps_the_full_composite(tmp_path):
     # A composite device map names wrapper modules; from_pretrained refuses it on the standalone decoder.
@@ -1132,8 +1110,6 @@ def test_loader_and_vision_forward_device_map_to_the_plan():
                 break
             j += 1
         assert "device_map = device_map," in src[i : j + 1], path.name
-
-
 
 
 def _as_variant(repo, variant, layout):
@@ -1233,8 +1209,6 @@ def test_loader_and_vision_forward_variant_and_cache_dir_to_the_plan():
             assert arg in src[i : j + 1], (path.name, arg)
 
 
-
-
 @needs_tf5
 def test_nested_text_class_is_resolved_at_code_revision(tmp_path, monkeypatch):
     # Weights from main, code from code_revision; main's modeling file lacks the nested text class.
@@ -1327,8 +1301,6 @@ def test_vision_stamp_uses_the_code_revision_commit():
     stamp = vision[i_stamp : vision.index("\n        )\n", i_stamp)]
     assert "_trusted_remote_code_commit(" in stamp
     assert 'code_revision = kwargs.get("code_revision"),' in stamp
-
-
 
 
 @needs_tf5
