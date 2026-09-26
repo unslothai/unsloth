@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regional compile for Diffusers transformers whose class leaves ``_repeated_blocks`` empty.
-
-``ModelMixin.compile_repeated_blocks`` raises on an empty list, so Lumina-2 and HiDream-I1 ran eager. Their blocks are
-the ``_no_split_modules`` classes stacked in an ``nn.ModuleList``; ``ensure_repeated_blocks`` names them on the
-instance (the class is untouched). Only classes measured to compile without graph breaks are enabled.
-"""
+"""Names the repeated blocks for Diffusers transformers that declare none (``compile_repeated_blocks`` raises on an
+empty list), on the instance only. Only classes verified to compile without graph breaks are listed."""
 
 from __future__ import annotations
 
@@ -63,9 +59,7 @@ def ensure_repeated_blocks(model: Any) -> tuple[str, ...]:
 
 
 def _moe_infer_dense(self: Any, x: Any, flat_expert_indices: Any, flat_expert_weights: Any) -> Any:
-    # Every expert over every token, kept only where the router picked it: the released loop's products summed in the
-    # same expert order, with no per-expert count read on the host. `where`, not a zero weight, so an unpicked token
-    # that overflows in fp16 adds 0 instead of 0 * inf = NaN.
+    # `where`, not a zero weight: an unpicked expert that overflows in fp16 must add 0, not 0 * inf = NaN.
     import torch
 
     k = self.num_activated_experts
@@ -81,11 +75,8 @@ def _moe_infer_dense(self: Any, x: Any, flat_expert_indices: Any, flat_expert_we
 
 
 def install_traceable_moe(model: Any) -> int:
-    """Replace HiDream's routed-expert loop on each MoE instance of ``model``.
-
-    The released ``moe_infer`` reads per-expert token counts on the host (``bincount().cpu()``), a graph break in every
-    block. Dense experts cost 2x the routed FLOPs (top-2 of 4) but no host sync or gather, and inductor fuses the
-    weighting: B200 1024px blocks ran 1.33x (bf16) / 4.1x (int8) faster than the released loop in eager."""
+    """Replace HiDream's routed-expert loop, whose host read of per-expert counts (``bincount().cpu()``) breaks the
+    graph in every block. Dense experts cost 2x the routed FLOPs (top-2 of 4) but need no host sync or gather."""
     patched = 0
     for sub in model.modules():
         if type(sub).__name__ != "MOEFeedForwardSwiGLU":

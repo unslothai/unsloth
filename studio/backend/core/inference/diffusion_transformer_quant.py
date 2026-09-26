@@ -325,20 +325,16 @@ _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {
 }
 
 
-# Families whose AUTO precision stays bf16 while bf16 fits on the card, measured with both sides regionally compiled
-# (50 steps, 1024px, 8 prompts, LPIPS vs bf16 eager). INT8 bought at most ~5% there and failed the default-on bar
-# (mean LPIPS <= 0.05), so it is only picked when bf16 would offload, where it is the faster fit. Explicit picks and
-# an operator's own checkpoint are honored as always.
+# AUTO keeps bf16 while it fits for these (measured with both sides compiled: INT8 was at most ~5% faster and failed the
+# default-on LPIPS bar); when bf16 would offload, INT8 is still picked.
 _FAMILY_AUTO_BF16_WHEN_RESIDENT: dict[str, str] = {
-    # B200: bf16 1.80 s vs int8 1.86 s per image, LPIPS 0.047 mean / 0.112 max. L4 (offloaded bf16): int8 26 s vs 36 s.
     "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail",
-    # B200 interleaved forward: bf16 409 ms vs int8 385 ms; LPIPS 0.167 mean / 0.322 max (MoE routing flips).
     "hidream-i1": "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail",
 }
 
 
 def auto_bf16_when_resident_reason(family: Optional[str]) -> Optional[str]:
-    """Why AUTO keeps bf16 for ``family`` when bf16 fits, or None (auto walks the ladder as usual)."""
+    """Why AUTO keeps bf16 for ``family`` when bf16 fits, or None."""
     return _FAMILY_AUTO_BF16_WHEN_RESIDENT.get(str(family or "").strip().lower())
 
 

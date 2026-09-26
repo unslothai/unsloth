@@ -1697,8 +1697,7 @@ def _plan_proves_resident(plan: Any) -> bool:
 
 
 def _auto_keeps_bf16_reason(fam: Any) -> Optional[str]:
-    """Why AUTO would keep bf16 for ``fam`` when bf16 fits, or None. One answer for both deciders (the pre-download
-    seed and the loader), so they cannot disagree about which weights a load uses."""
+    """Why AUTO keeps bf16 for ``fam`` when bf16 fits, or None; the seed and load deciders must both read this."""
     if not family_compiles_regionally(fam):
         return (
             f"'{getattr(fam, 'name', None)}' cannot be regionally compiled (its transformer declares no "
