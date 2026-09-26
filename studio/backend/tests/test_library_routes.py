@@ -631,7 +631,9 @@ def test_an_export_links_to_its_run_only_through_studio_metadata(tmp_path, monke
         (exports / name / "model.gguf").write_bytes(b"x")
         if meta:
             (exports / name / "export_metadata.json").write_text(meta)
-    run_id = lambda name: library._model_run_id(str(exports / name / "model.gguf"), "exported", runs)
+    run_id = lambda name: library._model_run_id(
+        str(exports / name / "model.gguf"), "exported", runs
+    )
     # No metadata: a copied-in folder claims nothing, whatever its name.
     assert run_id("foo-GGUF") is None
     # An older Studio export falls back to its name; a newer one names its checkpoint.

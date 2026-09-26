@@ -895,7 +895,9 @@ class ExportBackend:
             source = self.current_checkpoint
             metadata = {
                 "base_model": base_model,
-                "source_checkpoint": str(Path(source).resolve()) if source and Path(source).exists() else None,
+                "source_checkpoint": str(Path(source).resolve())
+                if source and Path(source).exists()
+                else None,
             }
             metadata_path = os.path.join(save_directory, "export_metadata.json")
             with open(metadata_path, "w", encoding = "utf-8") as f:
