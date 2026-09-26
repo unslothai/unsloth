@@ -1076,6 +1076,7 @@ def test_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(fake_r
 
     assert status["dtype"] == "float32"  # compute dtype is a separate concern
     assert status["gguf_variant"] == "Q8_0"
+    assert status["gguf_filename"] == filename
     assert backend.unload()["gguf_variant"] is None
 
 
@@ -2070,6 +2071,20 @@ def test_load_pipeline_rejects_non_unsloth_repo(fake_runtime):
     backend = DiffusionBackend()
     with pytest.raises(ValueError, match = "unsloth"):
         backend.load_pipeline("randomorg/Z-Image-bnb-4bit", family_override = "z-image")
+
+
+def test_validate_refuses_a_pipeline_pick_of_a_hosted_prequant_repo(fake_runtime):
+    from core.inference.diffusion_families import _FAMILIES, prequant_only_repo_ids
+
+    backend = DiffusionBackend()
+    with pytest.raises(ValueError, match = "Qwen/Qwen-Image-2.1") as excinfo:
+        backend.validate_load_request("unsloth/Qwen-Image-2.1-FP8")
+    message = str(excinfo.value)
+    assert "transformer precision to fp8 or int8" in message
+    assert "text encoder precision to fp8" in message
+    ids = prequant_only_repo_ids()
+    assert "unsloth/qwen-image-2.1-fp8" in ids
+    assert not any(fam.base_repo.lower() in ids for fam in _FAMILIES)
 
 
 def test_load_sdxl_rejects_untrusted_repo(fake_runtime):
@@ -12493,6 +12508,21 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
         failures
     ), "a configured prequant that is not in its repo left the plan calling itself complete"
     assert "prequant artifact missing" in str(failures[0])
+
+
+def test_generate_runs_the_pipeline_through_the_render_thread(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion as diff_mod
+
+    names = []
+
+    def run(name, fn):
+        names.append(name)
+        return fn()
+
+    monkeypatch.setattr(diff_mod.render_thread, "run", run)
+    backend = _loaded_backend(tmp_path)
+    assert len(backend.generate(prompt = "a sloth", steps = 2)["images"]) == 1
+    assert names == ["diffusion"]
 
 
 class _StopAfterInstallGate(Exception):

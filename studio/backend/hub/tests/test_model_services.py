@@ -4070,6 +4070,32 @@ def test_qwen3_asr_gguf_name_hint_is_not_classified_as_chat(monkeypatch, tmp_pat
     assert catalog_classification._gguf_path_task(chat) == "text-generation"
 
 
+def test_a_gguf_with_no_architecture_is_classified_from_its_name(monkeypatch, tmp_path):
+    """``unsloth/Qwen-Image-2.1-GGUF`` files have kv_count 0; a name that says nothing stays None."""
+    from hub.services.models import catalog_classification
+
+    image = tmp_path / "qwen-image-2.1-Q4_K_M.gguf"
+    chat = tmp_path / "Some-Chat-7B-Q4_K_M.gguf"
+    image.write_bytes(b"gguf")
+    chat.write_bytes(b"gguf")
+    monkeypatch.setattr(catalog_classification, "_gguf_architecture", lambda _path: None)
+    monkeypatch.setattr(catalog_classification, "_gguf_family_buildable", lambda _hints: True)
+
+    assert (
+        catalog_classification._gguf_path_task(image, ("unsloth/Qwen-Image-2.1-GGUF",))
+        == "text-to-image"
+    )
+    assert catalog_classification._gguf_path_task(chat) is None
+
+    # H3's conditioner is kv_count 0 too; only the fl2va / ref2va denoisers are video.
+    conditioner = tmp_path / "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+    denoiser = tmp_path / "minimax_h3_fl2va_pruned-Q4_K.gguf"
+    conditioner.write_bytes(b"gguf")
+    denoiser.write_bytes(b"gguf")
+    assert catalog_classification._gguf_path_task(conditioner) is None
+    assert catalog_classification._gguf_path_task(denoiser) == "text-to-video"
+
+
 def test_local_inventory_filters_embedder_configured_by_snapshot_path(monkeypatch, tmp_path):
     from core.rag import config as rag_config
 

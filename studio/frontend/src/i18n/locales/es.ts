@@ -92,6 +92,10 @@ export const es = {
     rateLimitedTitle: "Se alcanzó el límite de solicitudes de Hugging Face",
     rateLimitedBody:
       "Espera un momento y vuelve a intentar la búsqueda de {noun}.",
+    modelScope: "ModelScope",
+    useModelScope: "Usar ModelScope",
+    useModelScopeHint: "Busca y descarga desde ModelScope en su lugar. Puedes volver a cambiarlo en Ajustes.",
+    useModelScopeFailed: "No se pudo cambiar a ModelScope.",
     hfToken: {
       label: "Token de HF",
       saved: "Guardado",
@@ -122,6 +126,16 @@ export const es = {
     shutdown: "Apagar",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Documentación",
+      keyboardShortcuts: "Atajos de teclado",
+      whatsNew: "Novedades",
+      troubleshooting: "Solución de problemas",
+      systemStatus: "Estado del sistema",
+      sendFeedback: "Enviar comentarios",
+      about: "Acerca de Unsloth",
+    },
     find: {
       label: "Buscar en la página",
       previous: "Coincidencia anterior",
@@ -229,8 +243,6 @@ export const es = {
       organizeChats: "Organizar chats",
       organizeProjects: "Organizar proyectos",
       sortPinnedChats: "Ordenar chats fijados",
-      moveUp: "Subir",
-      moveDown: "Bajar",
     },
     dialog: {
       deleteChat: {
@@ -1054,6 +1066,19 @@ export const es = {
           "No se pudo actualizar el ajuste de cierre en la bandeja del sistema.",
         loadError: "No se pudo cargar el ajuste de inicio automático.",
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
+      },
+      hub: {
+        source: "Origen de los modelos",
+        sourceDescription: "Dónde busca y descarga el hub de modelos. Elige ModelScope si Hugging Face está bloqueado o es lento en tu red.",
+        sourceFallback: "No se pudo iniciar ModelScope, así que se usa Hugging Face. Revisa los registros de Unsloth.",
+        sectionTitle: "Hub de modelos",
+        endpoint: "Endpoint de Hugging Face",
+        endpointDescription: "De dónde se descargan los modelos y conjuntos de datos. Déjalo vacío para usar huggingface.co o escribe un espejo como https://hf-mirror.com.",
+        datasetsServer: "Usarlo también para las vistas previas de datos",
+        datasetsServerDescription: "Enviar también las vistas previas de conjuntos de datos (HF_DATASETS_SERVER) a este endpoint. Actívalo solo si el espejo las ofrece.",
+        invalidEndpoint: "Escribe una URL http(s) sin credenciales ni parámetros. http sin cifrar solo funciona con una dirección local.",
+        saveFailed: "No se pudo guardar la configuración del hub.",
+        loadFailed: "No se pudo cargar la configuración del hub.",
       },
       downloads: {
         sectionTitle: "Descargas",

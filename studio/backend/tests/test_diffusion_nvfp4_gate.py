@@ -120,6 +120,7 @@ def test_a_matching_record_reads_true_and_canonicalises_the_base(tmp_path):
 
 
 def test_the_backend_a_verdict_was_measured_on_is_readable(tmp_path):
+    """The ladder keeps the deny unless the measured backend serves this device."""
     path = _gate_file(tmp_path, _record())
     assert nvfp4_gate_backend("z-image", ZIMAGE_BASE, path = path) == "flashinfer"
     assert nvfp4_gate_backend("Z-Image", ZIMAGE_BASE, path = path) == "flashinfer"

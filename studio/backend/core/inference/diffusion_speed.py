@@ -22,9 +22,10 @@ this). On opt-in it applies the near-lossless speedups in the diffusers-recommen
             the Q4 noise floor) plus TF32 matmul and fused QKV.
 
 ``default`` is the cheap always-amortising compile; ``max`` pays the larger regional tax for the
-bigger warm speedup. The compiled dequant is skipped under ``max`` (the regional compile subsumes
-it; a separate compiled dequant would break that graph). ``supports_torch_compile`` + bf16/CUDA
-(or fp16 on Turing+ NVIDIA) checks gate regional compile.
+bigger warm speedup. The compiled dequant is skipped under ``max``, which subsumes it.
+
+Knobs, safe unset: ``UNSLOTH_DIFFUSION_COMPILE_VAE=auto|0|1`` (DiT VAE decode compile; ``auto`` = ``max`` only),
+and in their own modules ``UNSLOTH_NVFP4_FAST_BIAS``, ``_FAST_DISPATCH``, ``_ZERO_BUFFER`` and ``_BACKEND``.
 
 The flags this flips (TF32, cudnn.benchmark) are PROCESS-WIDE, so ``snapshot_backend_flags`` /
 ``restore_backend_flags`` let the caller restore prior values at unload, keeping a later ``off``
@@ -371,6 +372,7 @@ def apply_speed_optims(
     CUDA-graph arm refuses only on ``cache_engaged``: the caller bypasses per chunk if it toggles."""
     applied = {
         "channels_last": False,
+        "vae_fp16_decode": False,
         "cudnn_benchmark": False,
         "tf32": False,
         "fp16_accum": False,
@@ -391,6 +393,8 @@ def apply_speed_optims(
 
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
     applied["channels_last"] = _vae_channels_last(pipe, logger)
+    # Near-lossless, not bit-identical, so never on "off" (returned above).
+    applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
 
     if on_cuda:
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
@@ -434,10 +438,14 @@ def apply_speed_optims(
             offload_active = offload_active,
         )
 
-    # A compiled U-Net family also compiles the VAE decode (4.98 to 4.25 s over 4 images, LPIPS unchanged). DiTs skip
-    # it. dynamic=True keeps it resolution-robust.
-    if applied["compiled"] and _denoiser_unet(pipe) is not None:
-        applied["compiled_vae_decode"] = _compile_vae_decode(pipe, logger)
+    if applied["compiled"] and _vae_decode_compile_allowed(pipe, mode):
+        # A U-Net keeps the decode recipe its whole-module compile was measured with.
+        applied["compiled_vae_decode"] = _compile_vae_decode(
+            pipe,
+            logger,
+            max_autotune = mode == SPEED_MAX and _denoiser_unet(pipe) is None,
+            eager_when_tiled = _vae_eager_when_tiled(pipe),
+        )
 
     if mode == SPEED_MAX:
         if on_cuda:
@@ -498,6 +506,70 @@ def _vae_channels_last(pipe: Any, logger: Any) -> bool:
         return False
 
 
+def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> bool:
+    """fp16 channels_last(_3d) decode for fp32-pinned video VAEs (Wan) on NVIDIA sm75+; non-finite output reruns fp32.
+
+    fp16, not bf16 (the pin exists because bf16 bands). channels_last_3d alone slows HV1.5 / LTX-2: keep it Wan-only.
+    """
+    if not getattr(family, "vae_force_fp32", False) or getattr(target, "device", None) != "cuda":
+        return False
+    vae = getattr(pipe, "vae", None)
+    decoder = getattr(vae, "decoder", None)
+    original = getattr(vae, "decode", None)
+    if decoder is None or not callable(original):
+        return False
+    # A dual-DiT family calls apply_speed_optims once per expert over the same VAE.
+    if getattr(vae, "_unsloth_half_decode", False):
+        return True
+    if getattr(target, "backend", None) != "cuda" or not _fp16_compile_capable(target):
+        return False
+    try:
+        import functools
+
+        import torch
+
+        parts = [m for m in (getattr(vae, "post_quant_conv", None), decoder) if m is not None]
+        for part in parts:
+            part.to(torch.float16)
+            for module in part.modules():
+                weight = getattr(module, "weight", None)
+                if isinstance(module, (torch.nn.Conv2d, torch.nn.Conv3d)) and weight is not None:
+                    fmt = torch.channels_last if weight.dim() == 4 else torch.channels_last_3d
+                    weight.data = weight.data.contiguous(memory_format = fmt)
+        fell_back: list = []
+
+        @functools.wraps(original)
+        def decode(z: Any, *args: Any, **kwargs: Any) -> Any:
+            if fell_back or not torch.is_tensor(z):
+                return original(z, *args, **kwargs)
+            out = original(z.to(torch.float16), *args, **kwargs)
+            sample = out[0] if isinstance(out, tuple) else getattr(out, "sample", out)
+            if not torch.is_tensor(sample) or bool(torch.isfinite(sample).all()):
+                return out
+            if logger is not None:
+                logger.warning(
+                    "diffusion.speed: fp16 VAE decode was not finite; decoding in fp32 from now on"
+                )
+            for part in parts:
+                part.to(torch.float32)
+            fell_back.append(True)
+            return original(z, *args, **kwargs)
+
+        vae.decode = decode
+        vae._unsloth_half_decode = True
+        return True
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        try:
+            import torch
+            for part in (getattr(vae, "post_quant_conv", None), decoder):
+                if part is not None:
+                    part.to(torch.float32)
+        except Exception:  # noqa: BLE001, S110 - best-effort restore of the fp32 pin
+            pass
+        _warn(logger, "video vae fp16 decode", exc)
+        return False
+
+
 # U-Net denoisers ship no ``_repeated_blocks``, so the regional compile cannot reach them; these classes get a
 # WHOLE-module STATIC compile. SDXL (B200, 30 steps / 1024px): 26.9 vs 45.9 ms/step, 1.61x end-to-end at LPIPS 0.034.
 # Static means a recompile per (height, width, batch).
@@ -513,13 +585,7 @@ def _denoiser_unet(pipe: Any) -> Any:
 
 
 def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
-    """Whether this load's compiled artifacts are per-(width, height, batch).
-
-    ``max`` compiles regional DiT blocks with automatic dynamic (static until a dimension changes, then one
-    generalised graph; tracked by graph count, not shape) and U-Net whole-module is always static;
-    ``default`` DiT compiles dynamic=True (one artifact across shapes) EXCEPT a stream-merging DiT,
-    static there (see ``_STREAM_MERGING_BLOCKS``). The compile-cache layer keys on this to re-save its
-    bundle when a session hits an uncovered shape."""
+    """Whether this load's compiled artifacts are per-(width, height, batch); the compile cache keys on it."""
     mode = normalize_speed_mode(speed_mode)
     if mode == SPEED_MAX:
         # An auto-dynamic DiT generalises a dimension once and then reuses that graph for unseen values, so a new
@@ -559,7 +625,7 @@ _STREAM_MERGE_SOURCE = re.compile(
 
 @lru_cache(maxsize = None)
 def _class_merges_streams(cls: type, broad: bool = False) -> bool:
-    """``broad`` is an argument, not an env read in the body, so the memo cannot outlive it."""
+    """Whether one repeated-block CLASS needs a static compile; ``broad`` is an argument so the memo keys on it."""
     if cls.__name__ in _STREAM_MERGING_BLOCKS:
         return True
     if not broad:
@@ -882,7 +948,9 @@ def settle_compile_fallback(
     Adds ``compile_fallback_eager`` once, and drops ``compiled`` only when NO guarded DiT still runs compiled, so a
     dual-DiT load whose second expert still compiles keeps the LoRA gate and the compile-cache shape registry. Returns
     the recorded failure, or None when nothing fell back."""
-    fallback = compile_fallback_error(pipe)
+    dit_error = compile_fallback_error(pipe)
+    vae_error = getattr(getattr(pipe, "vae", None), "_unsloth_compile_decode_error", None)
+    fallback = dit_error or vae_error
     if not fallback:
         return None
     optims = tuple(getattr(state, "speed_optims", None) or ())
@@ -891,8 +959,10 @@ def settle_compile_fallback(
         updated.append("compile_fallback_eager")
         if logger is not None:
             logger.warning("diffusion.speed: regional compile fell back to eager: %s", fallback)
-    if "compiled" in updated and not compiled_dits_active(pipe):
+    if dit_error and "compiled" in updated and not compiled_dits_active(pipe):
         updated.remove("compiled")
+    if vae_error and "compiled_vae_decode" in updated:
+        updated.remove("compiled_vae_decode")
     if tuple(updated) != optims:
         # The load states are frozen dataclasses; the status must still reflect what actually runs.
         object.__setattr__(state, "speed_optims", tuple(updated))
@@ -931,16 +1001,120 @@ def compile_fallback_error(pipe: Any) -> Optional[str]:
     return None
 
 
-def _compile_vae_decode(pipe: Any, logger: Any) -> bool:
-    """torch.compile the VAE ``decode`` bound method in place (U-Net families; caller gates).
-    Instance-level assignment: the pipe owns it and the module object is untouched."""
+COMPILE_VAE_ENV = "UNSLOTH_DIFFUSION_COMPILE_VAE"
+
+_VAE_TRUE_TOKENS = ("1", "true", "yes", "on")
+_VAE_FALSE_TOKENS = ("0", "false", "no", "off")
+
+# Not a correctness list: these decode correctly compiled but measured SLOWER than eager.
+_VAE_COMPILE_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage", "AutoencoderKLWan"})
+
+# ``auto`` compiles only measured VAEs: video DiTs also pass through apply_speed_optims.
+_VAE_COMPILE_ALLOW: frozenset[str] = frozenset({"AutoencoderKL"})
+
+
+def vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
+    """Compile-cache key input; False for a U-Net so its existing bundles keep their key."""
+    return _denoiser_unet(pipe) is None and _vae_decode_compile_allowed(pipe, speed_mode)
+
+
+def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
+    """U-Nets always; a DiT only on ``max`` (it costs a 60-70 s slower first render) or with the env forced on."""
+    if _denoiser_unet(pipe) is not None:
+        return True
+    raw = os.environ.get(COMPILE_VAE_ENV, "").strip().lower()
+    if raw in _VAE_FALSE_TOKENS:
+        return False
+    if raw in _VAE_TRUE_TOKENS:
+        return True
+    if speed_mode != SPEED_MAX:
+        return False
+    name = type(getattr(pipe, "vae", None)).__name__
+    return name in _VAE_COMPILE_ALLOW and name not in _VAE_COMPILE_DENY
+
+
+def _vae_eager_when_tiled(pipe: Any) -> bool:
+    """A DiT decode not forced on by the env runs eager while tiled; U-Nets keep their measured recipe."""
+    if pipe is not None and _denoiser_unet(pipe) is not None:
+        return False
+    return os.environ.get(COMPILE_VAE_ENV, "").strip().lower() not in _VAE_TRUE_TOKENS
+
+
+def _guard_compiled_decode(
+    vae: Any,
+    compiled: Any,
+    eager: Any,
+    logger: Any,
+    eager_when_tiled: bool = False,
+) -> Any:
+    """``compiled`` behind an eager fallback: torch.compile is lazy, so lowering fails on the first call; OOMs still raise.
+
+    ``eager_when_tiled``: a tiled decode unrolls its tile loop into one graph (minutes of compile on low-VRAM loads),
+    and tiling is only settled by the memory plan after the compile, so it is read per call."""
+    had_own = "decode" in getattr(vae, "__dict__", {})
+    failed: list = []
+
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        if eager_when_tiled and getattr(vae, "use_tiling", False):
+            return eager(*args, **kwargs)
+        if not failed:
+            try:
+                return compiled(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 - reraised unless a compile-time failure
+                if not is_compile_failure(exc):
+                    raise
+                error = f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"[
+                    :300
+                ]
+                failed.append(error)
+                try:
+                    vae._unsloth_compile_decode_error = error
+                    vae._unsloth_compiled_decode = False
+                    if had_own:
+                        vae.decode = eager
+                    else:
+                        del vae.decode
+                except Exception:  # noqa: BLE001 - `failed` still routes this wrapper to eager
+                    pass
+                if logger is not None:
+                    logger.warning(
+                        "diffusion.speed: torch.compile failed on the VAE decode (%s); decoding eager",
+                        error,
+                    )
+                # The handled exception pins inductor's frames (and the traced fake tensors) through the retry.
+                exc.__traceback__ = None
+        return eager(*args, **kwargs)
+
+    return guarded
+
+
+def _compile_vae_decode(
+    pipe: Any,
+    logger: Any,
+    max_autotune: bool = False,
+    eager_when_tiled: bool = False,
+) -> bool:
+    """torch.compile the VAE ``decode`` in place; no cudagraphs, whose capture would pin decode activations."""
     vae = getattr(pipe, "vae", None)
     decode = getattr(vae, "decode", None) if vae is not None else None
     if not callable(decode):
         return False
+    # A dual-DiT family calls apply_speed_optims twice over the same pipe.
+    if getattr(vae, "_unsloth_compiled_decode", False):
+        return True
+    if getattr(vae, "_unsloth_compile_decode_error", None):
+        return False
     try:
         import torch
-        vae.decode = torch.compile(decode, fullgraph = False, dynamic = True)
+
+        kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": True}
+        if max_autotune:
+            kwargs["mode"] = "max-autotune-no-cudagraphs"
+        compiled = torch.compile(decode, **kwargs)
+        vae.decode = _guard_compiled_decode(
+            vae, compiled, decode, logger, eager_when_tiled = eager_when_tiled
+        )
+        vae._unsloth_compiled_decode = True
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "vae decode compile", exc)

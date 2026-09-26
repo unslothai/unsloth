@@ -585,7 +585,7 @@ def test_a_captured_block_gets_one_graph_per_branch(monkeypatch):
 
 
 def test_an_armed_controller_with_no_protect_capable_layer_refuses_and_says_so():
-    """A torchao load runs W4A4 at every step, so arming there would count steps nothing ran."""
+    """Only ``NVFP4FlashInferLinear`` reads the controller, so a torchao load must not arm."""
 
     class _Logger:
         def __init__(self):

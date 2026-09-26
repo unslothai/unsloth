@@ -203,15 +203,14 @@ def _fast_quantize(
 
 
 def _drop_transposed(key: int, ref: Any) -> None:
-    """Lock-free: a collection can land on a thread already holding the lock."""
+    """Weakref callback; lock-free because a collection can land on a thread already holding the lock."""
     entry = _TRANSPOSED.get(key)
     if entry is not None and entry[0] is ref:
         _TRANSPOSED.pop(key, None)
 
 
 def transposed(t: Any):
-    """A ``.T`` released with the weight. Over ``t.detach()``: ``t.T`` keeps ``t`` alive via ``_base``,
-    so the weakref would never fire."""
+    """A kept ``.T`` released with the weight; views ``t.detach()`` since ``t.T`` would pin ``t`` via ``_base``."""
     key = id(t)
     stamp = (t.data_ptr(), tuple(t.shape))
     entry = _TRANSPOSED.get(key)
@@ -241,7 +240,7 @@ def gemm_plan(
     *,
     force: bool = False,
 ):
-    """None (use ``mm_fp4``) for a COLD key under capture, where ``choose_one`` may profile into the graph."""
+    """``(runner, tactic, workspace)``, or None (use ``mm_fp4``), also for a COLD key under capture."""
     from .diffusion_nvfp4_ops import _device_index, _is_capturing
 
     device = xq.device
