@@ -1389,24 +1389,30 @@ class TestSplitRateRecheckAfterSelection:
             if keyword.arg in ("split_extra_bytes", "split_extra_for_slots")
         ]
         # Projector floor pin, explicit-context pin, reduced-slot retry, per-candidate
-        # re-fit. A fifth has to come here and say which context it prices at.
+        # re-fit, and the overcommit notice's q8_0 what-if, which prices the requested
+        # context at q8_0 KV. A sixth has to come here and say which context it prices at.
         #
         # Four, not the three the counting version asserted. It counted two spellings,
         # `_cc_split_extra(effective_ctx)` and `_cc_split_extra(ctx),`, and the
         # projector-floor site spells its context `_mm_floor_ctx`, so it was invisible
         # to the check that claimed to cover every call site. It has been wired
         # correctly the whole time; nothing was holding it there.
-        assert len(wired) == 4, wired
+        assert len(wired) == 5, wired
         # Each passes the step at a context of its own, so none is exempt and none
         # hardcodes one: `_cc_split_extra(4096)` would not match.
         # The reduced-slot search re-prices the step for each candidate slot count.
         for expression in wired:
             assert re.fullmatch(
-                r"_cc_split_extra\(\w+\)|lambda s: _cc_split_extra\(\w+, s\)", expression
+                r"_cc_split_extra\(\w+\)|lambda s: _cc_split_extra\(\w+, s\)"
+                r"|_cc_split_extra\(\w+, cache_type='q8_0'\)",
+                expression,
             ), expression
         assert "gpu_indices,use_fit=self._select_gpus_split_aware(" in load
         # The step rides _cc_bytes' pipelining gate, so it is 0 when llama.cpp declines.
-        assert "returnmax(0,_cc_bytes(ctx,2,slots)//2-_cc_bytes(ctx,1,slots))" in load
+        assert (
+            "returnmax(0,_cc_bytes(ctx,2,slots,cache_type)//2-_cc_bytes(ctx,1,slots,cache_type),)"
+            in load
+        )
         slots = "".join(inspect.getsource(LlamaCppBackend._slots_that_fit_on_gpu).split())
         assert "self._select_gpus_split_aware(" in slots
         assert (
