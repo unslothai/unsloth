@@ -359,6 +359,34 @@ try {
     foreach ($leaf in $batchPaths) { $null = Get-StudioPythonFinalPath -Path $leaf }
     Check "and every resolution after it is served without one" ($script:SingleCalls -eq 0)
 
+    # A declined private directory still batches: the list rides the environment instead.
+    $realDirFn = ${function:New-StudioChildScriptDirectory}
+    function New-StudioChildScriptDirectory { return "" }
+    try {
+        $script:StudioPythonFinalPathCache = $null
+        $script:SingleCalls = 0
+        Resolve-StudioFinalPathsInOneChild -Paths $batchPaths
+        foreach ($leaf in $batchPaths) { $null = Get-StudioPythonFinalPath -Path $leaf }
+        Check "a declined private directory still batches, through the environment" ($script:SingleCalls -eq 0)
+        Check "and leaves no list variable behind" ($null -eq $env:UNSLOTH_FINAL_PATHS)
+        # Past the block limit the list splits across children, each under it and none lost.
+        $script:RealScript = ${function:Invoke-StudioEarlyPythonScript}
+        $script:ChunkSizes = @(); $script:ChunkPaths = 0
+        function Invoke-StudioEarlyPythonScript {
+            param([string]$Exe, [string]$Script, [string[]]$ScriptArgs = @(), [int]$TimeoutMs = 10000)
+            $script:ChunkSizes += $env:UNSLOTH_FINAL_PATHS.Length
+            $script:ChunkPaths += @($env:UNSLOTH_FINAL_PATHS -split "`n").Count
+            return ""
+        }
+        $longPaths = @(1..300 | ForEach-Object { Join-Path $batchDir (("p{0:D3}-" -f $_) + ("x" * 140)) })
+        $script:StudioPythonFinalPathCache = $null
+        Resolve-StudioFinalPathsInOneChild -Paths $longPaths
+        ${function:Invoke-StudioEarlyPythonScript} = $script:RealScript
+        Check "a list past the block limit goes out in more than one child" ($script:ChunkSizes.Count -gt 1)
+        Check "each chunk stays under 30000 characters" (@($script:ChunkSizes | Where-Object { $_ -gt 30000 }).Count -eq 0)
+        Check "and every path is sent exactly once" ($script:ChunkPaths -eq $longPaths.Count)
+    } finally { ${function:New-StudioChildScriptDirectory} = $realDirFn }
+
     # The batch must return exactly what the single-path rung returns, or it is a second identity.
     $script:StudioPythonFinalPathCache = $null
     $one = Get-StudioPythonFinalPath -Path $batchPaths[0]
@@ -436,7 +464,9 @@ try {
 
     # The list goes through a file, not argv: a few hundred paths pass the 32767 character limit.
     Check "the batch hands the child a list FILE rather than an argv of paths" (
-        $batchText -match 'Set-Content -LiteralPath \$listFile' -and $batchText -match 'ScriptArgs @\(\$listFile\)')
+        $batchText -match 'Set-Content -LiteralPath \$listFile' -and $batchText -match 'Args = @\(\$listFile\)')
+    Check "and without one, chunks under the environment block limit" (
+        $batchText -match 'UNSLOTH_FINAL_PATHS' -and $batchText -match '-gt 30000')
     Check "the batch resolves with the same expression the single rung uses" ($batchText -match 'pathlib\.Path\(p\)\.resolve\(strict=True\)')
     Check "and keeps the same version gate" ($batchText -match 'sys\.version_info < \(3,8\)')
     Check "and applies the same two post-checks" (

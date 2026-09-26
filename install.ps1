@@ -2737,26 +2737,51 @@ function Install-UnslothStudio {
         try { $exe = Get-StudioEarlyPython } catch {}
         if (-not $exe) { return }
         $listDir = New-StudioChildScriptDirectory
-        if (-not $listDir) { return }
-        $listFile = Join-Path $listDir "paths.txt"
-        try { Set-Content -LiteralPath $listFile -Value $wanted -Encoding UTF8 -ErrorAction Stop }
-        catch { Remove-Item -LiteralPath $listDir -Recurse -Force -ErrorAction SilentlyContinue; return }
-        $probe = "import pathlib,sys" + [char]10 +
+        $listFile = $null
+        if ($listDir) {
+            $listFile = Join-Path $listDir "paths.txt"
+            try { Set-Content -LiteralPath $listFile -Value $wanted -Encoding UTF8 -ErrorAction Stop }
+            catch { Remove-Item -LiteralPath $listDir -Recurse -Force -ErrorAction SilentlyContinue; $listDir = $null; $listFile = $null }
+        }
+        # Without a private directory the list rides the environment, in chunks under its 32767-character
+        # block, so a declined directory does not fall back to one child per process.
+        $batches = @()
+        if ($listFile) { $batches += ,@{ Args = @($listFile); Env = $null } }
+        else {
+            $chunk = ""
+            foreach ($candidate in $wanted) {
+                if ($chunk -and ($chunk.Length + $candidate.Length + 1) -gt 30000) { $batches += ,@{ Args = @(); Env = $chunk }; $chunk = "" }
+                $chunk = if ($chunk) { $chunk + "`n" + $candidate } else { $candidate }
+            }
+            if ($chunk) { $batches += ,@{ Args = @(); Env = $chunk } }
+        }
+        $probe = "import os,pathlib,sys" + [char]10 +
             "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
             "out=[]" + [char]10 +
-            "with open(sys.argv[1],'r',encoding='utf-8-sig') as fh:" + [char]10 +
-            "    for line in fh:" + [char]10 +
-            "        p=line.rstrip('\r\n')" + [char]10 +
-            "        if not p: continue" + [char]10 +
-            "        try:" + [char]10 +
-            "            out.append(p+'|'+str(pathlib.Path(p).resolve(strict=True)))" + [char]10 +
-            "        except Exception:" + [char]10 +
-            "            out.append(p+'|')" + [char]10 +
+            "if len(sys.argv)>1:" + [char]10 +
+            "    with open(sys.argv[1],'r',encoding='utf-8-sig') as fh: lines=fh.read().split('\n')" + [char]10 +
+            "else:" + [char]10 +
+            "    lines=os.environ.get('UNSLOTH_FINAL_PATHS','').split('\n')" + [char]10 +
+            "for line in lines:" + [char]10 +
+            "    p=line.rstrip('\r\n')" + [char]10 +
+            "    if not p: continue" + [char]10 +
+            "    try:" + [char]10 +
+            "        out.append(p+'|'+str(pathlib.Path(p).resolve(strict=True)))" + [char]10 +
+            "    except Exception:" + [char]10 +
+            "        out.append(p+'|')" + [char]10 +
             "sys.stdout.buffer.write('\n'.join(out).encode('utf-8'))"
         $raw = ""
-        try { $raw = Invoke-StudioEarlyPythonScript -Exe $exe -Script $probe -ScriptArgs @($listFile) -TimeoutMs 30000 }
-        catch { $raw = "" }
-        finally { Remove-Item -LiteralPath $listDir -Recurse -Force -ErrorAction SilentlyContinue }
+        $savedPaths = $env:UNSLOTH_FINAL_PATHS
+        try {
+            foreach ($batch in $batches) {
+                if ($null -ne $batch.Env) { $env:UNSLOTH_FINAL_PATHS = $batch.Env }
+                try { $raw += "`n" + (Invoke-StudioEarlyPythonScript -Exe $exe -Script $probe -ScriptArgs $batch.Args -TimeoutMs 30000) } catch { }
+            }
+        } finally {
+            if ($null -eq $savedPaths) { Remove-Item Env:UNSLOTH_FINAL_PATHS -ErrorAction SilentlyContinue }
+            else { $env:UNSLOTH_FINAL_PATHS = $savedPaths }
+            if ($listDir) { Remove-Item -LiteralPath $listDir -Recurse -Force -ErrorAction SilentlyContinue }
+        }
         $answers = @{}
         $reported = @{}
         foreach ($line in ("$raw" -split "`r?`n")) {
