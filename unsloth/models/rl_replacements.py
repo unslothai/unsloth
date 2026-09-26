@@ -484,10 +484,15 @@ def online_dpo_trainer__forward(function_name, function):
         f"{j}        completion_ids.size(1), device = completion_ids.device\n"
         f"{j}    ).unsqueeze(0)\n"
         f"{j}    _unsloth_index = _unsloth_index.clamp(0, output.logits.size(1) - 1)\n"
-        # Row/column indexing, not take_along_dim: that broadcasts a [B, C, V] int64 index kept for backward.
-        f"{j}    logits = output.logits[\n"
-        f"{j}        torch.arange(_unsloth_index.size(0), device = _unsloth_index.device).unsqueeze(1), _unsloth_index\n"
-        f"{j}    ]\n"
+        # index_select of whole rows: a contiguous copy with a row-wise index_add backward. Advanced
+        # indexing was ~40% slower (fwd+bwd), take_along_dim keeps a [B, C, V] int64 index for backward.
+        f"{j}    _unsloth_rows, _unsloth_len = output.logits.shape[:2]\n"
+        f"{j}    _unsloth_index = _unsloth_index + _unsloth_len * torch.arange(\n"
+        f"{j}        _unsloth_rows, device = _unsloth_index.device\n"
+        f"{j}    ).unsqueeze(1)\n"
+        f"{j}    logits = output.logits.reshape(_unsloth_rows * _unsloth_len, -1).index_select(\n"
+        f"{j}        0, _unsloth_index.reshape(-1)\n"
+        f"{j}    ).view(_unsloth_rows, -1, output.logits.size(-1))\n"
         # The indexing copies; drop [B, L, V] before log_softmax so peak memory stays at TRL's level.
         f"{j}    output = None\n"
         f"{j}else:\n"
