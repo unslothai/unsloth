@@ -24,6 +24,7 @@ from loggers import get_logger
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -73,6 +74,7 @@ from core.inference.context_window import (
 )
 from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.stream_errors import stream_error_from_chunk
+from hub.utils.hf_errors import modelscope_missing
 from core.inference.llama_server_args import (
     _CACHE_RAM_FLAGS,
     _CTX_CHECKPOINTS_FLAGS,
@@ -471,10 +473,13 @@ from core.inference.tool_loop_controller import (
     tool_call_limit_nudge,
 )
 from state.tool_approvals import (
+    DECISION_EXPIRED,
+    TOOL_APPROVAL_EXPIRED_MESSAGE,
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
     begin_tool_decision,
     new_approval_id,
+    decision_reason,
     wait_tool_decision,
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
@@ -3046,6 +3051,20 @@ def _resolve_repo_id_casing(hf_repo: str) -> str:
         return hf_repo
 
 
+def _cached_gguf_snapshots(repo_id: str):
+    """Retain the existing active-cache lookup; add remembered chat copies once."""
+    from utils.models.model_config import _iter_hf_cache_snapshots
+    from hub.utils.gguf_sources import gguf_cache_snapshots
+
+    seen = set()
+    for snapshots in (_iter_hf_cache_snapshots(repo_id), gguf_cache_snapshots(repo_id)):
+        for snapshot in snapshots:
+            key = str(snapshot.resolve())
+            if key not in seen:
+                seen.add(key)
+                yield snapshot
+
+
 def _cached_colocated_split_main(
     repo_id: str, main_filename: str, shards: Iterable[str], expected_sizes: dict[str, int]
 ) -> Optional[str]:
@@ -3061,8 +3080,7 @@ def _cached_colocated_split_main(
     if not main_parts or any(part in (".", "..") for part in main_parts):
         return None
     try:
-        from utils.models.model_config import _iter_hf_cache_snapshots
-        for snap in _iter_hf_cache_snapshots(repo_id):
+        for snap in _cached_gguf_snapshots(repo_id):
             main_path = snap.joinpath(*main_parts)
             if not main_path.is_file():
                 continue
@@ -3096,8 +3114,13 @@ def _cached_variant_candidates(
 ) -> Generator[tuple[str, str, list[str], Path], None, None]:
     """Yield complete cached variant copies in snapshot preference order."""
     try:
-        from utils.models.model_config import _iter_hf_cache_snapshots
-        for snap in _iter_hf_cache_snapshots(repo_id):
+        from hub.utils.gguf_sources import (
+            cached_gguf_manifest_complete,
+            cached_gguf_source_partial,
+        )
+
+        pending_downloads = []
+        for snap in _cached_gguf_snapshots(repo_id):
             cached_files = _gguf_snapshot_files(snap)
             matches = _gguf_files_for_variant(cached_files, hf_variant)
             if not matches:
@@ -3120,7 +3143,15 @@ def _cached_variant_candidates(
                 continue
             if require_mmproj and not _pick_mmproj(cached_files):
                 continue
-            yield str(main_path), main, shards, snap
+            candidate = (str(main_path), main, shards, snap)
+            if not cached_gguf_manifest_complete(
+                repo_id, hf_variant, snap
+            ) or cached_gguf_source_partial(repo_id, hf_variant, snap):
+                pending_downloads.append(candidate)
+                continue
+            yield candidate
+        # Keep existing reuse semantics when no completed duplicate is available.
+        yield from pending_downloads
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")
 
@@ -4456,6 +4487,20 @@ def _swa_full_from_args_or_env(
     return value in _LLAMA_ARG_TRUE_VALUES
 
 
+def _reasoning_from_env(env: Mapping[str, str]) -> Optional[bool]:
+    value = env.get("LLAMA_ARG_REASONING")
+    if value in _LLAMA_ARG_TRUE_VALUES:
+        return True
+    if value in _LLAMA_ARG_FALSE_VALUES:
+        return False
+    return None
+
+
+def _reasoning_effort_from_env(env: Mapping[str, str]) -> Optional[str]:
+    value = env.get("LLAMA_ARG_REASONING_EFFORT")
+    return None if value == "default" else value
+
+
 def _env_asks_for_the_native_context(env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether an inherited LLAMA_ARG_CTX_SIZE is 0.
 
@@ -4868,6 +4913,12 @@ def _child_spec_env(
 _TARGET_ROLLBACK_SPEC_TYPES = frozenset(
     {"mtp", "draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark"}
 )
+
+
+# Mirrors llama.cpp is_recr_impl for SSM headers with no full_attention_interval.
+_SSM_EVERY_LAYER_ARCHS = frozenset({"mamba", "mamba2", "falcon-h1"})
+# Nemotron-H also zeroes head_count_kv on its MLP/MoE layers; its SSM layers have no FFN.
+_SSM_FFN_FREE_LAYER_ARCHS = frozenset({"nemotron_h", "nemotron_h_moe"})
 
 
 # Architectures whose TARGET context leaves the embedded MTP/NextN blocks out of
@@ -6384,9 +6435,6 @@ def _build_launch_reasoning_args(
     tools/server/server-common.cpp then overrides from the merged kwarg anyway. If
     llama.cpp stops writing that kwarg, or stops letting it override, this becomes a
     behaviour change rather than a substitution.
-
-    An exported LLAMA_ARG_REASONING is still overridden by the command line, exactly as
-    the kwargs channel overrides it on main; honouring it is #8521.
     """
     remaining = dict(reasoning_kwargs)
     args: list[str] = []
@@ -6938,6 +6986,18 @@ def _metal_capable_host() -> bool:
         return sys.platform == "darwin"
 
 
+# Shared with the settings reader so the search, the settings UI and the process
+# allowlist expand one value the same way, and none of them raises on a named user
+# the password database cannot answer for. Path.expanduser() does raise, which is
+# what took runtime discovery down on a stale ~deleted-user pin.
+def _expanded_user_path(value) -> Path:
+    try:
+        from utils.llama_cpp_path_settings import expanded_user_path
+        return expanded_user_path(value)
+    except Exception:
+        return Path(os.path.expanduser(str(value)))
+
+
 def _write_direct_stream_key(key: str) -> "Path":
     """Store the direct-streaming key where only the server user can read it."""
     from utils.paths.storage_roots import auth_root
@@ -6970,6 +7030,12 @@ def _extra_args_have_tensor_split(
         if str(token).split("=", 1)[0] in ("--tensor-split", "-ts", "--tensor_split"):
             return True
     return bool(str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT", "")).strip())
+
+
+@functools.lru_cache(maxsize = 1)
+def _count_ssl_context() -> ssl.SSLContext:
+    # httpx loads the CA bundle per Client (~15 ms); admission counts once per chat request.
+    return ssl.create_default_context()
 
 
 class LlamaCppBackend:
@@ -7202,6 +7268,7 @@ class LlamaCppBackend:
         # For the compute-graph buffer estimate; vocab from the tokens array len.
         # feed_forward_length is the widest layer when the GGUF stores one per layer.
         self._feed_forward_length: Optional[int] = None
+        self._feed_forward_length_by_layer: Optional[list[int]] = None
         self._expert_used_count: Optional[int] = None
         self._expert_feed_forward_length: Optional[int] = None
         self._expert_shared_feed_forward_length: Optional[int] = None
@@ -7330,6 +7397,7 @@ class LlamaCppBackend:
         self._is_audio: bool = False
         self._audio_type: Optional[str] = None
         self._audio_probed: bool = False
+        self._codec_failure = threading.local()
         # Audio INPUT capability (distinct from _is_audio, which is TTS output).
         self._has_audio_input: bool = False
         # Video INPUT capability, from llama-server's /props modalities. True
@@ -7841,7 +7909,11 @@ class LlamaCppBackend:
     def reasoning_default(self) -> bool:
         return self._reasoning_default
 
-    def _reasoning_kwargs(self, enable_thinking: bool) -> dict:
+    def _reasoning_kwargs(
+        self,
+        enable_thinking: bool,
+        effort: Optional[str] = None,
+    ) -> dict:
         if self._reasoning_style == "enable_thinking_effort":
             # GLM-5.2-style: enable_thinking is the on/off gate; when on, leave
             # the template's default effort (max) in place.
@@ -7849,7 +7921,7 @@ class LlamaCppBackend:
         if self._reasoning_style == "reasoning_effort":
             return _coerce_reasoning_effort(
                 getattr(self, "_architecture", None),
-                {"reasoning_effort": "high" if enable_thinking else "low"},
+                {"reasoning_effort": effort or ("high" if enable_thinking else "low")},
             )
         return {"enable_thinking": enable_thinking}
 
@@ -8478,8 +8550,8 @@ class LlamaCppBackend:
 
     @staticmethod
     def _resolved_studio_root_and_is_legacy() -> "tuple[Optional[Path], bool]":
-        """Resolve the Unsloth install root and classify it as the legacy
-        ~/.unsloth/studio root vs. a custom (env/venv-inferred) root.
+        """Resolve the directory llama.cpp hangs off and classify it as the
+        legacy ~/.unsloth/studio root vs. a custom (env/venv-inferred) root.
 
         Returns (resolved_root, is_legacy). On any import/resolution failure the
         root is treated as legacy and resolved_root is None -- callers must read
@@ -8488,8 +8560,16 @@ class LlamaCppBackend:
         (cleanup) so the two never disagree on which root is legacy.
         """
         try:
-            from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
+            from utils.paths.storage_roots import (  # noqa: WPS433
+                studio_root as _sr,
+                unsloth_home as _uh,
+            )
 
+            # llama.cpp is a sibling of studio/ under the master root, the path run.py and
+            # main.py export, so a portable install is never the legacy layout.
+            master = _uh()
+            if master is not None:
+                return master, False
             resolved = _sr()
             legacy_studio = Path.home() / ".unsloth" / "studio"
             try:
@@ -8604,7 +8684,18 @@ class LlamaCppBackend:
         custom_llama_cpp = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
         managed_path_marker = os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
         if custom_llama_cpp and not managed_path_marker:
-            hit, locked = _scan_pinned(_layout_candidates(Path(custom_llama_cpp)))
+            # expanduser, like every other reader of this variable:
+            # default_managed_llama_dir, get_stored_custom_llama_cpp_path and the
+            # desktop's own pinning all expand it, and the literal lookup here was
+            # the only one that did not. A "~/llama.cpp" written into a service
+            # unit, a .env or the Windows environment dialog reaches the process
+            # unexpanded, and the literal form made this search a folder named ~
+            # beside the working directory, walk past it, and load a different
+            # runtime than every other component was reporting on.
+            # Not Path.expanduser: it raises RuntimeError on a name it cannot
+            # resolve, so a stale ~deleted-user pin made discovery itself throw
+            # instead of falling through to the rest of the order below.
+            hit, locked = _scan_pinned(_layout_candidates(_expanded_user_path(custom_llama_cpp)))
             if locked is not None:
                 return _unavailable(locked)
             if hit:
@@ -12599,10 +12690,184 @@ class LlamaCppBackend:
             if _metal_capable_host():
                 # Same check as the load site: an Intel Mac wants its real reason.
                 return "this probe reads CUDA and HIP only; Apple Silicon offloads through Metal"
-            if LlamaCppBackend._is_vulkan_backend(binary):
-                return "the Vulkan probe reported no device"
+            # Before the backend branches, because it is the reason underneath BOTH: a
+            # render node this user cannot open leaves HIP with no device and the Vulkan
+            # loader with nothing to enumerate, and "the Vulkan probe reported no device"
+            # then sends the user after a driver that is fine (#10466). A Vulkan binary is
+            # asked only about the render node, never /dev/kfd, and keeps its own reason.
+            # Only of a build that can drive an AMD card: _is_vulkan_backend answers which
+            # backend the install defers to, so a CUDA-plus-Vulkan build counts as CUDA. An
+            # install this probe cannot read stays eligible, so a detection miss does not
+            # lose the #10466 host.
+            _is_vulkan = LlamaCppBackend._is_vulkan_backend(binary)
+            _backends = LlamaCppBackend._installed_ggml_backends(binary)
+            _amd_capable = not LlamaCppBackend._backend_lacks_gpu_lib(binary) and (
+                _is_vulkan or "hip" in _backends or not _backends
+            )
+
+            # The ordinal space the three device lists index, so an entry can be checked
+            # against something rather than only read. None on any host whose KFD topology
+            # cannot be read, which is the direction that leaves a selector alone.
+            try:
+                from utils.hardware.amd import amd_kfd_gpu_node_count
+                _amd_gpu_count = amd_kfd_gpu_node_count()
+            except Exception:  # noqa: BLE001
+                _amd_gpu_count = None
+
+            def _post_rocr_device_count() -> "int | None":
+                # ROCr filters the physical list FIRST and renumbers what survives, and
+                # the HIP layer indexes those (_rocm_visibility_masks_are_stacked), so a
+                # HIP ordinal is judged against the post-ROCr count: on two GPUs with
+                # ROCR_VISIBLE_DEVICES=0 one survives, and HIP ordinal 1 hides everything
+                # where the physical count of 2 reads it as harmless. None when the
+                # survivors cannot be counted, which leaves the HIP selector alone.
+                if not _rocr_filters:
+                    return _amd_gpu_count
+                _raw = (os.environ.get("ROCR_VISIBLE_DEVICES") or "").strip()
+                if not _raw or not _amd_gpu_count:
+                    return None
+                # ROCr's own rule, from RvdFilter in core/inc/amd_filter_device.h: it
+                # surfaces "tokens that are Legal and NOT Terminating", an index terminates
+                # when it "lies outside the interval [0 - (numGpuDevices - 1)]" OR "maps to
+                # a device that has been previously selected", and a token is Illegal when
+                # it "can't be evaluated into an instance of Device UUID or Enumeration
+                # Index". Every ending is a PREFIX of known length, including a repeated
+                # ordinal ("0,0" surfaces one device) and an empty token. Only a UUID is
+                # unknowable here: the KFD count is an ordinal space.
+                _survivors = 0
+                _selected: "set[int]" = set()
+                for _entry in _raw.split(","):
+                    _entry = _entry.strip()
+                    if not _entry.isdigit():
+                        # AMD documents the UUID form as the literal "GPU-XX"; anything
+                        # else that is not an index is Illegal to ROCr too, so it ends the
+                        # list at a length this does know.
+                        return None if _entry.lower().startswith("gpu-") else _survivors
+                    _idx = int(_entry)
+                    if _idx >= _amd_gpu_count or _idx in _selected:
+                        return _survivors
+                    _selected.add(_idx)
+                    _survivors += 1
+                return _survivors
+
+            def _hides_every_device(
+                value: str,
+                count: "int | None" = None,
+                *,
+                strict: bool = False,
+            ) -> bool:
+                # CUDA and HIP read the list left to right and stop at the first entry
+                # that names no device, so a value that is empty, or whose FIRST entry
+                # is empty or negative, exposes nothing; HIP_VISIBLE_DEVICES=0 still
+                # exposes GPU 0.
+                first = value.split(",")[0].strip()
+                if first == "" or first.startswith("-"):
+                    return True
+                # Nor does a token have to LOOK like a number to end the list. clr takes
+                # `index = atoi(str_id)` and rejects the token unless `str_id` is that
+                # index written back out, so HIP_VISIBLE_DEVICES=garbage (and 0x1, and 00)
+                # terminates on the FIRST token, exactly as -1 does. Asked only for the
+                # clr-layer variables: ROCr's illegal-token rule is a separate parser, in
+                # _is_an_illegal_rocr_selector, and a UUID token is left to
+                # _cannot_be_resolved since resolving it needs the agents.
+                if strict and not first.lower().startswith("gpu-"):
+                    try:
+                        _index = int(first)
+                    except ValueError:
+                        return True
+                    if str(_index) != first:
+                        return True
+                # An entry that looks valid can still name nothing: the list stops at the
+                # first index no device answers to, so HIP_VISIBLE_DEVICES=3 on a one-GPU
+                # host exposes zero devices, which is the empty probe being explained. Only
+                # ordinals, and only against a count actually read: reading an unknown
+                # count as a bound would call every selector here a blocker.
+                _bound = _amd_gpu_count if count is None else count
+                if not _bound or not first.isdigit():
+                    return False
+                return int(first) >= _bound
+
+            def _cannot_be_resolved(value: str) -> bool:
+                # ROCr and clr both resolve a UUID ("0,GPU-4b2c...") as well as an
+                # ordinal (rocdevice.cpp matches "GPU-" against HSA_AMD_AGENT_INFO_UUID).
+                # Nothing here can match one, so it is unresolved rather than judged:
+                # calling it a blocker invents a fault. Every other non-index is Illegal,
+                # which _is_an_illegal_rocr_selector decides.
+                first = value.split(",")[0].strip()
+                return first.lower().startswith("gpu-")
+
+            def _vk_selects_no_device(value: str) -> bool:
+                # ggml stops at the first token with no integer prefix, so if the FIRST
+                # lacks one device_indices stays empty. A sign counts as a prefix: "-1"
+                # extracts and wraps, which throws rather than selecting nothing.
+                _first = value.replace(",", " ").split()
+                if not _first:
+                    return True
+                _token = _first[0]
+                _digits = _token[1:] if _token[:1] in ("+", "-") else _token
+                return not _digits[:1].isdigit()
+
+            def _vk_ordinal_always_throws(value: str) -> bool:
+                # A negative ordinal is the one out-of-range value decidable WITHOUT the
+                # raw device count, because it wraps past every possible one: ggml reads
+                # `size_t tmp; while (ss >> tmp)` (ggml-vulkan.cpp, ggml_vk_instance_init),
+                # strtoull accepts the sign, and "-1" becomes 2**64-1, so it always throws
+                # "Invalid Vulkan device index". No group membership repairs that, so it is
+                # a blocker like an Illegal ROCr token. Extraction walks the list, so a
+                # negative one throws wherever it sits provided every token before it still
+                # extracts; "-0" wraps to 0 and is in range.
+                for _token in value.replace(",", " ").split():
+                    _signed = _token[:1] in ("+", "-")
+                    _digits = _token[1:] if _signed else _token
+                    if not _digits[:1].isdigit():
+                        return False  # extraction stops here, so nothing after it is read
+                    if _token[:1] == "-" and _digits.lstrip("0"):
+                        return True
+                return False
+
+            def _is_an_illegal_rocr_selector(value: str) -> bool:
+                # ROCr's filter (ROCR-Runtime, core/inc/amd_filter_device.h) calls a token
+                # Illegal when it "can't be evaluated into an instance of Device UUID or
+                # Enumeration Index", and an Illegal token terminates the list -- so an
+                # illegal FIRST token leaves zero survivors, exactly as an out-of-range
+                # ordinal does, and _post_rocr_device_count already counts it that way.
+                # Reported as a definite blocker rather than as something to check only if
+                # the group change fails, since no membership makes the runtime enumerate
+                # a device again.
+                first = value.split(",")[0].strip()
+                return (
+                    bool(first)
+                    and not first.startswith("-")
+                    and not first.isdigit()
+                    and not first.lower().startswith("gpu-")
+                )
+
+            # Which of the four this host actually reads, per variable rather than one rule
+            # for all. The runtime being explained is HIP, so clr's precedence holds:
+            # rocdevice.cpp reads HIP_VISIBLE_DEVICES when its FIRST BYTE is not NUL and
+            # CUDA_VISIBLE_DEVICES otherwise, so an empty CUDA mask behind a valid HIP one
+            # is never consulted -- while an empty HIP mask does not win, clr's flag
+            # defaulting to "" and unable to tell it from unset. ROCr sits BELOW that layer
+            # and composes rather than defers (_rocm_visibility_masks_are_stacked), so an
+            # empty ROCr mask does blind the runtime; Windows has no ROCr layer at all.
+            # _active_gpu_visibility_mask is deliberately not used: it gates the same chain
+            # on torch being a ROCm build, which is the wrong question for a HIP
+            # llama-server sitting beside the CPU torch wheel this host tends to have.
+            _hip_layer_var = (
+                "HIP_VISIBLE_DEVICES"
+                if os.environ.get("HIP_VISIBLE_DEVICES", "")
+                else "CUDA_VISIBLE_DEVICES"
+            )
+            _rocr_filters = (
+                sys.platform != "win32" and os.environ.get("ROCR_VISIBLE_DEVICES") is not None
+            )
+            _ordinal_filters = LlamaCppBackend._gpu_device_ordinal_active()
+
+            _post_rocr_count = _post_rocr_device_count()
 
             masks = []
+            blocking = []
+            unresolved = []
             for var in (
                 "CUDA_VISIBLE_DEVICES",
                 "HIP_VISIBLE_DEVICES",
@@ -12610,35 +12875,201 @@ class LlamaCppBackend:
                 "GPU_DEVICE_ORDINAL",
             ):
                 raw = os.environ.get(var)
-                if raw is not None:
-                    masks.append(f"{var}={raw!r}" if raw.strip() else f"{var} is empty")
+                if raw is None:
+                    continue
+                phrase = f"{var}={raw!r}" if raw.strip() else f"{var} is empty"
+                masks.append(phrase)
+                if var == "GPU_DEVICE_ORDINAL":
+                    _consulted = _ordinal_filters
+                elif var == "ROCR_VISIBLE_DEVICES":
+                    _consulted = _rocr_filters
+                else:
+                    _consulted = var == _hip_layer_var
+                # A Vulkan build reads none of the four, so none of them blocks it.
+                if _is_vulkan or not _consulted:
+                    continue
+                # ROCr indexes the physical list, the HIP layer indexes ROCr's survivors.
+                _rocr = var == "ROCR_VISIBLE_DEVICES"
+                _bound = _amd_gpu_count if _rocr else _post_rocr_count
+                if _hides_every_device(raw, _bound, strict = not _rocr) or (
+                    _rocr and _is_an_illegal_rocr_selector(raw)
+                ):
+                    blocking.append(phrase)
+                elif _cannot_be_resolved(raw):
+                    unresolved.append(phrase)
+            # The four above are the HIP/CUDA selectors, which a Vulkan build reads none of.
+            # GGML_VK_VISIBLE_DEVICES is the one it DOES read and _run_vulkan_probe passes
+            # it through deliberately, so it is the only selector that can empty a Vulkan
+            # probe. Only the two ends are decidable here: ggml_vk_instance_init reads
+            # ordinals with `ss >> tmp` against the RAW vkEnumeratePhysicalDevices list,
+            # before CPU devices are dropped and ICDs deduplicated, so this process does not
+            # have the bound. A first token with no integer prefix (the empty string
+            # included) selects nothing, and a NEGATIVE ordinal wraps past every possible
+            # bound and always throws; a merely large positive one needs the bound to judge,
+            # so it stays unresolved. Anything else is reported as unresolved.
+            if _is_vulkan:
+                _vk_raw = os.environ.get("GGML_VK_VISIBLE_DEVICES")
+                if _vk_raw is not None:
+                    _vk_phrase = (
+                        f"GGML_VK_VISIBLE_DEVICES={_vk_raw!r}"
+                        if _vk_raw.strip()
+                        else "GGML_VK_VISIBLE_DEVICES is empty"
+                    )
+                    masks.append(_vk_phrase)
+                    if _vk_selects_no_device(_vk_raw) or _vk_ordinal_always_throws(_vk_raw):
+                        blocking.append(_vk_phrase)
+                    else:
+                        unresolved.append(_vk_phrase)
+
             mask_note = f" ({', '.join(masks)})" if masks else ""
+
+            node_hint = None
+            if _amd_capable:
+                try:
+                    from utils.hardware.amd import amd_node_permission_hint
+                    node_hint = amd_node_permission_hint(needs_kfd = not _is_vulkan)
+                except Exception:  # noqa: BLE001
+                    node_hint = None
+
+            def _closed_nodes_block_the_runtime() -> bool:
+                # A host this cannot read answers True, which keeps the closed node as the
+                # stated reason -- what this returned before the sibling check existed.
+                try:
+                    from utils.hardware.amd import amd_closed_nodes_block_the_runtime
+                    return amd_closed_nodes_block_the_runtime(needs_kfd = not _is_vulkan)
+                except Exception:  # noqa: BLE001
+                    return True
+
+            def _another_vendor_has_an_open_node() -> bool:
+                # Vulkan enumerates any vendor, so an open Intel or NVIDIA render node is a
+                # complete path for THIS binary and the closed AMD one cannot be the whole
+                # story. Asked only for Vulkan: HIP needs /dev/kfd and an AMD render node,
+                # which no other vendor's node substitutes for. False on a host this cannot
+                # read, which keeps the behaviour it had before the check existed.
+                if not _is_vulkan:
+                    return False
+                # Which drivers the loader would actually load decides this: a loader that
+                # can only load AMD never opens the other vendor's driver, so its open node
+                # is no path. One that can load that vendor is the opposite case and must
+                # NOT suppress.
+                try:
+                    from utils.hardware.amd import (
+                        a_non_amd_render_node_is_open,
+                        the_vulkan_loader_can_only_load_amd,
+                    )
+                    if the_vulkan_loader_can_only_load_amd():
+                        return False
+                    return a_non_amd_render_node_is_open()
+                except Exception:  # noqa: BLE001
+                    return False
+
+            # The closed node when it does NOT explain the empty probe, appended to whatever
+            # reason does rather than returned in place of it.
+            _second_finding = ""
+            # Sufficient on its own, so it rides on the PRIMARY reason, not on what
+            # gets demoted.
+            _loader_finding = ""
+
+            def _the_vulkan_loader_has_no_driver() -> bool:
+                try:
+                    from utils.hardware.amd import the_vulkan_loader_has_no_usable_driver
+                    return the_vulkan_loader_has_no_usable_driver()
+                except Exception:  # noqa: BLE001
+                    return False
+
+            def _the_loader_override_to_blame() -> "str | None":
+                # Which of the three causes it is, since only two are repaired by
+                # installing anything.
+                try:
+                    from utils.hardware.amd import the_vulkan_loader_override_to_blame
+                    return the_vulkan_loader_override_to_blame()
+                except Exception:  # noqa: BLE001
+                    return None
+
+            def _reason(text: str) -> str:
+                return f"{text}{_loader_finding}{_second_finding}"
+
+            if node_hint:
+                # A mask hides devices whatever the node permissions are, so a host with
+                # both needs both fixes. Only a mask that can hide EVERY device counts as a
+                # second blocker: a valid selector beside a closed node is not why the probe
+                # came back empty. mask_note below still lists all four -- there it
+                # annotates what torch was looking at rather than claiming a repair.
+                if blocking:
+                    node_hint = (
+                        f"{node_hint} A device visibility mask is also in force "
+                        f"({', '.join(blocking)}), which the groups do not clear."
+                    )
+                elif unresolved:
+                    node_hint = (
+                        f"{node_hint} {', '.join(unresolved)} names a device this cannot "
+                        f"resolve, so whether it also hides the card is unknown; check it "
+                        f"if the groups do not help."
+                    )
+                # A closed node explains an empty probe only when it is one the runtime would
+                # have used. On a multi-AMD host a render node can be shut while a sibling is
+                # open, and the runtime then had a complete path and enumerated nothing
+                # anyway, so the closed one is a SECOND finding. Asked per backend, since HIP
+                # also needs /dev/kfd and that node has no sibling.
+                _node_is_why = (
+                    _closed_nodes_block_the_runtime() and not _another_vendor_has_an_open_node()
+                )
+                # A blocker the node repair cannot clear: manifests were found and none
+                # is loadable, so the probe stays empty however the node is owned. Kept out
+                # of node_hint, which may be demoted below: folding it in filed the one
+                # diagnosis that always holds under "not why the probe is empty". "also"
+                # only where the node repair really does precede it.
+                _also = "also " if _node_is_why else ""
+                if _is_vulkan and _the_vulkan_loader_has_no_driver():
+                    # The repair depends on WHY. A filter that disables every manifest, and
+                    # a forced list pointing at paths that do not resolve, are environment
+                    # settings that reinstalling a driver leaves exactly as they were. Named
+                    # rather than described, so the user has something to unset.
+                    _override = _the_loader_override_to_blame()
+                    if _override:
+                        _loader_finding = (
+                            f" The Vulkan loader {_also}has no driver it can load "
+                            f"here, and what leaves it with none is {_override}: clear or "
+                            f"correct that, since reinstalling the driver does not change "
+                            f"an environment override."
+                        )
+                    else:
+                        _loader_finding = (
+                            f" The Vulkan loader {_also}has no driver it can load "
+                            f"here: every ICD manifest it would read is missing its library "
+                            f"or is 32-bit, so reinstall the Vulkan driver as well."
+                        )
+                if _node_is_why:
+                    return f"{node_hint}{_loader_finding}"
+                _second_finding = f" Separately, and not why the probe is empty: {node_hint}"
+            if _is_vulkan:
+                return _reason("the Vulkan probe reported no device")
 
             try:
                 import torch
             except Exception:  # noqa: BLE001
-                return f"torch is not importable, so no GPU could be enumerated{mask_note}"
+                return _reason(f"torch is not importable, so no GPU could be enumerated{mask_note}")
             if not hasattr(torch, "cuda") or not torch.cuda.is_available():
-                return f"torch reports no usable CUDA or HIP device{mask_note}"
+                return _reason(f"torch reports no usable CUDA or HIP device{mask_note}")
             # Counting devices does not create a context; reading their memory would.
             count = torch.cuda.device_count()
             if not count:
-                return f"torch enumerated 0 devices{mask_note}"
+                return _reason(f"torch enumerated 0 devices{mask_note}")
 
             if LlamaCppBackend._torch_is_rocm(torch):
                 coverage = LlamaCppBackend._installed_llama_gfx_archs(binary)
                 if coverage:
                     present = sorted(set(LlamaCppBackend._rocm_arch_by_physical_id().values()))
                     if present and not (set(present) & set(coverage)):
-                        return (
+                        return _reason(
                             f"the installed llama.cpp build covers {sorted(coverage)} but this "
                             f"host has {present}, so the arch gate dropped every device"
                         )
-                return (
+                return _reason(
                     f"torch sees {count} ROCm device(s) but the probe returned none, so "
                     f"amd-smi and the torch fallback both declined{mask_note}"
                 )
-            return f"torch sees {count} device(s) but the probe returned none{mask_note}"
+            return _reason(f"torch sees {count} device(s) but the probe returned none{mask_note}")
         except Exception as e:  # noqa: BLE001 -- diagnostics must not break a load
             return f"the reason could not be determined ({type(e).__name__})"
 
@@ -15057,9 +15488,17 @@ class LlamaCppBackend:
             ]:
                 if os.path.isdir(cuda_lib):
                     lib_dirs.append(cuda_lib)
+
+            # Vendored dirs go last: rescue only, never displace a runtime already found.
+            from utils.llama_cpp_freshness import read_install_marker
+            from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
+
+            marker_binary = str(_resolve_llama_binary(binary))
+            vendored_cuda_dirs = vendored_cuda_runtime_dirs(read_install_marker(marker_binary))
             existing_ld = env.get("LD_LIBRARY_PATH", "")
-            new_ld = ":".join(lib_dirs)
-            env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+            env["LD_LIBRARY_PATH"] = ":".join(
+                path for path in [*lib_dirs, existing_ld, *vendored_cuda_dirs] if path
+            )
 
         return env
 
@@ -15421,14 +15860,41 @@ class LlamaCppBackend:
             n_parallel
         )
 
+    def _ctx_checkpoint_bytes(
+        self,
+        cache_type_kv: Optional[str] = None,
+        *,
+        swa_full: bool = False,
+        flash_attn: bool = True,
+    ) -> int:
+        """Host bytes of one slot's context checkpoint: the recurrent state, else the SWA window."""
+        recurrent = self._rollback_state_bytes(1)
+        if recurrent > 0:
+            return recurrent
+
+        def kv(checkpoints: int) -> int:
+            return self._estimate_kv_cache_bytes(
+                1,
+                cache_type_kv,
+                swa_full = swa_full,
+                ctx_checkpoints = checkpoints,
+                flash_attn = flash_attn,
+            )
+
+        return max(0, kv(1) - kv(0))
+
     def _bounded_ctx_checkpoints(
         self,
         n_parallel: int,
         server_caps: Mapping[str, object],
         extra_args: Optional[Iterable[str]] = None,
         env: Optional[Mapping[str, str]] = None,
+        *,
+        cache_type_kv: Optional[str] = None,
+        swa_full: bool = False,
+        flash_attn: bool = True,
     ) -> Optional[int]:
-        """Return an automatic recurrent-checkpoint cap, or None to preserve the argv."""
+        """Return an automatic context-checkpoint cap, or None to preserve the argv."""
         flag = server_caps.get("ctx_checkpoints_flag")
         if not flag:
             return None
@@ -15437,7 +15903,9 @@ class LlamaCppBackend:
             return None
         if _env_ctx_checkpoints_override(env) is not None:
             return None
-        per_checkpoint = self._rollback_state_bytes(1)
+        per_checkpoint = self._ctx_checkpoint_bytes(
+            cache_type_kv, swa_full = swa_full, flash_attn = flash_attn
+        )
         if per_checkpoint <= 0:
             return None
         total_ram_mib = self._host_memory_capacity_mib()
@@ -15453,7 +15921,7 @@ class LlamaCppBackend:
             return None
         logger.info(
             "Capping llama-server context checkpoints at %d per slot (this build's default %d): "
-            "each one snapshots this model's whole recurrent state (%.1f MiB), so the default "
+            "each one snapshots %.1f MiB of this model's state, so the default "
             "would hold %.1f GiB of host RAM across %d slot(s).",
             bounded,
             upstream_default,
@@ -15485,6 +15953,25 @@ class LlamaCppBackend:
         arch = getattr(self, "_architecture", None)
         return bool(arch) and str(arch).strip().lower() in _TARGET_KV_EXCLUDES_NEXTN_ARCHS
 
+    def _ssm_recurrent_layer_count(self, n_layers: int) -> int:
+        """SSM layers of a header with no attention interval, by llama.cpp's is_recr rules."""
+        arch = getattr(self, "_architecture", None)
+        if arch in _SSM_EVERY_LAYER_ARCHS:
+            return n_layers
+        heads = getattr(self, "_n_kv_heads_by_layer", None)
+        if not heads or getattr(self, "_kda_head_dim", None):
+            return 0
+        ffn = (
+            getattr(self, "_feed_forward_length_by_layer", None)
+            if arch in _SSM_FFN_FREE_LAYER_ARCHS
+            else None
+        ) or []
+        return sum(
+            1
+            for i, n_kv in enumerate(heads[:n_layers])
+            if n_kv == 0 and not (i < len(ffn) and ffn[i] > 0)
+        )
+
     def _mamba_recurrent_state_bytes(
         self,
         n_parallel: int = 1,
@@ -15503,17 +15990,16 @@ class LlamaCppBackend:
         n_group_raw = getattr(self, "_ssm_group_count", None)
         d_conv_raw = getattr(self, "_ssm_conv_kernel", None)
         fai_raw = getattr(self, "_full_attention_interval", None)
+        # Mamba1 (Jamba, Mamba) writes no group count; llama.cpp reads it as 0.
         if not all(
             value is not None
             for value in (
                 n_layers_raw,
                 d_inner_raw,
                 d_state_raw,
-                n_group_raw,
                 d_conv_raw,
-                fai_raw,
             )
-        ):
+        ) or (fai_raw is not None and n_group_raw is None):
             return 0
         # Excludes the embedded MTP blocks, as _estimate_kv_cache_bytes does and
         # for the same reason: llama.cpp keeps them out of the target's n_layer.
@@ -15521,9 +16007,12 @@ class LlamaCppBackend:
             0,
             int(n_layers_raw or 0) - int(getattr(self, "_nextn_predict_layers", None) or 0),
         )
-        fai = int(fai_raw or 0)
-        n_attn = -(-n_layers // fai) if fai > 0 else n_layers
-        n_recurrent = max(0, n_layers - n_attn)
+        if fai_raw is not None:
+            fai = int(fai_raw or 0)
+            n_attn = -(-n_layers // fai) if fai > 0 else n_layers
+            n_recurrent = max(0, n_layers - n_attn)
+        else:
+            n_recurrent = self._ssm_recurrent_layer_count(n_layers)
         if n_recurrent == 0:
             return 0
         d_inner = int(d_inner_raw or 0)
@@ -15750,6 +16239,8 @@ class LlamaCppBackend:
             )
             return int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot)
 
+        ssm_state = self._mamba_recurrent_state_bytes(n_parallel) + recurrent_checkpoints
+
         # Path 4: Standard GQA with explicit key/value dimensions
         if key_len is not None and val_len is not None:
             padded_v_width = None if flash_attn else self._max_kv_value_width(val_len)
@@ -15758,11 +16249,16 @@ class LlamaCppBackend:
                 layer_n_kv = self._kv_heads_for_layer(layer_idx, n_kv)
                 v_width = layer_n_kv * val_len if padded_v_width is None else padded_v_width
                 bytes_per_cell += layer_n_kv * key_len * bpe_k + v_width * bpe_v
-            return int(total_cells * bytes_per_cell)
+            return int(total_cells * bytes_per_cell) + ssm_state
 
         # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
         head_dim = self._legacy_head_dim()
-        return int(2 * n_kv * head_dim * n_layers_kv * total_cells * bpe_k)
+        # llama.cpp defaults head_count_kv to head_count, so a pure SSM (head_count 0) has no KV.
+        layer_default = self._n_kv_heads if self._n_kv_heads is not None else (self._n_heads or 0)
+        heads = [self._kv_heads_for_layer(i, layer_default) for i in range(n_layers_kv)]
+        # Without flash attention V is padded to the widest layer, as on Path 4.
+        v_heads = sum(heads) if flash_attn else len(heads) * max(heads)
+        return int((sum(heads) * bpe_k + v_heads * bpe_v) * head_dim * total_cells) + ssm_state
 
     def _draft_backend_for(self, drafter_path: str) -> Optional["LlamaCppBackend"]:
         """Lightweight backend with a drafter GGUF's metadata, to size its own KV
@@ -17111,6 +17607,7 @@ class LlamaCppBackend:
         self._pooling_type = None
         self._gguf_path = gguf_path
         self._feed_forward_length = None
+        self._feed_forward_length_by_layer = None
         self._expert_used_count = None
         self._expert_feed_forward_length = None
         self._expert_shared_feed_forward_length = None
@@ -17304,7 +17801,10 @@ class LlamaCppBackend:
                                     self._sliding_window_pattern = [bool(x) for x in val_a]
                                     sliding_window_pattern_period = None
                                 elif attr == "feed_forward_length" and val_a:
-                                    self._feed_forward_length = max(int(x) for x in val_a)
+                                    self._feed_forward_length_by_layer = [int(x) for x in val_a]
+                                    self._feed_forward_length = max(
+                                        self._feed_forward_length_by_layer
+                                    )
                             else:
                                 self._gguf_skip_value(f, vtype)
                         else:
@@ -22136,6 +22636,7 @@ class LlamaCppBackend:
         # gets it, so an embedded second session would otherwise release this load.
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
+        self._codec_failure.message = None
         with self._serial_load_scope():
             # Here, not at the spawn: a lock gives a waiter no priority, and the
             # duplicate-adoption phase below kills whatever is loaded -- after a
@@ -22948,7 +23449,9 @@ class LlamaCppBackend:
                         server_caps,
                         extra_args,
                         ctx_checkpoints,
-                        per_checkpoint_bytes = self._rollback_state_bytes(1),
+                        per_checkpoint_bytes = self._ctx_checkpoint_bytes(
+                            cache_type_kv, swa_full = swa_full, flash_attn = planned_flash_attn
+                        ),
                         n_parallel = n_parallel,
                         total_host_bytes = ((self._host_memory_capacity_mib() or 0) * 1024 * 1024)
                         or None,
@@ -26722,8 +27225,17 @@ class LlamaCppBackend:
                             # <= 9, not < 9: 9B is the top of the Small tier, so it is off too.
                             if size_b <= 9:
                                 thinking_default = False
-                    self._reasoning_default = thinking_default
-                    reasoning_kw = self._reasoning_kwargs(thinking_default)
+                    # argv beats the env `unsloth start` pins these through, so repeat it.
+                    _env_reasoning = _reasoning_from_env(env)
+                    if _env_reasoning is not None:
+                        thinking_default = _env_reasoning
+                    reasoning_kw = self._reasoning_kwargs(
+                        thinking_default, _reasoning_effort_from_env(env)
+                    )
+                    # An effort ladder thinks at every level but "none" (Inkling: 0), low included.
+                    self._reasoning_default = reasoning_kw.get(
+                        "enable_thinking", reasoning_kw.get("reasoning_effort") not in ("none", 0)
+                    )
                     # preserve_thinking is independent of the thinking gate.
                     # Qwen3.8 defaults it on; Qwen3.6, Gemma 4, and every other
                     # supporting family keep the existing off default. The
@@ -26895,7 +27407,14 @@ class LlamaCppBackend:
                 def _decide_auto_ctx_checkpoints() -> Optional[int]:
                     """The cap for the slots n_parallel currently names, or None to stand down."""
                     return (
-                        self._bounded_ctx_checkpoints(n_parallel, server_caps, extra_args)
+                        self._bounded_ctx_checkpoints(
+                            n_parallel,
+                            server_caps,
+                            extra_args,
+                            cache_type_kv = cache_type_kv,
+                            swa_full = swa_full,
+                            flash_attn = planned_flash_attn,
+                        )
                         if ctx_checkpoints is None
                         else None
                     )
@@ -31731,7 +32250,10 @@ class LlamaCppBackend:
             # UNSLOTH_LLAMA_CPP_PATH env var (custom install dir)
             custom_dir = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
             if custom_dir:
-                install_roots.append(Path(custom_dir))
+                # expanduser to match _find_llama_server_binary: the allowlist has
+                # to name the tree discovery actually spawns from, or a server
+                # started out of an expanded ~ is one this refuses to clean up.
+                install_roots.append(_expanded_user_path(custom_dir))
 
             # LLAMA_SERVER_PATH env var (exact binary path)
             exact_binaries: list[Path] = []
@@ -36605,6 +37127,9 @@ class LlamaCppBackend:
                             if decision_slot is not None
                             else None
                         )
+                        # The slot is where the waiter says WHY: the user's refusal, or an approval
+                        # nobody answered. Read before decision_slot is dropped in the deny branch.
+                        _decision_reason = decision_reason(decision_slot)
                         if _decision is not None and _decision != "deny":
                             # Approved: now it really is running.
                             yield {"type": "status", "text": decision.status_text}
@@ -36612,17 +37137,25 @@ class LlamaCppBackend:
                             decision_slot = None
                             _forced_choice_resolved = True
                             resolved_provisional_tool_call_ids.add(decision.tool_call_id)
+                            # An approval nobody answered is not the user's decision, and this
+                            # string is the only account of the call both the model and the
+                            # reopened card get: the buttons are gone by the time it lands.
+                            _denied_text = (
+                                TOOL_APPROVAL_EXPIRED_MESSAGE
+                                if _decision_reason == DECISION_EXPIRED
+                                else TOOL_REJECTED_MESSAGE
+                            )
                             yield {
                                 "type": "tool_end",
                                 "tool_name": decision.tool_name,
                                 "tool_call_id": decision.tool_call_id,
-                                "result": TOOL_REJECTED_MESSAGE,
+                                "result": _denied_text,
                                 "provenance": decision.provenance,
                             }
                             denied_message = {
                                 "role": "tool",
                                 "name": decision.tool_name,
-                                "content": TOOL_REJECTED_MESSAGE,
+                                "content": _denied_text,
                             }
                             if decision.tool_call_id:
                                 denied_message["tool_call_id"] = decision.tool_call_id
@@ -36908,7 +37441,14 @@ class LlamaCppBackend:
                         # outlives the closure.
                         _last_result_budget: list = ["<not passed>"]
 
-                        def _invoke_tool(_output_callback, _decision = decision):
+                        # Only a call the user answered: the executor lets it reach the host paths it names.
+                        _host_access_approved = _decision not in (None, "deny")
+
+                        def _invoke_tool(
+                            _output_callback,
+                            _decision = decision,
+                            _approved = _host_access_approved,
+                        ):
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
                             kwargs = dict(
@@ -36924,6 +37464,8 @@ class LlamaCppBackend:
                             # forced recall correctly refused.
                             if accepts_kwarg(execute_tool, "conversation_branch"):
                                 kwargs["conversation_branch"] = _extend_live_branch(conversation)
+                            if _approved and accepts_kwarg(execute_tool, "host_access_approved"):
+                                kwargs["host_access_approved"] = True
                             # And the room actually left: the model picks its own top_k and
                             # the result lands in the current tool exchange, which rolling
                             # truncation protects, so a top_k the window cannot hold ends
@@ -38427,6 +38969,7 @@ class LlamaCppBackend:
         chat_template_kwargs = None,
         continue_final_message: bool = False,
         should_abort = None,
+        prefer_native: bool = False,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
@@ -38440,6 +38983,8 @@ class LlamaCppBackend:
         ``should_abort`` is polled between the two llama-server calls. Admission is the
         caller's job; this only stops a count that was admitted while idle from spending its
         second round trip once the answer stopped mattering. Raises when it fires.
+
+        ``prefer_native`` tries /v1/chat/completions/input_tokens first (one round trip).
         """
         if not self.is_loaded:
             if strict:
@@ -38488,7 +39033,12 @@ class LlamaCppBackend:
         tools = neutralize_tool_descriptions(tools, None, _profile)
 
         try:
-            with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
+            with httpx.Client(
+                timeout = 10,
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _count_ssl_context(),
+            ) as client:
 
                 def _tokenize(text: str) -> int:
                     r = client.post(
@@ -38535,6 +39085,22 @@ class LlamaCppBackend:
                     if continue_final_message:
                         template_body["continue_final_message"] = True
                         template_body["add_generation_prompt"] = False
+                    if prefer_native:
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
+                        try:
+                            native = client.post(
+                                f"{self.base_url}/v1/chat/completions/input_tokens",
+                                json = template_body,
+                            )
+                            if native.status_code == 200:
+                                count = native.json().get("input_tokens")
+                                if type(count) is int and count > 0:
+                                    return count
+                        except Exception:
+                            pass
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
                     resp = client.post(
                         f"{self.base_url}/apply-template",
                         json = template_body,
@@ -38588,6 +39154,10 @@ class LlamaCppBackend:
             logger.debug(f"Audio type detection failed: {e}")
             return None
 
+    def codec_failure(self) -> Optional[str]:
+        """The ModelScope missing-repo sentence from this thread's last load_model codec init."""
+        return getattr(self._codec_failure, "message", None)
+
     def _apply_detected_audio(
         self,
         detected: Optional[str],
@@ -38609,6 +39179,7 @@ class LlamaCppBackend:
                     # Surface as HTTP 500 (matches pre-PR contract).
                     logger.warning("Failed to init audio codec '%s': %s", detected, exc)
                     self._audio_probed = False
+                    self._codec_failure.message = modelscope_missing(exc)
                     return False
         elif detected:
             # csm / whisper / audio_vlm: track type but keep _is_audio False --

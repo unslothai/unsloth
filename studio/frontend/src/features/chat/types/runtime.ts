@@ -100,6 +100,7 @@ export interface ChatLoraSummary {
   updatedAt?: number;
   source?: "training" | "exported";
   exportType?: "lora" | "merged" | "gguf";
+  sizeBytes?: number | null;
   /** Codec when the checkpoint fine-tunes an audio model, else null. */
   audioType?: string | null;
 }

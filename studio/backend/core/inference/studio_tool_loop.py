@@ -97,9 +97,12 @@ from core.inference.tool_stream_exec import (
 )
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
 from state.tool_approvals import (
+    DECISION_EXPIRED,
+    TOOL_APPROVAL_EXPIRED_MESSAGE,
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
     begin_tool_decision,
+    decision_reason,
     new_approval_id,
     wait_tool_decision,
 )
@@ -545,6 +548,7 @@ class _Turn:
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
     text: list[str] = field(default_factory = list)
+    reasoning: list[str] = field(default_factory = list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
     # Results from tools the PROVIDER ran this turn, keyed by call id so a repeated end event cannot record the same
@@ -1360,6 +1364,9 @@ async def stream_with_studio_tools(
 
                 delta = choice.get("delta")
                 delta = delta if isinstance(delta, dict) else {}
+                reasoning = delta.get("reasoning_content")
+                if getattr(transport, "preserves_reasoning", False) and isinstance(reasoning, str):
+                    turn.reasoning.append(reasoning)
                 content = delta.get("content")
                 raw_calls = delta.get("tool_calls")
                 extra = delta.get("extra_content")
@@ -1681,6 +1688,7 @@ async def stream_with_studio_tools(
                 )
                 yield _sse(start_event)
                 verdict = None
+                denied_reason = None
                 if decision_slot is not None:
                     waiter = asyncio.ensure_future(
                         asyncio.to_thread(
@@ -1703,6 +1711,9 @@ async def stream_with_studio_tools(
                             waiter.cancel()
                     verdict = waiter.result() if waiter.done() else None
                 if verdict == "deny":
+                    # Read before decision_slot is dropped below: the slot is where the waiter says
+                    # whether this was the user's refusal or an approval nobody answered.
+                    denied_reason = decision_reason(decision_slot)
                     decision_slot = None
                     denied = True
                 elif verdict is not None:
@@ -1714,19 +1725,27 @@ async def stream_with_studio_tools(
                     abort_tool_decision(decision_slot, approval_id)
 
             if denied:
+                # An approval nobody answered is not the user's decision, and this string is the only
+                # account of the call both the model and the reopened card get: the buttons are gone
+                # by the time it lands. Saying "the user declined" there is simply false.
+                denied_text = (
+                    TOOL_APPROVAL_EXPIRED_MESSAGE
+                    if denied_reason == DECISION_EXPIRED
+                    else TOOL_REJECTED_MESSAGE
+                )
                 yield _sse(
                     {
                         "type": "tool_end",
                         "tool_name": name,
                         "tool_call_id": card_id,
-                        "result": TOOL_REJECTED_MESSAGE,
+                        "result": denied_text,
                         "provenance": decision.provenance,
                     }
                 )
                 denied_message: dict[str, Any] = {
                     "role": "tool",
                     "name": name,
-                    "content": TOOL_REJECTED_MESSAGE,
+                    "content": denied_text,
                 }
                 if call_id:
                     denied_message["tool_call_id"] = call_id
@@ -1735,7 +1754,14 @@ async def stream_with_studio_tools(
                 reprompts = max_reprompts
                 continue
 
-            def _invoke(output_callback: Any, call = decision) -> str:
+            # Only a call the user answered: the executor lets it reach the host paths it names.
+            host_access_approved = verdict not in (None, "deny")
+
+            def _invoke(
+                output_callback: Any,
+                call = decision,
+                approved = host_access_approved,
+            ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -1749,6 +1775,8 @@ async def stream_with_studio_tools(
                 # leaves the replaced response in them.
                 if accepts_kwarg(execute_tool, "conversation_branch"):
                     kwargs["conversation_branch"] = request_branch
+                if approved and accepts_kwarg(execute_tool, "host_access_approved"):
+                    kwargs["host_access_approved"] = True
                 # And a budget, so the tool's clamp is not skipped. Unsloth cannot measure an external model's window,
                 # and a custom OpenAI-compatible endpoint can be a small local server, so a model-chosen 8 chunks is
                 # roughly 4K tokens replayed on every later call. Unmeasurable means one recall's worth. Explicitly
@@ -1856,6 +1884,8 @@ async def stream_with_studio_tools(
                 if assistant_message["content"]
                 else hosted_text
             )
+        if turn.reasoning:
+            assistant_message["reasoning_content"] = "".join(turn.reasoning)
         if turn.reasoning_extra:
             assistant_message["extra_content"] = turn.reasoning_extra
         if assistant_tool_calls:

@@ -19,8 +19,8 @@ import {
   composerSubmitIntent,
   composerShortcutLabels,
 } from "./utils/composer-preferences";
-import { useT } from "@/i18n";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -79,7 +79,6 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  BookOpenIcon,
   ChevronDownIcon,
   Columns2Icon,
   GlobeIcon,
@@ -101,6 +100,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatActive } from "./runtime-provider";
@@ -121,7 +121,10 @@ import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
+import { ChatAudioUploadMount } from "./components/chat-audio-upload-mount";
 import { useChatProjects } from "./hooks/use-chat-projects";
+import { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
+import { currentDictationEntryMode } from "./utils/dictation-entry";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
@@ -165,6 +168,7 @@ import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useT } from "@/i18n";
 import {
   PLUS_MENU_ORDER,
   type PlusMenuItemId,
@@ -183,15 +187,18 @@ import {
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
+  codeToolsOn,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
+  providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
 } from "./provider-capabilities";
+import { codeToolCanRun } from "./api/code-tool-placement";
 import { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 import {
   type CompositionEvent,
@@ -206,6 +213,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   useSyncExternalStore,
@@ -494,7 +502,7 @@ function PendingImageThumb({
     <div
       data-reload-snapshot-sensitive
       data-composer-attachment="image"
-      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted"
+      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted"
     >
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
       <button
@@ -570,7 +578,6 @@ export function SharedComposer({
 }): ReactElement {
   const t = useT();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
-  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
   const handleExitCompare = useCallback(() => {
@@ -581,6 +588,7 @@ export function SharedComposer({
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
   const [text, setText] = useState("");
+  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform(), text);
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
@@ -592,6 +600,15 @@ export function SharedComposer({
   const textRef = useRef(text);
   const pendingImagesRef = useRef(pendingImages);
   const pendingAudioRef = useRef(pendingAudio);
+  const setCurrentText = useCallback(
+    (value: string | ((previous: string) => string)) => {
+      const next =
+        typeof value === "function" ? value(textRef.current) : value;
+      textRef.current = next;
+      setText(next);
+    },
+    [],
+  );
   useEffect(() => {
     textRef.current = text;
     pendingImagesRef.current = pendingImages;
@@ -673,7 +690,7 @@ export function SharedComposer({
 
   const skillMentions = useTextareaSkillMentions({
     text,
-    setText,
+    setText: setCurrentText,
     inputRef: textareaRef,
     composingRef,
     enabled: supportsTools,
@@ -683,7 +700,7 @@ export function SharedComposer({
   );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
-  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const codeToolsEnabled = useChatRuntimeStore(codeToolsOn);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const setImageToolsEnabled = useChatRuntimeStore(
@@ -761,6 +778,7 @@ export function SharedComposer({
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
             baseUrl: selectedExternalProvider?.baseUrl ?? null,
+            apiType: selectedExternalProvider?.apiType,
           },
         )
       : null;
@@ -793,9 +811,12 @@ export function SharedComposer({
       : reasoningEffort;
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && displayedEffort !== "none";
-  const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
+  const reasoningDisabled =
+    !modelLoaded || !(effectiveSupportsReasoning || supportsPreserveThinking);
   const showReasoningControl =
-    effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
+    effectiveSupportsReasoning ||
+    effectiveReasoningAlwaysOn ||
+    supportsPreserveThinking;
   // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort dropdown; it just also
   // carries an Off row via supportsReasoningOff.
   const isEffort =
@@ -806,22 +827,25 @@ export function SharedComposer({
   const narrowEffortMenu =
     effectiveReasoningStyle === "enable_thinking_effort" &&
     !supportsPreserveThinking;
-  const thinkingActiveLook = isEffort
-    ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
-    : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
-  // Two-pill gating. Search: supportsTools (Code/python plus local web_search) OR
-  // supportsBuiltinWebSearch (OpenAI/Anthropic/OpenRouter/Kimi). Code: the local runtime OR
-  // Anthropic with a model taking code_execution_20250825, the only external code-execution tool
-  // today, per providerSupportsBuiltinCodeExecution.
+  const thinkingActiveLook = !effectiveSupportsReasoning
+    ? preserveThinking && !reasoningDisabled
+    : isEffort
+      ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
+      : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
+  // Search can use Unsloth tools or provider web search independently of Code.
+  // Code follows the provider's sandbox placement and never falls back to local
+  // execution when a hosted model lacks code support.
   const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
     selectedExternalProvider?.providerType,
     effectiveExternalModelId,
     selectedExternalProvider?.baseUrl,
+    selectedExternalProvider?.apiType,
   );
   const supportsBuiltinImageGeneration = providerSupportsBuiltinImageGeneration(
     selectedExternalProvider?.providerType,
     effectiveExternalModelId,
     selectedExternalProvider?.baseUrl,
+    selectedExternalProvider?.apiType,
   );
   const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
     selectedExternalProvider?.providerType,
@@ -844,11 +868,24 @@ export function SharedComposer({
     (isGeminiImageTier
       ? !supportsBuiltinWebSearch
       : !(supportsTools || supportsBuiltinWebSearch));
+  const externalUsesStudioTools =
+    providerModelSupportsStudioTools(
+      selectedExternalProvider?.providerType,
+      externalSelection?.modelId,
+    ) === true;
+  const canRunCode = isExternalModel
+    ? codeToolCanRun({
+        hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
+        providerHostsCodeExecution: providerHostsCodeExecution(
+          selectedExternalProvider?.providerType,
+          selectedExternalProvider?.baseUrl,
+          selectedExternalProvider?.apiType,
+        ),
+        supportsStudioTools: externalUsesStudioTools,
+      })
+    : supportsTools;
   const codeDisabled =
-    (modelLoaded &&
-      (isGeminiImageTier
-        ? true
-        : !(supportsTools || supportsBuiltinCodeExecution))) ||
+    (modelLoaded && (isGeminiImageTier || !canRunCode)) ||
     imageModeDisablesCode;
   // Images pill lights only on OpenAI cloud Responses-API models and the Gemini Nano Banana
   // family. No local tool runtime fallback.
@@ -856,11 +893,6 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
-  const externalUsesStudioTools =
-    providerModelSupportsStudioTools(
-      selectedExternalProvider?.providerType,
-      externalSelection?.modelId,
-    ) === true;
   const ragDisabled =
     modelLoaded && ((!externalUsesStudioTools && isExternalModel) || !supportsTools);
   const showRagPill = !isExternalModel || externalUsesStudioTools;
@@ -889,9 +921,36 @@ export function SharedComposer({
   const {
     isDictating,
     isFinalizing: isDictationFinalizing,
-    start: startDictation,
+    start: startDictationSession,
     stop: stopDictation,
-  } = useDictation(setText);
+  } = useDictation(setCurrentText);
+  const chatActive = useChatActive();
+  const compareUploadInstanceId = useId();
+  const audioUploadOwner = `${compareUploadInstanceId}:${model1?.id ?? ""}:${model2?.id ?? ""}`;
+  const readAudioUploadDraft = useCallback(() => textRef.current, []);
+  const writeAudioUploadDraft = useCallback(
+    (value: string) => setCurrentText(value),
+    [setCurrentText],
+  );
+  const focusAudioUploadDraft = useCallback(() => {
+    textareaRef.current?.focus({ preventScroll: true });
+  }, []);
+  const audioUpload = useChatAudioUpload({
+    owner: audioUploadOwner,
+    chatId: null,
+    disabled: isDictating || !chatActive,
+    readDraft: readAudioUploadDraft,
+    writeDraft: writeAudioUploadDraft,
+    focusDraft: focusAudioUploadDraft,
+  });
+  const startDictation = useCallback(() => {
+    if (audioUpload.busy || !chatActive) return;
+    if (currentDictationEntryMode() === "recording-file") {
+      audioUpload.openDialog();
+      return;
+    }
+    startDictationSession();
+  }, [audioUpload, chatActive, startDictationSession]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -926,7 +985,7 @@ export function SharedComposer({
     toast(`Prompt ${nextIndex + 1} / ${queueRef.current.length}`, {
       description: next.length > 80 ? next.slice(0, 80) + "…" : next,
     });
-    setText(next);
+    setCurrentText(next);
     setTimeout(() => { sendRef.current?.(); }, 100);
   }
 
@@ -1211,7 +1270,7 @@ export function SharedComposer({
       });
     };
     const clearSubmittedDraft = () => {
-      setText("");
+      setCurrentText("");
       setPendingImages([]);
       setPendingAudio(null);
       clearPendingAudioStore();
@@ -1285,6 +1344,7 @@ export function SharedComposer({
         keepChangedDraft();
         return;
       }
+      audioUpload.cancel();
       clearSubmittedDraft();
       // Set when an accepted transformers install unloaded the active model server-side; a later
       // failure must then clear the stale checkpoint.
@@ -1924,6 +1984,7 @@ export function SharedComposer({
           reservations.push(token);
         }
       }
+      audioUpload.cancel();
       clearSubmittedDraft();
       for (const handle of handles) {
         handle.append(content);
@@ -1963,7 +2024,7 @@ export function SharedComposer({
       }
       setCompositionState(false);
     }
-    if (composerSubmitIntent(e, sendShortcut)) {
+    if (composerSubmitIntent(e, sendShortcut, text)) {
       e.preventDefault();
       if (!busy && !isDictating) {
         send();
@@ -1982,7 +2043,6 @@ export function SharedComposer({
 
   // Compare mode swaps this composer in for the single-chat one and only one is ever on screen, so the
   // chords register in both. Both gate on the chat tab being visible: off-route the pane is hidden.
-  const chatActive = useChatActive();
   useShortcut(
     "startDictation",
     () => {
@@ -2050,7 +2110,7 @@ export function SharedComposer({
         onSelect={() => setRagEnabled(!ragEnabled)}
       >
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
-        Chat with Files
+        Chat with files
         {ragEnabled && !ragDisabled ? (
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
@@ -2071,8 +2131,8 @@ export function SharedComposer({
     ),
     skills: (
       <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
-        <BookOpenIcon />
-        Agent Skills
+        <HugeiconsIcon icon={Scroll01Icon} strokeWidth={2} />
+        Skills
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -2083,13 +2143,13 @@ export function SharedComposer({
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
           collisionPadding={16}
-          className="unsloth-plus-menu w-[208px]"
+          className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
           {recentPrompts.map((p) => (
             <DropdownMenuItem
               key={p.id}
               onSelect={() => {
-                setText(p.text);
+                setCurrentText(p.text);
                 requestAnimationFrame(() => textareaRef.current?.focus());
               }}
             >
@@ -2122,7 +2182,7 @@ export function SharedComposer({
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
           collisionPadding={16}
-          className="unsloth-plus-menu w-[208px]"
+          className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
           {[
             { label: "Training JSONL", fn: exportConversationRawJsonl },
@@ -2176,7 +2236,7 @@ export function SharedComposer({
           <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
           Projects
         </DropdownMenuSubTrigger>
-        <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+        <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(232px*var(--ui-space-scale,1))]">
           <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
             <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
             New project
@@ -2226,12 +2286,13 @@ export function SharedComposer({
       }}
     >
       <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
+      <ChatAudioUploadMount audioUpload={audioUpload} />
 
       <PromptStorageDialog
         open={promptStorageOpen}
         onOpenChange={setPromptStorageOpen}
         onUse={(t) => {
-          setText(t);
+          setCurrentText(t);
           requestAnimationFrame(() => textareaRef.current?.focus());
         }}
         onRunList={(items) => {
@@ -2258,7 +2319,7 @@ export function SharedComposer({
           toast(`Prompt 1 / ${filtered.length}`, {
             description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
           });
-          setText(filtered[0]);
+          setCurrentText(filtered[0]);
           setTimeout(() => { sendRef.current?.(); }, 100);
         }}
       />
@@ -2291,7 +2352,7 @@ export function SharedComposer({
         {pendingAudio && (
           <div
             data-composer-attachment="audio"
-            className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs"
+            className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
           >
             <HeadphonesIcon className="size-3.5 text-muted-foreground" />
             <span data-reload-snapshot-sensitive className="max-w-48 truncate">
@@ -2324,7 +2385,7 @@ export function SharedComposer({
           // must match the DOM at all times, else an unrelated parent re-render reconciles the textarea back
           // to the stored value mid-composition, wiping the preedit (#5318).
           setCompositionState(isNativeComposing(e.nativeEvent));
-          setText(e.target.value);
+          setCurrentText(e.target.value);
           skillMentions.update(
             e.target.value,
             e.target.selectionStart ?? e.target.value.length,
@@ -2346,7 +2407,7 @@ export function SharedComposer({
         }}
         onCompositionEnd={(e: CompositionEvent<HTMLTextAreaElement>) => {
           setCompositionState(false);
-          setText(e.currentTarget.value);
+          setCurrentText(e.currentTarget.value);
         }}
         onKeyDown={(event) => {
           if (!skillMentions.onKeyDown(event)) onKeyDown(event);
@@ -2413,7 +2474,7 @@ export function SharedComposer({
                 aria-label="Tools and attachments"
                 className="unsloth-composer-plus"
               >
-                <PlusIcon className="size-[22px] stroke-[1.75px]" />
+                <PlusIcon className="size-[calc(22px*var(--ui-space-scale,1))] stroke-[1.75px]" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
@@ -2421,7 +2482,7 @@ export function SharedComposer({
               align="start"
               sideOffset={0}
               avoidCollisions={true}
-              className="unsloth-plus-menu w-[244px]"
+              className="unsloth-plus-menu w-[calc(244px*var(--ui-space-scale,1))]"
               onCloseAutoFocus={(event) => event.preventDefault()}
             >
               <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
@@ -2517,7 +2578,7 @@ export function SharedComposer({
                   <MoreHorizontalIcon className="size-4" />
                   More
                 </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(248px*var(--ui-space-scale,1))]">
                   {overflowPlusItems.map((id) => (
                     <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
                   ))}
@@ -2544,7 +2605,7 @@ export function SharedComposer({
             aria-label="Exit compare chat"
           >
             <PillGlyph>
-              <Columns2Icon className="size-[14px]" />
+              <Columns2Icon className="size-[calc(14px*var(--ui-space-scale,1))]" />
             </PillGlyph>
             <span>Compare</span>
           </button>
@@ -2572,7 +2633,7 @@ export function SharedComposer({
             }
           >
             <PillGlyph>
-              <GlobeIcon className="size-[15px]" />
+              <GlobeIcon className="size-[calc(15px*var(--ui-space-scale,1))]" />
             </PillGlyph>
             <span>Search</span>
           </button>
@@ -2592,7 +2653,7 @@ export function SharedComposer({
             <PillGlyph>
               <HugeiconsIcon
                 icon={CodeIcon}
-                className="size-[18.5px]"
+                className="size-[calc(18.5px*var(--ui-space-scale,1))]"
                 strokeWidth={2}
               />
             </PillGlyph>
@@ -2657,7 +2718,7 @@ export function SharedComposer({
               <PillGlyph>
                 <HugeiconsIcon
                   icon={PencilRulerIcon}
-                  className="size-[15.5px]"
+                  className="size-[calc(15.5px*var(--ui-space-scale,1))]"
                   strokeWidth={2}
                 />
               </PillGlyph>
@@ -2691,7 +2752,7 @@ export function SharedComposer({
                       reasoningEffort: displayedEffort,
                     })}
                   >
-                    <BulbIcon className="size-[15.5px]" />
+                    <BulbIcon className="size-[calc(15.5px*var(--ui-space-scale,1))]" />
                     {thinkingActiveLook ? (
                       <span className="unsloth-thinking-label">
                         {isEffort
@@ -2702,7 +2763,7 @@ export function SharedComposer({
                           : "Thinking"}
                       </span>
                     ) : null}
-                    <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[15px]" />
+                    <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
                   </button>
                 )}
               >
@@ -2767,6 +2828,7 @@ export function SharedComposer({
                       ))}
                   </>
                 ) : (
+                  effectiveSupportsReasoning &&
                   effectiveSupportsReasoningOff &&
                   !reasoningLockedOn && (
                     <DropdownMenuItem
@@ -2800,8 +2862,8 @@ export function SharedComposer({
                       e.preventDefault();
                       const next = !preserveThinking;
                       setPreserveThinking(next);
-                      // Preserve thinking requires thinking on.
-                      if (next) {
+                      // Only local models couple this setting to generation controls.
+                      if (next && !isExternalModel) {
                         setReasoningEnabled(true);
                         applyQwenThinkingParams(true);
                       }
@@ -2851,7 +2913,7 @@ export function SharedComposer({
                 })}
               >
                 <PillGlyph>
-                  <BulbIcon className="size-[15.5px]" />
+                  <BulbIcon className="size-[calc(15.5px*var(--ui-space-scale,1))]" />
                 </PillGlyph>
                 {thinkingActiveLook ? (
                   <span className="unsloth-thinking-label">Thinking</span>
@@ -2862,17 +2924,34 @@ export function SharedComposer({
           {
             <>
               {!isDictating ? (
-                <TooltipIconButton
-                  tooltip="Dictate"
-                  side="bottom"
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 rounded-full text-muted-foreground"
-                  onClick={startDictation}
-                  aria-label="Dictate"
-                >
-                  <MicIcon className="unsloth-dictate-icon size-4" />
-                </TooltipIconButton>
+                audioUpload.busy ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1.5 rounded-full px-2 text-muted-foreground"
+                    aria-label={t("settings.voice.dictation.audioUploadCancel")}
+                    title={t("settings.voice.dictation.audioUploadCancel")}
+                    onClick={audioUpload.cancel}
+                  >
+                    <Spinner className="size-3.5" />
+                    <span>{t("settings.voice.dictation.audioUploadTranscribing")}</span>
+                    <XIcon className="size-3" aria-hidden="true" />
+                  </Button>
+                ) : (
+                  <TooltipIconButton
+                    tooltip="Dictate"
+                    side="bottom"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 rounded-full text-muted-foreground"
+                    disabled={!chatActive}
+                    onClick={startDictation}
+                    aria-label="Dictate"
+                  >
+                    <MicIcon className="unsloth-dictate-icon size-4" />
+                  </TooltipIconButton>
+                )
               ) : (
                 <TooltipIconButton
                   tooltip={
@@ -2935,7 +3014,7 @@ export function SharedComposer({
               disabled={!canSend}
               aria-label={t("promptQueue.sendLabel")}
             >
-              <ArrowUpIcon className="unsloth-send-icon size-[22px] stroke-2" />
+              <ArrowUpIcon className="unsloth-send-icon size-[calc(22px*var(--ui-space-scale,1))] stroke-2" />
             </TooltipIconButton>
           )}
         </div>

@@ -187,8 +187,9 @@ def _sidebar_nav(items):
 FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("hub", True),
     ("projects", True),
+    ("library", True),
     ("images", True),
-    ("video", True),
+    ("video", False),
     ("audio", False),
     ("train", True),
     ("recipes", False),
@@ -228,6 +229,7 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
         ("video", True),
         ("hub", False),
         ("projects", True),
+        ("library", True),
         ("images", True),
         ("audio", False),
         ("train", True),
@@ -255,6 +257,51 @@ def test_customization_sidebar_nav_rejects_pathological_length():
     huge = [{"id": "hub"} for _ in range(MAX_SIDEBAR_NAV_INPUT_ITEMS + 1)]
     with pytest.raises(ValidationError):
         PersonalizationPayload.model_validate(_sidebar_nav(huge))
+
+
+def _sidebar_nav_auto(value):
+    return {"appearance": {"customization": {"sidebarNavAuto": value}}}
+
+
+def test_customization_sidebar_nav_auto_defaults_to_none():
+    # None, not a list: the client reads it as "this record predates the field" and works the
+    # placement out from the layout. A default list would answer for a user who never chose.
+    assert PersonalizationPayload().appearance.customization.sidebarNavAuto is None
+
+
+def test_customization_sidebar_nav_auto_keeps_an_explicit_empty_list():
+    # The user decided the Projects row's placement themselves, so no rule applies to it. That
+    # is the opposite of an absent field and has to survive the round trip.
+    p = PersonalizationPayload.model_validate(_sidebar_nav_auto([]))
+    assert p.appearance.customization.sidebarNavAuto == []
+
+
+def test_customization_sidebar_nav_auto_dedupes_and_validates():
+    p = PersonalizationPayload.model_validate(_sidebar_nav_auto(["projects", "projects"]))
+    assert p.appearance.customization.sidebarNavAuto == ["projects"]
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(_sidebar_nav_auto(["chats"]))
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            _sidebar_nav_auto(["hub"] * (MAX_SIDEBAR_NAV_INPUT_ITEMS + 1))
+        )
+
+
+def test_personalization_put_round_trips_sidebar_nav_auto(monkeypatch):
+    # Pinning Projects while the rule hides it leaves the layout at the shipped default, so the
+    # choice lives in this field alone. Dropping it on the way in would undo it on the next load.
+    store: dict = {}
+    client = _shared_setup_1(monkeypatch, store)
+    put = client.put(
+        "/api/settings/personalization",
+        json = _sidebar_nav_auto([]),
+    )
+    assert put.status_code == 200
+    assert put.json()["appearance"]["customization"]["sidebarNavAuto"] == []
+    stored = store[pers.PERSONALIZATION_SETTING_KEY]["appearance"]["customization"]
+    assert stored["sidebarNavAuto"] == []
+    body = client.get("/api/settings/personalization").json()
+    assert body["appearance"]["customization"]["sidebarNavAuto"] == []
 
 
 def test_customization_imported_fonts_validated():
@@ -481,10 +528,13 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "hub", "pinned": True},
                     {"id": "train", "pinned": True},
                     {"id": "projects", "pinned": False},
+                    {"id": "library", "pinned": True},
                     {"id": "recipes", "pinned": False},
                     {"id": "export", "pinned": False},
                     {"id": "api", "pinned": False},
                 ],
+                # This layout was arranged by hand, so no row is left on a rule.
+                "sidebarNavAuto": [],
             },
         },
     }

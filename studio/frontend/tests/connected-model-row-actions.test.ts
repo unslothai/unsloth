@@ -7,7 +7,6 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-
 import { readSrc } from "./helpers/kit.ts";
 
 const pickers = readSrc(
@@ -48,11 +47,11 @@ test("a connected row draws its badges through ModelRow", () => {
   // drop there could not be honoured.
   assert.match(
     pickers,
-    /pinnedConnectedRows\.map\(\(model\) =>\s*renderConnectedModelRow\(model, true, true\)/,
+    /pinnedConnectedRows\.map\(\(model\) =>\s*renderPinnedDragRow\(\s*pinnedConnectedDrag,\s*model\.id,\s*renderConnectedModelRow\(model, true\)/,
   );
   assert.match(
     pickers,
-    /group\.models\.map\(\(model\) =>\s*renderConnectedModelRow\(model, false, !headed\)/,
+    /group\.models\.map\(\(model\) =>\s*renderConnectedModelRow\(model, !headed\)/,
   );
 });
 
@@ -65,7 +64,7 @@ test("capabilities are keyed by the provider's own model id", () => {
   );
   assert.match(
     pickers,
-    /connectedModelMarks\(\{\s*providerType: model\.providerType,\s*modelId: providerModelId,\s*baseUrl,/,
+    /connectedModelMarks\(\{\s*providerType: model\.providerType,\s*modelId: providerModelId,\s*baseUrl,\s*apiType: externalApiTypeById\.get\(model\.providerId\),/,
   );
   // A catalogue lands after first paint, so the marks have to be re-read when it does.
   assert.match(
@@ -92,7 +91,7 @@ test("modality comes from the resolvers the app already has", () => {
   assert.doesNotMatch(marks, /detectCapabilities/);
   assert.match(
     marks,
-    /imageGen: providerSupportsBuiltinImageGeneration\(\s*providerType,\s*modelId,\s*baseUrl,\s*\),/,
+    /imageGen: providerSupportsBuiltinImageGeneration\(\s*providerType,\s*modelId,\s*baseUrl,\s*apiType,\s*\),/,
   );
   // Audio is withheld even where a catalogue publishes it as an input modality: the attachment
   // adapter resolves the active model out of `models`, which carries loaded local models only, so
@@ -128,18 +127,11 @@ test("connected pins are a separate list from the On Device ones", () => {
   assert.doesNotMatch(pickers, /togglePinned\(model\.id\)/);
   assert.doesNotMatch(pickers, /pinKey\(model\.id\)/);
   assert.match(pickers, /onToggle: \(\) => togglePinnedConnected\(model\.id\)/);
-  // A toggle applies its one change to the STORED list. The write replaces the whole list, so two
-  // windows pinning different models before the storage event lands would otherwise keep only the
-  // second pin. Null, not [], when there is nothing to read: a toggle on an install whose writes
-  // all fail has to keep the session's own pins rather than drop them.
-  assert.match(
-    connectedPins,
-    /const base = storedPinned\(\) \?\? state\.pinned;/,
-  );
-  assert.match(
-    connectedPins,
-    /const raw = localStorage\.getItem\(KEY\);\s*if \(raw === null\) return null;/,
-  );
+  // A toggle applies its one change to the STORED list, since the write replaces the whole list
+  // and two windows pinning different models before the storage event lands would otherwise keep
+  // only the second pin. Asserted as behaviour in pinned-connected-models-reorder.test.ts, which
+  // also covers the storage-unavailable case; a regex here pinned the expression and broke on a
+  // rename that moved nothing.
   // A drag commit rebases too, for the same reason and one more: nothing echoes this window's own
   // write back to it, so a pin another window added mid-drag would be erased with no event left
   // to restore it. The dragged order is this window's; which ids are pinned is the record's.
@@ -147,10 +139,9 @@ test("connected pins are a separate list from the On Device ones", () => {
     connectedPins,
     /const next = rebaseOnStored\(state\.pinned\);\s*writePinned\(next\);/,
   );
-  assert.match(
-    connectedPins,
-    /const kept = order\.filter\(\(id\) => stored\.includes\(id\)\);\s*const added = stored\.filter\(\(id\) => !order\.includes\(id\)\);\s*return \[\.\.\.added, \.\.\.kept\];/,
-  );
+  // The rebase itself is asserted as behaviour in pinned-connected-models-reorder.test.ts,
+  // including the failed-write case where the record is fresh for other windows and stale only
+  // for this one. A regex over the expression broke on a rename that moved nothing.
 });
 
 test("a pin moves the row out of its provider group", () => {
@@ -388,7 +379,7 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   // one, and the pin effect's own guard sees no change in the stored string.
   assert.match(
     chatPage,
-    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceParams\.checkpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*\}\);\s*\}, \[activePinnedEffort,/,
+    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceParams\.checkpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*apiType: provider\?\.apiType,\s*\}\);\s*\}, \[activePinnedEffort,/,
   );
   assert.match(
     chatPage,
@@ -548,8 +539,8 @@ test("live effort edits use the shared runtime action", () => {
 test("a row with no heading over it still names its connection", () => {
   // Pinned rows and the name-sorted flat list have no provider heading, and two connections can
   // serve one model id, so the tooltip carries the connection name those rows have nowhere else.
-  assert.match(pickers, /renderConnectedModelRow\(model, true, true\)/);
-  assert.match(pickers, /renderConnectedModelRow\(model, false, !headed\)/);
+  assert.match(pickers, /renderConnectedModelRow\(model, true\)/);
+  assert.match(pickers, /renderConnectedModelRow\(model, !headed\)/);
   assert.match(pickers, /<span className="block text-ui-10 mt-1">\s*\{model\.providerName\}/);
   // No logo in the leading slot: down the pinned group it read as a second glyph column, and a
   // row is there to carry its name. So nothing goes in the slot at all now.
@@ -562,7 +553,7 @@ test("a row with no heading over it still names its connection", () => {
   // own left edge is ~30px in and a tooltip opening that way ran off screen.
   assert.match(
     pickers,
-    /<TooltipContent\s*side="right"\s*className="tooltip-compact max-w-\[15rem\] break-words"/,
+    /<TooltipContent\s*side="right"\s*className="tooltip-compact max-w-\[calc\(15rem\*var\(--ui-space-scale,1\)\)\] break-words"/,
   );
 });
 
@@ -714,7 +705,7 @@ test("a row's name starts where its heading's label does", () => {
     pickers,
     /<span className="flex min-w-0 items-center gap-1\.5 text-ui-10 font-semibold/,
   );
-  const listLabel = /className=\{cn\(\s*"flex items-center justify-between gap-1 px-2\.5 pb-1",\s*divider \? "mt-3 border-t border-border\/50 pt-3" : "pt-3",/;
+  const listLabel = /className=\{cn\(\s*"flex items-center justify-between gap-1 px-2\.5 pb-1",\s*divider \? "mt-3 border-t border-border pt-3" : "pt-3",/;
   assert.match(pickers, listLabel);
   assert.match(
     pickers,
@@ -734,7 +725,7 @@ test("reasoning is read through the resolver the composer uses", () => {
   for (const source of [infoDialog, settingsDialog]) {
     assert.match(
       source,
-      /getExternalReasoningCapabilities\(providerType, modelId, \{\s*isReasoningProvider,\s*baseUrl,\s*\}\)/,
+      /getExternalReasoningCapabilities\(providerType, modelId, \{\s*isReasoningProvider,\s*baseUrl,\s*apiType,\s*\}\)/,
     );
     // "none" is the off switch, not a level on offer.
     assert.match(source, /\(level\) => level !== "none"/);
@@ -742,6 +733,10 @@ test("reasoning is read through the resolver the composer uses", () => {
   assert.doesNotMatch(settingsDialog, /entry\?\.reasoning \? entry\.efforts/);
   // And a self-hosted endpoint's only reasoning signal is the flag on its connection.
   assert.match(pickers, /provider\.isReasoningModel === true,/);
+  // Custom Responses connections must carry their transport into both row dialogs.
+  assert.match(pickers, /apiType: externalApiTypeById\.get\(model\.providerId\)/);
+  assert.match(pickers, /apiType=\{settingsModel\.apiType\}/);
+  assert.match(pickers, /apiType=\{infoModel\.apiType\}/);
 });
 
 test("a Codex connection resolves against OpenAI's catalogue", async () => {

@@ -3,22 +3,34 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  ArrowExpand01Icon,
   Cancel01Icon,
   Delete02Icon,
   Download01Icon,
   FlimSlateIcon,
   ImageCropIcon,
-  Image03Icon,
   InformationCircleIcon,
-  PinIcon,
-  VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
+import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
-import { GalleryItemMenu } from "@/components/gallery-item-menu";
+import { GalleryItemMenu, GalleryPinBadge } from "@/components/gallery-item-menu";
+import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
+import { MediaViewer } from "@/components/media-viewer";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
+import { StripDropLine } from "@/components/gallery-strip-reorder";
+import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { ImageDropzone } from "@/components/image-dropzone";
-import { MediaPageLink } from "@/components/media-page-link";
+import { LibraryPageLink } from "@/components/media-page-link";
+import { translate, useT } from "@/i18n";
+import {
+  chatAboutMedia,
+  revealInFolder,
+  useLibraryFavorites,
+  useRevealLabel,
+} from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { videoTourSteps } from "./tour";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -26,6 +38,7 @@ import {
   applyPin,
   fetchNextPage,
   fetchWhileStable,
+  moveGalleryItem,
   nextSelectedId,
   pinnedOrder,
   removeGalleryItem,
@@ -34,6 +47,13 @@ import {
   sortGalleryItems,
   subscribeGalleryChanged,
 } from "@/lib/gallery-flags";
+import {
+  dismissExample,
+  isExampleDismissed,
+  readLastPrompt,
+  saveLastPrompt,
+} from "@/lib/last-prompt";
+
 import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
@@ -96,7 +116,13 @@ import {
   catalogToModelOptions,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
-import { useDenseQuantSchemes, useHostClass } from "@/hooks/use-host-class";
+import {
+  useDenseQuantSchemes,
+  useHostClass,
+  useNvfp4Diffusion,
+  useNvfp4DiffusionKnown,
+} from "@/hooks/use-host-class";
+import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -117,9 +143,11 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
+import { useIsMobileShell } from "@/hooks/use-mobile";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
+import { useDiffusionPickToast, usePickToastProgress } from "@/lib/use-diffusion-pick-toast";
 import {
   PRECISION_REFUSAL_TITLE,
   denseTextEncoderBuildLabel,
@@ -140,6 +168,7 @@ import {
   isDownloadCancelled,
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
@@ -169,6 +198,8 @@ import {
   cancelVideoGeneration,
   clearVideoGallery,
   deleteGalleryVideo,
+  addGalleryVideoToProject,
+  moveGalleryVideo,
   setGalleryVideoFlags,
   fetchGalleryVideoExport,
   fetchGalleryVideoSignedUrl,
@@ -182,7 +213,12 @@ import {
   loadVideoModel,
   unloadVideoModel,
 } from "./api";
+import { type Playback, fetchWithFreshLink, playWithMutedFallback, readPlayback } from "./viewer";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
+
+/** Placeholder hint until the prompt box is first focused. */
+const VIDEO_EXAMPLE_PROMPT =
+  "A slow cinematic shot down a quiet Kyoto street at sunrise, cherry blossom petals drifting in the air, a shopkeeper opening a wooden storefront, warm natural light.";
 
 // Curated models come from the shared catalog, one group per model with a format second level,
 // which also surfaces LTX-2.3 in Recommended since its HF pipeline_tag is image-to-video.
@@ -277,6 +313,8 @@ const VIDEO_LINK_REFRESH_MS = 6 * 60 * 60 * 1000;
 
 // Videos loaded per infinite-scroll page.
 const PAGE_SIZE = 50;
+
+const INLINE_PLAYBACK: Playback = { time: 0, playing: false, muted: true, volume: 1 };
 
 // Passes a window resync may make before giving up: each extra pass only happens when
 // pagination moved while it was fetching.
@@ -596,7 +634,7 @@ function AdvancedSelect({
           {badge}
         </span>
         <Select value={value} onValueChange={onValueChange}>
-          <SelectTrigger className="h-8 w-[160px] text-xs">
+          <SelectTrigger className="h-8 w-[calc(160px*var(--ui-space-scale,1))] max-sm:w-[min(calc(160px*var(--ui-space-scale,1)),50vw)] text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -673,12 +711,18 @@ function RecipePopover({
           Recipe
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" side="top" className="w-80 p-0">
-        <div className="border-b border-border/60 px-4 py-2.5">
+      {/* Fits the viewport: only the settings scroll, and overflow-hidden keeps the corners round. */}
+      <PopoverContent
+        align="end"
+        side="top"
+        collisionPadding={12}
+        className="flex max-h-[var(--radix-popover-content-available-height)] w-80 flex-col gap-0 overflow-hidden p-0"
+      >
+        <div className="shrink-0 border-b border-border/60 px-4 py-2.5">
           <p className="text-sm font-semibold">Generation settings</p>
           <p className="text-ui-11 text-muted-foreground">{formatTimestamp(video.created_at)}</p>
         </div>
-        <div className="flex flex-col gap-2 px-4 py-3 text-xs">
+        <div className="flex min-h-0 flex-col gap-2 overflow-y-auto overscroll-contain px-4 py-3 text-xs">
           <RecipeRow label="Prompt" value={video.prompt} wrap />
           {video.negative_prompt ? (
             <RecipeRow label="Negative" value={video.negative_prompt} wrap />
@@ -728,7 +772,7 @@ function RecipePopover({
           ) : null}
           <RecipeRow label="Seed" value={String(video.seed)} mono />
         </div>
-        <div className="border-t border-border/60 px-3 py-2.5">
+        <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(video)}>
             Restore these settings
           </Button>
@@ -886,14 +930,19 @@ function VideoGenerator({
   active?: boolean;
   onInitialReady?: () => void;
 }) {
+  const t = useT();
   const initialReadySent = useRef(false);
+  // Clear the floating sidebar toggle on mobile.
+  const isMobileShell = useIsMobileShell();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
+  const nvfp4Diffusion = useNvfp4Diffusion();
+  const nvfp4DiffusionKnown = useNvfp4DiffusionKnown();
   const videoModels = useVideoModels(hostClass, denseQuantSchemes);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
-  const [prompt, setPrompt] = useState(
-    "Ultra-realistic cinematic documentary footage of a quiet Kyoto neighborhood at sunrise. An elderly Japanese man opens his traditional wooden shop while a young woman wearing a simple kimono walks past carrying a small basket. Cherry blossom petals gently fall through the air, bicycles pass by, warm sunlight enters between narrow streets, distant temple bells echo. The camera slowly moves forward like a professional travel documentary, realistic human movements, natural expressions, authentic Japanese architecture, subtle wind movement in clothing and trees, realistic colors, 35mm film photography style.",
-  );
+  // Starts from the last prompt generated with; the example is only a placeholder.
+  const [prompt, setPrompt] = useState(() => readLastPrompt("video"));
+  const [exampleDismissed, setExampleDismissed] = useState(() => isExampleDismissed("video"));
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
@@ -978,10 +1027,13 @@ function VideoGenerator({
   const [attentionBackend, setAttentionBackend] = useState<
     "auto" | "native" | "cudnn" | "flash3" | "sage"
   >("auto");
-  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
+  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
+  useEffect(() => {
+    setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
+  }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant]);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options.
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
@@ -1009,6 +1061,7 @@ function VideoGenerator({
   } = useScrollFades();
   // Records come from the backend (durable); playback links and poster object URLs are cached separately.
   const [videos, setVideos] = useState<GalleryVideo[]>(() => galleryCache.videos);
+  const { rootStyle: railRootStyle } = useMediaRailWidth("video");
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
@@ -1070,6 +1123,7 @@ function VideoGenerator({
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
     loadToastId.current = null;
   }, []);
+  const pickToast = useDiffusionPickToast();
 
   // The load toast is built by handleLoad and the progress poll, both defined above
   // handleCancelLoad, so the action goes through a ref to keep a stable onClick.
@@ -1096,6 +1150,8 @@ function VideoGenerator({
     // Cancel, not release: a resolving pick or a staged download would load back what was just
     // ejected. Here rather than in handleUnload, so the loaded-models card is covered too.
     pickGuard.cancel();
+    // That pick can no longer load, so its toast must not keep promising it will.
+    pickToast.dismissAll();
     // Everything in flight is now stale. Clearing the timer stops the NEXT poll tick but not a
     // request awaiting its response; the counter is what those compare against.
     cancelSeq.current += 1;
@@ -1112,7 +1168,7 @@ function VideoGenerator({
       revertPick(quantRevert.current);
       quantRevert.current = null;
     }
-  }, [dismissLoadToast, pickGuard, revertPick]);
+  }, [dismissLoadToast, pickGuard, pickToast, revertPick]);
 
   // Mirror to the module cache so a tab switch re-renders instantly.
   useEffect(() => {
@@ -1127,6 +1183,48 @@ function VideoGenerator({
     [videos, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
+  const [viewer, setViewer] = useState<{ id: string; from: Playback } | null>(null);
+  const viewerVideoRef = useRef<HTMLVideoElement | null>(null);
+  const viewerPositioned = useRef(false);
+  const handback = useRef<{ id: string; playback: Playback } | null>(null);
+  const navigateToChat = useNavigate();
+  const revealLabel = useRevealLabel();
+  const viewerVideo = viewer ? (videos.find((video) => video.id === viewer.id) ?? null) : null;
+  const viewerSrc = viewerVideo ? srcById[viewerVideo.id] : undefined;
+  if (viewer && (!active || !viewerVideo)) setViewer(null);
+  const openViewer = () => {
+    if (!selected || !selectedSrc) return;
+    const inline = previewRef.current;
+    viewerPositioned.current = false;
+    handback.current = null;
+    setViewer({ id: selected.id, from: readPlayback(inline, INLINE_PLAYBACK) });
+    inline?.pause();
+  };
+  const recordViewer = (video: HTMLVideoElement) => {
+    if (!viewer || video !== viewerVideoRef.current) return;
+    handback.current = {
+      id: viewer.id,
+      playback: readPlayback(video, viewer.from, viewerPositioned.current),
+    };
+  };
+  const closeViewer = () => {
+    if (viewerVideoRef.current) recordViewer(viewerVideoRef.current);
+    setViewer(null);
+  };
+  const shownId = selected?.id;
+  useEffect(() => {
+    const last = handback.current;
+    if (viewer || !last || last.id !== shownId) return;
+    const inline = previewRef.current;
+    if (!selectedSrc || !inline) return;
+    handback.current = null;
+    const { playback } = last;
+    inline.currentTime = playback.time;
+    inline.muted = playback.muted;
+    inline.volume = playback.volume;
+    if (playback.playing && activeRef.current) void playWithMutedFallback(inline);
+    else inline.pause();
+  }, [viewer, shownId, selectedSrc]);
 
   // The resolution presets + temporal lattice for the loaded family, or the fallbacks before anything is loaded.
   const resolutionPresets = useMemo<Array<[number, number]>>(() => {
@@ -1759,6 +1857,27 @@ function VideoGenerator({
     [],
   );
 
+  // One-click download of the original MP4.
+  const handleQuickDownload = useCallback(
+    async (video: GalleryVideo) => {
+      const cached = galleryCache.srcById.get(video.id);
+      let url =
+        cached && Date.now() - cached.mintedAt < VIDEO_LINK_REFRESH_MS ? cached.url : null;
+      if (!url) {
+        try {
+          url = await fetchGalleryVideoSignedUrl(video.id);
+        } catch (err) {
+          toast.error("Could not save video", {
+            description: err instanceof Error ? err.message : undefined,
+          });
+          return;
+        }
+      }
+      await handleDownload(url, video, "mp4");
+    },
+    [handleDownload],
+  );
+
   // Drop a clip from the strip. `discardLink` is for a real delete: the bytes are gone, so the
   // cached link must go and any mint in flight must discard. An archived clip keeps both.
   const dropFromStrip = useCallback((id: string, discardLink: boolean) => {
@@ -1874,6 +1993,7 @@ function VideoGenerator({
 
   // The pin state each id was last CLICKED into, so a failing request can tell whether it is
   // still the current intent; without it a slow failure rolls back a later success.
+  const { isFavorite, toggleFavorite } = useLibraryFavorites();
   const pinAttempt = useRef(new Map<string, number>());
   const pinSeq = useRef(0);
 
@@ -1932,6 +2052,49 @@ function VideoGenerator({
     },
     [resyncWindow],
   );
+
+  // Drag-to-reorder: applied optimistically, then the server's record (key and pin) is adopted.
+  const handleMove = useCallback(
+    async (id: string, afterId: string | null) => {
+      const next = moveGalleryItem(galleryCache.videos, id, afterId);
+      if (next === galleryCache.videos) return;
+      const guessedPinned = Boolean(next.find((i) => i.id === id)?.pinned);
+      // Takes a pin token too: a pin clicked after this drop must not be undone by its response.
+      const attempt = (pinSeq.current += 1);
+      pinAttempt.current.set(id, attempt);
+      stripEpoch.current += 1;
+      galleryCache.videos = next;
+      setVideos(next);
+      try {
+        // Shares the pin queue, since both rewrite the order.
+        const record = await serializeById("video-pin", () => moveGalleryVideo(id, afterId));
+        if (pinAttempt.current.get(id) !== attempt) return;
+        pinAttempt.current.delete(id);
+        setVideos((prev) => {
+          const patched = prev.map((i) =>
+            i.id === id ? { ...i, pinned: record.pinned, order_at: record.order_at } : i,
+          );
+          // Re-sort only if the local pin guess was wrong.
+          const out =
+            Boolean(record.pinned) === guessedPinned ? patched : sortGalleryItems(patched);
+          galleryCache.videos = out;
+          return out;
+        });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to move video");
+        // Restore the server's order.
+        stripEpoch.current += 1;
+        const epoch = stripEpoch.current;
+        try {
+          await resyncWindow(galleryCache.videos.length, () => stripEpoch.current === epoch);
+        } catch {
+          void loadGallery();
+        }
+      }
+    },
+    [resyncWindow, loadGallery],
+  );
+  const stripReorder = useStripReorder((id, afterId) => void handleMove(id, afterId));
 
   const handleArchive = useCallback(
     async (id: string) => {
@@ -2420,6 +2583,8 @@ function VideoGenerator({
       opts: VideoLoadOptions,
       // Staged loads use the controls their preflight validated.
       pinned?: VideoLoadAdvanced,
+      // Reuse the pick toast when loading starts.
+      pickToastId?: string,
     ): Promise<boolean> => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
       // Read BEFORE the start request goes out: a Cancel pressed while it is in flight sends an
@@ -2441,7 +2606,8 @@ function VideoGenerator({
       setBusy("loading");
       dismissLoadToast();
       lastLoadSig.current = null;
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+      const handedOver = pickToast.take(pickToastId);
+      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast));
       // Snapshot the prior Reapply target first: a load that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
       const prevCanReapply = canReapply;
@@ -2506,6 +2672,7 @@ function VideoGenerator({
       cancelLoadFromToast,
       canReapply,
       currentLoadAdvanced,
+      pickToast,
     ],
   );
 
@@ -2517,6 +2684,7 @@ function VideoGenerator({
     advanced: VideoLoadAdvanced;
     // The pick that staged it: a download outlives its pick, so it must not evict a newer one when it lands.
     token: number;
+    toastId?: string;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
   handleLoadRef.current = handleLoad;
@@ -2529,9 +2697,12 @@ function VideoGenerator({
   const runStagedLoad = useCallback(
     (pending: NonNullable<typeof pendingStagedLoad.current>) => {
       if (pendingStagedLoad.current === pending) pendingStagedLoad.current = null;
-      if (!pickGuard.isLatest(pending.token)) return;
+      if (!pickGuard.isLatest(pending.token)) {
+        pickToast.dismiss(pending.toastId);
+        return;
+      }
       const owned = stagedQuantRevert.current;
-      void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced).then((started) => {
+      void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced, pending.toastId).then((started) => {
         if (started) return;
         if (quantRevert.current && quantRevert.current === owned) {
           revertPick(quantRevert.current);
@@ -2540,13 +2711,14 @@ function VideoGenerator({
         if (stagedQuantRevert.current === owned) stagedQuantRevert.current = null;
       });
     },
-    [pickGuard, revertPick],
+    [pickGuard, revertPick, pickToast],
   );
-  const { stage } = useStagedDownload({
+  const { stage, progress: stagedProgress } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
       if (!active) {
         stagedLoadDeferred.current = true;
+        pickToast.setPhase(pendingStagedLoad.current?.toastId, "ready");
         return;
       }
       const pending = pendingStagedLoad.current;
@@ -2555,6 +2727,7 @@ function VideoGenerator({
     onCancelled: () => {
       // Same rule as the images page: a plan that ends without every dependency on disk must not
       // leave an intent for a late completion to act on.
+      pickToast.dismiss(pendingStagedLoad.current?.toastId);
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
       // No load started, so the poll that owns the after-start rollback never runs: put the
@@ -2567,6 +2740,7 @@ function VideoGenerator({
       stagedQuantRevert.current = null;
     },
   });
+  usePickToastProgress(pickToast, stagedProgress);
 
   useEffect(() => {
     if (!active || !stagedLoadDeferred.current) return;
@@ -2593,9 +2767,12 @@ function VideoGenerator({
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
       stagedQuantRevert.current = null;
+      pickToast.dismissAll();
       const owns = () => token === undefined || pickGuard.holds(token);
       if (!owns()) return true;
       if (source !== "hub") return handleLoadRef.current(repoId, opts);
+      // Show feedback before the potentially slow Hub metadata request.
+      const pickToastId = pickToast.show();
 
       const advanced = currentLoadAdvanced(opts.kind);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
@@ -2621,7 +2798,10 @@ function VideoGenerator({
           gpu_ids: advanced.gpu_ids,
         });
         // Superseded. Report started so this pick's `.then` leaves the newer label alone.
-        if (pick !== pickSeq.current || !owns()) return true;
+        if (pick !== pickSeq.current || !owns()) {
+          pickToast.dismiss(pickToastId);
+          return true;
+        }
         // Same selection-time refusal the images page makes: the plan is the last point at which an
         // incompatible pairing can be caught before the download it would waste. The check is the FLUX.2
         // GGUF/base size pairing and the video planner has no diffusers base to pair against, so this is
@@ -2633,9 +2813,10 @@ function VideoGenerator({
             opts,
             advanced,
             token: token ?? pickGuard.claim(),
+            toastId: pickToastId,
           };
           stagedQuantRevert.current = ownRevert;
-          stage(
+          const staged = stage(
             plan.entries.map((e) => ({
               repoId: e.repo_id,
               files: e.files,
@@ -2652,20 +2833,25 @@ function VideoGenerator({
                   : e.repo_id === repoId),
             })),
           );
+          pickToast.setPhase(pickToastId, "downloading", staged);
           return true;
         }
       } catch {
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
-      if (pick !== pickSeq.current || !owns()) return true;
+      if (pick !== pickSeq.current || !owns()) {
+        pickToast.dismiss(pickToastId);
+        return true;
+      }
       if (incompatible) {
+        pickToast.dismiss(pickToastId);
         toast.error(incompatible);
         return false;
       }
-      return handleLoadRef.current(repoId, opts, advanced);
+      return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, pickGuard, currentLoadAdvanced],
+    [stage, pickGuard, currentLoadAdvanced, pickToast],
   );
 
   // A GGUF pick can arrive with only a repo id. The backend rejects a gguf load with no filename
@@ -2822,6 +3008,37 @@ function VideoGenerator({
     videoPresets.hydrated,
   ]);
 
+  // A Library "View in" link arrives as ?item=: select that clip, paging back until it loads. A
+  // counter, not effect cleanup, retires a lookup: clearing the query must not cancel its own.
+  const routedItem = active ? routeSearch?.item : undefined;
+  const routedLookup = useRef(0);
+  useEffect(() => {
+    if (!active) routedLookup.current += 1;
+  }, [active]);
+  useEffect(() => {
+    if (!routedItem) return;
+    const lookup = ++routedLookup.current;
+    void navigateSelf({ to: "/video", search: {}, replace: true });
+    void loadGalleryUntil({
+      has: () => galleryCache.videos.some((entry) => entry.id === routedItem),
+      count: () => galleryCache.videos.length,
+      hasMore: () => galleryCache.hasMore,
+      refresh: loadGallery,
+      loadMore,
+      busy: () => loadingMore.current,
+      cancelled: () => lookup !== routedLookup.current,
+    }).then((found) => {
+      if (lookup !== routedLookup.current) return;
+      if (found) {
+        setSelectedId(routedItem);
+      } else {
+        toast(translate("library.toast.clipNotFound"), {
+          description: translate("library.toast.notFoundDescription"),
+        });
+      }
+    });
+  }, [routedItem, navigateSelf, loadGallery, loadMore]);
+
 
   // The task dialog defers the load out of the branch that snapshotted the rollback, so the two
   // ways out carry that branch's two endings: choosing runs the load and reverts if it never
@@ -2852,7 +3069,8 @@ function VideoGenerator({
     setPendingH3Load(null);
     abandonPick();
     pickGuard.cancel();
-  }, [abandonPick, pickGuard]);
+    pickToast.dismissAll();
+  }, [abandonPick, pickGuard, pickToast]);
 
   const handleReapply = useCallback(() => {
     // Status is authoritative when another client replaced the resident model; the ref remains the
@@ -2876,7 +3094,8 @@ function VideoGenerator({
     pendingStagedLoad.current = null;
     stagedLoadDeferred.current = false;
     stagedQuantRevert.current = null;
-  }, []);
+    pickToast.dismissAll();
+  }, [pickToast]);
 
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
@@ -3154,6 +3373,8 @@ function VideoGenerator({
     const matchSource = resolutionIdx === MATCH_SOURCE_RESOLUTION;
     const preset = resolutionPresets[resolutionIdx] ?? resolutionPresets[0];
 
+    // Saved only once the request passes validation, so a rejected attempt is not kept.
+    saveLastPrompt("video", prompt);
     setBusy("generating");
     setGenStep(null);
     // The POST only STARTS the job and returns at once (a clip takes minutes, and the secure-mode
@@ -3262,7 +3483,7 @@ function VideoGenerator({
       />
       <AdvancedSelect
         label="Speed"
-        hint="Auto compiles every model at load: a clip takes minutes to denoise, so the one-time compile always pays for itself within a single run. eager = fused kernels, no compile. max adds TF32 + fused QKV."
+        hint="Auto compiles every model at load: a clip takes minutes to denoise, so the one-time compile always pays for itself within a single run. eager = fused kernels, no compile. max adds TF32 + fused QKV, plus the step cache on 20+ step models."
         badge={<ResolvedBadge status={status} controlKey="speed_mode" />}
         value={speedMode}
         onValueChange={(v) => setSpeedMode(v as typeof speedMode)}
@@ -3289,12 +3510,15 @@ function VideoGenerator({
             // The explicit low-precision schemes need the dense tensor-core path, which a Mac or
             // CPU-only host cannot run, so the picker does not list what the loader would refuse.
             ...(hostOffersDensePrecision(hostClass)
-              ? ([
-                  ["fp8", "FP8"],
-                  ["int8", "INT8"],
-                  ["nvfp4", "NVFP4 (Blackwell)"],
-                  ["mxfp8", "MXFP8 (Blackwell)"],
-                ] as [string, string][])
+              ? withNvfp4Option(
+                  [
+                    ["fp8", "FP8"],
+                    ["int8", "INT8"],
+                    ["nvfp4", "NVFP4 (Blackwell)"],
+                    ["mxfp8", "MXFP8 (Blackwell)"],
+                  ] as [string, string][],
+                  nvfp4Diffusion,
+                )
               : []),
           ]}
         />
@@ -3340,7 +3564,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models. Auto turns it on at 20+ steps and off for few-step distilled models, re-checked per clip."
+        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (small quality cost). Auto turns it on only on the Max speed tier at 20+ steps, re-checked per clip. Static skip extrapolates every other middle step on a fixed schedule (12+ steps) and keeps the compile and CUDA graph; Wan2.2 A14B, LTX-2 and MiniMax-H3 run uncached. Never picked by Auto."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
@@ -3348,6 +3572,7 @@ function VideoGenerator({
           ["auto", "Auto"],
           ["off", "Off"],
           ["fbcache", "First-Block-Cache"],
+          ["static", "Static skip"],
         ]}
       />
       <LoadedBuildSummary status={status} />
@@ -3372,7 +3597,11 @@ function VideoGenerator({
   return (
     // The chat-style layout gives this page no outer top inset, so clear the custom titlebar here as chat does.
     // 34px on win/linux, 0 under macOS's native one.
-    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+    <div
+      {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
+      style={railRootStyle}
+      className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+    >
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
       <AlertDialog
@@ -3452,7 +3681,12 @@ function VideoGenerator({
       </Dialog>
       {/* Top: the model selector, clear of the sidebar and level with the controls column. Load
           progress shows in a toast. */}
-      <div className="@container pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+      <div
+        className={cn(
+          "@container pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start justify-between pr-2 pt-[var(--studio-chat-header-padding-top,11px)]",
+          isMobileShell ? "pl-12" : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
+        )}
+      >
         {/* min-w-0: without it a long resident model name pushes the Images link off a phone screen. */}
         <div className="pointer-events-auto flex min-w-0 items-center gap-3">
           <ModelSelector
@@ -3464,9 +3698,10 @@ function VideoGenerator({
             resolveDownloadFootprint={resolveDownloadFootprint}
             onEject={status?.loaded ? handleUnload : undefined}
             variant="ghost"
-            className="!h-[34px]"
+            className="!h-[calc(34px*var(--ui-space-scale,1))]"
             task={VIDEO_GEN_TASKS}
             catalog={VIDEO_CATALOG}
+            hubCapability="diffusion"
             placeholder="Select video model"
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}
@@ -3482,7 +3717,7 @@ function VideoGenerator({
                   variant="outline"
                   size="sm"
                   aria-label="Cancel load"
-                  className="!h-[34px] rounded-full text-xs"
+                  className="!h-[calc(34px*var(--ui-space-scale,1))] rounded-full text-xs"
                   onClick={() => void handleCancelLoad()}
                 >
                   Cancel load
@@ -3505,8 +3740,12 @@ function VideoGenerator({
           )}
         </div>
         <div className="pointer-events-auto flex shrink-0 items-center gap-2">
-          {/* Images is a separate page, so it sits out here, not in this page's controls. */}
-          <MediaPageLink to="/images" label="Images" icon={Image03Icon} />
+          {/* A separate page, so it sits outside this page's controls. */}
+          <LibraryPageLink
+            tab="videos"
+            labelClassName="@max-[30rem]:hidden"
+            arrowClassName="@max-[30rem]:hidden"
+          />
         </div>
       </div>
 
@@ -3514,18 +3753,19 @@ function VideoGenerator({
           pages' content starts at the same 40px. */}
       {/* overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto, letting a
           wide row pan the page sideways on a phone. */}
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 max-sm:pl-0 max-sm:pr-0 sm:pr-8 lg:flex-row lg:overflow-hidden">
         {/* Widened by the pl-8 so the controls keep their old width. */}
         <div
           data-tour="video-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[400px] md:overflow-hidden md:border-r md:border-b-0"
+          className="relative flex w-full shrink-0 flex-col border-b border-border/60 pl-8 max-sm:pl-5 lg:w-[min(var(--media-rail-width,calc(400px*var(--ui-space-scale,1))),calc(100%-13rem))] lg:overflow-hidden lg:border-r lg:border-b-0"
         >
+          <MediaRailResizeHandle kind="video" className="hidden lg:contents" />
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 pb-6 pl-0.5 pr-7 md:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 pb-6 pl-0.5 pr-7 max-sm:pr-5 lg:overflow-y-auto",
               settingsFadeClass,
             )}
           >
@@ -3534,7 +3774,7 @@ function VideoGenerator({
             <div className="min-w-0 grid gap-1.5">
               <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
                 {/* The app's Video icon, same as the sidebar row. */}
-                <HugeiconsIcon icon={FlimSlateIcon} className="size-[18px] shrink-0" />
+                <HugeiconsIcon icon={FlimSlateIcon} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0" />
                 Create videos
               </h2>
               <p className="text-xs leading-snug text-muted-foreground">
@@ -3562,7 +3802,13 @@ function VideoGenerator({
             <Textarea
               data-type-to-activate="prompt"
               rows={4}
+              placeholder={exampleDismissed ? undefined : VIDEO_EXAMPLE_PROMPT}
               value={prompt}
+              onFocus={() => {
+                if (exampleDismissed) return;
+                dismissExample("video");
+                setExampleDismissed(true);
+              }}
               onChange={(e) => setPrompt(e.target.value)}
             />
           </Field>
@@ -4066,8 +4312,68 @@ function VideoGenerator({
 
         <div
           data-tour="video-preview"
-          className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden pl-2 md:min-h-0"
+          className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden pl-2 lg:min-h-0"
         >
+          {viewer && viewerVideo && viewerSrc && (
+            <MediaViewer
+              open={true}
+              onOpenChange={(open) => !open && closeViewer()}
+              title={viewerVideo.prompt || t("library.viewer.untitledVideo")}
+              meta={`Generated · ${viewerVideo.width} × ${viewerVideo.height} · ${Math.round(viewerVideo.duration_s)}s`}
+              media={true}
+              noun="video"
+              actions={{
+                primary: {
+                  label: t("library.menu.chatAboutThis"),
+                  icon: MessageCircleIcon,
+                  onClick: () =>
+                    void chatAboutMedia(
+                      navigateToChat,
+                      () => fetchWithFreshLink(viewerSrc, () => fetchGalleryVideoSignedUrl(viewerVideo.id)),
+                      viewerVideo.prompt,
+                      "video",
+                    ),
+                },
+                onDownload: () => void handleQuickDownload(viewerVideo),
+                reveal: revealLabel
+                  ? { label: revealLabel, onClick: () => revealInFolder(`video:${viewerVideo.id}`) }
+                  : undefined,
+                favorite: isFavorite(`video:${viewerVideo.id}`),
+                onToggleFavorite: () => toggleFavorite(`video:${viewerVideo.id}`),
+                onAddToProject: (projectId) => addGalleryVideoToProject(viewerVideo.id, projectId),
+                onDelete: () => {
+                  viewerVideoRef.current?.pause();
+                  handback.current = null;
+                  setViewer(null);
+                  void handleDelete(viewerVideo.id);
+                },
+              }}
+            >
+              <video
+                ref={viewerVideoRef}
+                src={viewerSrc}
+                controls
+                playsInline
+                muted={viewer.from.muted}
+                onLoadedMetadata={(event) => {
+                  const video = event.currentTarget;
+                  if (viewer.from.time) video.currentTime = viewer.from.time;
+                  video.volume = viewer.from.volume;
+                  viewerPositioned.current = true;
+                  if (viewer.from.playing) void playWithMutedFallback(video);
+                }}
+                onTimeUpdate={(event) => recordViewer(event.currentTarget)}
+                onVolumeChange={(event) => recordViewer(event.currentTarget)}
+                onError={(event) => {
+                  const from = readPlayback(event.currentTarget, viewer.from, viewerPositioned.current);
+                  viewerPositioned.current = false;
+                  setViewer((current) => current && { ...current, from });
+                  remintSrc(viewerVideo);
+                }}
+                className="size-full object-contain"
+              />
+            </MediaViewer>
+          )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6">
             {selected && selectedSrc ? (
               <>
@@ -4078,7 +4384,8 @@ function VideoGenerator({
                   ref={previewRef}
                   src={selectedSrc}
                   controls
-                  autoPlay
+                  // A clip finishing behind the open viewer is selected, but must not play under it.
+                  autoPlay={viewer === null}
                   muted
                   playsInline
                   onPlay={() => {
@@ -4096,12 +4403,28 @@ function VideoGenerator({
                 />
                 {selected.has_audio && (
                   <div className="absolute left-4 top-4 flex items-center gap-1 rounded-lg bg-background/80 px-2 py-1 text-ui-11 font-medium shadow-lg ring-1 ring-border backdrop-blur">
-                    <HugeiconsIcon icon={VolumeHighIcon} className="size-3.5" />
+                    <HugeiconsIcon icon={Volume02Icon} className="size-3.5" />
                     Audio
                   </div>
                 )}
                 {/* Actions grouped in one glass toolbar so they stay legible over any clip. */}
-                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
+                {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                  {/* Not a click on the clip itself: Chrome's ⋮ menu, WebKit's centred play button and the
+                      first click of a double-click to fullscreen all land on the frame, above the controls. */}
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={t("library.viewer.openVideo")}
+                    title={t("library.viewer.openVideo")}
+                    onClick={(event) => {
+                      // Safari does not focus a clicked button, and the viewer returns focus to what had it.
+                      event.currentTarget.focus();
+                      openViewer();
+                    }}
+                  >
+                    <HugeiconsIcon icon={ArrowExpand01Icon} className="size-4" />
+                  </Button>
                   <RecipePopover video={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild={true}>
@@ -4133,11 +4456,15 @@ function VideoGenerator({
                     active={active}
                     pinned={Boolean(selected.pinned)}
                     archived={Boolean(selected.archived)}
+                    favorite={isFavorite(`video:${selected.id}`)}
+                    onToggleFavorite={() => toggleFavorite(`video:${selected.id}`)}
                     onTogglePin={() =>
                       void handleTogglePin(selected.id, !selected.pinned)
                     }
                     onToggleArchive={() => void handleArchive(selected.id)}
                     onDelete={() => void handleDelete(selected.id)}
+                    onDownload={() => void handleQuickDownload(selected)}
+                    onAddToProject={(projectId) => addGalleryVideoToProject(selected.id, projectId)}
                   />
                 </div>
               </>
@@ -4188,7 +4515,8 @@ function VideoGenerator({
           {(videos.length > 0 || busy === "generating") && (
             <div
               ref={stripRef}
-              className="hover-scrollbar flex shrink-0 items-stretch gap-2 overflow-x-auto border-t border-foreground/10 p-3"
+              {...stripReorder.stripProps}
+              className="hover-scrollbar flex shrink-0 items-stretch gap-2 overflow-x-auto border-t border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] p-3"
               onScroll={(e) => {
                 // Near the right edge: pull the next older page (infinite scroll).
                 const el = e.currentTarget;
@@ -4209,8 +4537,16 @@ function VideoGenerator({
                 <div
                   key={video.id}
                   data-clip-id={video.id}
-                  className="group relative h-16 w-24 shrink-0"
+                  {...stripReorder.tileProps(video.id)}
+                  className={cn(
+                    "group relative h-16 w-24 shrink-0",
+                    // Fade the tile being dragged.
+                    stripReorder.draggingId === video.id && "opacity-40",
+                  )}
                 >
+                  {stripReorder.cue?.id === video.id && (
+                    <StripDropLine edge={stripReorder.cue.edge} />
+                  )}
                 <Tooltip>
                 <TooltipTrigger asChild={true}>
                 <button
@@ -4222,6 +4558,7 @@ function VideoGenerator({
                     <img
                       src={thumbnailById[video.id]}
                       alt=""
+                      draggable={false}
                       onError={() => handlePosterError(video.id)}
                       className="absolute inset-0 size-full object-cover"
                     />
@@ -4244,7 +4581,7 @@ function VideoGenerator({
                   </span>
                   {/* Selection marker on a non-focusable overlay. */}
                   {video.id === selected?.id && (
-                    <span className="pointer-events-none absolute inset-0 z-20 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
+                    <span className="pointer-events-none absolute inset-0 z-20 rounded-[10px] border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
                   )}
                 </button>
                 </TooltipTrigger>
@@ -4258,11 +4595,13 @@ function VideoGenerator({
                   </span>
                 </TooltipContent>
                 </Tooltip>
-                {/* Pin marker, top-left so it clears both the caption and the menu. */}
+                {/* Pin marker and Unpin button, top-left so it clears the caption and menu. */}
                 {video.pinned && (
-                  <span className="pointer-events-none absolute left-0.5 top-0.5 z-30 rounded-full bg-background/80 p-0.5 text-foreground shadow-sm ring-1 ring-border backdrop-blur">
-                    <HugeiconsIcon icon={PinIcon} className="size-3" />
-                  </span>
+                  <GalleryPinBadge
+                    noun="video"
+                    className="left-0.5 top-0.5 z-30"
+                    onUnpin={() => void handleTogglePin(video.id, false)}
+                  />
                 )}
                 <div className="absolute right-0.5 top-0.5 z-30">
                   <GalleryItemMenu
@@ -4271,9 +4610,13 @@ function VideoGenerator({
                     active={active}
                     pinned={Boolean(video.pinned)}
                     archived={Boolean(video.archived)}
+                    favorite={isFavorite(`video:${video.id}`)}
+                    onToggleFavorite={() => toggleFavorite(`video:${video.id}`)}
                     onTogglePin={() => void handleTogglePin(video.id, !video.pinned)}
                     onToggleArchive={() => void handleArchive(video.id)}
                     onDelete={() => void handleDelete(video.id)}
+                    onDownload={() => void handleQuickDownload(video)}
+                    onAddToProject={(projectId) => addGalleryVideoToProject(video.id, projectId)}
                   />
                 </div>
                 </div>

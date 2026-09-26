@@ -1,0 +1,314 @@
+{
+  "version": 1,
+  "comment": "Reviewed NVFP4 accuracy-gate verdicts, one entry per (family, base_repo, policy_id, policy_version, checkpoint_sha256). One entry says that ONE published checkpoint rendered the gate's prompt/resolution pairs within the recorded thresholds of its dense reference, on the backend, GPU and toolchain the entry names. Read by core/inference/diffusion_nvfp4_gate.py, which re-derives the verdict rather than trusting it as stored. Entries are measured out of band and committed after review; nothing writes this file at run time. Empty means no checkpoint has been gated yet, which keeps nvfp4 out of the auto ladder for every family.",
+  "records": [
+    {
+      "family": "z-image",
+      "base_repo": "Tongyi-MAI/Z-Image-Turbo",
+      "policy_id": "zimg_rg76_v1",
+      "policy_version": 1,
+      "checkpoint_sha256": "2453bc13d7abe5b4a49721f4a9d38a9aa16dee20085a9267f8a35867c7d9cc33",
+      "repo_id": "unsloth/Z-Image-Turbo-NVFP4",
+      "filename": "Z-Image-Turbo-NVFP4.pt",
+      "gptq": true,
+      "all_pass": true,
+      "num_pairs": 24,
+      "num_passed": 24,
+      "aggregates": {
+        "lpips_mean": 0.1581714154841999,
+        "ssim_mean": 0.8411444996904973,
+        "clip_delta_mean": 0.004930264006058375,
+        "failures": []
+      },
+      "gates": {
+        "lpips_case_max": 0.6,
+        "lpips_mean_max": 0.25,
+        "ssim_case_min": 0.3,
+        "ssim_mean_min": 0.7,
+        "clip_delta_case_max": 0.03,
+        "clip_delta_mean_max": 0.01,
+        "black_luma_min": 0.02
+      },
+      "resolutions": [
+        512,
+        1024
+      ],
+      "seeds": [
+        1234,
+        4321
+      ],
+      "cuda_graphs": true,
+      "backend": "flashinfer",
+      "gpu": "NVIDIA B200",
+      "versions": {
+        "torch": "2.12.1+cu130",
+        "torchao": "0.18.0",
+        "diffusers": "0.41.0.dev0",
+        "flashinfer": "0.6.18.post1"
+      },
+      "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
+      "run_date": "2026-09-24",
+      "results_path": "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/nvfp4_repick/zimg_zimg_rg76_v1_g32/gate/results.json",
+      "fp8_paired": {
+        "metric": "lpips_vgg(nvfp4, bf16) - lpips_vgg(fp8, bf16), per (prompt, seed)",
+        "prompts": "diffusion_bench image_24 (24 frozen prompts)",
+        "num_pairs": 48,
+        "resolution": 1024,
+        "seeds": [
+          1234,
+          4321
+        ],
+        "fp8_sha256": "d9ee7d97ef94f620660b0f475ee961b84a877fd99d86bfc84101d21ad3cd8dfc",
+        "d_lpips_mean": 0.0219,
+        "d_lpips_ci95": [
+          0.0021,
+          0.0402
+        ],
+        "d_lpips_prompt_cluster_ci95": [
+          0.0035,
+          0.0412
+        ],
+        "bar_upper_ci95": 0.05,
+        "ssim_vs_bf16": {
+          "fp8": 0.8275,
+          "nvfp4": 0.8028
+        },
+        "psnr_vs_bf16": {
+          "fp8": 21.79,
+          "nvfp4": 20.63
+        }
+      }
+    },
+    {
+      "family": "qwen-image-2.1",
+      "base_repo": "Qwen/Qwen-Image-2.1",
+      "policy_id": "qwen21_r020_v1",
+      "policy_version": 1,
+      "checkpoint_sha256": "37af1338c21a0c20dd0518f1908f6bc5828740c1cd12c50718552a31d753c24d",
+      "repo_id": "unsloth/Qwen-Image-2.1-NVFP4",
+      "filename": "Qwen-Image-2.1-NVFP4.pt",
+      "gptq": true,
+      "all_pass": true,
+      "num_pairs": 28,
+      "num_passed": 28,
+      "aggregates": {
+        "lpips_mean": 0.1248540869647903,
+        "ssim_mean": 0.8829234177148308,
+        "clip_delta_mean": 0.005960816783564431,
+        "failures": []
+      },
+      "gates": {
+        "lpips_case_max": 0.6,
+        "lpips_mean_max": 0.25,
+        "ssim_case_min": 0.3,
+        "ssim_mean_min": 0.7,
+        "clip_delta_case_max": 0.03,
+        "clip_delta_mean_max": 0.01,
+        "black_luma_min": 0.02
+      },
+      "resolutions": [
+        512,
+        1024
+      ],
+      "seeds": [
+        1234,
+        4321
+      ],
+      "cuda_graphs": true,
+      "backend": "flashinfer",
+      "gpu": "NVIDIA B200",
+      "versions": {
+        "torch": "2.12.1+cu130",
+        "torchao": "0.18.0",
+        "diffusers": "0.41.0.dev0",
+        "flashinfer": "0.6.18.post1"
+      },
+      "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
+      "run_date": "2026-09-24",
+      "results_path": "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/nvfp4_repick/q21_qwen21_r020_v1_g32/gate/results.json",
+      "fp8_paired": {
+        "metric": "lpips_vgg(nvfp4, bf16) - lpips_vgg(fp8, bf16), per (prompt, seed)",
+        "prompts": "diffusion_bench image_24 (24 frozen prompts)",
+        "num_pairs": 48,
+        "resolution": 1024,
+        "seeds": [
+          1234,
+          4321
+        ],
+        "fp8_sha256": "5ce621f4deab0fca5f4b9cd43af68f57ef0a8eb9ea0581d0229dce8612c27788",
+        "d_lpips_mean": 0.0277,
+        "d_lpips_ci95": [
+          0.0118,
+          0.0457
+        ],
+        "d_lpips_prompt_cluster_ci95": [
+          0.0134,
+          0.0432
+        ],
+        "bar_upper_ci95": 0.05,
+        "ssim_vs_bf16": {
+          "fp8": 0.9045,
+          "nvfp4": 0.8782
+        },
+        "psnr_vs_bf16": {
+          "fp8": 25.98,
+          "nvfp4": 24.37
+        }
+      }
+    },
+    {
+      "family": "flux.1",
+      "base_repo": "black-forest-labs/FLUX.1-schnell",
+      "policy_id": "flux_r420_v1",
+      "policy_version": 1,
+      "checkpoint_sha256": "d4e4c5e353374e022685f2e48dc7b38d054e36f30809dd8eb77a22a0a5d67006",
+      "repo_id": "unsloth/FLUX.1-schnell-NVFP4",
+      "filename": "FLUX.1-schnell-NVFP4.pt",
+      "gptq": true,
+      "all_pass": true,
+      "num_pairs": 24,
+      "num_passed": 24,
+      "aggregates": {
+        "lpips_mean": 0.1846515154466033,
+        "ssim_mean": 0.7870014756664174,
+        "clip_delta_mean": 0.007136411964893341,
+        "failures": []
+      },
+      "gates": {
+        "lpips_case_max": 0.6,
+        "lpips_mean_max": 0.25,
+        "ssim_case_min": 0.3,
+        "ssim_mean_min": 0.7,
+        "clip_delta_case_max": 0.03,
+        "clip_delta_mean_max": 0.01,
+        "black_luma_min": 0.02
+      },
+      "resolutions": [
+        512,
+        1024
+      ],
+      "seeds": [
+        1234,
+        4321
+      ],
+      "cuda_graphs": true,
+      "backend": "flashinfer",
+      "gpu": "NVIDIA B200",
+      "versions": {
+        "torch": "2.12.1+cu130",
+        "torchao": "0.18.0",
+        "diffusers": "0.41.0.dev0",
+        "flashinfer": "0.6.18.post1"
+      },
+      "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
+      "run_date": "2026-09-24",
+      "results_path": "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/nvfp4_repick/flux_flux_r420_v1_g32/gate/results.json",
+      "fp8_paired": {
+        "metric": "lpips_vgg(nvfp4, bf16) - lpips_vgg(fp8, bf16), per (prompt, seed)",
+        "prompts": "diffusion_bench image_24 (24 frozen prompts)",
+        "num_pairs": 48,
+        "resolution": 1024,
+        "seeds": [
+          1234,
+          4321
+        ],
+        "fp8_sha256": "fd619e706f2f42171864d45e5115e4410a9830bd33945837360e05e109761f76",
+        "d_lpips_mean": 0.0235,
+        "d_lpips_ci95": [
+          0.0161,
+          0.0307
+        ],
+        "d_lpips_prompt_cluster_ci95": [
+          0.0163,
+          0.0307
+        ],
+        "bar_upper_ci95": 0.05,
+        "ssim_vs_bf16": {
+          "fp8": 0.8137,
+          "nvfp4": 0.7881
+        },
+        "psnr_vs_bf16": {
+          "fp8": 22.39,
+          "nvfp4": 21.18
+        }
+      }
+    },
+    {
+      "family": "qwen-image",
+      "base_repo": "Qwen/Qwen-Image-2512",
+      "policy_id": "qwen2512_m120_attn8_v1",
+      "policy_version": 1,
+      "checkpoint_sha256": "665e8f9a12d31366cfd4ac10a93c751a32219ea2386107b55a43b0cde5955607",
+      "repo_id": "unsloth/Qwen-Image-2512-NVFP4",
+      "filename": "Qwen-Image-2512-NVFP4.pt",
+      "gptq": true,
+      "all_pass": true,
+      "num_pairs": 28,
+      "num_passed": 28,
+      "aggregates": {
+        "lpips_mean": 0.13174473800297296,
+        "ssim_mean": 0.89856672865755,
+        "clip_delta_mean": 0.005002257015023913,
+        "failures": []
+      },
+      "gates": {
+        "lpips_case_max": 0.6,
+        "lpips_mean_max": 0.25,
+        "ssim_case_min": 0.3,
+        "ssim_mean_min": 0.7,
+        "clip_delta_case_max": 0.03,
+        "clip_delta_mean_max": 0.01,
+        "black_luma_min": 0.02
+      },
+      "resolutions": [
+        512,
+        1024
+      ],
+      "seeds": [
+        1234,
+        4321
+      ],
+      "cuda_graphs": true,
+      "backend": "flashinfer",
+      "gpu": "NVIDIA B200",
+      "versions": {
+        "torch": "2.12.1+cu130",
+        "torchao": "0.18.0",
+        "diffusers": "0.41.0.dev0",
+        "flashinfer": "0.6.18.post1"
+      },
+      "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
+      "run_date": "2026-09-24",
+      "results_path": "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/nvfp4_repick/q2512_qwen2512_m120_attn8_v1_g32/gate/results.json",
+      "fp8_paired": {
+        "metric": "lpips_vgg(nvfp4, bf16) - lpips_vgg(fp8, bf16), per (prompt, seed)",
+        "prompts": "diffusion_bench image_24 (24 frozen prompts)",
+        "num_pairs": 48,
+        "resolution": 1024,
+        "seeds": [
+          1234,
+          4321
+        ],
+        "fp8_sha256": "d6b26b72e5925220df8e38fad8446850d35d2187f28e4164b77532cf74e80cf0",
+        "d_lpips_mean": 0.0282,
+        "d_lpips_ci95": [
+          0.0076,
+          0.0496
+        ],
+        "d_lpips_prompt_cluster_ci95": [
+          0.0082,
+          0.0493
+        ],
+        "bar_upper_ci95": 0.05,
+        "ssim_vs_bf16": {
+          "fp8": 0.906,
+          "nvfp4": 0.881
+        },
+        "psnr_vs_bf16": {
+          "fp8": 26.38,
+          "nvfp4": 24.9
+        }
+      }
+    }
+  ]
+}

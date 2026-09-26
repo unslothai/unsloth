@@ -20,6 +20,7 @@ from hub.schemas.inventory import ModelFormat
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils import download_manifest, download_registry
 from hub.utils.hf_cache_state import snapshot_selection_key
+from hub.utils.host_paths import scrub_paths
 from hub.utils.snapshot_filters import (
     snapshot_download_blob_hashes,
     snapshot_download_size,
@@ -135,8 +136,96 @@ def get_repo_snapshot_metadata_cached(
     return total, blob_hashes
 
 
+_mlx_plan_cache: OrderedDict = OrderedDict()
+
+
+def _cached_mlx_siblings(repo_id):
+    from huggingface_hub.hf_api import RepoSibling
+
+    # The raw tree retains LFS SHA256s, not just Git pointer IDs.
+    from huggingface_hub._tree_cache import read_tree_cache
+    from hub.utils.hf_cache_state import preferred_repo_cache_dirs
+
+    for entry in preferred_repo_cache_dirs("model", repo_id):
+        snapshot = hf_cache_scan.default_ref_snapshot(entry)
+        tree = read_tree_cache(str(entry), snapshot.name) if snapshot is not None else None
+        if tree:
+            return [
+                RepoSibling(rfilename = path, size = item.size, blob_id = item.lfs_sha256 or item.blob_id)
+                for path, item in tree.items()
+            ]
+    return []
+
+
+def get_mlx_load_plan_cached(repo_id: str, hf_token: Optional[str] = None):
+    from hub.utils.snapshot_filters import blob_hashes_for_siblings, mlx_load_siblings
+    from huggingface_hub import HfApi
+
+    key = (repo_id, hf_cache_scan.token_fingerprint(hf_token))
+    with _repo_size_cache_lock:
+        cached = _mlx_plan_cache.get(key)
+        if cached is not None and time.monotonic() - cached[1] < _REPO_SIZE_POS_TTL:
+            _mlx_plan_cache.move_to_end(key)
+            return cached[0]
+    try:
+        siblings = (
+            HfApi(token = hf_token)
+            .model_info(
+                repo_id,
+                files_metadata = True,
+                timeout = _MODEL_METADATA_TIMEOUT_SECONDS,
+            )
+            .siblings
+        )
+    except Exception:
+        try:
+            siblings = _cached_mlx_siblings(repo_id)
+        except Exception:
+            siblings = []
+    siblings = mlx_load_siblings(siblings)
+    files = tuple(
+        download_manifest.ExpectedFile(
+            path = item.rfilename,
+            size = int(item.size or 0),
+            sha256 = getattr(getattr(item, "lfs", None), "sha256", None),
+        )
+        for item in siblings
+    )
+    plan = (sum(file.size for file in files), blob_hashes_for_siblings(siblings), files)
+    if not siblings and cached is not None:
+        plan = cached[0]
+    with _repo_size_cache_lock:
+        _mlx_plan_cache[key] = (plan, time.monotonic())
+        _mlx_plan_cache.move_to_end(key)
+        while len(_mlx_plan_cache) > _REPO_SIZE_CACHE_MAX:
+            _mlx_plan_cache.popitem(last = False)
+    return plan
+
+
 def all_hf_cache_scans():
     return hf_cache_scan.all_hf_cache_scans()
+
+
+def _blob_key(file_obj, fallback: str) -> str:
+    """Key existing files by inode: no-symlink snapshot paths are their own blob_path, and reuse hard links them."""
+    blob_path = getattr(file_obj, "blob_path", None)
+    if not blob_path:
+        return fallback
+    try:
+        st = Path(blob_path).stat()
+    except OSError:
+        return str(blob_path)
+    return f"inode:{st.st_dev}:{st.st_ino}" if st.st_ino else str(blob_path)
+
+
+def repo_unique_size_bytes(repo_info) -> int:
+    """Every file across revisions, each stored copy counted once (see ``_blob_key``)."""
+    unique: dict[str, int] = {}
+    for revision in repo_info.revisions:
+        rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
+        for f in cached_repo_files(revision):
+            unique[_blob_key(f, f"{rev_id}:{f.file_name}")] = int(f.size_on_disk or 0)
+    return sum(unique.values())
 
 
 def _repo_gguf_size_bytes(repo_info) -> int:
@@ -148,12 +237,7 @@ def _repo_gguf_size_bytes(repo_info) -> int:
             # Snapshot-relative: only the directory marks an MTP/ drafter as a companion.
             name = _cached_repo_file_name(f)
             if _is_main_gguf_filename(name):
-                blob_path = getattr(f, "blob_path", None)
-                size = f.size_on_disk or 0
-                if blob_path:
-                    unique_blobs[str(blob_path)] = size
-                else:
-                    unique_blobs[f"{rev_id}:{name}"] = size
+                unique_blobs[_blob_key(f, f"{rev_id}:{name}")] = f.size_on_disk or 0
     return sum(unique_blobs.values())
 
 
@@ -512,10 +596,11 @@ def _scan_cached_gguf(
         )
     except Exception as e:
         # The index is built once for the whole scan and outside the per-repository try, so one undecodable cache directory name, hashed for the repo key, answered 500 with every valid row hidden.
-        logger.warning("Could not build shared cached-GGUF state index: %s", e)
+        logger.warning("Could not build shared cached-GGUF state index: %s", scrub_paths(e))
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
+    repo_cache_roots: dict[str, set[Path]] = {}
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             try:
@@ -617,15 +702,28 @@ def _scan_cached_gguf(
                         tts_only = row_task == "text-to-speech",
                     )
                 )
-                # Only the winning cache root loads, so the loser's vision flag must not carry over.
+                # Preserve a snapshot-pinned load id for a single cache: refs/main can
+                # be stale or dangling even when a different snapshot holds the quant.
+                # Only a repository spanning distinct cache roots needs repo-wide
+                # resolution so chat can choose the requested quant's owning copy.
+                repo_cache_roots.setdefault(key, set()).add(repo_path.parent)
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row
                 elif last_modified > existing.get("last_modified", 0.0):
                     existing["last_modified"] = last_modified
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
-                logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
+                logger.warning("Skipping cached GGUF repo %s: %s", repo_label, scrub_paths(e))
                 continue
+    from hub.utils.gguf_sources import CHAT_GGUF_TASKS
+
+    for key, row in seen_lower.items():
+        if (
+            len(repo_cache_roots.get(key, ())) > 1
+            and not row["partial"]
+            and row["task"] in CHAT_GGUF_TASKS
+        ):
+            row["load_id"] = row["repo_id"]
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
 
@@ -767,9 +865,8 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     def _record_blob(
         target: dict[str, tuple[int, float]], file_obj, rev_id: str, file_name: str
     ) -> None:
-        blob_path = getattr(file_obj, "blob_path", None)
         size = int(file_obj.size_on_disk or 0)
-        key = str(blob_path) if blob_path else f"{rev_id}:{file_name}"
+        key = _blob_key(file_obj, f"{rev_id}:{file_name}")
         value = (size, _blob_mtime(file_obj))
         target[key] = value
         all_weight_blobs[key] = value
@@ -975,7 +1072,7 @@ def _scan_cached_models(
             active_hub_cache = active_hub_cache,
         )
     except Exception as e:
-        logger.warning("Could not build shared cached-model state index: %s", e)
+        logger.warning("Could not build shared cached-model state index: %s", scrub_paths(e))
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
@@ -1137,7 +1234,7 @@ def _scan_cached_models(
                     existing["last_modified"] = last_modified
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
-                logger.warning(f"Skipping cached model repo {repo_label}: {e}")
+                logger.warning("Skipping cached model repo %s: %s", repo_label, scrub_paths(e))
                 continue
     cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
     logger.info(

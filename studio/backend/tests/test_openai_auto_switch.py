@@ -2463,6 +2463,48 @@ def test_snapshot_selector_skips_only_the_unreadable_child(tmp_path, monkeypatch
     assert selected[3] == readable
 
 
+def test_path_companion_roots_widen_only_the_snapshot_the_repo_would_hand_out(tmp_path):
+    """#10599: loading by path widens to the sibling revisions of the SAME repo dir,
+    and only when the path is the one a repo-level selection resolves to."""
+    repo, old, newer = _vision_gguf_cache_repo(tmp_path)
+    (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    assert tuple(map(Path, resolver.local_path_gguf_companion_roots(str(old)))) == (old, newer)
+    # A revision the selector would not hand out is pinned, so it keeps its own root only.
+    assert resolver.local_path_gguf_companion_roots(str(newer)) == ()
+
+    pinned = repo / "snapshots" / "newer-weights-revision"
+    pinned.mkdir(parents = True)
+    (pinned / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    os.utime(pinned, (3_000, 3_000))
+    assert resolver.local_path_gguf_companion_roots(str(old)) == ()
+    assert tuple(map(Path, resolver.local_path_gguf_companion_roots(str(pinned)))) == (
+        pinned,
+        newer,
+        old,
+    )
+
+
+@pytest.mark.parametrize("kind", ["plain_dir", "repo_dir", "missing", "file", "repo_id"])
+def test_path_companion_roots_refuse_anything_outside_an_hf_cache_snapshot(tmp_path, kind):
+    """The widening reaches sibling revisions of one ``models--`` dir and nothing else."""
+    repo, old, _newer = _vision_gguf_cache_repo(tmp_path)
+    candidates = {
+        "plain_dir": tmp_path / "loose-model-dir",
+        "repo_dir": repo,
+        "missing": old.parent / "absent-revision",
+        "file": old / "vision-model-Q4_K_M.gguf",
+        "repo_id": Path("org/Vision-GGUF"),
+    }
+    target = candidates[kind]
+    if kind == "plain_dir":
+        target.mkdir()
+        (target / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    assert resolver.local_path_gguf_companion_roots(str(target)) == ()
+
+
 def test_disjoint_companion_roots_preserve_selected_snapshot_ancestor_walk(tmp_path):
     """A selected snapshot still walks intermediate parents before sibling revisions."""
     from utils.models.model_config import detect_mmproj_file
@@ -4360,6 +4402,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         gguf_only = False,
         audio_preflight = None,
         image_preflight = None,
+        tool_images_only = False,
     ):
         captured.update(
             require_vision = require_vision,
@@ -5665,6 +5708,18 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
             {"enable_thinking": True, "preserve_thinking": True},
             {"enable_thinking": True, "preserve_thinking": True},
             id = "preserve_thinking",
+        ),
+        pytest.param(
+            "reasoning_effort",
+            {"chat_template_kwargs": {"reasoning_effort": "none"}},
+            {"reasoning_effort": "none"},
+            id = "nested_effort",
+        ),
+        pytest.param(
+            "enable_thinking",
+            {"chat_template_kwargs": {"preserve_thinking": True}},
+            {"preserve_thinking": True},
+            id = "nested_preserve_thinking",
         ),
         # Nothing selected: send nothing, so llama-server keeps its load-time defaults.
         pytest.param("enable_thinking", {}, None, id = "template_default"),
@@ -7138,6 +7193,76 @@ def test_a_matching_explicit_ctx_flag_survives_auto_switch(monkeypatch):
     assert request.llama_extra_args == ["--ctx-size", "100352"]
 
 
+def test_a_ctx_flag_saved_from_the_picker_reaches_an_api_load(monkeypatch):
+    """#11511: the picker saves its slider context beside a typed -c. Its own load runs at the
+    -c (llama.cpp takes the last one), so an API auto-switch of the same row must too, instead
+    of stripping the flag as a stale shadow of the slider."""
+    _mock_override_store(monkeypatch)
+    saved = _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["-c", "300000", "--rope-scaling", "yarn"],
+        custom_context_length = 262144,
+    )
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["custom_context_length"] == 300000
+    assert entry["llama_extra_args"] == ["-c", "300000", "--rope-scaling", "yarn"]
+
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
+    _run_hook("unsloth/B-GGUF")
+    request = rec.calls[0]
+    assert request.max_seq_length == 300000
+    assert request.llama_extra_args == ["-c", "300000", "--rope-scaling", "yarn"]
+
+
+@pytest.mark.parametrize(
+    "extra_args, fields, expected",
+    [
+        # llama.cpp's last -c wins, in either spelling.
+        (
+            ["--ctx-size", "8192", "-c", "65536"],
+            {"max_seq_length": 4096, "custom_context_length": 4096},
+            {"max_seq_length": 65536, "custom_context_length": 65536},
+        ),
+        # -c 0 asks llama.cpp for the model's own context: nothing to record.
+        (["-c", "0"], {"custom_context_length": 4096}, {"custom_context_length": 4096}),
+        # No context field sent: none is invented, the flag stays the only control.
+        (["-c", "65536"], {"kv_cache_dtype": "q8_0"}, {}),
+        # No -c: the slider value is stored as sent.
+        (["--top-k", "40"], {"custom_context_length": 4096}, {"custom_context_length": 4096}),
+        # Past the stored ceiling the slider value stays, so the flag is still checked on load.
+        (["-c", "99999999"], {"custom_context_length": 4096}, {"custom_context_length": 4096}),
+    ],
+)
+def test_a_saved_ctx_flag_sets_only_the_context_fields_sent(
+    monkeypatch, extra_args, fields, expected
+):
+    _mock_override_store(monkeypatch)
+    saved = _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = extra_args, **fields)
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    stored = {
+        key: entry[key] for key in ("max_seq_length", "custom_context_length") if key in entry
+    }
+    assert stored == expected
+
+
+def test_a_fill_keeps_the_sent_context_when_it_does_not_store_the_flag(monkeypatch):
+    """A fill (the localStorage migration) keeps a stored row's flags, so a -c in its payload is
+    not what any load will run with and must not rewrite the context."""
+    _mock_override_store(monkeypatch)
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--top-k", "7"])
+    saved = _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["-c", "65536"],
+        custom_context_length = 4096,
+        fill_absent_fields = True,
+    )
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["llama_extra_args"] == ["--top-k", "7"]
+    assert entry["custom_context_length"] == 4096
+
+
 @pytest.mark.parametrize(
     "stored_max_seq_length",
     ["100352", "not-a-number", 100352.0, True, [100352], {"v": 100352}],
@@ -8511,6 +8636,61 @@ def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatc
     assert db.get_app_setting(key) == {"a": {"v": 9}}
 
 
+def test_a_first_writer_entry_collapses_a_conflicting_claim_inside_the_write(tmp_path, monkeypatch):
+    """The credential-provenance rule, decided where the race is. A caller that reads the map,
+    sees nothing, and then writes loses to a second caller doing the same with a different
+    identity: both see "absent" and the last one stores its own claim over the first. So the
+    comparison belongs inside this transaction."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(db, "_schema_ready", set())
+
+    key = "test_map_entry_first_writer"
+    first = {"at": 100.0, "by": "identity-a"}
+    assert db.upsert_app_setting_map_entry(
+        key, "repo", first, keep_first_writer = True, ambiguous_field = "by"
+    ) == {"repo": first}
+
+    # The same identity writing again changes nothing, timestamp included.
+    db.upsert_app_setting_map_entry(
+        key,
+        "repo",
+        {"at": 200.0, "by": "identity-a"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key) == {"repo": first}
+
+    # A different one cannot take it over, and cannot be taken over in turn.
+    db.upsert_app_setting_map_entry(
+        key,
+        "repo",
+        {"at": 300.0, "by": "identity-b"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key) == {"repo": {"at": 100.0, "by": None}}
+    db.upsert_app_setting_map_entry(
+        key,
+        "repo",
+        {"at": 400.0, "by": "identity-a"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key) == {"repo": {"at": 100.0, "by": None}}
+
+    # An absent entry is still created, and the ordinary write still replaces.
+    db.upsert_app_setting_map_entry(
+        key,
+        "other",
+        {"at": 500.0, "by": "identity-b"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key)["other"] == {"at": 500.0, "by": "identity-b"}
+    db.upsert_app_setting_map_entry(key, "other", {"at": 600.0, "by": "identity-c"})
+    assert db.get_app_setting(key)["other"] == {"at": 600.0, "by": "identity-c"}
+
+
 def test_a_fill_never_relabels_a_stored_gpu_pin_with_this_browser_s_index_space(
     tmp_path, monkeypatch
 ):
@@ -9060,6 +9240,125 @@ def test_an_invalidated_index_rebuilds_on_a_host_that_just_booted(monkeypatch):
         assert built == [1], kwargs
 
 
+def _settable_resolver_clock(monkeypatch):
+    """Advance resolver time by assigning ``clock.now``."""
+    clock = types.SimpleNamespace(now = 1000.0)
+    monkeypatch.setattr(resolver, "time", types.SimpleNamespace(monotonic = lambda: clock.now))
+    return clock
+
+
+def _counted_scans(monkeypatch, index = None):
+    scans = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or dict(index or {}))
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+    return scans
+
+
+@pytest.mark.parametrize(
+    "loaded, requested",
+    [
+        ("unsloth/A-GGUF", "claude-haiku-4-5"),
+        ("/elsewhere/unscanned.gguf", "/elsewhere/unscanned.gguf"),
+        ("/elsewhere/unscanned.gguf", "unscanned"),
+    ],
+)
+def test_a_name_that_is_not_on_disk_rescans_once_not_per_request(monkeypatch, loaded, requested):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    warmed = []
+
+    def _warm_lands():
+        # Simulate a background scan without counting it as blocking.
+        warmed.append(1)
+        resolver._scan = (clock.now, {})
+
+    monkeypatch.setattr(resolver, "warm_index_soon", _warm_lands)
+    real_resolve = resolver.resolve_local_gguf
+    backend, rec = _wired(monkeypatch, _FakeBackend(loaded, "Q4_K_M"), None)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", real_resolve)
+
+    for _ in range(4):
+        clock.now += resolver._CACHE_TTL_S + 1
+        _run_hook(requested)
+
+    assert scans == [1]
+    assert warmed
+    assert rec.calls == []
+    assert backend.model_identifier == loaded
+
+
+def test_a_remembered_miss_still_finds_a_model_that_appears_later(monkeypatch):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1]
+
+    # Simulate background discovery without invalidation.
+    added = {"org/b": _entry("org/b", "Q4_K_M")}
+    clock.now += resolver._CACHE_TTL_S + 1
+    monkeypatch.setattr(resolver, "_scan", (clock.now, added))
+    assert resolver.resolve_local_gguf_for_switch("org/b") is not None
+
+    # Stale hits must rescan before switching.
+    clock.now += resolver._CACHE_TTL_S + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1, 1]
+
+
+def test_an_invalidation_forgets_a_remembered_miss(monkeypatch):
+    # Download completion must make the new model discoverable immediately.
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+
+    monkeypatch.setattr(
+        resolver, "_build_index", lambda: scans.append(1) or {"org/b": _entry("org/b")}
+    )
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is not None
+    assert scans == [1, 1]
+
+
+def test_a_remembered_miss_expires_and_a_failed_scan_proves_nothing(monkeypatch):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+
+    # Misses expire if background refresh never completes.
+    clock.now += 2 * resolver._duty_window() + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1, 1]
+
+    def _fail():
+        scans.append(1)
+        raise OSError("scan root vanished")
+
+    monkeypatch.setattr(resolver, "_build_index", _fail)
+    monkeypatch.setattr(resolver, "_misses", {})
+    clock.now += resolver._CACHE_TTL_S + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    clock.now += resolver._CACHE_TTL_S + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1, 1, 1, 1]
+
+
+def test_an_oversized_name_is_not_remembered(monkeypatch):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("x" * (resolver._MAX_MISS_NAME + 1)) is None
+    assert resolver.resolve_local_gguf_for_switch("x" * resolver._MAX_MISS_NAME) is None
+    assert [len(name) for _scope, name in resolver._misses] == [resolver._MAX_MISS_NAME]
+
+
 # The resident short circuit is the one path that answers without consulting the
 # index, so it must never say yes where the pre-existing resident check says no.
 # Anything it accepts, main would have accepted too: a miss only costs the scan.
@@ -9326,6 +9625,7 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         require_video = False,
         audio_preflight = None,
         image_preflight = None,
+        tool_images_only = False,
     ):
         captured.update(
             require_vision = require_vision,
@@ -11327,6 +11627,92 @@ def test_withheld_refusal_survives_a_leaked_auto_download_flag(monkeypatch):
     status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
     assert status == 404, f"a leaked auto-download flag turned the refusal into a {status}"
     assert "none of the downloaded models is a chat model" in detail
+
+
+def test_a_stale_idle_reload_stash_diverts_a_refusal_into_a_reload(monkeypatch):
+    # Why the fixture beside this matters, pinned as behaviour rather than left as a story.
+    # The route reads llama_keepwarm's idle stash before it refuses anything and reloads
+    # exactly what the idle loop freed, which is deliberate: after an idle unload an alias or
+    # unknown name has to stay servable. It is only a problem when the stash belongs to a
+    # DIFFERENT TEST, because the request then loads a model this one never named -- on CI,
+    # against this file's own backend double, that surfaced as
+    # `'_B' object has no attribute 'load_model'` and `assert 500 == 404`.
+    #
+    # Asserted on which model the route went to load, not on the status: the status here is
+    # whatever the double happens to be missing, and the claim is about the diversion.
+    asked: list = []
+
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [
+            {"id": "org/A-GGUF"},
+            {"id": "tiny", "task": "automatic-speech-recognition"},
+        ],
+        downloaded = ("org/A-GGUF", "unsloth/whisper-tiny"),
+    )
+
+    def _load_model(config = None, **_kw):
+        asked.append(getattr(config, "model_name", None) or config)
+        raise _Reached()
+
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type(
+            "_B",
+            (),
+            {"active_model_name": None, "models": {}, "load_model": staticmethod(_load_model)},
+        )(),
+    )
+    kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+
+    with pytest.raises(Exception):
+        asyncio.run(
+            inference_route.openai_chat_completions(_chat_request(model = "tiny"), object(), "tester")
+        )
+
+    assert any("Idle-GGUF" in str(one) for one in asked), (
+        "the stale stash did not divert the request, so this test no longer covers the leak "
+        f"the fixture exists to stop (asked: {asked})"
+    )
+
+
+def test_the_idle_reload_stash_is_cleared_around_every_test(tmp_path):
+    # Driven directly, for the reason written on the settings-memo twin above: under xdist
+    # --dist loadgroup an ordering-based check passes by luck. Both ends matter, since the
+    # leak is the LAST idle test in a worker seeding the first test of the next module.
+    #
+    # With a manifest naming REAL files, not an empty one: llama_keepwarm makes whoever takes
+    # the manifest responsible for unlinking its slots, so a fixture that assigns None drops
+    # the only reference to a saved snapshot and leaves the bytes on disk. An empty manifest
+    # cannot tell that apart from a clean-up that worked.
+    import sys
+
+    fixture = next(
+        getattr(module, "_drop_the_idle_reload_stash_between_tests")
+        for module in list(sys.modules.values())
+        if module is not None and hasattr(module, "_drop_the_idle_reload_stash_between_tests")
+    )
+
+    def _saved(name):
+        slot = tmp_path / name
+        slot.write_bytes(b"kv")
+        return {"dir": str(tmp_path), "slots": [{"id": 0, "filename": name, "n_saved": 42}]}, slot
+
+    run = fixture.__wrapped__()
+    kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+    kw._kv_resume, before = _saved("before.bin")
+    next(run)
+    assert kw._last_unloaded_model is None, "the stash was not cleared before the test body"
+    assert kw._kv_resume is None, "the KV manifest was not cleared before the test body"
+    assert not before.exists(), "the KV slot file outlived the manifest that named it"
+
+    kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+    kw._kv_resume, after = _saved("after.bin")
+    next(run, None)
+    assert kw._last_unloaded_model is None, "the stash was not cleared after the test body"
+    assert kw._kv_resume is None, "the KV manifest was not cleared after the test body"
+    assert not after.exists(), "the KV slot file outlived the manifest that named it"
 
 
 def test_chat_withheld_model_does_not_send_the_caller_to_load_it(monkeypatch):
