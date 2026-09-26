@@ -4258,7 +4258,7 @@ function VideoGenerator({
 
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
-          <div className="relative z-10 flex shrink-0 justify-center gap-2 pt-0.5 pb-4 pl-8 pr-7">
+          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 pt-0.5 pb-4 pl-4 pr-3">
             {busy === "generating" ? (
               <Button
                 // Kept in step with the Images Stop control, which uses the same fill.
