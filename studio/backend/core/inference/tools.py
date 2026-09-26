@@ -7,6 +7,7 @@ execution, and terminal commands."""
 import ast
 import codecs
 import copy
+from collections import deque
 import fnmatch
 import functools
 import hashlib
@@ -19299,11 +19300,16 @@ def _truncate(
     scope: "str | None" = "",
     hint: str = "",
     reserve_tokens: float = 0.0,
+    omitted: "tuple[int, int]" = (0, 0),
 ) -> str:
     # Resolved per call, not bound at import: the default would freeze the constant before any model is loaded, which
     # is exactly when the window is still unknown.
     if limit is None:
         limit = _tool_result_char_budget()
+    # `omitted` is the (chars, lines) the drain dropped between its head and tail, so only the head may be shown.
+    size = len(text) + omitted[0]
+    if omitted[0]:
+        limit = min(limit, _SPILL_MAX_BYTES)
     # Same correction as a fetched page: a character cap reserves its share of the window only for English, and a
     # command that prints CJK or percent-escaped text costs two to three times what the cap assumed.
     # Whatever the loop will append to this result once it has it: the tool-error nudge goes on after the tool has
@@ -19345,7 +19351,7 @@ def _truncate(
     # to nothing.
     if _request_result_room() is not None:
         limit = _dense_char_limit(text, cap, cost + _RESULT_NOTICE_RESERVE)
-    if limit <= 0 and len(_zero_room_stub(len(text), None, True)) >= len(text):
+    if limit <= 0 and len(_zero_room_stub(size, None, True)) >= len(text):
         # Decided BEFORE the spill: a result this short is served whole below, and writing a file (and creating the
         # spill directory) for output that is never cut is a side effect with nothing on the other side of it.
         return text + hint
@@ -19354,7 +19360,7 @@ def _truncate(
         # No room for a body, so no room for the usual notice either: at this point the notice IS the message, and the
         # full one costs ~90 tokens of a budget that just reported none. Kept to a line so the thread stays servable
         # and the next fit can evict older turns and recover, which is the whole reason a stub beats a refusal.
-        stub = _zero_room_stub(len(text), spill, complete)
+        stub = _zero_room_stub(size, spill, complete)
         # A short result costs less than the notice explaining it is gone, and replacing "done" with a longer sentence
         # saves nothing and loses the answer.
         return (stub if len(stub) < len(text) else text) + hint
@@ -19363,7 +19369,7 @@ def _truncate(
         return (
             head
             + (
-                f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
+                f"\n\n... (truncated to {limit} chars for the model; {size} chars "
                 "total. The full output is not retained here; any files the code wrote "
                 "persist in the working directory.)"
             )
@@ -19378,7 +19384,7 @@ def _truncate(
         # blank line, where the head is "\n" alone and a count of two makes the hint resume at line 3, skipping the
         # first line the reader never saw.
         shown = 0 if not head else head.count("\n") + (0 if head.endswith("\n") else 1)
-        total = text.count("\n") + 1
+        total = text.count("\n") + 1 + omitted[1]
         resume = f"sed -n '{shown + 1},{shown + max(1, shown)}p' {spill}"
         where = f"showing lines 1-{shown} of {total}"
     else:
@@ -19393,11 +19399,11 @@ def _truncate(
         chunk = text[len(head) : len(head) * 2 or None]
         span = len(chunk.encode("utf-8", "surrogatepass"))
         resume = f"tail -c +{offset + 1} {spill} | head -c {max(1, span)}"
-        where = f"showing the first {len(head)} chars of {len(text)}"
+        where = f"showing the first {len(head)} chars of {size}"
     # The workdir sentence stays whatever else the notice says: it is about the files the CODE wrote, not the spill,
     # and it is the only thing telling the model those survive.
     common = (
-        f"\n\n... (truncated to {limit} chars for the model; {where}, {len(text)} chars "
+        f"\n\n... (truncated to {limit} chars for the model; {where}, {size} chars "
         f"total. {_capitalise(_spill_phrase(spill, complete))}, and any files the code "
         "wrote persist in the working directory"
     )
@@ -20247,6 +20253,10 @@ def _missing_path_hint(output: str, workdir: str | None = None) -> str:
     )
 
 
+# Kept past the spill's head so a trailing traceback still reaches `_missing_path_hint`.
+_DRAIN_TAIL_CHARS = 64 * 1024
+
+
 def _drain_process_output(
     proc,
     timeout,
@@ -20254,17 +20264,21 @@ def _drain_process_output(
     cancel_event = None,
     *,
     pgid = None,
-) -> tuple[str, bool]:
+) -> "tuple[str, bool, tuple[int, int]]":
     """``proc.communicate(timeout=...)`` equivalent that also streams each stdout line to
     ``output_callback`` as it is produced.
 
-    Returns ``(output, timed_out)``. The joined output is identical to what ``communicate`` would
+    Returns ``(output, timed_out, omitted)``. The joined output is what ``communicate`` would
     return: the same TextIOWrapper decodes the stream, so encoding, error replacement, and newline
-    translation all match. On timeout the process tree is killed (mirroring the non-streaming path).
+    translation all match. Past the spill's head only a rolling tail is kept, and ``omitted`` is the
+    ``(chars, lines)`` dropped between them. On timeout the process tree is killed (mirroring the
+    non-streaming path).
     With ``timeout=None`` the drain waits for EOF like ``communicate`` would, stopping early only
     when ``cancel_event`` is set.
     """
     chunks: list[str] = []
+    tail: "deque[str]" = deque()
+    kept = joined = tail_chars = omitted_chars = omitted_lines = 0
 
     # Captured before waiting so a stdout-holding grandchild can still be killed after the leader is reaped (getpgid
     # then fails). Callers pass it in from right after Popen; fall back to capturing here for direct callers.
@@ -20272,9 +20286,25 @@ def _drain_process_output(
         pgid = _capture_process_group(proc)
 
     def _reader() -> None:
+        nonlocal kept, joined, tail_chars, omitted_chars, omitted_lines
         try:
-            for line in iter(proc.stdout.readline, ""):
-                chunks.append(line)
+            # Sized reads: a newline-free stream would otherwise arrive as one unbounded "line".
+            for line in iter(lambda: proc.stdout.readline(_DRAIN_TAIL_CHARS), ""):
+                if kept <= _SPILL_MAX_BYTES:
+                    chunks.append(line)
+                    kept += len(line)
+                    # A str per line costs ~50 bytes, so a flood of tiny lines would dwarf the cap unless coalesced.
+                    if len(chunks) - joined >= 1024:
+                        chunks[joined:] = ["".join(chunks[joined:])]
+                        joined += 1
+                else:
+                    tail.append(line)
+                    tail_chars += len(line)
+                    while tail_chars > _DRAIN_TAIL_CHARS and len(tail) > 1:
+                        gone = tail.popleft()
+                        tail_chars -= len(gone)
+                        omitted_chars += len(gone)
+                        omitted_lines += gone.count("\n")
                 if output_callback is not None:
                     try:
                         output_callback(line)
@@ -20325,7 +20355,7 @@ def _drain_process_output(
                     break
                 reader.join(timeout = 0.5)
     reader.join(timeout = 5)
-    return "".join(chunks), timed_out
+    return "".join(chunks) + "".join(tail), timed_out, (omitted_chars, omitted_lines)
 
 
 _MAX_REPORTED_FILES = 25
@@ -20609,7 +20639,11 @@ def _created_file_sentinels(
 
 
 def _timed_out_result(
-    output: str | None, timeout: int, workdir: str | None, scope: "str | None"
+    output: str | None,
+    timeout: int,
+    workdir: str | None,
+    scope: "str | None",
+    omitted: "tuple[int, int]" = (0, 0),
 ) -> str:
     """Captured output, then the timeout status line.
 
@@ -20627,6 +20661,7 @@ def _timed_out_result(
         workdir = workdir,
         scope = scope,
         reserve_tokens = _text_token_cost(f"\n{ended}", ctx),
+        omitted = omitted,
     )
     result = f"{head}\n{ended}"
     # With the retry nudge, a stub or short head served whole can overrun a room the status fits.
@@ -20783,7 +20818,7 @@ def _python_exec(
         # Always drain via _drain_process_output (output_callback may be None): it kills the captured group on
         # cancellation, reaping a grandchild that outlived the leader, and returns bytes identical to communicate() so
         # the streaming vs non-streaming result stays byte-identical.
-        output, timed_out = _drain_process_output(
+        output, timed_out, omitted = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
         if prepared is not None:
@@ -20804,7 +20839,7 @@ def _python_exec(
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
-            ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope, omitted)
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -20831,7 +20866,7 @@ def _python_exec(
         # envelope.
         result = _defuse_sentinels(result)
         result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint, omitted = omitted)
             if result.strip()
             else "(no output)" + hint
         )
@@ -21002,7 +21037,7 @@ def _bash_exec(
 
         # Always drain via _drain_process_output (see _python_exec): kills the captured group on cancellation and
         # returns bytes identical to communicate(), keeping streaming vs non-streaming byte-identical.
-        output, timed_out = _drain_process_output(
+        output, timed_out, omitted = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
         if prepared is not None:
@@ -21023,7 +21058,7 @@ def _bash_exec(
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
-            ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope, omitted)
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -21044,7 +21079,7 @@ def _bash_exec(
         hint = _missing_path_hint(result, workdir)
         result = _defuse_sentinels(result)  # before the fit; see _python_exec
         result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint, omitted = omitted)
             if result.strip()
             else "(no output)" + hint
         )
