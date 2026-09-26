@@ -987,7 +987,7 @@ function GpuMemorySettings({
                 {showSplit && isGpuChecked(d.index) && (
                   <div className="ml-auto flex shrink-0 items-center gap-1">
                     <NumericValueInput
-                      value={splitShares[position] ?? 0}
+                      value={splitShares[orderedGpuIds.indexOf(d.index)] ?? 0}
                       min={0}
                       max={splitScale}
                       step={1}
