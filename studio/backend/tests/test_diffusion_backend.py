@@ -12156,7 +12156,9 @@ def test_the_offload_replan_prices_a_precast_text_encoder_once(fake_runtime, tmp
         def buffers(self, recurse = True):
             return []
 
-    monkeypatch.setattr(sys.modules["torch"], "nn", types.SimpleNamespace(Module = _Module), raising = False)
+    monkeypatch.setattr(
+        sys.modules["torch"], "nn", types.SimpleNamespace(Module = _Module), raising = False
+    )
 
     def _replan_te(scale, held_mib = None):
         monkeypatch.setattr(te_prequant, "te_prequant_budget_scale", lambda *a, **k: scale)
@@ -12164,7 +12166,9 @@ def test_the_offload_replan_prices_a_precast_text_encoder_once(fake_runtime, tmp
         _stub_pipeline_dense_quant(backend, monkeypatch)
         if held_mib is not None:
             # the pipe already holds the pre-cast encoder: the plan must not price it below the scaled table again
-            monkeypatch.setattr(_FakePipe, "components", {"text_encoder": _Module(held_mib)}, raising = False)
+            monkeypatch.setattr(
+                _FakePipe, "components", {"text_encoder": _Module(held_mib)}, raising = False
+            )
         seen = []
 
         def _plan(self, *args, **kwargs):
@@ -13350,7 +13354,10 @@ def test_an_explicit_fp8_under_offload_on_nvidia_is_still_declined(
     else:
         status = backend.load_pipeline("Qwen/Qwen-Image-2512", **kwargs)
         assert status["transformer_quant"] is None
-        assert "hooks torchao weights do not survive" in status["resolved"]["transformer_quant"]["reason"]
+        assert (
+            "hooks torchao weights do not survive"
+            in status["resolved"]["transformer_quant"]["reason"]
+        )
         backend.unload()
     assert calls == [] and reasons == []
 

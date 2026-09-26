@@ -6105,7 +6105,8 @@ class DiffusionBackend:
                                 and (
                                     plan.offload_policy != OFFLOAD_MODEL
                                     or estimate is None
-                                    or estimate.steady_transformer_mib + quant_overhead > quant_budget
+                                    or estimate.steady_transformer_mib + quant_overhead
+                                    > quant_budget
                                     or (largest_streamable_companion_mib(pipe) or 0) > quant_budget
                                 )
                             ):
