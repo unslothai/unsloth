@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """text_only on repo-code composites: load only the language model when the checkpoint stores it whole under one prefix."""
 
 import ast
