@@ -2026,8 +2026,9 @@ with sync_playwright() as p:
             shoot(f"10-theme-cycle-{cycle + 1}")
             info(f"  cycle {cycle + 1}: dark={bg['isDark']} body bg={bg['bg']!r}")
             # The theme item keeps the menu open on purpose (preventDefault in app-sidebar.tsx). Close it here, as a
-            # user would; left open, the next cycle waited 7 s for a close that never came, and its first click on the
-            # account button only closed the menu, costing another 5 s wait and a retry. About 13 s per cycle.
+            # user would; left open, the next cycle waited up to 7 s for a close that never came, and its first click on
+            # the account button only closed the menu, costing a failed open wait and a retry. Measured: about 10 s
+            # per cycle before, 2 s after.
             page.keyboard.press("Escape")
             wait_menu_closed(5_000)
         # Across cycles we should see both a near-white (light) and a near-black (dark) body bg; one polarity means the
