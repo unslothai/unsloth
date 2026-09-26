@@ -249,3 +249,33 @@ def test_nothing_is_carried_when_no_cached_copy_verifies(remote_gguf_repo):
     """A first-time download has no cached path to carry."""
     assert ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0").gguf_verified is None
     assert ModelConfig.from_identifier(REPO).gguf_verified is None
+
+
+QWEN_LOWERCASE_VARIANTS = [
+    GgufVariantInfo(
+        filename = f"qwen2.5-7b-instruct-{quant}-00001-of-0000{shards}.gguf",
+        quant = quant,
+        size_bytes = size,
+    )
+    for quant, shards, size in [
+        ("fp16", 4, 15_237_853_600),
+        ("q8_0", 3, 8_098_525_600),
+        ("q6_k", 2, 6_254_197_600),
+        ("q5_k_m", 2, 5_444_831_600),
+        ("q4_k_m", 2, 4_683_073_600),
+        ("q2_k", 1, 3_015_940_000),
+    ]
+]
+
+
+def test_no_variant_autoselects_a_lowercase_quant_over_the_first_listed(
+    remote_gguf_repo, monkeypatch
+):
+    monkeypatch.setattr(
+        mc,
+        "list_gguf_variants",
+        lambda identifier, hf_token = None: (list(QWEN_LOWERCASE_VARIANTS), False),
+    )
+    filenames = [v.filename for v in QWEN_LOWERCASE_VARIANTS]
+    assert mc._pick_best_gguf(filenames) == "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
+    assert ModelConfig.from_identifier("Qwen/Qwen2.5-7B-Instruct-GGUF").gguf_variant == "q4_k_m"
