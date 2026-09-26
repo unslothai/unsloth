@@ -147,3 +147,38 @@ test("pptx: tables capped, SmartArt read, pictures as Blobs", () => {
   assert.deepEqual(table?.table?.at(-1), ["…"]);
   assert.deepEqual(diagram?.paragraphs?.map((p) => p.text), ["Plan"]);
 });
+
+for (const cache of ["<v></v>", "<v/>", "<s:v xmlns:s=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" />"]) {
+  test(`xlsx: preserves a cached empty string formula result (${cache})`, () => {
+    const [sheet] = readXlsx(workbook(
+      `<worksheet xmlns="${MAIN}"><sheetData><row r="1">
+        <c r="A1" t="str"><f>IF(1=1,&quot;&quot;,42)</f>${cache}</c>
+        <c r="B1" t="str"><f>IF(1=1,&quot;ready&quot;,42)</f><v>ready</v></c>
+        <c r="C1"><f>1-1</f><v>0</v></c>
+      </row></sheetData></worksheet>`,
+    ));
+    assert.equal(sheet?.rows[0]?.[0]?.text ?? "", "");
+    assert.equal(sheet?.rows[0]?.[1]?.text, "ready");
+    assert.equal(sheet?.rows[0]?.[2]?.text, "0");
+  });
+}
+
+test("xlsx: preserves formula fallback for uncalculated cells and shared followers", () => {
+  const [sheet] = readXlsx(workbook(
+    `<worksheet xmlns="${MAIN}"><sheetData><row r="1">
+      <c r="A1"><f>SUM(1,2)</f><v></v></c>
+      <c r="B1" t="n"><f>SUM(1,2)</f><v/></c>
+      <c r="C1"><f>SUM(1,2)</f></c>
+      <c r="D1" t="str"><f>IF(1=1,&quot;&quot;,42)</f></c>
+      <c r="E1" t="str"><f t="shared" si="0" ref="E1:G1">IF(A1=0,&quot;&quot;,A1)</f><v/></c>
+      <c r="F1" t="str"><f t="shared" si="0"/><v/></c>
+      <c r="G1"><f t="shared" si="0"/><v/></c>
+    </row></sheetData></worksheet>`,
+  ));
+  const row = sheet?.rows[0];
+  for (const col of [0, 1, 2]) assert.equal(row?.[col]?.text, "=SUM(1,2)");
+  assert.equal(row?.[3]?.text, '=IF(1=1,"",42)');
+  assert.equal(row?.[4]?.text ?? "", "");
+  assert.equal(row?.[5]?.text ?? "", "");
+  assert.equal(row?.[6]?.text, '=IF(C1=0,"",C1)');
+});

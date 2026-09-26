@@ -775,7 +775,7 @@ const CELL_OPEN = openTag("c");
 const CELL_CLOSE = closeTag("c");
 const COL_OPEN = openTag("col");
 const COL_CLOSE = closeTag("col");
-const VALUE = /<(?:[\w.-]+:)?v(?:\s[^>]*)?>([\s\S]*?)<\/(?:[\w.-]+:)?v\s*>/;
+const VALUE = /<(?:[\w.-]+:)?v(?=[\s/>])[^>]*?(?:\/>|>([\s\S]*?)<\/(?:[\w.-]+:)?v\s*>)/;
 const FORMULA = /<(?:[\w.-]+:)?f(?=[\s/>])([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:[\w.-]+:)?f\s*>)/;
 const PHONETIC = /<(?:[\w.-]+:)?rPh(?=[\s/>])[^>]*?(?:\/>|>[\s\S]*?<\/(?:[\w.-]+:)?rPh\s*>)/g;
 const TEXT_RUN = /<(?:[\w.-]+:)?t(?:\s[^>]*)?>([\s\S]*?)(?:<\/(?:[\w.-]+:)?t\s*>|$)/g;
@@ -872,14 +872,15 @@ function readSheet(
       }
       if (rowHidden || hidden.columns.has(col)) continue;
       const type = attribute(attrs, "t");
-      const raw = decodeXml((VALUE.exec(body)?.[1] ?? "").slice(0, MAX_CELL_BYTES));
+      const cached = VALUE.exec(body);
+      const raw = decodeXml((cached?.[1] ?? "").slice(0, MAX_CELL_BYTES));
       const master = sharedId !== null ? shared.get(sharedId) : undefined;
       const formula = fText || (master ? shiftFormula(master.formula, r - master.row, col - master.col) : "");
       const cellStyle = style(Number(attribute(attrs, "s") ?? 0)) ?? {};
       let value = raw;
       let numeric = false;
-      // A formula with no cached result, as openpyxl and similar writers save them.
-      if (raw === "" && formula) value = `=${formula}`;
+      // An empty string cache is a result; an empty numeric cache is uncalculated (openpyxl).
+      if (raw === "" && formula && !(type === "str" && cached)) value = `=${formula}`;
       else if (type === "s" || type === "inlineStr" || type === "str") {
         value = formatText(type === "s" ? string(Number(raw)) : type === "inlineStr" ? stringText(body) : raw, cellStyle.format);
       } else if (type === "b") value = isTrue(raw) ? "TRUE" : "FALSE";
