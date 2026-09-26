@@ -39,7 +39,12 @@ CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chr
 # still the right turn.
 CONVERSATION_FORCED_MIN_SCORE = float(os.environ.get("RAG_CONVERSATION_FORCED_MIN_SCORE", "0.0"))
 
-UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
+_DEFAULT_UPLOAD_EXTS_CSV = ".pdf,.txt,.md,.markdown,.docx,.html,.htm"
+UPLOAD_EXTS = {
+    ext.strip().lower()
+    for ext in os.environ.get("RAG_UPLOAD_EXTS", _DEFAULT_UPLOAD_EXTS_CSV).split(",")
+    if ext.strip()
+}
 # 0 disables the cap; bounds parse + vision work at ingest.
 MAX_UPLOAD_BYTES = int(os.environ.get("RAG_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 
