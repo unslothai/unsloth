@@ -57,5 +57,13 @@ export function sheetDelimiter(name: string, contentType = ""): "," | "\t" | nul
   return Object.hasOwn(DELIMITERS, key) ? DELIMITERS[key]! : null;
 }
 
+const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdx"]);
+const MARKDOWN_TYPES = new Set(["text/markdown", "text/x-markdown"]);
+
+/** Markdown, by extension or MIME type: shown rendered rather than as its source. */
+export function isMarkdown(name: string, contentType = ""): boolean {
+  return MARKDOWN_EXTENSIONS.has(extensionOf(name)) || MARKDOWN_TYPES.has(mimeOf(contentType));
+}
+
 /** Documents past this are offered as a download instead: each viewer parses on the main thread. */
 export const MAX_DOCUMENT_PREVIEW_BYTES = 50 * 1024 * 1024;

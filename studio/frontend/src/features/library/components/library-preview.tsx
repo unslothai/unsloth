@@ -3,7 +3,7 @@
 
 import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { CodeSourceView } from "@/components/code-source-view";
-import { DocumentView, documentKind, sheetDelimiter } from "@/components/file-viewer";
+import { DocumentView, documentKind, isMarkdown, sheetDelimiter } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { Button } from "@/components/ui/button";
 import { MediaViewer, ScaleMenu } from "@/components/media-viewer";
@@ -57,8 +57,6 @@ type Body =
   | "model"
   | "none";
 
-const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdx"]);
-
 const CODE_LANGUAGES: Record<string, string> = {
   py: "python",
   js: "javascript",
@@ -82,8 +80,7 @@ function bodyFor(item: LibraryItem): Body {
   if (item.model) return "model";
   if (hasImagePreview(item)) return "image";
   if (item.textOnly) {
-    const extension = fileExtension(ownName(item));
-    if (MARKDOWN_EXTENSIONS.has(extension)) return "markdown";
+    if (isMarkdown(ownName(item), item.contentType)) return "markdown";
     // A CSV sent in chat keeps its whole text, so it opens as a grid like an upload.
     return sheetDelimiter(ownName(item), item.contentType) ? "document" : "text";
   }
@@ -91,7 +88,7 @@ function bodyFor(item: LibraryItem): Body {
   const kind = fileKind(item);
   if (kind === "web") return "web";
   if (kind === "audio" || kind === "video") return kind;
-  if (MARKDOWN_EXTENSIONS.has(fileExtension(ownName(item)))) return "markdown";
+  if (isMarkdown(ownName(item), item.contentType)) return "markdown";
   return isTextPreviewable(item) ? "text" : "none";
 }
 

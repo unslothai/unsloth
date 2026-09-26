@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type Unzipped, inflateSync, strFromU8, unzipSync } from "fflate";
+import { Inflate, type Unzipped, inflateSync, strFromU8, unzipSync } from "fflate";
 
 /** Readers for the parts of an XLSX or PPTX a viewer shows: values, not a faithful rendering. */
 
@@ -85,6 +85,8 @@ function inflateEntry(bytes: Uint8Array, view: DataView, entry: ZipEntry): Uint8
 type Reader = ((names: Iterable<string>, limit?: number) => Unzipped) & {
   /** A part's unpacked size, as the archive declares it. */
   size: (name: string) => number | undefined;
+  /** A part's first `max` bytes, inflating no further (all of it when shorter). */
+  head: (name: string, max: number) => Uint8Array | undefined;
 };
 
 function archive(bytes: Uint8Array): Reader {
@@ -112,7 +114,8 @@ function archive(bytes: Uint8Array): Reader {
       }
       return sizes.get(name);
     };
-    return Object.assign(read, { size });
+    const head = (name: string, max: number) => read([name])[name]?.subarray(0, max);
+    return Object.assign(read, { size, head });
   }
   const read = (names: Iterable<string>, limit = Infinity) => {
     const files: Unzipped = {};
@@ -124,7 +127,41 @@ function archive(bytes: Uint8Array): Reader {
     }
     return files;
   };
-  return Object.assign(read, { size: (name: string) => index.get(name)?.originalSize });
+  const head = (name: string, max: number) => {
+    const entry = index.get(name);
+    if (!entry || entry.originalSize <= max) return read([name])[name];
+    charge(max);
+    return inflateHead(bytes, view, entry, max);
+  };
+  return Object.assign(read, { size: (name: string) => index.get(name)?.originalSize, head });
+}
+
+/** An entry's first `max` bytes, inflated a little at a time and stopped there. */
+function inflateHead(bytes: Uint8Array, view: DataView, entry: ZipEntry, max: number): Uint8Array {
+  const at = entry.offset;
+  if (view.getUint32(at, true) !== 0x04034b50) throw new Error("Not a valid ZIP archive.");
+  const start = at + 30 + view.getUint16(at + 26, true) + view.getUint16(at + 28, true);
+  const data = bytes.subarray(start, start + entry.size);
+  if (entry.method === 0) return data.slice(0, max);
+  if (entry.method !== 8) throw new Error(`Unsupported ZIP compression method ${entry.method}.`);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const inflater = new Inflate((chunk) => {
+    chunks.push(chunk);
+    total += chunk.length;
+  });
+  // 16 KB in, at most about 16 MB out a step.
+  for (let from = 0; from < data.length && total < max; from += 16384) {
+    inflater.push(data.subarray(from, from + 16384), from + 16384 >= data.length);
+  }
+  const out = new Uint8Array(Math.min(total, max));
+  let filled = 0;
+  for (const chunk of chunks) {
+    if (filled >= out.length) break;
+    out.set(chunk.subarray(0, out.length - filled), filled);
+    filled += chunk.length;
+  }
+  return out;
 }
 
 function xml(files: Unzipped, path: string): Document | null {
@@ -167,6 +204,13 @@ function relationshipList(files: Unzipped, part: string): { id: string; type: st
 /** Relationship id to part path. */
 function relationships(files: Unzipped, part: string): Map<string, string> {
   return new Map(relationshipList(files, part).map((rel) => [rel.id, rel.path]));
+}
+
+/** The package's main part (workbook, presentation) as _rels/.rels names it, else where it usually is. */
+function mainPart(read: Reader, fallback: string): string {
+  const root = read(["_rels/.rels"], MAX_XML_PART_BYTES);
+  const path = relationshipList(root, "").find((rel) => rel.type.endsWith("/officeDocument"))?.path;
+  return path && read.size(path) !== undefined ? path : fallback;
 }
 
 function relsPath(part: string): string {
@@ -326,6 +370,25 @@ const fractionShape = memo((format) =>
 
 const unquote = (format: string) => format.replace(/"([^"]*)"/g, "$1").replace(/\\(.)/g, "$1");
 
+/** The fraction nearest `x` with a denominator up to `maxDen`, by continued fractions: a few dozen
+ *  steps whatever the width, where trying each denominator of # ?????????/????????? is a billion. */
+function closestFraction(x: number, maxDen: number): [number, number] {
+  let [p0, q0, p1, q1] = [0, 1, 1, 0];
+  let v = x;
+  for (let i = 0; i < 64; i++) {
+    const a = Math.floor(v);
+    const q2 = q0 + a * q1;
+    if (q2 > maxDen) break;
+    [p0, q0, p1, q1] = [p1, q1, p0 + a * p1, q2];
+    if (v - a < 1e-12) break;
+    v = 1 / (v - a);
+  }
+  // The best semiconvergent can beat the last convergent that fits.
+  const k = Math.floor((maxDen - q0) / q1);
+  const [ps, qs] = [p0 + k * p1, q0 + k * q1];
+  return Math.abs(x - ps / qs) < Math.abs(x - p1 / q1) - 1e-12 ? [ps, qs] : [p1, q1];
+}
+
 /** `format` with its quotes: a literal is never read as placeholders. */
 function formatFraction(value: number, format: string): string | null {
   const match = fractionShape(format);
@@ -342,15 +405,7 @@ function formatFraction(value: number, format: string): string | null {
     denominator = Number(denominatorCode);
     numerator = Math.round(rest * denominator);
   } else {
-    let best = Math.abs(rest - numerator);
-    for (let d = 2; d < 10 ** denominatorCode.length; d++) {
-      const n = Math.round(rest * d);
-      if (Math.abs(rest - n / d) < best - 1e-12) {
-        best = Math.abs(rest - n / d);
-        numerator = n;
-        denominator = d;
-      }
-    }
+    [numerator, denominator] = closestFraction(rest, 10 ** denominatorCode.length - 1);
   }
   if (wholeCode && numerator === denominator) {
     whole += 1;
@@ -903,9 +958,12 @@ const SHEET_CUT_BYTES = 1024 * 1024;
 // Upper bound on sheet XML read, since a row may hold 16,384 cells.
 const MAX_SHEET_XML_BYTES = 64 * 1024 * 1024;
 
+const SHEET_DATA_CLOSE = Array.from("sheetData>", (char) => char.charCodeAt(0));
+
 /** Byte offset after the `rows`th `</row>` (any prefix), or after the last one within
- *  MAX_SHEET_XML_BYTES; -1 if the part ends first. Scans bytes, so the rest is never decoded. */
-function rowsEnd(bytes: Uint8Array, rows: number): { end: number; capped: boolean } {
+ *  MAX_SHEET_XML_BYTES; -1 if the part ends first. `closed`, after </sheetData>, when that comes
+ *  first: no row follows it. Scans bytes, so the rest is never decoded. */
+function rowsEnd(bytes: Uint8Array, rows: number): { end: number; capped: boolean; closed?: number } {
   let count = 0;
   let last = -1;
   for (let i = bytes.indexOf(0x3c); i !== -1; i = bytes.indexOf(0x3c, i + 1)) {
@@ -928,22 +986,29 @@ function rowsEnd(bytes: Uint8Array, rows: number): { end: number; capped: boolea
     if (bytes[name] === 0x72 && bytes[name + 1] === 0x6f && bytes[name + 2] === 0x77 && bytes[name + 3] === 0x3e) {
       last = name + 4;
       if (++count === rows) return { end: last, capped: false };
+    } else if (SHEET_DATA_CLOSE.every((byte, n) => bytes[name + n] === byte)) {
+      return { end: -1, capped: false, closed: name + SHEET_DATA_CLOSE.length };
     }
   }
   return { end: -1, capped: false };
 }
 
 /** A worksheet's text up to its first `rows` rows. `cut` when rows were left out. */
-function sheetText(bytes: Uint8Array, rows: number): { text: string; cut: boolean } {
+/** `whole` false when `bytes` is only the part's head, so more of it follows. */
+function sheetText(bytes: Uint8Array, rows: number, whole = true): { text: string; cut: boolean } {
   if (bytes.length <= SHEET_CUT_BYTES) return { text: strFromU8(bytes), cut: false };
-  const { end, capped } = rowsEnd(bytes, rows);
+  const { end, capped, closed } = rowsEnd(bytes, rows);
+  // Every row, before sheetData closes: what follows (merges, formatting) is not needed.
+  if (closed !== undefined) return { text: strFromU8(bytes.subarray(0, closed)), cut: false };
   if (end === -1) {
     // No row closes within the cap: only the head is read, which yields no rows.
     return bytes.length > MAX_SHEET_XML_BYTES || capped
       ? { text: strFromU8(bytes.subarray(0, MAX_SHEET_XML_BYTES)), cut: true }
       : { text: strFromU8(bytes), cut: false };
   }
-  const more = capped || rowsEnd(bytes.subarray(end), 1).end !== -1;
+  // More rows: one closes later in what was read, or the part goes on before sheetData closes.
+  const next = rowsEnd(bytes.subarray(end), 1);
+  const more = capped || next.end !== -1 || (!whole && next.closed === undefined);
   return { text: strFromU8(bytes.subarray(0, end)), cut: more };
 }
 
@@ -1065,7 +1130,7 @@ function styleSections(bytes: Uint8Array | undefined): Document | null {
 
 export function readXlsx(bytes: Uint8Array): Sheet[] {
   const read = archive(bytes);
-  const main = "xl/workbook.xml";
+  const main = mainPart(read, "xl/workbook.xml");
   if ((read.size(main) ?? 0) > MAX_XML_PART_BYTES) throw new Error("File is too large to preview.");
   const head = read([main, relsPath(main)], MAX_XML_PART_BYTES);
   const workbook = xml(head, main);
@@ -1094,9 +1159,11 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
       break;
     }
     const path = paths.get(relId(sheet, "id") ?? "");
-    const part = path ? read([path])[path] : undefined;
+    // Only as much as is scanned: a worksheet can unpack to far more than its kept rows.
+    const part = path ? read.head(path, MAX_SHEET_XML_BYTES + 1) : undefined;
     if (!part) continue;
-    const { text, cut } = sheetText(part, Math.min(MAX_SHEET_ROWS, budget.cells));
+    const whole = part.length <= MAX_SHEET_XML_BYTES;
+    const { text, cut } = sheetText(part, Math.min(MAX_SHEET_ROWS, budget.cells), whole);
     const parsed = readSheet(text, sheet.getAttribute("name") ?? "Sheet", string, style, date1904, budget);
     if (cut) parsed.truncated = true;
     sheets.push(parsed);
@@ -1417,7 +1484,7 @@ function degrees(xfrm: Element | undefined): number {
  *  use are inflated: not notes, comments, masters or unused media. */
 export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   const read = archive(bytes);
-  const main = "ppt/presentation.xml";
+  const main = mainPart(read, "ppt/presentation.xml");
   if ((read.size(main) ?? 0) > MAX_XML_PART_BYTES) throw new Error("File is too large to preview.");
   const head = read([main, relsPath(main)], MAX_XML_PART_BYTES);
   const presentation = xml(head, main);
@@ -1474,7 +1541,13 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
     const boxes: SlideBox[] = [];
     let left = MAX_SLIDE_ITEMS;
     let cut = false;
-    // Each adder returns true once the budget is spent, which ends the slide.
+    // Each box's text is charged as it is kept, so no slide runs far past the deck's text budget.
+    const keep = (box: SlideBox): boolean => {
+      boxes.push(box);
+      textLeft -= boxText(box);
+      return textLeft <= 0 && (cut = true);
+    };
+    // Each adder returns true once a budget is spent, which ends the slide.
     const addShape = (shape: Element): boolean => {
       const body = first(shape, "txBody");
       if (!body) return false;
@@ -1503,12 +1576,11 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       }
       if (!paragraphs.length) return false;
       left -= paragraphs.length;
-      boxes.push({
+      return keep({
         frame: readFrame(shape, cx, cy),
         placeholder: first(shape, "ph")?.getAttribute("type") ?? (first(shape, "ph") ? "body" : undefined),
         paragraphs,
       });
-      return false;
     };
     // Tables, charts and SmartArt sit in a graphicFrame. A chart shows its cached data.
     const addFrame = (frame: Element): boolean => {
@@ -1519,24 +1591,23 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       const chartDoc = chartPath ? partDoc(chartPath) : null;
       const chart = chartDoc && readChart(chartDoc, left);
       if (chart) {
-        boxes.push({ frame: place(), ...chart });
         left -= chart.table.reduce((n, row) => n + row.length, 0);
+        if (keep({ frame: place(), ...chart })) return true;
       }
       const diagramRef = first(frame, "relIds");
       const diagramPath = diagramRef && slideRels.get(relId(diagramRef, "dm") ?? "");
       const diagramDoc = diagramPath ? partDoc(diagramPath) : null;
       const diagram = diagramDoc && left > 0 ? readDiagram(diagramDoc, left) : [];
       if (diagram.length) {
-        boxes.push({ frame: place(), paragraphs: diagram });
         left -= diagram.length;
+        if (keep({ frame: place(), paragraphs: diagram })) return true;
       }
       const tbl = first(frame, "tbl");
       if (!tbl || left <= 0) return false;
       const table = readTable(tbl, left);
       if (!table.some((row) => row.some((cell) => cell.trim()))) return false;
-      boxes.push({ frame: place(), table });
       left -= table.reduce((n, row) => n + row.length, 0);
-      return false;
+      return keep({ frame: place(), table });
     };
     const addPicture = (pic: Element): boolean => {
       const blip = first(pic, "blip");
@@ -1588,8 +1659,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
     // What was left out, marked as a table's cut is.
     if (cut) boxes.push({ paragraphs: [{ text: "…" }] });
     slides.push({ boxes });
-    // Paragraphs are counted, but one can be long: the deck's text is bounded by size too.
-    textLeft -= boxes.reduce((n, box) => n + boxText(box), 0);
+    // The deck's text is spent: the slides after are left out.
     if (textLeft <= 0) {
       truncated = index < slidePaths.length - 1;
       break;

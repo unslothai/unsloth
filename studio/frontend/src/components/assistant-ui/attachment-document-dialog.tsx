@@ -4,7 +4,7 @@
 "use client";
 
 import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
-import { DocumentView, documentKind } from "@/components/file-viewer";
+import { DocumentView, documentKind, isMarkdown } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { MediaViewer, ScaleMenu } from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
@@ -17,7 +17,6 @@ import { Slot } from "radix-ui";
 import { type FC, type PropsWithChildren, useEffect, useRef, useState } from "react";
 
 const SCALES = [0.5, 0.75, 1, 1.25, 1.5, 2];
-const MARKDOWN_NAME = /\.(md|markdown|mdx)$/i;
 
 /** `plain`: a sent document's stored text, shown when its original file is gone. `text` and `plain`
  *  are capped for rendering (`truncated`); `blob`, which a download saves, is whole. */
@@ -72,7 +71,7 @@ const DocumentDialog: FC<
   const [open, setOpen] = useState(false);
   const [scale, setScale] = useState(1);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
-  const markdown = MARKDOWN_NAME.test(source.name);
+  const markdown = isMarkdown(source.name, source.contentType ?? "");
   // Read on open, so a re-render (e.g. streaming) does not restart the load.
   const loadRef = useRef(load);
   useEffect(() => {
