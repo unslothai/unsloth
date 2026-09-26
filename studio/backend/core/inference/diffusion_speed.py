@@ -548,7 +548,9 @@ def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> 
             if not torch.is_tensor(sample) or bool(torch.isfinite(sample).all()):
                 return out
             if logger is not None:
-                logger.warning("diffusion.speed: fp16 VAE decode was not finite; decoding in fp32 from now on")
+                logger.warning(
+                    "diffusion.speed: fp16 VAE decode was not finite; decoding in fp32 from now on"
+                )
             for part in parts:
                 part.to(torch.float32)
             fell_back.append(True)
@@ -560,7 +562,6 @@ def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> 
     except Exception as exc:  # noqa: BLE001 - optimisation only
         try:
             import torch
-
             for part in (getattr(vae, "post_quant_conv", None), decoder):
                 if part is not None:
                     part.to(torch.float32)

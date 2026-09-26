@@ -36,7 +36,11 @@ class _FakeWanVAE(torch.nn.Module):
     def dtype(self):
         return next(self.parameters()).dtype
 
-    def decode(self, z, return_dict = True):
+    def decode(
+        self,
+        z,
+        return_dict = True,
+    ):
         weight = self.decoder[0].weight
         self.seen.append((z.dtype, weight.dtype))
         assert z.dtype == weight.dtype, "latents must reach the decoder in its own dtype"
@@ -64,9 +68,13 @@ def _snapshot(vae):
 
 def _unchanged(vae, snap):
     now = vae.state_dict()
-    return all(
-        now[k].dtype == d and now[k].stride() == s and torch.equal(now[k], t) for k, (d, s, t) in snap.items()
-    ) and "decode" not in vae.__dict__
+    return (
+        all(
+            now[k].dtype == d and now[k].stride() == s and torch.equal(now[k], t)
+            for k, (d, s, t) in snap.items()
+        )
+        and "decode" not in vae.__dict__
+    )
 
 
 @pytest.fixture
@@ -103,7 +111,10 @@ def test_second_expert_call_is_idempotent(sm75):
 @pytest.mark.parametrize(
     "family, target",
     [
-        (types.SimpleNamespace(vae_force_fp32 = False), _target()),  # LTX-2 / HV1.5 / H3 / image families
+        (
+            types.SimpleNamespace(vae_force_fp32 = False),
+            _target(),
+        ),  # LTX-2 / HV1.5 / H3 / image families
         (types.SimpleNamespace(), _target()),
         (_wan(), _target(backend = "rocm")),
         (_wan(), _target(device = "mps", backend = "mps")),
@@ -153,10 +164,15 @@ def test_speed_layer_wires_it_and_off_does_not(monkeypatch):
         monkeypatch.setattr(ds_mod, name, lambda *a, **k: False)
     pipe = types.SimpleNamespace(vae = None, transformer = types.SimpleNamespace())
     fam = _wan()
-    target = types.SimpleNamespace(device = "cpu", dtype = torch.float32, supports_default_torch_compile = False)
-    assert apply_speed_optims(pipe, target, is_gguf = False, family = fam, speed_mode = SPEED_OFF)[
-        "vae_fp16_decode"
-    ] is False
+    target = types.SimpleNamespace(
+        device = "cpu", dtype = torch.float32, supports_default_torch_compile = False
+    )
+    assert (
+        apply_speed_optims(pipe, target, is_gguf = False, family = fam, speed_mode = SPEED_OFF)[
+            "vae_fp16_decode"
+        ]
+        is False
+    )
     assert calls == []
     applied = apply_speed_optims(pipe, target, is_gguf = False, family = fam, speed_mode = SPEED_DEFAULT)
     assert applied["vae_fp16_decode"] is True and calls == [fam]
