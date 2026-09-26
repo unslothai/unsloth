@@ -69,6 +69,28 @@ def test_the_missing_names_are_added(fake_modules):
             assert hasattr(fake_modules[name], symbol), f"{name}.{symbol}"
 
 
+def test_the_transformers_package_keeps_no_stub(fake_modules):
+    """The donor stub must not reach the package either.
+
+    `import transformers.conversion_mapping as m` resolves through the package attribute,
+    not sys.modules, so a stub attached there outlives the real module going back into
+    sys.modules and answers every later conversion lookup with None.
+    """
+    parent = types.ModuleType("transformers")
+    saved = sys.modules.get("transformers")
+    sys.modules["transformers"] = parent
+    try:
+        F._backfill_missing_conversion_symbols()
+    finally:
+        if saved is None:
+            sys.modules.pop("transformers", None)
+        else:
+            sys.modules["transformers"] = saved
+    for name in F._PEFT_CONVERSION_SYMBOLS:
+        attached = vars(parent).get(name.rpartition(".")[2])
+        assert attached is None, f"{name}: {getattr(attached, '__file__', attached)}"
+
+
 def test_the_real_module_is_not_replaced(fake_modules):
     before = {n: m for n, m in fake_modules.items()}
     F._backfill_missing_conversion_symbols()

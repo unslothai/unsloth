@@ -32,6 +32,7 @@ from .cohere import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
+from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -110,6 +111,11 @@ from ._utils import (
     resolve_model_class,
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
+    _get_remote_composite_text_only,
+    _merge_key_mapping,
+    _rebase_user_quantization_config,
+    _drop_text_only_key_mapping,
+    _adapter_fits_text_model,
     set_task_config_attr,
     maybe_prefetch_hf_snapshot,
 )
@@ -294,6 +300,43 @@ def _config_diff(config):
         except Exception:
             pass
     return {}
+
+
+def _is_mistral_format_checkpoint(
+    model_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+):
+    """True for a checkpoint in Mistral's own format (`params.json`, no `config.json`), which
+    AutoConfig cannot read. Answers False on any doubt, including offline."""
+    # Meta's original Llama checkpoints also ship `params.json`, so require a Mistral-only file.
+    markers = ("tekken.json", "consolidated.safetensors", "consolidated.safetensors.index.json")
+    try:
+        if os.path.isdir(model_name):
+            has = lambda name: os.path.isfile(os.path.join(model_name, name))
+        else:
+            if local_files_only:
+                return False
+            from huggingface_hub import file_exists
+            has = lambda name: file_exists(model_name, name, revision = revision, token = token)
+        return has("params.json") and not has("config.json") and any(has(m) for m in markers)
+    except Exception:
+        return False
+
+
+def _mistral_format_error(model_name):
+    return (
+        f"Unsloth: `{model_name}` is a checkpoint in Mistral's own format: it ships `params.json` "
+        "and no `config.json`, and transformers has no modeling code for it (the model card says "
+        "so and points at vLLM).\n"
+        "Unsloth trains through transformers, so this checkpoint cannot be loaded for training "
+        "until transformers gains an implementation or a transformers-format conversion of the "
+        "weights is published. For inference use vLLM with mistral-common, as the model card "
+        "describes.\n"
+        "If you meant a transformers-format repo, check the repo id: the converted uploads carry "
+        "a `config.json`."
+    )
 
 
 def _has_sequence_classification_architecture(config):
@@ -950,6 +993,8 @@ class FastLanguageModel(FastLlamaModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
                     f"to obtain the latest transformers build, then restart this session."
                 )
+            if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
+                raise RuntimeError(_mistral_format_error(model_name)) from autoconfig_exc
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
                 f"AutoConfig error: {autoconfig_error}\n\n"
@@ -1305,6 +1350,17 @@ class FastLanguageModel(FastLlamaModel):
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
+            # Grouped linears (DeepSeek-V4 o_a_proj): the LoRA mapping is not saved, re-register it.
+            _grouped_config = register_grouped_linear_lora_for_adapter(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                **peft_load_kwargs,
+            )
+            if _grouped_config is not None:
+                peft_load_kwargs["config"] = _grouped_config
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -1753,6 +1809,8 @@ class FastModel(FastBaseModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
                     f"to obtain the latest transformers build, then restart this session."
                 )
+            if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
+                raise RuntimeError(_mistral_format_error(model_name)) from autoconfig_exc
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
                 f"AutoConfig error: {autoconfig_error}\n\n"
@@ -2110,6 +2168,7 @@ class FastModel(FastBaseModel):
                 )
         load_text_only = text_only and auto_model is None
         text_only_decoder = False
+        _text_key_mapping = None
         if load_text_only:
             if hasattr(model_config, "vision_config"):
                 text_config = _get_text_only_config(model_config, old_model_name)
@@ -2117,10 +2176,58 @@ class FastModel(FastBaseModel):
                 text_class = resolve_model_class(
                     AutoModelForCausalLM, text_config, **_probe_hub_kwargs
                 )
-                if text_class is None or not _is_family_text_decoder(
+                # Repo-code composites (Nemotron-Omni) keep a whole causal LM under one checkpoint prefix; load only it when every text weight is found there.
+                family_decoder = text_class is not None and _is_family_text_decoder(
                     getattr(model_config, "model_type", ""),
                     getattr(text_config, "model_type", ""),
+                )
+                remote_text_only = None
+                # InternVL: get_text_config() is the wrapper itself, so the family check always passes.
+                if not family_decoder or type(text_config) is type(model_config):
+                    remote_text_only = _get_remote_composite_text_only(
+                        model_config,
+                        model_name,
+                        trust_remote_code = trust_remote_code,
+                        token = token,
+                        revision = base_revision if not is_peft else None,
+                        local_files_only = local_files_only,
+                        fast_inference = fast_inference,
+                        subfolder = kwargs.get("subfolder"),
+                        device_map = device_map,
+                        variant = kwargs.get("variant"),
+                        cache_dir = kwargs.get("cache_dir"),
+                        code_revision = kwargs.get("code_revision"),
+                    )
+                if (
+                    remote_text_only is not None
+                    and is_peft
+                    and not _adapter_fits_text_model(
+                        old_model_name,
+                        remote_text_only[1],
+                        token = token,
+                        revision = revision,
+                        local_files_only = local_files_only,
+                        cache_dir = kwargs.get("cache_dir"),
+                        text_names = remote_text_only[2],
+                    )
                 ):
+                    # An adapter trained on the full composite names its weights (and often its target regex) under the wrapper prefix; keep the full model it was trained on.
+                    remote_text_only = None
+                if remote_text_only is not None:
+                    text_config, _text_key_mapping = remote_text_only[:2]
+                    logger.warning_once(
+                        f"Loading {old_model_name} as text-only: only its language model "
+                        f"({type(text_config).__name__}) is built, vision/audio weights are skipped. "
+                        "Use FastVisionModel with text_only = False for multimodal inputs."
+                    )
+                    _merge_key_mapping(kwargs, _text_key_mapping)
+                    _rebase_user_quantization_config(kwargs, _text_key_mapping)
+                    # The post-load stamp writes this into model.config; use the rebased copy the load used.
+                    quantization_config = kwargs.get("quantization_config", quantization_config)
+                    model_config = text_config
+                    is_vlm = False
+                    text_only_decoder = True
+                elif not family_decoder:
                     load_text_only = False
                 else:
                     logger.warning_once(
@@ -2249,6 +2356,7 @@ class FastModel(FastBaseModel):
             *args,
             **kwargs,
         )
+        _drop_text_only_key_mapping(model, _text_key_mapping)
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
@@ -2382,6 +2490,16 @@ class FastModel(FastBaseModel):
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
+            _grouped_config = register_grouped_linear_lora_for_adapter(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                **peft_load_kwargs,
+            )
+            if _grouped_config is not None:
+                peft_load_kwargs["config"] = _grouped_config
             try:
                 model = PeftModel.from_pretrained(
                     model,

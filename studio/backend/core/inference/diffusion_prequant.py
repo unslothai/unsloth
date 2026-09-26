@@ -558,8 +558,15 @@ def resolve_prequant_source(
         # Family-declared name first when there is one, then the derived chain, which puts the
         # safetensors spelling ahead of the pickle. Order-preserving dedup so a family that declares
         # exactly what the chain would derive does not make the downloader ask twice for it.
+        declared = (preferred,) if preferred else ()
+        # opt-in rotated artifact goes first; the plain chain stays behind it (not yet hosted, or offline)
+        from .diffusion_transformer_quant import convrot_prequant_filename, int8_convrot_enabled
+
+        rotated = convrot_prequant_filename(scheme, getattr(fam, "name", None))
+        if rotated and int8_convrot_enabled():
+            declared = (rotated,) + declared
         names: list[str] = []
-        for name in ((preferred,) if preferred else ()) + derived:
+        for name in declared + derived:
             if name and name not in names:
                 names.append(name)
         return PrequantSource(
@@ -567,7 +574,7 @@ def resolve_prequant_source(
             location = repo_id,
             filename = names[0],
             fallback_filenames = tuple(names[1:]),
-            declared_filenames = (preferred,) if preferred else (),
+            declared_filenames = declared,
         )
     return None
 
@@ -1203,7 +1210,11 @@ def load_prequantized_transformer(
         # dense fallback) for one this build cannot honour exactly. After load_state_dict because the meta retry above
         # rebuilds the module; before apply_small_m_padding because padding reparents the Linears and the recorded
         # fqns name the unwrapped tree.
-        from .diffusion_convrot import apply_activation_rotation
+        from .diffusion_convrot import (
+            apply_activation_rotation,
+            declares_rotation,
+            warm_rotation_cache,
+        )
 
         apply_activation_rotation(transformer, metadata, logger = logger)
 
@@ -1218,6 +1229,17 @@ def load_prequantized_transformer(
         del ckpt
 
         transformer = transformer.to(device)
+        if declares_rotation(metadata):
+            try:
+                import torch
+
+                on = next(iter(transformer.parameters()), None)
+                dtype = getattr(
+                    torch, str(metadata.get("torch_dtype") or "bfloat16"), torch.bfloat16
+                )
+                warm_rotation_cache(transformer, on.device if on is not None else device, dtype)
+            except Exception:  # noqa: BLE001
+                pass
         # Same small-M row padding the runtime quantise path applies, and for the same reason: a checkpoint built
         # under the current exclusion set QUANTISES the family's small-M linears, so without the wrappers they would
         # raise inside _int_mm the moment the compiled scope reaches them. After load_state_dict, since wrapping
@@ -1393,7 +1415,16 @@ def _resolve_checkpoint_path(
                 # happened. Offline, a cache miss is the only verdict there is, so the chain is
                 # walked exactly as for a 404.
                 if not local_files_only or last:
-                    raise
+                    cached = (
+                        None
+                        if last
+                        else cached_checkpoint_path(
+                            source, cache_dir = cache_dir, names = names[index + 1 :]
+                        )
+                    )
+                    if cached is None:
+                        raise
+                    return cached
             except EntryNotFoundError:
                 if last:
                     raise
