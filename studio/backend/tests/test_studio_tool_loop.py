@@ -613,6 +613,24 @@ def test_sandbox_stays_on_by_default(executed):
     _run(transport, tools = [PY])
 
     assert executed[0]["disable_sandbox"] is False
+    # Nobody approved it, so the executor keeps the jail even for a host path.
+    assert "host_access_approved" not in executed[0]
+
+
+@pytest.mark.parametrize("verdict", ["allow", "deny"])
+def test_only_an_approved_call_is_marked_approved(executed, monkeypatch, verdict):
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda session, approval: object())
+    monkeypatch.setattr(
+        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: verdict
+    )
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
+    monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "ap1")
+    _run(_shared_setup_1(), tools = [PY], permission_mode = "auto", confirm_calls = True)
+
+    if verdict == "allow":
+        assert executed[0]["host_access_approved"] is True
+    else:
+        assert executed == []
 
 
 # ── Forced tool choice ────────────────────────────────────────────
@@ -1337,3 +1355,39 @@ def test_mcp_images_are_not_sent_to_a_text_only_provider(mcp_image_result):
     follow_up = transport.requests[1]["messages"]
     assert follow_up[-1]["role"] == "tool"
     assert "__MCP_IMAGES__" not in follow_up[-1]["content"]
+
+
+@pytest.mark.parametrize("preserve", [True, False])
+def test_reasoning_replay_during_tool_rounds_is_opt_in(executed, preserve):
+    transport = FakeTransport(
+        [
+            [
+                _sse({"reasoning_content": "First "}),
+                _sse({"reasoning_content": "thought."}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"unsloth"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "Done."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    transport.preserves_reasoning = preserve
+    _run(transport)
+    assistant = transport.requests[1]["messages"][-2]
+    assert assistant.get("reasoning_content") == ("First thought." if preserve else None)
+    assert assistant["tool_calls"][0]["function"]["name"] == "web_search"
+    assert transport.requests[1]["messages"][-1]["role"] == "tool"

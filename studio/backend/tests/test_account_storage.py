@@ -262,7 +262,7 @@ def test_hf_validation_cache_and_budget_are_private(monkeypatch):
     monkeypatch.setattr(
         validation,
         "_check_remote",
-        lambda token: (
+        lambda token, **_k: (
             calls.append(current_account_id()) or validation.TokenValidationResult(status = "valid")
         ),
     )
@@ -409,7 +409,7 @@ def test_hf_inflight_checks_do_not_join_another_account(monkeypatch):
     entered = threading.Barrier(2)
     results = []
 
-    def remote(token):
+    def remote(token, **_k):
         entered.wait(timeout = 5)
         return validation.TokenValidationResult(status = "valid")
 

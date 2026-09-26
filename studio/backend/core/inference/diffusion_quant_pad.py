@@ -16,30 +16,10 @@ whole conditioning front end. This is the alternative: pad the flattened row cou
 ``pad_to``, run the GEMM, slice the result back. The module becomes compilable with no change to
 the quantization config, and the rows the caller asked for are returned BITWISE unchanged.
 
-Two properties make the padding exact rather than approximately exact, and both are load-bearing:
-
-  * The pad rows REPLICATE row 0 rather than being zeros. An all-zero row has amax 0, hence
-    scale 0, hence a division by zero in the activation quantizer. That NaN would stay confined
-    to a row that is then discarded, but replication costs the same and keeps the intermediate
-    finite -- and finite intermediates are what let the equality be checked at all.
-  * The activation scale is PER ROW (torchao quantizes the activations of
-    ``Int8DynamicActivationInt8WeightConfig`` with ``_int8_symm_per_token_...``), so each kept
-    row's scale is computed from that row alone and extra rows cannot perturb it. Replicating
-    row 0 happens to leave a per-TENSOR amax unchanged too, so the two properties overlap for
-    that particular granularity -- but a granularity calibrated on anything other than a plain
-    amax (a percentile, a mean, a running observer) would shift under duplicated rows and
-    silently change every output. ``wrap_small_m_linears`` therefore refuses to wrap a quantized
-    Linear whose activation granularity it cannot prove is per row, and RAISES rather than
-    quietly leaving it unwrapped: a half-padded transformer is the one outcome worse than either
-    end state, since it compiles on the modules that were wrapped and crashes on the rest.
-
-Ordering invariant: wrapping REPARENTS the Linear, so it must happen AFTER a state dict is
-loaded and BEFORE nothing in particular. The offline prequant builder
-(``scripts/build_prequant_checkpoint.py``) drives ``quantize_`` directly and saves the state
-dict, so it never sees a wrapper. As a second line of defence ``PadToMinM`` is state-dict
-TRANSPARENT: it saves and loads its inner Linear's tensors under the wrapper's own prefix, so a
-checkpoint written from a wrapped transformer still names ``context_embedder.weight`` rather
-than ``context_embedder.inner.weight`` and stays loadable by an unwrapped tree.
+Exact because pad rows REPLICATE row 0 (a zero row gives scale 0 and NaN) and the activation scale
+is PER ROW; ``wrap_small_m_linears`` RAISES on a granularity it cannot prove per row, since a
+half-padded transformer crashes. ``ZeroRowSafeLinear`` answers an EMPTY activation itself (nvfp4).
+Wrapping reparents the Linear, so do it AFTER loading; ``PadToMinM`` is state-dict transparent.
 """
 
 from __future__ import annotations
@@ -217,6 +197,80 @@ class PadToMinM(nn.Module):
 
     def extra_repr(self) -> str:
         return f"min_m = {self.min_m}, pad_to = {self.pad_to}"
+
+
+class ZeroRowSafeLinear(nn.Module):
+    """Answer an EMPTY activation here: torchao NVFP4's global-scale ``max()`` raises on ``numel() == 0``."""
+
+    def __init__(self, inner: nn.Linear) -> None:
+        super().__init__()
+        self.inner = inner
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.numel() == 0:
+            # The bias add broadcasts over zero elements, kept so the result matches F.linear's.
+            out = x.new_zeros((*x.shape[:-1], self.inner.out_features))
+            bias = getattr(self.inner, "bias", None)
+            return out if bias is None else out + bias
+        return self.inner(x)
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            if name == "inner":
+                raise
+            inner = self._modules.get("inner")
+            if inner is None:
+                raise
+            return getattr(inner, name)
+
+    def state_dict(self, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+        """Emit the inner Linear's tensors under the wrapper's prefix, loadable unwrapped."""
+        destination = kwargs.pop("destination", args[0] if args else None)
+        prefix = kwargs.pop("prefix", args[1] if len(args) > 1 else "")
+        keep_vars = kwargs.pop("keep_vars", args[2] if len(args) > 2 else False)
+        if destination is None:
+            return self.inner.state_dict(prefix = prefix, keep_vars = keep_vars)
+        self.inner.state_dict(destination = destination, prefix = prefix, keep_vars = keep_vars)
+        return destination
+
+    def _load_from_state_dict(
+        self,
+        state_dict: Any,
+        prefix: str,
+        local_metadata: Any,
+        strict: bool,
+        missing_keys: list,
+        unexpected_keys: list,
+        error_msgs: list,
+    ) -> None:
+        """Accept the unwrapped key names ``state_dict`` above writes, and hand them to ``inner``."""
+        for key in [k for k in state_dict if k.startswith(prefix)]:
+            leaf = key[len(prefix) :]
+            if not leaf or leaf.startswith("inner."):
+                continue
+            state_dict[prefix + "inner." + leaf] = state_dict.pop(key)
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )
+
+
+def wrap_zero_row_linears(model: nn.Module, fqns: Iterable[str]) -> tuple[str, ...]:
+    """Wrap each Linear in ``fqns`` in a ``ZeroRowSafeLinear``; idempotent, and never stacks on ``PadToMinM``."""
+    done: list[str] = []
+    for fqn in sorted(set(fqns)):
+        parent_name, _, leaf = fqn.rpartition(".")
+        try:
+            parent = model.get_submodule(parent_name) if parent_name else model
+            module = getattr(parent, leaf)
+        except AttributeError:
+            continue
+        if not is_quantized_linear(module):
+            continue
+        setattr(parent, leaf, ZeroRowSafeLinear(module))
+        done.append(fqn)
+    return tuple(done)
 
 
 def padding_is_bitwise_exact(

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useHfEndpoint } from "@/lib/hf-endpoint";
+import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -49,7 +49,10 @@ import { Fragment, type ReactNode, memo, useMemo } from "react";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import type { DiscoverRow } from "../types";
 import { HubOptionMenu } from "./hub-option-menu";
-import { buildRowStatusTooltip } from "./models-catalog-rows";
+import {
+  DOWNLOADING_DOT_CLASS,
+  buildRowStatusTooltip,
+} from "./models-catalog-rows";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessGlyphs, CapabilityPill } from "./shared";
 
@@ -332,6 +335,7 @@ function TitleMarkers({
   gated,
   isPrivate,
   partial,
+  downloading = false,
   unsupported,
   onDevice,
 }: {
@@ -339,6 +343,7 @@ function TitleMarkers({
   gated?: false | "auto" | "manual";
   isPrivate?: boolean;
   partial: boolean;
+  downloading?: boolean;
   unsupported: boolean;
   onDevice: boolean;
 }) {
@@ -359,11 +364,18 @@ function TitleMarkers({
         />
       )}
       <AccessGlyphs gated={gated} isPrivate={isPrivate} tooltip={false} />
-      {partial && (
+      {partial && !downloading && (
         <span
           role="img"
           aria-label="Partial download"
           className={cn(STATUS_DOT_CLASS, "bg-status-warning")}
+        />
+      )}
+      {partial && downloading && (
+        <span
+          role="img"
+          aria-label="Downloading"
+          className={cn(STATUS_DOT_CLASS, DOWNLOADING_DOT_CLASS)}
         />
       )}
       {unsupported && (
@@ -479,6 +491,7 @@ function RowActions({
   onSelect: (id: string) => void;
 }) {
   const hfEndpoint = useHfEndpoint();
+  const hubName = useHubName();
   const hfUrl = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${row.result.id}`;
   const actionClass =
     "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:text-foreground";
@@ -548,7 +561,7 @@ function RowActions({
               strokeWidth={1.75}
               className="size-4"
             />
-            Open on Hugging Face
+            Open on {hubName}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -584,6 +597,10 @@ function useResultRowModel(
     support,
     unsupported,
     partial: row.isAvailableOnDevice && row.isPartialOnDevice,
+    downloading:
+      row.isAvailableOnDevice &&
+      row.isPartialOnDevice &&
+      row.isDownloadingOnDevice === true,
     onDevice: row.isAvailableOnDevice && !row.isPartialOnDevice,
     sizeLabel: sizeLabel !== "N/A" ? sizeLabel : null,
     taskLabel,
@@ -603,7 +620,15 @@ export const ResultCard = memo(function ResultCard({
   showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
-  const { support, unsupported, partial, onDevice, sizeLabel, taskLabel } =
+  const {
+    support,
+    unsupported,
+    partial,
+    downloading,
+    onDevice,
+    sizeLabel,
+    taskLabel,
+  } =
     useResultRowModel(row, deviceType, isDataset);
   const format =
     isDataset || !showFormatDot
@@ -613,6 +638,7 @@ export const ResultCard = memo(function ResultCard({
         : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
+    downloading,
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -665,6 +691,7 @@ export const ResultCard = memo(function ResultCard({
             gated={row.result.gated}
             isPrivate={row.result.private}
             partial={partial}
+            downloading={downloading}
             unsupported={unsupported}
             onDevice={onDevice}
           />
@@ -733,7 +760,15 @@ export const ResultGridRow = memo(function ResultGridRow({
   showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
-  const { support, unsupported, partial, onDevice, sizeLabel, taskLabel } =
+  const {
+    support,
+    unsupported,
+    partial,
+    downloading,
+    onDevice,
+    sizeLabel,
+    taskLabel,
+  } =
     useResultRowModel(row, deviceType, isDataset);
   const sizeDisplay = isDataset ? null : sizeLabel;
   const format =
@@ -744,6 +779,7 @@ export const ResultGridRow = memo(function ResultGridRow({
         : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
+    downloading,
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -791,6 +827,7 @@ export const ResultGridRow = memo(function ResultGridRow({
                 gated={row.result.gated}
                 isPrivate={row.result.private}
                 partial={partial}
+                downloading={downloading}
                 unsupported={unsupported}
                 onDevice={onDevice}
               />
@@ -878,7 +915,8 @@ export const ResultSplitRow = memo(function ResultSplitRow({
   showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
-  const { support, unsupported, partial, onDevice } = useResultRowModel(
+  const { support, unsupported, partial, downloading, onDevice } =
+    useResultRowModel(
     row,
     deviceType,
     isDataset,
@@ -891,6 +929,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
         : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
+    downloading,
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -920,6 +959,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
             gated={row.result.gated}
             isPrivate={row.result.private}
             partial={partial}
+            downloading={downloading}
             unsupported={unsupported}
             onDevice={onDevice}
           />

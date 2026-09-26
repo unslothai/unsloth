@@ -1083,7 +1083,7 @@ def test_every_install_entry_point_is_counted() -> None:
     source = STACK_PATH.read_text(encoding = "utf-8")
     tree = ast.parse(source)
     counted = {
-        "pip_install",
+        "_pip_install_once",
         "pip_install_try",
         "_uninstall_distribution",
         "_purge_recordless_distributions",

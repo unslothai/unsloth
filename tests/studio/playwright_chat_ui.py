@@ -27,8 +27,13 @@ from _playwright_robust import (  # noqa: E402
     is_benign_console_error,
     is_benign_page_error,
     recover_or_replace_page as _robust_recover_or_replace_page,
+    report_failing_step,
     robust_evaluate,
+    step_budget_s,
+    wait_for_first,
     wait_for_health,
+    wait_for_settled,
+    wait_until,
     click_forced,
 )
 
@@ -93,6 +98,20 @@ WALL_TIMEOUT_S = float(
 # .github/scripts/run-studio-permission-browser.sh.
 TOTAL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_TOTAL_TIMEOUT_S", "0")) or None
 
+# Per-step ceilings. A step that overruns its own stops the run there, named, instead of
+# every later step waiting out its own timeouts first. A step that waits on the model gets
+# WALL_TIMEOUT_S, the budget each of its waits already had; one that only drives the UI
+# gets UI_STEP_BUDGET_S, generous next to the few seconds it takes on a hosted runner.
+# Both stretch with STUDIO_UI_TURN_TIMEOUT_MS, the knob the slow lanes already raise
+# (macOS triples it), and with STUDIO_PW_STEP_BUDGET_SCALE.
+_SLOW_LANE = max(1.0, TURN_TIMEOUT_MS / 180_000)
+UI_STEP_BUDGET_S = step_budget_s(180 * _SLOW_LANE)
+MODEL_STEP_BUDGET_S = step_budget_s(WALL_TIMEOUT_S)
+# For the steps that retry themselves (change-password, composer mount, re-login): each
+# attempt restarts the inactivity budget, as it always has, and the step has no ceiling of
+# its own, so no attempt the loop allows is cut short. Failing still names the step.
+NO_STEP_CEILING = 0
+
 _n = [0]
 
 _watchdog = None  # armed below; everything above it runs before there is one
@@ -104,9 +123,11 @@ def wall_kick():
         _watchdog.kick()
 
 
-def step(s):
+def step(s, budget_s = None):
+    """Start step `s`; it may run `budget_s` (default UI_STEP_BUDGET_S) before the run stops."""
     print(f"[ui] STEP {s}", flush = True)
-    wall_kick()
+    if _watchdog is not None:
+        _watchdog.begin_step(s, UI_STEP_BUDGET_S if budget_s is None else budget_s)
 
 
 def info(s):
@@ -411,7 +432,8 @@ def exercise_permission_mode_controls(page, shoot):
     expect(pill).to_have_attribute("data-variant", "danger")
     active_icon = pill.locator(".composer-pill-glyph > :first-child")
     pill.hover()
-    page.wait_for_timeout(200)
+    # Read the opacity once the hover transition has finished, not at a fixed delay into it.
+    wait_for_settled(active_icon)
     icon_opacity = float(active_icon.evaluate("el => getComputedStyle(el).opacity"))
     if icon_opacity < 0.5:
         fail(f"Full access icon disappeared on hover (opacity={icon_opacity})")
@@ -440,6 +462,150 @@ def login_via_api(pw):
             return r.status
     except urllib.error.HTTPError as exc:
         return exc.code
+
+
+# How long a Recents click may take to show the thread's turns. Opening a chat runs its history
+# loader, which awaits four requests in a row (the thread, its active runs, its messages, its
+# research state) before anything renders. On a Windows runner shared by two lanes that took
+# 300-700 ms, so a fixed 500 ms read found an empty thread in about one run in four.
+RECENTS_LOAD_TIMEOUT_MS = 20_000
+
+
+def open_recent_thread_with_our_prompts(
+    page,
+    sent_prompts,
+    shoot,
+    our_thread_id = "",
+):
+    """Click this run's chat in Recents and prove it opens with the turns it sent.
+
+    The entry is chosen by title, since a chat's title is its first prompt: the most recent row
+    is not necessarily ours. Then the check waits for the thread to render rather than reading
+    once: turns only appear once the history loader has finished.
+
+    *our_thread_id*, read while this run's chat was open, is the identity when known: the prompts
+    are fixed, so on a reused Studio home an earlier run's chat can carry the same title and turns.
+    That row is opened and must show our turns.
+
+    Without it, a row whose title is one of our prompts is ours, so it must show our turns or the
+    step fails.
+    When no title matches (auto-titling renames a chat), the rows are tried in listed order until
+    one opens with our turns: a row that loads someone else's turns, or none, is not ours, and
+    the next is tried. Only a click error or a row that is not ours moves on; the step fails if
+    none of the candidates is.
+    """
+    wanted = [" ".join(p.lower().split()) for p in sent_prompts]
+    threads = page.locator('[data-testid="recent-thread"]')
+    try:
+        threads.first.wait_for(state = "visible", timeout = 5_000)
+    except Exception as _wait_err:
+        info(f"WARN no recent-thread testid surfaced within 5s: {_wait_err!s}")
+    n_threads = threads.count()
+    titles = [(threads.nth(i).text_content() or "").strip() for i in range(min(n_threads, 20))]
+    ours = [i for i, t in enumerate(titles) if " ".join(t.lower().split()) in wanted]
+    if not ours:
+        info(f"WARN no Recents title matches a prompt we sent; titles={titles[:5]!r}")
+    # (row, label, strict): a strict row is known to be ours, so it must show our turns.
+    candidates = [(threads.nth(i), titles[i], i in ours) for i in ours] + [
+        (threads.nth(i), titles[i], False) for i in range(len(titles)) if i not in ours
+    ]
+    if our_thread_id:
+        # By id, over every row: pinned and project chats share the testid and can sit ahead.
+        row = page.locator(f'[data-testid="recent-thread"][data-thread-id="{our_thread_id}"]').first
+        if row.count() == 0:
+            soft_fail(f"this run's chat {our_thread_id!r} is not in the sidebar")
+            return
+        candidates = [(row, (row.text_content() or "").strip(), True)]
+
+    def shown_user_turns():
+        return (
+            robust_evaluate(
+                page,
+                """() => Array.from(document.querySelectorAll('[data-role="user"]'))
+                .map((el) => (el.innerText || "").toLowerCase().split(/\\s+/).join(" "))""",
+            )
+            or []
+        )
+
+    def landed(thread_id, before, before_thread):
+        """ "ours" once the thread shows one of our prompts, "other" once it has loaded user
+        turns and none is ours, None if neither within the timeout.
+
+        *before* is what the page showed before the click. The chat keeps one runtime while the
+        next thread loads, so the previous thread's turns stay on screen after the URL changes:
+        turns identical to *before* are not this thread's yet, whether or not they are ours, unless
+        the row clicked is the thread that was already open (*before_thread*)."""
+        try:
+            handle = page.wait_for_function(
+                """([threadId, wanted, before, beforeThread]) => {
+                    const params = new URLSearchParams(location.search);
+                    if (threadId && params.get("thread") !== threadId
+                            && params.get("compare") !== threadId) {
+                        return false;
+                    }
+                    const users = Array.from(document.querySelectorAll('[data-role="user"]'))
+                        .map((el) => (el.innerText || "").toLowerCase().split(/\\s+/).join(" "));
+                    const stale = users.length > 0 && threadId !== beforeThread
+                        && JSON.stringify(users) === JSON.stringify(before);
+                    if (stale) return false;
+                    if (users.some((text) => wanted.some((prompt) => text.includes(prompt)))) {
+                        return "ours";
+                    }
+                    return users.length ? "other" : false;
+                }""",
+                arg = [thread_id, wanted, before, before_thread],
+                timeout = RECENTS_LOAD_TIMEOUT_MS,
+            )
+            return handle.json_value()
+        except Exception:
+            return None
+
+    deadline = time.monotonic() + 60
+    clicked = 0
+    thread_id = ""
+    for i, (entry, title, strict) in enumerate(candidates[:5]):
+        if time.monotonic() > deadline:
+            break
+        before = shown_user_turns()
+        before_thread = robust_evaluate(
+            page, "() => new URLSearchParams(location.search).get('thread') || ''"
+        )
+        try:
+            thread_id = entry.get_attribute("data-thread-id") or ""
+            entry.scroll_into_view_if_needed()
+            entry.click(timeout = 5_000)
+        except Exception as _click_err:
+            info(f"recent-thread click {i} failed: {_click_err!s}")
+            continue
+        clicked += 1
+        info(f"OK clicked recent entry: {title[:60]!r}")
+        started = time.monotonic()
+        verdict = landed(thread_id, before, before_thread)
+        if verdict == "ours":
+            shoot("15d-recent-clicked")
+            info(
+                "OK landed on a thread that includes our prompts "
+                f"({(time.monotonic() - started) * 1000:.0f} ms after the click)"
+            )
+            return
+        if strict:
+            break  # known to be ours, by id or by title: it must show our turns
+        info(f"recent entry {i} is not this run's chat ({verdict or 'no turns'}); trying the next")
+    if not clicked:
+        soft_fail(f"no Recents entry was clickable within 60s deadline (n_threads={n_threads})")
+        return
+    turns_text = robust_evaluate(
+        page,
+        """() => Array.from(
+            document.querySelectorAll('[data-role="user"], [data-role="assistant"]')
+        ).map((e) => (e.innerText || "").toLowerCase()).join(" ")""",
+    )
+    shoot("15d-recent-clicked")
+    soft_fail(
+        "Recents-clicked thread doesn't contain any of our sent prompts after "
+        f"{RECENTS_LOAD_TIMEOUT_MS} ms; url={page.url!r} thread={thread_id!r} "
+        f"turns_text={turns_text[:120]!r}"
+    )
 
 
 def parse_rgb(s):
@@ -479,7 +645,8 @@ def exercise_floating_monitor_geometry(page):
         page.mouse.down()
         page.mouse.move(end_x, end_y, steps = 10)
         page.mouse.up()
-        page.wait_for_timeout(100)
+        # The callers measure the panel next: wait for it to stop moving, not for 100 ms.
+        wait_for_settled(monitor)
 
     def drag_monitor_to(x, y):
         box = monitor_handle.bounding_box()
@@ -707,6 +874,7 @@ with sync_playwright() as p:
         info = info,
         total_deadline_s = TOTAL_TIMEOUT_S,
     )
+    report_failing_step(_watchdog, label = "ui")
     # Pre-flight: macos-14 can surface a 200 /api/health while the auth DB is still migrating;
     # this 30s probe catches that gap before we sink 60s into a change-password timeout.
     wait_for_health(BASE, timeout = 30.0, info = info)
@@ -792,7 +960,7 @@ with sync_playwright() as p:
     # Bootstrap state pre-seeds the current password; we enter the
     # new password twice and submit -- the user's first-run experience.
     # ─────────────────────────────────────────────────────
-    step("change-password through UI (Setup your account)")
+    step("change-password through UI (Setup your account)", NO_STEP_CEILING)
     # Settle the network before touching the form: a late bootstrap poll can rerender the page (dropping
     # #new-password) mid-test. The whole goto/wait/fill/submit sequence is wrapped in a 3-attempt retry with a fresh
     # page/reload between tries so a mid-try rerender doesn't poison the next.
@@ -878,7 +1046,7 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     # 2. Chat surface mounts, default model surface is visible.
     # ─────────────────────────────────────────────────────
-    step("wait for composer to mount")
+    step("wait for composer to mount", NO_STEP_CEILING)
     # After change-password the router rebuilds login -> chat shell; on macos-14 racing straight into wait_for() either
     # burns the timeout or crashes the renderer mid-mount. Settle network first, then wait_for with one recovery cycle
     # on failure.
@@ -1029,7 +1197,7 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     # 3. Trigger model load via the same endpoint the picker uses.
     # ─────────────────────────────────────────────────────
-    step("load GGUF via /api/inference/load (uses session cookie)")
+    step("load GGUF via /api/inference/load (uses session cookie)", MODEL_STEP_BUDGET_S)
     # AbortSignal-bounded: macos-14 has been seen wedging on this fetch. The 3-min budget is generous for a
     # cold-cache load; a wedge fails cleanly instead of forcing a 30-min runner cancel.
     load_resp = evaluate_fetch(
@@ -1079,12 +1247,13 @@ with sync_playwright() as p:
         soft_fail("model picker button not found")
     else:
         picker_btn.click()
-        page.wait_for_timeout(500)
+        # The popover mounts its search input when it opens; wait for that, not 500 ms.
+        search = wait_for_first(
+            page.get_by_placeholder(re.compile(r"Search.*models?", re.I)),
+            timeout_ms = 10_000,
+        )
         shoot("03c-model-picker-open")
-        search = page.get_by_placeholder(
-            re.compile(r"Search.*models?", re.I),
-        ).first
-        if search.count() == 0:
+        if search is None:
             soft_fail("model picker search input not found")
         else:
             # "qwen" then "llama" popover text must DIFFER, proving the typeahead actually filters (else an
@@ -1100,15 +1269,37 @@ with sync_playwright() as p:
                 }""",
                 )
 
-            search.fill("qwen")
-            page.wait_for_timeout(800)
-            qwen_text = picker_visible_text()
+            # The query is debounced, then filters locally and searches the Hub. Instead of
+            # reading at a fixed 800 ms, wait for the popover text to move off what it showed
+            # before this query and hold still for a few polls, then read it. A typeahead that
+            # ignores its input never moves, the wait gives up, and the comparison below
+            # reports it exactly as before.
+            def picker_text_after(query, previous):
+                search.fill(query)
+                try:
+                    page.wait_for_function(
+                        """([previous]) => {
+                            const el = document.querySelector(
+                                '[role="dialog"], [role="listbox"], [role="menu"]'
+                            );
+                            const text = el ? (el.innerText || '').trim() : '';
+                            const s = (window.__pickerText ||= { text: null, same: 0 });
+                            s.same = text === s.text ? s.same + 1 : 0;
+                            s.text = text;
+                            return text !== previous && s.same >= 3;
+                        }""",
+                        arg = [previous],
+                        polling = 100,
+                        timeout = 10_000,
+                    )
+                except Exception as exc:
+                    info(f"WARN picker text did not change for {query!r}: {type(exc).__name__}")
+                return picker_visible_text()
+
+            qwen_text = picker_text_after("qwen", picker_visible_text())
             shoot("03d-model-picker-search-qwen")
             search.fill("")
-            page.wait_for_timeout(300)
-            search.fill("llama")
-            page.wait_for_timeout(800)
-            llama_text = picker_visible_text()
+            llama_text = picker_text_after("llama", qwen_text)
             shoot("03e-model-picker-search-llama")
             if qwen_text and llama_text and qwen_text == llama_text:
                 soft_fail(
@@ -1118,7 +1309,12 @@ with sync_playwright() as p:
             else:
                 info("OK search bar filtered (qwen text != llama text)")
         page.keyboard.press("Escape")
-        page.wait_for_timeout(300)
+        try:
+            page.get_by_placeholder(re.compile(r"Search.*models?", re.I)).first.wait_for(
+                state = "hidden", timeout = 10_000
+            )
+        except Exception:
+            pass  # best-effort, as the fixed pause was: the next step opens its own surface
 
     # ─────────────────────────────────────────────────────
     # 4. A follow-up submitted 100 ms after a normal send must queue behind it.
@@ -1226,7 +1422,7 @@ with sync_playwright() as p:
             shoot(f"04-turn-{idx}-still-streaming")
             raise
 
-    step("rapid submit: 100 ms follow-up queues behind the first turn")
+    step("rapid submit: 100 ms follow-up queues behind the first turn", MODEL_STEP_BUDGET_S)
     rapid_bubbles_before = _bubble_count()
     composer_form = page.locator('form:has(textarea[aria-label="Message input"])').first
     # How long a reply takes is not ours to decide: sampling settings, whatever GGUF_REPO points at and an early EOS all
@@ -1421,7 +1617,7 @@ with sync_playwright() as p:
     info("OK 100 ms follow-up waited and both assistant turns completed")
 
     for i, p_ in enumerate(prompts, start = 1):
-        step(f"turn {i}: {p_!r}")
+        step(f"turn {i}: {p_!r}", MODEL_STEP_BUDGET_S)
         send_and_wait(p_, i)
     shoot("04-after-five-turns")
 
@@ -1446,10 +1642,12 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     # 5. Regenerate the last assistant turn.
     # ─────────────────────────────────────────────────────
-    step("regenerate last assistant turn")
+    step("regenerate last assistant turn", MODEL_STEP_BUDGET_S)
     last_assistant = page.locator('[data-role="assistant"]').last
     last_assistant.hover()
-    page.wait_for_timeout(400)
+    # The newest reply keeps its action bar mounted (autohide="not-last"), so wait for the bar
+    # itself rather than a fixed 400 ms after the hover.
+    wait_for_first(last_assistant.locator(".aui-assistant-action-bar-root"), timeout_ms = 10_000)
     # Exclude disabled controls: the picker's new disabled "Reload model" button also matches and sorts first, so
     # .first would target it.
     regen_btn = (
@@ -1483,10 +1681,23 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     extra = ["Reply with: yes", "Reply with: no"]
     for j, p_ in enumerate(extra, start = 1):
-        step(f"extra turn {j}: {p_!r}")
+        step(f"extra turn {j}: {p_!r}", MODEL_STEP_BUDGET_S)
         before_count = len(page.locator('[data-role="assistant"]').all())
         send_and_wait(p_, before_count + 1)
     shoot("06-after-extra-turns")
+    # This run's chat by id, read while it is open, so the Recents step reopens THIS chat and not
+    # one an earlier run left with the same fixed prompts.
+    our_thread_id = (
+        robust_evaluate(
+            page,
+            """() => new URLSearchParams(location.search).get("thread")
+                || document.querySelector('[data-testid="recent-thread"][data-active="true"]')
+                    ?.getAttribute("data-thread-id")
+                || ''""",
+        )
+        or ""
+    )
+    info(f"this run's chat: {our_thread_id or 'no thread id on the page'}")
 
     # ─────────────────────────────────────────────────────
     # 7. Composer toggle buttons. Each aria-label flips between
@@ -1508,7 +1719,15 @@ with sync_playwright() as p:
             continue
         before = toggle.get_attribute("aria-label") or ""
         toggle.click()
-        page.wait_for_timeout(200)
+        toggle_now = page.locator(
+            f'button[aria-label="Disable {feature}"], button[aria-label="Enable {feature}"]'
+        ).first
+        # Wait for the label to flip rather than 200 ms; a toggle that never flips falls
+        # through to the same WARN as before.
+        try:
+            expect(toggle_now).not_to_have_attribute("aria-label", before, timeout = 5_000)
+        except AssertionError:
+            pass
         after = (
             page.locator(
                 f'button[aria-label="Disable {feature}"], button[aria-label="Enable {feature}"]'
@@ -1523,9 +1742,9 @@ with sync_playwright() as p:
             page.locator(
                 f'button[aria-label="Disable {feature}"], button[aria-label="Enable {feature}"]'
             ).first.click()
+            expect(toggle_now).to_have_attribute("aria-label", before, timeout = 5_000)
         except Exception:
             pass
-        page.wait_for_timeout(200)
     shoot("07-toggles-cycled")
 
     # ─────────────────────────────────────────────────────
@@ -1535,11 +1754,12 @@ with sync_playwright() as p:
     if cfg_open.count() > 0:
         step("Configuration sheet: drive Temperature + Top P + extras")
         cfg_open.click()
-        page.wait_for_timeout(500)
+        # Count the sliders once the sheet has rendered them, not 500 ms after the click.
+        sliders = page.locator('[role="slider"]')
+        wait_for_first(sliders, timeout_ms = 10_000)
         shoot("08-config-open")
         # Walk every Radix slider (role="slider") by index, focus it, press Home (-> min) for deterministic state; a
         # locked slider surfaces an error here.
-        sliders = page.locator('[role="slider"]')
         n_sliders = sliders.count()
         info(f"configuration sheet exposes {n_sliders} slider(s)")
         for idx in range(n_sliders):
@@ -1548,7 +1768,9 @@ with sync_playwright() as p:
                 s.scroll_into_view_if_needed()
                 s.focus()
                 page.keyboard.press("Home")  # -> min
-                page.wait_for_timeout(80)
+                expect(s).to_have_attribute(
+                    "aria-valuenow", s.get_attribute("aria-valuemin") or "", timeout = 5_000
+                )
             except Exception as exc:
                 info(f"  slider[{idx}] focus/Home failed: {exc!r}")
         shoot("09-config-all-min")
@@ -1559,7 +1781,10 @@ with sync_playwright() as p:
             close_btn.click()
         else:
             page.keyboard.press("Escape")
-        page.wait_for_timeout(300)
+        try:
+            expect(sliders).to_have_count(0, timeout = 10_000)
+        except AssertionError:
+            pass  # best-effort, as the fixed pause was
 
     def read_chat_typography():
         """Read message typography after a user-driven theme transition."""
@@ -1677,7 +1902,8 @@ with sync_playwright() as p:
         step("theme toggle x3 with computed-color assertion")
         observed = []
         typography_states = []
-        for cycle in range(3):
+
+        def wait_menu_closed(timeout_ms):
             try:
                 page.wait_for_function(
                     """() => {
@@ -1687,11 +1913,15 @@ with sync_playwright() as p:
                         // close animation; treat that as already gone.
                         return m.getAttribute('data-state') === 'closed';
                     }""",
-                    timeout = 7_000,
+                    timeout = timeout_ms,
                 )
             except Exception:
                 pass
-            page.wait_for_timeout(250)
+
+        for cycle in range(3):
+            # The previous cycle's menu is closed (or closing) when this returns, which is what
+            # the extra 250 ms pause after it was standing in for.
+            wait_menu_closed(7_000)
             # Retry once (after Escape to clear stray popups) if the first click is silently swallowed
             # mid-view-transition.
             opened = False
@@ -1711,7 +1941,7 @@ with sync_playwright() as p:
                     break
                 except Exception:
                     page.keyboard.press("Escape")
-                    page.wait_for_timeout(300)
+                    wait_menu_closed(5_000)
             if not opened:
                 soft_fail(f"theme cycle {cycle + 1}: account menu didn't open")
                 break
@@ -1723,6 +1953,9 @@ with sync_playwright() as p:
                 page.keyboard.press("Escape")
                 soft_fail(f"theme cycle {cycle + 1}: theme menuitem missing")
                 break
+            was_dark = robust_evaluate(
+                page, "() => document.documentElement.classList.contains('dark')"
+            )
             # Click with fallbacks: a small CI viewport can push the item off-screen (force=True still needs it in
             # viewport). Fall back to scroll-into-view, then a synthetic evaluate() .click() that skips Playwright's
             # viewport check.
@@ -1740,14 +1973,43 @@ with sync_playwright() as p:
                     break
                 except Exception as exc:
                     click_err = exc
+                    # Kept: a short pause between two click strategies, not a wait for any state.
                     page.wait_for_timeout(200)
             if click_err is not None:
                 page.keyboard.press("Escape")
                 soft_fail(f"theme cycle {cycle + 1}: theme menuitem click failed ({click_err!r})")
                 break
             # Settle. The ".dark" class on <html> is the ground truth (theme-store toggles only that); don't gate on
-            # ".light".
-            page.wait_for_timeout(700)
+            # ".light". Instead of 700 ms: wait for it to flip, for every CSS transition the flip started to finish
+            # (font-weight is animatable, and a read mid-transition reports the old theme's weight), and for the body
+            # colour and message typography to hold for a few frames. A toggle that does not flip falls through to
+            # the same polarity check as before.
+            try:
+                page.wait_for_function(
+                    """([wasDark]) => {
+                        const root = document.documentElement;
+                        const msg = document.querySelector(
+                            '.aui-assistant-message-root, .aui-user-message-root'
+                        );
+                        const ms = msg ? getComputedStyle(msg) : null;
+                        const sig = [
+                            getComputedStyle(document.body).backgroundColor,
+                            ms ? ms.fontWeight + '/' + ms.letterSpacing : '',
+                        ].join('|');
+                        const transitioning = document.getAnimations().some(
+                            (a) => a instanceof CSSTransition && a.playState === 'running'
+                        );
+                        const s = (window.__themeSettle ||= { sig: null, same: 0 });
+                        s.same = !transitioning && sig === s.sig ? s.same + 1 : 0;
+                        s.sig = sig;
+                        return root.classList.contains('dark') !== wasDark && s.same >= 3;
+                    }""",
+                    arg = [was_dark],
+                    polling = "raf",
+                    timeout = 10_000,
+                )
+            except Exception as exc:
+                info(f"WARN theme cycle {cycle + 1}: .dark did not flip: {type(exc).__name__}")
             bg = robust_evaluate(
                 page,
                 """() => {
@@ -1766,6 +2028,12 @@ with sync_playwright() as p:
             typography_states.append(typography)
             shoot(f"10-theme-cycle-{cycle + 1}")
             info(f"  cycle {cycle + 1}: dark={bg['isDark']} body bg={bg['bg']!r}")
+            # The theme item keeps the menu open on purpose (preventDefault in app-sidebar.tsx). Close it here, as a
+            # user would; left open, the next cycle waited up to 7 s for a close that never came, and its first click on
+            # the account button only closed the menu, costing a failed open wait and a retry. Measured: about 10 s
+            # per cycle before, 2 s after.
+            page.keyboard.press("Escape")
+            wait_menu_closed(5_000)
         # Across cycles we should see both a near-white (light) and a near-black (dark) body bg; one polarity means the
         # toggle stuck.
         rgbs = [parse_rgb(o["bg"]) for o in observed if parse_rgb(o["bg"])]
@@ -1824,17 +2092,17 @@ with sync_playwright() as p:
             more_btn = page.get_by_role("button", name = re.compile(r"^\s*More\s*$", re.I)).first
             if more_btn.count() > 0:
                 more_btn.hover()
-                page.wait_for_timeout(500)
-                item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
-                if item.count() == 0:
+                items = page.get_by_role("menuitem", name = re.compile(label, re.I))
+                item = wait_for_first(items, timeout_ms = 5_000)
+                if item is None:
                     click_forced(more_btn)
-                    page.wait_for_timeout(500)
-                    item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
-                if item.count() > 0:
+                    item = wait_for_first(items, timeout_ms = 5_000)
+                if item is not None:
                     btn = item
         if btn is None:
             soft_fail(f"nav '{label}' not found")
             return False
+        url_before = page.url
         # force=True bypasses the actionability check: the post-toggle view-transition can briefly report <html> as
         # topmost even though the button is visible + enabled (belt-and-suspenders atop the startViewTransition
         # neutraliser).
@@ -1843,7 +2111,16 @@ with sync_playwright() as p:
         except Exception as exc:
             soft_fail(f"nav '{label}' click failed: {exc!r}")
             return False
-        page.wait_for_timeout(800)
+        if expected_url_pat:
+            # Wait for the route change itself, not 800 ms: a URL that differs from the one before
+            # the click, since the pattern alone may already match. The check below still decides.
+            try:
+                page.wait_for_url(
+                    lambda u: u != url_before and re.search(expected_url_pat, u) is not None,
+                    timeout = 5_000,
+                )
+            except Exception:
+                pass
         if expected_url_pat and not re.search(expected_url_pat, page.url):
             soft_fail(
                 f"clicking '{label}' didn't change url to /{expected_url_pat}; current: {page.url}"
@@ -1858,26 +2135,31 @@ with sync_playwright() as p:
     plus_btn = page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I)).first
     if plus_btn.count() > 0:
         click_forced(plus_btn)
-        page.wait_for_timeout(400)
-        compare_item = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)).first
+        compare_items = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I))
+        # The menu renders its items together, so once any item is there Compare's absence is real.
+        wait_for_first(page.get_by_role("menuitem"), timeout_ms = 5_000)
+        compare_item = compare_items.first
         if compare_item.count() == 0:
             # Compare chat moved into the "More" submenu; hover (then click as fallback) to open it.
             more_trigger = page.get_by_role("menuitem", name = re.compile(r"^More$", re.I)).first
             if more_trigger.count() > 0:
                 more_trigger.hover()
-                page.wait_for_timeout(400)
-                compare_item = page.get_by_role(
-                    "menuitem", name = re.compile(r"Compare chat", re.I)
-                ).first
-                if compare_item.count() == 0:
+                compare_item = wait_for_first(compare_items, timeout_ms = 5_000)
+                if compare_item is None:
                     click_forced(more_trigger)
-                    page.wait_for_timeout(400)
-                    compare_item = page.get_by_role(
-                        "menuitem", name = re.compile(r"Compare chat", re.I)
-                    ).first
+                    compare_item = wait_for_first(compare_items, timeout_ms = 5_000)
+                compare_item = compare_items.first
         if compare_item.count() > 0:
+            url_before = page.url
             click_forced(compare_item)
-            page.wait_for_timeout(800)
+            try:
+                # The URL before the click may already carry a query (?new=...), so wait for a new one.
+                page.wait_for_url(
+                    lambda u: u != url_before and re.search(r"/chat\?", u) is not None,
+                    timeout = 10_000,
+                )
+            except Exception:
+                pass
             if not re.search(r"/chat\?", page.url):
                 soft_fail(f"'Compare chat' didn't open compare; current: {page.url}")
         else:
@@ -1889,10 +2171,14 @@ with sync_playwright() as p:
     search_btn = page.get_by_role("button", name = re.compile(r"^search$", re.I)).first
     if search_btn.count() > 0:
         search_btn.click()
-        page.wait_for_timeout(500)
+        search_dialog = page.get_by_role("dialog")
+        wait_for_first(search_dialog, timeout_ms = 10_000)
         shoot("13-search-dialog")
         page.keyboard.press("Escape")
-        page.wait_for_timeout(300)
+        try:
+            expect(search_dialog).to_have_count(0, timeout = 10_000)
+        except AssertionError:
+            pass  # best-effort, as the fixed pause was
     click_nav("Recipes", r"/data-recipes")
     shoot("14-recipes")
     page.goto(f"{BASE}/chat")
@@ -1901,11 +2187,12 @@ with sync_playwright() as p:
     if acct.count() > 0:
         step("Developer (API) tab via account menu")
         acct.click()
-        page.wait_for_timeout(400)
+        wait_for_first(page.locator('[role="menu"][data-state="open"]'), timeout_ms = 5_000)
         dev = page.get_by_role("menuitem", name = re.compile(r"developer|api", re.I)).first
         if dev.count() > 0:
             dev.click()
-            page.wait_for_timeout(800)
+            # The Settings dialog it opens, instead of 800 ms; both lookups below were already best-effort.
+            wait_for_first(page.get_by_role("dialog"), timeout_ms = 10_000)
             shoot("15-developer-tab")
             create_btn = page.get_by_role(
                 "button",
@@ -1919,7 +2206,10 @@ with sync_playwright() as p:
             if keys_section.count() > 0:
                 info(f"OK API tab text: {(keys_section.text_content() or '').strip()[:80]!r}")
             page.keyboard.press("Escape")
-            page.wait_for_timeout(300)
+            try:
+                expect(page.get_by_role("dialog")).to_have_count(0, timeout = 10_000)
+            except AssertionError:
+                pass  # best-effort, as the fixed pause was
         else:
             page.keyboard.press("Escape")
 
@@ -1929,7 +2219,15 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     step("Recipes tab: cards render + click first card")
     page.goto(f"{BASE}/data-recipes")
-    page.wait_for_timeout(1500)
+    # The route is rendered once its always-present "new recipe" control is, not after 1.5 s; the
+    # list is read from IndexedDB after that, behind a "Loading recipes" placeholder.
+    wait_for_first(page.locator('[data-tour="recipes-new"]'), timeout_ms = 15_000)
+    try:
+        expect(page.locator("main").get_by_text("Loading recipes", exact = True)).to_have_count(
+            0, timeout = 15_000
+        )
+    except AssertionError:
+        pass  # the count below reports what rendered
     headings = page.locator("main h2, main h3, [data-recipe], a[href*='/data-recipes/']")
     n_cards = headings.count()
     info(f"Recipes route headings/cards: {n_cards}")
@@ -1937,8 +2235,18 @@ with sync_playwright() as p:
     if n_cards > 0:
         try:
             headings.first.scroll_into_view_if_needed()
+            list_url = page.url
             headings.first.click()
-            page.wait_for_timeout(1200)
+            # An in-app route change: wait for the recipe's own URL, since the list page's <main>
+            # would satisfy a settle check before the detail route commits.
+            try:
+                page.wait_for_url(
+                    lambda u: u != list_url and re.search(r"/data-recipes/[^/?#]+", u) is not None,
+                    timeout = 10_000,
+                )
+            except Exception:
+                info(f"WARN recipe card click did not open a recipe route; current: {page.url}")
+            wait_for_settled(page.locator("main"))
             shoot("15c-recipes-first-card")
             info("OK clicked first recipe card")
         except Exception as exc:
@@ -1948,60 +2256,16 @@ with sync_playwright() as p:
     composer.wait_for(state = "visible", timeout = 60_000)
 
     # ─────────────────────────────────────────────────────
-    # 11c. Recents: click the most-recent thread (we persisted one
-    # via the turns above). Guards the thread-history loader / route.
+    # 11c. Recents: open the thread the turns above persisted, from the
+    # sidebar. Guards the thread-history loader / route.
     # ─────────────────────────────────────────────────────
     step("Recents: click previous chat in sidebar")
-    # The persisted thread title is usually a snippet of the first user message, so accept any of our prompt keywords.
-    PROMPT_KEYWORDS = ("hello", "world", "tree", "yes", "1+1", "2+2")
-    # Use the structural data-testid (thread-sidebar.tsx): the old
-    # text-filtered selector matched coalesced nav text and burned
-    # 13-23 min per platform. Also bound the whole step at 30s so a
-    # misbehaving selector can't blow up wallclock.
-    threads = page.locator('[data-testid="recent-thread"]')
-    deadline = time.monotonic() + 30
-    clicked_recent = False
-    try:
-        threads.first.wait_for(state = "visible", timeout = 5_000)
-    except Exception as _wait_err:
-        info(f"WARN no recent-thread testid surfaced within 5s: {_wait_err!s}")
-    n_threads = threads.count()
-    for i in range(min(n_threads, 5)):
-        if time.monotonic() > deadline:
-            break
-        try:
-            t = (threads.nth(i).text_content() or "").strip()
-            threads.nth(i).scroll_into_view_if_needed()
-            threads.nth(i).click(timeout = 5_000)
-            page.wait_for_timeout(500)
-            shoot("15d-recent-clicked")
-            info(f"OK clicked recent entry: {t[:60]!r}")
-            # The landed thread must include at least one of our prompts.
-            turns_text = robust_evaluate(
-                page,
-                """() => {
-                const els = document.querySelectorAll(
-                    '[data-role="user"], [data-role="assistant"]'
-                );
-                return Array.from(els).map(e => (e.innerText || '')
-                    .toLowerCase()).join(' ');
-            }""",
-            )
-            clicked_recent = True
-            if any(k in turns_text for k in PROMPT_KEYWORDS):
-                info("OK landed on a thread that includes our prompts")
-                break
-            else:
-                soft_fail(
-                    "Recents-clicked thread doesn't contain any of our "
-                    f"sent prompts; turns_text={turns_text[:120]!r}"
-                )
-                break
-        except Exception as _click_err:
-            info(f"recent-thread click {i} failed: {_click_err!s}")
-            continue
-    if not clicked_recent:
-        soft_fail(f"no Recents entry was clickable within 30s deadline (n_threads={n_threads})")
+    open_recent_thread_with_our_prompts(
+        page,
+        ["Reply with exactly: rapid-first", "Reply with exactly: rapid-second", *prompts, *extra],
+        shoot,
+        our_thread_id = our_thread_id,
+    )
     page.goto(f"{BASE}/chat")
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
@@ -2015,7 +2279,8 @@ with sync_playwright() as p:
     if attach.count() > 0:
         # Only hover -- clicking would block on the native file dialog.
         attach.hover()
-        page.wait_for_timeout(200)
+        # The screenshot is of the hover tooltip; wait for it rather than 200 ms (best-effort).
+        wait_for_first(page.get_by_role("tooltip"), timeout_ms = 5_000)
         shoot("16-attachment-hover")
 
     # ─────────────────────────────────────────────────────
@@ -2162,7 +2427,10 @@ with sync_playwright() as p:
     # 17. Persisted monitor auth boundary, then shutdown. A monitor left open
     # must stay dormant on /login and resume after successful authentication.
     # ─────────────────────────────────────────────────────
-    step("persisted monitor stays dormant on /login and resumes after auth")
+    # Its own step, with the UI budget: nothing here retries, and several of these calls
+    # (page.evaluate among them) have no timeout of their own. A main run was seen to wedge
+    # here and sit out the whole 720 s inactivity budget.
+    step("persisted monitor: reset the browser session and open a fresh page")
     # Start fresh after the CLI rotation invalidates this browser session.
     # Stay in the SAME context: it keeps the init script and costs nothing to reuse.
     try:
@@ -2193,6 +2461,7 @@ with sync_playwright() as p:
     page = _fresh_page
     login_system_request_count = len(system_requests)
 
+    step("persisted monitor stays dormant on /login and resumes after auth", NO_STEP_CEILING)
     # Re-login with NEW2 for a valid /api/shutdown token.
     _tolerated_nav = ("ERR_ABORTED", "interrupted by another navigation")
     # A slow CI runner can make this re-login navigation time out even with the server healthy, so retry the whole
@@ -2211,7 +2480,20 @@ with sync_playwright() as p:
             pw_field = page.locator("#password")
             pw_field.wait_for(state = "visible", timeout = 60_000)
             page.keyboard.press("Control+,")
-            page.wait_for_timeout(5_500)
+            # A "nothing may happen" window, so its length stays: no /api/system request may go out
+            # while /login is up, and 5.5 s spans more than one monitor poll interval. It is watched
+            # rather than slept through, so a request that does go out fails the check at once
+            # instead of at the end of the window.
+            try:
+                wait_until(
+                    lambda: len(system_requests) != login_system_request_count,
+                    timeout_s = 5.5,
+                    what = "an /api/system request while /login is active",
+                    interval_s = 0.1,
+                    page = page,
+                )
+            except TimeoutError:
+                pass  # the window passed with no request, which is what is asserted
             if len(system_requests) != login_system_request_count:
                 raise AssertionError(
                     "persisted monitor requested /api/system while /login was active"
@@ -2307,12 +2589,11 @@ with sync_playwright() as p:
     if acct_btn.count() == 0:
         fail("account menu button missing -- can't reach Shutdown")
     acct_btn.click()
-    page.wait_for_timeout(400)
-    shutdown_item = page.get_by_role(
-        "menuitem",
-        name = re.compile(r"^\s*Shutdown\s*$", re.I),
-    ).first
-    if shutdown_item.count() == 0:
+    shutdown_item = wait_for_first(
+        page.get_by_role("menuitem", name = re.compile(r"^\s*Shutdown\s*$", re.I)),
+        timeout_ms = 10_000,
+    )
+    if shutdown_item is None:
         fail("Shutdown menuitem not in account menu")
     shutdown_item.click()
     shoot("19-shutdown-dialog")
