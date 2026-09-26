@@ -145,6 +145,7 @@ export {
 } from "./hooks/use-sidebar-drag";
 export {
   useSectionDrag,
+  sectionKeyLanding,
   SECTION_ATTR,
   type SectionLanding,
 } from "./hooks/use-section-drag";
@@ -171,6 +172,7 @@ export {
   CUSTOM_SECTION_NAME_MAX,
   PROJECTS_SECTION_KEY,
   PINNED_SECTION_KEY,
+  inSectionOrder,
   resolveSectionOrder,
 } from "./stores/sidebar-organization-store";
 export type {

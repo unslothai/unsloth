@@ -194,6 +194,7 @@ import {
   customSectionIdOf,
   PROJECTS_SECTION_KEY,
   PINNED_SECTION_KEY,
+  inSectionOrder,
   resolveSectionOrder,
   type SidebarChatSort,
   type SidebarCustomSection,
@@ -209,6 +210,7 @@ import {
   recentChatItemAtSlot,
   useChatNavigationStore,
   SectionNameDialog,
+  sectionKeyLanding,
   useSectionDrag,
 } from "@/features/chat";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
@@ -1624,6 +1626,19 @@ export function AppSidebar() {
       return next;
     });
   }, []);
+  // Rows the open custom sections draw. Creating, filling, hiding or folding one changes the list's
+  // height with no scroll to re-measure the bottom fade off.
+  const customSectionRowCount = useMemo(
+    () =>
+      visibleCustomSections.reduce(
+        (count, section) =>
+          collapsedSectionIds.has(section.id)
+            ? count
+            : count + (customSectionRows.get(section.id)?.length ?? 0),
+        0,
+      ),
+    [visibleCustomSections, collapsedSectionIds, customSectionRows],
+  );
   // The folders the custom sections draw, open or not: the bottom fade counts their chats.
   const customSectionProjectRecords = useMemo(
     () =>
@@ -1682,9 +1697,10 @@ export function AppSidebar() {
       sortedChatsByProjectId,
     ],
   );
+  // Hidden from the menu, the section is not drawn, so its folders' chats are not walked either.
   const sectionProjectChatItems = useMemo(
-    () => folderChatItems(projectsOpen, visibleProjectRecords),
-    [folderChatItems, projectsOpen, visibleProjectRecords],
+    () => folderChatItems(projectsSectionRendered && projectsOpen, visibleProjectRecords),
+    [folderChatItems, projectsSectionRendered, projectsOpen, visibleProjectRecords],
   );
   // A collapsed section is not on screen either, so its rows are not walked or
   // selected any more than a collapsed folder's are.
@@ -2310,18 +2326,22 @@ export function AppSidebar() {
     // written into a list still sorted, which is the drop ignored all over again.
     const switching = effects.switchSort;
     let sortPicked = false;
-    const stopWatchingSort = switching
-      ? useSidebarOrganizationStore.subscribe((now, before) => {
-          sortPicked ||=
-            switchedListSort(now, switching) !== switchedListSort(before, switching);
-        })
-      : () => {};
+    // The chat stays on screen in its old list until the move lands, so it can be filed from its
+    // menu meanwhile: that is the newer intent, and the drop's filing stands down for it.
+    let filedSince = false;
+    const stopWatchingSort = useSidebarOrganizationStore.subscribe((now, before) => {
+      if (switching) {
+        sortPicked ||=
+          switchedListSort(now, switching) !== switchedListSort(before, switching);
+      }
+      filedSince ||= now.sectionByChatId[item.id] !== before.sectionByChatId[item.id];
+    });
     const chain = (previous?.chain ?? Promise.resolve())
       .then(() => moveChatToProject(item, move.projectId))
       .then((moved) => {
         if (!moved || moves.get(item.id)?.generation !== generation) return;
         // Read before applyOrders, whose own switch would otherwise trip the watch.
-        applyFiling();
+        if (!filedSince) applyFiling();
         applyOrders(ordersBefore, sortPicked);
         if (unpinAfter) usePinnedChatsStore.getState().unpin(unpinAfter);
       })
@@ -2455,6 +2475,11 @@ export function AppSidebar() {
     pinnedChatItems.length,
     // And with no chats in them, folders appear and disappear on their own.
     organizeBy,
+    // Custom sections: an empty one still draws its header and hint, and folding it hides both.
+    visibleCustomSections.length,
+    collapsedSectionIds,
+    customSectionRowCount,
+    projectsSectionHidden,
   ]);
 
   // Resizing changes clientHeight without firing onScroll, so the fade would
@@ -3469,8 +3494,8 @@ export function AppSidebar() {
         onClick: () => {
           useSidebarOrganizationStore.setState((now) => {
             if (now.customSections.some((s) => s.id === section.id)) return now;
-            const customSections = [...now.customSections];
-            customSections.splice(Math.min(index, customSections.length), 0, section);
+            const restored = [...now.customSections];
+            restored.splice(Math.min(index, restored.length), 0, section);
             const sectionByChatId = { ...now.sectionByChatId };
             for (const id of chatIds) sectionByChatId[id] ??= section.id;
             const sectionByProjectId = { ...now.sectionByProjectId };
@@ -3483,7 +3508,9 @@ export function AppSidebar() {
               section.id,
             );
             return {
-              customSections,
+              // In the order the sidebar now draws them, which the sections left behind may have
+              // been dragged out of since: the Show and Section lists read top to bottom like it.
+              customSections: inSectionOrder(restored, sectionOrder),
               sectionOrder,
               sectionByChatId,
               sectionByProjectId,
@@ -3708,6 +3735,14 @@ export function AppSidebar() {
       <div
         data-sidebar-section={key}
         onPointerDown={(event) => startSectionDrag(event, key)}
+        // Alt + arrow on the header moves the section, as it moves a row: the path to the same
+        // reorder for a keyboard, which never starts a pointer drag.
+        onKeyDown={(event) => {
+          const landing = sectionKeyLanding(event, key);
+          if (!landing) return;
+          event.preventDefault();
+          moveSection(key, landing.target, landing.edge);
+        }}
         className="relative"
       >
         {content}
@@ -4066,7 +4101,8 @@ export function AppSidebar() {
     config: {
       label: string;
       target: SectionTarget;
-      /** The section every row is already in, which is not offered again. */
+      /** The section every row is drawn in, which is not offered again. A pinned row keeps its
+       *  section while Pinned draws it, and filing it there is how it goes back, so it has none. */
       current: string | null;
       /** Whether any row is in a section, which is what "No section" can undo. */
       anyFiled: boolean;
@@ -4123,7 +4159,8 @@ export function AppSidebar() {
   /** "Move to section" for a selection of several rows of one kind. */
   function renderBulkSectionSubmenu(kind: "chat" | "project", ids: string[]) {
     const assignments = kind === "chat" ? sectionByChatId : sectionByProjectId;
-    const sections = new Set(ids.map((id) => assignments[id] ?? null));
+    const pinned = kind === "chat" ? pinnedIdSet : pinnedProjectIdSet;
+    const sections = new Set(ids.map((id) => (pinned.has(id) ? null : assignments[id] ?? null)));
     return renderSectionSubmenu(CONTEXT_ROW_MENU, {
       label: t("shell.sections.moveToSection"),
       target:
@@ -4400,7 +4437,7 @@ export function AppSidebar() {
             {renderSectionSubmenu(P, {
               label: t("shell.sections.section"),
               target: { chatIds: [item.id] },
-              current: sectionByChatId[item.id] ?? null,
+              current: pinnedIdSet.has(item.id) ? null : sectionByChatId[item.id] ?? null,
               anyFiled: Boolean(sectionByChatId[item.id]),
             })}
             <P.Sub>
@@ -4761,7 +4798,7 @@ export function AppSidebar() {
           {renderSectionSubmenu(P, {
             label: t("shell.sections.section"),
             target: { projectIds: [project.id] },
-            current: sectionByProjectId[project.id] ?? null,
+            current: pinnedProjectIdSet.has(project.id) ? null : sectionByProjectId[project.id] ?? null,
             anyFiled: Boolean(sectionByProjectId[project.id]),
           })}
           <P.Separator />

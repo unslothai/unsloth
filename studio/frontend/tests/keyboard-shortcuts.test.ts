@@ -1285,7 +1285,7 @@ test("a collapsed sidebar section is not published for the chords", async () => 
   );
   assert.match(
     APP_SIDEBAR,
-    /folderChatItems\(projectsOpen, visibleProjectRecords\)/,
+    /folderChatItems\(projectsSectionRendered && projectsOpen, visibleProjectRecords\)/,
   );
   // In one list every project chat is a Recents row, so a folder must not list it again.
   assert.match(APP_SIDEBAR, /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\)/);

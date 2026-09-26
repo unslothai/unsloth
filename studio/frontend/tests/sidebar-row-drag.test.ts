@@ -1079,7 +1079,7 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
   );
   assert.match(
     APP_SIDEBAR,
-    /\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)\n\s*\.then\(\(moved\) => \{\n\s*if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;\n(?:\s*\/\/[^\n]*\n)*\s*applyFiling\(\);\n\s*applyOrders\(ordersBefore, sortPicked\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
+    /\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)\n\s*\.then\(\(moved\) => \{\n\s*if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;\n(?:\s*\/\/[^\n]*\n)*\s*if \(!filedSince\) applyFiling\(\);\n\s*applyOrders\(ordersBefore, sortPicked\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
   );
   // And nothing else in commitDrop writes an order on its own.
   const commit = APP_SIDEBAR.slice(
@@ -1121,7 +1121,7 @@ test("a sort picked while a move is in flight is not overwritten", () => {
   // for it would leave the slot written into a list still sorted, undoing the drop.
   assert.match(
     commit,
-    /const stopWatchingSort = switching\n\s*\? useSidebarOrganizationStore\.subscribe\(\(now, before\) => \{\n\s*sortPicked \|\|=\n\s*switchedListSort\(now, switching\) !== switchedListSort\(before, switching\);\n\s*\}\)\n\s*: \(\) => \{\};/,
+    /const stopWatchingSort = useSidebarOrganizationStore\.subscribe\(\(now, before\) => \{\n\s*if \(switching\) \{\n\s*sortPicked \|\|=\n\s*switchedListSort\(now, switching\) !== switchedListSort\(before, switching\);\n\s*\}/,
   );
   // Each list reads its own sort, custom sections included.
   assert.match(

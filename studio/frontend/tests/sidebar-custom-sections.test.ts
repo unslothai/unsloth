@@ -735,11 +735,136 @@ test("undoing a removed section puts it back where it was drawn", () => {
   const body = APP_SIDEBAR.slice(start, APP_SIDEBAR.indexOf("function renderSortSubmenu", start));
   assert.match(body, /const followers = drawnOrder\.slice\(drawnOrder\.indexOf\(section\.id\) \+ 1\);/);
   assert.match(body, /const follower = followers\.find\(\(key\) => sectionOrder\.includes\(key\)\);/);
-  assert.match(body, /customSections,\n\s*sectionOrder,/);
+  assert.match(body, /customSections: inSectionOrder\(restored, sectionOrder\),\n\s*sectionOrder,/);
 });
 
 test("the section name dialog keeps its mode while it closes", async () => {
   const dialog = await readSrcAsync("features/chat/components/section-name-dialog.tsx");
   assert.match(dialog, /if \(open && \(shown\.mode !== mode \|\| shown\.initialName !== initialName\)\)/);
   assert.match(dialog, /mode=\{shown\.mode\}\n\s*initialName=\{shown\.initialName\}/);
+});
+
+// Review follow-ups: a payload can name a section after a built-in, and an older one can carry a
+// project sort that no control can change any more.
+test("a saved section keyed like Pinned or Projects is dropped, and so are its rows' filings", () => {
+  const merged = mergePersistedOrganization(
+    {
+      customSections: [
+        { id: PROJECTS_SECTION_KEY, name: "Impostor", sort: "manual" },
+        { id: PINNED_SECTION_KEY, name: "Impostor", sort: "manual" },
+        { id: "real", name: "Real", sort: "manual" },
+      ],
+      sectionByChatId: { c1: PROJECTS_SECTION_KEY, c2: "real" },
+      sectionByProjectId: { p1: PINNED_SECTION_KEY },
+    },
+    useSidebarOrganizationStore.getInitialState(),
+  );
+  assert.deepEqual(merged.customSections.map((section) => section.id), ["real"]);
+  // The rows filed in them come back to their normal lists.
+  assert.deepEqual(merged.sectionByChatId, { c2: "real" });
+  assert.deepEqual(merged.sectionByProjectId, {});
+});
+
+test("a saved automatic project sort, no longer offered, falls back to Manual", () => {
+  for (const projectSort of ["updated", "name", "created", "manual", "bogus"]) {
+    const merged = mergePersistedOrganization(
+      { projectSort },
+      useSidebarOrganizationStore.getInitialState(),
+    );
+    assert.equal(merged.projectSort, "manual", projectSort);
+  }
+});
+
+test("a chat filed from its menu while its drop into a folder is in flight keeps that filing", () => {
+  assert.match(
+    APP_SIDEBAR,
+    /filedSince \|\|= now\.sectionByChatId\[item\.id\] !== before\.sectionByChatId\[item\.id\];/,
+  );
+  assert.match(APP_SIDEBAR, /if \(!filedSince\) applyFiling\(\);\n\s*applyOrders\(ordersBefore, sortPicked\);/);
+});
+
+test("custom sections re-measure the bottom fade when they change the list's height", () => {
+  const deps = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("// Recompute bottom-fade on mount"),
+    APP_SIDEBAR.indexOf("// Resizing changes clientHeight"),
+  );
+  for (const dep of ["visibleCustomSections.length", "collapsedSectionIds", "customSectionRowCount", "projectsSectionHidden"]) {
+    assert.ok(deps.includes(`    ${dep},\n`), dep);
+  }
+});
+
+test("Alt + arrow on a section's header moves it, as it moves a row", async () => {
+  const hook = await readSrcAsync("features/chat/hooks/use-section-drag.ts");
+  assert.match(hook, /export function sectionKeyLanding\(/);
+  // The header only: its "+" and "..." keep their keys, and a row's own Alt + arrow is the row's.
+  assert.match(hook, /const header = pressed\.closest\(HEADER_SELECTOR\);/);
+  assert.match(hook, /if \(pressed\.closest\(HEADER_ACTION_SELECTOR\)\) return null;/);
+  assert.match(hook, /return neighbour \? \{ target: neighbour, edge: up \? "top" : "bottom" \} : null;/);
+  assert.match(
+    APP_SIDEBAR,
+    /onKeyDown=\{\(event\) => \{\n\s*const landing = sectionKeyLanding\(event, key\);\n\s*if \(!landing\) return;\n\s*event\.preventDefault\(\);\n\s*moveSection\(key, landing\.target, landing\.edge\);/,
+  );
+});
+
+test("a pinned row can be filed back into the section it kept while pinned", () => {
+  // Pinned draws it, so its retained section is not where it is; filing there unpins it.
+  assert.match(APP_SIDEBAR, /current: pinnedIdSet\.has\(item\.id\) \? null : sectionByChatId\[item\.id\] \?\? null,/);
+  assert.match(
+    APP_SIDEBAR,
+    /current: pinnedProjectIdSet\.has\(project\.id\) \? null : sectionByProjectId\[project\.id\] \?\? null,/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /new Set\(ids\.map\(\(id\) => \(pinned\.has\(id\) \? null : assignments\[id\] \?\? null\)\)\)/,
+  );
+});
+
+test("a hidden Projects section's chats are not walked or selected", () => {
+  assert.match(
+    APP_SIDEBAR,
+    /folderChatItems\(projectsSectionRendered && projectsOpen, visibleProjectRecords\)/,
+  );
+});
+
+test("signing in as another account drops the previous account's sections", async () => {
+  const { transitionBrowserAccount, BROWSER_ACCOUNT_KEY } = await import(
+    "../src/lib/account-transition.ts"
+  );
+  const memory = (): Storage => {
+    const map = new Map<string, string>();
+    return {
+      get length() {
+        return map.size;
+      },
+      key: (index: number) => [...map.keys()][index] ?? null,
+      getItem: (key: string) => map.get(key) ?? null,
+      setItem: (key: string, value: string) => void map.set(key, value),
+      removeItem: (key: string) => void map.delete(key),
+      clear: () => map.clear(),
+    };
+  };
+  const localStorage = memory();
+  localStorage.setItem(BROWSER_ACCOUNT_KEY, "account:a1:alice");
+  localStorage.setItem(
+    SIDEBAR_ORGANIZATION_STORAGE_KEY,
+    JSON.stringify({ state: { customSections: [{ id: "s1", name: "Alice's", sort: "manual" }] } }),
+  );
+  let reloadedTo = "";
+  const indexedDB = {
+    deleteDatabase() {
+      const request: { onsuccess?: () => void } = {};
+      queueMicrotask(() => request.onsuccess?.());
+      return request;
+    },
+  } as unknown as IDBFactory;
+  const changed = await transitionBrowserAccount({ username: "bob", accountId: "b2" }, "/chat", () => {}, {
+    localStorage,
+    sessionStorage: memory(),
+    indexedDB,
+    location: { replace: (url: string) => void (reloadedTo = url) } as Location,
+  });
+  assert.equal(changed, true);
+  assert.equal(localStorage.getItem(SIDEBAR_ORGANIZATION_STORAGE_KEY), null);
+  // And the page reloads, so the store in memory goes with it.
+  assert.equal(reloadedTo, "/chat");
 });

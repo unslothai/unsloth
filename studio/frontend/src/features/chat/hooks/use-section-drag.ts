@@ -81,6 +81,31 @@ function headedSiblingAfter(element: Element | undefined): Element | null {
   return null;
 }
 
+/**
+ * Where Alt + Up or Down on a section's header moves the section: past the drawn section above or
+ * below it. The keyboard's way to the reorder a drag does, as alt + arrow is for a row. Null for
+ * any other key, a press outside the header or on its buttons, and at either end of the list.
+ */
+export function sectionKeyLanding(
+  event: React.KeyboardEvent<HTMLElement>,
+  key: string,
+): SectionLanding | null {
+  if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return null;
+  const pressed = event.target as Element;
+  const header = pressed.closest(HEADER_SELECTOR);
+  if (!header || !event.currentTarget.contains(header)) return null;
+  if (pressed.closest(HEADER_ACTION_SELECTOR)) return null;
+  const list = event.currentTarget.parentElement;
+  if (!list) return null;
+  const drawn = [...list.querySelectorAll<HTMLElement>(`:scope > [${SECTION_ATTR}]`)]
+    .filter((element) => element.offsetHeight > 0)
+    .map((element) => element.getAttribute(SECTION_ATTR));
+  const up = event.key === "ArrowUp";
+  const at = drawn.indexOf(key);
+  const neighbour = at === -1 ? undefined : drawn[at + (up ? -1 : 1)];
+  return neighbour ? { target: neighbour, edge: up ? "top" : "bottom" } : null;
+}
+
 export interface UseSectionDragOptions {
   /** Commits a drop that changes the order. */
   onDrop: (key: string, landing: SectionLanding) => void;

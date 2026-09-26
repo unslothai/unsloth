@@ -90,7 +90,7 @@ export function resolveSectionOrder(
 
 /** The custom sections in the order `order` draws them, so every list of them (the Show
  *  toggles, the Section submenus) reads top to bottom like the sidebar. */
-function inSectionOrder(
+export function inSectionOrder(
   customSections: SidebarCustomSection[],
   order: readonly string[],
 ): SidebarCustomSection[] {
@@ -300,12 +300,9 @@ export function mergePersistedOrganization(
   // A saved "priority", no longer offered, falls back to each list's default.
   const chatSort = readSort(saved?.chatSort, "updated");
   const pinnedSort = readSort(saved?.pinnedSort, "manual");
-  const projectSort: SidebarProjectSort =
-    saved?.projectSort === "updated" ||
-    saved?.projectSort === "name" ||
-    saved?.projectSort === "created"
-      ? saved.projectSort
-      : "manual";
+  // Folders keep only the order they are dragged into: a saved automatic sort, no longer offered,
+  // could be neither seen nor changed, so it falls back to Manual.
+  const projectSort: SidebarProjectSort = "manual";
   const manualOrder: Record<string, string[]> = {};
   if (saved?.manualOrder && typeof saved.manualOrder === "object") {
     for (const [scope, ids] of Object.entries(saved.manualOrder)) {
@@ -323,6 +320,9 @@ export function mergePersistedOrganization(
       if (!raw || typeof raw !== "object") continue;
       const entry = raw as Partial<SidebarCustomSection>;
       if (typeof entry.id !== "string" || !entry.id || seen.has(entry.id)) continue;
+      // A section is keyed like Pinned and Projects, so one named after them would be drawn as
+      // them, and the rows filed in it would vanish.
+      if (entry.id === PINNED_SECTION_KEY || entry.id === PROJECTS_SECTION_KEY) continue;
       const name =
         typeof entry.name === "string" ? normalizeSectionName(entry.name) : "";
       if (!name) continue;
