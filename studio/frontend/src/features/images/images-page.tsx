@@ -2526,7 +2526,7 @@ export function ImagesPage({
           return;
         }
         setGenStep((prev) => {
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
+          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds && prev.phase === p.phase) return prev;
           return p;
         });
       } catch {
@@ -4088,7 +4088,7 @@ export function ImagesPage({
         // Skip the state update (and re-render) when nothing the bar shows moved.
         setGenStep((prev) => {
           if (!p.active) return null;
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
+          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds && prev.phase === p.phase) return prev;
           return p;
         });
       } catch {
