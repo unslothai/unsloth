@@ -85,6 +85,7 @@ from core.inference.sd_cpp_engine import (
 )
 from core.inference.sd_cpp_server import SdCppServer
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from utils.account_context import account_thread, current_account_id
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
@@ -3997,6 +3998,7 @@ class SdCppDiffusionBackend:
 
     # ── Unload / status ──────────────────────────────────────────────────────
 
+    @_invalidates_gpu_memory("sd.cpp unload")
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
             if expected_account is not None:

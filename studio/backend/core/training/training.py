@@ -38,6 +38,7 @@ import traceback
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING, Literal, Iterator
@@ -1655,6 +1656,7 @@ class TrainingBackend:
             del self._start_requests[request_id]
             overflow -= 1
 
+    @_invalidates_gpu_memory("training start")
     @owned_job()
     def start_training(
         self,
@@ -2006,6 +2008,7 @@ class TrainingBackend:
                 )
             return True
 
+    @_invalidates_gpu_memory("training stop")
     @job_control
     def stop_training(
         self,

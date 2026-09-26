@@ -46,6 +46,7 @@ from typing import Any, Optional
 
 from hub.utils.hf_errors import modelscope_missing
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 
 from .diffusion_attention import (
     SDPA_MATH_ONLY_MESSAGE,
@@ -4310,6 +4311,7 @@ class VideoBackend:
 
     # ── the load itself ──────────────────────────────────────────────────────
 
+    @_invalidates_gpu_memory("video load")
     def load_pipeline(
         self,
         repo_id: str,
@@ -7671,6 +7673,7 @@ class VideoBackend:
                 release_pinned_host_memory()
             reclaim_host_memory(logger = logger)
 
+    @_invalidates_gpu_memory("video unload")
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
             if expected_account is not None:

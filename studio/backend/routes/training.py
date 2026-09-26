@@ -1316,19 +1316,22 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
 
     Polled by the frontend during training.
     """
-    from utils.hardware import get_gpu_utilization
+    from utils.hardware import get_gpu_utilization, gpu_query
 
     # Off-loop: the first call blocks on detection while the warm is importing torch.
-    return await asyncio.to_thread(get_gpu_utilization)
+    # A display poll: a reading a few seconds old is fine and spares the driver.
+    with gpu_query.display_reads():
+        return await asyncio.to_thread(get_gpu_utilization)
 
 
 @router.get("/hardware/visible")
 async def get_visible_hardware_utilization(current_subject: str = Depends(get_current_subject)):
-    from utils.hardware import get_visible_gpu_utilization
+    from utils.hardware import get_visible_gpu_utilization, gpu_query
 
     # Off the event loop: the ROCm fallbacks shell out (Windows perf counters, sysfs) and the System view polls this
-    # route.
-    return await asyncio.to_thread(get_visible_gpu_utilization)
+    # route. A display poll, so a reading a few seconds old is fine.
+    with gpu_query.display_reads():
+        return await asyncio.to_thread(get_visible_gpu_utilization)
 
 
 @router.get("/start-requests/{start_request_id}", response_model = TrainingStartRequestStatus)

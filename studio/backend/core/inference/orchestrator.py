@@ -12,6 +12,7 @@ import base64
 import os
 import signal
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import multiprocessing as mp
 import queue
 import re
@@ -712,11 +713,14 @@ class InferenceOrchestrator:
                 return None
             request_id = str(uuid.uuid4())
             with self._send_order_lock:
-                from utils.hardware import get_visible_gpu_utilization
+                from utils.hardware import get_visible_gpu_utilization, gpu_query
 
                 live_free: dict[int, float] = {}
                 total_by_index: dict[int, float] = {}
-                for device in get_visible_gpu_utilization().get("devices", []):
+                # Paired with the worker's own bytes under this fence: same instant, so no cache.
+                with gpu_query.fresh_reads():
+                    _live_devices = get_visible_gpu_utilization().get("devices", [])
+                for device in _live_devices:
                     try:
                         index = int(device["index"])
                         total = float(device["vram_total_gb"])
@@ -850,8 +854,13 @@ class InferenceOrchestrator:
             if time.monotonic() >= deadline:
                 return None
             try:
+                from utils.hardware import gpu_query
+
                 result: dict[int, int] = {}
-                for device in get_visible_gpu_utilization().get("devices", []):
+                # Consecutive samples are compared: a cached one would read as settled.
+                with gpu_query.fresh_reads():
+                    devices = get_visible_gpu_utilization().get("devices", [])
+                for device in devices:
                     index = int(device["index"])
                     total = float(device["vram_total_gb"])
                     used = float(device["vram_used_gb"])
@@ -1807,6 +1816,7 @@ class InferenceOrchestrator:
     # get unloaded by the swap.
     load_generation: int = 0
 
+    @_invalidates_gpu_memory("inference load")
     def load_model(
         self,
         config,
@@ -2188,6 +2198,7 @@ class InferenceOrchestrator:
         from core.inference import stt_registry
         return stt_registry.resident()
 
+    @_invalidates_gpu_memory("inference unload")
     def unload_model(self, model_name: str) -> bool:
         # active_model_name can differ in case from the client's raw /unload name (the load path canonicalizes
         # casing). Match case-insensitively and use the canonical spelling so the guard, unload command, and cleanup

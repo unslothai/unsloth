@@ -158,6 +158,21 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _reset_gpu_query_cache():
+    """nvidia-smi answers are cached per process (utils/hardware/gpu_query.py): a fake CLI
+    installed by one test must not answer for the next."""
+    # Only when already imported: importing utils.hardware here would change what the
+    # import-order tests observe.
+    gpu_query = sys.modules.get("utils.hardware.gpu_query")
+    if gpu_query is not None:
+        gpu_query.reset()
+    yield
+    gpu_query = sys.modules.get("utils.hardware.gpu_query")
+    if gpu_query is not None:
+        gpu_query.reset()
+
+
+@pytest.fixture(autouse = True)
 def _isolate_studio_home(_studio_home_root, monkeypatch):
     home = _studio_home_root / f"home-{next(_studio_home_counter)}"
     home.mkdir()

@@ -67,6 +67,10 @@ DETECTION_EPOCH = 0
 def invalidate_detection() -> int:
     """Retire any detection in flight. Returns the new epoch."""
     global DETECTION_EPOCH
+    from . import gpu_query
+
+    # A re-detection can follow a driver reload or a MIG change: drop the cached inventory.
+    gpu_query.invalidate_static("hardware re-detection")
     with _EPOCH_LOCK:
         DETECTION_EPOCH += 1
         return DETECTION_EPOCH

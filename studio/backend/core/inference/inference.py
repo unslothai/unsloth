@@ -66,6 +66,7 @@ from core.inference.mlx_inference import _mlx_stop_cut, _mlx_stop_sequences
 from io import StringIO
 import structlog
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 
 
 logger = get_logger(__name__)
@@ -636,6 +637,7 @@ class InferenceBackend:
             repaired,
         )
 
+    @_invalidates_gpu_memory("transformers load")
     def load_model(
         self,
         config: ModelConfig,
@@ -965,6 +967,7 @@ class InferenceBackend:
 
             raise Exception(error_msg)
 
+    @_invalidates_gpu_memory("transformers unload")
     def unload_model(self, model_name: str) -> bool:
         """Remove a model from the registry and clear GPU memory."""
         if model_name in self.models:
