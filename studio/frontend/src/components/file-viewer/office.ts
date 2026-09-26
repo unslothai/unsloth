@@ -6,6 +6,9 @@ import { type Unzipped, inflateSync, strFromU8, unzipSync } from "fflate";
 /** Readers for the parts of an XLSX or PPTX a viewer shows: values, not a faithful rendering. */
 
 const MAX_UNPACKED_BYTES = 200 * 1024 * 1024;
+// A part parsed into a DOM (workbook, presentation, slide, chart, relationships) past this is not
+// read, as the ceiling on a Word document's XML: real ones are far smaller.
+const MAX_XML_PART_BYTES = 10 * 1024 * 1024;
 export const MAX_SHEET_ROWS = 5000;
 export const MAX_SHEET_COLUMNS = 200;
 // Across every sheet, so a workbook of many sheets reads no more than one full one. Each row also
@@ -76,9 +79,10 @@ function inflateEntry(bytes: Uint8Array, view: DataView, entry: ZipEntry): Uint8
   throw new Error(`Unsupported ZIP compression method ${entry.method}.`);
 }
 
-/** Inflates the named parts, on demand. The archive is indexed once, so each read is by lookup,
- *  not another pass over every entry. The unpacked total counts across calls. */
-type Reader = ((names: Iterable<string>) => Unzipped) & {
+/** Inflates the named parts, on demand; one past `limit` is left out. The archive is indexed
+ *  once, so each read is by lookup, not another pass over every entry. The unpacked total counts
+ *  across calls. */
+type Reader = ((names: Iterable<string>, limit?: number) => Unzipped) & {
   /** A part's unpacked size, when the index knows it. */
   size: (name: string) => number | undefined;
 };
@@ -92,19 +96,19 @@ function archive(bytes: Uint8Array): Reader {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const index = zipIndex(bytes, view);
   if (!index) {
-    const read = (names: Iterable<string>) => {
+    const read = (names: Iterable<string>, limit = Infinity) => {
       const wanted = new Set(names);
       return unzipSync(bytes, {
-        filter: (entry) => wanted.has(entry.name) && (charge(entry.originalSize), true),
+        filter: (entry) => wanted.has(entry.name) && entry.originalSize <= limit && (charge(entry.originalSize), true),
       });
     };
     return Object.assign(read, { size: () => undefined });
   }
-  const read = (names: Iterable<string>) => {
+  const read = (names: Iterable<string>, limit = Infinity) => {
     const files: Unzipped = {};
     for (const name of new Set(names)) {
       const entry = index.get(name);
-      if (!entry) continue;
+      if (!entry || entry.originalSize > limit) continue;
       charge(entry.originalSize);
       files[name] = inflateEntry(bytes, view, entry);
     }
@@ -1039,7 +1043,8 @@ function styleSections(bytes: Uint8Array | undefined): Document | null {
 export function readXlsx(bytes: Uint8Array): Sheet[] {
   const read = archive(bytes);
   const main = "xl/workbook.xml";
-  const head = read([main, relsPath(main)]);
+  if ((read.size(main) ?? 0) > MAX_XML_PART_BYTES) throw new Error("File is too large to preview.");
+  const head = read([main, relsPath(main)], MAX_XML_PART_BYTES);
   const workbook = xml(head, main);
   if (!workbook) throw new Error("Not a valid XLSX workbook.");
   // Only parts the workbook uses: not custom XML, pivot caches or drawings.
@@ -1170,8 +1175,6 @@ const MAX_CHART_CELLS = 5000;
 
 // Slides read: each is kept as boxes once parsed.
 const MAX_SLIDES = 500;
-// As the ceiling on a Word document's XML.
-const MAX_SLIDE_XML_BYTES = 10 * 1024 * 1024;
 const HIDDEN_SLIDE = /<(?:[\w.-]+:)?sld\b[^>]*\sshow\s*=\s*["'](?:0|false)["']/;
 
 // Paragraphs, table cells and pictures on one slide, all of which it mounts at once.
@@ -1322,7 +1325,8 @@ function degrees(xfrm: Element | undefined): number {
 export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   const read = archive(bytes);
   const main = "ppt/presentation.xml";
-  const head = read([main, relsPath(main)]);
+  if ((read.size(main) ?? 0) > MAX_XML_PART_BYTES) throw new Error("File is too large to preview.");
+  const head = read([main, relsPath(main)], MAX_XML_PART_BYTES);
   const presentation = xml(head, main);
   if (!presentation) throw new Error("Not a valid PPTX presentation.");
   const size = first(presentation, "sldSz");
@@ -1337,7 +1341,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   for (const path of slidePaths) {
     if (!path) continue;
     // Past this a slide is not parsed, its DOM too large to build: it shows as cut.
-    if ((read.size(path) ?? 0) > MAX_SLIDE_XML_BYTES) {
+    if ((read.size(path) ?? 0) > MAX_XML_PART_BYTES) {
       if (slides.length === MAX_SLIDES) {
         truncated = true;
         break;
@@ -1347,7 +1351,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
     }
     // One slide at a time, parsed before the next is read: a long deck holds one slide's XML and
     // inflates no more than it shows.
-    const part = read([path, relsPath(path)]);
+    const part = read([path, relsPath(path)], MAX_XML_PART_BYTES);
     const slideXml = part[path];
     // A hidden slide is left out of the show, so out of the viewer and the model's text too. Read
     // from the root tag, so it is never parsed.
@@ -1359,15 +1363,8 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
     const doc = xml(part, path);
     if (!doc) continue;
     const slideRelList = relationshipList(part, path);
-    const files = read(
-      slideRelList
-        .filter(
-          (rel) =>
-            /\/(chart|diagramData)$/.test(rel.type) ||
-            (images && rel.type.endsWith("/image") && !pictures.has(rel.path)),
-        )
-        .map((rel) => rel.path),
-    );
+    // A chart, diagram or picture is read as its frame comes, and let go after.
+    const partDoc = (partPath: string) => xml(read([partPath], MAX_XML_PART_BYTES), partPath);
     const slideRels = new Map(slideRelList.map((rel) => [rel.id, rel.path]));
     const boxes: SlideBox[] = [];
     let left = MAX_SLIDE_ITEMS;
@@ -1418,7 +1415,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       const place = () => readFrame(frame, cx, cy) ?? { x: 0.05, y: 0.25, w: 0.9, h: 0.65 };
       const chartRef = first(frame, "chart");
       const chartPath = chartRef && slideRels.get(relId(chartRef, "id") ?? "");
-      const chartDoc = chartPath ? xml(files, chartPath) : null;
+      const chartDoc = chartPath ? partDoc(chartPath) : null;
       const chart = chartDoc && readChart(chartDoc);
       if (chart) {
         boxes.push({ frame: place(), ...chart });
@@ -1426,7 +1423,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       }
       const diagramRef = first(frame, "relIds");
       const diagramPath = diagramRef && slideRels.get(relId(diagramRef, "dm") ?? "");
-      const diagramDoc = diagramPath ? xml(files, diagramPath) : null;
+      const diagramDoc = diagramPath ? partDoc(diagramPath) : null;
       const diagram = diagramDoc ? readDiagram(diagramDoc) : [];
       if (diagram.length) {
         boxes.push({ frame: place(), paragraphs: diagram });
@@ -1443,15 +1440,19 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       const blip = first(pic, "blip");
       const target = blip && slideRels.get(relId(blip, "embed") ?? "");
       const type = target && imageType(target);
-      const data = target && files[target];
-      const image = target && (pictures.get(target) ?? (data && type ? new Blob([data as Uint8Array<ArrayBuffer>], { type }) : null));
-      if (!image) continue;
+      if (!target || !type) continue;
       if (left <= 0) {
         cut = true;
         break;
       }
+      let image = pictures.get(target);
+      if (!image) {
+        const data = read([target])[target];
+        if (!data) continue;
+        image = new Blob([data as Uint8Array<ArrayBuffer>], { type });
+        pictures.set(target, image);
+      }
       left--;
-      pictures.set(target, image);
       boxes.unshift({ frame: readFrame(pic, cx, cy), image });
     }
     // What was left out, marked as a table's cut is.
