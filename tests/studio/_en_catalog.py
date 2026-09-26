@@ -42,6 +42,7 @@ _TOKEN = re.compile(
     | (?P<string>{_QUOTED})
     | (?P<open>\{{)
     | (?P<close>\}})
+    | (?P<spread>\.\.\.)
     """,
     re.VERBOSE | re.DOTALL,
 )
@@ -78,8 +79,12 @@ def _decode(literal: str) -> str:
             interpolated = True
         if char == "\\" and index + 1 < len(body):
             nxt = body[index + 1]
-            if nxt == "\n":
+            if body.startswith("\r\n", index + 1):
                 # A line continuation contributes nothing to the value.
+                index += 3
+                continue
+            if nxt in "\n\r\u2028\u2029":
+                # So does one over any other ECMAScript line terminator.
                 index += 2
                 continue
             braced = re.match(r"u\{([0-9A-Fa-f]{1,6})\}", body[index + 1 :])
@@ -144,6 +149,14 @@ def _flatten(source: str) -> dict[str, str]:
         elif kind == "close":
             if path:
                 path.pop()
+            pending = None
+        elif kind == "spread":
+            # `...shared` applies after the properties before it, so any of them may be
+            # replaced by a value this reader cannot see. Properties after it still win.
+            prefix = ".".join(p for p in path if p is not None)
+            for dotted, value in strings.items():
+                if not prefix or dotted.startswith(prefix + "."):
+                    strings[dotted] = _Expression(value)
             pending = None
         elif kind == "string":
             if pending is not None:

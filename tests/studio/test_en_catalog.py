@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from _en_catalog import EN_LOCALE_TS, aria_label_selector, en_string
+from _en_catalog import EN_LOCALE_TS, _decode, aria_label_selector, en_string
 
 HERE = Path(__file__).resolve().parent
 
@@ -45,7 +45,14 @@ export const en = {
       noted: "Context " /* note */ + "window usage",
       upper: "context".toUpperCase(),
       picked: flag ? "short" : "long",
+      separated: "a\\\u2028b",
       last: "Last" // trailing comment
+    },
+    overridden: {
+      before: "Before",
+      nested: { inner: "Inner" },
+      ...shared,
+      after: "After",
     },
   },
 };
@@ -76,10 +83,18 @@ def sample(tmp_path):
         ("settings.chat.codePoint", "Smile \U0001f600"),
         ("settings.chat.continued", "one two"),
         ("settings.chat.last", "Last"),
+        ("settings.chat.separated", "ab"),
+        ("settings.overridden.after", "After"),
     ],
 )
 def test_a_key_resolves_by_its_full_path(sample, key, expected):
     assert en_string(key, sample) == expected
+
+
+@pytest.mark.parametrize("terminator", ["\n", "\r\n", "\r", "\u2028", "\u2029"])
+def test_a_continuation_over_any_line_terminator_contributes_nothing(terminator):
+    # Decoded directly: reading a file with read_text folds CR LF to LF before the tokenizer.
+    assert _decode(f'"a\\{terminator}b"') == "ab"
 
 
 def test_a_missing_key_fails_naming_it(sample):
@@ -114,6 +129,8 @@ def test_a_concatenated_value_is_refused_not_truncated(sample):
         "settings.chat.noted",
         "settings.chat.upper",
         "settings.chat.picked",
+        "settings.overridden.before",
+        "settings.overridden.nested.inner",
     ):
         with pytest.raises(ValueError, match = "expression"):
             en_string(key, sample)
@@ -186,6 +203,44 @@ def test_both_import_forms_mark_a_catalog_driver(tmp_path, source, imports):
 COMPOSER_WORKFLOW = HERE.parents[1] / ".github" / "workflows" / "studio-composer-compatibility.yml"
 
 
+def _can_run(condition, job: dict) -> bool:
+    """Whether an `if:` leaves the step or job reachable on some leg of the job's matrix.
+
+    Reads the two shapes that can switch a driver off statically: a literal false, and a
+    `matrix.<key> == '<value>'` test that no `include` leg satisfies. Anything else is taken
+    as reachable, since it depends on the run.
+    """
+    if condition is None:
+        return True
+    text = str(condition).strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2].strip()
+    if condition is False or text == "false":
+        return False
+    legs = ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []
+    for key, value in re.findall(r"\bmatrix\.([\w-]+)\s*==\s*'([^']*)'", text):
+        if not any(str(leg.get(key)) == value for leg in legs):
+            return False
+    return True
+
+
+@pytest.mark.parametrize(
+    "condition, runs",
+    [
+        (None, True),
+        (False, False),
+        ("false", False),
+        ("${{ false }}", False),
+        ("${{ !cancelled() && matrix.suite == 'safari' }}", True),
+        ("${{ !cancelled() && matrix.suite == 'webkit-only' }}", False),
+        ("runner.os == 'Linux'", True),
+    ],
+)
+def test_a_statically_unreachable_step_is_not_coverage(condition, runs):
+    job = {"strategy": {"matrix": {"include": [{"suite": "browsers"}, {"suite": "safari"}]}}}
+    assert _can_run(condition, job) is runs
+
+
 def test_the_composer_workflow_runs_on_a_catalog_only_change():
     """Both browser drivers find their controls through `_en_catalog.py`, and this workflow is
     the one that runs them. A PR that changes only the reader has to run it too.
@@ -209,11 +264,14 @@ def test_the_composer_workflow_runs_on_a_catalog_only_change():
         if not path.name.startswith(("test_", "_")) and _imports_catalog(path)
     )
     assert drivers, "no browser driver reads the catalog any more"
-    # What a step runs, with shell comments dropped: a commented-out command runs nothing.
+    # What a step that can run executes, with shell comments dropped: a commented-out
+    # command, or one in a step or job no matrix leg reaches, runs nothing.
     commands = "\n".join(
         line
         for job in (workflow.get("jobs") or {}).values()
+        if _can_run(job.get("if"), job)
         for step in job.get("steps") or []
+        if _can_run(step.get("if"), job)
         for line in str(step.get("run") or "").splitlines()
         if not line.lstrip().startswith("#")
     )
