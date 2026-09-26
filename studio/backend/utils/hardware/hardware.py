@@ -5485,7 +5485,6 @@ def gpu_ids_with_torch_kernels() -> Optional[list[int]]:
         return None
     try:
         import torch
-
         visible = _torch_ordinal_physical_ids(torch.cuda.device_count())
     except Exception as e:
         logger.debug("Could not map torch devices to physical ids: %s", e)
