@@ -601,3 +601,44 @@ def test_qwen_image_21_sizes_a_dense_quant_candidate():
     est = estimate_dense_quant(fam, "fp8", base_repo = fam.base_repo, prequant_available = True)
     assert est is not None, "no estimate means the pipeline seed is never chosen"
     assert est.prequant and est.steady_transformer_mib > 0
+
+
+def test_resolved_log_line_shows_engaged_values_and_their_source():
+    record = build_resolved_record(
+        {
+            "transformer_quant": (None, "int8", "per-kind default"),
+            "text_encoder_quant": ("nvfp4", "nvfp4", "applied"),
+            "memory_mode": ("fast", "none", "fits"),
+        }
+    )
+    line = ap.format_resolved_for_log(record)
+    assert "transformer_quant=int8(auto)" in line
+    # An applied explicit pick is the case that used to leave no trace in the log.
+    assert "text_encoder_quant=nvfp4(requested nvfp4)" in line
+    assert "memory_mode=none(requested fast)" in line
+
+
+def test_resolved_log_line_flags_a_declined_request():
+    record = build_resolved_record({"text_encoder_quant": ("nvfp4", "off", "no fp8 dtype")})
+    assert ap.format_resolved_for_log(record) == (
+        f"text_encoder_quant=off(requested nvfp4, {ap.RESOLVED_FELL_BACK})"
+    )
+    assert ap.format_resolved_for_log(None) == ""
+
+
+def test_generation_log_line_reads_the_recipe_fields():
+    result = {
+        "images": [SimpleNamespace(size = (1024, 768)), SimpleNamespace(size = (1024, 768))],
+        "seed": 7,
+        "seeds": [7, 8],
+        "workflow": "inpaint",
+        "active_loras": [["style", 0.8]],
+        "reference_resolution": None,
+        "localized_edit": None,
+    }
+    line = ap.format_generation_for_log(result, engine = "diffusers", steps = 30, strength = 0.6)
+    assert line == (
+        "engine=diffusers workflow=inpaint images=2 size=1024x768 seeds=[7, 8] steps=30 "
+        "strength=0.6 loras=[['style', 0.8]]"
+    )
+    assert "size" not in ap.format_generation_for_log({"images": []}, engine = "sd_cpp")

@@ -224,6 +224,8 @@ from .diffusion_auto_policy import (
     base_repo_bf16_components_gb,
     build_resolved_record,
     estimate_dense_quant,
+    format_generation_for_log,
+    format_resolved_for_log,
     family_bf16_components_gb,
     precision_fallback_allowed,
     precision_refusal_message,
@@ -6665,12 +6667,14 @@ class DiffusionBackend:
         logger.info(
             # The estimates too: the verdict alone cannot be checked from a user's log, and a None among these terms
             # is itself the explanation for a tier the planner skipped.
-            "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s reasons=%s estimates=%s",
+            "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s resolved=[%s] reasons=%s "
+            "estimates=%s",
             repo_id,
             base,
             device,
             effective_policy,
             effective_tiling,
+            format_resolved_for_log(self._state.resolved if self._state is not None else None),
             "; ".join(plan.reasons),
             plan.estimates,
         )
@@ -8704,7 +8708,7 @@ class DiffusionBackend:
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 # Count the finished generation (drives deferred speed); a batch is one generation.
                 object.__setattr__(state, "generation_count", state.generation_count + 1)
-                return {
+                result = {
                     "images": list(images),
                     "seed": int(seed),
                     "seeds": [int(s) for s in per_image_seeds],
@@ -8730,6 +8734,17 @@ class DiffusionBackend:
                     "reference_resolution": ref_resolution,
                     "localized_edit": localized_edit.mode if localized_edit is not None else None,
                 }
+                logger.info(
+                    "diffusion.generated: %s",
+                    format_generation_for_log(
+                        result,
+                        engine = "diffusers",
+                        steps = steps,
+                        strength = strength,
+                        upscale = upscale,
+                    ),
+                )
+                return result
             finally:
                 if static_skip_pipe is not None:
                     try:
