@@ -21,6 +21,9 @@ const EDGE = 24;
 // would otherwise ask for more pixels than a browser holds.
 const MAX_CANVAS_PIXELS = 32 * 1024 * 1024;
 const MAX_CANVAS_SIDE = 16384;
+// PDF.js skips, before decoding, any image past this many pixels: the canvas bound only shrinks
+// what is drawn, not the source. A 600dpi scan of a letter or A4 page still fits.
+const PDF_OPTIONS = { maxImageSize: 64 * 1024 * 1024 };
 // Below this resolution a page is too blurred to read, and shows as unpreviewable.
 const MIN_PIXEL_RATIO = 0.1;
 // A page with more text runs than this shows without its text layer: each is a positioned span.
@@ -160,6 +163,7 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
     <div ref={setContainer} className="size-full overflow-auto bg-muted/60">
       <Document
         file={file}
+        options={PDF_OPTIONS}
         onLoadSuccess={(document) => {
           setPdf(document);
           setPages(document.numPages);

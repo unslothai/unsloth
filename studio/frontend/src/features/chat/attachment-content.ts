@@ -611,16 +611,15 @@ const DOCX_IMAGE_PART = /\.(png|jpe?g|gif|bmp|tiff?|emf|wmf|svg|webp)$/i;
  *  to is never shown. */
 function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => boolean; used: Set<string> } {
   const names = new Set<string>();
-  const parts = unzipSync(bytes, {
-    filter: (entry) => {
-      names.add(entry.name);
-      return (
-        (entry.name === DOCX_CONTENT_TYPES_PART || entry.name.endsWith(".rels")) &&
-        entry.originalSize <= MAX_OPEN_DOCUMENT_XML_BYTES
-      );
-    },
-  });
-  const types = parts[DOCX_CONTENT_TYPES_PART];
+  // Only the parts it reads are inflated, one at a time: at most six, each within the XML bound.
+  const read = (name: string) =>
+    unzipSync(bytes, {
+      filter: (entry) => {
+        names.add(entry.name);
+        return entry.name === name && entry.originalSize <= MAX_OPEN_DOCUMENT_XML_BYTES;
+      },
+    })[name];
+  const types = read(DOCX_CONTENT_TYPES_PART);
   const defaults = new Map<string, string>();
   const overrides = new Map<string, string>();
   const markup = types ? strFromU8(types).replace(XML_NON_ELEMENT_RE, "") : "";
@@ -641,7 +640,7 @@ function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => bool
   };
   // Each part's targets resolve against its folder, and mammoth opens the first that exists.
   const targetsOf = (path: string) =>
-    readDocxXmlTargets(parts[docxRelationshipsPath(path)], path.slice(0, Math.max(0, path.lastIndexOf("/"))));
+    readDocxXmlTargets(read(docxRelationshipsPath(path)), path.slice(0, Math.max(0, path.lastIndexOf("/"))));
   const resolve = (targets: string[] | undefined, fallback: string) =>
     targets?.find((path) => names.has(path)) ?? fallback;
   const main = resolve(targetsOf("").get(DOCX_MAIN_DOCUMENT_TYPE), DOCX_MAIN_DOCUMENT_FALLBACK);
