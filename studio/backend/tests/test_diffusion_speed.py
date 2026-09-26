@@ -2007,6 +2007,25 @@ def test_auto_dynamic_active_follows_the_torchao_marker():
     assert isinstance(ds_mod.dynamo_graph_count(), int)
 
 
+def test_automatic_dynamic_compile_arms_the_prompt_length_allowlist(monkeypatch):
+    from core.inference import diffusion_dynamic_text
+
+    armed = []
+    monkeypatch.setattr(
+        diffusion_dynamic_text, "install", lambda t, logger = None: armed.append(t) or True
+    )
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True, with_fuse = True)
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
+    assert armed == [pipe.transformer]
+
+    armed.clear()
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
+    assert armed == []
+
+
 def test_speed_max_compiles_a_quantised_stream_merging_dit_static(monkeypatch):
     """A torchao FLUX block under automatic dynamic hits CantSplit on the first new resolution and drops to eager;
     max compiles it static instead, and reports its artifacts as per-shape."""
