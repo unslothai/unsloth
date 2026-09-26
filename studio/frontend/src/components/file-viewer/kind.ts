@@ -19,7 +19,7 @@ const TYPE_KINDS: Record<string, DocumentKind> = {
   "application/pdf": "pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "sheet",
-  "application/vnd.ms-excel.sheet.macroEnabled.12": "sheet",
+  "application/vnd.ms-excel.sheet.macroenabled.12": "sheet",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation": "slides",
 };
 

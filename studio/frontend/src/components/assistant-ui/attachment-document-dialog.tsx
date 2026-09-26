@@ -91,7 +91,7 @@ const DocumentDialog: FC<
           next = { blob, text, truncated };
         } else if (textFallback && blob.type.startsWith("text/")) {
           const { text, truncated } = truncateAttachmentPreviewText(await blob.text());
-          next = { plain: text, truncated };
+          next = { blob, plain: text, truncated };
         }
         if (!cancelled) setLoaded(next);
       })
@@ -132,7 +132,11 @@ const DocumentDialog: FC<
         }
         actions={{
           onDownload: blob
-            ? () => void downloadFile(blob, source.name, source.contentType || undefined)
+            ? () =>
+                // The stored text, when the original is gone: saved as text, not under the document's type.
+                void (loaded?.plain !== undefined
+                  ? downloadFile(blob, `${source.name.replace(/\.[^.]+$/, "")}.txt`, "text/plain")
+                  : downloadFile(blob, source.name, source.contentType || undefined))
             : undefined,
         }}
       >

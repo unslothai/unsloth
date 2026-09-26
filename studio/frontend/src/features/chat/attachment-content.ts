@@ -603,6 +603,8 @@ type DocxArchive = {
  *  relationships point at, so a large unreferenced part must still preview.
  *  `assertDocxPartSizes` refuses the ones mammoth would have parsed. `keepLarge` keeps them
  *  (still marked oversized) for the viewer, which needs large images as well as text. */
+const DOCX_IMAGE_PART = /\.(png|jpe?g|gif|bmp|tiff?|emf|wmf|svg|webp)$/i;
+
 function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = false): DocxArchive {
   const names = new Set<string>();
   const oversized = new Set<string>();
@@ -613,7 +615,8 @@ function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = fals
       names.add(entry.name);
       if (entry.originalSize > MAX_OPEN_DOCUMENT_XML_BYTES) {
         oversized.add(entry.name);
-        if (!keepLarge) return false;
+        // Mammoth reads large media, never large unreferenced XML.
+        if (!keepLarge || !DOCX_IMAGE_PART.test(entry.name)) return false;
       }
       unpacked += entry.originalSize;
       if (unpacked > MAX_DOCX_UNPACKED_BYTES) {

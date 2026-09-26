@@ -437,12 +437,17 @@ type SectionKind = "elapsed" | "date" | "literal" | "scientific" | "number";
 
 /** A section's kind, with tags dropped (`tagged`) and quotes undone (`code`). */
 const readSection = memo((section) => {
-  // [$€-407]-style currency tags keep their symbol; [Red] and the like go, but not the
-  // elapsed-time units [h], [m] and [s]. Padding (_x) and fill (*x) go too.
-  const tagged = section
-    .replace(/\[\$([^\]-]*)[^\]]*\]/g, "$1")
-    .replace(/\[(?![hms]+\])[^\]]*\]/gi, "")
-    .replace(/_.|\*./g, "");
+  // [$€-407]-style currency tags keep their symbol, quoted; [Red] and the like go, but not the
+  // elapsed-time units [h], [m] and [s]. Padding (_x) and fill (*x) go too. Only outside
+  // quoted and escaped text: "A_B"0 shows A_B1.
+  const tagged = (section.match(/"[^"]*"|\\[\s\S]|\[[^\]]*\]|[_*][\s\S]?|[\s\S]/g) ?? [])
+    .map((token) => {
+      if (token[0] === "_" || token[0] === "*") return "";
+      if (token[0] !== "[" || /^\[[hms]+\]$/i.test(token)) return token;
+      const symbol = /^\[\$([^\]-]*)/.exec(token)?.[1];
+      return symbol ? `"${symbol}"` : "";
+    })
+    .join("");
   // Quoted text and escapes are literal: kept in `code`, left out of `bare`, which says what the format is.
   const code = tagged.replace(/"([^"]*)"/g, "$1").replace(/\\(.)/g, "$1");
   const bare = tagged.replace(/"[^"]*"|\\./g, "");
@@ -837,6 +842,26 @@ function sharedStrings(bytes: Uint8Array | undefined): (index: number) => string
   };
 }
 
+// A style section past this is skipped: real ones are far smaller, even at Excel's 64,000 formats.
+const MAX_STYLE_SECTION_BYTES = 16 * 1024 * 1024;
+
+/** Only the style sections the reader uses (number formats, fonts, cell formats), each found by a
+ *  byte scan and decoded alone, so a large styles part costs little. */
+function styleSections(bytes: Uint8Array | undefined): Document | null {
+  const root = bytes && findTag(bytes, 0, "styleSheet", false);
+  if (!bytes || !root || root.empty) return null;
+  const open = strFromU8(bytes.subarray(root.start, root.end));
+  const parts = ["numFmts", "fonts", "cellXfs"].map((name) => {
+    const start = findTag(bytes, root.end, name, false);
+    const end = start && !start.empty ? findTag(bytes, start.end, name, true) : null;
+    return start && end && end.end - start.start <= MAX_STYLE_SECTION_BYTES
+      ? strFromU8(bytes.subarray(start.start, end.end))
+      : "";
+  });
+  const prefix = /^<([\w.-]+:)?/.exec(open)?.[1] ?? "";
+  return parseXml(`${open}${parts.join("")}</${prefix}styleSheet>`);
+}
+
 export function readXlsx(bytes: Uint8Array): Sheet[] {
   const read = archive(bytes);
   const main = "xl/workbook.xml";
@@ -850,7 +875,7 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
   const stylesPath = partOf("styles", "xl/styles.xml");
   const support = read((name) => name === stringsPath || name === stylesPath);
   const string = sharedStrings(support[stringsPath]);
-  const styles = readStyles(xml(support, stylesPath));
+  const styles = readStyles(styleSections(support[stylesPath]));
   const date1904 = ["1", "true"].includes(first(workbook, "workbookPr")?.getAttribute("date1904") ?? "");
   const paths = new Map(rels.map((rel) => [rel.id, rel.path]));
   const sheets: Sheet[] = [];

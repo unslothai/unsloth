@@ -17,7 +17,7 @@ const ORIGINAL_TYPES: Record<string, string> = {
   "application/pdf": "pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
-  "application/vnd.ms-excel.sheet.macroEnabled.12": "xlsm",
+  "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
 };
 
