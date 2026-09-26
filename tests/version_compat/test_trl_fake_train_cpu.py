@@ -448,3 +448,50 @@ def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
         "no batch arrived as a list, so this canary is not exercising the GRPO collator "
         "shape and would not have caught unsloth-zoo#1217"
     )
+
+
+def test_sft_applies_trl_router_aux_loss_coef(tmp_path):
+    """TRL >= 1.7 writes SFTConfig.router_aux_loss_coef to the config after the MoE CausalLM cached the
+    checkpoint's value at init; Unsloth's nll loss goes through that forward, so it must use TRL's value."""
+    import inspect
+    from datasets import Dataset
+    from trl import SFTConfig, SFTTrainer
+    from transformers import AutoTokenizer, MixtralConfig, MixtralForCausalLM
+
+    if "router_aux_loss_coef" not in inspect.signature(SFTConfig).parameters:
+        pytest.skip("SFTConfig has no router_aux_loss_coef before TRL 1.7")
+    try:
+        tok = AutoTokenizer.from_pretrained(_MODEL)
+    except OSError as e:
+        pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
+    tok.pad_token = tok.pad_token or tok.eos_token
+    config = MixtralConfig(
+        vocab_size = len(tok), hidden_size = 32, intermediate_size = 64, num_hidden_layers = 2,
+        num_attention_heads = 4, num_key_value_heads = 2, num_local_experts = 4, num_experts_per_tok = 2,
+        router_aux_loss_coef = 0.02,
+    )
+    torch.manual_seed(0)
+    model = MixtralForCausalLM(config)
+    ds = Dataset.from_list([{"text": "The quick brown fox jumps over the lazy dog."}] * 8)
+    cfg = SFTConfig(
+        output_dir = str(tmp_path / "ci_sft_moe"),
+        per_device_train_batch_size = 2,
+        max_steps = 1,
+        report_to = "none",
+        save_strategy = "no",
+        use_cpu = True,
+        max_length = None,
+        padding_free = False,
+        dataset_text_field = "text",
+        fp16 = False,
+        bf16 = False,
+        router_aux_loss_coef = 0.05,
+    )
+    SFTTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds)
+    ids = tok(["The quick brown fox jumps over the lazy dog."], return_tensors = "pt").input_ids
+    model.train()
+    with torch.no_grad():
+        on = model(input_ids = ids, labels = ids, output_router_logits = True)
+        off = model(input_ids = ids, labels = ids, output_router_logits = False)
+    applied = (float(on.loss) - float(off.loss)) / float(on.aux_loss)
+    assert abs(applied - 0.05) < 1e-4, f"applied aux coefficient {applied}, expected SFTConfig's 0.05"
