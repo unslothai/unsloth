@@ -33,14 +33,21 @@ from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 PROFILES = {
-    "vllm": {"version": "0.20.0", "module": "vllm", "cuda": "cu130", "driver": 580},
+    "vllm": {
+        "version": "0.20.0",
+        "module": "vllm",
+        "cuda": "cu130",
+        "driver": 580,
+        # FlashInfer fetches the trtllm kernels it uses on demand rather than the whole cubin wheel.
+        "omit": ("flashinfer-cubin",),
+    },
     "sglang": {
         "version": "0.5.12",
         "module": "sglang",
         "cuda": "cu130",
         "driver": 580,
         # Excluded: outlines-core 0.1.26 has no py3.13 wheel; only --grammar-backend outlines needs it.
-        "omit": ("outlines", "outlines-core"),
+        "omit": ("outlines", "outlines-core", "flashinfer-cubin"),
     },
 }
 PYTHON = (3, 13)
@@ -171,6 +178,63 @@ def _same_build(installed: str | None, locked: str | None, cuda: str) -> bool:
     return installed is not None and installed in (locked, f"{locked}+{cuda}")
 
 
+def _compat(engine: str) -> dict[str, list[str]]:
+    """What the locked packages require of each other (engine_compat.py), or {} for a stale file."""
+    path = requirements(engine).with_suffix(".compat.json")
+    try:
+        data = json.loads(path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data["requires"] if data.get("lock_sha256") == profile_digest(engine) else {}
+
+
+def _reusable(
+    engine: str, lock: dict, studio: dict[str, str], provided: dict[str, str]
+) -> dict[str, str]:
+    """Studio's own versions every engine dependency accepts, kept only while their own
+    requirements still hold against what the engine will see."""
+    from packaging.requirements import Requirement
+    from packaging.specifiers import SpecifierSet
+    import importlib.metadata as metadata
+
+    compat = _compat(engine)
+    if not compat:
+        return {}
+    hidden = {"flashinfer-python", "flashinfer-jit-cache", "flashinfer-cubin"}
+    reuse = {
+        name: studio[name]
+        for name in lock
+        if name in studio
+        and name not in provided
+        and name not in hidden
+        and all(
+            SpecifierSet(spec).contains(studio[name], prereleases = True)
+            for spec in compat.get(name, ())
+        )
+    }
+    requires = {}
+    for name in reuse:
+        dists = list(metadata.distributions(name = name, path = _studio_site()))
+        requires[name] = [Requirement(r) for r in (dists[0].requires or [])] if dists else None
+    while True:
+        seen = {name: version for name, (version, _) in lock.items()} | provided | reuse
+        drop = {
+            name
+            for name in reuse
+            if requires[name] is None
+            or any(
+                _normalize(r.name) in seen
+                and not r.specifier.contains(seen[_normalize(r.name)], prereleases = True)
+                for r in requires[name]
+                if r.marker is None or r.marker.evaluate({"extra": ""})
+            )
+        }
+        if not drop:
+            return reuse
+        for name in drop:
+            del reuse[name]
+
+
 def install_plan(engine: str) -> dict:
     """Split the lock into packages Studio already provides and the ones to install."""
     lock = _pins(engine)
@@ -190,6 +254,8 @@ def install_plan(engine: str) -> dict:
         for name, (version, _) in lock.items()
         if shared and _same_build(studio.get(name), version, cuda)
     }
+    if shared:
+        provided |= _reusable(engine, lock, studio, provided)
     return {
         "shared": shared,
         "provided": provided,
@@ -262,7 +328,7 @@ def stale(info: dict) -> bool:
 
 # Runs in the engine's interpreter, so it checks both layers as the engine imports them.
 _CHECK = r"""
-import importlib.metadata as metadata, re, sys
+import importlib.metadata as metadata, json, re, sys
 from packaging.requirements import Requirement
 
 def normalize(name):
@@ -270,6 +336,7 @@ def normalize(name):
 
 omitted = set(sys.argv[2].split(",")) - {""}
 cuda = sys.argv[3]
+provided = json.loads(sys.argv[4]) if len(sys.argv) > 4 else {}
 problems = []
 for line in open(sys.argv[1], encoding = "utf-8"):
     match = re.match(r"([A-Za-z0-9][A-Za-z0-9_.\-]*)==([^\s;\\]+)", line)
@@ -280,7 +347,7 @@ for line in open(sys.argv[1], encoding = "utf-8"):
         found = metadata.version(name)
     except metadata.PackageNotFoundError:
         found = None
-    if found not in (version, f"{version}+{cuda}"):
+    if found not in (version, f"{version}+{cuda}", provided.get(normalize(name))):
         problems.append(f"{name}=={version} is required, found {found}")
         continue
     for raw in metadata.requires(name) or []:
@@ -734,6 +801,7 @@ def _install(
                     str(requirements(engine)),
                     ",".join(profile(engine).get("omit", ())),
                     profile(engine)["cuda"],
+                    json.dumps(plan["provided"]),
                 ],
                 cancel,
             )

@@ -103,6 +103,7 @@ def studio_with_engine_torch(monkeypatch, engine, **changes):
     packages.update(changes)
     monkeypatch.setattr(install, "_studio_packages", lambda: dict(packages))
     monkeypatch.setattr(install, "_torch_runtime", lambda: runtime)
+    monkeypatch.setattr(install, "_studio_site", lambda: [])
     monkeypatch.setattr(install.sys, "version_info", (3, 13, 0))
     monkeypatch.setattr(install.sys.implementation, "name", "cpython")
     monkeypatch.setattr(install.platform, "python_version", lambda: "3.13.0")
@@ -111,26 +112,27 @@ def studio_with_engine_torch(monkeypatch, engine, **changes):
 
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_shared_environment_installs_only_what_studio_lacks(isolated, monkeypatch, engine):
-    studio = studio_with_engine_torch(monkeypatch, engine, fastapi = "0.0.1")
+    studio = studio_with_engine_torch(monkeypatch, engine, numpy = "1.0.0")
     monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
     monkeypatch.setattr(install, "_run", fake_venv)
     install._install(engine, threading.Event())
     info = install.installed(engine)
     assert info["shared"] is True
     assert info["provided"] == {
-        name: version for name, version in studio.items() if name != "fastapi"
+        name: version for name, version in studio.items() if name != "numpy"
     }
     packages = (Path(info["path"]) / "engine-requirements.txt").read_text()
     assert not any(
-        line.startswith(("torch==", "triton==", "numpy==")) for line in packages.splitlines()
+        line.startswith(("torch==", "triton==", "fastapi==")) for line in packages.splitlines()
     )
-    assert any(line.startswith((engine + "==", "fastapi==")) for line in packages.splitlines())
+    assert any(line.startswith(engine + "==") for line in packages.splitlines())
+    assert any(line.startswith("numpy==") for line in packages.splitlines())
     pth = Path(info["path"]) / "lib" / "python3.13" / "site-packages" / install._BASE_PTH
     assert pth.read_text() == f"import {install._BASE_MODULE}\n"
     assert "site.addsitedir(" in pth.with_name(f"{install._BASE_MODULE}.py").read_text()
     assert install.status(engine)["current"] is True
 
-    studio["numpy"] = "0.0.1"
+    studio["fastapi"] = "0.0.1"
     status = install.status(engine)
     assert status["installed"] is True and status["current"] is False
     from core.inference import managed_engine
@@ -212,6 +214,59 @@ def test_engine_cuda_home_is_the_locked_pip_nvcc(tmp_path, monkeypatch):
         str(engine_cuda / "include"),
         str(studio_cuda / "include"),
     ]
+
+
+def fake_dist(site, name, version, *requires):
+    info = site / f"{name.replace('-', '_')}-{version}.dist-info"
+    info.mkdir(parents = True)
+    body = "".join(f"Requires-Dist: {r}\n" for r in requires)
+    (info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n{body}"
+    )
+
+
+def test_shared_engine_reuses_studio_versions_its_dependencies_accept(
+    isolated, monkeypatch, tmp_path
+):
+    pins = {name: version for name, (version, _) in install._pins("vllm").items()}
+    site = tmp_path / "studio-site"
+    fake_dist(site, "bitsandbytes", "9.0.0")
+    fake_dist(site, "scipy", "9.0.0", "numpy>=99")
+    fake_dist(site, "pillow", "1.0.0")
+    fake_dist(site, "flashinfer-python", "9.0.0")
+    studio = studio_with_engine_torch(
+        monkeypatch,
+        "vllm",
+        bitsandbytes = "9.0.0",
+        scipy = "9.0.0",
+        pillow = "1.0.0",
+        **{"flashinfer-python": "9.0.0"},
+    )
+    monkeypatch.setattr(install, "_studio_site", lambda: [str(site)])
+    lock = {**install._pins("vllm"), "scipy": ("1.18.0", "scipy==1.18.0\n")}
+    monkeypatch.setattr(install, "_pins", lambda engine: lock)
+    monkeypatch.setattr(
+        install, "_compat", lambda engine: {"pillow": [">=11"], "flashinfer-python": []}
+    )
+    plan = install.install_plan("vllm")
+    # No dependent constrains it: Studio's own version serves the engine.
+    assert plan["provided"]["bitsandbytes"] == "9.0.0"
+    assert not any(line.startswith("bitsandbytes==") for line in plan["requirements"].splitlines())
+    # Rejected by a dependent, or its own requirement fails against the engine's numpy.
+    assert "pillow" not in plan["provided"] and "scipy" not in plan["provided"]
+    # Studio's NVFP4 FlashInfer is hidden from engines, so it can never stand in.
+    assert "flashinfer-python" not in plan["provided"]
+    assert plan["provided"]["torch"] == studio["torch"] == pins["torch"]
+
+    monkeypatch.setattr(install, "_compat", lambda engine: {})
+    assert "bitsandbytes" not in install.install_plan("vllm")["provided"]
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_compat_file_matches_its_lock(engine):
+    assert install._compat(engine), "regenerate with requirements/engines/engine_compat.py"
+    assert "flashinfer-cubin" not in install._pins(engine)
+    assert "flashinfer-cubin" in install.profile(engine)["omit"]
 
 
 def test_changed_studio_torch_uses_an_isolated_environment(isolated, monkeypatch):

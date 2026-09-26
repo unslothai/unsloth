@@ -2,3 +2,6 @@
 # --grammar-backend outlines, which Studio never selects.
 outlines
 outlines-core
+# FlashInfer fetches the closed trtllm kernels it uses on demand (cached per engine
+# environment) instead of the 360 MB cubin wheel of every kernel.
+flashinfer-cubin

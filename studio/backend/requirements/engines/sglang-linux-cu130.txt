@@ -636,9 +636,6 @@ flash-attn-4==4.0.0b15 \
     # via
     #   -r studio/backend/requirements/engines/sglang-linux-cu130.in
     #   sglang
-flashinfer-cubin==0.6.11.post1 \
-    --hash=sha256:1eb801fc80b5576760d356e31eb452d05ab240f44185f539331bd5f2236e504a
-    # via sglang
 flashinfer-python==0.6.11.post1 \
     --hash=sha256:52c6dbd1262ff0d46dce0253996108e0c55e86faa7c25a1bed7072b31d23551a \
     --hash=sha256:b16ac9a4f229a6a0d875a2fd76dfd935d5c62e4a99ea7b128fe4b457530a5aed
