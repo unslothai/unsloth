@@ -1418,7 +1418,8 @@ function Test-StudioChildScriptDirectoryElevated {
 
 function New-StudioChildScriptDirectory {
     $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
-    $dir = Join-Path $tempRoot ("unsloth-child-" + [guid]::NewGuid().ToString("N"))
+    # Join-Path throws on a TEMP naming a missing drive: decline, like any other unusable root.
+    try { $dir = Join-Path $tempRoot ("unsloth-child-" + [guid]::NewGuid().ToString("N")) -ErrorAction Stop } catch { return "" }
     $made = $false
     try {
         $createdPath = "$(New-Item -ItemType Directory -Path $dir -ErrorAction Stop |
@@ -1642,8 +1643,10 @@ main()
         $stem = $null
         foreach ($root in @($env:TEMP, $env:TMP, $env:LOCALAPPDATA, $env:TMPDIR, "/tmp")) {
             if (-not $root) { continue }
-            $candidateStem = Join-Path $root ("unsloth-nvprobe-" + [guid]::NewGuid().ToString("N"))
-            try { $null = New-Item -ItemType File -Path "$candidateStem.out" -ErrorAction Stop; $stem = $candidateStem; break } catch {}
+            try {
+                $candidateStem = Join-Path $root ("unsloth-nvprobe-" + [guid]::NewGuid().ToString("N")) -ErrorAction Stop
+                $null = New-Item -ItemType File -Path "$candidateStem.out" -ErrorAction Stop; $stem = $candidateStem; break
+            } catch {}
         }
         if (-not $stem) { return "" }
     } else {

@@ -619,6 +619,19 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
         }
         Check "live: an unusable TEMP falls through to the next root" ($got -eq "nvml;12;8;8.9")
         Check "live: and leaves nothing behind there" (@(Get-ChildItem -LiteralPath $altRoot).Count -eq 0)
+
+        # TEMP and TMP on a drive that does not exist: Join-Path itself throws, in the real directory helper too.
+        $savedRoots = @{}
+        foreach ($v in @("TEMP", "TMP", "LOCALAPPDATA", "TMPDIR")) { $savedRoots[$v] = [Environment]::GetEnvironmentVariable($v) }
+        try {
+            $env:TEMP = "Z:\UnslothReviewTemp"; $env:TMP = "Z:\UnslothReviewTemp"; $env:LOCALAPPDATA = $altRoot
+            Remove-Item Env:TMPDIR -ErrorAction SilentlyContinue
+            $got = Read-NvidiaLibraryRawViaPython -TimeoutMs 5000
+        } finally {
+            foreach ($v in $savedRoots.Keys) { [Environment]::SetEnvironmentVariable($v, $savedRoots[$v]) }
+        }
+        Check "live: a TEMP on a missing drive falls through to the next root" ($got -eq "nvml;12;8;8.9")
+        Check "live: and no stray output file lands in the working directory" (-not (Test-Path -LiteralPath ".out"))
     } finally {
         $script:PythonExe = $savedPy
         if ($null -eq $savedSkipEnv) { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -ErrorAction SilentlyContinue }
