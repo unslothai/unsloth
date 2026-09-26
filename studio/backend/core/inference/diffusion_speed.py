@@ -978,8 +978,8 @@ def _guard_compiled_decode(
     """``compiled`` behind an eager fallback: torch.compile is lazy, so lowering fails on the first call; OOMs still raise.
 
     ``eager_when_tiled``: a tiled decode unrolls its tile loop into one graph (minutes of compile on low-VRAM loads),
-    and tiling is only settled by the memory plan after the compile, so it is read per call. ``owner`` holds the
-    decode (the VAE, or the slot of an outer wrapper) and is what the fallback restores."""
+    and tiling is only settled by the memory plan after the compile, so it is read per call. ``owner`` (the VAE or an
+    outer wrapper's slot) is what the fallback restores."""
     owner = vae if owner is None else owner
     had_own = "decode" in getattr(owner, "__dict__", {})
     failed: list = []
@@ -1026,8 +1026,7 @@ def _compile_vae_decode(
 ) -> bool:
     """torch.compile the VAE ``decode`` in place; no cudagraphs, whose capture would pin decode activations."""
     vae = getattr(pipe, "vae", None)
-    # An outer wrapper that must stay eager (the fp16 decode's non-finite check) exposes the slot it calls through, so
-    # the compile goes inside it and a compile failure never unwraps it.
+    # An outer wrapper that must stay eager (the fp16 decode's non-finite check) exposes the slot it calls through.
     outer = getattr(vae, "__dict__", {}).get("decode") if vae is not None else None
     owner = getattr(outer, "_unsloth_decode_slot", None) or vae
     decode = getattr(owner, "decode", None) if vae is not None else None

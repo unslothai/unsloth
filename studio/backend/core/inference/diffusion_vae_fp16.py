@@ -3,16 +3,10 @@
 
 """fp16 VAE decode for U-Net (SDXL) pipelines whose VAE sets ``force_upcast``.
 
-The SDXL VAE overflows fp16 in its last decoder stages (activations reach ~1.2e6), so SDXL pipelines upcast the whole
-VAE to fp32 for every decode on fp16 GPUs (T4: 2.75 s vs 1.01 s at 1024). Dividing the residual stream after the
-first upsampler by 2**8 (and the eps of each GroupNorm reading it by 2**16) is an identity in exact arithmetic, since
-GroupNorm is scale invariant, and keeps every activation inside fp16 range. Weights are rescaled in place by a power of
-two, so an fp32 decode stays exact up to the fp16 rounding of the smallest rescaled weights.
-
-Measured on 72 real SDXL / SDXL-Turbo latents vs the fp32 decode: PSNR 61.0-63.2 dB min / 67.8-68.1 dB mean, LPIPS at
-most 5e-5, at most 6 pixels per 1024x1024 frame more than 8/255 off, no non-finite frame (the stock fp16 decode is NaN
-on every one; bf16 is 49.4 dB). A non-finite decode still reruns in fp32 and hands every later decode back to the
-pipeline's fp32 upcast. The encode keeps its fp32 math.
+The SDXL VAE overflows fp16 in its last decoder stages, so the pipelines upcast the whole VAE to fp32 on fp16 loads.
+Dividing the residual stream after the first upsampler by 2**8 (and the eps of each GroupNorm reading it by 2**16) is an
+identity, since GroupNorm is scale invariant, and keeps every activation in fp16 range. A non-finite decode still reruns
+in fp32 and hands later decodes back to the pipeline's upcast.
 """
 
 from __future__ import annotations
@@ -29,9 +23,7 @@ def _scale_plan(decoder: Any) -> Optional[tuple]:
 
     ``convs`` are (conv, divide_weight) pairs: a conv fed by an unscaled tensor (the entry upsampler, every post-norm
     ``conv2``) divides weight and bias; one whose input is already scaled (shortcut, later upsamplers) divides only its
-    bias. ``norms`` read the scaled stream, so their eps shrinks by scale**2 and they stay exact. None when the decoder
-    is not the plain GroupNorm AutoencoderKL layout this relies on (an attention or spatial norm in an up block, a time
-    embedding)."""
+    bias. ``norms`` read the scaled stream, so their eps shrinks by scale**2. None for any other decoder layout."""
     import torch
 
     up_blocks = list(getattr(decoder, "up_blocks", None) or ())
@@ -121,8 +113,7 @@ def enable_fp16_vae_decode(
             if m is not None
         ]
         fell_back: list = []
-        # Studio's VAE decode compile lands in this slot, inside the non-finite check: a data-dependent check inside
-        # the compiled region would graph-break, and a compile failure restores the slot, never unwrapping the check.
+        # Studio's decode compile goes in this slot: the check stays eager (no graph break) and outlives a fallback.
         slot = types.SimpleNamespace(decode = decode)
 
         def _fp32_call(fn: Any, parts: list, x: Any, *args: Any, **kwargs: Any) -> Any:
