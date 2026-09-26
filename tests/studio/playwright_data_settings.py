@@ -38,6 +38,21 @@ ARM_SEARCH_HITS = """() => {
 }"""
 
 
+# Every [role=dialog] still in the DOM, for the failure report.
+DIALOG_STATE = """() => [...document.querySelectorAll('[role=dialog]')].map(el => {
+    const style = getComputedStyle(el);
+    return {
+        state: el.getAttribute('data-state'),
+        slot: el.getAttribute('data-slot'),
+        display: style.display,
+        opacity: style.opacity,
+        animationName: style.animationName,
+        animations: el.getAnimations().map(a => ({ name: a.animationName ?? null, playState: a.playState, currentTime: a.currentTime })),
+        text: el.innerText.slice(0, 120),
+    };
+})"""
+
+
 def search_to(page, target):
     """Pick `target` from the settings search, with the hit recorder armed before the click."""
     page.evaluate(ARM_SEARCH_HITS)
@@ -61,6 +76,17 @@ FIXTURE = """(() => {
     localStorage.setItem('unsloth_chat_legacy_imported_to_studio_db', 'true');
     const fixture = { rows: [], requests: [], hold: false, fail: false, listFail: false, media: {}, projects: [{ id: "research", name: "Research notes", createdAt: 1, updatedAt: 1 }, { id: "other", name: "Other project", createdAt: 2, updatedAt: 2 }, { id: "archived-project", name: "Old experiments", createdAt: 3, updatedAt: 3, archived: true }] };
     window.__dataFixture = fixture;
+    // The legacy IndexedDB store sits behind a 1 s gate that stays shut for the life of the page
+    // once any read overruns it, and a clear then counts that store as failed. A slow runner
+    // (Firefox on Windows) can trip it at any point, so a check whose outcome turns on that store
+    // sets failLegacyWrites to refuse its writes rather than inherit whatever the gate did earlier.
+    const transaction = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (stores, mode, ...rest) {
+        if (fixture.failLegacyWrites && mode === 'readwrite') {
+            throw new DOMException('Legacy chat store writes refused by the fixture', 'UnknownError');
+        }
+        return transaction.call(this, stores, mode, ...rest);
+    };
     window.fetch = async (input, init = {}) => {
         const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
         const method = init.method || input?.method || 'GET';
@@ -78,7 +104,8 @@ FIXTURE = """(() => {
         } else if (url.pathname === '/api/chat/threads') {
             if (fixture.listFail) { status = 503; body = { detail: 'Chat list unavailable' }; }
             else body = { threads: fixture.rows };
-        } else if (url.pathname === '/api/chat/projects') body = { projects: fixture.projects.filter(project => url.searchParams.get('include_archived') !== 'false' || !project.archived) };
+        } else if (url.pathname === '/api/library') body = { items: [], disk: null };
+        else if (url.pathname === '/api/chat/projects') body = { projects: fixture.projects.filter(project => url.searchParams.get('include_archived') !== 'false' || !project.archived) };
         else if (url.pathname === '/api/chat/export') {
             if (fixture.holdExport) await new Promise(resolve => { fixture.releaseExport = resolve; });
             body = { threads: fixture.rows, messages: [], projects: [] };
@@ -139,7 +166,7 @@ def run(page):
         page.evaluate(
             """options => {
             const f = window.__dataFixture;
-            Object.assign(f, { requests: [], hold: false, holdExport: false, fail: false, listFail: false }, options);
+            Object.assign(f, { requests: [], hold: false, holdExport: false, fail: false, listFail: false, failLegacyWrites: false }, options);
             f.rows = Array.from({ length: options.count ?? 3 }, (_, i) => ({
                 id: crypto.randomUUID(), title: `Chat ${i}`, modelType: 'base', modelId: 'test',
                 createdAt: 1700000000000 + i, updatedAt: 1700000000000 + i,
@@ -210,12 +237,28 @@ def run(page):
     assert len(deletes()) == 1
     checks.append("pending-delete-locks-choice-and-dismissal")
 
-    reset(fail = True)
-    dialog = confirm(True)
+    # Neither store clears, so the clear fails outright: the confirmation stays open and is armed
+    # for a retry. Whether it closes when only the backend fails turns on the legacy store gate,
+    # which this page cannot reopen once a slow read has shut it, so that is not asserted here.
+    reset(fail = True, failLegacyWrites = True)
+    confirm(True)
+    # Pinned to the confirmation itself: `.last` would slide onto Settings once it closed, and a
+    # closing dialog still answers role queries until its exit animation ends.
+    dialog = page.get_by_role("dialog").filter(has = page.locator("#clear-chats-delete-files"))
     dialog.get_by_role("button", name = "Clear 3 chats", exact = True).click()
+    # Both backend attempts have answered. The action reads "Clearing..." until the clear settles,
+    # so finding it under its own name again, enabled, is the clear being over.
+    page.wait_for_function(
+        "window.__dataFixture.requests.filter(r => r.method === 'DELETE' && r.done).length === 2"
+    )
+    expect(dialog.get_by_role("button", name = "Clear 3 chats", exact = True)).to_be_enabled()
+    expect(dialog).to_have_attribute("data-state", "open")
+    expect(dialog.get_by_role("switch")).to_be_enabled()
+    assert page.evaluate("window.__dataFixture.rows.length") == 3
+    assert len(deletes()) == 2
+    dialog.get_by_role("button", name = "Cancel", exact = True).click()
     expect(page.locator("#clear-chats-delete-files")).to_have_count(0)
     expect(page.get_by_role("button", name = "Delete all", exact = True)).to_be_enabled()
-    assert page.evaluate("window.__dataFixture.rows.length") == 3
     assert len(deletes()) == 2
     checks.append("failed-delete-preserves-chats-and-reenables-action")
 
@@ -1045,6 +1088,12 @@ def main():
                 result.update(run(page))
             except Exception as error:
                 result["error"] = str(error)
+                # A dialog that outlives close() leaves a blank screenshot behind, so record what
+                # is still mounted: its state and whether an exit animation is holding it.
+                try:
+                    result["dialogs"] = page.evaluate(DIALOG_STATE)
+                except Exception as state_error:
+                    result["dialogs"] = f"unavailable: {state_error}"
                 page.screenshot(path = str(output.with_suffix(".png")))
                 raise
             finally:

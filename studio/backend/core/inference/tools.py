@@ -78,6 +78,8 @@ from core.inference.tool_confinement import ToolConfinementUnavailable, account_
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
 
+from . import os_sandbox
+
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -9124,7 +9126,8 @@ def _is_trusted_windows_program_dir(path: str) -> bool:
 
 # not dot-named: the walks skip dot-dirs, which would hide a model's /tmp write. not "tmp": too common in a workspace,
 # and adopting one is what broke the walks.
-_SANDBOX_TEMP_DIRNAME = "unsloth-tmp"
+# Shared with os_sandbox: a drifted name would silently disable the scan's exemption.
+_SANDBOX_TEMP_DIRNAME = os_sandbox.TOOL_TEMP_DIRNAME
 
 
 def _sandbox_temp_dir(workdir: str) -> str:
@@ -9534,6 +9537,183 @@ def _bypass_preexec():
         os.setsid()
     except OSError:
         pass
+
+
+# Never read back by the executors, so a concurrent call can only make this stale.
+_last_tool_execution_record: "os_sandbox.ToolExecutionRecord | None" = None
+
+
+def _note_tool_execution(record) -> None:
+    """Built from a live probe, never from model output, so it is safe to show as a badge."""
+    global _last_tool_execution_record
+    if record is None:
+        return
+    _last_tool_execution_record = record
+    logger.info("tool execution mode: %s", record.as_dict())
+
+
+def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -> str:
+    """Require disable_sandbox for full access; checked here because managed accounts skip the planner."""
+    if tool_execution_mode not in os_sandbox.TOOL_EXECUTION_MODES:
+        raise os_sandbox.SandboxUnavailableError(
+            f"TOOL_EXECUTION_MODE_INVALID: {tool_execution_mode!r} is not a tool "
+            f"execution mode ({', '.join(os_sandbox.TOOL_EXECUTION_MODES)})",
+            remediation = "Use 'auto' or 'required'.",
+        )
+    if disable_sandbox:
+        return "full"
+    if tool_execution_mode == "full":
+        raise os_sandbox.SandboxUnavailableError(
+            "TOOL_EXECUTION_MODE_INVALID: full access is not requestable through "
+            "tool_execution_mode",
+            remediation = "Full access is granted with disable_sandbox (Bypass Permissions).",
+        )
+    return tool_execution_mode
+
+
+_with_session_packages = os_sandbox.with_session_packages
+
+
+def _software_safeguards_launch(plan, fault: str):
+    """Prepare an unisolated launch, retaining session packages and recording *fault*."""
+    full = plan.requested_mode == "full"
+    return os_sandbox.PreparedSandboxLaunch(
+        argv = plan.argv,
+        workdir = plan.workdir,
+        env = _with_session_packages(plan.env, plan.workdir),
+        preexec_fn = plan.preexec_fn,
+        backend = "software-safeguards",
+        timeout_seconds = plan.timeout_seconds,
+        close_fds = plan.close_fds,
+        terminate_descendants = plan.terminate_descendants,
+        execution_record = os_sandbox.ToolExecutionRecord(
+            requested_mode = plan.requested_mode,
+            # Do not claim software safeguards for a launch that skipped them.
+            effective_mode = "full" if full else "software_safeguards",
+            environment = sys.platform,
+            backend = "software-safeguards",
+            profile_id = "full-access" if full else "software-safeguards-v1",
+            probe_generation = "",
+            os_isolation = False,
+            retained_safeguards = tuple(
+                item
+                for item in (
+                    os_sandbox._FULL_SAFEGUARDS if full else os_sandbox._SOFTWARE_SAFEGUARDS
+                )
+                if item != "timeout" or plan.timeout_seconds is not None
+            ),
+            limitations = (
+                ("security_restrictions_disabled", fault)
+                if full
+                else (*os_sandbox._software_only_limitations(), fault)
+            ),
+        ),
+    )
+
+
+def _reaches_host_paths(kind: str, text: str) -> bool:
+    """Whether the call names a host path outside the silent roots: the check that put it in front of the user."""
+    try:
+        if kind == "python":
+            tree, error = _parse_python(text)
+            return error is None and _python_reaches_outside_sandbox(tree, text)
+        # Decoded like the approval classifier, or cat $'/home/u/x' prompts yet stays isolated.
+        decoded = _decode_ansi_c(text, keep_one_word = True)
+        command = decoded.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
+        for variant in {command, _expand_shell_assignments(_expand_param_defaults(command))}:
+            lexer = shlex.shlex(variant, posix = True, punctuation_chars = ";&|()")
+            lexer.whitespace_split = True
+            if _terminal_reaches_outside_sandbox(list(lexer), variant):
+                return True
+    except Exception:  # noqa: BLE001 - unclassifiable stays isolated
+        return False
+    return False
+
+
+def _prepare_tool_launch(plan, *, host_access_approved: bool = False):
+    """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
+    if host_access_approved and plan.requested_mode == "auto":
+        return _software_safeguards_launch(plan, "user_approved_host_access")
+    try:
+        prepared = os_sandbox.prepare_tool_launch(plan)
+        if plan.preexec_fn is not None and prepared.preexec_fn is None:
+            # Preserve setsid so timeout cleanup cannot kill the server's process group.
+            logger.warning(
+                "Sandbox backend %s dropped the launch pre-exec; restoring it",
+                prepared.backend,
+            )
+            prepared.preexec_fn = plan.preexec_fn
+        if prepared.execution_record is not None and not prepared.execution_record.os_isolation:
+            # The other door: os_sandbox returns its own fallback through here.
+            prepared.env = _with_session_packages(prepared.env, plan.workdir)
+        return prepared
+    except (os_sandbox.WorkdirUnsafeError, os_sandbox.SandboxBuildError):
+        # These failures can be tool-induced; fallback would let code remove its own boundary.
+        raise
+    except os_sandbox.SandboxUnavailableError:
+        # Any other refusal means the backend stopped being available.
+        if plan.requested_mode == "required" or (
+            plan.requested_mode not in os_sandbox.TOOL_EXECUTION_MODES
+        ):
+            raise
+        logger.warning(
+            "The sandbox backend is no longer available, running with software safeguards",
+            exc_info = True,
+        )
+        return _software_safeguards_launch(plan, "sandbox_became_unavailable")
+    except Exception as exc:  # noqa: BLE001 - construction failures never buy a host replay
+        if plan.requested_mode == "full":
+            return _software_safeguards_launch(plan, "sandbox_planner_error")
+        raise os_sandbox.SandboxBuildError(
+            f"sandbox preparation failed without host fallback: {exc}"
+        ) from exc
+
+
+# Launcher stderr prefixes for refusing to build the sandbox, not payload failures.
+_LAUNCHER_FAILURE_MARKERS = {
+    "bubblewrap": "bwrap: ",
+    "macos-seatbelt": "sandbox-exec: ",
+}
+
+
+def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> None:
+    """Drop a stale probe verdict found at exec, so it costs one call rather than the cache's lifetime."""
+    if prepared is None or prepared.backend == "software-safeguards":
+        return
+    if not output.startswith("Exit code "):
+        return
+    # Keyed on the backend that ran: Seatbelt reports `sandbox-exec:`, not `bwrap:`.
+    marker = _LAUNCHER_FAILURE_MARKERS.get(prepared.backend)
+    if marker is None or marker not in output[:400]:
+        return
+    logger.warning("The sandbox backend failed at launch; re-probing the capability")
+    try:
+        from .sandbox_probe import reset_probe_cache
+        reset_probe_cache()
+        if sys.platform == "linux":
+            from .sandbox_linux import reset_cache_verdicts
+            reset_cache_verdicts()
+    except Exception:  # noqa: BLE001 - a cache reset never breaks a tool result
+        logger.debug("could not reset the sandbox probe cache", exc_info = True)
+
+
+def _sandbox_refusal(exc) -> str:
+    """The remediation is part of the answer: the reader can fix the host."""
+    remediation = getattr(exc, "remediation", "") or ""
+    return _truncate(f"Execution error: {exc}{(' ' + remediation) if remediation else ''}")
+
+
+def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:
+    """The OUTER process needs its own session: every kill path is killpg based."""
+    popen_kwargs["cwd"] = prepared.workdir
+    popen_kwargs["env"] = prepared.env
+    if sys.platform != "win32":
+        popen_kwargs["preexec_fn"] = prepared.preexec_fn
+    popen_kwargs["close_fds"] = prepared.close_fds
+    if prepared.pass_fds:
+        # Empty for every fallback, so Windows never sees a kwarg it rejects.
+        popen_kwargs["pass_fds"] = tuple(prepared.pass_fds)
+    return popen_kwargs
 
 
 # Hardening the Unsloth parent is done once (PR_SET_DUMPABLE is process-global and sticky); guarded so repeated bypass
@@ -10564,15 +10744,9 @@ def _legacy_lock_peek(name: str) -> "threading.Lock | None":
 _LEGACY_SHARED_BUCKET = "_invalid"
 
 
-def _legacy_session_dir(session_id: str) -> "str | None":
-    """This session's directory at the legacy root, while one is still there.
-
-    Both names, like the migration itself: a chat from before the upgrade whose
-    id starts with the derived prefix kept its folder under the literal id.
-    """
-    if not is_owner_context():
-        return None
-    legacy_root = _legacy_sandbox_root()
+def _legacy_names(session_id: str) -> "list[str]":
+    """Every name this session's folder can have at the legacy root, which is also the key its move
+    is locked under."""
     names = [_sandbox_name(session_id)]
     if not _usable_session_id(session_id):
         # Before this change an id the filesystem could not hold shared one bucket with every other such chat: read
@@ -10582,13 +10756,50 @@ def _legacy_session_dir(session_id: str) -> "str | None":
         # Only the derived-prefix case: an id the old code could hold kept its folder under the literal name while
         # _sandbox_name now hashes it. A fallback name is nobody's chat: every session-less call ran in there.
         names.append(session_id)
-    for name in names:
+    return names
+
+
+def _marked_sandbox_after_moves(root: str, session_id: str) -> "str | None | bool":
+    """_marked_sandbox_in with every legacy move of this session held off, or False when no move of
+    it ever started. Under whichever name it was moved from: a chat whose id starts with the
+    derived prefix moves under the literal id, and its staging tree is marked with the derived one."""
+    locks = [_legacy_lock_peek(name) for name in _legacy_names(session_id)]
+    locks = [lock for lock in locks if lock is not None]
+    if not locks:
+        return False
+    # All at once, so no move can start between the wait and the look. A mover only ever holds one of these, so taking
+    # several in a fixed order cannot deadlock against it.
+    with contextlib.ExitStack() as held:
+        for lock in locks:
+            held.enter_context(lock)
+        return _marked_sandbox_in(root, session_id)
+
+
+def _legacy_session_dir(session_id: str) -> "str | None":
+    """This session's directory at the legacy root, while one is still there.
+
+    Both names, like the migration itself: a chat from before the upgrade whose
+    id starts with the derived prefix kept its folder under the literal id.
+    """
+    if not is_owner_context():
+        return None
+    legacy_root = _legacy_sandbox_root()
+    for name in _legacy_names(session_id):
         candidate = os.path.join(legacy_root, name)
-        if not os.path.isdir(candidate) or os.path.islink(candidate):
+        if os.path.islink(candidate):
             continue
+        if os.path.isdir(candidate):
+            lock = _legacy_lock_for(name)
+        else:
+            # Gone from the legacy root can mean sitting in staging, where neither root holds it and the caller would
+            # fall through to a destination that does not exist yet. The same durable trace
+            # _migrate_one_legacy_session waits on: an entry means a move began, so waiting on it lets the move land.
+            lock = _legacy_lock_peek(name)
+            if lock is None:
+                continue
         # Under this session's move lock, and checked again inside it: the move is a rename, so a path handed back
         # mid-move lists nothing and 404s every card. One that already ran sends the caller to the destination.
-        with _legacy_lock_for(name):
+        with lock:
             if os.path.isdir(candidate) and not os.path.islink(candidate):
                 return candidate
     return None
@@ -10958,6 +11169,14 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         # A migration that moved the tree but could not rename it into place leaves the only copy under a marked name,
         # at any root.
         ours = _marked_sandbox_in(root, session_id)
+        if ours and _STAGING_SUFFIX in os.path.basename(ours):
+            # A live move marks its staging tree before renaming it into place, so this can also be one still moving,
+            # which the rename is about to take away. Movers hold the session's lock for the whole move, so once it is
+            # free a staging tree that is still there is a stranded one, and one that landed or rolled back is found
+            # where it went.
+            settled = _marked_sandbox_after_moves(root, session_id)
+            if settled is not False:
+                ours = settled
         if ours:
             return ours
         # Right after an upgrade the files can still be at the legacy root: the move runs in the background and can
@@ -10965,6 +11184,13 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         legacy = _legacy_session_dir(session_id)
         if legacy:
             return legacy
+        if not os.path.isdir(workdir):
+            # The lookup above can have waited out a move the first scan ran ahead of. One whose rename and rollback
+            # both failed leaves the only copy in a marked staging tree, which that scan never saw. Only a session a
+            # move has touched pays for the second listing.
+            ours = _marked_sandbox_after_moves(root, session_id)
+            if ours:
+                return ours
     if not _root_is_ours() and not _owned_by_session(workdir, session_id):
         # In a root the user pointed us at this chat can be in a fallback whose name nothing recomputes, and a read
         # that stops here shows an empty sandbox and 404s the file cards already in the transcript.
@@ -12786,6 +13012,9 @@ def execute_tool(
     context_tokens = _UNSET_CONTEXT_TOKENS,
     search_images: bool = False,
     result_budget_tokens: int | None = None,
+    *,
+    tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -12798,7 +13027,11 @@ def execute_tool(
     tools; web_search / MCP are unchanged. ``output_callback``: optional ``callable(str)`` invoked
     with incremental stdout/stderr chunks while python/terminal executions run. Purely
     observational: the returned result string is identical with or without it. ``website_policy``:
-    hidden server-validated domain limits for web_search.
+    hidden server-validated domain limits for web_search. ``tool_execution_mode`` controls OS
+    isolation for python/terminal: ``"auto"`` isolates when available and otherwise preserves
+    existing behavior, while ``"required"`` refuses unisolated execution. Full access remains
+    controlled by ``disable_sandbox``; ``"full"`` here is refused. ``host_access_approved``: the user approved this
+    call at the confirmation prompt (see ``_prepare_tool_launch``).
     """
     from state.tool_policy import require_tool_access
 
@@ -12998,6 +13231,8 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                tool_execution_mode = tool_execution_mode,
+                host_access_approved = host_access_approved,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -13009,6 +13244,8 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                tool_execution_mode = tool_execution_mode,
+                host_access_approved = host_access_approved,
             )
     # Same in-flight guard as the two above: it writes into the session workdir, so a chat deleted mid-call must not
     # unlink it underneath.
@@ -13839,6 +14076,94 @@ _UNICODE_BOM_CODECS = (
 _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
 
+_META_CHARSET_SCAN_BYTES = 2048
+# A comment or whole tag, quoted attribute values included, so markup inside them is never read as <meta>. As in the
+# browser prescan, an unterminated tag ends the scan.
+_HTML_TAG_RE = re.compile(
+    rb"<!--.*?(?:-->|\Z)|<([a-z][^\s/>]*)((?:[\s/](?:[^>\"']|\"[^\"]*\"|'[^']*')*)?)>|<[!/?][^>]*>|<[a-z!/?].*",
+    re.IGNORECASE | re.DOTALL,
+)
+_META_ATTR_RE = re.compile(rb"([^\s\"'/=>]+)(?:\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]*)))?")
+_META_CONTENT_CHARSET_RE = re.compile(rb"charset\s*=\s*[\"']?\s*([^\s\"';]+)", re.IGNORECASE)
+_XML_ENCODING_RE = re.compile(rb"\s*<\?xml\b[^>]*?encoding\s*=\s*[\"']([\w.:-]+)", re.IGNORECASE)
+# WHATWG Encoding labels by the Python codec that matches the browser decoder. A meta declaration
+# of UTF-16 or x-user-defined means UTF-8 or windows-1252; "replacement" labels are left out.
+_WHATWG_CHARSET_LABELS = {
+    "utf-8": (
+        "unicode-1-1-utf-8 unicode11utf8 unicode20utf8 utf-8 utf8 x-unicode20utf8 unicodefffe "
+        "utf-16be csunicode iso-10646-ucs-2 ucs-2 unicode unicodefeff utf-16 utf-16le"
+    ),
+    "cp866": "866 cp866 csibm866 ibm866",
+    "iso8859-2": (
+        "csisolatin2 iso-8859-2 iso-ir-101 iso8859-2 iso88592 iso_8859-2 iso_8859-2:1987 l2 "
+        "latin2"
+    ),
+    "iso8859-3": (
+        "csisolatin3 iso-8859-3 iso-ir-109 iso8859-3 iso88593 iso_8859-3 iso_8859-3:1988 l3 "
+        "latin3"
+    ),
+    "iso8859-4": (
+        "csisolatin4 iso-8859-4 iso-ir-110 iso8859-4 iso88594 iso_8859-4 iso_8859-4:1988 l4 "
+        "latin4"
+    ),
+    "iso8859-5": (
+        "csisolatincyrillic cyrillic iso-8859-5 iso-ir-144 iso8859-5 iso88595 iso_8859-5 "
+        "iso_8859-5:1988"
+    ),
+    "iso8859-6": (
+        "arabic asmo-708 csiso88596e csiso88596i csisolatinarabic ecma-114 iso-8859-6 "
+        "iso-8859-6-e iso-8859-6-i iso-ir-127 iso8859-6 iso88596 iso_8859-6 iso_8859-6:1987"
+    ),
+    "iso8859-7": (
+        "csisolatingreek ecma-118 elot_928 greek greek8 iso-8859-7 iso-ir-126 iso8859-7 iso88597 "
+        "iso_8859-7 iso_8859-7:1987 sun_eu_greek"
+    ),
+    "iso8859-8": (
+        "csiso88598e csisolatinhebrew hebrew iso-8859-8 iso-8859-8-e iso-ir-138 iso8859-8 "
+        "iso88598 iso_8859-8 iso_8859-8:1988 visual csiso88598i iso-8859-8-i logical"
+    ),
+    "iso8859-10": "csisolatin6 iso-8859-10 iso-ir-157 iso8859-10 iso885910 l6 latin6",
+    "iso8859-13": "iso-8859-13 iso8859-13 iso885913",
+    "iso8859-14": "iso-8859-14 iso8859-14 iso885914",
+    "iso8859-15": "csisolatin9 iso-8859-15 iso8859-15 iso885915 iso_8859-15 l9",
+    "iso8859-16": "iso-8859-16",
+    "koi8-r": "cskoi8r koi koi8 koi8-r koi8_r",
+    "koi8-u": "koi8-ru koi8-u",
+    "mac-roman": "csmacintosh mac macintosh x-mac-roman",
+    "cp874": "dos-874 iso-8859-11 iso8859-11 iso885911 tis-620 windows-874",
+    "cp1250": "cp1250 windows-1250 x-cp1250",
+    "cp1251": "cp1251 windows-1251 x-cp1251",
+    "cp1252": (
+        "ansi_x3.4-1968 ascii cp1252 cp819 csisolatin1 ibm819 iso-8859-1 iso-ir-100 iso8859-1 "
+        "iso88591 iso_8859-1 iso_8859-1:1987 l1 latin1 us-ascii windows-1252 x-cp1252 "
+        "x-user-defined"
+    ),
+    "cp1253": "cp1253 windows-1253 x-cp1253",
+    "cp1254": (
+        "cp1254 csisolatin5 iso-8859-9 iso-ir-148 iso8859-9 iso88599 iso_8859-9 iso_8859-9:1989 "
+        "l5 latin5 windows-1254 x-cp1254"
+    ),
+    "cp1255": "cp1255 windows-1255 x-cp1255",
+    "cp1256": "cp1256 windows-1256 x-cp1256",
+    "cp1257": "cp1257 windows-1257 x-cp1257",
+    "cp1258": "cp1258 windows-1258 x-cp1258",
+    "mac-cyrillic": "x-mac-cyrillic x-mac-ukrainian",
+    "gb18030": (
+        "chinese csgb2312 csiso58gb231280 gb2312 gb_2312 gb_2312-80 gbk iso-ir-58 x-gbk gb18030"
+    ),
+    "big5hkscs": "big5 big5-hkscs cn-big5 csbig5 x-x-big5",
+    "euc_jp": "cseucpkdfmtjapanese euc-jp x-euc-jp",
+    "iso2022_jp": "csiso2022jp iso-2022-jp",
+    "cp932": "csshiftjis ms932 ms_kanji shift-jis shift_jis sjis windows-31j x-sjis",
+    "cp949": (
+        "cseuckr csksc56011987 euc-kr iso-ir-149 korean ks_c_5601-1987 ks_c_5601-1989 ksc5601 "
+        "ksc_5601 windows-949"
+    ),
+}
+_WHATWG_CHARSET_CODECS = {
+    label: codec for codec, labels in _WHATWG_CHARSET_LABELS.items() for label in labels.split()
+}
+
 
 def _looks_binary(text: str) -> bool:
     """Whether control or undecodable characters exceed the binary threshold."""
@@ -13871,6 +14196,39 @@ def _has_single_byte_text_evidence(data: bytes) -> bool:
         return True
     ascii_text_bytes = sum(byte in _ASCII_TEXT_BYTES for byte in data)
     return ascii_text_bytes / len(data) >= _MIN_SINGLE_BYTE_ASCII_RATIO
+
+
+def _whatwg_codec(label: bytes) -> str | None:
+    return _WHATWG_CHARSET_CODECS.get(label.strip(b"\t\n\f\r ").decode("latin-1").lower())
+
+
+def _sniff_meta_charset(head: bytes, content_type: str) -> str | None:
+    # Browsers prescan <meta> only in HTML (first usable one wins, XML prolog as fallback) and read
+    # only the prolog in XML. A headerless body is XML if it opens with a prolog, HTML if it looks it.
+    prolog = _XML_ENCODING_RE.match(head)
+    if content_type:
+        is_html = content_type == "text/html"
+        is_xml = content_type in ("text/xml", "application/xml") or content_type.endswith("+xml")
+    else:
+        is_xml = prolog is not None
+        is_html = not is_xml and _looks_like_html(head.decode("latin-1"))
+    if is_html:
+        for tag in _HTML_TAG_RE.finditer(head):
+            if (tag.group(1) or b"").lower() != b"meta":
+                continue
+            attrs = {}
+            for name, *values in _META_ATTR_RE.findall(tag.group(2)):
+                attrs.setdefault(name.lower(), b"".join(values))
+            label = attrs.get(b"charset")
+            if label is None and attrs.get(b"http-equiv", b"").strip().lower() == b"content-type":
+                match = _META_CONTENT_CHARSET_RE.search(attrs.get(b"content", b""))
+                label = match and match.group(1)
+            codec = label and _whatwg_codec(label)
+            if codec:
+                return codec
+    elif not is_xml:
+        return None
+    return prolog and _whatwg_codec(prolog.group(1))
 
 
 def _extract_pdf_text(data: bytes) -> str:
@@ -14617,14 +14975,19 @@ def _fetch_url_raw(
             (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
             None,
         )
+        fallback_codec = (
+            bom_codec
+            or _sniff_meta_charset(raw_bytes[:_META_CHARSET_SCAN_BYTES], content_type)
+            or "utf-8"
+        )
         try:
-            raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+            raw_html = raw_bytes.decode(declared or fallback_codec, errors = "replace")
         except (LookupError, ValueError):
             # Survives lookup, fails the decode: base64/hex/zlib are not text codecs, "undefined" always raises, idna
             # rejects replace. The fallback cannot raise.
             declared = None
             declared_codec = None
-            raw_html = raw_bytes.decode(bom_codec or "utf-8", errors = "replace")
+            raw_html = raw_bytes.decode(fallback_codec, errors = "replace")
 
         # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
         if _looks_binary(raw_html):
@@ -17836,6 +18199,13 @@ def _cancel_watcher(
     short-circuit)."""
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
+            request_cancel = getattr(proc, "_unsloth_cancel", None)
+            if request_cancel is not None and request_cancel():
+                try:
+                    proc.wait(timeout = 5)
+                    return
+                except subprocess.TimeoutExpired:
+                    pass
             _killpg_captured(pgid)
             _kill_process_tree(proc)
             return
@@ -19213,11 +19583,15 @@ def _python_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    *,
+    tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
 ) -> str:
     """Execute Python code in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip the
     safety analysis and rlimit pre-exec, and use the host env minus secrets. output_callback:
     optional callable(str) streamed each stdout line as it is produced; the returned result is
-    unchanged."""
+    unchanged. tool_execution_mode selects automatic or required OS isolation; disable_sandbox
+    keeps full access as a separate explicit choice."""
     if not code or not code.strip():
         return "No code provided."
 
@@ -19250,6 +19624,8 @@ def _python_exec(
 
     tmp_path = None
     _scratch_name = None
+    # Bound before the try so the finally can release even when prepare raised.
+    prepared = None
     try:
         workdir = _get_workdir(session_id)
         confinement = _account_confinement()
@@ -19284,25 +19660,52 @@ def _python_exec(
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
+            # close_fds leaves 0-2 open, so an unset stdin would be the server's.
+            stdin = subprocess.DEVNULL,
             text = True,
             # Decode child output as utf-8 (it emits utf-8 via PYTHONIOENCODING); replace so non-ASCII output never
             # crashes the read on Windows.
             encoding = "utf-8",
             errors = "replace",
-            cwd = workdir,
-            env = safe_env,
         )
-        if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
-        else:
+        if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
         # -u forces unbuffered child stdout so a bare print() streams live
         # instead of sitting in the pipe's block buffer until exit. Applied
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        argv = _apply_confinement(confinement, popen_kwargs, [sys.executable, "-u", tmp_path])
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
+        base_preexec = (
+            None
+            if sys.platform == "win32"
+            else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
+        )
+        # Managed accounts keep their own boundary as the outer contract; `confines`, not `is not None` (placeholder).
+        if confinement is None or not confinement.confines:
+            prepared = _prepare_tool_launch(
+                os_sandbox.ToolLaunchPlan(
+                    argv = (sys.executable, "-u", tmp_path),
+                    workdir = workdir,
+                    env = safe_env,
+                    preexec_fn = base_preexec,
+                    requested_mode = requested_mode,
+                    timeout_seconds = timeout,
+                    execution_kind = "python",
+                    cancel_event = cancel_event,
+                ),
+                host_access_approved = host_access_approved and _reaches_host_paths("python", code),
+            )
+            proc = os_sandbox.spawn_prepared_launch(
+                prepared, **_apply_prepared_launch(prepared, popen_kwargs)
+            )
+            _note_tool_execution(prepared.execution_record)
+        else:
+            popen_kwargs.update(cwd = workdir, env = safe_env)
+            if sys.platform != "win32":
+                popen_kwargs["preexec_fn"] = base_preexec
+            argv = _apply_confinement(confinement, popen_kwargs, [sys.executable, "-u", tmp_path])
+            proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see _capture_process_group); None on Windows.
         pgid = _capture_process_group(proc)
@@ -19322,6 +19725,21 @@ def _python_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        if prepared is not None:
+            proc._unsloth_completion_reason = (
+                "timed_out"
+                if timed_out
+                else (
+                    "cancelled"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "finished"
+                )
+            )
+        if prepared is not None:
+            completion = os_sandbox.verify_prepared_completion(prepared, proc)
+            if completion is not None and completion.get("timedOut"):
+                timed_out = True
+            _note_tool_execution(prepared.execution_record)
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
@@ -19362,17 +19780,30 @@ def _python_exec(
         if session_id:
             result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
 
+        _forget_sandbox_capability_if_the_backend_failed(prepared, result)
         return result
 
+    except os_sandbox.SandboxUnavailableError as e:
+        if cancel_event is not None and cancel_event.is_set():
+            # A stop during the (on Windows DACL, multi-second) probe is a cancel, not a sandbox error.
+            return "Execution cancelled."
+        return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
         # been.
+        if prepared is not None and prepared.backend == "mxc-processcontainer":
+            _note_tool_execution(prepared.execution_record)
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
+        # Private mounts and descriptors, released on every exit path.
+        if prepared is not None:
+            prepared.cleanup()
+            os_sandbox.finalize_prepared_cleanup(prepared)
+            _note_tool_execution(prepared.execution_record)
         _forget_tool_pid(locals().get("proc"))
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -19389,11 +19820,14 @@ def _bash_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    *,
+    tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
 ) -> str:
     """Execute a bash command in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip
     the command blocklist and rlimit pre-exec, and use the host env minus secrets.
     output_callback: optional callable(str) streamed each stdout line as it is produced; the
-    returned result is unchanged."""
+    returned result is unchanged. tool_execution_mode follows _python_exec."""
     if not command or not command.strip():
         return "No command provided."
 
@@ -19427,6 +19861,7 @@ def _bash_exec(
     spill_dir = None
     spill_scope = None
     call_token = None
+    prepared = None
     _scratch_name = None
     try:
         try:
@@ -19445,25 +19880,52 @@ def _bash_exec(
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
+            # See _python_exec: the server's stdin must not reach a tool call.
+            stdin = subprocess.DEVNULL,
             text = True,
             # Match _python_exec: decode utf-8 with "replace" so invalid output bytes never raise UnicodeDecodeError
             # (which the streaming reader thread would swallow), keeping both paths byte-identical.
             encoding = "utf-8",
             errors = "replace",
-            cwd = workdir,
-            env = safe_env,
         )
-        if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
-        else:
+        if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
         shell_argv, _scratch_name = _shell_argv(command, workdir, confinement)
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.add(_scratch_name)
-        argv = _apply_confinement(confinement, popen_kwargs, shell_argv)
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
+        base_preexec = (
+            None
+            if sys.platform == "win32"
+            else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
+        )
+        if confinement is None or not confinement.confines:
+            prepared = _prepare_tool_launch(
+                os_sandbox.ToolLaunchPlan(
+                    argv = tuple(shell_argv),
+                    workdir = workdir,
+                    env = safe_env,
+                    preexec_fn = base_preexec,
+                    requested_mode = requested_mode,
+                    timeout_seconds = timeout,
+                    execution_kind = "terminal",
+                    cancel_event = cancel_event,
+                ),
+                host_access_approved = host_access_approved
+                and _reaches_host_paths("terminal", command),
+            )
+            proc = os_sandbox.spawn_prepared_launch(
+                prepared, **_apply_prepared_launch(prepared, popen_kwargs)
+            )
+            _note_tool_execution(prepared.execution_record)
+        else:
+            popen_kwargs.update(cwd = workdir, env = safe_env)
+            if sys.platform != "win32":
+                popen_kwargs["preexec_fn"] = base_preexec
+            argv = _apply_confinement(confinement, popen_kwargs, shell_argv)
+            proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see _python_exec); None on Windows.
         pgid = _capture_process_group(proc)
@@ -19482,6 +19944,21 @@ def _bash_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        if prepared is not None:
+            proc._unsloth_completion_reason = (
+                "timed_out"
+                if timed_out
+                else (
+                    "cancelled"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "finished"
+                )
+            )
+        if prepared is not None:
+            completion = os_sandbox.verify_prepared_completion(prepared, proc)
+            if completion is not None and completion.get("timedOut"):
+                timed_out = True
+            _note_tool_execution(prepared.execution_record)
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
@@ -19513,14 +19990,27 @@ def _bash_exec(
         # Only for a chat that has an id (see _python_exec).
         if session_id:
             result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
+        _forget_sandbox_capability_if_the_backend_failed(prepared, result)
         return result
 
+    except os_sandbox.SandboxUnavailableError as e:
+        if cancel_event is not None and cancel_event.is_set():
+            # A stop during the (on Windows DACL, multi-second) probe is a cancel, not a sandbox error.
+            return "Execution cancelled."
+        return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
         # been.
+        if prepared is not None and prepared.backend == "mxc-processcontainer":
+            _note_tool_execution(prepared.execution_record)
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
+        # Private mounts and descriptors, released on every exit path.
+        if prepared is not None:
+            prepared.cleanup()
+            os_sandbox.finalize_prepared_cleanup(prepared)
+            _note_tool_execution(prepared.execution_record)
         _forget_tool_pid(locals().get("proc"))
         if _scratch_name:
             with _scratch_lock:

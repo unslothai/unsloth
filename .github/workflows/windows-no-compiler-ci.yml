@@ -70,6 +70,12 @@ on:
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/windows-no-compiler-ci.yml'
+      # The desktop leg runs install.ps1 --tauri --local, which hands setup to this
+      # checkout's CLI; commands/studio.py, commands/start.py and
+      # _studio_runtime_gate.py spawn PowerShell, the path a compiler would come back
+      # through.
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
   push:
     branches: [main]
     paths:
@@ -91,11 +97,17 @@ on:
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/windows-no-compiler-ci.yml'
+      # The desktop leg runs install.ps1 --tauri --local, which hands setup to this
+      # checkout's CLI; commands/studio.py, commands/start.py and
+      # _studio_runtime_gate.py spawn PowerShell, the path a compiler would come back
+      # through.
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

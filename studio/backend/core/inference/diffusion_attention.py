@@ -444,6 +444,7 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
     """
     import importlib.util
     import os
+    import sys
 
     spec = _INSTALLABLE_BACKENDS.get(backend)
     if spec is None:
@@ -453,6 +454,18 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
     gate = os.environ.get(_ATTENTION_INSTALL_ENV, "auto").strip().lower()
     if gate in ("0", "false", "no", "off"):
         return None
+    # A hidden package stays unusable until restart; skip without recording an attempt.
+    if module in sys.modules and sys.modules[module] is None:
+        reason = f"{module} is disabled in this process because it requires a different torch"
+        if logger is not None:
+            logger.warning(
+                "diffusion.attention: not installing %s for backend=%s: %s; restart Studio "
+                "once the installer has removed it. Using the default backend",
+                package,
+                backend,
+                reason,
+            )
+        return reason
     # Refusing is a POLICY decision, not a failed attempt, so it is checked before the _INSTALL_ATTEMPTED memo below and
     # records nothing: a later request on a fixed environment must still be able to install. Scoped to kernels; the sage
     # / flash-attn / xformers wheels do not import huggingface_hub at module scope.
@@ -507,7 +520,6 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
         return None
     _INSTALL_ATTEMPTED.add(package)
     import subprocess
-    import sys
 
     if logger is not None:
         logger.info(
@@ -689,10 +701,8 @@ def _warn(logger: Any, what: str, exc: Exception) -> None:
 # eager forward pre-hook (outside the compiled blocks): drop the all-zero image stream (t2v), trim the mllm/byt5
 # streams to their globally-valid columns, and, when nothing partially-padded remains, flag the DiT so the processor
 # skips the dense mask and runs the fused path. Mixed-padding batches fall back to the stock dense mask. SHAPE NOTE:
-# the trimmed text length is prompt-dependent, so the compiled blocks see a new shape per prompt. Free on the default
-# speed tier (dynamic=True) but not on ``max`` (dynamic=False), where each length is its own graph and a fullgraph
-# region hard-errors at dynamo's recompile limit. The caller therefore only installs the trim on a tier that compiles
-# dynamically; see the call site in video.py.
+# trimmed length varies per prompt; safe because ``max`` compiles with dynamic=None (one generalising recompile). A
+# static (dynamic=False) compile would recompile per prompt length and hit dynamo's recompile limit under fullgraph.
 _HUNYUAN15_TRANSFORMER_CLS = "HunyuanVideo15Transformer3DModel"
 _HUNYUAN15_PROCESSOR_CLS = "HunyuanVideo15AttnProcessor2_0"
 _NULL_ATTN_FLAG = "_unsloth_null_attn_mask"

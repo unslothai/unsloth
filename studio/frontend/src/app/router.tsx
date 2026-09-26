@@ -18,6 +18,7 @@ import { Route as indexRoute } from "./routes/index";
 import { Route as loginRoute } from "./routes/login";
 import { Route as hubRoute } from "./routes/hub";
 import { Route as projectsRoute } from "./routes/projects";
+import { Route as libraryRoute } from "./routes/library";
 import { Route as changePasswordRoute } from "./routes/change-password";
 import { Route as settingsRoute } from "./routes/settings";
 import { Route as studioRoute } from "./routes/studio";
@@ -31,6 +32,7 @@ const routeTree = rootRoute.addChildren([
   studioRoute,
   chatRoute,
   projectsRoute,
+  libraryRoute,
   exportRoute,
   imagesRoute,
   videoRoute,

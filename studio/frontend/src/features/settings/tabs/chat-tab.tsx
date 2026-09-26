@@ -52,7 +52,7 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
 // the ones used in the composer + menu itself.
-const PLUS_MENU_ICON_CLASS = "size-[18px]";
+const PLUS_MENU_ICON_CLASS = "size-[calc(18px*var(--ui-space-scale,1))]";
 const PLUS_MENU_SETTINGS: {
   id: PlusMenuItemId;
   labelKey: TranslationKey;
@@ -233,6 +233,18 @@ export function ChatTab() {
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
   );
+  const showInlineReadAloud = useChatPreferencesStore(
+    (state) => state.showInlineReadAloud,
+  );
+  const setShowInlineReadAloud = useChatPreferencesStore(
+    (state) => state.setShowInlineReadAloud,
+  );
+  const showInlineEditResponse = useChatPreferencesStore(
+    (state) => state.showInlineEditResponse,
+  );
+  const setShowInlineEditResponse = useChatPreferencesStore(
+    (state) => state.setShowInlineEditResponse,
+  );
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
   );
@@ -408,7 +420,7 @@ export function ChatTab() {
             {currentDatePromptError ? (
               <span
                 role="alert"
-                className="max-w-[260px] text-right text-xs text-destructive"
+                className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive"
               >
                 {currentDatePromptError}
               </span>
@@ -533,6 +545,26 @@ export function ChatTab() {
             aria-label={t("settings.chat.showResponseModel")}
             checked={showResponseModel}
             onCheckedChange={setShowResponseModel}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.inlineReadAloud")}
+          description={t("settings.chat.inlineReadAloudDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.inlineReadAloud")}
+            checked={showInlineReadAloud}
+            onCheckedChange={setShowInlineReadAloud}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.inlineEditResponse")}
+          description={t("settings.chat.inlineEditResponseDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.inlineEditResponse")}
+            checked={showInlineEditResponse}
+            onCheckedChange={setShowInlineEditResponse}
           />
         </SettingsRow>
         <SettingsRow

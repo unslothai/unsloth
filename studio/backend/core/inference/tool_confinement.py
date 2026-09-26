@@ -112,6 +112,11 @@ class Confinement:
     def wrap(self, argv: list[str]) -> list[str]:
         return [*self.wrapper, *argv] if self.wrapper else argv
 
+    @property
+    def confines(self) -> bool:
+        """Whether this confines anything; ``unconfined-by-owner`` is a placeholder and must not skip the generic sandbox."""
+        return self.preexec is not None or bool(self.wrapper)
+
 
 def unconfined_tools_allowed() -> bool:
     return (os.environ.get(_OVERRIDE_ENV) or "").strip().lower() in ("1", "true", "yes", "on")

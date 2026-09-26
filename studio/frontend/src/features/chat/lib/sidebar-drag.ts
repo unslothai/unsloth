@@ -13,6 +13,7 @@ import {
   projectOrderScope,
   RECENTS_ORDER_SCOPE,
   type SidebarChatSort,
+  type SidebarProjectSort,
   type SidebarOrganizeBy,
 } from "../stores/sidebar-organization-store.ts";
 
@@ -54,6 +55,7 @@ export interface SidebarDropContext {
   organizeBy: SidebarOrganizeBy;
   chatSort: SidebarChatSort;
   pinnedSort: SidebarChatSort;
+  projectSort: SidebarProjectSort;
   pinnedChatIds: ReadonlySet<string>;
   pinnedProjectIds: ReadonlySet<string>;
   /** Row ids per list, in drawn order. Pinned is one list of folders and chats. */
@@ -96,7 +98,7 @@ export interface SidebarDropEffects {
   unpinProject?: string;
   moveChat?: { chatId: string; projectId: string | null };
   /** The list to switch to Manual, or its own rule undoes the drop. */
-  switchSort?: "chats" | "pinned";
+  switchSort?: "chats" | "pinned" | "projects";
 }
 
 export interface SidebarDropPlan {
@@ -240,6 +242,7 @@ function planFolderDrop(
   if (zone.section === "recents") return null;
   if (zone.folderId === drag.id) return STAY;
   const ids = ctx.orders.projects;
+  const switchSort = ctx.projectSort === "manual" ? undefined : "projects";
   let target: { id: string; edge: DropEdge } | null = null;
   if (zone.folderId) {
     target =
@@ -255,7 +258,7 @@ function planFolderDrop(
     return {
       action: { kind: "reorder" },
       cue: folderLine(PROJECT_ORDER_SCOPE, target.id, target.edge, zone),
-      effects: { orders: [{ scope: PROJECT_ORDER_SCOPE, ids: next }] },
+      effects: { orders: [{ scope: PROJECT_ORDER_SCOPE, ids: next }], switchSort },
     };
   }
   // Out of Pinned: unpinned, landing against a folder or last.
@@ -268,6 +271,7 @@ function planFolderDrop(
     effects: {
       orders: [{ scope: PROJECT_ORDER_SCOPE, ids: next }],
       unpinProject: drag.id,
+      switchSort,
     },
   };
 }
@@ -293,11 +297,11 @@ function planChatDrop(
     const folderId = zone.folderId;
     const sameFolder = drag.projectId === folderId;
     if (fromPinnedList) {
-      // A pinned folder keeps the pin; a folder under Projects takes it away.
-      if (zone.section === "pinned") {
-        return sameFolder ? STAY : moveChat(drag, zone, edge, ctx, folderId, false);
+      // Another pinned folder keeps the pin; a folder under Projects takes it away.
+      if (!sameFolder) {
+        return moveChat(drag, zone, edge, ctx, folderId, zone.section !== "pinned");
       }
-      if (!sameFolder) return moveChat(drag, zone, edge, ctx, folderId, true);
+      // Dropping it on its own folder unpins it.
       const landing = landingIn(
         projectOrderScope(folderId),
         ctx.orders.projectChats(folderId),
@@ -496,6 +500,34 @@ function reorder(
       switchSort: sort === "manual" ? undefined : sortKey,
     },
   };
+}
+
+/** The folder or section to outline. A drop that files the chat into a folder lights that folder
+ *  even while a line shows its slot, so "into the folder" never reads as "under it". */
+export function litRingKey(plan: SidebarDropPlan | null): string | null {
+  if (!plan) return null;
+  if ("ring" in plan.cue) return plan.cue.ring;
+  if (plan.action.kind === "move" && plan.action.projectId) {
+    return folderRingKey(plan.action.projectId);
+  }
+  return null;
+}
+
+/** Whether two plans land the row identically. `place` is ignored: it names the same slot
+ *  from different neighbours. */
+export function equivalentDrop(a: SidebarDropPlan, b: SidebarDropPlan): boolean {
+  const landing = (plan: SidebarDropPlan) =>
+    JSON.stringify({
+      action: plan.action,
+      orders: plan.effects.orders.map(({ scope, ids }) => ({ scope, ids })),
+      pinChat: plan.effects.pinChat,
+      unpinChat: plan.effects.unpinChat,
+      pinProject: plan.effects.pinProject,
+      unpinProject: plan.effects.unpinProject,
+      moveChat: plan.effects.moveChat,
+      switchSort: plan.effects.switchSort,
+    });
+  return landing(a) === landing(b);
 }
 
 /** Changes exactly when the painted state does, so equal plans skip a re-render. */

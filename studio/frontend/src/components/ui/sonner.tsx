@@ -98,7 +98,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
         swipeDirections={[]}
         toastOptions={{
           classNames: {
-            toast: "cn-toast",
+            // an open modal dialog sets pointer-events:none on body, which toasts would otherwise inherit.
+            toast: "cn-toast pointer-events-auto",
             description: "!text-muted-foreground",
           },
         }}
