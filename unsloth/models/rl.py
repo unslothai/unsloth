@@ -2746,7 +2746,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += pad_to_multiple_of
 
     # Check for loss_type = dr_grpo and scale_rewards for GRPO; DAPO uses per-token loss, so BNPO loss is used. See huggingface/trl#3130 (comment 2746947835).
-    # TRL >= 0.22 takes "group" as its spelling of True and makes it the default, so match both.
+    # TRL >= 0.22 defaults scale_rewards to "group" (= True).
     if "loss_type" in call_args and "scale_rewards" in call_args:
         check_dr_grpo = (
             "if loss_type.lower() == 'dr_grpo':\n"

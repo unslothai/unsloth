@@ -102,13 +102,9 @@ def test_explicit_loss_type_still_wins():
 
 
 def test_dr_grpo_turns_off_reward_scaling_by_default():
-    """Dr GRPO drops the per-group std division. TRL >= 0.22 defaults scale_rewards to
-    "group", which its docs define as the same setting as True, so both must be overridden."""
+    """TRL >= 0.22 defaults scale_rewards to "group" (= True), so dr_grpo must override both."""
     import unsloth  # noqa: F401
     import trl
-
-    if not hasattr(trl.GRPOConfig, "scale_rewards"):
-        pytest.skip("this TRL has no GRPOConfig.scale_rewards")
 
     def scale(**kwargs):
         return trl.GRPOConfig(output_dir = "unused", loss_type = "dr_grpo", **kwargs).scale_rewards
