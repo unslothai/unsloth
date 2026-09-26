@@ -283,6 +283,13 @@ def _build_plan(key: tuple, device: Any, operands: list):
         return _GEMM_PLAN.setdefault(key, plan)
 
 
+def forget_availability() -> None:
+    """Re-probe on the next ``available()``."""
+    global _AVAILABLE
+    with _LOCK:
+        _AVAILABLE = None
+
+
 def reset() -> None:
     """Called on unload: the transposed views would pin a freed model."""
     global _AVAILABLE

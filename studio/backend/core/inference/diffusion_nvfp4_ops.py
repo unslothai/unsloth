@@ -31,6 +31,8 @@ _REGISTER_LOCK = threading.Lock()
 _REGISTERED = False
 _PREFLIGHT_LOCK = threading.Lock()
 _PREFLIGHT: dict[int, dict] = {}
+# Last transient preflight failure per device index: reporting only, never used to pick a backend.
+_PREFLIGHT_TRANSIENT: dict[int, dict] = {}
 _WARNED: set = set()
 
 _BARRIER_LOCK = threading.Lock()
@@ -360,6 +362,7 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
         }
         with _PREFLIGHT_LOCK:
             _PREFLIGHT[index] = rec
+            _PREFLIGHT_TRANSIENT.pop(index, None)
         return dict(rec)
 
     rec = {"ok": False, "reason": "", "capability": capability, "name": name}
@@ -376,10 +379,14 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
     except Exception as exc:  # noqa: BLE001 - every failure mode here means "use torchao"
         rec["reason"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         if _transient_preflight_failure(exc):
+            # Not memoised: a model about to be evicted may own the card, so OOM means "not now".
+            with _PREFLIGHT_LOCK:
+                _PREFLIGHT_TRANSIENT[index] = dict(rec)
             return dict(rec)
 
     with _PREFLIGHT_LOCK:
         _PREFLIGHT[index] = rec
+        _PREFLIGHT_TRANSIENT.pop(index, None)
     return dict(rec)
 
 
@@ -424,6 +431,7 @@ def _transient_preflight_failure(exc: BaseException) -> bool:
 def reset_preflight_cache() -> None:
     with _PREFLIGHT_LOCK:
         _PREFLIGHT.clear()
+        _PREFLIGHT_TRANSIENT.clear()
     _WARNED.clear()
 
 

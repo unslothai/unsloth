@@ -119,6 +119,8 @@ from .diffusion_auto_policy import (
     precision_fallback_allowed,
     precision_refusal_message,
 )
+from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+from .diffusion_nvfp4_install import nvfp4_backend_fields as _nvfp4_backend_fields
 from .diffusion_transformer_quant import (
     TQ_AUTO,
     TQ_INT8,
@@ -2948,6 +2950,65 @@ class VideoBackend:
             )
         return repo is not None
 
+    @staticmethod
+    def _install_flashinfer_for_seed(
+        wanted: bool,
+        seed_scheme: Optional[str],
+        device: Any,
+        *,
+        local_files_only: bool = False,
+    ) -> Optional[tuple[bool, str]]:
+        """FlashInfer install for a conventional load, only when the settled plan kept the NVFP4 seed."""
+        if not wanted or seed_scheme != "nvfp4":
+            return None
+        from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
+
+        return ensure_flashinfer_for_nvfp4(device, logger = logger, local_files_only = local_files_only)
+
+    def _nvfp4_denoiser_checkpoint_will_load(
+        self,
+        fam: Any,
+        base: Optional[str],
+        h3_task: Optional[str],
+        hf_token: Optional[str],
+        *,
+        local_files_only: bool = False,
+        kind: str = "pipeline",
+        planned: Optional[str] = None,
+    ) -> bool:
+        """Whether an NVFP4 video load opens hosted pre-quantised denoisers (the only FlashInfer path); unanswerable -> False."""
+        if not nvfp4_diffusion_enabled():
+            return False
+        try:
+            modular = bool(getattr(fam, "modular_workflow", None))
+            if planned == DENOISER_SEED_DECLINED and not modular:
+                return False
+            task = (h3_task or getattr(fam, "modular_workflow", None)) if modular else h3_task
+            if not self._denoiser_prequant_covered(fam, "nvfp4", base, task, kind = kind):
+                return False
+            from .diffusion_prequant import restricted_prequant_load_supported
+
+            if not restricted_prequant_load_supported("nvfp4"):
+                return False
+            if self._denoiser_prequant_cached_repo(fam, "nvfp4", base, task) is not None:
+                return True
+            if local_files_only:
+                return False
+            from huggingface_hub import HfApi
+
+            repo, _files = self._denoiser_prequant_hub_files(
+                fam, "nvfp4", base, HfApi(token = hf_token or None), task
+            )
+            return repo is not None
+        except Exception as exc:  # noqa: BLE001 -- a refused or unreachable listing is no checkpoint
+            logger.info(
+                "video.nvfp4_install: no reachable NVFP4 checkpoint for %s, so the load runs on "
+                "torchao and FlashInfer is not installed (%s)",
+                base,
+                type(exc).__name__,
+            )
+            return False
+
     def _h3_planned_auto_denoiser_scheme(
         self,
         fam: Any,
@@ -4412,6 +4473,31 @@ class VideoBackend:
 
         target = self._device_target(gpu_ordinal)
         device = target.device
+        # FlashInfer only serves hosted pre-quantised denoisers. Modular H3 installs below; a conventional load installs
+        # after its live-memory plan keeps the seed (a capacity-settled seed can still be dropped).
+        _nvfp4_install_wanted = (
+            kind == "pipeline"
+            and nvfp4_diffusion_enabled()
+            and "nvfp4"
+            in (
+                normalize_transformer_quant(transformer_quant),
+                _video_auto_denoiser_planned,
+            )
+            and (
+                _video_auto_denoiser_planned == "nvfp4"
+                or self._nvfp4_denoiser_checkpoint_will_load(
+                    fam,
+                    base,
+                    h3_task,
+                    hf_token,
+                    local_files_only = local_files_only,
+                    kind = kind,
+                    planned = _video_auto_denoiser_planned,
+                )
+            )
+        )
+        # Bound only at the commit past the token check: a superseded load may return from the install late.
+        _nvfp4_install_outcome: Optional[tuple[bool, str]] = None
         # Video DiTs are bf16-native; fp16 overflows, so a resolved fp16 promotes to float32.
         dtype = target.dtype
         if fam.fp16_incompatible and dtype is torch.float16:
@@ -4420,6 +4506,11 @@ class VideoBackend:
         dtype_scale = 2.0 if device != "cpu" and dtype is torch.float32 else 1.0
 
         if fam.modular_workflow:
+            if _nvfp4_install_wanted:
+                from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
+                _nvfp4_install_outcome = ensure_flashinfer_for_nvfp4(
+                    device, logger = logger, local_files_only = local_files_only
+                )
             return self._load_h3_modular_pipeline(
                 diffusers = diffusers,
                 torch = torch,
@@ -4444,6 +4535,7 @@ class VideoBackend:
                 _base_local_dir = _base_local_dir,
                 # Settled before the pull when the pull acted on it; None when it did not.
                 _h3_auto_denoiser_planned = _h3_auto_denoiser_planned,
+                _nvfp4_install_outcome = _nvfp4_install_outcome,
                 transformer_cache = transformer_cache,
             )
 
@@ -4680,6 +4772,9 @@ class VideoBackend:
                 denoiser_seed_scheme = None
                 denoiser_seed_gb = None
                 plan, bf16_plan, quant_replanned = _plan_for_te_scale(settled_te_scale, log = False)
+        _nvfp4_install_outcome = self._install_flashinfer_for_seed(
+            _nvfp4_install_wanted, denoiser_seed_scheme, device, local_files_only = local_files_only
+        )
         denoiser_injected: dict[str, Any] = {}
         if denoiser_seed_scheme is not None:
             from .video_denoiser_prequant import denoiser_prequant_pipe_kwargs
@@ -5270,6 +5365,9 @@ class VideoBackend:
                     del pipe
                     clear_gpu_cache()
                     raise RuntimeError("Video load was cancelled or superseded.")
+                from .diffusion_nvfp4_install import record_install_reason
+
+                record_install_reason(self, *(_nvfp4_install_outcome or (True, None)), device)
                 self._state = _VideoLoadState(
                     pipe = pipe,
                     family = fam,
@@ -5387,6 +5485,7 @@ class VideoBackend:
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         _h3_auto_denoiser_planned: Optional[str] = None,
+        _nvfp4_install_outcome: Optional[tuple[bool, str]] = None,
         local_files_only: bool = False,
         transformer_cache: Optional[str] = None,
     ) -> dict[str, Any]:
@@ -6041,6 +6140,9 @@ class VideoBackend:
                 del pipe
                 clear_gpu_cache()
                 raise RuntimeError("Video load was cancelled or superseded.")
+            from .diffusion_nvfp4_install import record_install_reason
+
+            record_install_reason(self, *(_nvfp4_install_outcome or (True, None)), device)
             self._state = _VideoLoadState(
                 pipe = pipe,
                 family = fam,
@@ -7688,6 +7790,7 @@ class VideoBackend:
                 "transformer_cache_stats": None,
                 "transformer_quant": None,
                 "transformer_quant_backend": None,
+                "transformer_quant_backend_reason": None,
                 "text_encoder_quant": None,
                 "has_audio": False,
                 "supports_cfg": True,
@@ -7739,7 +7842,7 @@ class VideoBackend:
                 static_skip_stats(state.pipe) if state.transformer_cache == TC_STATIC else None
             ),
             "transformer_quant": state.transformer_quant,
-            "transformer_quant_backend": _video_transformer_quant_backend(state),
+            **_nvfp4_backend_fields(_video_transformer_quant_backend(state), owner = self),
             "text_encoder_quant": state.text_encoder_quant,
             "has_audio": fam.has_audio,
             "supports_cfg": fam.supports_cfg,
