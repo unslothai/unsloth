@@ -271,6 +271,7 @@ export {
   parseAttachmentText,
   readAttachmentText,
   repackDocxAttachmentArchive,
+  repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
 } from "./attachment-content";
 export { ApiProviderLogo } from "./api-provider-logo";

@@ -297,10 +297,16 @@ function formatDate(serial: number, code: string): string {
 
 /** A fraction format: # ?/? (whole part and fraction), ?/? (improper), or a fixed denominator (# ?/8).
  *  The denominator is the closest one its placeholders allow. Null when the format has none. */
-const fractionShape = memo((code) => /(?:([0#?]+)\s+)?[0#?]+\s*\/\s*([1-9]\d*|[0#?]+)/.exec(code));
+const fractionShape = memo((format) =>
+  // Quoted and escaped text blanked, same length: 0 "0/0" is a number and a literal.
+  /(?:([0#?]+)\s+)?[0#?]+\s*\/\s*([1-9]\d*|[0#?]+)/.exec(format.replace(/"[^"]*"|\\./g, (text) => "\u0001".repeat(text.length))),
+);
 
-function formatFraction(value: number, code: string): string | null {
-  const match = fractionShape(code);
+const unquote = (format: string) => format.replace(/"([^"]*)"/g, "$1").replace(/\\(.)/g, "$1");
+
+/** `format` with its quotes: a literal is never read as placeholders. */
+function formatFraction(value: number, format: string): string | null {
+  const match = fractionShape(format);
   if (!match) return null;
   const text = match[0];
   const wholeCode = match[1];
@@ -331,8 +337,8 @@ function formatFraction(value: number, code: string): string | null {
   const fraction = numerator ? `${numerator}/${denominator}` : "";
   let body = `${numerator}/${denominator}`;
   if (wholeCode) body = whole || fraction ? [whole ? String(whole) : "", fraction].filter(Boolean).join(" ") : "0";
-  const at = code.indexOf(text);
-  return `${value < 0 ? "-" : ""}${code.slice(0, at)}${body}${code.slice(at + text.length)}`.trim();
+  const at = match.index;
+  return `${value < 0 ? "-" : ""}${unquote(format.slice(0, at))}${body}${unquote(format.slice(at + text.length))}`.trim();
 }
 
 /** An elapsed-time format ([h]:mm:ss, [mm]:ss, [ss]): the bracketed unit counts past its usual range. */
@@ -532,7 +538,8 @@ const readSection = memo((section) => {
             : "number";
   // Commas after the last digit placeholder scale by a thousand each: #,##0,, shows millions.
   const scale = 1000 ** (bare.match(SCALE_COMMAS)?.[2]?.length ?? 0);
-  return { tagged, code, kind, percent: bare.includes("%"), scale };
+  // Each % scales by a hundred: 0%% shows 0.01 as 100%%.
+  return { tagged, code, kind, percents: bare.split("%").length - 1, scale };
 });
 
 /** Where a format's exponent (E+ or E-) starts, outside quoted text; -1 when it has none. */
@@ -566,18 +573,18 @@ export function formatNumber(value: number, rawCode: string | undefined, date190
   if (!rawCode || rawCode === "General" || rawCode === "@") return generalText(value);
   const sections = splitSections(rawCode);
   const { index, sign } = pickSection(value, sections);
-  const { tagged, code, kind, percent, scale } = readSection(sections[index] ?? rawCode);
+  const { tagged, code, kind, percents, scale } = readSection(sections[index] ?? rawCode);
   if (kind === "elapsed") return `${sign}${formatElapsed(Math.abs(value), tagged)}`;
   if (kind === "date") return formatDate(date1904 ? value + 1462 : value, tagged);
   // No digit placeholders: literal text, with the value wherever "General" stands.
   if (kind === "literal") return `${sign}${code.replace(/general/i, generalText(Math.abs(value)))}`.trim();
   // The magnitude, percent and thousands scaling applied whatever its shape; the section writes its
   // own sign, as in the other branches. (# ?/?;(# ?/?) shows (1 1/2), # ?/?, shows thousands.)
-  const number = Math.abs(percent ? value * 100 : value) / scale;
+  const number = (Math.abs(value) * 100 ** percents) / scale;
   // The scaling commas go, or the fraction and exponent would show them as text.
   const unscaled = (format: string) => (scale === 1 ? format : format.replace(SCALE_COMMAS, "$1"));
   if (kind === "scientific") return `${sign}${formatScientific(number, unscaled(tagged)).trim()}`;
-  const fraction = formatFraction(number, unscaled(code));
+  const fraction = formatFraction(number, unscaled(tagged));
   if (fraction !== null) return `${sign}${fraction}`;
   return `${sign}${placeDigits(number, tagged).trim()}`;
 }
@@ -626,6 +633,9 @@ function localeFormat(id: number): string | undefined {
   return (id >= 27 && id <= 36) || (id >= 50 && id <= 58) ? "m/d/yyyy" : undefined;
 }
 
+/** An OOXML on/off flag (<b/>, <b val="0"/>): on unless its val says otherwise. */
+const isOn = (flag: Element) => !["0", "false", "off"].includes(flag.getAttribute("val") ?? "");
+
 function readStyles(doc: Document | null): CellStyle[] {
   if (!doc) return [];
   const formats = new Map<number, string>();
@@ -635,8 +645,8 @@ function readStyles(doc: Document | null): CellStyle[] {
   const fontsNode = first(doc, "fonts");
   const fonts = fontsNode
     ? children(fontsNode, "font").map((font) => ({
-        bold: children(font, "b").some((b) => b.getAttribute("val") !== "0"),
-        italic: children(font, "i").some((i) => i.getAttribute("val") !== "0"),
+        bold: children(font, "b").some(isOn),
+        italic: children(font, "i").some(isOn),
       }))
     : [];
   const xfs = first(doc, "cellXfs");
@@ -725,7 +735,7 @@ const COL_CLOSE = closeTag("col");
 const VALUE = /<(?:[\w.-]+:)?v(?:\s[^>]*)?>([\s\S]*?)<\/(?:[\w.-]+:)?v\s*>/;
 const FORMULA = /<(?:[\w.-]+:)?f(?=[\s/>])([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:[\w.-]+:)?f\s*>)/;
 const PHONETIC = /<(?:[\w.-]+:)?rPh(?=[\s/>])[^>]*?(?:\/>|>[\s\S]*?<\/(?:[\w.-]+:)?rPh\s*>)/g;
-const TEXT_RUN = /<(?:[\w.-]+:)?t(?:\s[^>]*)?>([\s\S]*?)<\/(?:[\w.-]+:)?t\s*>/g;
+const TEXT_RUN = /<(?:[\w.-]+:)?t(?:\s[^>]*)?>([\s\S]*?)(?:<\/(?:[\w.-]+:)?t\s*>|$)/g;
 const SHEET_DATA = /<(?:[\w.-]+:)?sheetData[\s/>]/;
 
 const MARKUP = /<!\[CDATA\[([\s\S]*?)\]\]>|<!--[\s\S]*?-->/g;
@@ -742,11 +752,19 @@ function flattenMarkup(text: string): string {
 /** A string's text (<si>, <is>), runs joined, phonetic runs (<rPh>) dropped. */
 function stringText(xmlText: string): string {
   let out = "";
-  for (const match of flattenMarkup(xmlText).replace(PHONETIC, "").matchAll(TEXT_RUN)) out += decodeXml(match[1]!);
+  for (const match of flattenMarkup(xmlText).replace(PHONETIC, "").matchAll(TEXT_RUN)) {
+    // Past a cell's worth, the rest is never decoded.
+    out += decodeXml(match[1]!.slice(0, MAX_CELL_BYTES));
+    if (out.length >= MAX_CELL_TEXT) return out.slice(0, MAX_CELL_TEXT);
+  }
   return out;
 }
 
 const isTrue = (value: string | null) => value === "1" || value === "true";
+
+// Excel's own limit on a cell's text; MAX_CELL_BYTES of XML covers it, entities and all.
+const MAX_CELL_TEXT = 32_767;
+const MAX_CELL_BYTES = MAX_CELL_TEXT * 10;
 
 function readSheet(
   text: string,
@@ -786,11 +804,11 @@ function readSheet(
       break;
     }
     budget.cells--;
-    // Hidden, as Excel shows it: neither in the grid nor in the text sent to the model.
-    if (isTrue(attribute(rowAttrs, "hidden"))) {
-      hidden.rows.add(r);
-      continue;
-    }
+    // Hidden, as Excel shows it: neither in the grid nor in the text sent to the model. Still read
+    // for a shared formula's master, which a shown cell below may follow.
+    const rowHidden = isTrue(attribute(rowAttrs, "hidden"));
+    if (rowHidden) hidden.rows.add(r);
+    if (rowHidden && !rowBody.includes("shared")) continue;
     const cells: (SheetCell | undefined)[] = [];
     let nextColumn = 0;
     for (const [attrs, body] of elements(rowBody, CELL_OPEN, CELL_CLOSE)) {
@@ -798,20 +816,20 @@ function readSheet(
       const col = ref ? columnIndex(ref) : nextColumn;
       nextColumn = col + 1;
       if (col >= MAX_SHEET_COLUMNS) {
-        truncated = true;
+        truncated ||= !rowHidden;
         continue;
       }
-      if (hidden.columns.has(col)) continue;
-      const type = attribute(attrs, "t");
-      const raw = decodeXml(VALUE.exec(body)?.[1] ?? "");
       // Cheap check first: most cells have no formula.
       const f = body.includes("f") ? FORMULA.exec(body) : null;
       const fAttrs = f?.[1] ?? "";
-      const fText = decodeXml(f?.[2] ?? "");
+      const fText = decodeXml((f?.[2] ?? "").slice(0, MAX_CELL_BYTES));
       const sharedId = f && attribute(fAttrs, "t") === "shared" ? (attribute(fAttrs, "si") ?? "") : null;
       if (sharedId !== null && fText && ref) {
         shared.set(sharedId, { formula: fText, row: r, col });
       }
+      if (rowHidden || hidden.columns.has(col)) continue;
+      const type = attribute(attrs, "t");
+      const raw = decodeXml((VALUE.exec(body)?.[1] ?? "").slice(0, MAX_CELL_BYTES));
       const master = sharedId !== null ? shared.get(sharedId) : undefined;
       const formula = fText || (master ? shiftFormula(master.formula, r - master.row, col - master.col) : "");
       const style = styles[Number(attribute(attrs, "s") ?? 0)] ?? {};
@@ -827,10 +845,10 @@ function readSheet(
         numeric = true;
       }
       if (value === "" && !style.bold) continue;
-      cells[col] = { text: value, numeric, bold: style.bold, italic: style.italic };
+      cells[col] = { text: value.slice(0, MAX_CELL_TEXT), numeric, bold: style.bold, italic: style.italic };
       budget.cells--;
     }
-    rows[r] = cells;
+    if (!rowHidden) rows[r] = cells;
   }
   return { name, rows, widths, truncated, hidden };
 }
@@ -952,7 +970,8 @@ function sharedStrings(bytes: Uint8Array | undefined): (index: number) => string
     }
     const range = ranges[index];
     if (!bytes || !range) return "";
-    return (texts[index] ??= stringText(strFromU8(bytes.subarray(range[0], range[1]))));
+    // A cell's worth of XML at most: a string cut there ends in an open run, which still reads.
+    return (texts[index] ??= stringText(strFromU8(bytes.subarray(range[0], Math.min(range[1], range[0] + MAX_CELL_BYTES)))));
   };
 }
 
@@ -1279,28 +1298,34 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
         cut = true;
         break;
       }
-      const paragraphs = all(body, "p")
-        .map((p) => {
-          const runs = all(p, "r");
-          const rPr = runs[0] && first(runs[0], "rPr");
-          const pPr = first(p, "pPr");
-          const sz = Number(rPr?.getAttribute("sz"));
-          return {
-            text: paragraphText(p),
-            size: sz ? sz / 100 : undefined,
-            bold: rPr?.getAttribute("b") === "1",
-            align: pPr?.getAttribute("algn") ?? undefined,
-            bullet: Boolean(pPr && (first(pPr, "buChar") || first(pPr, "buAutoNum"))),
-          };
-        })
-        .filter((p) => p.text.trim());
+      const paragraphs: NonNullable<SlideBox["paragraphs"]> = [];
+      // Read only as far as the budget: a shape can hold far more paragraphs than are kept.
+      const list = body.getElementsByTagNameNS("*", "p");
+      for (let i = 0, p = list.item(0); p; p = list.item(++i)) {
+        const text = paragraphText(p);
+        if (!text.trim()) continue;
+        if (paragraphs.length === left) {
+          cut = true;
+          break;
+        }
+        const runs = all(p, "r");
+        const rPr = runs[0] && first(runs[0], "rPr");
+        const pPr = first(p, "pPr");
+        const sz = Number(rPr?.getAttribute("sz"));
+        paragraphs.push({
+          text,
+          size: sz ? sz / 100 : undefined,
+          bold: rPr?.getAttribute("b") === "1",
+          align: pPr?.getAttribute("algn") ?? undefined,
+          bullet: Boolean(pPr && (first(pPr, "buChar") || first(pPr, "buAutoNum"))),
+        });
+      }
       if (!paragraphs.length) continue;
-      if (paragraphs.length > left) cut = true;
       left -= paragraphs.length;
       boxes.push({
         frame: readFrame(shape, cx, cy),
         placeholder: first(shape, "ph")?.getAttribute("type") ?? (first(shape, "ph") ? "body" : undefined),
-        paragraphs: paragraphs.slice(0, paragraphs.length + Math.min(0, left)),
+        paragraphs,
       });
     }
     // Tables, charts and SmartArt sit in a graphicFrame. A chart shows its cached data.

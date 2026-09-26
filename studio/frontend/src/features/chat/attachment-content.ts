@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type Unzipped, strFromU8, unzipSync, zipSync } from "fflate";
+import { type Unzipped, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import {
   MAX_TEXT_ATTACHMENT_BYTES,
   TEXT_ATTACHMENT_ACCEPT,
@@ -632,7 +632,7 @@ function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = fals
 /** Refuses the parts mammoth goes on to parse when they exceed the XML ceiling. mammoth takes
  *  no entry filter, so the set is resolved as findPartPaths resolves it, each falling back
  *  to a fixed name when no target resolves. Both sides read the same bytes. */
-function assertDocxPartSizes(filename: string, archive: DocxArchive): void {
+function assertDocxPartSizes(filename: string, archive: DocxArchive): string {
   const { entries, names, oversized } = archive;
   const bound = (path: string) => {
     if (oversized.has(path)) {
@@ -670,6 +670,7 @@ function assertDocxPartSizes(filename: string, archive: DocxArchive): void {
       bound(docxRelationshipsPath(path));
     }
   }
+  return mainDocument;
 }
 
 /** The archive mammoth is given: fflate's own output, so a part that lies about its size
@@ -677,11 +678,53 @@ function assertDocxPartSizes(filename: string, archive: DocxArchive): void {
 export function repackDocxAttachmentArchive(
   filename: string,
   bytes: Uint8Array,
-  { keepLarge = false } = {},
 ): Uint8Array {
-  const archive = unpackDocxEntries(filename, bytes, keepLarge);
+  const archive = unpackDocxEntries(filename, bytes);
   assertDocxPartSizes(filename, archive);
   return zipSync(archive.entries, { level: 0 });
+}
+
+// A tag, or markup whose text may look like one.
+const XML_TOKEN_RE =
+  /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<[?!][\s\S]*?>|<(\/?)([^\s/>]+)(?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*\s*(\/?)>/g;
+const PARAGRAPH_RE = /<(?:[\w.-]+:)?p[\s/>]/;
+
+/** The document cut after its `max`th paragraph (<w:p>, at any depth), each element still open
+ *  closed after it; null when it has no more. */
+function cutDocxParagraphs(xml: string, max: number): string | null {
+  const open: string[] = [];
+  let count = 0;
+  XML_TOKEN_RE.lastIndex = 0;
+  for (let match = XML_TOKEN_RE.exec(xml); match; match = XML_TOKEN_RE.exec(xml)) {
+    const [, closing, name, empty] = match;
+    if (!name) continue;
+    if (!closing && !empty) {
+      open.push(name);
+      continue;
+    }
+    if (closing) open.pop();
+    if (/(?:^|:)p$/.test(name) && ++count === max) {
+      const end = XML_TOKEN_RE.lastIndex;
+      if (!PARAGRAPH_RE.test(xml.slice(end))) return null;
+      return `${xml.slice(0, end)}${open.reverse().map((tag) => `</${tag}>`).join("")}`;
+    }
+  }
+  return null;
+}
+
+/** repackDocxAttachmentArchive for the viewer: large images kept, and the body cut after
+ *  `maxParagraphs`, so mammoth never converts more than is shown. */
+export function repackDocxPreviewArchive(
+  filename: string,
+  bytes: Uint8Array,
+  maxParagraphs: number,
+): { archive: Uint8Array; truncated: boolean } {
+  const archive = unpackDocxEntries(filename, bytes, true);
+  const mainDocument = assertDocxPartSizes(filename, archive);
+  const main = archive.entries[mainDocument];
+  const cut = main ? cutDocxParagraphs(strFromU8(main), maxParagraphs) : null;
+  if (cut !== null) archive.entries[mainDocument] = strToU8(cut);
+  return { archive: zipSync(archive.entries, { level: 0 }), truncated: cut !== null };
 }
 
 /** The bytes of a view, as an ArrayBuffer, without copying when it owns one. jszip reads the

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Spinner } from "@/components/ui/spinner";
-import { repackDocxAttachmentArchive } from "@/features/chat";
+import { repackDocxPreviewArchive } from "@/features/chat";
 import { useT } from "@/i18n";
 import { openLink } from "@/lib/open-link";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
@@ -32,10 +32,10 @@ async function parse(file: Blob, kind: DocumentKind, name: string, contentType: 
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (kind === "docx") {
     const { default: mammoth } = await import("mammoth");
-    // Large parts kept: an image past the XML ceiling still shows.
-    const repacked = repackDocxAttachmentArchive(name, bytes, { keepLarge: true });
-    const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.buffer as ArrayBuffer });
-    return { kind, ...sanitizeDocxHtml(value) };
+    const repacked = repackDocxPreviewArchive(name, bytes, MAX_DOCX_PARAGRAPHS);
+    const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.archive.buffer as ArrayBuffer });
+    const { html, truncated } = sanitizeDocxHtml(value);
+    return { kind, html, truncated: truncated || repacked.truncated };
   }
   if (kind === "slides") return { kind, deck: readPptx(bytes) };
   const delimiter = sheetDelimiter(name, contentType);
@@ -58,7 +58,9 @@ const DOCX_TAGS = new Set(
 );
 const DOCX_ATTRIBUTES = new Set(["href", "src", "alt", "id", "colspan", "rowspan"]);
 
-// Elements past this are dropped: a small file can convert to far too many to mount.
+// Paragraphs past this are cut before conversion, so mammoth and the DOM never see them.
+const MAX_DOCX_PARAGRAPHS = 20_000;
+// Elements past this are dropped: a paragraph can still convert to many.
 const MAX_DOCX_ELEMENTS = 50_000;
 
 /** mammoth writes a small vocabulary; anything else, and any link that is not a web, mail or
