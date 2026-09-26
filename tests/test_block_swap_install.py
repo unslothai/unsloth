@@ -135,7 +135,11 @@ def test_swapper_from_load_is_reused():
 
 
 class _Config:
-    def __init__(self, n = 8, **extra):
+    def __init__(
+        self,
+        n = 8,
+        **extra,
+    ):
         self.num_hidden_layers = n
         self.layer_types = ["full_attention"] * n
         self.other_list = [1, 2, 3]
@@ -172,3 +176,34 @@ def test_trim_refuses_what_install_refuses():
     ns, _ = _load(zoo = False)
     with pytest.raises(ImportError, match = "unsloth_zoo"):
         ns["trim_config_for_block_swap"](_Config(), 4)
+
+
+def _peft_signature_and_calls(path):
+    mod = ast.parse(open(os.path.join(HERE, "unsloth", "models", path), encoding = "utf-8").read())
+    for cls in (n for n in mod.body if isinstance(n, ast.ClassDef)):
+        for fn in cls.body:
+            if isinstance(fn, ast.FunctionDef) and fn.name == "get_peft_model":
+                return fn
+    raise AssertionError(f"get_peft_model not found in {path}")
+
+
+@pytest.mark.parametrize("path", ["llama.py", "vision.py"])
+def test_block_swap_layers_is_last_so_positional_callers_keep_their_slots(path):
+    fn = _peft_signature_and_calls(path)
+    assert fn.args.args[-1].arg == "block_swap_layers"
+    assert fn.args.kwarg is not None
+
+
+def test_new_model_route_forwards_block_swap_layers():
+    fn = _peft_signature_and_calls("llama.py")
+    forwarded = [
+        call
+        for call in ast.walk(fn)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "get_peft_model"
+        and getattr(call.func.value, "id", None) == "FastBaseModel"
+    ]
+    assert forwarded, "llama get_peft_model no longer delegates to FastBaseModel"
+    for call in forwarded:
+        assert "block_swap_layers" in {k.arg for k in call.keywords}
