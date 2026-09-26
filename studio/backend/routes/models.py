@@ -2882,6 +2882,26 @@ async def scan_loras(
         )
 
 
+def _disk_bytes(model_path: str, export_type: Optional[str]) -> Optional[int]:
+    """Bytes a fine-tune takes on disk. A GGUF export counts its whole folder."""
+    path = Path(model_path)
+    if export_type == "gguf" and path.is_file():
+        path = path.parent
+    try:
+        if path.is_file():
+            return path.stat().st_size
+        total = 0
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                try:
+                    total += os.lstat(os.path.join(root, name)).st_size
+                except OSError:
+                    continue
+        return total
+    except OSError:
+        return None
+
+
 def _scan_loras_sync(
     resolved_outputs_dir: str, resolved_exports_dir: str, hf_token: Optional[str]
 ) -> List[LoRAInfo]:
@@ -2897,6 +2917,7 @@ def _scan_loras_sync(
                 base_model = base_model,
                 source = "training",
                 export_type = model_type,
+                size_bytes = _disk_bytes(model_path, model_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
             )
         )
@@ -2910,6 +2931,7 @@ def _scan_loras_sync(
                 base_model = base_model,
                 source = "exported",
                 export_type = export_type,
+                size_bytes = _disk_bytes(model_path, export_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
             )
         )
@@ -3047,6 +3069,22 @@ def _active_video_backend():
     except Exception as e:
         logger.debug(f"Video backend unavailable during delete guard: {e}")
         return None
+
+
+def _forget_gone_library_entries(source: str, folder: Path) -> None:
+    """Drop the Library's name, folder and star for models that were in `folder` and are gone now,
+    so they never land on a new model saved to the same path. A GGUF export is listed by one of
+    its files, so deleting that variant ends its entry. The files are gone already, so a failure
+    here only logs."""
+    try:
+        from storage import library_db
+        prefix = f"model:{source}:"
+        for item_id in library_db.list_entries():
+            path = item_id[len(prefix) :] if item_id.startswith(prefix) else ""
+            if path and not os.path.lexists(path) and _is_path_under(Path(path), folder):
+                library_db.delete_entry(item_id)
+    except Exception as e:
+        logger.warning("Could not clear the Library entries under %s: %s", folder, e)
 
 
 def _prune_empty_parents(start: Path, stop_at: Path) -> None:
@@ -3383,6 +3421,7 @@ async def delete_finetuned_model(
                     _prune_empty_parents(target_path, allowed_root)
             except OSError:
                 pass
+            _forget_gone_library_entries(source, target_path)
             await _invalidate_local_scans()
             logger.info(
                 "Deleted %s GGUF file(s) for exported model at %s variant %s (%0.1f MB freed)",
@@ -3409,6 +3448,7 @@ async def delete_finetuned_model(
             )
 
         _prune_empty_parents(target_path, allowed_root)
+        _forget_gone_library_entries(source, target_path)
 
         await _invalidate_local_scans()
         logger.info("Deleted fine-tuned model at %s", target_path)
@@ -3629,11 +3669,16 @@ async def _read_native_context_length_bounded(model: str, is_local: bool) -> Opt
 
 
 def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
-    """Native max context from a downloaded GGUF for this repo, or None. The value is identical across
-    quants, so one non-mmproj shard's header is enough. Never raises. Bounded by
-    ``_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS``: this only pre-fills a context field on an already
-    selectable row, so a dragging walk reports None rather than holding the variant listing open.
-    Checked between files, and files already read stay cached, so a later request resumes."""
+    """Native max context from a downloaded GGUF for this repo, or None.
+
+    A file path reads that exact quant; a directory reads one non-mmproj shard.
+    Only resolves once a file is on disk. Never raises.
+
+    Bounded by ``_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS``: this only pre-fills a
+    context field on an already selectable row, so a dragging walk reports None
+    rather than holding the variant listing open. Checked between files, and
+    files already read stay cached, so a later request resumes.
+    """
     try:
         from utils.models.gguf_metadata import read_gguf_context_length
         from utils.paths.path_utils import file_contents_available_locally
@@ -3652,7 +3697,8 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
             if time.monotonic() >= deadline:
                 logger.debug("native context read for '%s' out of budget", repo_id)
                 return None
-            for f in _iter_gguf_paths(root, deadline):
+            paths = [root] if is_local and root.is_file() else _iter_gguf_paths(root, deadline)
+            for f in paths:
                 if time.monotonic() >= deadline:
                     logger.debug("native context read for '%s' out of budget", repo_id)
                     return None
@@ -3689,6 +3735,11 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
 
             if not _is_valid_repo_id(repo_id):
                 return None, 0
+            from hub.utils.gguf_sources import cached_gguf_sources
+
+            source = cached_gguf_sources(repo_id).get((quant or "").strip().lower())
+            if source is not None:
+                return _resolve_quant_gguf(str(source.snapshot), quant, True)
             roots = []
             for entry in iter_repo_cache_dirs("model", repo_id):
                 snaps = entry / "snapshots"
@@ -4086,7 +4137,11 @@ async def get_kv_cache_estimate(
                 _cc_caps,
                 None,
                 ctx_checkpoints,
-                per_checkpoint_bytes = getattr(be, "_rollback_state_bytes", lambda _n: 0)(1),
+                per_checkpoint_bytes = getattr(be, "_ctx_checkpoint_bytes", lambda *_a, **_k: 0)(
+                    _effective_cache_type,
+                    swa_full = _plan_kwargs.get("swa_full", False),
+                    flash_attn = _plan_kwargs.get("flash_attn", True),
+                ),
                 n_parallel = n_parallel,
                 total_host_bytes = (_total_ram_mib * 1024 * 1024) if _total_ram_mib else None,
             )
@@ -4471,6 +4526,7 @@ async def get_gguf_variants(
     offline: bool = False,
     local_path: Optional[str] = None,
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
+    include_cache_locations: bool = False,
     hf_token_header: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
@@ -4491,6 +4547,7 @@ async def get_gguf_variants(
             prefer_local_cache = prefer_local_cache,
             offline = offline,
             local_path = local_path,
+            include_cache_locations = include_cache_locations,
             hf_token = hf_token,
         )
         response = answer.response
@@ -4505,7 +4562,21 @@ async def get_gguf_variants(
         # not suppress from inside.
         if not answer.cache_authorized and not is_local_path(context_model):
             context_model = None
-        local = context_model is not None and is_local_path(context_model)
+        variant_sources = getattr(answer, "variant_context_sources", None) or {}
+
+        # One read per copy the listing answered from, so each quant is priced off its own
+        # source. A None context_model (unauthorized caller) contributes no read at all.
+        read_models = [
+            model for model in dict.fromkeys([context_model, *variant_sources.values()]) if model
+        ]
+        # Share the existing hard deadline and concurrency guard across all source reads.
+        context_values = await asyncio.gather(
+            *(
+                _read_native_context_length_bounded(model, is_local_path(model))
+                for model in read_models
+            )
+        )
+        context_lengths = dict(zip(read_models, context_values))
 
         # See the /hub twin: the identifier is resolved on the way in, so it has to be
         # referenced again on the way out.
@@ -4516,6 +4587,10 @@ async def get_gguf_variants(
                     GgufVariantDetail(
                         filename = v.filename,
                         quant = v.quant,
+                        cache_path = getattr(v, "cache_path", None),
+                        context_length = context_lengths.get(
+                            variant_sources.get(v.quant.lower(), context_model)
+                        ),
                         # A path-qualified key is not a label a picker can show; without this
                         # the row reads as its whole relative path.
                         display_label = getattr(v, "display_label", None),
@@ -4536,11 +4611,7 @@ async def get_gguf_variants(
                 ],
                 has_vision = response.has_vision,
                 default_variant = response.default_variant,
-                context_length = (
-                    await _read_native_context_length_bounded(context_model, local)
-                    if context_model is not None
-                    else None
-                ),
+                context_length = context_lengths.get(context_model),
                 resolved_locally = bool(getattr(response, "resolved_locally", False)),
                 dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
                 loadable_variants = getattr(response, "loadable_variants", None),
@@ -5360,6 +5431,13 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
         raise HTTPException(status_code = 404, detail = "Model not found in cache")
 
     if variant:
+        from hub.utils.gguf_sources import cached_gguf_sources
+
+        source = cached_gguf_sources(repo_id).get(variant.strip().lower())
+        if source is not None:
+            path = source.snapshot / source.variant.filename
+            if path.is_file():
+                return path
         want = (variant or "").strip()
         candidate_revisions = sorted(
             (rev for repo_info in matching_repos for rev in repo_info.revisions),

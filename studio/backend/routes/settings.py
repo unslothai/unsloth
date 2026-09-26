@@ -80,6 +80,13 @@ from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
 )
+from utils.hub_settings import (
+    HubSettings,
+    active_source,
+    get_hub_settings,
+    set_hub_settings,
+    set_hub_source,
+)
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
@@ -673,6 +680,22 @@ class DownloadTransportResponse(BaseModel):
     xet_unavailable_reason: Optional[str] = None
     auto_resolves_to: str
     auto_reason: Optional[str] = None
+
+
+class HubSettingsPayload(BaseModel):
+    hf_endpoint: str = Field(max_length = 2048)
+    datasets_server_follows_endpoint: StrictBool
+
+
+class HubSourcePayload(BaseModel):
+    source: Literal["huggingface", "modelscope"]
+
+
+class HubSettingsResponse(BaseModel):
+    hf_endpoint: str
+    datasets_server_follows_endpoint: bool
+    source: Literal["huggingface", "modelscope"]
+    active_source: Literal["huggingface", "modelscope"]
 
 
 class XetNoticeReservePayload(BaseModel):
@@ -1439,6 +1462,52 @@ def update_download_transport(
             log = logger,
         ) from exc
     return _download_transport_response(mode)
+
+
+def _hub_settings_response(settings: HubSettings) -> HubSettingsResponse:
+    return HubSettingsResponse(
+        hf_endpoint = settings.hf_endpoint,
+        datasets_server_follows_endpoint = settings.datasets_server_follows_endpoint,
+        source = settings.source,
+        active_source = active_source(),
+    )
+
+
+# Owner only: the endpoint can name a private address that other accounts' clients must not learn.
+@_owner_settings_router.get("/hub", response_model = HubSettingsResponse)
+def get_hub(current_subject: str = Depends(get_current_subject)) -> HubSettingsResponse:
+    return _hub_settings_response(get_hub_settings())
+
+
+@_owner_settings_router.put("/hub", response_model = HubSettingsResponse)
+def update_hub(
+    payload: HubSettingsPayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HubSettingsResponse:
+    # The endpoint receives the installation's Hugging Face token, like the token routes above.
+    require_ui_session(via_api_key)
+    try:
+        settings = set_hub_settings(payload.hf_endpoint, payload.datasets_server_follows_endpoint)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid Hugging Face endpoint."),
+            event = "settings.update_hub_failed",
+            log = logger,
+        ) from exc
+    return _hub_settings_response(settings)
+
+
+@_owner_settings_router.put("/hub/source", response_model = HubSettingsResponse)
+def update_hub_source(
+    payload: HubSourcePayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HubSettingsResponse:
+    require_ui_session(via_api_key)
+    return _hub_settings_response(set_hub_source(payload.source))
 
 
 @_owner_settings_router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
@@ -3756,8 +3825,9 @@ SIDEBAR_MENU_ITEM_DEFAULTS = {
 SIDEBAR_NAV_ITEM_DEFAULTS = {
     "hub": True,
     "projects": True,
+    "library": True,
     "images": True,
-    "video": True,
+    "video": False,
     "audio": False,
     "train": True,
     "recipes": False,
@@ -3797,6 +3867,7 @@ def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
 SidebarNavItemId = Literal[
     "hub",
     "projects",
+    "library",
     "images",
     "video",
     "audio",

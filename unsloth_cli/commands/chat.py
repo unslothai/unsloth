@@ -504,7 +504,10 @@ def chat(
                 )
 
             messages.append(
-                {"role": "assistant", "content": visible_text(answer, show_thinking = False)}
+                {
+                    "role": "assistant",
+                    "content": visible_text(answer, show_thinking = False, final = True),
+                }
             )
     finally:
         chat_backend.close()

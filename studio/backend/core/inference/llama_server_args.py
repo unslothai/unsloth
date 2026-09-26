@@ -39,7 +39,7 @@ CACHE_RAM_MAX_MIB = 1024 * 1024
 # llama.cpp allocates this default even when Studio emits no flag.
 LLAMA_CTX_CHECKPOINTS_DEFAULT = 32
 
-# Recurrent checkpoints live in host RAM and can be much larger than SWA snapshots.
+# Checkpoints live in host RAM: a hybrid's whole recurrent state, or an SWA model's window.
 CTX_CHECKPOINT_HOST_BUDGET_FRACTION = 0.05
 CTX_CHECKPOINT_HOST_BUDGET_FLOOR_BYTES = 1024**3
 # Keep rollback available; zero forces a full prompt re-ingest after divergence.
