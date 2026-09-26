@@ -27,6 +27,7 @@ export {
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
+  revealFineTunedModel,
   validateModel,
   type BrowseFoldersResponse,
   type CachedGgufRepo,
@@ -162,6 +163,7 @@ export {
 } from "./stores/sidebar-organization-store";
 export type {
   SidebarChatSort,
+  SidebarProjectSort,
   SidebarOrganizeBy,
 } from "./stores/sidebar-organization-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
