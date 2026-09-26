@@ -455,8 +455,7 @@ def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
 
 
 def _pci_function_is_behind_a_port(device_dir: str) -> Optional[bool]:
-    """True on a nonzero PCI bus (discrete Arc), False on bus 0 (iGPU at 00:02.0), None if unreadable.
-    A VM passthrough card on bus 0 reads as integrated, erring toward not flagging it."""
+    """True on a nonzero PCI bus (discrete Arc), False on bus 0 (iGPU; also VM passthrough, erring to not flag), None if unreadable."""
     try:
         address = os.path.basename(os.path.realpath(device_dir))
     except OSError:

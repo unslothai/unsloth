@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A working GPU must not be lost to a failing probe or a name the kernel omits (XPU, Linux Arc,
-WSL nvidia-smi). No such hardware here: torch, sysfs and the filesystem are faked."""
+"""A working GPU survives a failing probe or a missing name (XPU, Linux Arc, WSL nvidia-smi); all faked."""
 
 from __future__ import annotations
 
@@ -69,8 +68,6 @@ def _detect(
         return hw._detect_hardware_locked()
 
 
-# -- one probe failing must not take a working device with it ----------------------------
-
 
 def test_a_raising_cuda_probe_falls_through_to_a_working_xpu(monkeypatch):
     assert _detect(monkeypatch, _fake_torch(cuda_raises = True, xpu = True)) == hw.DeviceType.XPU
@@ -96,8 +93,6 @@ def test_the_winner_is_unchanged_when_every_probe_succeeds(monkeypatch):
     assert _detect(monkeypatch, _fake_torch(cuda = True, xpu = True)) == hw.DeviceType.CUDA
     assert _detect(monkeypatch, _fake_torch(xpu = True)) == hw.DeviceType.XPU
 
-
-# -- a nameless Linux Intel record: discrete by PCI address, not by name -----------------
 
 
 @pytest.mark.parametrize(
@@ -145,8 +140,6 @@ def test_a_linux_intel_host_is_told_the_pin_instead_of_a_repair_that_reinstalls_
     assert ("UNSLOTH_TORCH_INDEX_FAMILY=xpu" in message) is pinned
     assert ("Repair installation" in message) is not pinned
 
-
-# -- WSL keeps nvidia-smi off PATH -------------------------------------------------------
 
 
 @pytest.mark.parametrize("present", [True, False])
