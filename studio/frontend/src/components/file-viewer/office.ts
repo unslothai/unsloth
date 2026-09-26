@@ -696,13 +696,14 @@ const REFERENCE =
   /(^|[^A-Za-z0-9_.$])(?:(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![\d(A-Za-z_!])|(\$?)([A-Za-z]{1,3}):(\$?)([A-Za-z]{1,3})(?![\w(!.])|(\$?)(\d+):(\$?)(\d+)(?![\d.]))/g;
 
 /** A shared formula moved from its master cell to one `rows` and `columns` away: relative
- *  references shift, $-anchored parts and quoted text stay. */
+ *  references shift, $-anchored parts, quoted text and quoted sheet names stay. */
 function shiftFormula(formula: string, rows: number, columns: number): string {
   const column = (abs: string, name: string) =>
     abs + (abs ? name.toUpperCase() : columnName(columnIndex(name.toUpperCase()) + columns));
   const row = (abs: string, n: string) => abs + (abs ? n : String(Number(n) + rows));
+  // Quoted text and quoted sheet names ('A1'!B2) are left as they are.
   return formula
-    .split(/("[^"]*")/)
+    .split(/("(?:[^"]|"")*"|'(?:[^']|'')*')/)
     .map((part, index) =>
       index % 2
         ? part
@@ -812,7 +813,7 @@ function readSheet(
   text: string,
   name: string,
   string: (index: number) => string,
-  styles: CellStyle[],
+  style: (index: number) => CellStyle | undefined,
   date1904: boolean,
   budget: { cells: number },
 ): Sheet {
@@ -874,20 +875,20 @@ function readSheet(
       const raw = decodeXml((VALUE.exec(body)?.[1] ?? "").slice(0, MAX_CELL_BYTES));
       const master = sharedId !== null ? shared.get(sharedId) : undefined;
       const formula = fText || (master ? shiftFormula(master.formula, r - master.row, col - master.col) : "");
-      const style = styles[Number(attribute(attrs, "s") ?? 0)] ?? {};
+      const cellStyle = style(Number(attribute(attrs, "s") ?? 0)) ?? {};
       let value = raw;
       let numeric = false;
       // A formula with no cached result, as openpyxl and similar writers save them.
       if (raw === "" && formula) value = `=${formula}`;
       else if (type === "s" || type === "inlineStr" || type === "str") {
-        value = formatText(type === "s" ? string(Number(raw)) : type === "inlineStr" ? stringText(body) : raw, style.format);
+        value = formatText(type === "s" ? string(Number(raw)) : type === "inlineStr" ? stringText(body) : raw, cellStyle.format);
       } else if (type === "b") value = isTrue(raw) ? "TRUE" : "FALSE";
       else if (type !== "str" && type !== "e" && raw !== "" && Number.isFinite(Number(raw))) {
-        value = formatNumber(Number(raw), style.format, date1904);
+        value = formatNumber(Number(raw), cellStyle.format, date1904);
         numeric = true;
       }
-      if (value === "" && !style.bold) continue;
-      cells[col] = { text: value.slice(0, MAX_CELL_TEXT), numeric, bold: style.bold, italic: style.italic };
+      if (value === "" && !cellStyle.bold) continue;
+      cells[col] = { text: value.slice(0, MAX_CELL_TEXT), numeric, bold: cellStyle.bold, italic: cellStyle.italic };
       budget.cells--;
     }
     if (!rowHidden) rows[r] = cells;
@@ -1040,6 +1041,8 @@ function grow(array: Uint32Array): Uint32Array<ArrayBuffer> {
 
 // A style section past this is skipped: real ones are far smaller, even at Excel's 64,000 formats.
 const MAX_STYLE_SECTION_BYTES = 16 * 1024 * 1024;
+// A styles part past this is not read: its cells show unstyled.
+const MAX_STYLES_BYTES = 3 * MAX_STYLE_SECTION_BYTES;
 
 /** Only the style sections the reader uses (number formats, fonts, cell formats), each found by a
  *  byte scan and decoded alone, so a large styles part costs little. */
@@ -1070,9 +1073,12 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
   const partOf = (type: string, fallback: string) => rels.find((rel) => rel.type.endsWith(`/${type}`))?.path ?? fallback;
   const stringsPath = partOf("sharedStrings", "xl/sharedStrings.xml");
   const stylesPath = partOf("styles", "xl/styles.xml");
-  const support = read([stringsPath, stylesPath]);
-  const string = sharedStrings(support[stringsPath]);
-  const styles = readStyles(styleSections(support[stylesPath]));
+  // Each read when a kept cell first needs it: a workbook can carry a large table no cell uses.
+  let strings: ((index: number) => string) | undefined;
+  const string = (index: number) => (strings ??= sharedStrings(read([stringsPath])[stringsPath]))(index);
+  let styles: CellStyle[] | undefined;
+  const style = (index: number) =>
+    (styles ??= readStyles(styleSections(read([stylesPath], MAX_STYLES_BYTES)[stylesPath])))[index];
   const date1904 = ["1", "true"].includes(first(workbook, "workbookPr")?.getAttribute("date1904") ?? "");
   const paths = new Map(rels.map((rel) => [rel.id, rel.path]));
   const sheets: Sheet[] = [];
@@ -1089,7 +1095,7 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
     const part = path ? read([path])[path] : undefined;
     if (!part) continue;
     const { text, cut } = sheetText(part, Math.min(MAX_SHEET_ROWS, budget.cells));
-    const parsed = readSheet(text, sheet.getAttribute("name") ?? "Sheet", string, styles, date1904, budget);
+    const parsed = readSheet(text, sheet.getAttribute("name") ?? "Sheet", string, style, date1904, budget);
     if (cut) parsed.truncated = true;
     sheets.push(parsed);
   }
@@ -1148,7 +1154,16 @@ export function readDelimited(text: string, delimiter: string, name: string): Sh
 
 export interface SlideBox {
   /** Position and size as fractions of the slide, when the shape sets its own. */
-  frame?: { x: number; y: number; w: number; h: number; /** Clockwise, in degrees. */ rot?: number };
+  frame?: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    /** Clockwise, in degrees. */
+    rot?: number;
+    flipH?: boolean;
+    flipV?: boolean;
+  };
   placeholder?: string;
   paragraphs?: { text: string; size?: number; bold?: boolean; align?: string; bullet?: boolean }[];
   /** A picture's bytes. The viewer makes a URL only while its slide is mounted. */
@@ -1188,6 +1203,28 @@ const imageType = (path: string) => {
   return Object.hasOwn(IMAGE_TYPES, extension) ? IMAGE_TYPES[extension] : undefined;
 };
 
+/** Image types the package declares (a part's Override, else its extension's Default), for a
+ *  picture named without a known extension (image1.bin); only types a browser shows. */
+function packageImageTypes(read: Reader): (path: string) => string | undefined {
+  const name = "[Content_Types].xml";
+  const doc = xml(read([name], MAX_XML_PART_BYTES), name);
+  const declared = (tag: string, key: string, trim: RegExp) =>
+    new Map(
+      (doc ? all(doc, tag) : []).map((el) => [
+        (el.getAttribute(key) ?? "").replace(trim, "").toLowerCase(),
+        (el.getAttribute("ContentType") ?? "").toLowerCase(),
+      ]),
+    );
+  const defaults = declared("Default", "Extension", /^$/);
+  const overrides = declared("Override", "PartName", /^\//);
+  const shown = new Set(Object.values(IMAGE_TYPES));
+  return (path) => {
+    const dot = path.lastIndexOf(".");
+    const type = overrides.get(path.toLowerCase()) ?? (dot === -1 ? undefined : defaults.get(path.slice(dot + 1).toLowerCase()));
+    return type && shown.has(type) ? type : undefined;
+  };
+}
+
 // A chart shown as a table, capped so a chart of many long series stays a readable size.
 const MAX_CHART_SERIES = 100;
 const MAX_CHART_CELLS = 5000;
@@ -1196,6 +1233,8 @@ const MAX_CHART_CELLS = 5000;
 const MAX_SLIDES = 500;
 // Characters of text kept across a deck; the slides after are left out.
 const MAX_DECK_TEXT = 8 * 1024 * 1024;
+// Picture bytes kept across a deck; pictures past it are left out, their slides marked cut.
+const MAX_DECK_IMAGE_BYTES = 64 * 1024 * 1024;
 
 function boxText(box: SlideBox): number {
   let n = box.caption?.length ?? 0;
@@ -1222,7 +1261,7 @@ function readTable(tbl: Element, limit: number): string[][] {
       break;
     }
     cells += row.length;
-    table.push(row.map((tc) => all(tc, "p").map(paragraphText).join("\n")));
+    table.push(row.map((tc) => clip(all(tc, "p").map(paragraphText).join("\n"))));
   }
   if (cut) table.push(["…"]);
   return table;
@@ -1316,6 +1355,9 @@ function readFrame(shape: Element, cx: number, cy: number): SlideBox["frame"] {
   let [x, y] = off;
   let [w, h] = ext;
   let rot = degrees(xfrm);
+  // Its own flips, each group's flip turning them over again.
+  let flipH = isTrue(xfrm?.getAttribute("flipH") ?? null);
+  let flipV = isTrue(xfrm?.getAttribute("flipV") ?? null);
   // In a group, a frame is in the group's child space (chOff, chExt): map it out through each
   // group to the slide. A flip mirrors it within the group, turning it the other way; a rotation
   // turns it about the group's centre.
@@ -1335,10 +1377,12 @@ function readFrame(shape: Element, cx: number, cy: number): SlideBox["frame"] {
     if (isTrue(box?.getAttribute("flipH") ?? null)) {
       x = 2 * gx + gw - x - w;
       rot = -rot;
+      flipH = !flipH;
     }
     if (isTrue(box?.getAttribute("flipV") ?? null)) {
       y = 2 * gy + gh - y - h;
       rot = -rot;
+      flipV = !flipV;
     }
     const turn = degrees(box);
     if (turn) {
@@ -1351,7 +1395,15 @@ function readFrame(shape: Element, cx: number, cy: number): SlideBox["frame"] {
     }
   }
   rot %= 360;
-  return { x: x / cx, y: y / cy, w: w / cx, h: h / cy, ...(rot ? { rot } : {}) };
+  return {
+    x: x / cx,
+    y: y / cy,
+    w: w / cx,
+    h: h / cy,
+    ...(rot ? { rot } : {}),
+    ...(flipH ? { flipH } : {}),
+    ...(flipV ? { flipV } : {}),
+  };
 }
 
 /** An xfrm's clockwise rotation in degrees (rot is in 60,000ths). */
@@ -1376,6 +1428,10 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   const slides: Slide[] = [];
   // One Blob per picture, however many slides use it.
   const pictures = new Map<string, Blob>();
+  let pictureBytes = 0;
+  // By extension, else as [Content_Types].xml declares the part (read once, when first needed).
+  let declared: ((path: string) => string | undefined) | undefined;
+  const pictureType = (path: string) => imageType(path) ?? (declared ??= packageImageTypes(read))(path);
   let truncated = false;
   let textLeft = MAX_DECK_TEXT;
   for (const [index, path] of slidePaths.entries()) {
@@ -1416,13 +1472,11 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
     const boxes: SlideBox[] = [];
     let left = MAX_SLIDE_ITEMS;
     let cut = false;
-    for (const shape of all(doc, "sp")) {
+    // Each adder returns true once the budget is spent, which ends the slide.
+    const addShape = (shape: Element): boolean => {
       const body = first(shape, "txBody");
-      if (!body) continue;
-      if (left <= 0) {
-        cut = true;
-        break;
-      }
+      if (!body) return false;
+      if (left <= 0) return (cut = true);
       const paragraphs: NonNullable<SlideBox["paragraphs"]> = [];
       // Read only as far as the budget: a shape can hold far more paragraphs than are kept.
       const list = body.getElementsByTagNameNS("*", "p");
@@ -1445,20 +1499,18 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
           bullet: Boolean(pPr && (first(pPr, "buChar") || first(pPr, "buAutoNum"))),
         });
       }
-      if (!paragraphs.length) continue;
+      if (!paragraphs.length) return false;
       left -= paragraphs.length;
       boxes.push({
         frame: readFrame(shape, cx, cy),
         placeholder: first(shape, "ph")?.getAttribute("type") ?? (first(shape, "ph") ? "body" : undefined),
         paragraphs,
       });
-    }
+      return false;
+    };
     // Tables, charts and SmartArt sit in a graphicFrame. A chart shows its cached data.
-    for (const frame of all(doc, "graphicFrame")) {
-      if (left <= 0) {
-        cut = true;
-        break;
-      }
+    const addFrame = (frame: Element): boolean => {
+      if (left <= 0) return (cut = true);
       const place = () => readFrame(frame, cx, cy) ?? { x: 0.05, y: 0.25, w: 0.9, h: 0.65 };
       const chartRef = first(frame, "chart");
       const chartPath = chartRef && slideRels.get(relId(chartRef, "id") ?? "");
@@ -1477,31 +1529,60 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
         left -= diagram.length;
       }
       const tbl = first(frame, "tbl");
-      if (!tbl || left <= 0) continue;
+      if (!tbl || left <= 0) return false;
       const table = readTable(tbl, left);
-      if (!table.some((row) => row.some((cell) => cell.trim()))) continue;
+      if (!table.some((row) => row.some((cell) => cell.trim()))) return false;
       boxes.push({ frame: place(), table });
       left -= table.reduce((n, row) => n + row.length, 0);
-    }
-    for (const pic of images ? all(doc, "pic") : []) {
+      return false;
+    };
+    const addPicture = (pic: Element): boolean => {
       const blip = first(pic, "blip");
       const target = blip && slideRels.get(relId(blip, "embed") ?? "");
-      const type = target && imageType(target);
-      if (!target || !type) continue;
-      if (left <= 0) {
-        cut = true;
-        break;
-      }
+      const type = target && pictureType(target);
+      if (!target || !type) return false;
+      if (left <= 0) return (cut = true);
       let image = pictures.get(target);
       if (!image) {
+        // Pictures stay with the deck, so their bytes are bounded across it.
+        if (pictureBytes + (read.size(target) ?? 0) > MAX_DECK_IMAGE_BYTES) {
+          cut = true;
+          return false;
+        }
         const data = read([target])[target];
-        if (!data) continue;
+        if (!data) return false;
+        pictureBytes += data.length;
         image = new Blob([data as Uint8Array<ArrayBuffer>], { type });
         pictures.set(target, image);
       }
       left--;
-      boxes.unshift({ frame: readFrame(pic, cx, cy), image });
-    }
+      boxes.push({ frame: readFrame(pic, cx, cy), image });
+      return false;
+    };
+    // In document order, as PowerPoint stacks them: a later shape draws over an earlier one.
+    const walk = (parent: Element): boolean => {
+      for (let node = parent.firstElementChild; node; node = node.nextElementSibling) {
+        const name = node.localName;
+        const branch =
+          name === "AlternateContent" ? (children(node, "Fallback")[0] ?? children(node, "Choice")[0]) : undefined;
+        const stop =
+          name === "grpSp"
+            ? walk(node)
+            : branch
+              ? walk(branch)
+              : name === "sp"
+                ? addShape(node)
+                : name === "graphicFrame"
+                  ? addFrame(node)
+                  : name === "pic" && images
+                    ? addPicture(node)
+                    : false;
+        if (stop) return true;
+      }
+      return false;
+    };
+    const tree = first(doc, "spTree");
+    if (tree) walk(tree);
     // What was left out, marked as a table's cut is.
     if (cut) boxes.push({ paragraphs: [{ text: "…" }] });
     slides.push({ boxes });

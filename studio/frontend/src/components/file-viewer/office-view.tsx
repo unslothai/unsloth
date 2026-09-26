@@ -340,13 +340,17 @@ const CENTER_TITLE_FRAME = { x: 0.1, y: 0.26, w: 0.8, h: 0.24 };
 const SUBTITLE_FRAME = { x: 0.15, y: 0.53, w: 0.7, h: 0.2 };
 const TITLES = new Set(["title", "ctrTitle"]);
 
-function frameStyle(frame: NonNullable<SlideBox["frame"]>): CSSProperties {
+/** `mirror` for a picture, which a flip mirrors. Text is never mirrored: a vertical flip turns it
+ *  upside down, as PowerPoint draws it, and a horizontal one leaves it be. */
+function frameStyle(frame: NonNullable<SlideBox["frame"]>, mirror = false): CSSProperties {
+  const turn = (frame.rot ?? 0) + (!mirror && frame.flipV ? 180 : 0);
+  const flip = mirror && (frame.flipH || frame.flipV) ? `scale(${frame.flipH ? -1 : 1}, ${frame.flipV ? -1 : 1})` : "";
   return {
     left: `${frame.x * 100}%`,
     top: `${frame.y * 100}%`,
     width: `${frame.w * 100}%`,
     height: `${frame.h * 100}%`,
-    transform: frame.rot ? `rotate(${frame.rot}deg)` : undefined,
+    transform: [turn ? `rotate(${turn}deg)` : "", flip].filter(Boolean).join(" ") || undefined,
   };
 }
 
@@ -427,7 +431,7 @@ const SlideFace = memo(function SlideFace({ slide, index, deck }: { slide: Slide
       >
         {slide.boxes.map((box, boxIndex) =>
           box.frame ? (
-            <div key={boxIndex} className="absolute overflow-hidden" style={frameStyle(box.frame)}>
+            <div key={boxIndex} className="absolute overflow-hidden" style={frameStyle(box.frame, Boolean(box.image))}>
               {box.image ? (
                 <SlideImage image={box.image} />
               ) : box.table ? (
