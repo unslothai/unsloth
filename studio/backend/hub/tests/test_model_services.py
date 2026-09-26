@@ -3996,8 +3996,7 @@ def test_hf_cache_scan_fallback_row_uses_local_model_info_alias(monkeypatch, tmp
 def test_hf_cache_scan_flags_a_companion_only_pipeline(
     monkeypatch, tmp_path, with_denoiser, download_partial, expected
 ):
-    """The local listing must carry the same companion_prefetch flag as the cached one: the Hub merges
-    both, and a local row without it kept showing Partial and a Continue sized for the whole repo."""
+    """The local listing must carry companion_prefetch like the cached one: the Hub merges both."""
     cache_dir = tmp_path / "hub"
     repo_dir = cache_dir / "models--Org--Pipeline"
     snapshot = repo_dir / "snapshots" / _SNAPSHOT_SHA

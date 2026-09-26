@@ -276,7 +276,6 @@ export function useSelectedModelView({
         selectedLocalRow.source === "hf_cache" &&
         !!selectedLocalRow.partial &&
         !!selectedLocalRow.repoId;
-      // A GGUF's borrowed companions: not on device and not an unfinished download either.
       const isCompanionPrefetch = selectedLocalRow.companionPrefetch === true;
       const mergedTags = selectedHfResult?.tags ?? selectedLocalRow.tags;
       const mergedPipelineTag =

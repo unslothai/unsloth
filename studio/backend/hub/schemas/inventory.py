@@ -224,8 +224,7 @@ class LocalModelInfo(BaseModel):
         False,
         description = "Whether THIS partial can be continued byte for byte.",
     )
-    # Same flag as CachedModelRepo.companion_prefetch: the Hub merges both listings, so a row from
-    # either one must say it, or the other keeps offering "Continue".
+    # Mirrors CachedModelRepo.companion_prefetch: the Hub merges both listings.
     companion_prefetch: bool = Field(
         False,
         description = (
@@ -315,7 +314,6 @@ class CachedModelRepo(CachedRepoBase):
     # An sd.cpp companion mirror is never a pick on any page, but still gets a row, because these run to
     # tens of GB and the row is how they are seen and deleted.
     companion: bool = False
-    # Pipeline repo holding only what a GGUF load borrowed (VAE, text encoder): partial for loading, not an unfinished download.
     companion_prefetch: bool = False
     # An unrecognised pipeline carries no task and no root config for can_chat, so this flag is all
     # that keeps it out of a chat picker. Declared because response_model drops undeclared keys, which

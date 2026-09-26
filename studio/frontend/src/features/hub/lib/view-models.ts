@@ -190,8 +190,7 @@ export function toHfModelResult(raw: unknown): HfModelResult | null {
   };
 }
 
-// buildDiscoverRows reads each row's repo, format, partial, downloading and companion state; a change in any of
-// them has to change this key, or the memoised Discover grid keeps the stale state.
+// Must cover every row field buildDiscoverRows reads, or the memoised Discover grid goes stale.
 export function discoveryInventorySignature(
   cachedRows: readonly CachedInventoryRow[],
   localRows: readonly LocalInventoryRow[],
@@ -234,7 +233,6 @@ export function buildDiscoverRows(
       localRows,
       formatHint: result.isGguf ? "gguf" : "non-gguf",
     });
-    // Only what a GGUF load borrowed: neither on device as this model nor a download to continue.
     const companionPrefetch =
       (resource.cachedRow?.companionPrefetch ??
         resource.localRow?.companionPrefetch) === true;
