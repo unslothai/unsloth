@@ -1,0 +1,553 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""Load NVIDIA ModelOpt FP8 checkpoints through transformers' fp8 quantizer.
+
+ModelOpt per-tensor FP8 equals transformers' static fp8 format except for scale names
+(``weight_scale`` / ``input_scale`` vs ``weight_scale_inv`` / ``activation_scale``), so the
+config block is rewritten to ``quant_method: fp8`` and the scales renamed via ``key_mapping``.
+"""
+
+import fnmatch
+import functools
+import inspect
+import json
+import os
+import re
+import weakref
+from types import SimpleNamespace
+from typing import Optional
+
+__all__ = [
+    "modelopt_fp8_plan",
+    "arm_modelopt_fp8_loading",
+    "MODELOPT_FP8_KEY_MAPPING",
+    "UNSLOTH_MODELOPT_KEY_MAPPING_ATTR",
+    "pop_modelopt_key_mapping",
+    "modelopt_rewritten",
+    "keep_task_heads_unquantized",
+    "modelopt_planner_quantization_config",
+    "keep_fp8_scale_names_on_save",
+    "attach_hf_quant_config",
+    "move_config_overrides_onto_config",
+    "enable_modelopt_merged_save",
+]
+
+UNSLOTH_MODELOPT_KEY_MAPPING_ATTR = "_unsloth_modelopt_key_mapping"
+
+# Anchored at the end of the key, so `weight_scale_inv` or `weight_scale_2` never match.
+MODELOPT_FP8_KEY_MAPPING = {
+    r"\.weight_scale$": ".weight_scale_inv",
+    r"\.input_scale$": ".activation_scale",
+}
+
+_FP8_ALGOS = ("FP8", "FP8_PER_TENSOR")
+
+
+def _modelopt_pattern(name) -> str:
+    # ModelOpt ignore entries are fnmatch globs; as regexes `layers.16*` would also skip layers 1, 10-19.
+    name = str(name)
+    if any(ch in name for ch in "*?["):
+        return fnmatch.translate(name)
+    # transformers matches unanchored, so a bare `model.layers.1` would also skip layers 10-19.
+    return r"(?:.*\.)?" + re.escape(name) + r"(?:\.|$)"
+
+
+def _checkpoint_renames(config) -> list:
+    """Checkpoint renames (VLM `visual.*` -> `model.visual.*`); ignore lists use checkpoint names."""
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+    except Exception:
+        return []
+    keys = list(getattr(config, "architectures", None) or []) + [
+        getattr(config, "model_type", None)
+    ]
+    renames = []
+    for key in keys:
+        if not key:
+            continue
+        try:
+            conversions = get_checkpoint_conversion_mapping(key) or []
+        except Exception:
+            continue
+        for conversion in conversions:
+            if type(conversion).__name__ != "WeightRenaming":
+                continue
+            # 5.5 has no `_original_*` copies; later releases rewrite the live patterns in place.
+            src = (
+                getattr(conversion, "_original_source_patterns", None)
+                or getattr(conversion, "source_patterns", None)
+                or []
+            )
+            tgt = (
+                getattr(conversion, "_original_target_patterns", None)
+                or getattr(conversion, "target_patterns", None)
+                or []
+            )
+            if len(src) == 1 and len(tgt) == 1 and (src[0], tgt[0]) not in renames:
+                renames.append((src[0], tgt[0]))
+    return renames
+
+
+def _renamed(name: str, renames) -> str:
+    for src, tgt in renames:
+        try:
+            name = re.sub(src, tgt, name, count = 1)
+        except re.error:
+            pass
+    return name
+
+
+def _as_dict(quant) -> Optional[dict]:
+    if quant is None:
+        return None
+    if isinstance(quant, dict):
+        return quant
+    to_dict = getattr(quant, "to_dict", None)
+    if callable(to_dict):
+        try:
+            out = to_dict()
+        except Exception:
+            return None
+        return out if isinstance(out, dict) else None
+    return None
+
+
+def _group_is_fp8(group) -> bool:
+    if not isinstance(group, dict):
+        return False
+    weights = group.get("weights")
+    if not isinstance(weights, dict):
+        return False
+    if str(weights.get("type", "")).lower() != "float" or int(weights.get("num_bits", 0) or 0) != 8:
+        return False
+    if weights.get("strategy", "tensor") not in (None, "tensor"):
+        return False
+    if weights.get("dynamic", False):
+        return False
+    return True
+
+
+def _activations_map_onto_fp8(inputs) -> bool:
+    # transformers' dynamic fp8 is per token, so dynamic "token" maps; static must be per tensor.
+    if not isinstance(inputs, dict):
+        return False
+    if str(inputs.get("type", "")).lower() != "float" or int(inputs.get("num_bits", 0) or 0) != 8:
+        return False
+    strategy = inputs.get("strategy", "tensor")
+    if inputs.get("dynamic", False):
+        return strategy in (None, "tensor", "token")
+    return strategy in (None, "tensor")
+
+
+def _exclusion_patterns(ignore, renames) -> list:
+    patterns = []
+    for name in ignore:
+        variants = [str(name), _renamed(str(name), renames)]
+        # transformers also prefixes an unprefixed checkpoint with the base model (no 5.5 rename).
+        variants += ["model." + v for v in variants if not v.startswith(("*", "model."))]
+        for variant in variants:
+            pattern = _modelopt_pattern(variant)
+            if pattern not in patterns:
+                patterns.append(pattern)
+    return patterns
+
+
+def modelopt_fp8_plan(config) -> Optional[dict]:
+    quant = _as_dict(getattr(config, "quantization_config", None))
+    if quant is None:
+        return None
+    if str(quant.get("quant_method", "")).lower() != "modelopt":
+        return None
+    algo = quant.get("quant_algo")
+    if algo is None and isinstance(quant.get("quantization"), dict):
+        algo = quant["quantization"].get("quant_algo")
+    if str(algo).upper() not in _FP8_ALGOS:
+        return None
+    groups = quant.get("config_groups")
+    activation_scheme = "static"
+    if groups is not None:
+        if not isinstance(groups, dict) or len(groups) == 0:
+            return None
+        if not all(_group_is_fp8(group) for group in groups.values()):
+            return None
+        # fp8 converts every Linear not ignored; narrower targets would convert unscaled layers.
+        if not all(
+            list(group.get("targets") or ["Linear"]) == ["Linear"] for group in groups.values()
+        ):
+            return None
+        inputs = [group.get("input_activations") for group in groups.values()]
+        if all(x is None for x in inputs):
+            activation_scheme = None
+        elif any(x is None for x in inputs):
+            return None
+        elif not all(_activations_map_onto_fp8(x) for x in inputs):
+            return None
+        elif len({bool(x.get("dynamic", False)) for x in inputs}) > 1:
+            return None
+        elif inputs[0].get("dynamic", False):
+            activation_scheme = "dynamic"
+    ignore = quant.get("ignore")
+    if ignore is None:
+        ignore = quant.get("exclude_modules")
+    if ignore is None and isinstance(quant.get("quantization"), dict):
+        ignore = quant["quantization"].get("exclude_modules")
+    plan = {
+        "quant_method": "fp8",
+        "weight_block_size": None,
+        "modules_to_not_convert": _exclusion_patterns(ignore or [], _checkpoint_renames(config)),
+    }
+    if activation_scheme is not None:
+        plan["activation_scheme"] = activation_scheme
+    else:
+        plan["activation_scheme"] = "dynamic"
+    return plan
+
+
+def _hf_quant_config_path(
+    name,
+    revision = None,
+    token = None,
+    hub_kwargs = None,
+) -> Optional[str]:
+    if not name:
+        return None
+    hub = dict(hub_kwargs or {})
+    subfolder = hub.get("subfolder") or ""
+    filename = "hf_quant_config.json"
+    if os.path.isdir(name):
+        path = os.path.join(name, subfolder, filename)
+        return path if os.path.isfile(path) else None
+    try:
+        from huggingface_hub import hf_hub_download, try_to_load_from_cache
+
+        cached = try_to_load_from_cache(
+            name,
+            f"{subfolder}/{filename}" if subfolder else filename,
+            cache_dir = hub.get("cache_dir"),
+            revision = revision,
+        )
+        if isinstance(cached, str):
+            return cached
+        if cached is not None:
+            # Cached as absent for this revision.
+            return None
+        return hf_hub_download(
+            name,
+            filename,
+            subfolder = subfolder or None,
+            revision = revision,
+            token = token,
+            cache_dir = hub.get("cache_dir"),
+            local_files_only = bool(hub.get("local_files_only", False)),
+        )
+    except Exception:
+        return None
+
+
+def _modelopt_block_from_hf_quant_config(path) -> Optional[dict]:
+    try:
+        with open(path, "r", encoding = "utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    producer = data.get("producer")
+    if not (isinstance(producer, dict) and str(producer.get("name", "")).lower() == "modelopt"):
+        return None
+    return {"quant_method": "modelopt", **data}
+
+
+def attach_hf_quant_config(
+    config,
+    token = None,
+    model_name = None,
+    revision = None,
+    hub_kwargs = None,
+) -> bool:
+    """Older ModelOpt exports (nvidia/Llama-3.1-8B-Instruct-FP8) keep quantization only in hf_quant_config.json."""
+    if getattr(config, "quantization_config", None) is not None:
+        return False
+    name = model_name or getattr(config, "_name_or_path", None)
+    rev = revision if model_name else getattr(config, "_commit_hash", None)
+    path = _hf_quant_config_path(name, rev, token, hub_kwargs)
+    quant = _modelopt_block_from_hf_quant_config(path) if path else None
+    if quant is None:
+        return False
+    probe = SimpleNamespace(
+        quantization_config = quant,
+        model_type = getattr(config, "model_type", None),
+        architectures = getattr(config, "architectures", None),
+    )
+    if modelopt_fp8_plan(probe) is None:
+        return False
+    try:
+        config.quantization_config = quant
+    except Exception:
+        return False
+    return True
+
+
+def _transformers_accepts_fp8_plan(plan) -> bool:
+    # transformers 4.x only knows dynamic block fp8 and rejects a per-tensor plan.
+    try:
+        from transformers.utils.quantization_config import FineGrainedFP8Config
+        FineGrainedFP8Config(**{k: v for k, v in plan.items() if k != "quant_method"})
+    except Exception:
+        return False
+    return True
+
+
+# A retried / second load reuses the config (now native fp8, marker moved off): keep the renaming by id.
+_REWRITTEN_CONFIGS: dict = {}
+
+
+def _remember_rewrite(config, mapping) -> None:
+    key = id(config)
+    entry = _REWRITTEN_CONFIGS.get(key)
+    if entry is not None and entry[0]() is config:
+        return
+    try:
+        ref = weakref.ref(config)
+        weakref.finalize(config, _REWRITTEN_CONFIGS.pop, key, None)
+    except TypeError:
+        return
+    _REWRITTEN_CONFIGS[key] = (ref, dict(mapping))
+
+
+def _remembered_mapping(config) -> Optional[dict]:
+    entry = _REWRITTEN_CONFIGS.get(id(config))
+    if entry is None or entry[0]() is not config:
+        return None
+    return dict(entry[1])
+
+
+def modelopt_rewritten(config) -> bool:
+    return (
+        hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
+        or _remembered_mapping(config) is not None
+    )
+
+
+def arm_modelopt_fp8_loading(config, verbose: bool = True) -> Optional[dict]:
+    plan = modelopt_fp8_plan(config)
+    if plan is None or not _transformers_accepts_fp8_plan(plan):
+        return None
+    try:
+        config.quantization_config = dict(plan)
+        setattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR, dict(MODELOPT_FP8_KEY_MAPPING))
+    except Exception:
+        return None
+    _remember_rewrite(config, MODELOPT_FP8_KEY_MAPPING)
+    _dequantize_modelopt_on_merged_save()
+    if verbose:
+        print(
+            "Unsloth: NVIDIA ModelOpt FP8 checkpoint detected; loading it as a static per-tensor "
+            "fp8 checkpoint (weight_scale -> weight_scale_inv, input_scale -> activation_scale)."
+        )
+    return plan
+
+
+def enable_modelopt_merged_save(config) -> bool:
+    """Arm the merged-save dequantization, also when vLLM reads the weights and no rewrite runs."""
+    if modelopt_fp8_plan(config) is None:
+        return False
+    _dequantize_modelopt_on_merged_save()
+    return True
+
+
+def _dequantize_modelopt_on_merged_save() -> None:
+    """unsloth_zoo's merged_16bit save reads the on-disk config and only dequantizes methods it
+    knows as fp8; a ModelOpt block was skipped, writing raw fp8 bytes beside a config without
+    quantization_config. Its per-tensor dequant already handles ModelOpt scales."""
+    try:
+        import unsloth_zoo.saving_utils as zoo_saving
+    except Exception:
+        return
+    original = getattr(zoo_saving, "_is_fp8_quant_config", None)
+    if original is None or getattr(original, "_unsloth_modelopt", False):
+        return
+    try:
+        if original({"quant_method": "modelopt", "quant_algo": "FP8"}):
+            return
+    except Exception:
+        return
+
+    @functools.wraps(original)
+    def _is_fp8_quant_config(quant_config):
+        if original(quant_config):
+            return True
+        return modelopt_fp8_plan(SimpleNamespace(quantization_config = quant_config)) is not None
+
+    _is_fp8_quant_config._unsloth_modelopt = True
+    zoo_saving._is_fp8_quant_config = _is_fp8_quant_config
+
+    status = getattr(zoo_saving, "check_model_quantization_status", None)
+    if status is None or getattr(status, "_unsloth_modelopt", False):
+        return
+
+    try:
+        signature = inspect.signature(status)
+    except Exception:
+        signature = None
+
+    @functools.wraps(status)
+    def check_model_quantization_status(*args, **kwargs):
+        result = status(*args, **kwargs)
+        if result != (False, None) or signature is None:
+            return result
+        # zoo passes the token positionally: check_model_quantization_status(model_name, token, ...).
+        try:
+            bound = signature.bind(*args, **kwargs).arguments
+        except TypeError:
+            return result
+        path = _hf_quant_config_path(bound.get("model_name_or_path"), token = bound.get("token"))
+        quant = _modelopt_block_from_hf_quant_config(path) if path else None
+        if quant is not None and _is_fp8_quant_config(quant):
+            return (True, "fp8")
+        return result
+
+    check_model_quantization_status._unsloth_modelopt = True
+    zoo_saving.check_model_quantization_status = check_model_quantization_status
+
+
+def _is_modelopt_rename(conversion, ours) -> bool:
+    if type(conversion).__name__ != "WeightRenaming":
+        return False
+    sources = getattr(conversion, "_original_source_patterns", None) or getattr(
+        conversion, "source_patterns", None
+    )
+    if isinstance(sources, str):
+        sources = [sources]
+    return bool(sources) and set(sources) <= ours
+
+
+def keep_fp8_scale_names_on_save(model) -> None:
+    """save_pretrained reverses key_mapping; drop the scale renames so names match the fp8 config."""
+    ours = set(MODELOPT_FP8_KEY_MAPPING)
+    for module in model.modules():
+        conversions = getattr(module, "_weight_conversions", None)
+        if not isinstance(conversions, list):
+            continue
+        kept = [c for c in conversions if not _is_modelopt_rename(c, ours)]
+        if len(kept) != len(conversions):
+            module._weight_conversions = kept
+
+
+@functools.lru_cache(maxsize = 1)
+def _from_pretrained_own_kwargs() -> frozenset:
+    from transformers import PreTrainedModel
+
+    fn = PreTrainedModel.from_pretrained
+    names = set(inspect.signature(fn).parameters)
+    try:
+        names |= set(re.findall(r"kwargs\.pop\(\s*[\"'](\w+)[\"']", inspect.getsource(fn)))
+    except Exception:
+        pass
+    return frozenset(names | {"quantization_config", "key_mapping", "attn_implementation"})
+
+
+def move_config_overrides_onto_config(config, kwargs: dict) -> None:
+    """Apply config kwargs (use_cache=False) that a config= load would pass to the strict model init."""
+    own = _from_pretrained_own_kwargs()
+    for key in list(kwargs):
+        if key not in own and hasattr(config, key):
+            setattr(config, key, kwargs.pop(key))
+
+
+def _class_checkpoint_mapping(model_class) -> dict:
+    # transformers 5.3 applies VLM class renames only when no caller key_mapping is passed.
+    mapping = getattr(model_class, "_checkpoint_conversion_mapping", None)
+    if not isinstance(mapping, dict) or not mapping:
+        return {}
+    try:
+        from transformers.conversion_mapping import VLMS
+    except Exception:
+        try:
+            from transformers.modeling_utils import VLMS
+        except Exception:
+            return {}
+    mro = getattr(model_class, "__mro__", ())[:-1]
+    if not any(name in cls.__name__.lower() for cls in mro for name in VLMS):
+        return {}
+    return dict(mapping)
+
+
+def pop_modelopt_key_mapping(
+    config,
+    kwargs: dict,
+    model_class = None,
+) -> None:
+    mapping = getattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR, None)
+    if mapping is None:
+        mapping = _remembered_mapping(config)
+        if mapping is None:
+            return
+    try:
+        delattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
+    except Exception:
+        pass
+    user = kwargs.get("key_mapping", None)
+    if isinstance(user, dict):
+        merged = dict(user)
+    else:
+        merged = _class_checkpoint_mapping(model_class)
+    for pattern, target in mapping.items():
+        merged.setdefault(pattern, target)
+    kwargs["key_mapping"] = merged
+
+
+# Fresh task heads with no fp8 weight on disk.
+_TASK_HEAD_MODULES = ("score", "classifier", "classification_head", "qa_outputs")
+_TASK_CLASS_SUFFIXES = (
+    "ForSequenceClassification",
+    "ForTokenClassification",
+    "ForQuestionAnswering",
+    "ForMultipleChoice",
+    "ForImageClassification",
+    "ForAudioClassification",
+    "ForAudioFrameClassification",
+    "ForVideoClassification",
+)
+
+
+def keep_task_heads_unquantized(config, *model_classes) -> bool:
+    names = [getattr(cls, "__name__", "") for cls in model_classes if cls is not None]
+    if not any(name.endswith(_TASK_CLASS_SUFFIXES) for name in names):
+        return False
+    # A task checkpoint already ships its head, quantized unless the ignore list names it.
+    architectures = getattr(config, "architectures", None) or []
+    if any(str(name).endswith(_TASK_CLASS_SUFFIXES) for name in architectures):
+        return False
+    quant = getattr(config, "quantization_config", None)
+    if not isinstance(quant, dict) or quant.get("quant_method") != "fp8":
+        return False
+    skip = list(quant.get("modules_to_not_convert") or [])
+    skip.extend(name for name in _TASK_HEAD_MODULES if name not in skip)
+    quant["modules_to_not_convert"] = skip
+    return True
+
+
+def modelopt_planner_quantization_config(config, dequantize: bool = False) -> Optional[dict]:
+    quant = getattr(config, "quantization_config", None)
+    if not isinstance(quant, dict):
+        return None
+    plan = dict(quant)
+    if dequantize:
+        try:
+            from transformers.utils.quantization_config import FineGrainedFP8Config
+            if "dequantize" in inspect.signature(FineGrainedFP8Config).parameters:
+                plan["dequantize"] = True
+        except Exception:
+            pass
+    return plan

@@ -399,7 +399,7 @@ export function OpenAICodeExecSection({
   const displayActiveId = displayedContainerId;
 
   return (
-    <div className="flex flex-col gap-3 pt-1">
+    <div className="flex flex-col gap-3">
       {/* TTL */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
@@ -421,7 +421,7 @@ export function OpenAICodeExecSection({
           max={TTL_MAX}
           value={ttlValue}
           onChange={(e) => onTtlChange(e.target.value)}
-          className="h-8 w-[72px] pl-3 text-sm tabular-nums"
+          className="h-8 w-[calc(72px*var(--ui-space-scale,1))] pl-3 text-sm tabular-nums"
         />
       </div>
 

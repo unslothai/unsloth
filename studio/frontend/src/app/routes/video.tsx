@@ -14,12 +14,13 @@ export const Route = createRoute({
   // which the page loads and then clears.
   validateSearch: (
     search: Record<string, unknown>,
-  ): { model?: string; quant?: string; ggufQuant?: string } => ({
+  ): { model?: string; quant?: string; ggufQuant?: string; item?: string } => ({
     ...(typeof search.model === "string" ? { model: search.model } : {}),
     ...(typeof search.quant === "string" ? { quant: search.quant } : {}),
     ...(typeof search.ggufQuant === "string"
       ? { ggufQuant: search.ggufQuant }
       : {}),
+    ...(typeof search.item === "string" ? { item: search.item } : {}),
   }),
   beforeLoad: () => requireAuth(),
   component: () => null,

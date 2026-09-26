@@ -16,9 +16,8 @@ import {
 } from "@/features/training";
 import { useT } from "@/i18n";
 import { MediaPageLink } from "@/components/media-page-link";
-import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
 import {
-  Image03Icon,
+  LibrariesIcon,
 } from "@hugeicons/core-free-icons";
 import {
   ChevronLeftIcon,
@@ -187,7 +186,7 @@ export function StudioPage(): ReactElement {
         onValueChange={(value) => handleTabChange(value as TrainSubTab)}
         className="contents"
       >
-        <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-7 px-5 pb-20 pt-8 sm:px-9 sm:pt-10">
+        <div className="mx-auto flex w-full max-w-[calc(1180px*var(--ui-space-scale,1))] 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-7 px-5 pb-20 pt-8 max-sm:px-4 sm:px-9 sm:pt-10">
           <header className="font-heading flex flex-col gap-5">
             <div className="flex flex-col gap-0.5">
               <h1 className="page-title-halo text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
@@ -215,17 +214,14 @@ export function StudioPage(): ReactElement {
                   trainingRunActive={trainingRunActive}
                   showTrainingView={showTrainingView}
                 />
-                {/* Image training is a mode of the Images page, not a route, so it sits
-                    beside the sub-nav rather than in it. */}
+                {/* Finished runs land in the Library's Fine-tunes tab. */}
                 <div className="ml-auto flex items-center gap-2 pb-2">
                   <MediaPageLink
-                    to="/images"
-                    label={t("studio.imageTraining")}
-                    tooltip={t("studio.goToImageTraining")}
-                    icon={Image03Icon}
-                    onNavigate={() =>
-                      useImageWorkflowStore.getState().setPageMode("train")
-                    }
+                    to="/library"
+                    libraryTab="models"
+                    label={t("shell.navigation.library")}
+                    tooltip={t("studio.goToLibrary")}
+                    icon={LibrariesIcon}
                   />
                 </div>
               </div>

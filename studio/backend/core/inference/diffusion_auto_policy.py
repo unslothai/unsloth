@@ -37,6 +37,30 @@ _QUANT_STEADY_FACTOR: dict[str, float] = {
     "nvfp4": 0.33,
 }
 
+# Measured policy residency over bf16 + ~0.04 slack; 0.33 would keep a non-fitting model resident.
+_POLICY_STEADY_FACTOR: dict[str, float] = {
+    "zimg_rg76_v1": 0.50,
+    "flux_r420_v1": 0.45,
+    "qwen21_r020_v1": 0.50,
+    "qwen2512_m120_attn8_v1": 0.42,
+    "qwen_p02_v1": 0.47,
+}
+
+
+def policy_steady_factor(family: Any, base_repo: Optional[str] = None) -> Optional[float]:
+    """The NVFP4 POLICY steady factor for ``(family, base_repo)``, or None. Never raises."""
+    from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+
+    if not nvfp4_diffusion_enabled():
+        return None
+    try:
+        from .diffusion_nvfp4_policy import resolve_policy
+        policy = resolve_policy(getattr(family, "name", family), base_repo)
+    except Exception:  # noqa: BLE001 -- an unresolvable policy just means the plain factor
+        return None
+    return None if policy is None else _POLICY_STEADY_FACTOR.get(policy.policy_id)
+
+
 # bf16-RESIDENT component sizes in decimal GB: (transformer, text encoders, VAE). What they occupy on device after the
 # dtype cast, NOT the download size (Z-Image-Turbo ships fp32: 24.6 GB of shards -> 12.3 GB bf16). From HF sibling
 # metadata.
@@ -47,6 +71,11 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "flux.2-dev": (64.5, 48.0, 0.4),
     "qwen-image": (40.9, 16.6, 0.3),
     "qwen-image-edit": (40.9, 16.6, 0.3),
+    # A different architecture, not a refreshed Qwen-Image: 32 single-stream blocks against 60
+    # dual-stream ones, so the DiT is 14.2 GB rather than 40.9, while the Qwen3-VL 8B encoder is
+    # LARGER than Qwen-Image's Qwen2.5-VL 7B. Ships bf16, so resident equals on-disk. Read off the
+    # Hub sibling metadata for Qwen/Qwen-Image-2.1: transformer 14.23, text_encoder 17.53, vae 1.35.
+    "qwen-image-2.1": (14.2, 17.5, 1.4),
     "z-image": (12.3, 8.0, 0.2),
     "krea-2": (26.3, 8.9, 0.5),
     # Ships fp32 (10.4 + 10.5 + 0.3 GB of shards); bf16-resident is half.
@@ -226,8 +255,14 @@ def estimate_dense_quant(
 ) -> Optional[DenseQuantEstimate]:
     """Estimate the candidate's footprint from the family table, or None when the
     family (or scheme factor) is unknown."""
+    from .diffusion_nvfp4_flag import nvfp4_blocked
+
+    if nvfp4_blocked(scheme):
+        return None
     components = family_bf16_components_gb(fam, base_repo)
     factor = _QUANT_STEADY_FACTOR.get(scheme)
+    if scheme == "nvfp4":
+        factor = policy_steady_factor(fam, base_repo) or factor
     if components is None or factor is None:
         return None
     transformer_gb, text_encoders_gb, vae_gb = components
@@ -268,6 +303,20 @@ def _hf_cache_free_mib() -> Optional[int]:
         return None
 
 
+def _has_usable_prequant(
+    fam: Any, scheme: str, prequant_path: Optional[str], base_repo: Optional[str]
+) -> bool:
+    """Whether a hosted or operator-supplied prequant checkpoint for ``scheme`` is usable; False on failure."""
+    try:
+        from .diffusion_prequant import usable_prequant_source
+        return (
+            usable_prequant_source(fam, scheme, path_override = prequant_path, base_repo = base_repo)
+            is not None
+        )
+    except Exception:  # noqa: BLE001 -- prequant probing must never sink the candidate
+        return False
+
+
 def resolve_dense_quant_candidate(
     *,
     fam: Any,
@@ -292,7 +341,15 @@ def resolve_dense_quant_candidate(
         return None
     if not dense_transformer_supported(target):
         return None
-    scheme = select_transformer_quant_scheme(target, requested, family = getattr(fam, "name", None))
+    scheme = select_transformer_quant_scheme(
+        target,
+        requested,
+        family = getattr(fam, "name", None),
+        base_repo = base_repo,
+        has_prequant = lambda candidate: _has_usable_prequant(
+            fam, candidate, prequant_path, base_repo
+        ),
+    )
     if scheme is None:
         return None
     prequant_available = False

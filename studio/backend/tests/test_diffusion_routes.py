@@ -36,7 +36,7 @@ from fastapi.testclient import TestClient
 import core.inference.diffusion as diffusion_module
 import core.inference.gpu_arbiter as gpu_arbiter
 import core.inference.image_gallery as gallery_module
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 import routes.inference as inference_routes
 from routes.inference import studio_router
 
@@ -275,6 +275,8 @@ def client(monkeypatch, tmp_path):
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # A browser session: the status routes redact host paths for an API-key caller.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app)
 
 
@@ -690,6 +692,45 @@ def test_generate_execution_error_with_cancelled_substring_is_sanitized_500(clie
     assert "cancelled" not in detail and "models" not in detail and "/home/u" not in detail
 
 
+def test_generate_memory_refusal_is_a_tagged_400_and_allow_oversized_reaches_the_backend(
+    client, monkeypatch
+):
+    from core.inference.diffusion_memory import (
+        IMAGE_REFUSAL_HEADER,
+        IMAGE_REFUSAL_MEMORY_ESTIMATE,
+        ImageActivationShortfallError,
+    )
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+    seen = []
+
+    def _guarded(**kwargs):
+        seen.append(kwargs.get("allow_oversized"))
+        if not kwargs.get("allow_oversized"):
+            raise ImageActivationShortfallError("Generating at 2048x2048 needs about 34.00 GB")
+        return {"images": [], "seed": 1, "seeds": []}
+
+    monkeypatch.setattr(backend, "generate", _guarded)
+    refused = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert refused.status_code == 400
+    assert refused.headers.get(IMAGE_REFUSAL_HEADER) == IMAGE_REFUSAL_MEMORY_ESTIMATE
+    assert "2048x2048" in refused.json()["detail"]
+    retried = client.post(
+        "/api/inference/images/generate", json = {"prompt": "p", "allow_oversized": True}
+    )
+    assert retried.status_code == 200
+    assert seen == [False, True]
+
+    def _plain(**kwargs):
+        raise ValueError("width and height are required for this workflow.")
+
+    monkeypatch.setattr(backend, "generate", _plain)
+    other = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert other.status_code == 400
+    assert IMAGE_REFUSAL_HEADER not in other.headers
+
+
 def test_generate_user_cancellation_returns_409(client, monkeypatch):
     # The exact cancellation sentinel both engines raise is client-state (409).
     backend = diffusion_module.get_diffusion_backend()
@@ -842,6 +883,8 @@ def test_a_cpu_mispredicted_engine_is_still_preflighted(monkeypatch):
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # A browser session: the status routes redact host paths for an API-key caller.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     local = TestClient(app)
 
     resp = local.post(
@@ -914,6 +957,8 @@ def test_gated_pick_on_an_engine_switch_keeps_the_previous_model(monkeypatch, de
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # A browser session: the status routes redact host paths for an API-key caller.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     local = TestClient(app)
 
     resp = local.post(
@@ -1183,6 +1228,8 @@ def test_load_routes_to_sd_cpp_on_cpu(monkeypatch, tmp_path):
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # A browser session: the status routes redact host paths for an API-key caller.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     client = TestClient(app)
 
     resp = _post_load(client, model_path = "unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z.gguf")
@@ -2648,3 +2695,174 @@ def test_the_plan_route_refuses_an_unrecognised_model_before_planning(client):
 
     assert resp.status_code == 400, resp.text
     assert "Could not infer a diffusion family" in resp.json()["detail"]
+
+
+def test_edit_without_a_size_lets_the_backend_match_image_1(client, monkeypatch):
+    """An edit that names no size must not be pinned to the schema's 1024 square: the route hands
+    the backend None so it sizes from Image 1 on the family grid. A named size passes through."""
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    backend = diffusion_module.get_diffusion_backend()
+    seen = []
+    original = backend.generate
+
+    def _record(**kwargs):
+        seen.append(kwargs)
+        out = original(**kwargs)
+        out.update(workflow = "edit", reference_resolution = 512, localized_edit = "mask")
+        return out
+
+    monkeypatch.setattr(backend, "generate", _record)
+    layer = {"mode": "mask", "image": "QUJD"}
+    resp = _post_generate(
+        client,
+        prompt = "p",
+        workflow = "edit",
+        init_image = "QUJD",
+        reference_images = ["QUJD", "QUJD"],
+        reference_resolution = 512,
+        localized_edit = layer,
+    )
+    assert resp.status_code == 200
+    assert seen[-1]["width"] is None and seen[-1]["height"] is None
+    assert seen[-1]["workflow"] == "edit" and seen[-1]["reference_resolution"] == 512
+    assert seen[-1]["localized_edit"].mode == "mask"
+    record = resp.json()["images"][0]
+    # The engaged values are what the recipe keeps; the count stays images BEYOND the source.
+    assert record["reference_resolution"] == 512
+    assert record["localized_edit"] == "mask"
+    assert record["reference_image_count"] == 2
+    _post_generate(client, prompt = "p", workflow = "edit", init_image = "QUJD", width = 1024)
+    assert seen[-1]["width"] == 1024 and seen[-1]["height"] == 1024
+
+
+def test_generate_schema_bounds_for_unified_editing(client):
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    nine = _post_generate(client, prompt = "p", init_image = "QUJD", reference_images = ["QUJD"] * 9)
+    assert nine.status_code == 200
+    ten = _post_generate(client, prompt = "p", init_image = "QUJD", reference_images = ["QUJD"] * 10)
+    assert ten.status_code == 422
+    assert _post_generate(client, prompt = "p", workflow = "inpaint").status_code == 422
+    assert _post_generate(client, prompt = "p", width = 2752, height = 1536).status_code == 200
+    assert _post_generate(client, prompt = "p", width = 2768).status_code == 422
+    bad_mode = _post_generate(client, prompt = "p", localized_edit = {"mode": "lasso", "image": "QUJD"})
+    assert bad_mode.status_code == 422
+
+
+def test_the_precision_gate_judges_an_explicit_scheme_on_the_pipeline_base(monkeypatch):
+    """A per-base NVFP4 gate record (Qwen-Image-2512) lifts the family deny only for that base, so the
+    route gate must ask about the base the load keys on, or it 409s a load the loader accepts."""
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        diffusion_module, "_pipeline_quant_uncompilable_reason", lambda *a, **k: None
+    )
+    seen = []
+
+    def _select(target, requested, **kwargs):
+        seen.append(kwargs.get("base_repo"))
+        return requested
+
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", _select)
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "qwen-image"),
+        model_kind = "pipeline",
+        transformer_quant = "nvfp4",
+        repo_id = "Qwen/Qwen-Image-2512",
+    )
+    assert seen == ["Qwen/Qwen-Image-2512"]
+
+
+def test_a_gpu_refusal_on_a_gated_base_is_not_blamed_on_the_family_deny(monkeypatch):
+    """Qwen-Image-2512's gate record lifts the qwen-image NVFP4 deny for that base only. When the GPU then declines
+    the scheme, the refusal must say so, not claim no accuracy record covers the base."""
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        diffusion_module, "_pipeline_quant_uncompilable_reason", lambda *a, **k: None
+    )
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: None)
+    import core.inference.diffusion_transformer_quant as tq
+
+    monkeypatch.setattr(tq, "torchao_unavailable_reason", lambda: None)
+    base = "Qwen/Qwen-Image-2512"
+    assert not tq.family_denies_scheme("qwen-image", "nvfp4", base)
+    with pytest.raises(RuntimeError) as err:
+        backend.assert_precision_available(
+            types.SimpleNamespace(name = "qwen-image"),
+            model_kind = "pipeline",
+            transformer_quant = "nvfp4",
+            repo_id = base,
+        )
+    message = str(err.value)
+    assert "on this GPU" in message
+    assert "accuracy-gate record" not in message
+
+
+def test_a_gguf_pick_whose_base_comes_from_its_card_is_judged_on_the_gated_base(monkeypatch):
+    """A GGUF load that names no base_repo resolves it from the repo card at load time. The network-free gate must not
+    refuse explicit NVFP4 under the generic family deny that the Qwen-Image-2512 gate record lifts."""
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        diffusion_module, "_pipeline_quant_uncompilable_reason", lambda *a, **k: None
+    )
+    import core.inference.diffusion_transformer_quant as tq
+
+    seen = []
+
+    def _select(target, requested, **kwargs):
+        seen.append(kwargs.get("base_repo"))
+        return (
+            None
+            if tq.family_denies_scheme(kwargs.get("family"), requested, kwargs.get("base_repo"))
+            else requested
+        )
+
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", _select)
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "qwen-image"),
+        model_kind = "gguf",
+        transformer_quant = "nvfp4",
+        repo_id = "unsloth/Qwen-Image-2512-GGUF",
+    )
+    assert seen == ["Qwen/Qwen-Image-2512"]
+
+
+def test_a_managed_account_cannot_send_allow_oversized(client, monkeypatch):
+    from hub.services.models import account_access
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+    seen = []
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "require_media_adapters", lambda *a, **k: None)
+    monkeypatch.setattr(account_access, "require_media_generation_access", lambda *a, **k: None)
+    monkeypatch.setattr(
+        backend,
+        "generate",
+        lambda **kw: seen.append(kw.get("allow_oversized"))
+        or {"images": [], "seed": 1, "seeds": []},
+    )
+    resp = client.post(
+        "/api/inference/images/generate", json = {"prompt": "p", "allow_oversized": True}
+    )
+    assert resp.status_code == 200
+    assert seen == [False]
