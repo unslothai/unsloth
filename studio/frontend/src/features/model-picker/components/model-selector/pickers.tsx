@@ -8249,7 +8249,8 @@ function FineTunedRows({
                           ggufVariant: quant,
                         });
                         if (pinnedKeys.includes(pinKey(adapter.id))) {
-                          await repinExportedGguf(adapter.id).catch(() => undefined);
+                          // If the rescan fails, drop the pin rather than leave it pointing at a gone file.
+                          await repinExportedGguf(adapter.id).catch(() => unpinRepo(adapter.id));
                         }
                         onModelsChange?.({
                           id: adapter.id,
