@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""fp16 channels_last_3d decode for the fp32-pinned video VAEs (``_video_vae_half_decode``).
-
-Hermetic: a tiny CPU module stands in for AutoencoderKLWan and the capability probe is monkeypatched, so no GPU,
-diffusers or model download is needed.
-"""
+"""``_video_vae_half_decode`` on a tiny CPU stand-in for AutoencoderKLWan; capability probe monkeypatched."""
 
 from __future__ import annotations
 
@@ -92,7 +88,7 @@ def test_engages_on_nvidia_for_a_pinned_family(sm75):
     assert not vae.decoder[0].weight.is_contiguous()
     assert vae.decoder[1].weight.is_contiguous(memory_format = torch.channels_last)
     assert vae.post_quant_conv.weight.is_contiguous(memory_format = torch.channels_last_3d)
-    # The encoder (i2v conditioning) keeps today's fp32 NCDHW, so the pipeline still reads an fp32 vae.dtype.
+    # Encoder stays fp32 so the pipeline still reads an fp32 vae.dtype.
     assert all(p.dtype == torch.float32 and p.is_contiguous() for p in vae.encoder.parameters())
     assert vae.dtype == torch.float32
     out = vae.decode(torch.randn(1, 4, 2, 5, 5), return_dict = False)[0]
