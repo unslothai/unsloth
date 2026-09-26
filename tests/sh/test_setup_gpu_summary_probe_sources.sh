@@ -517,6 +517,9 @@ assert_eq "amd-smi: CUDA_VISIBLE_DEVICES, HIP's alias, indexes the list" \
 assert_eq "amd-smi: an empty HIP mask still leaves ROCR=1's survivor" \
     "gfx1100|AMD Radeon RX 7900 XTX" \
     "$(STUB_ROCR=1 STUB_HIP_EMPTY=1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"
+assert_eq "amd-smi: a UUID in ROCR over unlike adapters declines instead of guessing" \
+    "|" \
+    "$(STUB_ROCR=GPU-4b2c1a9f8d3e6f7a,1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"
 
 echo "=== detected, but no arm produced a record ==="
 # Under `set -euo pipefail` an unassigned variable is not an empty string, it is a fatal
@@ -524,7 +527,7 @@ echo "=== detected, but no arm produced a record ==="
 assert_eq "the KFD-shaped path reaches the end instead of aborting on set -u" \
     "|" "$(kfd_shape_summary)"
 assert_eq "every variable the selection block reads is initialised up front" \
-    "" "$(grep -oE '\$\{?_setup_(gfx|gfx_all|mkt|amd_records|amd_detected|amd_probe|nvidia_usable)\b' \
+    "" "$(grep -oE '\$\{?_setup_(gfx|gfx_all|mkt|amd_records|amd_detected|amd_probe|rocr_uuid_declined|nvidia_usable)\b' \
               "$WORK/select.sh" | tr -d '${' | sort -u \
           | while read -r _v; do grep -q "^$_v=" "$WORK/init.sh" || echo "$_v"; done | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "amd-smi answers list but not static --asic" \

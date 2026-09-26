@@ -3350,6 +3350,7 @@ _setup_gfx_all=""
 _setup_gfx=""
 _setup_hip_map_missing=0
 _setup_amd_probe=""
+_setup_rocr_uuid_declined=0
 _setup_mkt=""
 _setup_amd_records=""
 
@@ -3649,6 +3650,15 @@ elif [ "$_setup_amd_detected" = true ]; then
             # None in range keeps the whole list, as install.sh does.
             if [ -n "$_setup_kept" ]; then printf '%s\n' "$_setup_kept"; else printf '%s\n' "$1"; fi
         }
+        # A UUID token names a device but no position in amd-smi's list, so with unlike adapters no
+        # survivor is known to be the selected one: decline, as install.sh does.
+        if [ -n "$(printf '%s' "$ROCR_VISIBLE_DEVICES" | tr -d '0-9, \t')" ] && \
+           [ "$(printf '%s\n' "${_setup_amd_records:-$_setup_gfx_all}" | awk -F'|' \
+                'NF { k = ($1 != "" ? $1 : "name:" $2); if (!(k in seen)) { seen[k]; n++ } } END { print n + 0 }')" -gt 1 ]; then
+            _setup_amd_records=""
+            _setup_gfx_all=""
+            _setup_rocr_uuid_declined=1
+        fi
         [ -n "$_setup_amd_records" ] && _setup_amd_records=$(_setup_rocr_keep "$_setup_amd_records")
         [ -n "$_setup_gfx_all" ] && _setup_gfx_all=$(_setup_rocr_keep "$_setup_gfx_all")
     fi
@@ -3711,6 +3721,10 @@ elif [ "$_setup_amd_detected" = true ]; then
     if [ -z "$_setup_gfx" ] && [ "$_setup_hip_map_missing" = 1 ]; then
         substep "Unlike AMD adapters and no HIP id map (amd-smi list -e needs ROCm 6.4+):"
         substep "cannot tell which one this session selects. Set UNSLOTH_ROCM_GFX_ARCH to pick."
+    fi
+    if [ -z "$_setup_gfx" ] && [ "$_setup_rocr_uuid_declined" = 1 ]; then
+        substep "ROCR_VISIBLE_DEVICES names a GPU by UUID, which amd-smi cannot place, and the"
+        substep "adapters differ. Set UNSLOTH_ROCM_GFX_ARCH to pick."
     fi
     # ROCm version via hipconfig, then amd-smi
     _setup_rocm_ver=""
