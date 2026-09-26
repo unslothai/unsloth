@@ -167,3 +167,11 @@ test("the download card keeps Delete for a companion-only repo", () => {
   const inspector = readSrc("features/hub/catalog/model-inspector.tsx");
   assert.match(inspector, /companionPrefetch=\{model\.companionPrefetch === true\}/);
 });
+
+test("a companion-only inventory row never gets the green On device dot", () => {
+  const rows = readSrc("features/hub/catalog/models-catalog-rows.tsx");
+  assert.match(
+    rows,
+    /<PartialStatusDot downloading=\{downloading\} \/>\s*\) : row\.companionPrefetch \? null : \(\s*<StatusDot tone="success" label="On device" \/>/,
+  );
+});

@@ -687,7 +687,7 @@ export const InventoryRow = memo(function InventoryRow({
       )}
       {partialRepoId ? (
         <PartialStatusDot downloading={downloading} />
-      ) : (
+      ) : row.companionPrefetch ? null : (
         <StatusDot tone="success" label="On device" />
       )}
       {unsupported && (
