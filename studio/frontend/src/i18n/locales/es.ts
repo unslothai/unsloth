@@ -1508,6 +1508,8 @@ export const es = {
         noRamReserveDescription: "Reduce la RAM ocupada por los pesos del modelo.",
         noRamReserveHint: "Omite la carga mapeada en memoria en las compilaciones de Windows compatibles cuando el modelo está totalmente descargado en la GPU, de modo que sus páginas no quedan residentes. En caso contrario conserva la carga mapeada en memoria. Los búferes de CPU necesarios pueden seguir usando RAM. Elimina --no-mmap y --mlock.",
         mlockVetoed: "--mlock permanece desactivado: fijar el modelo reservaría RAM para todo él. La descarga automática por inactividad sigue desactivada.",
+        mlockNotApplicable: "El modelo cargado está por completo en la GPU, así que no hay ninguna copia en la RAM que fijar y se omite --mlock. «Mantener el modelo en la memoria de la GPU» sigue aplicándose: la descarga automática por inactividad está desactivada.",
+        mlockUngoverned: "El modelo cargado usa un motor cuyas opciones de ubicación de memoria no controla Memoria del modelo. Mantener residente sigue desactivando la descarga automática por inactividad para los modelos de imagen y vídeo. Su política de memoria de llama.cpp queda guardada para el próximo modelo llama.cpp que cargues.",
         memlockCapped: "Este sistema limita la memoria bloqueada a {limit}. Un modelo mayor no quedará fijado por completo; aumenta el límite con ulimit -l.",
         reloadRequired: "Vuelve a cargar el modelo para aplicar las nuevas opciones de memoria.",
         loadError: "No se pudieron cargar los ajustes de memoria del modelo",

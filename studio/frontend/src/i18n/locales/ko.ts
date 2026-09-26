@@ -1480,6 +1480,8 @@ export const ko = {
         noRamReserveDescription: "모델 가중치가 차지하는 RAM을 줄입니다.",
         noRamReserveHint: "모델이 GPU에 완전히 오프로드된 경우 지원되는 Windows 빌드에서 메모리 매핑 로딩을 건너뛰어 파일 페이지가 상주하지 않도록 합니다. 그렇지 않으면 메모리 매핑 로딩을 유지합니다. 필요한 CPU 버퍼는 여전히 RAM을 사용할 수 있습니다. --no-mmap과 --mlock을 제거합니다.",
         mlockVetoed: "--mlock은 꺼진 상태로 유지됩니다. 모델을 고정하면 모델 전체 크기만큼 RAM을 예약하게 됩니다. 유휴 시 자동 언로드는 계속 비활성화됩니다.",
+        mlockNotApplicable: "불러온 모델이 전부 GPU에 있어 시스템 RAM에 고정할 사본이 없으므로 --mlock을 건너뜁니다. ‘모델을 GPU 메모리에 유지’는 계속 적용되어 유휴 시 자동 언로드가 꺼져 있습니다.",
+        mlockUngoverned: "불러온 모델은 모델 메모리가 메모리 배치 플래그를 제어하지 않는 실행기를 사용합니다. 계속 상주시키기는 이미지 및 비디오 모델의 유휴 자동 언로드를 계속 비활성화합니다. llama.cpp 메모리 정책은 다음에 불러오는 llama.cpp 모델을 위해 저장된 상태로 유지됩니다.",
         memlockCapped: "이 시스템은 잠금 메모리를 {limit}로 제한합니다. 더 큰 모델은 완전히 고정되지 않습니다. ulimit -l로 한도를 늘리세요.",
         reloadRequired: "새 메모리 옵션을 적용하려면 모델을 다시 로드하세요.",
         loadError: "모델 메모리 설정을 불러오지 못했습니다",

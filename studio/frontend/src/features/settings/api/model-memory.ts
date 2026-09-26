@@ -4,8 +4,8 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-import { SettingsRouteAbsentError } from "./settings-route-absent";
 import { invalidateOpenAIAutoSwitchSettings } from "./openai-auto-switch";
+import { SettingsRouteAbsentError } from "./settings-route-absent";
 
 const MODEL_MEMORY_EVENT = "unsloth-model-memory-change";
 
@@ -16,6 +16,13 @@ export type ModelMemorySettings = {
   defaultNoRamReserve: boolean;
   /** Whether --mlock applies; false when noRamReserve vetoes it. */
   mlockActive: boolean;
+  /**
+   * Whether the loaded model has a host copy to pin at all. False when it is
+   * fully offloaded to a discrete GPU, where the lock is skipped on purpose.
+   * True with nothing loaded.
+   */
+  mlockApplicable: boolean;
+  mlockSkipReason?: "full_gpu_offload" | "ungoverned" | null;
   /** A model is loaded whose --mlock state differs from the saved one. */
   reloadRequired: boolean;
   /** Soft RLIMIT_MEMLOCK when finite; null means unlimited or N/A. */
@@ -34,12 +41,18 @@ type ApiModelMemorySettings = {
   // biome-ignore lint/style/useNamingConvention: API schema
   mlock_active: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
+  mlock_applicable?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlock_skip_reason?: "full_gpu_offload" | "ungoverned" | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
   reload_required: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   memlock_limit_bytes: number | null;
 };
 
 let inFlightModelMemory: Promise<ModelMemorySettings> | null = null;
+let pendingModelMemoryWrites: Promise<void> | null = null;
+let deferredModelMemoryRead: Promise<ModelMemorySettings> | null = null;
 // Bumped by every forced read, so a displaced one can tell it is no longer the current
 // answer. It still resolves for its own caller; it just stops speaking for everyone else.
 let modelMemoryGeneration = 0;
@@ -61,6 +74,12 @@ function fromApi(settings: ApiModelMemorySettings): ModelMemorySettings {
     defaultKeepResident: settings.default_keep_resident,
     defaultNoRamReserve: settings.default_no_ram_reserve,
     mlockActive: settings.mlock_active,
+    // Optional on the wire so a frontend newer than its backend does not start
+    // claiming every load has nothing to lock.
+    mlockApplicable: settings.mlock_applicable ?? true,
+    mlockSkipReason:
+      settings.mlock_skip_reason ??
+      (settings.mlock_applicable === false ? "full_gpu_offload" : null),
     reloadRequired: settings.reload_required,
     memlockLimitBytes: settings.memlock_limit_bytes,
   };
@@ -102,7 +121,14 @@ async function fetchModelMemorySettings(): Promise<ModelMemorySettings> {
  */
 export async function loadModelMemorySettings(
   options: { force?: boolean } = {},
-) {
+): Promise<ModelMemorySettings> {
+  if (pendingModelMemoryWrites) {
+    deferredModelMemoryRead ??= pendingModelMemoryWrites.then(() => {
+      deferredModelMemoryRead = null;
+      return loadModelMemorySettings({ force: true });
+    });
+    return deferredModelMemoryRead;
+  }
   if (options.force) {
     inFlightModelMemory = null;
     modelMemoryGeneration += 1;
@@ -128,8 +154,7 @@ export async function loadModelMemorySettings(
   return inFlightModelMemory;
 }
 
-/** Partial update: omitted fields keep their stored value. */
-export async function updateModelMemorySettings(
+async function saveModelMemorySettings(
   patch: Partial<Pick<ModelMemorySettings, "keepResident" | "noRamReserve">>,
 ): Promise<ModelMemorySettings> {
   const body: Record<string, boolean> = {};
@@ -153,4 +178,27 @@ export async function updateModelMemorySettings(
   // idleUnloadActive changed too and its own cache is now stale.
   invalidateOpenAIAutoSwitchSettings();
   return publishModelMemory(fromApi(await res.json()));
+}
+
+/** Partial update: omitted fields keep their stored value. */
+export function updateModelMemorySettings(
+  patch: Partial<Pick<ModelMemorySettings, "keepResident" | "noRamReserve">>,
+): Promise<ModelMemorySettings> {
+  // A GET already in flight predates this write, and later reads must wait for it.
+  inFlightModelMemory = null;
+  modelMemoryGeneration += 1;
+  const previousWrites = pendingModelMemoryWrites ?? Promise.resolve();
+  const write = previousWrites.then(() => saveModelMemorySettings(patch));
+  const writeTail = write.then(
+    () => undefined,
+    () => undefined,
+  );
+  pendingModelMemoryWrites = writeTail;
+  const clearWrite = () => {
+    if (pendingModelMemoryWrites === writeTail) {
+      pendingModelMemoryWrites = null;
+    }
+  };
+  writeTail.then(clearWrite);
+  return write;
 }

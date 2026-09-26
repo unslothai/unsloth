@@ -22,6 +22,7 @@ import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import {
   type ModelRuntime,
   withModelLoadNotice,
+  withModelUnloadNotice,
 } from "@/lib/model-lifecycle-events";
 import { showLoadWarning } from "../utils/load-warning-toast";
 import type {
@@ -463,15 +464,17 @@ export async function fetchGgufStagedMetadata(payload: {
 }
 
 export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
-  const response = await authFetch("/api/inference/unload", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+  return withModelUnloadNotice("chat", payload.model_path, async () => {
+    const response = await authFetch("/api/inference/unload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await parseJsonOrThrow<unknown>(response, "Model unload");
+    // Only after the unload is known to have happened: a rejected one leaves the model
+    // resident and the notice true. A different model's unload leaves it standing.
+    dismissCarveoutAdviceForModel(payload.model_path);
   });
-  await parseJsonOrThrow<unknown>(response, "Model unload");
-  // Only after the unload is known to have happened: a rejected one leaves the model
-  // resident and the notice true. A different model's unload leaves it standing.
-  dismissCarveoutAdviceForModel(payload.model_path);
 }
 
 /** The approval this decision was for is no longer waiting: it expired unanswered, the run was
