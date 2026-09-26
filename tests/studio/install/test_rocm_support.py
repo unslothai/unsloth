@@ -2256,6 +2256,17 @@ class TestGfx1102Rocm64Floor:
         )
         assert self._run_install_sh_routing(preamble) == "rocm6.1"
 
+    @pytest.mark.parametrize("rocr, hip", (("0,0,1", "2"), ("0,99,1", "1")))
+    def test_install_sh_ends_rocr_survivors_at_a_repeated_or_missing_ordinal(self, rocr, hip):
+        """ROCr's survivors are a prefix, as _rocr_visible_subset: only card 0 is left, so the
+        HIP index runs off the end and falls back to it rather than reaching the gfx1200."""
+        preamble = (
+            "rocminfo() { return 1; }\n"
+            + self._amd_smi_stub("gfx1100", "gfx1200")
+            + f"export ROCR_VISIBLE_DEVICES={rocr}; export HIP_VISIBLE_DEVICES={hip}"
+        )
+        assert self._run_install_sh_routing(preamble) == "rocm6.1"
+
     def test_install_sh_declines_a_rocr_uuid_mask_over_unlike_amd_smi_adapters(self):
         """A UUID names a device but no position, so no survivor is known to be it."""
         preamble = (

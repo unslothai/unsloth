@@ -517,6 +517,12 @@ assert_eq "amd-smi: CUDA_VISIBLE_DEVICES, HIP's alias, indexes the list" \
 assert_eq "amd-smi: an empty HIP mask still leaves ROCR=1's survivor" \
     "gfx1100|AMD Radeon RX 7900 XTX" \
     "$(STUB_ROCR=1 STUB_HIP_EMPTY=1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"
+assert_eq "amd-smi: a repeated ROCr ordinal ends the survivors (ROCR=0,0,1 leaves card 0 only)" \
+    "gfx90a|AMD Instinct MI210" \
+    "$(STUB_ROCR=0,0,1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 2)"
+assert_eq "amd-smi: an out-of-range ROCr ordinal ends the survivors (ROCR=0,99,1)" \
+    "gfx90a|AMD Instinct MI210" \
+    "$(STUB_ROCR=0,99,1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 1)"
 assert_eq "amd-smi: a UUID in ROCR over unlike adapters declines instead of guessing" \
     "|" \
     "$(STUB_ROCR=GPU-4b2c1a9f8d3e6f7a,1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"

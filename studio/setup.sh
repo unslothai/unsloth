@@ -3646,8 +3646,9 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_rocr_keep() {
             _setup_kept=$(printf '%s\n' "$1" | awk -v m="$ROCR_VISIBLE_DEVICES" '
                 NF { v[n++] = $0 }
-                END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] ~ /^[0-9]+$/ && t[i] + 0 < n) print v[t[i] + 0] } }')
-            # None in range keeps the whole list, as install.sh does.
+                END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] !~ /^[0-9]+$/) continue; x = t[i] + 0; if (x >= n || (x in s)) break; s[x] = 1; print v[x] } }')
+            # Prefix up to the first out-of-range or repeated ordinal, as _rocr_visible_subset;
+            # none keeps the whole list.
             if [ -n "$_setup_kept" ]; then printf '%s\n' "$_setup_kept"; else printf '%s\n' "$1"; fi
         }
         # A UUID token names a device but no position in amd-smi's list, so with unlike adapters no
