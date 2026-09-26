@@ -1,18 +1,7 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Refresh a rewritten shortcut's icon through a child interpreter where the shell cannot define
-# the type to do it itself.
-#
-# The installer tells Explorer about each shortcut it wrote with SHChangeNotify, because the
-# global broadcast alone misses a same-name .lnk rewritten in place. That call needs a type
-# defined at runtime, which WDAC Dynamic Code Security refuses, and on those hosts the refresh
-# simply did not happen: the shortcut worked, its icon was stale. (Constrained Language Mode never
-# reaches it: WScript.Shell is not an allowed COM object there, so no shortcut is written.)
-#
-# This is cosmetic in both directions. A stale icon is not a broken install, and nothing in this
-# path may fail one, so every check below is as much about the rung staying silent as about it
-# working.
+# Shortcut icon refresh via a child interpreter where WDAC refuses the runtime type; must never fail an install.
 # Run: pwsh -NoProfile -File tests/studio/test_early_python_icon_refresh.ps1
 
 $ErrorActionPreference = "Stop"
@@ -94,7 +83,6 @@ if (-not (Get-StudioEarlyPython)) {
     exit 0
 }
 
-# ------------------------------------------------------------- the rung, through a stub runner
 
 $script:RunnerCalls = 0
 $script:RunnerArgs = @()
@@ -119,8 +107,7 @@ try {
     Check "every shortcut written is named to the child, not just the last" (
         $script:RunnerCalls -eq 1 -and ($script:RunnerArgs -join "|") -eq ($links -join "|"))
 
-    # Bites control: the answer has to come from the child. Anything else is not success, or the
-    # rung would report a refresh on a host where nothing happened.
+    # Only the child's answer counts as success.
     $script:RunnerOutput = ""
     Check "control: a silent child is not success" (
         (Invoke-StudioPythonShellIconRefresh -Paths $links) -eq $false)
@@ -129,21 +116,16 @@ try {
         (Invoke-StudioPythonShellIconRefresh -Paths $links) -eq $false)
     $script:RunnerOutput = "ok"
 
-    # Nothing here may fail an install. A throw from the runner has to surface as a false, since
-    # the caller's own catch is what would otherwise be relied on to swallow it.
     $script:RunnerThrows = $true
     $threw = $false
     try { $null = Invoke-StudioPythonShellIconRefresh -Paths $links } catch { $threw = $true }
     Check "a child that throws does not escape into the install" ($threw -eq $false)
     $script:RunnerThrows = $false
 
-    # No shortcuts written means nothing to announce per item, but the global broadcast still
-    # costs one child and is harmless, so the contract is only that it does not throw.
     Check "an empty shortcut list is handled" (
         $null -ne (Invoke-StudioPythonShellIconRefresh -Paths @()))
 
-    # An interpreter handed in is used even when discovery still holds a miss from before the
-    # install provided one: probe first with nothing on the host, install after, then refresh.
+    # A passed interpreter wins over a cached discovery miss from before the install.
     $savedFinder = ${function:Get-StudioEarlyPython}
     function Get-StudioEarlyPython {
         if ($script:StudioEarlyPythonProbed) { return $script:StudioEarlyPython }
@@ -154,8 +136,8 @@ try {
     $script:StudioEarlyPythonProbed = $false
     $script:StudioEarlyPython = $null
     $script:FakeHostPython = $null
-    $null = Get-StudioEarlyPython          # the install lock's probe, on a host with no Python
-    $script:FakeHostPython = "C:\Studio\venv\Scripts\python.exe"   # then the install provides one
+    $null = Get-StudioEarlyPython
+    $script:FakeHostPython = "C:\Studio\venv\Scripts\python.exe"
 
     Check "control: discovery is still stuck on the cached miss (bites)" (
         $null -eq (Get-StudioEarlyPython))
@@ -167,8 +149,6 @@ try {
     $script:StudioEarlyPythonProbed = $false
     $script:StudioEarlyPython = $null
 
-    # And the shortcut writer hands it over. The check above drives the helper directly, so it
-    # would pass on its own with the call site still relying on discovery.
     $shortcutFn = @($ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
         $n.Name -eq "New-StudioShortcuts"
@@ -194,7 +174,6 @@ try {
         Check "with the probe disabled an explicit interpreter is still refused" (
             (Invoke-StudioPythonShellIconRefresh -Paths $links -Exe "C:\Studio\venv\Scripts\python.exe") -eq $false)
         Check "and no child process was started" ($script:RunnerCalls -eq 0)
-        # Whitespace and other values must not accidentally disable it.
         $env:UNSLOTH_EARLY_PYTHON_PROBE = " 0 "
         Check "the switch is read with surrounding whitespace trimmed" (
             (Invoke-StudioPythonShellIconRefresh -Paths $links -Exe "C:\Studio\venv\Scripts\python.exe") -eq $false)
@@ -216,7 +195,6 @@ try {
     if ($null -eq $savedOs) { Remove-Item Env:OS -ErrorAction SilentlyContinue } else { $env:OS = $savedOs }
 }
 
-# ------------------------------------------------------ the probe, and the rung above it
 
 $fnAst = $ast.FindAll({ param($n)
     $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -224,16 +202,11 @@ $fnAst = $ast.FindAll({ param($n)
 }, $true)[0]
 $probeText = $fnAst.Extent.Text
 
-# The per-item notification is the one that matters: SHCNE_UPDATEITEM with SHCNF_PATHW. The
-# global SHCNE_ASSOCCHANGED broadcast misses a same-name .lnk rewritten in place, which is what
-# an update does every single time.
-# Both carry SHCNF_FLUSH (0x1000): the child exits right after, and an unflushed notification is
-# only queued, so it can be lost with the child still answering ok.
+# Per-item SHCNE_UPDATEITEM is required (the global broadcast misses in-place .lnk rewrites); SHCNF_FLUSH since the child exits at once.
 Check "the probe sends SHCNE_UPDATEITEM with SHCNF_PATHW per shortcut, flushed" (
     $probeText -match "SHChangeNotify\(0x00002000,0x1005,p,None\)")
 Check "the probe still sends the global SHCNE_ASSOCCHANGED broadcast, flushed" (
     $probeText -match "SHChangeNotify\(0x08000000,0x1000,None,None\)")
-# ctypes defaults an undeclared argument to a C int, which would truncate a pointer on 64 bit.
 Check "the probe declares SHChangeNotify's signature" (
     $probeText -match "SHChangeNotify\.argtypes" -and $probeText -match "LPCWSTR")
 

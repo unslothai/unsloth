@@ -2805,34 +2805,17 @@ function Install-UnslothStudio {
     function Invoke-StudioPythonShellIconRefresh {
         param([string[]]$Paths = @(), [string]$Exe = "")
         if (-not ($env:OS -eq "Windows_NT")) { return $false }
-        # The kill switch first, and before the caller's interpreter rather than only inside
-        # discovery. UNSLOTH_EARLY_PYTHON_PROBE=0 means "do not spawn an interpreter on this
-        # host", which is a statement about the host and not about how the path was obtained.
-        # Get-StudioEarlyPython honours it, so routing around discovery to fix the fresh-install
-        # case also routed around the switch, and a host that had opted out got a child process
-        # anyway. The refresh is cosmetic, so opting out costs a stale icon and nothing else.
+        # Kill switch before $Exe too: it forbids any child on this host, however the path was found.
         if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $false }
-        # The caller's interpreter wins over discovery: it is the one the install just provided,
-        # and New-StudioShortcuts has already confirmed its path exists and resolved it, so there
-        # is nothing left to check here. Discovery is only the fallback for a caller without one.
         $exe = $Exe
         if ([string]::IsNullOrWhiteSpace($exe)) {
-            # Inside the try, not above it. Discovery can throw, and this function promises it
-            # never does; the caller's own catch happened to cover it, but the promise was still
-            # false.
             try {
                 $exe = Get-StudioEarlyPython
             } catch { return $false }
         }
         if (-not $exe) { return $false }
-        # SHCNE_UPDATEITEM 0x00002000 with SHCNF_PATHW 0x0005 per shortcut, then SHCNE_ASSOCCHANGED
-        # 0x08000000 as the global broadcast. Same two calls, same order as the rung above: the
-        # per-item notification is the one that matters, because the global broadcast misses a
-        # same-name .lnk that was rewritten in place.
-        #
-        # Plus SHCNF_FLUSH 0x1000, which the rung above does not need. Without it SHChangeNotify
-        # only queues the notification, and this child exits straight after, so Explorer can
-        # lose it while the child still reports ok. A hung Explorer is bounded by the timeout.
+        # Per-item SHCNE_UPDATEITEM is required: the global broadcast misses in-place .lnk rewrites.
+        # SHCNF_FLUSH (0x1000) because the child exits at once and a queued notification is lost.
         $script = "import ctypes,sys" + [char]10 +
             "from ctypes import wintypes" + [char]10 +
             "s32=ctypes.WinDLL('shell32',use_last_error=True)" + [char]10 +
