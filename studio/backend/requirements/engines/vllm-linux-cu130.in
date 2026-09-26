@@ -1,6 +1,6 @@
 # Optional Linux x86_64, Python 3.13, CUDA 13.0 serving environment. The torch, torchvision,
 # torchaudio and CUDA pins match a default Studio install, so the engine can share them.
-vllm==0.20.0
+vllm==0.26.0
 torch==2.11.0
 torchvision==0.26.0
 torchaudio==2.11.0
