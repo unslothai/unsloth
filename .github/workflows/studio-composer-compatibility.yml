@@ -26,6 +26,8 @@ on:
       # line a PR that changes only the driver never runs the driver.
       - 'tests/studio/*queue_localization*'
       - 'tests/studio/_playwright_robust.py'
+      # Both drivers find their controls through this reader, so a change to it is a change to them.
+      - 'tests/studio/_en_catalog.py'
       - '.github/workflows/studio-composer-compatibility.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
   workflow_dispatch:
