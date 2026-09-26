@@ -273,7 +273,7 @@ function RequestRow({
             {formatTime(entry.started_at)}
           </span>
         </div>
-        <div className="min-w-0 truncate pl-4 text-ui-11 text-muted-foreground">
+        <div className="min-w-0 break-all pl-4 text-ui-11 text-muted-foreground">
           {entry.model}
         </div>
         {entry.error ? (
@@ -313,8 +313,8 @@ function RequestRow({
           {formatDuration(entry.duration_ms)}
         </span>
       </div>
-      <div className="flex min-w-0 items-center gap-2 pl-4">
-        <span className="truncate text-ui-11 text-muted-foreground">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 pl-4">
+        <span className="min-w-0 break-all text-ui-11 text-muted-foreground">
           {entry.model}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2 text-ui-11 tabular-nums text-muted-foreground">
