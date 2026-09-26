@@ -1280,10 +1280,8 @@ function Invoke-Collect {
 
     $tail = Get-ScopeTail (Resolve-LlamaDir $dir)
     $venvTail = Get-ScopeTail (Resolve-VenvDir $dir)
-    # Studio's CPU fallback copy of the runtime (llama_cpp.py: _swa_cache_path().parent\runtime\llama-cpu-*)
-    $cpuHome = Get-StudioHomeOverride
-    if (-not $cpuHome) { $cpuHome = Join-Path $env:USERPROFILE '.unsloth\studio' }
-    $cpuTail = (Get-ScopeTail (Join-Path $cpuHome 'runtime')) + 'llama-cpu-*\'
+    # Studio's CPU fallback copy of the runtime: <studio home>\runtime\llama-cpu-*, the home run.py exports
+    $cpuTail = (Get-ScopeTail (Join-Path (Resolve-StudioHomeFor $dir) 'runtime')) + 'llama-cpu-*\'
     $shaped = @($events | ForEach-Object {
         $msg = $_.Message
         $data = Get-EventDataMap $_

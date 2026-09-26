@@ -2100,7 +2100,7 @@ def test_studios_cpu_fallback_runtime_is_scoped_as_llama_cpp():
     shaped = _cut(_collect(), "$tail = Get-ScopeTail", "$scopeByActivity = @{}")
     _has(
         shaped,
-        "$cpuTail = (Get-ScopeTail (Join-Path $cpuHome 'runtime')) + 'llama-cpu-*\\'",
+        "$cpuTail = (Get-ScopeTail (Join-Path (Resolve-StudioHomeFor $dir) 'runtime')) + 'llama-cpu-*\\'",
         'if ($subject -like "*$tail*" -or $subject -like "*$cpuTail*")',
     )
     tail = "\\Users\\u\\.unsloth\\studio\\runtime\\" + "llama-cpu-*\\"
