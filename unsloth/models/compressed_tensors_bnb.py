@@ -594,7 +594,12 @@ class _WithOriginalSources:
         return getattr(self.op, "reverse_op", None)
 
     def __getattr__(self, name):
-        return getattr(self.op, name)
+        # copy.deepcopy (the loader copies each converter) probes attributes before `op` exists.
+        try:
+            op = self.__dict__["op"]
+        except KeyError:
+            raise AttributeError(name) from None
+        return getattr(op, name)
 
 
 # MXFP4 stays packed: MoE experts -> Mxfp4StackedExperts, other Linears -> Mxfp4PackedLinear (UNSLOTH_MXFP4_KEEP_PACKED=0 opts out).
