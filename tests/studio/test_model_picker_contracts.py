@@ -855,10 +855,13 @@ def test_partial_safetensors_download_keeps_delete_menu():
     guard = guard[: -len("&& (")]
 
     def stopped_partial(operand):
-        # `isPartial && !downloading`, with isPartial possibly one of several OR'd sources.
+        # Exactly `isPartial && !downloading`, isPartial possibly one of several OR'd sources.
+        # Any further conjunct is a further restriction on a stopped partial, so it fails.
         parts = split_operands(operand, "&&")
-        return "!downloading" in parts and any(
-            "isPartial" in split_operands(part, "||") for part in parts
+        return (
+            len(parts) == 2
+            and "!downloading" in parts
+            and any("isPartial" in split_operands(part, "||") for part in parts)
         )
 
     assert any(
