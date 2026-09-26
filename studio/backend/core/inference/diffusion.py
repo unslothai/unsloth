@@ -8634,10 +8634,10 @@ class DiffusionBackend:
                             self._reset_step_cache(state.pipe)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                         try:
-                            # torchao aten.to fails torch's aliasing check under inference_mode; offload moves weights.
+                            # torchao aten.to fails torch's aliasing check under inference_mode; model offload moves weights.
                             grad_mode = (
                                 torch.no_grad
-                                if state.transformer_quant and state.offload_policy != OFFLOAD_NONE
+                                if state.transformer_quant and state.offload_policy == OFFLOAD_MODEL
                                 else torch.inference_mode
                             )
                             with grad_mode(), protect_ctx:
