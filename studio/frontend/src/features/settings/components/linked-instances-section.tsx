@@ -29,20 +29,27 @@ import {
   MoreHorizontalIcon,
   PencilEdit02Icon,
   RefreshIcon,
+  StopCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useId, useState } from "react";
 import {
+  type ColabLaunchJob,
+  type ColabSession,
   type LinkedInstance,
   type LinkedInstanceInfo,
   type LinkedInstanceStatus,
   createLinkedInstance,
   deleteLinkedInstance,
+  fetchColabLaunch,
+  fetchColabSessions,
   fetchLinkedInstances,
   fetchLinkedInstancesInfo,
+  stopColabSession,
   testLinkedInstance,
   updateLinkedInstance,
 } from "../api/linked-instances";
+import { COLAB_STAGES, ColabLaunchDialog } from "./colab-launch-dialog";
 import { LinkedInstanceDetailsDialog } from "./linked-instance-details-dialog";
 import { acceleratorLabel, formatGb } from "./linked-instance-format";
 
@@ -91,18 +98,22 @@ function InstanceRow({
   instance,
   status,
   info,
+  colab,
   onCheck,
   onDetails,
   onEdit,
   onRemove,
+  onStop,
 }: {
   instance: LinkedInstance;
   status: Status;
   info: LinkedInstanceInfo | undefined;
+  colab: ColabSession | undefined;
   onCheck: () => void;
   onDetails: () => void;
   onEdit: () => void;
   onRemove: () => void;
+  onStop: () => void;
 }) {
   const t = useT();
   const checking = status === undefined || status === "checking";
@@ -144,13 +155,22 @@ function InstanceRow({
         <StatusDot status={status} />
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <div className="flex min-w-0 items-baseline justify-between gap-3">
-            <button
-              type="button"
-              onClick={onDetails}
-              className="truncate rounded-sm font-mono text-sm font-medium text-foreground hover:underline hover:decoration-border hover:underline-offset-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              @{instance.name}
-            </button>
+            <span className="flex min-w-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={onDetails}
+                className="truncate rounded-sm font-mono text-sm font-medium text-foreground hover:underline hover:decoration-border hover:underline-offset-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                @{instance.name}
+              </button>
+              {colab ? (
+                <span className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-px text-ui-11 font-medium text-amber-700 dark:text-amber-400">
+                  {t("settings.apiKeys.linkedInstances.colab.badge", {
+                    gpu: colab.gpu,
+                  })}
+                </span>
+              ) : null}
+            </span>
             <span
               className={cn(
                 "shrink-0 text-ui-11 tabular-nums",
@@ -223,13 +243,29 @@ function InstanceRow({
                 <HugeiconsIcon icon={Copy01Icon} className="mr-2 size-3.5" />
                 {t("settings.apiKeys.linkedInstances.copyPrefix")}
               </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={onRemove}
-                className="text-destructive focus:text-destructive"
-              >
-                <HugeiconsIcon icon={Delete02Icon} className="mr-2 size-3.5" />
-                {t("settings.apiKeys.linkedInstances.remove")}
-              </DropdownMenuItem>
+              {colab ? (
+                <DropdownMenuItem
+                  onClick={onStop}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <HugeiconsIcon
+                    icon={StopCircleIcon}
+                    className="mr-2 size-3.5"
+                  />
+                  {t("settings.apiKeys.linkedInstances.colab.stop")}
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem
+                  onClick={onRemove}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <HugeiconsIcon
+                    icon={Delete02Icon}
+                    className="mr-2 size-3.5"
+                  />
+                  {t("settings.apiKeys.linkedInstances.remove")}
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -439,6 +475,24 @@ export function LinkedInstancesSection() {
   const [infos, setInfos] = useState<Record<string, LinkedInstanceInfo>>({});
   const [detailsId, setDetailsId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [colabSessions, setColabSessions] = useState<ColabSession[]>([]);
+  const [colabJob, setColabJob] = useState<ColabLaunchJob | null>(null);
+  const [colabOpen, setColabOpen] = useState(false);
+  const [stopTarget, setStopTarget] = useState<ColabSession | null>(null);
+  const [stopping, setStopping] = useState(false);
+
+  const loadColab = useCallback(async () => {
+    try {
+      const [sessions, job] = await Promise.all([
+        fetchColabSessions(),
+        fetchColabLaunch(),
+      ]);
+      setColabSessions(sessions);
+      setColabJob(job);
+    } catch {
+      // Colab launching is optional; the linked list still works without it.
+    }
+  }, []);
 
   const loadInfo = useCallback(async () => {
     try {
@@ -476,14 +530,53 @@ export function LinkedInstancesSection() {
       setError(null);
       for (const instance of loaded) void check(instance.id);
       void loadInfo();
+      void loadColab();
     } catch {
       setError(t("settings.apiKeys.linkedInstances.loadError"));
     }
-  }, [t, check, loadInfo]);
+  }, [t, check, loadInfo, loadColab]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const colabRunning = colabJob?.state === "running";
+  useEffect(() => {
+    if (!colabRunning) return;
+    const timer = window.setInterval(async () => {
+      const job = await fetchColabLaunch().catch(() => null);
+      setColabJob(job);
+      if (job && job.state !== "running") void load();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [colabRunning, load]);
+
+  const confirmStop = async () => {
+    if (!stopTarget) return;
+    setStopping(true);
+    try {
+      await stopColabSession(stopTarget.session);
+      toast.success(t("settings.apiKeys.linkedInstances.colab.stopped"));
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : null);
+    } finally {
+      setStopTarget(null);
+      setStopping(false);
+    }
+  };
+
+  const colabByInstance = new Map(
+    colabSessions.flatMap((s) =>
+      s.instance_id ? [[s.instance_id, s] as const] : [],
+    ),
+  );
+  // Launch teardown failed or the link was removed: the VM may still bill.
+  const orphanSessions = colabSessions.filter(
+    (s) =>
+      !(s.instance_id && instances?.some((i) => i.id === s.instance_id)) &&
+      !(colabRunning && colabJob?.session === s.session),
+  );
 
   const confirmRemove = async () => {
     if (!removeTarget) return;
@@ -556,21 +649,84 @@ export function LinkedInstancesSection() {
             </p>
           </div>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          variant={adding ? "outline" : "default"}
-          className="min-w-20 shrink-0"
-          onClick={() => {
-            setEditingId(null);
-            setAdding((v) => !v);
-          }}
-        >
-          {adding
-            ? t("common.cancel")
-            : t("settings.apiKeys.linkedInstances.add")}
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => setColabOpen(true)}
+          >
+            {t("settings.apiKeys.linkedInstances.colab.launch")}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={adding ? "outline" : "default"}
+            className="min-w-20"
+            onClick={() => {
+              setEditingId(null);
+              setAdding((v) => !v);
+            }}
+          >
+            {adding
+              ? t("common.cancel")
+              : t("settings.apiKeys.linkedInstances.add")}
+          </Button>
+        </div>
       </div>
+
+      {colabRunning && colabJob ? (
+        <div className="flex items-center justify-between gap-3 border-t border-border/60 px-4 py-2.5">
+          <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+            <span
+              aria-hidden={true}
+              className="size-2 shrink-0 animate-pulse rounded-full bg-amber-500"
+            />
+            <span className="truncate">
+              {t("settings.apiKeys.linkedInstances.colab.launchingBanner", {
+                name: colabJob.name,
+                gpu: colabJob.gpu,
+                stage: t(
+                  COLAB_STAGES.find((s) => s.id === colabJob.stage)?.label ??
+                    "settings.apiKeys.linkedInstances.colab.stageAllocating",
+                ),
+              })}
+            </span>
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 shrink-0 px-2 text-xs"
+            onClick={() => setColabOpen(true)}
+          >
+            {t("settings.apiKeys.linkedInstances.colab.view")}
+          </Button>
+        </div>
+      ) : null}
+
+      {orphanSessions.map((s) => (
+        <div
+          key={s.session}
+          className="flex items-center justify-between gap-3 border-t border-border/60 px-4 py-2.5"
+        >
+          <span className="min-w-0 truncate text-xs text-amber-700 dark:text-amber-400">
+            {t("settings.apiKeys.linkedInstances.colab.orphan", {
+              session: s.session,
+              gpu: s.gpu,
+            })}
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 shrink-0 px-2 text-xs text-destructive hover:text-destructive"
+            onClick={() => setStopTarget(s)}
+          >
+            {t("settings.apiKeys.linkedInstances.colab.stop")}
+          </Button>
+        </div>
+      ))}
 
       {adding ? (
         <InstanceForm
@@ -611,6 +767,7 @@ export function LinkedInstancesSection() {
                 instance={instance}
                 status={statuses[instance.id]}
                 info={infos[instance.id]}
+                colab={colabByInstance.get(instance.id)}
                 onCheck={() => {
                   void check(instance.id);
                   void loadInfo();
@@ -621,6 +778,9 @@ export function LinkedInstancesSection() {
                   setEditingId(instance.id);
                 }}
                 onRemove={() => setRemoveTarget(instance)}
+                onStop={() =>
+                  setStopTarget(colabByInstance.get(instance.id) ?? null)
+                }
               />
             ),
           )}
@@ -641,6 +801,53 @@ export function LinkedInstancesSection() {
         }}
         refreshing={detailsId !== null && statuses[detailsId] === "checking"}
       />
+
+      <ColabLaunchDialog
+        open={colabOpen}
+        onOpenChange={(open) => {
+          setColabOpen(open);
+          if (!open) void loadColab();
+        }}
+        onFinished={() => void load()}
+      />
+
+      <Dialog
+        open={stopTarget !== null}
+        onOpenChange={(open) => !open && !stopping && setStopTarget(null)}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {t("settings.apiKeys.linkedInstances.colab.stopTitle", {
+                name: stopTarget?.name ?? "",
+              })}
+            </DialogTitle>
+            <DialogDescription>
+              {t("settings.apiKeys.linkedInstances.colab.stopDescription", {
+                name: stopTarget?.name ?? "",
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setStopTarget(null)}
+              disabled={stopping}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              onClick={() => void confirmStop()}
+              disabled={stopping}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {stopping
+                ? t("settings.apiKeys.linkedInstances.colab.stopping")
+                : t("settings.apiKeys.linkedInstances.colab.stop")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={removeTarget !== null}

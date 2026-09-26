@@ -128,3 +128,89 @@ export async function fetchLinkedInstancesInfo(): Promise<
   if (!res.ok) throw await detail(res, "Failed to load linked instances");
   return res.json();
 }
+
+export type ColabGpu = "T4" | "L4" | "A100" | "H100";
+export type ColabStage =
+  "allocating" | "installing" | "starting" | "linking" | "ready";
+
+export interface ColabCapability {
+  state:
+    "ready" | "unsupported" | "missing_cli" | "kernel_client" | "signed_out";
+  ready: boolean;
+  message: string;
+  setup: string[];
+  runner: "native" | "wsl" | null;
+  distro: string | null;
+  auth: string | null;
+  detail: string | null;
+}
+
+export interface ColabLaunchJob {
+  id: string;
+  name: string;
+  gpu: ColabGpu;
+  session: string;
+  stage: ColabStage;
+  state: "running" | "ready" | "failed" | "cancelled";
+  error: string | null;
+  setup: string[];
+  instance_id: string | null;
+  started_at: string;
+  finished_at: string | null;
+  log: string[];
+}
+
+/** A Colab VM this machine started; it bills until stopped. */
+export interface ColabSession {
+  session: string;
+  name: string;
+  gpu: string;
+  instance_id: string | null;
+  created_at: string;
+}
+
+export async function fetchColabCapability(): Promise<ColabCapability> {
+  const res = await authFetch("/api/linked-instances/colab/capability");
+  if (!res.ok) throw await detail(res, "Failed to check the Colab CLI");
+  return res.json();
+}
+
+export async function fetchColabLaunch(): Promise<ColabLaunchJob | null> {
+  const res = await authFetch("/api/linked-instances/colab/launch");
+  if (!res.ok) throw await detail(res, "Failed to load the Colab launch");
+  return res.json();
+}
+
+export async function startColabLaunch(input: {
+  gpu: ColabGpu;
+  name: string;
+}): Promise<ColabLaunchJob> {
+  const res = await authFetch("/api/linked-instances/colab/launch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw await detail(res, "Failed to launch a Colab GPU");
+  return res.json();
+}
+
+export async function cancelColabLaunch(): Promise<void> {
+  const res = await authFetch("/api/linked-instances/colab/launch/cancel", {
+    method: "POST",
+  });
+  if (!res.ok) throw await detail(res, "Failed to cancel the Colab launch");
+}
+
+export async function fetchColabSessions(): Promise<ColabSession[]> {
+  const res = await authFetch("/api/linked-instances/colab/sessions");
+  if (!res.ok) throw await detail(res, "Failed to load Colab sessions");
+  return res.json();
+}
+
+export async function stopColabSession(session: string): Promise<void> {
+  const res = await authFetch(
+    `/api/linked-instances/colab/sessions/${encodeURIComponent(session)}/stop`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw await detail(res, "Failed to stop the Colab session");
+}
