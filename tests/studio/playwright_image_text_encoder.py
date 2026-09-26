@@ -202,9 +202,7 @@ def main():
         assert not loads
         choose("INT8")
         state["complete"] = True
-        expect(page.get_by_role("button", name = "Reapply", exact = True)).to_be_enabled(
-            timeout = 20_000
-        )
+        expect(page.get_by_role("button", name = "Reapply", exact = True)).to_be_enabled(timeout = 20_000)
         if DECLINE:
             # The select must show what RAN, or the page advertises a precision nothing is using.
             # A declined scheme runs the dense encoder ("off"), and since #11539 a family default
