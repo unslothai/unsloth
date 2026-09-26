@@ -1144,7 +1144,9 @@ def main() -> int:
                             timeout = 10_000,
                         )
                     except PlaywrightTimeoutError:
-                        info(f"WARN {size} {name}: the notes toggle never reported aria-expanded=true")
+                        info(
+                            f"WARN {size} {name}: the notes toggle never reported aria-expanded=true"
+                        )
                     settle_cards(page)
                     measure(page, f"{size} {name} expanded")
                     toggle.click()
