@@ -286,7 +286,8 @@ def fp16_compile_explicit_only(target: Any) -> bool:
 
 
 def family_compiles_regionally(family: Any) -> bool:
-    """False only for an EMPTY ``_repeated_blocks`` (``compile_repeated_blocks`` raises); unknown reads True."""
+    """False only for an EMPTY ``_repeated_blocks`` Studio cannot supply (``compile_repeated_blocks`` raises); unknown
+    reads True."""
     if getattr(family, "denoiser_attr", "transformer") != "transformer":
         return True
     name = getattr(family, "transformer_class", None)
@@ -306,7 +307,10 @@ def family_compiles_regionally(family: Any) -> bool:
         return True
     if cls is None or not hasattr(cls, "_repeated_blocks"):
         return True
-    return bool(cls._repeated_blocks)
+    if cls._repeated_blocks:
+        return True
+    from .diffusion_regional_compile import verified_repeated_blocks
+    return bool(verified_repeated_blocks(name))
 
 
 def _is_bfloat16(dtype: Any) -> bool:
@@ -606,6 +610,13 @@ def _compile_repeated_blocks(
     unet = _denoiser_unet(pipe) if not dits else None
     if not dits and unet is None:
         return False
+    # Before the stream-merge probe below, which reads the same block names.
+    for transformer in dits:
+        try:
+            from .diffusion_regional_compile import ensure_repeated_blocks
+            ensure_repeated_blocks(transformer)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "repeated block discovery", exc)
     # default: dynamic=True, fast cold start, no recompile on resolution change. max: max-autotune-no-cudagraphs +
     # automatic dynamic (None): the first shape compiles static and autotuned, and a dimension that then changes is
     # generalised once. dynamic=False recompiled on every new prompt length for DiTs whose blocks see the text tokens
