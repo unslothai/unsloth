@@ -1433,7 +1433,7 @@ def _transformer_names(pipe: Any, fam: VideoFamily) -> tuple[str, ...]:
 
 
 def _video_transformer_quant_backend(state: Any) -> Optional[str]:
-    """Read from the module tree; both experts share one backend. Never raises."""
+    """Which NVFP4 kernel path the loaded denoiser(s) run, or None. Never raises."""
     if getattr(state, "transformer_quant", None) != "nvfp4":
         return None
     try:
@@ -3077,7 +3077,7 @@ class VideoBackend:
         text_encoder_quant: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
     ) -> Optional[str]:
-        """The plan's seed scheme; ``DENOISER_SEED_DECLINED`` if the load would offload."""
+        """The pre-download auto denoiser scheme, None, or ``DENOISER_SEED_DECLINED`` if the plan would offload."""
         try:
             if kind != "pipeline" or getattr(fam, "modular_workflow", None):
                 return None
@@ -3270,7 +3270,7 @@ class VideoBackend:
         cancel_event: Optional[threading.Event] = None,
         local_files_only: bool = False,
     ) -> None:
-        """Pre-fetch hosted denoiser checkpoint(s) under the load's cancel event; best effort."""
+        """Pre-fetch the hosted denoiser checkpoint(s) under the load's cancel event; best effort except cancellation."""
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         from core.inference.diffusion_prequant import candidate_filenames_of
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -3311,7 +3311,7 @@ class VideoBackend:
         *,
         kind: str = "pipeline",
     ) -> bool:
-        """True when hosted pre-quantized denoisers replace ALL dense DiT shards; never raises."""
+        """True when hosted pre-quantized checkpoints replace ALL the family's dense DiT shards; offline, never raises."""
         try:
             scheme = normalize_transformer_quant(transformer_quant)
             # An unresolved "auto" must NOT drop dense shards; the backend settles it first.
@@ -3334,7 +3334,7 @@ class VideoBackend:
         base: Optional[str],
         h3_task: Optional[str] = None,
     ) -> list[Any]:
-        """Every ``PrequantSource`` a seeded load would open, or ``[]``; never raises."""
+        """Every ``PrequantSource`` a seeded load would open, or ``[]``; registry only, never raises."""
         scheme = (transformer_quant or "").strip().lower()
         if scheme in ("", "auto", "off", "none"):
             return []
@@ -3358,7 +3358,7 @@ class VideoBackend:
         base: Optional[str],
         h3_task: Optional[str] = None,
     ) -> tuple[str, ...]:
-        """Repo id(s) a seeded denoiser is fetched from, for the in-flight delete guard."""
+        """Hosted repo id(s) a seeded denoiser is fetched from, for the in-flight delete guard."""
         return tuple(
             dict.fromkeys(
                 src.location
@@ -3377,7 +3377,8 @@ class VideoBackend:
         api: Any,
         h3_task: Optional[str] = None,
     ) -> tuple[Optional[str], list[tuple[str, int]]]:
-        """``(repo_id, [(rfilename, size)])`` for all hosted denoisers or ``(None, [])``."""
+        """``(repo_id, [(rfilename, size)])`` for every hosted denoiser artifact, or ``(None, [])``, so preflight
+        counts the checkpoint that replaces the dropped dense shards."""
         sources = VideoBackend._denoiser_prequant_source_list(fam, transformer_quant, base, h3_task)
         if not sources or any(getattr(src, "kind", None) != "repo" for src in sources):
             return None, []
@@ -3518,8 +3519,7 @@ class VideoBackend:
     ) -> list[tuple[str, int]]:
         """The (rfilename, size) list a load actually needs from the base repo.
 
-        Single source of truth for the progress estimate AND the scoped pre-download,
-        so the two can never disagree. Excluded on purpose:
+        Shared by the progress estimate and the scoped pre-download. Excluded on purpose:
         - root-level packaged checkpoints (ComfyUI-style singles; 170 GB of the LTX-2
           repo) -- the diffusers pipeline only reads per-component subfolders;
         - the duplicate ``text_encoder/diffusion_pytorch_model*`` shard set (the LTX-2
@@ -3536,15 +3536,10 @@ class VideoBackend:
         - the dense weight shards of the denoiser partition this load opens, under
           ``skip_transformer_weights``, supplied instead by a hosted PRE-QUANTIZED
           denoiser checkpoint (H3's transformer is 66.3 GB of its base repo).
-          ``transformer/config.json`` stays; ``skip_transformer_components`` names the covered ones.
+          ``transformer/config.json`` is kept for the same reason the pre-cast
+          encoders keep theirs; ``skip_transformer_components`` names the covered denoisers.
 
-        ``h3_task`` picks the H3 denoiser partition. The base repo ships two, and a load only ever
-        brings up one: ``transformer/`` for fl2va (which also covers text-only) and
-        ``transformer_ref/`` for ref2va. They are 66.28 GB each, so the scoped list carries exactly
-        one of them, never both. Substituting rather than listing both is what keeps the stage at
-        one denoiser: listing only ``transformer/`` staged the wrong 66.28 GB for a ref2va load and
-        left the right one to be fetched inline, outside the download manager's disk preflight and
-        cancellation."""
+        ``h3_task`` picks the ONE H3 partition staged (``transformer/`` or ``transformer_ref/``)."""
         from .diffusion_te_prequant import is_prequant_covered_weight
         from .video_minimax_h3 import H3_TASK_REFERENCES
 
@@ -4599,10 +4594,7 @@ class VideoBackend:
             log: bool,
             denoiser_gb: Optional[float] = None,
         ) -> tuple[Any, Any, bool]:
-            """``(plan, bf16_plan, quant_replanned)`` for a text-encoder budget of ``scale`` x
-            its bf16 size. Pure and cheap (``plan_diffusion_memory`` is arithmetic), so the
-            dense-encoder plan can be rebuilt below if the pre-cast injection does not land.
-            ``denoiser_gb`` replaces the bf16 DiT term for a SEEDED load (steady and peak)."""
+            """``(plan, bf16_plan, quant_replanned)``; ``denoiser_gb`` prices a SEEDED DiT (peak == steady)."""
             text_encoder_gb = components[1] * scale if components is not None else 0.0
             # dtype_scale doubles bf16 terms when the fp16 promotion lands fp32 on an accelerator. A vae_force_fp32
             # family is the one component it must NOT touch: its table term is already recorded at fp32 and assembly

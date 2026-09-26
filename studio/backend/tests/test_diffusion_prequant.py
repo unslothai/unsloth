@@ -346,7 +346,7 @@ class _Bytes:
 
 
 class Float8Tensor:
-    """The class NAME is what the fingerprint and the activation-floor check key on."""
+    """A quantized fp8 weight; the class NAME is what the fingerprint and activation-floor checks key on."""
 
     def __init__(
         self,
@@ -2328,7 +2328,7 @@ def test_an_nvfp4_install_must_be_able_to_open_the_fp8_weights_too():
 
 
 def test_the_checkpoint_is_released_before_the_device_copy(monkeypatch, tmp_path):
-    """assign=True shares the checkpoint's tensors: unreference them before ``.to(device)``."""
+    """The CPU checkpoint must be unreferenced by the time ``.to(device)`` allocates (unified memory peak)."""
     import weakref
 
     seen: dict = {}

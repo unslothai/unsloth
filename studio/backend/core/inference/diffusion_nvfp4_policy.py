@@ -3,8 +3,8 @@
 
 """Per-layer NVFP4 policies for the image DiTs: a named set of layers at 4 bits over an fp8 model.
 
-FAILS CLOSED: layers match by exact dotted SUFFIX and every rule asserts a count, so a diffusers
-rename raises at build time instead of shipping precisions nobody measured.
+A policy puts a named set of layers at 4 bits over fp8: a memory lever, not a speed win, so nvfp4
+sits BELOW fp8 in the image auto order. FAILS CLOSED: exact suffixes and asserted counts per rule.
 """
 
 from __future__ import annotations
@@ -22,12 +22,12 @@ NVFP4_POLICY_KIND = "unsloth_nvfp4_layer_policy_v1"
 
 
 class PolicyMismatch(ValueError):
-    """The model is not the one this policy was written for. Raised, never warned."""
+    """The model this policy was applied to is not the one it was written for."""
 
 
 @dataclass(frozen = True)
 class Rule:
-    """``expect`` is asserted at assignment time; ``prefix`` narrows the rule to one subtree."""
+    """``suffix`` -> ``precision``; ``expect`` is an asserted count, ``prefix`` narrows to one subtree."""
 
     suffix: str
     precision: str
@@ -35,7 +35,7 @@ class Rule:
     prefix: str = ""
 
     def matches(self, fqn: str) -> bool:
-        """Exact dotted suffix: ``norm.linear`` selects neither ``norm1.linear`` nor ``norm_out``."""
+        """Exact dotted-suffix match: ``norm.linear`` does not select ``norm1.linear``."""
         if self.prefix and not fqn.startswith(self.prefix):
             return False
         return fqn == self.suffix or fqn.endswith("." + self.suffix)
@@ -43,9 +43,7 @@ class Rule:
 
 @dataclass(frozen = True)
 class Admit:
-    """A linear the shared filter rejects that this policy quantises anyway, at an exact ``shape``.
-    Dropping the floor instead would admit ``t_embedder.mlp.*``, which must stay bf16
-    (``TimestepEmbedder.forward`` reads ``mlp[0].weight.dtype``)."""
+    """A filter-rejected linear this policy quantises anyway; ``shape`` is exact so ``t_embedder.mlp.*`` stays bf16."""
 
     suffix: str
     shape: tuple
@@ -57,7 +55,7 @@ class Admit:
 
 @dataclass(frozen = True)
 class NVFP4Policy:
-    """Keyed on lowercased ``base_repos``: a sibling checkpoint is different, ungated weights."""
+    """One measured per-layer precision assignment, keyed on lowercased ``base_repos`` (never a sibling's)."""
 
     policy_id: str
     version: int
@@ -201,15 +199,13 @@ def policy_by_id(policy_id: Any) -> Optional[NVFP4Policy]:
 
 
 def policy_expected_counts(policy: NVFP4Policy) -> dict:
-    """Zero entries dropped: a Counter never records a precision no layer took."""
     return {
         str(key): int(value) for key, value in dict(policy.expected_counts).items() if int(value)
     }
 
 
 def resolve_policy(family: Any, base_repo: Any = None) -> Optional[NVFP4Policy]:
-    """Keyed on the BASE: an unnamed base answers None even where the family has one policy, or a
-    second gated base would hand every anonymous load the first one's precisions."""
+    """The policy for ``(family, base_repo)``, or None; an unnamed base is None even if the family has one."""
     fam = str(family or "").strip().lower()
     if not fam:
         return None
@@ -232,6 +228,7 @@ def assign_precisions(
     min_features: Optional[int] = None,
     require_divisible: Optional[int] = None,
 ) -> dict:
+    """``{fqn: precision}`` for EVERY Linear, or raise ``PolicyMismatch``; rules apply in order, first claim wins."""
     import torch
 
     from .diffusion_transformer_quant import (
@@ -305,7 +302,6 @@ def policy_metadata(
     activation_scales_baked: bool = False,
     gptq: bool = False,
 ) -> dict:
-    """Sorted for byte-stable builds; the fqn list is recorded, not re-derived from a drifting rule."""
     counts = Counter(assignment.values())
     return {
         NVFP4_POLICY_KEY: {
@@ -323,11 +319,12 @@ def policy_metadata(
 
 
 def declares_policy(metadata: Any) -> bool:
-    """Keyed on the KEY: an unreadable block must refuse, not read as "no policy"."""
+    """True when ``metadata`` has the policy KEY; an unreadable block must refuse, not read as "no policy"."""
     return isinstance(metadata, dict) and metadata.get(NVFP4_POLICY_KEY) not in (None, "")
 
 
 def policy_metadata_error(metadata: Any) -> Optional[str]:
+    """Why ``metadata``'s declared policy breaks the contract, or None. Torch-free."""
     if not declares_policy(metadata):
         return None
     block = metadata.get(NVFP4_POLICY_KEY)
@@ -373,7 +370,7 @@ _EXPECTED_WEIGHT_CLASS = {
 
 
 def _verify_weight_types(transformer: Any, assignment: Mapping) -> None:
-    """Raise unless every layer holds its precision's weight class: torchao skips layers silently."""
+    """Raise unless every assigned layer holds its precision's weight class (torchao can skip silently)."""
     wrong: list = []
     for fqn, module in transformer.named_modules():
         precision = assignment.get(fqn)
@@ -400,7 +397,7 @@ def quantize_with_policy(
     fast_accum: Optional[bool] = None,
     logger: Any = None,
 ) -> dict:
-    """NVFP4 pass first, then fp8 over plain Parameters only. A raise leaves it partly quantised."""
+    """Apply ``policy`` in place via two disjoint ``quantize_`` passes, NVFP4 first; discard on a raise."""
     import torch
     from torchao.quantization import quantize_
 

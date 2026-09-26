@@ -3,9 +3,9 @@
 
 """The FlashInfer NVFP4 Linear, and the conversion that puts a hosted checkpoint onto it.
 
-Nothing requantizes: torchao's payload IS FlashInfer's, with ``per_tensor_scale == 1 / w_gsf``.
-The activation scale must be BAKED: calibrating it live is not capture-safe and latched flux to
-black frames, so a layer with no baked scale is NOT converted.
+ONE artifact, two backends. Nothing here requantizes: torchao's payload IS FlashInfer's, byte for
+byte. The activation global scale is BAKED, never calibrated (not capture-safe, and the cause of the
+flux black-frame latch), so a layer without one is NOT converted.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def nvfp4_linear_class():
     from .diffusion_nvfp4_bias import fused_bias_add_
 
     class NVFP4FlashInferLinear(nn.Module):
-        """Runs inside a captured CUDA graph: no host synchronize, no device-value branch."""
+        """NVFP4-weight Linear; the forward must stay capture-safe (no host sync, no device-value branch)."""
 
         def __init__(
             self,
@@ -107,7 +107,6 @@ def nvfp4_linear_class():
                 )
                 out = F.linear(flat, weight)
             else:
-                # Zero graph breaks under compile; without it a flashinfer launch can hit the wrong card.
                 with _device_guard(flat):
                     xq, x_sf = torch.ops.unsloth_nvfp4.quantize(flat, self.a_gsf)
                     out = torch.ops.unsloth_nvfp4.mm(
@@ -221,7 +220,7 @@ def convert_nvfp4_backend(
     *,
     logger: Any = None,
 ) -> int:
-    """All or nothing: one missing baked scale leaves the whole tree on torchao."""
+    """Move every NVFP4 Linear onto FlashInfer, returning how many; all or nothing on a missing baked scale."""
     if backend != BACKEND_FLASHINFER:
         return 0
     scales = _baked_activation_scales(metadata)
@@ -280,7 +279,7 @@ def nvfp4_prewarm(
     *,
     logger: Any = None,
 ) -> int:
-    """Must run before any capture, which would bake in ``mm_fp4``'s default tactic."""
+    """Autotune converted layers at these token counts BEFORE any capture, with the precision lever suspended."""
     from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
 
     if not nvfp4_diffusion_enabled():
@@ -334,7 +333,7 @@ def _prewarm_shapes(modules, shapes, *, logger, tuned_box) -> None:
 
 
 def _iter_linears(transformer: Any):
-    """Keyed on feature counts: a converted layer has no ``weight``."""
+    """Every Linear-like leaf, by feature counts (a converted layer has no ``weight``)."""
     for name, module in transformer.named_modules():
         if not name:
             continue

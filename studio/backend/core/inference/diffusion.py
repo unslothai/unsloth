@@ -146,6 +146,7 @@ from .diffusion_speed import (
     restore_backend_flags,
     settle_compile_fallback,
     snapshot_backend_flags,
+    vae_decode_compile_allowed,
 )
 from .diffusion_attention import (
     apply_attention_backend,
@@ -1386,8 +1387,7 @@ def _planned_quant_scheme(
     base_repo: Optional[str],
     prequant_path: Optional[str],
 ) -> Optional[str]:
-    """The scheme the load will resolve: without the base and the checkpoint probe, plan and load
-    pick different schemes and a second denoiser is fetched inline."""
+    """The scheme the load will resolve, asked with the same base and hosted-checkpoint probe as the load."""
     return select_transformer_quant_scheme(
         target,
         requested,
@@ -6361,6 +6361,7 @@ class DiffusionBackend:
                                 "mode": "max-autotune-no-cudagraphs"
                                 if effective_speed == SPEED_MAX
                                 else "default",
+                                "vae_decode": vae_decode_compile_allowed(pipe, effective_speed),
                             },
                             logger = logger,
                         )
@@ -6770,7 +6771,6 @@ class DiffusionBackend:
                 check_cancelled()
                 if transformer is not None:
                     if scheme == TQ_NVFP4:
-                        # Only M = 1 is knowable here; other shapes tune on their first eager GEMM.
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
                         nvfp4_prewarm(transformer, (1,), logger = logger)
                     pipe = self._assemble_pipe(
@@ -8019,6 +8019,7 @@ class DiffusionBackend:
                     and state.offload_policy == OFFLOAD_NONE,
                     "dynamic": compile_dynamic(getattr(state.pipe, "transformer", None), True),
                     "mode": "default",
+                    "vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT),
                 },
                 logger = logger,
             )
@@ -9015,7 +9016,7 @@ class DiffusionBackend:
 
 
 def _transformer_quant_backend(state: Any) -> Optional[str]:
-    """The NVFP4 kernel path read from the MODULE TREE, not the load's intent. Never raises."""
+    """Which NVFP4 kernel path the loaded denoiser runs, read from the MODULE TREE, or None. Never raises."""
     if getattr(state, "transformer_quant", None) != TQ_NVFP4:
         return None
     try:

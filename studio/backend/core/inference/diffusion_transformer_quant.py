@@ -213,7 +213,6 @@ _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
 
 
 def zero_row_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
-    """Tokens needing the empty-activation guard; nvfp4 only (fp8 / mxfp8 reduce per row)."""
     if scheme != TQ_NVFP4:
         return ()
     return _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS.get(str(family or "").strip().lower(), ())
@@ -226,7 +225,7 @@ def apply_zero_row_guard(
     *,
     logger: Any = None,
 ) -> tuple[str, ...]:
-    """Wrap this family's zero-row-reachable quantized Linears after quantize; not best-effort."""
+    """Guard zero-row-reachable quantized Linears; call AFTER quantization (else the first t2v render crashes)."""
     tokens = zero_row_tokens_for_scheme(scheme, family)
     if not tokens:
         return ()
@@ -297,10 +296,8 @@ _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
 
 @dataclass(frozen = True)
 class _AutoPrefer:
-    """A family's own head of the ``auto`` order, tried AHEAD of the family-blind ``_AUTO_LADDER``.
-
-    Dropped below ``floor`` and, unless ``consumer_ok``, on consumer GPUs. ``gated``: needs a
-    passing record for THIS base on this device's backend; ``backend``: needs that NVFP4 backend."""
+    """A family's head of the ``auto`` order, ahead of ``_AUTO_LADDER``; off below ``floor`` or on consumer GPUs
+    (unless ``consumer_ok``), and ``gated`` / ``backend`` need a passing record / backend for THIS device."""
 
     floor: tuple[int, int]
     schemes: tuple[str, ...]
@@ -354,6 +351,7 @@ def _nvfp4_gate_passed(family, base_repo) -> bool:
 
 
 def _nvfp4_gate_backend_ok(family, base_repo, device: Any) -> bool:
+    """Whether a passing gate record was measured on the backend this device selects; failure keeps the deny."""
     if not nvfp4_diffusion_enabled():
         return False
     try:
@@ -367,6 +365,7 @@ def _nvfp4_gate_backend_ok(family, base_repo, device: Any) -> bool:
 
 
 def _nvfp4_backend_is(device: Any, name: str) -> bool:
+    """Whether ``select_nvfp4_backend`` picks ``name`` for ``device``; failure drops the head."""
     if not nvfp4_diffusion_enabled():
         return False
     try:
@@ -381,7 +380,7 @@ def _family_denied(
     scheme: str,
     base_repo: Optional[str] = None,
 ) -> bool:
-    """nvfp4 is the one entry a gate record can lift, per BASE: a sibling base stays denied."""
+    """Whether the deny table rules ``scheme`` out; a gate record lifts nvfp4 per BASE, not per family."""
     if scheme not in _FAMILY_SCHEME_DENY.get(str(family or "").strip().lower(), ()):
         return False
     if scheme == TQ_NVFP4 and _nvfp4_gate_passed(family, base_repo):
@@ -400,7 +399,7 @@ def _family_train_denied(
     scheme: str,
     base_repo: Optional[str] = None,
 ) -> bool:
-    """``_family_denied`` plus training-only additions: a superset, never a bypass."""
+    """``_family_denied`` plus training-only denies (always a superset); nvfp4 is denied for every family."""
     if scheme == TQ_NVFP4:
         return True
     key = str(family or "").strip().lower()
@@ -437,8 +436,7 @@ def family_denies_scheme(
     scheme: str,
     base_repo: Optional[str] = None,
 ) -> bool:
-    """Whether the measured deny list rules ``scheme`` out for ``family``, regardless of hardware.
-    Public so the refusal message can tell a family deny from a missing kernel."""
+    """Whether the deny list rules ``scheme`` out for ``family``, so a refusal can tell it from a missing kernel."""
     return _family_denied(family, scheme, base_repo)
 
 
@@ -449,6 +447,7 @@ def explain_unusable_scheme(
     *,
     prequant_missing: bool = False,
 ) -> str:
+    """Why an EXPLICIT ``scheme`` got None: family deny, unusable torchao, or a GPU without the kernels."""
     if nvfp4_blocked(scheme):
         return nvfp4_disabled_message()
     if family_denies_scheme(family, scheme, base_repo):
@@ -929,14 +928,9 @@ def select_transformer_quant_scheme(
     ``auto`` walks the per-arch ladder and returns the first scheme passing a real quantise+matmul
     smoke test, so an unavailable Blackwell fp4/mx kernel lands on fp8/int8 with no error. An
     explicit scheme is honored only if supported (else None), never swapped. ``family`` applies the
-    measured deny list (``_FAMILY_SCHEME_DENY``): schemes that produce black frames / out-of-bar
-    drift are skipped by ``auto`` and refused when explicit.
-
-    ``base_repo`` keys the per-base nvfp4 deny lift. ``require_prequant`` schemes are offered by
-    AUTO only when ``has_prequant`` finds a hosted checkpoint; EXPLICIT opts into a build.
-
-    ``unproven_ok`` is for the PRE-EVICTION route gate: a resident model can fail the smoke test for
-    want of VRAM, so it answers only "provably unusable here".
+    measured deny list; ``base_repo`` keys its per-base nvfp4 lift. ``require_prequant``: schemes AUTO
+    offers only with a hosted checkpoint (the gate measured that artifact, not an on-the-fly build).
+    ``unproven_ok`` is for the PRE-EVICTION gate, where a resident model can fail the smoke test for VRAM.
     """
     requested = normalize_transformer_quant(requested)
     if requested is None or not dense_transformer_supported(target):
@@ -1047,10 +1041,7 @@ def _auto_scheme_order(
     cap: tuple[int, int],
     base_repo: Optional[str] = None,
 ) -> tuple[str, ...]:
-    """The schemes ``auto`` would try on this GPU for this family, best first, before the deny list
-    and the smoke probe have their say. Empty when no tier matches, head or not: a capability below
-    every tier has no dense quant path at all. Shared by ``select_transformer_quant_scheme`` and
-    ``auto_scheme_candidates`` so the two can never disagree."""
+    """Schemes ``auto`` would try here, best first, before deny list and smoke probe; empty below every tier."""
     tier: tuple[str, ...] = ()
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
@@ -1691,11 +1682,7 @@ def quantize_transformer(
     offload: bool = False,
     act_int8: Optional[bool] = None,
 ) -> Optional[str]:
-    """Quantise ``pipe.transformer``'s FLOP-heavy linears in place with the arch-chosen scheme.
-    Returns the scheme engaged, or None when disabled / unsupported / failed (caller loads GGUF).
-    Best-effort: never raises for an unsupported environment (failure leaves it dense).
-    ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None auto-detects,
-    True/False force it. ``base_repo`` (UPSTREAM id) selects the per-layer NVFP4 policy."""
+    """Quantise ``pipe.transformer`` in place, returning the scheme or None (GGUF); ``base_repo`` picks the NVFP4 policy."""
     native = native_quant_scheme(target, mode, family = family, offload = offload)
     if native is not None:
         if act_int8 is None:

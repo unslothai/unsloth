@@ -48,7 +48,7 @@ _POLICY_STEADY_FACTOR: dict[str, float] = {
 
 
 def policy_steady_factor(family: Any, base_repo: Optional[str] = None) -> Optional[float]:
-    """None keeps the whole-model factor. Never raises: a sizing estimate must not sink a load."""
+    """The NVFP4 POLICY steady factor for ``(family, base_repo)``, or None. Never raises."""
     from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
 
     if not nvfp4_diffusion_enabled():
@@ -306,7 +306,7 @@ def _hf_cache_free_mib() -> Optional[int]:
 def _has_usable_prequant(
     fam: Any, scheme: str, prequant_path: Optional[str], base_repo: Optional[str]
 ) -> bool:
-    """False on any failure: "cannot tell" is not "yes"."""
+    """Whether a hosted or operator-supplied prequant checkpoint for ``scheme`` is usable; False on failure."""
     try:
         from .diffusion_prequant import usable_prequant_source
         return (
