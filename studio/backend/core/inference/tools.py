@@ -15117,6 +15117,22 @@ def _loaded_context_tokens() -> int | None:
     return None
 
 
+def _request_context_tokens() -> int | None:
+    """Return the context window for this request.
+
+    ``execute_tool`` stores an ``int`` or ``None``. These values are final and must not use the
+    process probe. Any other value means that the request did not set a window, so use the probe.
+
+    The type check is important. Two live copies of this module have different sentinel objects.
+    An identity check can pass one of those objects to the budget math and raise ``TypeError``
+    (#11384).
+    """
+    scoped = _REQUEST_CONTEXT_TOKENS.get()
+    if scoped is None or isinstance(scoped, int):
+        return scoped
+    return _loaded_context_tokens()
+
+
 def _result_char_budget(cap: int) -> int:
     """`cap`, lowered to what the serving window can actually hold. Shared by fetched pages and by
     terminal/python results, because the failure is the same: a fixed character cap has no
@@ -15125,10 +15141,7 @@ def _result_char_budget(cap: int) -> int:
     that does not fit and the request goes irreducible. Measured live on a 5120-token window:
     7043 and 6684 token requests refused, both on the code tools, whose 16,000-character cap is
     about 4,000 tokens on its own."""
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     if not ctx:
         return cap
     # Clamped to `cap` on the way out, not only on the way in. The floor keeps a result worth reading when the WINDOW
@@ -15156,10 +15169,7 @@ def _page_char_budget() -> int:
     Above roughly an 11k window this returns the old constant unchanged, so only the models that
     cannot afford a whole page are affected.
     """
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     if not ctx:
         return _MAX_PAGE_CHARS
     return max(_MIN_PAGE_CHARS, min(_MAX_PAGE_CHARS, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
@@ -15181,10 +15191,7 @@ def _request_result_room() -> int | None:
 
 def _window_context_tokens() -> int | None:
     """The window this request is served by, or None when it cannot be read."""
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     return ctx if ctx else None
 
 
