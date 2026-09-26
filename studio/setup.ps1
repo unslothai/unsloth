@@ -3490,11 +3490,15 @@ if (-not $HasNvidiaSmi) {
     }
 }
 if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
-    # The driver lists a GPU nvidia-smi cannot: the gates below read this as "GPU present",
-    # and the consumers stop asking nvidia-smi, absent or rejected, for the rest of the run.
-    $HasNvidiaSmi = $true
-    $script:NvidiaSmiRejected = $true
-    Write-StudioLine "   NVIDIA GPU found through the driver library; nvidia-smi is unavailable" -ForegroundColor Gray
+    # A driver too old for any CUDA wheel (below 11) is no GPU this route can serve: the Intel and
+    # AMD routes still get their turn instead of the install falling to CPU.
+    if ((Get-NvidiaLibraryInventory).CudaMajor -ge 11) {
+        # The driver lists a GPU nvidia-smi cannot: the gates below read this as "GPU present",
+        # and the consumers stop asking nvidia-smi, absent or rejected, for the rest of the run.
+        $HasNvidiaSmi = $true
+        $script:NvidiaSmiRejected = $true
+        Write-StudioLine "   NVIDIA GPU found through the driver library; nvidia-smi is unavailable" -ForegroundColor Gray
+    }
 }
 # nvidia-smi was already resolved above and never asked which card it found, so the banner
 # said "NVIDIA GPU detected" on every NVIDIA host alike. compute_cap is the counterpart of the
