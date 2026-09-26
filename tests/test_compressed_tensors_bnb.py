@@ -1221,3 +1221,23 @@ def test_chained_expert_ops_all_see_the_original_sources(stack_only_merge):
         )
     assert set(got) == set(targets)
     torch.testing.assert_close(got[targets[0]], want[targets[0]])
+
+
+def test_wrapped_converter_op_survives_the_loaders_deepcopy():
+    # transformers' loader deep-copies every WeightConverter per target key (native MoE merges).
+    pytest.importorskip("transformers.core_model_loading")
+    import copy
+
+    from transformers.core_model_loading import MergeModulelist, WeightConverter
+    from unsloth.models.compressed_tensors_bnb import _with_original_sources
+
+    pattern = "mlp.experts.*.gate_proj.weight"
+    op = _with_original_sources(MergeModulelist(dim = 0), [pattern], [pattern])
+    converter = WeightConverter(
+        source_patterns = [pattern],
+        target_patterns = "mlp.experts.gate_up_proj",
+        operations = [op],
+    )
+    clone = copy.deepcopy(converter).operations[0]
+    assert type(clone) is type(op) and clone.op is not op.op
+    assert clone.weight_sources == op.weight_sources and clone.dim == 0
