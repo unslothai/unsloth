@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth run` must not re-exec itself forever when the studio venv is reached through a symlink.
-
-The venv's console scripts carry the venv's real path in their shebang, so the child that
-run() re-execs through STUDIO_HOME / "unsloth_studio" reports the resolved sys.prefix. A
-string prefix check against the unresolved link never matched, and every child re-exec'd
-again with no output.
-"""
+"""`unsloth run` must not re-exec itself forever when the studio venv is reached through a symlink."""
 
 from __future__ import annotations
 
@@ -47,7 +41,6 @@ def test_resolved_prefix_counts_as_symlinked_venv(tmp_path, monkeypatch):
     real, link = _symlinked_venv(tmp_path)
     monkeypatch.setattr(sys, "prefix", str(real))
     assert studio_mod._running_in_studio_venv(link)
-    # The pre-fix check, for reference: this is exactly what never matched.
     assert not sys.prefix.startswith(str(link))
 
 
@@ -86,7 +79,6 @@ def test_missing_paths_do_not_raise(tmp_path, monkeypatch):
 
 
 def test_symlink_loop_does_not_raise(tmp_path, monkeypatch):
-    # Path.resolve() raises RuntimeError on a symlink loop before Python 3.13.
     studio_mod = _studio()
 
     def _loop(self, *a, **k):
@@ -180,8 +172,7 @@ def test_unlinked_venv_still_execs_the_console_script(monkeypatch):
 
 @_posix_exec_only
 def test_symlinked_venv_execs_through_the_linked_interpreter(tmp_path, monkeypatch):
-    # An older CLI in the venv has neither the marker nor the resolved check: through the
-    # console script its sys.prefix is the resolved path and it re-execs forever.
+    # An older venv CLI would loop via the console script (resolved sys.prefix).
     studio_mod = _studio()
     real, link = _symlinked_venv(tmp_path)
     _, result, execs = _run_app(

@@ -227,8 +227,7 @@ DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
 PBKDF2_ITERATIONS = 100_000
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
-# Set only for the child of run()'s re-exec into the studio venv. A child that sees it but is
-# still outside the venv must stop: re-exec'ing again would loop with no output.
+# Marks run()'s re-exec'd child; a marked child still outside the venv must stop, not loop.
 _STUDIO_REEXEC_ENV = "_UNSLOTH_STUDIO_REEXEC"
 _CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
 
@@ -453,21 +452,13 @@ def _studio_venv_python() -> Optional[Path]:
 def _resolved_or_self(path: Path) -> Path:
     try:
         return path.resolve()
-    except (OSError, RuntimeError, ValueError):
-        # RuntimeError: a symlink loop before Python 3.13
+    except (OSError, RuntimeError, ValueError):  # RuntimeError: symlink loop, Python < 3.13
         return path
 
 
 def _running_in_studio_venv(venv_dir: Path) -> bool:
-    """Whether this interpreter runs from the studio venv at *venv_dir* (or a dir inside it).
-
-    Compares whole path components, both as given and resolved. The venv's console scripts
-    carry the venv's real path in their shebang, so a child re-exec'd through a symlinked
-    STUDIO_HOME / unsloth_studio reports the resolved sys.prefix while venv_dir keeps the
-    link; a plain string prefix check never matched there and run() re-exec'd itself forever.
-    Components also keep a sibling like unsloth_studio2 from counting as the venv, and
-    normcase / samefile cover case-insensitive filesystems.
-    """
+    """Compare resolved path components: console-script shebangs hold the resolved venv path,
+    so a string prefix check against a symlinked venv_dir never matched and looped forever."""
     prefix = Path(sys.prefix)
     for a, b in (
         (prefix, venv_dir),
@@ -2565,7 +2556,6 @@ def run(
 
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = _running_in_studio_venv(studio_venv_dir)
-    # Consumed here so it never reaches the server's own descendants.
     reexeced = os.environ.pop(_STUDIO_REEXEC_ENV, None) == "1"
     if reexeced and not in_studio_venv:
         typer.echo(
@@ -2627,9 +2617,7 @@ def run(
         if sys.platform == "win32":
             launch_head = _managed_cli_argv(studio_python)
         elif _resolved_or_self(studio_venv_dir) != studio_venv_dir:
-            # The console script's shebang holds the resolved path, so an older child CLI (plain
-            # prefix check, no re-exec marker) would re-exec forever. Via the linked interpreter
-            # its sys.prefix keeps the link and both old and new children see the venv.
+            # Older child CLIs loop via the console script's resolved shebang; python keeps the link.
             launch_head = [str(studio_python), "-c", _WINDOWS_CLI_ENTRYPOINT]
         else:
             launch_head = [str(studio_bin)]

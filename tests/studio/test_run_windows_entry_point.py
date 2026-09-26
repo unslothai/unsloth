@@ -88,8 +88,7 @@ def _assigned_launch_head(stmts) -> Optional[ast.expr]:
 
 
 def _launch_head_arms() -> tuple[ast.expr, ast.expr, ast.expr]:
-    """(Windows arm, POSIX arm, platform test), written as a conditional expression or as an
-    if / elif / else chain whose last else is the plain POSIX launch."""
+    """(Windows arm, POSIX arm, platform test) from an IfExp or an if/elif/else chain."""
     for node in ast.walk(_run_function()):
         if isinstance(node, ast.Assign) and _assigned_launch_head([node]) is not None:
             value = node.value
