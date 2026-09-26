@@ -54,6 +54,7 @@ const EXTENSION_KINDS: Record<string, LibraryFileKind> = {
   tsv: "spreadsheet",
   xls: "spreadsheet",
   xlsx: "spreadsheet",
+  xlsm: "spreadsheet",
   ods: "spreadsheet",
   ppt: "presentation",
   pptx: "presentation",

@@ -423,6 +423,8 @@ def _attachment_items() -> list[dict]:
     from storage.studio_db import list_chat_attachments
 
     items = []
+    # One file on disk however many messages sent it, so disk usage counts each original once.
+    counted: set[str] = set()
     for attachment in list_chat_attachments():
         content_type = str(attachment.get("contentType") or "").split(";", 1)[0].strip().lower()
         # A document sent with its original file (core.chat_originals) serves that file, not text.
@@ -447,6 +449,11 @@ def _attachment_items() -> list[dict]:
                 pair_id = attachment.get("pairId"),
             )
         )
+        sha256 = attachment.get("originalSha256")
+        if attachment.get("hasOriginal") and sha256:
+            if sha256 in counted:
+                items[-1]["storageBytes"] = 0
+            counted.add(sha256)
     return items
 
 

@@ -38,6 +38,9 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SWEEP_GRACE_SECONDS = 3600
 _SWEEP_INTERVAL_SECONDS = 600
 _sweep_lock = threading.Lock()
+# Held while a save publishes a file and while a sweep checks and removes one, so a sweep never
+# removes a file a save has just refreshed.
+_file_lock = threading.Lock()
 # Per originals folder: each account has its own, and one account's sweep must not delay another's.
 _last_sweep: dict[Path, float] = {}
 _scheduled: set[Path] = set()
@@ -93,11 +96,12 @@ def save(chunks: Iterable[bytes]) -> tuple[str, int]:
                 handle.write(chunk)
         sha256 = digest.hexdigest()
         final_path = directory / sha256
-        if final_path.exists():
-            # Already kept: refresh its age, so a sweep racing this send leaves it be.
-            os.utime(final_path)
-        else:
-            os.replace(tmp_path, final_path)
+        with _file_lock:
+            if final_path.exists():
+                # Already kept: refresh its age, so a sweep leaves it be.
+                os.utime(final_path)
+            else:
+                os.replace(tmp_path, final_path)
         return sha256, size
     finally:
         tmp_path.unlink(missing_ok = True)
@@ -129,11 +133,17 @@ def sweep(force: bool = False) -> int:
                     continue
                 if not (is_original or entry.name.endswith(".tmp")):
                     continue
-                # Unreferenced originals, and temp files a crashed upload left behind.
-                if now - entry.stat().st_mtime < _SWEEP_GRACE_SECONDS:
-                    waiting = True
-                    continue
-                os.unlink(entry.path)
+                # Unreferenced originals, and temp files a crashed upload left behind. Stat afresh
+                # under the lock: a save may have refreshed the file since the scan began.
+                with _file_lock:
+                    try:
+                        mtime = os.stat(entry.path).st_mtime
+                    except FileNotFoundError:
+                        continue
+                    if now - mtime < _SWEEP_GRACE_SECONDS:
+                        waiting = True
+                        continue
+                    os.unlink(entry.path)
                 removed += 1
         if waiting:
             _schedule(directory)

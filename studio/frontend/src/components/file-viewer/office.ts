@@ -442,6 +442,23 @@ function readStyles(doc: Document | null): CellStyle[] {
   });
 }
 
+/** A shared formula moved from its master cell to one `rows` and `columns` away: relative
+ *  references shift, $-anchored parts and quoted text stay. */
+function shiftFormula(formula: string, rows: number, columns: number): string {
+  return formula
+    .split(/("[^"]*")/)
+    .map((part, index) =>
+      index % 2
+        ? part
+        : part.replace(
+            /(^|[^A-Za-z0-9_.$])(\$?)([A-Z]{1,3})(\$?)(\d+)(?![\d(A-Za-z_!])/g,
+            (_, lead: string, colAbs: string, col: string, rowAbs: string, row: string) =>
+              `${lead}${colAbs}${colAbs ? col : columnName(columnIndex(col) + columns)}${rowAbs}${rowAbs ? row : Number(row) + rows}`,
+          ),
+    )
+    .join("");
+}
+
 function readSheet(
   doc: Document,
   name: string,
@@ -461,6 +478,18 @@ function readSheet(
     for (let i = min; i <= max; i++) {
       if (isHidden(col)) hidden.columns.add(i - 1);
       else if (width) widths[i - 1] = Math.round(width * 7 + 5);
+    }
+  }
+  // Shared formulas: the master cell holds the text, the rest of its range only the id.
+  const shared = new Map<string, { formula: string; row: number; col: number }>();
+  for (const f of all(doc, "f")) {
+    const ref = f.parentElement?.getAttribute("r");
+    if (f.getAttribute("t") === "shared" && f.textContent && ref) {
+      shared.set(f.getAttribute("si") ?? "", {
+        formula: f.textContent,
+        row: Number(ref.replace(/^[A-Z]+/, "")) - 1,
+        col: columnIndex(ref),
+      });
     }
   }
   let truncated = false;
@@ -491,7 +520,10 @@ function readSheet(
       if (hidden.columns.has(col)) continue;
       const type = c.getAttribute("t");
       const raw = first(c, "v")?.textContent ?? "";
-      const formula = first(c, "f")?.textContent ?? "";
+      const f = first(c, "f");
+      const master = f?.getAttribute("t") === "shared" ? shared.get(f.getAttribute("si") ?? "") : undefined;
+      const formula =
+        f?.textContent || (master ? shiftFormula(master.formula, r - master.row, col - master.col) : "");
       const style = styles[Number(c.getAttribute("s") ?? 0)] ?? {};
       let text = raw;
       let numeric = false;
@@ -627,17 +659,26 @@ function dataUrl(bytes: Uint8Array, type: string): string {
   return `data:${type};base64,${btoa(binary)}`;
 }
 
-/** A chart's cached data as a table: a header of series names, then one row a category. */
+// A chart shown as a table, capped so a chart of many long series stays a readable size.
+const MAX_CHART_SERIES = 100;
+const MAX_CHART_CELLS = 5000;
+
+/** A chart's cached data as a table: a header of series names, then one row a category. A last
+ *  row of "…" marks data left out. */
 function readChart(doc: Document): { caption?: string; table: string[][] } | null {
+  const serNodes = all(doc, "ser");
+  const limit = Math.floor(MAX_CHART_CELLS / (Math.min(serNodes.length, MAX_CHART_SERIES) + 1));
+  let cut = serNodes.length > MAX_CHART_SERIES;
   const cache = (node: Element | undefined) => {
     const out: string[] = [];
     for (const pt of node ? all(node, "pt") : []) {
       const idx = Number(pt.getAttribute("idx") ?? out.length);
-      if (idx >= 0 && idx < MAX_SHEET_ROWS) out[idx] = first(pt, "v")?.textContent ?? "";
+      if (idx >= limit) cut = true;
+      else if (idx >= 0) out[idx] = first(pt, "v")?.textContent ?? "";
     }
     return out;
   };
-  const series = all(doc, "ser").map((ser) => {
+  const series = serNodes.slice(0, MAX_CHART_SERIES).map((ser) => {
     const tx = children(ser, "tx")[0];
     return {
       name: (tx && (cache(tx)[0] ?? first(tx, "v")?.textContent)) ?? "",
@@ -650,9 +691,23 @@ function readChart(doc: Document): { caption?: string; table: string[][] } | nul
   const count = series.reduce((n, s) => Math.max(n, s.values.length), categories.length);
   const table = [["", ...series.map((s) => s.name)]];
   for (let i = 0; i < count; i++) table.push([categories[i] ?? String(i + 1), ...series.map((s) => s.values[i] ?? "")]);
+  if (cut) table.push(["…"]);
   const title = first(doc, "title");
   const caption = title ? all(title, "t").map((t) => t.textContent ?? "").join("") : "";
   return { caption: caption || undefined, table };
+}
+
+/** A paragraph's text in order, a manual line break (<a:br/>) kept as a newline. */
+function paragraphText(p: Element): string {
+  return Array.from(p.children)
+    .map((child) =>
+      child.localName === "br"
+        ? "\n"
+        : child.localName === "r" || child.localName === "fld"
+          ? all(child, "t").map((t) => t.textContent ?? "").join("")
+          : "",
+    )
+    .join("");
 }
 
 function readFrame(shape: Element, cx: number, cy: number): SlideBox["frame"] {
@@ -697,7 +752,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
           const pPr = first(p, "pPr");
           const sz = Number(rPr?.getAttribute("sz"));
           return {
-            text: all(p, "t").map((t) => t.textContent ?? "").join(""),
+            text: paragraphText(p),
             size: sz ? sz / 100 : undefined,
             bold: rPr?.getAttribute("b") === "1",
             align: pPr?.getAttribute("algn") ?? undefined,
@@ -724,7 +779,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       const table = children(tbl, "tr").map((tr) =>
         children(tr, "tc").map((tc) =>
           all(tc, "p")
-            .map((p) => all(p, "t").map((t) => t.textContent ?? "").join(""))
+            .map(paragraphText)
             .join("\n"),
         ),
       );

@@ -4510,6 +4510,7 @@ def list_chat_attachments_page(
             "type": row["type"],
             "contentType": row["content_type"],
             "sizeBytes": row["size_bytes"],
+            "originalSha256": row["original_sha256"],
             "hasOriginal": bool(row["original_sha256"])
             and (originals / row["original_sha256"]).is_file(),
             "createdAt": row["created_at"],

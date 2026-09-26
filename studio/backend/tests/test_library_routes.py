@@ -321,6 +321,32 @@ def test_chat_attachments_holding_bytes_are_known_by_their_type_in_any_case(clie
     assert deleted == [("m:1", "voice")]
 
 
+def test_an_original_sent_many_times_counts_once_toward_disk_usage(client, monkeypatch):
+    import storage.studio_db as studio_db
+
+    def sent(attachment_id, sha256, has_original = True):
+        return {
+            "messageId": "m",
+            "id": attachment_id,
+            "type": "document",
+            "contentType": "application/pdf",
+            "sizeBytes": 1000,
+            "originalSha256": sha256,
+            "hasOriginal": has_original,
+        }
+
+    monkeypatch.setattr(library, "_SOURCES", (library._attachment_items,))
+    monkeypatch.setattr(
+        studio_db,
+        "list_chat_attachments",
+        lambda: [sent("a", "1" * 64), sent("b", "1" * 64), sent("c", "2" * 64), sent("d", "1" * 64)],
+    )
+    items = _items(client)[0]
+    usage = [items[f"attachment:m:{name}"].get("storageBytes", 1000) for name in "abcd"]
+    assert usage == [1000, 0, 1000, 0]
+    assert all(items[f"attachment:m:{name}"]["sizeBytes"] == 1000 for name in "abcd")
+
+
 def test_a_chat_audio_part_is_typed_by_its_format_or_its_bytes():
     from storage.studio_db import _content_part_attachments
 

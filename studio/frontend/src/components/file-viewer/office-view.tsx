@@ -277,7 +277,7 @@ function SlideText({ box, widthPt }: { box: SlideBox; widthPt: number }) {
       {box.paragraphs?.map((p, index) => (
         <p
           key={index}
-          className={cn("leading-tight", (title || p.bold) && "font-semibold", p.bullet && "pl-[1.1em] -indent-[1.1em]")}
+          className={cn("leading-tight whitespace-pre-line", (title || p.bold) && "font-semibold", p.bullet && "pl-[1.1em] -indent-[1.1em]")}
           style={{
             fontSize: `${((p.size ?? (title ? 36 : 18)) / widthPt) * 100}cqw`,
             textAlign: p.align === "ctr" ? "center" : p.align === "r" ? "right" : undefined,
