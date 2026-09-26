@@ -229,8 +229,6 @@ export const ptBR = {
       organizeChats: "Organizar conversas",
       organizeProjects: "Organizar projetos",
       sortPinnedChats: "Ordenar conversas fixadas",
-      moveUp: "Mover para cima",
-      moveDown: "Mover para baixo",
     },
     dialog: {
       deleteChat: {

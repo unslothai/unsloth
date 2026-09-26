@@ -227,8 +227,6 @@ export const ko = {
       organizeChats: "채팅 정리",
       organizeProjects: "프로젝트 정리",
       sortPinnedChats: "고정된 채팅 정렬",
-      moveUp: "위로 이동",
-      moveDown: "아래로 이동",
     },
     dialog: {
       deleteChat: {

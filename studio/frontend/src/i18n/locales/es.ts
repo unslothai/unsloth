@@ -229,8 +229,6 @@ export const es = {
       organizeChats: "Organizar chats",
       organizeProjects: "Organizar proyectos",
       sortPinnedChats: "Ordenar chats fijados",
-      moveUp: "Subir",
-      moveDown: "Bajar",
     },
     dialog: {
       deleteChat: {

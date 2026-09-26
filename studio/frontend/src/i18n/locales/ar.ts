@@ -227,8 +227,6 @@ export const ar = {
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
       sortPinnedChats: "ترتيب المحادثات المثبتة",
-      moveUp: "تحريك لأعلى",
-      moveDown: "تحريك لأسفل",
     },
     dialog: {
       deleteChat: {
