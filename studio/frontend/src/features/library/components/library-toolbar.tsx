@@ -69,6 +69,15 @@ const VIEW_OPTIONS = [
 
 export type LibrarySortChoice = "default" | LibrarySortKey;
 
+export interface LibrarySortMenuProps {
+  value: LibrarySortChoice;
+  onChange: (next: LibrarySortChoice) => void;
+  /** The view orders by last activity rather than modified time. */
+  activity?: boolean;
+  /** False where only folders show, which have no size. */
+  showSize?: boolean;
+}
+
 const SORT_OPTIONS: { value: LibrarySortChoice; label: TranslationKey }[] = [
   { value: "default", label: "library.toolbar.sortDefault" },
   { value: "name", label: "library.toolbar.sortName" },
@@ -168,12 +177,18 @@ function FilterMenu({
 function SortMenu({
   value,
   onChange,
-}: {
-  value: LibrarySortChoice;
-  onChange: (next: LibrarySortChoice) => void;
-}) {
+  activity = false,
+  showSize = true,
+}: LibrarySortMenuProps) {
   const t = useT();
-  const current = SORT_OPTIONS.find((option) => option.value === value);
+  // Suggested orders "Modified" by last activity, as its list view header says.
+  const options = SORT_OPTIONS.filter((option) => showSize || option.value !== "size").map(
+    (option) =>
+      activity && option.value === "modified"
+        ? { ...option, label: "library.list.lastActivity" as TranslationKey }
+        : option,
+  );
+  const current = options.find((option) => option.value === value);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -186,7 +201,7 @@ function SortMenu({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" sideOffset={4} className="w-max min-w-36">
-        {SORT_OPTIONS.map(({ value: option, label }) => {
+        {options.map(({ value: option, label }) => {
           const checked = option === value;
           return (
             <DropdownMenuItem
@@ -280,7 +295,7 @@ export function LibraryToolbar({
   view: LibraryView;
   onViewChange: (view: LibraryView) => void;
   /** Grid view only: list view sorts by column headers. */
-  sort?: { value: LibrarySortChoice; onChange: (next: LibrarySortChoice) => void };
+  sort?: LibrarySortMenuProps;
   search: string;
   onSearchChange: (value: string) => void;
   searchPlaceholder: string;
@@ -297,7 +312,7 @@ export function LibraryToolbar({
             showTypes={filterMode === "all"}
           />
         )}
-        {sort && <SortMenu value={sort.value} onChange={sort.onChange} />}
+        {sort && <SortMenu {...sort} />}
         {VIEW_OPTIONS.map(({ value, label, icon }) => (
           <button
             key={value}

@@ -250,9 +250,14 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   );
 
   // "Default order" falls back to the sort in Library settings.
+  const gridSortValue = (search.sort ? SORT_STATES[search.sort].key : "default") as LibrarySortChoice;
   const gridSort = {
-    value: (search.sort ? SORT_STATES[search.sort].key : "default") as LibrarySortChoice,
+    value: gridSortValue,
+    activity: tab === "suggested" && !folderId,
+    showSize: Boolean(folderId) || tab !== "folders",
+    // Reselecting the checked key keeps its direction, which list view may have flipped.
     onChange: (choice: LibrarySortChoice) =>
+      choice !== gridSortValue &&
       go(
         {
           ...search,
