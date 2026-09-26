@@ -88,15 +88,29 @@ export function deriveContextUsageBar({
   const usedTokens =
     typeof used === "number" && Number.isFinite(used) ? used : null;
   const hasUsageDetails =
-    promptTokens !== undefined ||
-    completionTokens !== undefined ||
-    (cached !== undefined && cached > 0) ||
-    (cacheWrites !== undefined && cacheWrites > 0);
+    !estimated &&
+    (promptTokens !== undefined ||
+      completionTokens !== undefined ||
+      (cached !== undefined && cached > 0) ||
+      (cacheWrites !== undefined && cacheWrites > 0));
 
   if (limit === null) {
     // nothing to show: no window to name, and no counted usage to report against one
     if (usedTokens === null) return null;
     if (usedTokens <= 0 && !hasUsageDetails) return null;
+
+    if (estimated) {
+      return {
+        face: `~${formatTokenCount(usedTokens)} tokens`,
+        label: `Estimated context usage: ~${formatTokenCount(usedTokens)} tokens`,
+        totalRowName: "Estimated tokens",
+        totalRowValue: `~${formatTokenCountFull(usedTokens)}`,
+        percent: null,
+        hasUsageDetails: false,
+        estimated: true,
+      };
+    }
+
     return {
       face: `${formatTokenCount(usedTokens)} tokens`,
       label: `Token usage: ${formatTokenCount(usedTokens)} tokens`,

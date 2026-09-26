@@ -81,9 +81,11 @@ export const ContextUsageBar: FC<
         <div className="grid min-w-44 gap-1.5 text-xs">
           {percent !== null ? (
             <div className="flex items-center justify-between gap-4">
-              <span className="text-muted-foreground">Context usage</span>
+              <span className="text-muted-foreground">
+                {state.estimated ? "Estimated context usage" : "Context usage"}
+              </span>
               <span className={cn("font-mono tabular-nums font-medium", severity.text)}>
-                {percent.toFixed(1)}%
+                {state.estimated ? `~${percent.toFixed(1)}%` : `${percent.toFixed(1)}%`}
               </span>
             </div>
           ) : null}

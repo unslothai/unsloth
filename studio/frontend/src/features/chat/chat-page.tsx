@@ -255,6 +255,7 @@ import {
 import { attachmentsSample } from "./utils/pasted-text";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
+import { estimateMessagesTokenCount } from "./utils/estimate-chat-tokens";
 import {
   consumeProjectSourcesPending,
   hasProjectSourcesPending,
@@ -3715,16 +3716,13 @@ export function ChatPage({
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
       void listStoredChatMessages(threadId)
-        .then(
-          (messages) =>
-            [...messages].sort((a, b) => b.createdAt - a.createdAt)[0],
-        )
-        .then((msg) => {
+        .then((messages) => {
+          const sorted = [...messages].sort((a, b) => b.createdAt - a.createdAt);
+          const msg = sorted[0];
           const metadata = msg?.metadata as Record<string, unknown> | undefined;
           const usage = metadata?.contextUsage as ReturnType<
             typeof useChatRuntimeStore.getState
           >["contextUsage"];
-          if (!usage) return;
           const store = useChatRuntimeStore.getState();
           const activeCheckpoint = store.params.checkpoint;
           const usageModelId = (usage as { modelId?: unknown }).modelId;
