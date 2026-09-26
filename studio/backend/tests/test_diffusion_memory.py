@@ -795,7 +795,6 @@ def test_refine_model_offload_streams_only_when_a_component_exceeds_budget(monke
 
 
 def test_loaded_text_encoder_mib_counts_every_encoder_the_pipe_holds_once(monkeypatch):
-    """One module in two slots counts once."""
     Module = _install_sized_torch(monkeypatch)
     shared = Module(300)
     pipe = types.SimpleNamespace(

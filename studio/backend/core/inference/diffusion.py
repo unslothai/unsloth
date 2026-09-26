@@ -6008,8 +6008,7 @@ class DiffusionBackend:
                     )
 
                     # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and pre-quantised
-                    # pipelines; offloaded plans stay dense unless whole-module. Quantising on CPU (before placement)
-                    # is bit-identical to the GGUF order (sm_89, fp8 + int8, max|diff| 0.0).
+                    # pipelines; offloaded plans stay dense unless whole-module.
                     if (
                         pipe is not None
                         and kind == "pipeline"
@@ -6110,9 +6109,7 @@ class DiffusionBackend:
                                     native_scheme,
                                     plan.offload_policy,
                                 )
-                            # Group offload is WRONG for torchao: its stream cache aliases weights (.cpu() returns the
-                            # live tensor) and streamless swap_tensors fails on compiled modules. So whole-module only,
-                            # with the transformer and every text encoder fitting unstreamed.
+                            # Group offload is WRONG for torchao: its stream cache aliases weights and swap_tensors fails when compiled.
                             quant_budget = int(plan.estimates.get("safe_device_budget_mib") or 0)
                             quant_overhead = int(
                                 plan.estimates.get("runtime_headroom_mib") or 0

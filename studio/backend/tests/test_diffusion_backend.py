@@ -854,7 +854,6 @@ def fake_runtime(monkeypatch):
     torch.Generator = _FakeGenerator
     torch.cuda = types.SimpleNamespace(is_available = lambda: False)
     torch.backends = types.SimpleNamespace(mps = None)
-    # generate() enters inference_mode / no_grad; no-op CMs here.
     torch.inference_mode = lambda: contextlib.nullcontext()
     torch.no_grad = lambda: contextlib.nullcontext()
 
@@ -12145,7 +12144,6 @@ def test_an_offloaded_quantised_transformer_renders_outside_inference_mode(
 def test_the_offload_replan_sizes_the_text_encoder_the_pipe_holds(
     fake_runtime, tmp_path, monkeypatch
 ):
-    """Measured encoder replaces the table's bf16 figure only when smaller."""
     from core.inference import diffusion as dmod
 
     real_plan = DiffusionBackend._plan_memory
