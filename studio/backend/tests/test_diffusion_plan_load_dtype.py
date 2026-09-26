@@ -344,6 +344,17 @@ def test_a_bin_only_component_is_repriced_in_the_directory_scan(tmp_path):
     assert sizes == {"text_encoder/pytorch_model.bin": 4000}
 
 
+def test_a_tied_bin_weight_is_counted_once(tmp_path):
+    path = tmp_path / "pytorch_model.bin"
+    shared = torch.zeros(100, 8, dtype = torch.bfloat16)
+    torch.save(
+        {"shared.weight": shared, "encoder.embed_tokens.weight": shared, "head": shared[:10]},
+        path,
+    )
+    # The alias costs nothing; a distinct view of the same storage is still its own parameter.
+    assert DiffusionBackend._bin_cast_bytes(path, 4) == (800 + 80) * 4
+
+
 def test_a_legacy_bin_keeps_the_stored_size(tmp_path):
     path = tmp_path / "pytorch_model.bin"
     torch.save({"w": torch.zeros(10)}, path, _use_new_zipfile_serialization = False)

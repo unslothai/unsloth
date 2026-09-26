@@ -4443,9 +4443,21 @@ class DiffusionBackend:
             if not isinstance(state, dict):
                 return None
             tensors = []
+            seen: set = set()
             for name, tensor in state.items():
                 if not isinstance(tensor, torch.Tensor):
                     return None
+                # Tied weights are saved once and load as one tensor: count an exact alias once.
+                alias = (
+                    tensor.untyped_storage().data_ptr(),
+                    tensor.storage_offset(),
+                    tuple(tensor.shape),
+                    tuple(tensor.stride()),
+                    tensor.dtype,
+                )
+                if alias in seen:
+                    continue
+                seen.add(alias)
                 width = int(tensor.element_size()) if tensor.is_floating_point() else None
                 numel = int(tensor.numel())
                 tensors.append((str(name), width, numel, numel * int(tensor.element_size())))
