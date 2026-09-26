@@ -1368,6 +1368,30 @@ def test_route_to_vulkan_prebuilt_auto_fallback_when_no_amd_gpu_reaches_floor():
     assert routed.has_rocm is False
 
 
+def test_a_lone_rdna1_card_takes_the_vulkan_route(monkeypatch):
+    # RDNA 1 (gfx1010, RX 5700 XT) now gets ROCm torch on Windows from AMD's multi-arch index
+    # (unslothai/unsloth#11614), but no HIP llama.cpp prebuilt exists for it and Vulkan is the
+    # right llama-server backend there. A one-card RDNA 1 host, no mask set, must auto-route
+    # to the Vulkan bundle rather than fall through HIP -> CPU -> source build.
+    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010"])
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is True
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert repo == FORK
+    assert persist == "auto"
+    assert routed.has_rocm is False
+
+
+def test_rdna1_beside_a_hip_capable_card_keeps_the_hip_bundle(monkeypatch):
+    # The other card can be exposed to HIP, and Vulkan would enumerate both, so the mixed
+    # host keeps the HIP prebuilt as before.
+    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010", "gfx1034"])
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
+
+
 @pytest.mark.parametrize(
     "mask_env", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
 )

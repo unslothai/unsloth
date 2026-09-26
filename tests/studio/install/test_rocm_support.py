@@ -1031,7 +1031,9 @@ class TestEnsureRocmTorch:
         # a ROCm build and stopped. setup.ps1 force-reinstalls, so this is `studio update`.
         pip_try = self._windows_repair("gfx103x-all")
         assert pip_try.call_count == 1
-        assert "gfx120X-all" in str(pip_try.call_args)
+        # #11815: the reinstall lands on the multi-arch pin for the dGPU, not its family leaf.
+        assert "torch[device-gfx1200]" in str(pip_try.call_args)
+        assert "whl-multi-arch" in str(pip_try.call_args)
 
     def test_matching_wheel_family_is_left_alone(self):
         # Negative control: the right family must not be re-downloaded on every update.
@@ -4319,32 +4321,40 @@ class TestIsRdnaExpansion:
 
 
 class TestWindowsRocmIndexUrl:
-    """Verify GPU arch → AMD pip index URL mapping."""
+    """Verify GPU arch → AMD pip index URL mapping. Since #11815 every RDNA arch goes to
+    the multi-arch index by default; the per-family leaf is what a family-layout mirror
+    (UNSLOTH_ROCM_WINDOWS_MIRROR, no multi-arch mirror) still selects."""
 
-    def test_gfx1200_maps_to_gfx120x_all(self):
-        url = stack_mod._windows_rocm_index_url("gfx1200")
-        assert url is not None
-        assert "gfx120X-all" in url
+    @pytest.fixture(autouse = True)
+    def _no_mirror(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
+        monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://repo.amd.com/rocm/whl")
 
-    def test_gfx1201_maps_to_gfx120x_all(self):
-        url = stack_mod._windows_rocm_index_url("gfx1201")
-        assert url is not None
-        assert "gfx120X-all" in url
+    @pytest.mark.parametrize("gfx", ["gfx1200", "gfx1201", "gfx1151", "gfx1150", "gfx1100"])
+    def test_rdna_maps_to_the_multiarch_index(self, gfx):
+        url = stack_mod._windows_rocm_index_url(gfx)
+        assert url == "https://repo.amd.com/rocm/whl-multi-arch/"
 
-    def test_gfx1151_maps_to_gfx1151(self):
-        url = stack_mod._windows_rocm_index_url("gfx1151")
-        assert url is not None
-        assert "gfx1151" in url
+    @pytest.mark.parametrize(
+        "gfx,leaf",
+        [
+            ("gfx1200", "gfx120X-all"),
+            ("gfx1201", "gfx120X-all"),
+            ("gfx1151", "gfx1151"),
+            ("gfx1150", "gfx1150"),
+            ("gfx1100", "gfx110X-all"),
+        ],
+    )
+    def test_family_mirror_keeps_the_family_leaf(self, gfx, leaf, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_ROCM_WINDOWS_MIRROR", "https://mirror.example/whl")
+        monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://mirror.example/whl")
+        assert stack_mod._windows_rocm_index_url(gfx) == f"https://mirror.example/whl/{leaf}/"
 
-    def test_gfx1150_maps_to_gfx1150(self):
-        url = stack_mod._windows_rocm_index_url("gfx1150")
-        assert url is not None
-        assert "gfx1150" in url
-
-    def test_gfx1100_maps_to_gfx110x_all(self):
-        url = stack_mod._windows_rocm_index_url("gfx1100")
-        assert url is not None
-        assert "gfx110X-all" in url
+    def test_cdna_keeps_its_family(self):
+        assert (
+            stack_mod._windows_rocm_index_url("gfx90a") == "https://repo.amd.com/rocm/whl/gfx90a/"
+        )
 
     def test_unknown_arch_returns_none(self):
         assert stack_mod._windows_rocm_index_url("gfx9999") is None
@@ -4477,16 +4487,16 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1036"
 
     def test_unsupported_discrete_does_not_depose_a_supported_igpu(self, monkeypatch):
-        # A supported APU next to a discrete card with no Windows wheels (gfx1010 is absent
-        # from _GFX_TO_AMD_INDEX_ARCH): preferring the dGPU purely for being discrete
+        # A supported APU next to a discrete card with no Windows wheels (gfx803, Polaris, is absent
+        # from _GFX_TO_AMD_INDEX_ARCH; gfx1010 routes since #11755): preferring the dGPU purely for being discrete
         # resolves to no index and falls back to CPU, worse than the shadowing itself.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
-        assert stack_mod._windows_rocm_index_url("gfx1010") is None
+        assert stack_mod._windows_rocm_index_url("gfx803") is None
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1010\n"
+        mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx803\n"
         with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
             with patch("subprocess.run", return_value = mock_result):
                 result = stack_mod._detect_windows_gfx_arch()
@@ -4500,14 +4510,14 @@ class TestDetectWindowsGfxArch:
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         assert stack_mod._windows_rocm_index_url("gfx1013") is None
-        assert stack_mod._windows_rocm_index_url("gfx1010") is None
+        assert stack_mod._windows_rocm_index_url("gfx803") is None
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = b"gcnArchName : gfx1013\ngcnArchName : gfx1010\n"
+        mock_result.stdout = b"gcnArchName : gfx1013\ngcnArchName : gfx803\n"
         with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
             with patch("subprocess.run", return_value = mock_result):
                 result = stack_mod._detect_windows_gfx_arch()
-        assert result == "gfx1010"
+        assert result == "gfx803"
 
     def test_cuda_visible_devices_also_pins_the_igpu(self, monkeypatch):
         # HIP honours CUDA_VISIBLE_DEVICES with the same semantics as its own masks, so a
@@ -4611,14 +4621,14 @@ class TestDetectWindowsGfxArch:
         assert self._hipinfo_pick(["gfx1036:xnack-", "gfx1200:xnack-"]) == "gfx1200"
 
     def test_prefers_a_wheel_backed_discrete_over_an_unsupported_one(self, monkeypatch):
-        # gfx1010 has no Windows wheel index, so stopping at the first non-integrated
+        # gfx803 (Polaris) has no Windows wheel index (gfx1010 routes since #11755), so stopping at the first non-integrated
         # token dropped a host with a perfectly good gfx1200 to CPU torch.
         for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(_m, raising = False)
-        assert stack_mod._windows_rocm_index_url("gfx1010") is None
-        assert self._hipinfo_pick(["gfx1036", "gfx1010", "gfx1200"]) == "gfx1200"
+        assert stack_mod._windows_rocm_index_url("gfx803") is None
+        assert self._hipinfo_pick(["gfx1036", "gfx803", "gfx1200"]) == "gfx1200"
         # Same when the iGPU itself has no wheels: still prefer the supported card.
-        assert self._hipinfo_pick(["gfx1013", "gfx1010", "gfx1200"]) == "gfx1200"
+        assert self._hipinfo_pick(["gfx1013", "gfx803", "gfx1200"]) == "gfx1200"
 
     def test_pinning_a_wheelless_gpu_says_why_torch_will_be_cpu(self, monkeypatch, capsys):
         # The pin is honoured, but silently installing CPU torch while another enumerated
@@ -4627,7 +4637,7 @@ class TestDetectWindowsGfxArch:
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
-        assert self._hipinfo_pick(["gfx1010", "gfx1036"]) == "gfx1010"
+        assert self._hipinfo_pick(["gfx803", "gfx1036"]) == "gfx803"
         out = capsys.readouterr().out
         assert "no AMD Windows wheels" in out
         assert "gfx1036" in out
@@ -4646,10 +4656,10 @@ class TestDetectWindowsGfxArch:
 
     def test_advisory_names_the_selected_gpus_real_index(self, monkeypatch, capsys):
         # Not always device 1: here it is device 2, and naming 1 would expose the
-        # gfx1010 the installed wheels do not target.
+        # gfx803 the installed wheels do not target.
         for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(_m, raising = False)
-        assert self._hipinfo_pick(["gfx1036", "gfx1010", "gfx1200"]) == "gfx1200"
+        assert self._hipinfo_pick(["gfx1036", "gfx803", "gfx1200"]) == "gfx1200"
         out = capsys.readouterr().out
         assert "HIP_VISIBLE_DEVICES 2" in out
         assert "HIP_VISIBLE_DEVICES 1" not in out

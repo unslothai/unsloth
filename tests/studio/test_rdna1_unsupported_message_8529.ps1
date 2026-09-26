@@ -4,8 +4,10 @@
 # Behavioural test for the RDNA 1 "detected but not covered by ROCm" wording in
 # install.ps1 and studio/setup.ps1 (issue #8529). The reporter's card is an RX 5700 XT
 # (Navi 10, gfx1010). AMD's Windows torch indexes are gfx103X/110X/1150/1151/120X only,
-# so CPU torch is correct and stays; the bug was telling them to install the HIP SDK or
-# set UNSLOTH_ROCM_GFX_ARCH, neither of which can succeed on gfx1010.
+# so CPU torch was correct; the bug was telling them to install the HIP SDK or set
+# UNSLOTH_ROCM_GFX_ARCH. Since unslothai#11614 the Windows installers route RDNA 1 to AMD's
+# multi-arch index, so RDNA 1 lives in the supported table and Polaris (gfx803)
+# is what the unsupported wording is exercised with.
 #
 # The Python suite evaluates the table with Python's `re`; this runs it under the .NET
 # engine that ships it, the only place -match semantics are real. Fixtures are raw WMI
@@ -52,27 +54,27 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     }
 
     # --- the reporter's card, and the rest of RDNA 1 ---------------------------
-    Check "RX 5700 XT -> gfx1010"          ((Resolve-Unsupported "AMD Radeon RX 5700 XT") -eq 'gfx1010')
-    Check "RX 5700 -> gfx1010"             ((Resolve-Unsupported "AMD Radeon RX 5700") -eq 'gfx1010')
-    Check "RX 5600 XT -> gfx1010"          ((Resolve-Unsupported "AMD Radeon RX 5600 XT") -eq 'gfx1010')
-    Check "Radeon Pro 5600 XT -> gfx1010"  ((Resolve-Unsupported "AMD Radeon Pro 5600 XT") -eq 'gfx1010')
-    Check "Radeon Pro V520 -> gfx1011"     ((Resolve-Unsupported "AMD Radeon Pro V520") -eq 'gfx1011')
-    Check "Radeon Pro 5600M -> gfx1011"    ((Resolve-Unsupported "AMD Radeon Pro 5600M") -eq 'gfx1011')
-    Check "RX 5500 XT -> gfx1012"          ((Resolve-Unsupported "AMD Radeon RX 5500 XT") -eq 'gfx1012')
+    Check "RX 5700 XT no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon RX 5700 XT"))
+    Check "RX 5700 no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon RX 5700"))
+    Check "RX 5600 XT no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon RX 5600 XT"))
+    Check "Radeon Pro 5600 XT no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon Pro 5600 XT"))
+    Check "Radeon Pro V520 no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon Pro V520"))
+    Check "Radeon Pro 5600M no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon Pro 5600M"))
+    Check "RX 5500 XT no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon RX 5500 XT"))
     # The professional boards LLVM's table omits, mapped from libdrm data/amdgpu.ids read
     # against pci.ids, which files 7312/7310 under Navi 10 and 7340/7341/7347/734f under
     # Navi 14.
-    Check "Radeon Pro W5700 -> gfx1010"    ((Resolve-Unsupported "AMD Radeon Pro W5700") -eq 'gfx1010')
-    Check "Radeon Pro W5700X -> gfx1010"   ((Resolve-Unsupported "AMD Radeon Pro W5700X") -eq 'gfx1010')
-    Check "Radeon Pro W5500 -> gfx1012"    ((Resolve-Unsupported "AMD Radeon Pro W5500") -eq 'gfx1012')
-    Check "Radeon Pro W5500M -> gfx1012"   ((Resolve-Unsupported "AMD Radeon Pro W5500M") -eq 'gfx1012')
-    Check "Radeon Pro W5300M -> gfx1012"   ((Resolve-Unsupported "AMD Radeon Pro W5300M") -eq 'gfx1012')
-    Check "RX 5300 -> gfx1012"             ((Resolve-Unsupported "AMD Radeon RX 5300") -eq 'gfx1012')
-    Check "RX 5300M -> gfx1012"            ((Resolve-Unsupported "AMD Radeon RX 5300M") -eq 'gfx1012')
+    Check "Radeon Pro W5700 no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon Pro W5700"))
+    Check "Radeon Pro W5700X no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon Pro W5700X"))
+    Check "Radeon Pro W5500 no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon Pro W5500"))
+    Check "Radeon Pro W5500M no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon Pro W5500M"))
+    Check "Radeon Pro W5300M no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon Pro W5300M"))
+    Check "RX 5300 no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon RX 5300"))
+    Check "RX 5300M no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon RX 5300M"))
     # The Mac Pro MPX boards, pci.ids 7319 and 731b under Navi 10. The only Navi 10
     # retail parts whose name carries neither "RX 5700" nor a W prefix.
-    Check "Radeon Pro 5700 XT -> gfx1010"  ((Resolve-Unsupported "AMD Radeon Pro 5700 XT") -eq 'gfx1010')
-    Check "Radeon Pro 5700 -> gfx1010"     ((Resolve-Unsupported "AMD Radeon Pro 5700") -eq 'gfx1010')
+    Check "Radeon Pro 5700 XT no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon Pro 5700 XT"))
+    Check "Radeon Pro 5700 no longer unsupported (routes on Windows, #11614)" ($null -eq (Resolve-Unsupported "AMD Radeon Pro 5700"))
     # The W-series that DOES have wheels: "W5700" must not be read out of "W7500".
     Check "PRO W7500 unclaimed"            ($null -eq (Resolve-Unsupported "AMD Radeon PRO W7500"))
     Check "PRO W6500 unclaimed"            ($null -eq (Resolve-Unsupported "AMD Radeon PRO W6500"))
@@ -123,8 +125,15 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
         }
         return $null
     }
-    Check "RX 5700 XT gets no supported arch" ($null -eq (Resolve-Supported "AMD Radeon RX 5700 XT"))
-    Check "RX 5500 XT gets no supported arch" ($null -eq (Resolve-Supported "AMD Radeon RX 5500 XT"))
+    # #11614: RDNA 1 routes on Windows through the multi-arch index, so the supported
+    # table owns it now.
+    Check "RX 5700 XT -> gfx1010 (supported)"      ((Resolve-Supported "AMD Radeon RX 5700 XT") -eq 'gfx1010')
+    Check "RX 5600 XT -> gfx1010 (supported)"      ((Resolve-Supported "AMD Radeon RX 5600 XT") -eq 'gfx1010')
+    Check "Radeon Pro W5700 -> gfx1010 (supported)" ((Resolve-Supported "AMD Radeon Pro W5700") -eq 'gfx1010')
+    Check "Radeon Pro V520 -> gfx1011 (supported)" ((Resolve-Supported "AMD Radeon Pro V520") -eq 'gfx1011')
+    Check "RX 5500 XT -> gfx1012 (supported)"      ((Resolve-Supported "AMD Radeon RX 5500 XT") -eq 'gfx1012')
+    Check "RX 570 still gets no supported arch"   ($null -eq (Resolve-Supported "AMD Radeon RX 570"))
+    Check "RX 580 still gets no supported arch"   ($null -eq (Resolve-Supported "AMD Radeon RX 580"))
     Check "RX 9070 XT still maps to gfx1201"  ((Resolve-Supported "AMD Radeon RX 9070 XT") -eq 'gfx1201')
 
     # No arch may appear in both tables: one routes to a wheel index, the other
@@ -405,33 +414,39 @@ Invoke-Expression (Get-AssignmentSource $installPath '$unsupportedNameArchTable'
 # block's own `$ROCmUnsupportedGfxArch = $row.A` land in that function's scope, so every
 # "claims nothing" case would pass without the guard existing at all.
 $guardCases = @(
-    # The reporter's host: one RDNA 1 card, nothing else. The verdict must still be reached.
-    @{ N = "lone RX 5700 XT is still named gfx1010"
-       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT"); E = 'gfx1010' }
-    # The mixed host: adapter 0 is the 5700, adapter 1 has wheels. Stay quiet and keep the
+    # Since unslothai#11614 the RX 5700 XT ROUTES on Windows (multi-arch index), so the
+    # uncovered card these cases are built on is Polaris (#8458's RX 580, gfx803). RDNA 1 now
+    # plays the covered-peer part where a covered peer is needed.
+    # The reporter's host: one uncovered card, nothing else. The verdict must still be reached.
+    @{ N = "lone RX 580 is still named gfx803"
+       L = "AMD Radeon RX 580"; A = @("AMD Radeon RX 580"); E = 'gfx803' }
+    # The mixed host: adapter 0 is the 580, adapter 1 has wheels. Stay quiet and keep the
     # arch-unknown arm, which points at the override that really does work there.
-    @{ N = "RX 5700 beside an RX 7900 XTX claims nothing"
-       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT", "AMD Radeon RX 7900 XTX"); E = $null }
+    @{ N = "RX 580 beside an RX 7900 XTX claims nothing"
+       L = "AMD Radeon RX 580"; A = @("AMD Radeon RX 580", "AMD Radeon RX 7900 XTX"); E = $null }
     @{ N = "RX 580 beside an RX 9070 XT claims nothing"
        L = "AMD Radeon RX 580"; A = @("AMD Radeon RX 580", "AMD Radeon RX 9070 XT"); E = $null }
-    # Two uncovered cards are still an uncovered host.
-    @{ N = "RX 5700 XT beside an RX 580 is still named"
-       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT", "AMD Radeon RX 580"); E = 'gfx1010' }
+    # An RDNA 1 peer is a covered peer now.
+    @{ N = "RX 580 beside an RX 5700 XT claims nothing (RDNA 1 routes, #11614)"
+       L = "AMD Radeon RX 580"; A = @("AMD Radeon RX 580", "AMD Radeon RX 5700 XT"); E = $null }
+    # And the RX 5700 XT itself never reaches this table any more.
+    @{ N = "lone RX 5700 XT is not called unsupported"
+       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT"); E = $null }
     # A peer we cannot map is not a covered peer; it is the unknown the arm already handles.
-    @{ N = "RX 5700 XT beside an unmappable Radeon is still named"
-       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT", "AMD Radeon Graphics"); E = 'gfx1010' }
+    @{ N = "RX 580 beside an unmappable Radeon is still named"
+       L = "AMD Radeon RX 580"; A = @("AMD Radeon RX 580", "AMD Radeon Graphics"); E = 'gfx803' }
     # The amd-smi paths never enter the WMI scan, so the peer list is empty there.
     @{ N = "an empty peer list does not suppress the verdict"
-       L = "AMD Radeon RX 5700 XT"; A = @(); E = 'gfx1010' }
+       L = "AMD Radeon RX 580"; A = @(); E = 'gfx803' }
     # Under a mask the peers no longer speak for the named card, but both label sources take
     # adapter 0, so the label is only the SELECTED card when there is nothing else to pick.
-    @{ N = "a masked lone RX 5700 XT is still named"
-       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT"); M = "0"; E = 'gfx1010' }
+    @{ N = "a masked lone RX 580 is still named"
+       L = "AMD Radeon RX 580"; A = @("AMD Radeon RX 580"); M = "0"; E = 'gfx803' }
     @{ N = "a mask beside a second adapter claims nothing"
-       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT", "AMD Radeon RX 7900 XTX"); M = "1"; E = $null }
+       L = "AMD Radeon RX 580"; A = @("AMD Radeon RX 580", "AMD Radeon RX 7900 XTX"); M = "1"; E = $null }
     # Even two uncovered peers: the arch named would still be adapter 0's, not the pinned one.
     @{ N = "a mask beside a second uncovered adapter claims nothing"
-       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT", "AMD Radeon RX 580"); M = "1"; E = $null }
+       L = "AMD Radeon RX 580"; A = @("AMD Radeon RX 580", "AMD Radeon RX 570"); M = "1"; E = $null }
 )
 $guardSource = $guardBlocks[0].Extent.Text
 foreach ($case in $guardCases) {
