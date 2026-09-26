@@ -182,3 +182,28 @@ test("xlsx: preserves formula fallback for uncalculated cells and shared followe
   assert.equal(row?.[5]?.text ?? "", "");
   assert.equal(row?.[6]?.text, '=IF(C1=0,"",C1)');
 });
+
+
+test("xlsx: out-of-range date values do not prevent reading the workbook", () => {
+  for (const date1904 of [false, true]) {
+    for (const value of [1700000000, -1700000000]) {
+      assert.equal(formatNumber(value, "mmm-yy", date1904), String(value));
+      assert.equal(formatNumber(value, "mmmmm", date1904), String(value));
+    }
+  }
+  assert.equal(formatNumber(45000, "mmm-yy"), "Mar-23");
+  const [sheet] = readXlsx(workbook(
+    `<worksheet xmlns="${MAIN}"><sheetData><row r="1">
+      <c r="A1" s="1"><v>1700000000</v></c>
+      <c r="B1" s="1"><v>45000</v></c>
+      <c r="C1"><v>42</v></c>
+    </row></sheetData></worksheet>`,
+    {
+      "xl/styles.xml": strToU8(`<styleSheet xmlns="${MAIN}">
+        <numFmts count="1"><numFmt numFmtId="164" formatCode="mmm-yy"/></numFmts>
+        <cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="164"/></cellXfs>
+      </styleSheet>`),
+    },
+  ));
+  assert.deepEqual(sheet?.rows[0]?.map((cell) => cell?.text), ["1700000000", "Mar-23", "42"]);
+});

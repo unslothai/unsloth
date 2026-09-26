@@ -265,13 +265,14 @@ const dateTokens = memo((code) => {
 
 /** A date or time, token by token as the format writes it. `m` is minutes after an hour or before
  *  a second, otherwise the month. */
-function formatDate(serial: number, code: string): string {
+function formatDate(serial: number, code: string): string | null {
   const { tokens, kinds, twelve, fraction } = dateTokens(code);
   const unit = 1000 / 10 ** fraction;
   // The 1900 system counts a 29 February 1900 that never was (serial 60), so earlier serials run a day ahead.
   const whole = Math.floor(serial);
   const shifted = serial < 60 ? serial + 1 : serial;
   const date = new Date(Math.round(((shifted - 25569) * 86400000) / unit) * unit);
+  if (!Number.isFinite(date.getTime())) return null;
   const pad = (n: number, width = 2) => String(n).padStart(width, "0");
   const hours = date.getUTCHours();
   return tokens
@@ -609,7 +610,7 @@ export function formatNumber(value: number, rawCode: string | undefined, date190
   const { index, sign } = pickSection(value, sections);
   const { tagged, code, kind, percents, scale } = readSection(sections[index] ?? rawCode);
   if (kind === "elapsed") return `${sign}${formatElapsed(Math.abs(value), tagged)}`;
-  if (kind === "date") return formatDate(date1904 ? value + 1462 : value, tagged);
+  if (kind === "date") return formatDate(date1904 ? value + 1462 : value, tagged) ?? generalText(value);
   // No digit placeholders: literal text, with the value wherever "General" stands.
   if (kind === "literal") return `${sign}${code.replace(/general/i, generalText(Math.abs(value)))}`.trim();
   // The magnitude, percent and thousands scaling applied whatever its shape; the section writes its
