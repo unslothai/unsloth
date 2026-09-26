@@ -11495,23 +11495,6 @@ def _gguf_runtime_bytes(
             llama_extra_args,
             default = managed_kv_unified,
         )
-        # Resolve the same capability-dependent count that load_model emits.
-        _cc_caps: dict = {}
-        try:
-            _cc_caps = LlamaCppBackend.probe_server_capabilities() or {}
-        except Exception as _cc_exc:
-            logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
-        # Older lightweight probes may not provide the new sizing helpers.
-        _per_checkpoint = getattr(probe, "_rollback_state_bytes", lambda _n: 0)(1)
-        _host_mib = getattr(probe, "_host_memory_capacity_mib", lambda: None)()
-        _resolved_checkpoints = effective_ctx_checkpoints_for_caps(
-            _cc_caps,
-            llama_extra_args,
-            ctx_checkpoints,
-            per_checkpoint_bytes = _per_checkpoint,
-            n_parallel = slots,
-            total_host_bytes = (_host_mib * 1024 * 1024) if _host_mib else None,
-        )
         # load_model appends --flash-attn on to every launch whose build has the flag,
         # so the default here is ON, not off. The false arm pads variable-width V
         # tensors to the model-wide maximum (_max_kv_value_width), which on an
@@ -11521,7 +11504,7 @@ def _gguf_runtime_bytes(
         _fa_supported = True
         try:
             _fa_caps = LlamaCppBackend.probe_server_capabilities()
-            # Same ``found`` test as the checkpoint probe above: the defaults dict
+            # Same ``found`` test as the checkpoint probe below: the defaults dict
             # reports nothing supported, so keying on the flag alone would size every
             # unprobed host as flash-attention-less.
             if _fa_caps.get("found") and not _fa_caps.get("supports_flash_attn", True):
@@ -11552,6 +11535,23 @@ def _gguf_runtime_bytes(
                 tensor_parallel = bool(tensor_parallel),
                 env = os.environ,
             )
+        _cc_caps: dict = {}
+        try:
+            _cc_caps = LlamaCppBackend.probe_server_capabilities() or {}
+        except Exception as _cc_exc:
+            logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
+        _per_checkpoint = getattr(probe, "_ctx_checkpoint_bytes", lambda *_a, **_k: 0)(
+            cache_type_for_budget, swa_full = swa_full, flash_attn = flash_attn
+        )
+        _host_mib = getattr(probe, "_host_memory_capacity_mib", lambda: None)()
+        _resolved_checkpoints = effective_ctx_checkpoints_for_caps(
+            _cc_caps,
+            llama_extra_args,
+            ctx_checkpoints,
+            per_checkpoint_bytes = _per_checkpoint,
+            n_parallel = slots,
+            total_host_bytes = (_host_mib * 1024 * 1024) if _host_mib else None,
+        )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
             cache_type_for_budget,
@@ -40083,6 +40083,8 @@ async def diffusion_download_plan(
                     speed_mode = getattr(request, "speed_mode", None),
                     # Judged on the card this pick would load on, as the loader does.
                     gpu_ordinal = gpu_ordinal,
+                    repo_id = request.model_path,
+                    base_repo = request.base_repo,
                 )
             else:
                 _assert_native_precision_unset(
@@ -40330,6 +40332,8 @@ async def load_diffusion_model_gated(
                 cpu_offload = bool(getattr(request, "cpu_offload", False)),
                 speed_mode = getattr(request, "speed_mode", None),
                 gpu_ordinal = gpu_ordinal,
+                repo_id = request.model_path,
+                base_repo = request.base_repo,
             )
         elif fam is not None and pending_name == ENGINE_SD_CPP:
             # The native engine accepts both knobs for interface parity and ignores them. It was
@@ -40403,6 +40407,8 @@ async def load_diffusion_model_gated(
                     cpu_offload = bool(getattr(request, "cpu_offload", False)),
                     speed_mode = getattr(request, "speed_mode", None),
                     gpu_ordinal = gpu_ordinal,
+                    repo_id = request.model_path,
+                    base_repo = request.base_repo,
                 )
 
         def _start_engine_load():

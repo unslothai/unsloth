@@ -226,6 +226,9 @@ export const en = {
       inOneList: "In one list",
       sortChatsBy: "Sort chats by",
       sortPinnedBy: "Sort pinned by",
+      sortProjectsBy: "Sort projects by",
+      name: "Name",
+      dateCreated: "Date created",
       priority: "Priority",
       lastUpdated: "Last updated",
       manualOrder: "Manual order",
@@ -3014,6 +3017,11 @@ export const en = {
       gridView: "Grid view",
       listView: "List view",
       settings: "Library settings",
+      sort: "Sort",
+      sortDefault: "Default order",
+      sortName: "Name",
+      sortModified: "Modified",
+      sortSize: "Size",
     },
     // Entries of the New menu.
     create: {

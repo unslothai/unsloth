@@ -2055,6 +2055,13 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 8px 28px -6px var(--background) !important;
 	}
 
+	/* Library card menus: match the card menu button so they stand off the cards. */
+	.dark [data-slot="dropdown-menu-content"].library-actions-menu,
+	.dark [data-slot="dropdown-menu-sub-content"].library-actions-menu {
+		--accent: var(--color-neutral-600);
+		background-color: var(--color-neutral-700);
+	}
+
 	/* Model selector: tighter than the menus above so it lifts off the
 	   composer it overlaps (chatbox geometry). Account menu stays flat. */
 	.dark .unsloth-model-selector-menu {

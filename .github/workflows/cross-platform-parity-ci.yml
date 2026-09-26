@@ -115,6 +115,30 @@ on:
       - 'tests/sh/test_setup_xpu_posix_summary.sh'
       - 'studio/setup.sh'
       - '.github/workflows/cross-platform-parity-ci.yml'
+      # Read or executed by the parity tests above but not matched by any entry:
+      # test_install_rollback_lifecycle.sh sources _harness.sh and _ps1_source.sh;
+      # test_windows_setup_output_encoding.py dot-sources Get-FunctionSource.ps1 and
+      # asserts on install.rs and update.rs next to process.rs;
+      # test_installer_skip_autostart.py asserts on README.md;
+      # test_installer_profile_hardening.py imports unsloth_cli.commands, which imports
+      # every command module; prebuilt_core.py imports auth_safe.py and llama_backend.py
+      # needs its package init. The pytest step runs from the repo root, so the root
+      # conftest, tests/_shared and the pytest config in pyproject.toml apply on all
+      # three operating systems.
+      - 'tests/sh/_harness.sh'
+      - 'tests/sh/_ps1_source.sh'
+      - 'tests/studio_setup_ps1/Get-FunctionSource.ps1'
+      - 'studio/src-tauri/src/install.rs'
+      - 'studio/src-tauri/src/update.rs'
+      - 'README.md'
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'pyproject.toml'
   push:
     branches: [main]
     paths:
@@ -203,6 +227,30 @@ on:
       - 'tests/sh/test_setup_xpu_posix_summary.sh'
       - 'studio/setup.sh'
       - '.github/workflows/cross-platform-parity-ci.yml'
+      # Read or executed by the parity tests above but not matched by any entry:
+      # test_install_rollback_lifecycle.sh sources _harness.sh and _ps1_source.sh;
+      # test_windows_setup_output_encoding.py dot-sources Get-FunctionSource.ps1 and
+      # asserts on install.rs and update.rs next to process.rs;
+      # test_installer_skip_autostart.py asserts on README.md;
+      # test_installer_profile_hardening.py imports unsloth_cli.commands, which imports
+      # every command module; prebuilt_core.py imports auth_safe.py and llama_backend.py
+      # needs its package init. The pytest step runs from the repo root, so the root
+      # conftest, tests/_shared and the pytest config in pyproject.toml apply on all
+      # three operating systems.
+      - 'tests/sh/_harness.sh'
+      - 'tests/sh/_ps1_source.sh'
+      - 'tests/studio_setup_ps1/Get-FunctionSource.ps1'
+      - 'studio/src-tauri/src/install.rs'
+      - 'studio/src-tauri/src/update.rs'
+      - 'README.md'
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'pyproject.toml'
   workflow_dispatch:
 
 concurrency:
@@ -211,7 +259,7 @@ concurrency:
   # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
   # the moment a newer one is queued, so a merge burst still leaves only the tip.
   # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

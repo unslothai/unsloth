@@ -437,7 +437,17 @@ class TestCheckpointsNeverReachAVramFigure:
         source = inspect.getsource(LlamaCppBackend.load_model)
         # One rule, re-asked wherever the slot count changes, never a second spelling.
         assert source.count("def _decide_auto_ctx_checkpoints(") == 1
-        assert "self._bounded_ctx_checkpoints(n_parallel, server_caps, extra_args)" in source
+        compact = "".join(source.split())
+        sized = (
+            "self._ctx_checkpoint_bytes(cache_type_kv,swa_full=swa_full,"
+            "flash_attn=planned_flash_attn)"
+        )
+        assert f"per_checkpoint_bytes={sized}" in compact
+        assert (
+            "self._bounded_ctx_checkpoints(n_parallel,server_caps,extra_args,"
+            "cache_type_kv=cache_type_kv,swa_full=swa_full,flash_attn=planned_flash_attn,)"
+        ) in compact
+        assert "per_checkpoint_bytes=self._rollback_state_bytes" not in compact
         assert source.count("self._bounded_ctx_checkpoints(") == 1
         assert "str(_auto_ctx_checkpoints)" in source
 
@@ -1077,3 +1087,182 @@ class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
         discrete = inference_routes._estimate_gguf_kv_gb("x.gguf", 4096, shared_memory_pool = False)
         assert shared == 11.0 and discrete == 7.0
         assert shared > discrete, "the shared pool must not be credited the host share"
+
+
+_GEMMA4_31B_SWA = [(i + 1) % 6 != 0 for i in range(60)]
+_GEMMA4_31B = {
+    "context_length": 262144,
+    "block_count": 60,
+    "embedding_length": 5376,
+    "attention.head_count": 32,
+    "attention.head_count_kv": [16 if swa else 4 for swa in _GEMMA4_31B_SWA],
+    "attention.key_length": 512,
+    "attention.value_length": 512,
+    "attention.key_length_swa": 256,
+    "attention.value_length_swa": 256,
+    "attention.sliding_window": 1024,
+    "attention.sliding_window_pattern": _GEMMA4_31B_SWA,
+}
+GEMMA4_SNAPSHOT = 800 * MIB
+
+
+@pytest.fixture
+def gemma4_gguf(tmp_path, monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "_kv_cache_estimation_for_checkpoints",
+        Path(__file__).parent / "test_kv_cache_estimation.py",
+    )
+    helpers = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helpers)
+    kv = {"general.architecture": "gemma4"}
+    kv.update({f"gemma4.{k}": v for k, v in _GEMMA4_31B.items()})
+    path = tmp_path / "gemma-4-31B-it-Q6_K.gguf"
+    path.write_bytes(helpers._make_gguf_bytes("gemma4", kv))
+    monkeypatch.delenv("LLAMA_ARG_SWA_FULL", raising = False)
+    monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 94 * 1024)
+    )
+    caps = {**_caps(), "supports_kv_unified": True, "supports_flash_attn": True}
+    monkeypatch.setattr(
+        LlamaCppBackend, "probe_server_capabilities", classmethod(lambda cls, *a, **k: caps)
+    )
+    return path
+
+
+def _gemma4_backend(path):
+    b = LlamaCppBackend()
+    b._read_gguf_metadata(str(path))
+    return b
+
+
+def test_an_swa_snapshot_is_its_window(gemma4_gguf):
+    b = _gemma4_backend(gemma4_gguf)
+    assert b._rollback_state_bytes(1) == 0
+    assert b._ctx_checkpoint_bytes("f16") == GEMMA4_SNAPSHOT
+    assert b._ctx_checkpoint_bytes("q8_0") < GEMMA4_SNAPSHOT
+    assert b._ctx_checkpoint_bytes("f16", swa_full = True) == 0
+    assert _plain_attention_backend()._ctx_checkpoint_bytes("f16") == 0
+    assert _backend()._ctx_checkpoint_bytes("f16") == _backend()._rollback_state_bytes(1)
+
+
+def test_the_launcher_bounds_an_swa_load(gemma4_gguf):
+    b = _gemma4_backend(gemma4_gguf)
+    assert b._bounded_ctx_checkpoints(1, _caps(), cache_type_kv = "f16") == 6
+    assert b._bounded_ctx_checkpoints(4, _caps(), cache_type_kv = "f16") == (
+        CTX_CHECKPOINTS_MIN_USEFUL
+    )
+    assert b._bounded_ctx_checkpoints(4, _caps(), cache_type_kv = "f16", swa_full = True) is None
+    assert b._bounded_ctx_checkpoints(1, _caps(), cache_type_kv = "q8_0", flash_attn = False) < (
+        b._bounded_ctx_checkpoints(1, _caps(), cache_type_kv = "q8_0")
+    )
+
+
+@pytest.mark.parametrize("flash_attn", [None, False], ids = ["managed", "fa-off"])
+def test_both_estimates_price_the_count_the_launcher_emits(gemma4_gguf, monkeypatch, flash_attn):
+    """The reported load: Auto context, f16, four slots. Uncapped this was 100 GiB of host RAM."""
+    import asyncio
+
+    from routes import inference as inference_routes
+    from routes import models as models_routes
+
+    sized_with = []
+    snapshot = LlamaCppBackend._ctx_checkpoint_bytes
+
+    def spy(self, *args, **kwargs):
+        sized_with.append(kwargs.get("flash_attn"))
+        return snapshot(self, *args, **kwargs)
+
+    monkeypatch.setattr(LlamaCppBackend, "_ctx_checkpoint_bytes", spy)
+    emitted = _gemma4_backend(gemma4_gguf)._bounded_ctx_checkpoints(4, _caps(), cache_type_kv = "f16")
+    expected = 4 * emitted * GEMMA4_SNAPSHOT
+
+    extras = None if flash_attn is None else ["--flash-attn", "off"]
+    sized_with.clear()
+    panel = inference_routes._gguf_runtime_bytes(str(gemma4_gguf), 0, extras, 4, "f16", False)
+    assert panel.n_ctx == 262144
+    assert panel.kv_checkpoint_bytes == expected
+
+    monkeypatch.setattr(
+        models_routes, "_resolve_quant_gguf", lambda *_a: (str(gemma4_gguf), 25 * GIB)
+    )
+    hub = asyncio.run(
+        models_routes.get_kv_cache_estimate(
+            repo_id = "unsloth/gemma-4-31B-it-GGUF",
+            quant = "Q6_K",
+            n_ctx = 262144,
+            cache_type_kv = "f16",
+            n_parallel = 4,
+            speculative_type = None,
+            spec_draft_n_max = None,
+            spec_draft_cache_type = None,
+            ctx_checkpoints = None,
+            disable_vision = True,
+            n_batch = None,
+            n_ubatch = None,
+            tensor_parallel = False,
+            flash_attn = flash_attn,
+            kv_unified = None,
+            swa_full = None,
+            no_mmproj_offload = None,
+            request = None,
+            current_subject = "test",
+        )
+    )
+    assert hub["kv_checkpoint_bytes"] == expected
+    assert set(sized_with) == {flash_attn is None}
+
+
+_GRANITE_H_SMALL = {
+    "context_length": 1048576,
+    "block_count": 40,
+    "embedding_length": 4096,
+    "attention.head_count": 32,
+    "attention.head_count_kv": [8 if i % 10 == 5 else 0 for i in range(40)],
+    "ssm.conv_kernel": 4,
+    "ssm.state_size": 128,
+    "ssm.group_count": 1,
+    "ssm.inner_size": 8192,
+}
+GRANITE_SNAPSHOT = 36 * (3 * (8192 + 2 * 128) + 128 * 8192) * 4
+
+
+@pytest.fixture
+def granite_gguf(tmp_path, monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "_kv_cache_estimation_for_checkpoints",
+        Path(__file__).parent / "test_kv_cache_estimation.py",
+    )
+    helpers = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helpers)
+    kv = {"general.architecture": "granitehybrid"}
+    kv.update({f"granitehybrid.{k}": v for k, v in _GRANITE_H_SMALL.items()})
+    path = tmp_path / "granite-4.0-h-small-Q4_K_M.gguf"
+    path.write_bytes(helpers._make_gguf_bytes("granitehybrid", kv))
+    monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 94 * 1024)
+    )
+    caps = {**_caps(), "supports_kv_unified": True, "supports_flash_attn": True}
+    monkeypatch.setattr(
+        LlamaCppBackend, "probe_server_capabilities", classmethod(lambda cls, *a, **k: caps)
+    )
+    return path
+
+
+def test_an_interval_free_hybrid_is_capped_and_priced(granite_gguf):
+    from routes import inference as inference_routes
+
+    b = LlamaCppBackend()
+    b._read_gguf_metadata(str(granite_gguf))
+    assert b._rollback_state_bytes(1) == GRANITE_SNAPSHOT
+    emitted = b._bounded_ctx_checkpoints(4, _caps())
+    assert emitted == 8
+    panel = inference_routes._gguf_runtime_bytes(str(granite_gguf), 32768, None, 4, "f16", False)
+    assert panel.kv_checkpoint_bytes == 4 * emitted * GRANITE_SNAPSHOT
