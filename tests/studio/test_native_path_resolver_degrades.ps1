@@ -100,10 +100,13 @@ $fns = @(
     "Test-StudioCanDefineNativeTypes", "Test-StudioEmitInChildProcess", "New-StudioDynamicAssembly",
     "New-StudioEmittedNativeType",
     "Initialize-StudioFinalPathNativeType", "Get-StudioNativeFinalPath",
-    "Get-StudioEarlyPython", "Invoke-StudioEarlyPython", "Get-StudioPythonFinalPath",
+    "Get-StudioEarlyPython", "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython",
+    "Get-StudioPythonFinalPath",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo",
     "Initialize-StudioProcessImageNativeType", "Get-StudioNativeProcessImagePath",
+    # Reached only by the below-Get-Process scenario at the end of the harness.
+    "Get-StudioPythonProcessImageTable",
     "Get-StudioProcessImagePath"
 )
 $src = @()
@@ -232,6 +235,15 @@ try { `$fallback = Get-StudioProcessImagePath -ProcessId `$PID } catch { `$fallb
 Write-Host "PROCIMG_FALLBACK_THREW: `$fallbackThrew"
 Write-Host "PROCIMG_FALLBACK_ANSWERED: `$(-not [string]::IsNullOrWhiteSpace(`$fallback))"
 Write-Host "PROCIMG_WARNED: `$script:StudioProcessImageWarned"
+
+# The rungs below Get-Process, which the check above never reaches because this shell can read
+# its own .Path. A Get-Process with no answer stands in for an uninspectable process.
+function Get-Process { param(`$Id, `$ErrorAction) return `$null }
+`$script:StudioPythonProcessImageProbed = `$false
+`$script:StudioPythonProcessImageTable = `$null
+`$deepThrew = `$false
+try { `$null = Get-StudioProcessImagePath -ProcessId `$PID } catch { `$deepThrew = `$true; Write-Host "DEEP_ERROR: `$(`$_.Exception.Message)" }
+Write-Host "PROCIMG_DEEP_THREW: `$deepThrew"
 "@
     $file = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_native_" + [guid]::NewGuid().ToString("N") + ".ps1")
     Set-Content -LiteralPath $file -Value $harness -Encoding utf8
@@ -273,6 +285,8 @@ Write-Host "PROCIMG_WARNED: `$script:StudioProcessImageWarned"
     # And with the type forced away, the rungs below it still answer, which is what
     # keeps a host from finding no running processes and overwriting an open venv.
     Check "the fallback rung does not throw" ($out -match "PROCIMG_FALLBACK_THREW: False")
+    # Catches a helper missing from the extraction list.
+    Check "the rungs below Get-Process do not throw either" ($out -match "PROCIMG_DEEP_THREW: False")
     Check "the fallback rung still names our own image" ($out -match "PROCIMG_FALLBACK_ANSWERED: True")
     Check "and says out loud that it is degraded" ($out -match "PROCIMG_WARNED: True")
 }

@@ -2814,13 +2814,34 @@ exit 1
         $script = "import pathlib,sys" + [char]10 +
                   "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
                   "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
+        # Any error, incl. from Test-Path, returns $null (lexical rung).
+        try {
+            # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
+            $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)"
+            if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
+            if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
+            if (-not (Test-Path -LiteralPath $answer)) { return $null }
+            return $answer
+        } catch {
+            return $null
+        }
+    }
+
+    function Invoke-StudioEarlyPythonScript {
+        param(
+            [Parameter(Mandatory = $true)][string]$Exe,
+            [Parameter(Mandatory = $true)][string]$Script,
+            [string[]]$ScriptArgs = @(),
+            [int]$TimeoutMs = 10000
+        )
         $proc = $null
         $clock = [System.Diagnostics.Stopwatch]::StartNew()
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $Exe
             # -S as well as -I: -I still imports site, so a sitecustomize could print or hang.
-            $argv = @("-I", "-S", "-c", $script, $Path)
+            # ArgumentList is .NET Core only; Windows PowerShell 5.1 lacks it.
+            $argv = @("-I", "-S", "-c", $Script) + $ScriptArgs
             if ($null -ne $psi.PSObject.Properties["ArgumentList"]) {
                 foreach ($a in $argv) { $null = $psi.ArgumentList.Add($a) }
             } else {
@@ -2846,12 +2867,7 @@ exit 1
             # A leftover child can hold stdout open, so the deadline bounds the read too.
             $left = [Math]::Max(0, $TimeoutMs - [int]$clock.ElapsedMilliseconds)
             if (-not $stdout.Wait($left)) { return $null }
-            # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
-            $answer = "$($stdout.Result)"
-            if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
-            if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
-            if (-not (Test-Path -LiteralPath $answer)) { return $null }
-            return $answer
+            return "$($stdout.Result)"
         } catch {
             return $null
         } finally {
@@ -6040,6 +6056,57 @@ exit 0
 
     $script:StudioProcessImageTable = $null
     $script:StudioProcessImageWarned = $false
+    # PID -> image path via ctypes in a child, so no type is defined in this script.
+    $script:StudioPythonProcessImageTable = $null
+    $script:StudioPythonProcessImageProbed = $false
+
+    function Get-StudioPythonProcessImageTable {
+        $exe = Get-StudioEarlyPython
+        if (-not $exe) { return $null }
+        if (-not ($env:OS -eq "Windows_NT")) { return $null }
+        $probe = "import ctypes,sys" + [char]10 +
+            "from ctypes import wintypes" + [char]10 +
+            "k32=ctypes.WinDLL('kernel32',use_last_error=True)" + [char]10 +
+            "psapi=ctypes.WinDLL('psapi',use_last_error=True)" + [char]10 +
+            "k32.OpenProcess.restype=wintypes.HANDLE" + [char]10 +
+            "k32.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]" + [char]10 +
+            "k32.CloseHandle.argtypes=[wintypes.HANDLE]" + [char]10 +
+            "k32.QueryFullProcessImageNameW.argtypes=[wintypes.HANDLE,wintypes.DWORD,wintypes.LPWSTR,ctypes.POINTER(wintypes.DWORD)]" + [char]10 +
+            "n=1024" + [char]10 +
+            "while True:" + [char]10 +
+            "    a=(wintypes.DWORD*n)();b=wintypes.DWORD()" + [char]10 +
+            "    if not psapi.EnumProcesses(ctypes.byref(a),ctypes.sizeof(a),ctypes.byref(b)): sys.exit(3)" + [char]10 +
+            "    if b.value < ctypes.sizeof(a): break" + [char]10 +
+            "    n*=2" + [char]10 +
+            "out=[]" + [char]10 +
+            "for pid in a[:b.value//ctypes.sizeof(wintypes.DWORD)]:" + [char]10 +
+            "    if not pid: continue" + [char]10 +
+            "    h=k32.OpenProcess(0x1000,False,pid)" + [char]10 +
+            "    if not h: continue" + [char]10 +
+            "    try:" + [char]10 +
+            "        buf=ctypes.create_unicode_buffer(32768);sz=wintypes.DWORD(32768)" + [char]10 +
+            "        if k32.QueryFullProcessImageNameW(h,0,buf,ctypes.byref(sz)): out.append(str(pid)+'|'+buf.value)" + [char]10 +
+            "    finally:" + [char]10 +
+            "        k32.CloseHandle(h)" + [char]10 +
+            "sys.stdout.buffer.write('\n'.join(out).encode('utf-8'))"
+        $raw = Invoke-StudioEarlyPythonScript -Exe $exe -Script $probe -TimeoutMs 20000
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+        $table = @{}
+        foreach ($line in ($raw -split "`r?`n")) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $split = $line.IndexOf('|')
+            if ($split -lt 1) { continue }
+            $pidText = $line.Substring(0, $split)
+            $path = $line.Substring($split + 1)
+            $parsed = 0
+            if (-not [int]::TryParse($pidText, [ref]$parsed)) { continue }
+            if ($parsed -le 0) { continue }
+            if (-not [string]::IsNullOrWhiteSpace($path)) { $table[$parsed] = $path }
+        }
+        if ($table.Count -eq 0) { return $null }
+        return $table
+    }
+
     function Get-StudioProcessImagePath {
         param([Parameter(Mandatory = $true)][int]$ProcessId)
         if (Initialize-StudioProcessImageNativeType) {
@@ -6060,6 +6127,19 @@ exit 0
                 if (-not [string]::IsNullOrWhiteSpace($process.Path)) { return $process.Path }
             } catch {}
         }
+        # PROCESS_QUERY_LIMITED_INFORMATION works where PROCESS_VM_READ does not; one child per run.
+        if (-not $script:StudioPythonProcessImageProbed) {
+            $script:StudioPythonProcessImageProbed = $true
+            # A failure falls through to the WMI rung, never past it.
+            try { $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable } catch {
+                $script:StudioPythonProcessImageTable = $null
+            }
+        }
+        if ($script:StudioPythonProcessImageTable -and
+            $script:StudioPythonProcessImageTable.ContainsKey($ProcessId)) {
+            return $script:StudioPythonProcessImageTable[$ProcessId]
+        }
+        # Per-run PID snapshots: a reused PID reads stale; accepted.
         # Queried once per run, not once per process: this is the slow rung.
         if ($null -eq $script:StudioProcessImageTable) {
             $script:StudioProcessImageTable = @{}
