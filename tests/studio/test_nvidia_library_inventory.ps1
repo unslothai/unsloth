@@ -244,8 +244,7 @@ $script:FakePythonRc = 0
 $HasNvidiaSmi = $false
 $HasNvidiaDriverEvidence = $false
 Check "a CUDA prebuilt with the GPU gone is not kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
-# A card on the bus with no driver stack behind it (the presence-only promotion) is not a CUDA
-# host for llama.cpp: install_llama_prebuilt.py never sees the bus, so it would not pick CUDA either.
+# Presence-only is not a CUDA host for llama.cpp.
 $HasNvidiaSmi = $true
 $HasNvidiaDriverEvidence = $false
 Check "a CUDA prebuilt on a presence-only NVIDIA host is not kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")

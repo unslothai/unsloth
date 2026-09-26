@@ -1,22 +1,8 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# The last-resort NVIDIA presence source, what it must never do, and the wheel it leads to.
-#
-# $HasNvidiaSmi does not mean "nvidia-smi exists". It means "an NVIDIA GPU is present", and
-# setting it true SUPPRESSES all AMD and Intel detection downstream. So a presence source has
-# three jobs, and only the first is the obvious one:
-#
-#   1. Say yes on a host with a working NVIDIA card that neither nvidia-smi nor the driver library
-#      could report, instead of sending it to CPU-only wheels in silence (#9255).
-#   2. Say no on everything else. A false yes on an AMD or Intel machine turns off that machine's
-#      GPU support entirely, which is a worse failure than the one this fixes.
-#   3. Lead somewhere useful. Promoting the flag without also giving the wheel selector a version
-#      to work from was MEASURED to produce $HasNvidiaSmi true, AMD detection off, and a CPU index
-#      anyway: strictly worse than doing nothing. That is why this file also drives the index.
-#
-# Marketing names in the fixtures are deliberately adversarial, because matching on a name rather
-# than the PCI vendor ID is the obvious wrong implementation and it has to fail loudly.
+# $HasNvidiaSmi suppresses AMD and Intel detection, so the presence source must say yes only for a
+# healthy VEN_10DE adapter (names are deliberately adversarial) and must lead to a real index.
 # Run: pwsh -NoProfile -File tests/studio/test_nvidia_adapter_presence.ps1
 
 $ErrorActionPreference = "Stop"
@@ -41,10 +27,7 @@ function Get-FunctionText($file, $name) {
     return $fn[0].Extent.Text
 }
 
-# ------------------------------------------------------------------- the shared region
-#
-# install.ps1 nests one level deeper, so compare without indentation, the same way
-# test_nvidia_library_inventory.ps1 and test_nvidia_smi_discovery.ps1 do.
+# install.ps1 nests one level deeper, so compare without indentation.
 $strip = { param($t) (($t -split "`n") | ForEach-Object { $_.TrimStart() }) -join "`n" }
 $shared = @(
     "Invoke-BoundedVideoControllerScan", "Test-NvidiaAdapterPresent",
@@ -64,8 +47,6 @@ foreach ($name in @("Test-NvidiaAdapterPresent", "Test-OtherVendorAdapterPresent
                     "Get-NvidiaRegistryAdapter", "Test-NvidiaAdapterWithoutNvidiaDriver")) {
     Invoke-Expression (Get-FunctionText $setupPs1 $name)
 }
-# The Intel route's registry names, which the other-vendor gate reconciles a localized WMI name
-# against. Empty unless a row below sets it, so every row above keeps its old meaning.
 $script:FakeRegistryNames = @()
 $script:FakeRegistryThrows = $false
 function Get-IntelRegistryAdapterNames {
@@ -73,11 +54,8 @@ function Get-IntelRegistryAdapterNames {
     return $script:FakeRegistryNames
 }
 
-# The scan is stubbed, not run: this host has no Win32_VideoController, and what is under test is
-# the judgement applied to an inventory rather than the ability to fetch one.
 $script:FakeAdapters = @()
-# $null means "derive it from the fixture", which is what every row below job 2b wants. A row
-# that needs a scan which ANSWERED yet listed no healthy NVIDIA adapter sets it explicitly.
+# $null derives Ok from the fixture.
 $script:FakeScanOk = $null
 function Invoke-BoundedVideoControllerScan {
     param([int]$TimeoutSec = 15)
@@ -93,10 +71,6 @@ function Adapter($name, $id, $code, $driver = "32.0.15.6094") {
     }
 }
 
-# ------------------------------------------------------------------- job 1 and job 2
-#
-# The registry fallback finds nothing on this host, so a $true below can only have come from the
-# inventory. Checked rather than assumed, in the empty case first.
 $script:FakeAdapters = @()
 Check "control: nothing on the bus is not a GPU, and the registry adds nothing here" (
     (Test-NvidiaAdapterPresent) -eq $false)
@@ -116,9 +90,7 @@ foreach ($case in @(
     Check "no NVIDIA reported for $($case.N)" ((Test-NvidiaAdapterPresent) -eq $false)
 }
 
-# A marketing name is not evidence. These two are the trap: an adapter whose name says NVIDIA but
-# whose vendor ID is AMD's must be no, and an NVIDIA adapter with an OEM-rebranded or localized
-# name that never says NVIDIA must still be yes. Matching on the name gets both backwards.
+# Names are the trap: only the vendor ID counts.
 $script:FakeAdapters = @(Adapter "NVIDIA compatible display" "PCI\VEN_1002&DEV_744C" 0)
 Check "a non-NVIDIA card whose NAME says NVIDIA is not counted" ((Test-NvidiaAdapterPresent) -eq $false)
 
@@ -126,9 +98,6 @@ $script:FakeAdapters = @(Adapter "Carte graphique" "PCI\VEN_10DE&DEV_2684" 0)
 Check "an NVIDIA card whose name says nothing recognisable is still counted" (
     (Test-NvidiaAdapterPresent) -eq $true)
 
-# A record is not a card. A driver configuration outlives removed hardware, and a disabled or
-# faulted adapter is not usable. Counting any of these would suppress AMD and Intel on a machine
-# whose only real GPU is one of those.
 foreach ($case in @(
     @{ N = "a disabled adapter (code 22)";          C = 22 },
     @{ N = "a device-problem adapter (code 43)";    C = 43 },
@@ -149,11 +118,6 @@ Check "the vendor ID match is case-insensitive" ((Test-NvidiaAdapterPresent) -eq
 $script:FakeAdapters = @(Adapter "Some Card" "PCI\VEN_110D&DEV_E10D" 0)
 Check "a lookalike vendor ID is not matched" ((Test-NvidiaAdapterPresent) -eq $false)
 
-# ------------------------------------------------- job 2, the gate that keeps this additive
-#
-# A hybrid host already gets AMD or Intel wheels today, so it is NOT the host this fixes.
-# Promoting NVIDIA there would suppress a working path for a GPU whose CUDA version nothing on the
-# machine can report.
 foreach ($case in @(
     @{ N = "a healthy AMD adapter";   A = @(Adapter "AMD Radeon RX 7900 XTX" "PCI\VEN_1002&DEV_744C" 0); Want = $true },
     @{ N = "a healthy Intel adapter"; A = @(Adapter "Intel Arc A770" "PCI\VEN_8086&DEV_56A0" 0); Want = $true },
@@ -166,28 +130,20 @@ foreach ($case in @(
         (Test-OtherVendorAdapterPresent) -eq $case.Want)
 }
 
-# And the two together on the machine that matters: NVIDIA plus AMD, both healthy. Presence says
-# yes, the gate says another vendor is here, so the promotion must NOT fire.
 $script:FakeAdapters = @(
     (Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0),
     (Adapter "AMD Radeon 780M" "PCI\VEN_1002&DEV_15BF" 0))
 Check "on a hybrid NVIDIA plus AMD host presence is true but the gate blocks promotion" (
     (Test-NvidiaAdapterPresent) -eq $true -and (Test-OtherVendorAdapterPresent) -eq $true)
 
-# The commonest machine in this entire population: a laptop with an NVIDIA GPU and Intel
-# integrated graphics. UHD and Iris get no XPU wheels, so counting them as an alternative blocks
-# the NVIDIA promotion and then hands the host CPU wheels anyway. Worse than either outcome on
-# its own, and it is the configuration the promotion was written for.
+# UHD / Iris get no XPU wheels, so they must not block the promotion.
 foreach ($case in @(
     @{ N = "Intel UHD Graphics";    Name = "Intel(R) UHD Graphics 770";        Blocks = $false },
     @{ N = "Intel Iris Xe";         Name = "Intel(R) Iris(R) Xe Graphics";     Blocks = $false },
     @{ N = "Intel HD Graphics";     Name = "Intel(R) HD Graphics 630";         Blocks = $false },
-    # Arc and Data Center parts DO block: for those the Intel route has somewhere to go, and
-    # suppressing it would cost the host wheels it can actually use.
     @{ N = "Intel Arc A770";        Name = "Intel(R) Arc(TM) A770 Graphics";   Blocks = $true },
     @{ N = "Intel Arc B580";        Name = "Intel(R) Arc(TM) B580 Graphics";   Blocks = $true },
     @{ N = "Intel Data Center GPU"; Name = "Intel(R) Data Center GPU Max 1100"; Blocks = $true },
-    # A nameless Intel adapter cannot be shown to be XPU-capable, so it does not block.
     @{ N = "a nameless Intel adapter"; Name = "";                              Blocks = $false }
 )) {
     $script:FakeAdapters = @(
@@ -198,22 +154,16 @@ foreach ($case in @(
     Check "  and NVIDIA presence is unaffected either way" ((Test-NvidiaAdapterPresent) -eq $true)
 }
 
-# AMD is deliberately NOT narrowed: its route serves most Radeon parts through a name-to-gfx
-# table rather than a short allowlist, so deciding capability here would duplicate that table.
 $script:FakeAdapters = @(
     (Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0),
     (Adapter "AMD Radeon(TM) Graphics" "PCI\VEN_1002&DEV_15BF" 0))
 Check "an integrated AMD adapter still blocks, unlike the Intel one" (
     (Test-OtherVendorAdapterPresent) -eq $true)
 
-# The gate's Intel pattern must be the SAME one the XPU route uses, or the two answer different
-# questions and drift apart silently. Read both out of install.ps1 rather than restating either.
 $gateText = Get-FunctionText $installPs1 "Test-OtherVendorAdapterPresent"
 $installAll = [System.IO.File]::ReadAllText($installPs1)
 Check "the gate defers to the shared XPU-capable pattern" ($gateText -match 'Get-XpuCapableNameRegex')
-# @() around the WHOLE pipeline, not just the Matches. Sort-Object -Unique on one element
-# returns a bare string, .Count on a string is 1, and [0] is then its first CHARACTER, so both
-# checks below compare "(" with "(" and pass for free. Hit exactly that here before fixing it.
+# @() around the WHOLE pipeline: one unique string would make [0] its first character.
 $patternDefs = @(@([regex]::Matches($installAll, 'function Get-XpuCapableNameRegex \{ return "([^"]+)" \}') |
     ForEach-Object { $_.Groups[1].Value }) | Sort-Object -Unique)
 $routeDefs = @(@([regex]::Matches($installAll, '\$_xpuNameRe = "([^"]+)"') |
@@ -223,10 +173,6 @@ Check "the extracted patterns are whole strings, not characters" (
 Check "both patterns are defined exactly once" ($patternDefs.Count -eq 1 -and $routeDefs.Count -eq 1)
 Check "the gate pattern and the XPU route pattern are identical" ($patternDefs[0] -ceq $routeDefs[0])
 
-# -------------------------------------------------------- the driver version to CUDA floor
-#
-# Windows reports the DISPLAY driver version, not the NVIDIA release: "32.0.15.6094" is NVIDIA
-# 560.94. Values are a floor, never the exact version.
 foreach ($case in @(
     @{ V = "32.0.15.6094"; Want = "12.6" },   # 560.94
     @{ V = "32.0.15.7020"; Want = "12.8" },   # 570.20
@@ -244,11 +190,7 @@ foreach ($case in @(
     Check "driver $($case.V) floors at '$want'" ($text -eq $want)
 }
 
-# Read out of the adapter inventory, and only from a HEALTHY NVIDIA one.
 $script:FakeAdapters = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0 "32.0.15.7020")
-# The release parse on its own. This is what lets the caller tell "no version at all" apart from
-# "a version, and it is below every row of the table": the floor helper answers $null for both,
-# and they want opposite wheels.
 foreach ($case in @(
     @{ V = "32.0.15.6094"; R = 560; N = "a Windows display-driver version" },
     @{ V = "30.0.14.4568"; R = 445; N = "a pre-R450 Windows version" },
@@ -257,17 +199,12 @@ foreach ($case in @(
     @{ V = "";             R = $null; N = "an empty version" },
     @{ V = "not a version"; R = $null; N = "an unparseable version" },
     @{ V = "1.2.3";        R = $null; N = "a three-field version" },
-    # Three digits at least. The caller now acts on a low release by choosing CPU wheels, so a
-    # malformed string must read as unknown rather than as an ancient driver.
     @{ V = "99.1";         R = $null; N = "a two-digit release" },
     @{ V = "100.1";        R = 100;  N = "the lowest release shape NVIDIA actually ships" },
-    # Microsoft's Basic Display driver on an NVIDIA adapter reports ITS version, not NVIDIA's. Read
-    # as NVIDIA's scheme these were releases 136, 262 and 190, all "pre-R450", which chose CPU
-    # wheels and force-replaced a working cu* venv. They are not NVIDIA releases at all.
+    # Microsoft Basic Display versions are not NVIDIA releases.
     @{ V = "10.0.19041.3636"; R = $null; N = "a Microsoft Basic Display driver version" },
     @{ V = "10.0.22621.1";    R = $null; N = "a Windows 11 Basic Display driver version" },
     @{ V = "10.0.19041.1";    R = $null; N = "a Windows 10 Basic Display driver version" },
-    # NVIDIA's own scheme across its eras: third field 1x, fourth four digits.
     @{ V = "31.0.15.3623";    R = 536; N = "a WDDM 3.1 NVIDIA version" },
     @{ V = "26.21.14.4250";   R = 442; N = "a WDDM 2.6 NVIDIA version" },
     @{ V = "21.21.13.7892";   R = 378; N = "a WDDM 2.1 NVIDIA version" }
@@ -275,8 +212,6 @@ foreach ($case in @(
     $got = Get-NvidiaDriverRelease -DriverVersion $case.V
     Check "$($case.N) reads as release $($case.R)" ($got -eq $case.R)
 }
-# And the two disagree exactly where they should: a readable pre-R450 version has a release but
-# no floor, which is the whole distinction the wheel branch now depends on.
 Check "a pre-R450 driver has a release but no floor" (
     (Get-NvidiaDriverRelease -DriverVersion "30.0.14.4568") -eq 445 -and
     $null -eq (Get-NvidiaDriverCudaFloor -DriverVersion "30.0.14.4568"))
@@ -296,10 +231,7 @@ $script:FakeAdapters = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_268
 Check "a faulted NVIDIA adapter's driver version is not used" (
     $null -eq (Get-NvidiaAdapterCudaFloor))
 
-# --------------------------------------------------------------- the table cannot drift
-#
-# The floors are ported from studio/nvidia_probe.py. Generated from that file rather than retyped,
-# so the two cannot disagree without this failing.
+# Generated from studio/nvidia_probe.py so the tables cannot drift.
 $probePy = Join-Path $root "studio/nvidia_probe.py"
 $probeText = Get-Content -Raw -LiteralPath $probePy
 $pyRows = @()
@@ -309,8 +241,7 @@ foreach ($m in [regex]::Matches($tableMatch.Groups[1].Value, '\((\d+),\s*\((\d+)
     $pyRows += "$($m.Groups[1].Value):$($m.Groups[2].Value).$($m.Groups[3].Value)"
 }
 Check "the python table has rows to compare (bites)" ($pyRows.Count -ge 5)
-# Read from the function that HOLDS the table. Get-NvidiaDriverCudaFloor now only parses a
-# version and hands the release on, so reading it would compare an empty list and pass.
+# Get-NvidiaDriverCudaFloor no longer holds the table; reading it would pass on an empty list.
 $psText = Get-FunctionText $setupPs1 "Get-NvidiaCudaFloorForRelease"
 $psRows = @()
 foreach ($m in [regex]::Matches($psText, '@\((\d+),\s*(\d+),\s*(\d+)\)')) {
@@ -319,10 +250,6 @@ foreach ($m in [regex]::Matches($psText, '@\((\d+),\s*(\d+),\s*(\d+)\)')) {
 Check "the PowerShell floor table matches nvidia_probe.py exactly" (
     ($pyRows -join ",") -eq ($psRows -join ","))
 
-# ------------------------------------------------------------------ where it is consumed
-#
-# The promotion must sit BELOW the driver library, not above it. The library knows the CUDA
-# version and the compute capabilities; this knows only that a card exists.
 foreach ($file in @($installPs1, $setupPs1)) {
     $text = Get-Content -Raw -LiteralPath $file
     $name = Split-Path $file -Leaf
@@ -336,20 +263,13 @@ foreach ($file in @($installPs1, $setupPs1)) {
     Check "$name gates the promotion on no other vendor being present" (
         $text -match '-not \(Test-OtherVendorAdapterPresent -Scan \$presenceScan\)')
 
-    # PowerShell does not hoist. Both files are one long body executed top to bottom, so a
-    # function called above its own definition is not defined yet and the call fails with "not
-    # recognized". This was real, twice: the presence helper first landed BELOW the promotion that
-    # calls it, and then the bounded scan did. Every pwsh suite still passed both times, because
-    # they extract functions and define them in dependency order themselves. Only reading the file
-    # in order catches it.
+    # PowerShell does not hoist, and the pwsh suites define functions in dependency order themselves.
     foreach ($fn in $shared) {
         $def = $text.IndexOf("function $fn")
         Check "$name defines $fn before the promotion that uses it" ($def -gt 0 -and $def -lt $presence)
     }
     $scanCalls = 0
     foreach ($m in [regex]::Matches($text, '(?<!function )Invoke-BoundedVideoControllerScan')) {
-        # A name in a comment is prose, not a call: other code documents itself by pointing at
-        # this helper, and such a comment is free to sit anywhere in the file.
         $lineStart = $text.LastIndexOf("`n", [Math]::Max($m.Index - 1, 0)) + 1
         if ($text.Substring($lineStart, $m.Index - $lineStart).Contains("#")) { continue }
         $scanCalls++
@@ -357,23 +277,17 @@ foreach ($file in @($installPs1, $setupPs1)) {
         Check "$name calls Invoke-BoundedVideoControllerScan at offset $($m.Index) after its definition" (
             $m.Index -gt $def)
     }
-    # Bites: skipping comments must not skip everything.
     Check "$name has real calls to the bounded scan to order (bites)" ($scanCalls -gt 0)
 }
 
-# setup.ps1 must NOT guess a family. Get-PytorchCudaTag returning "" means unknown, and the
-# do-not-wipe escape keys on that: guessing cu126 there replaced a working cu130 venv on every
-# update (#9255). Only install.ps1, which is choosing an index for a fresh install, may floor.
+# setup.ps1 must NOT guess: "" keys the do-not-wipe escape (#9255).
 $setupTag = Get-FunctionText $setupPs1 "Get-PytorchCudaTag"
 Check "setup.ps1 still returns empty for unknown rather than flooring" (
     $setupTag -notmatch 'NvidiaPresenceCudaFloor')
 Check "and install.ps1 is where the floor is consumed" (
     (Get-FunctionText $installPs1 "Get-TorchIndexUrl") -match 'NvidiaPresenceCudaFloor')
 
-# The routing rows above set $script:NvidiaPresenceDriverRelease directly, so nothing in them
-# exercises the promotion site that is supposed to RECORD it. Without this, deleting that
-# recording leaves every row green while every real host reports no release at all, and the
-# pre-R450 branch becomes unreachable. Found exactly that way: the mutation passed.
+# The rows above set the release directly, so check the promotion site records it.
 foreach ($file in @($installPs1, $setupPs1)) {
     $text = [System.IO.File]::ReadAllText($file)
     $leaf = Split-Path -Leaf $file
@@ -385,11 +299,6 @@ foreach ($file in @($installPs1, $setupPs1)) {
         $text -match '\$script:NvidiaPresenceDriverRelease = \$null')
 }
 
-# setup.ps1 alone carries the rejection latch, and the bus promotion has to set it for the same
-# reason the driver-library promotion above it does: reaching that block means discovery already
-# walked every candidate path and every one was absent, hung, or reported no GPU. Left false,
-# Get-CudaComputeCapability and Get-PytorchCudaTag rediscover that same executable, which costs up
-# to two more bounded waits and can select a family from a banner detection already rejected.
 $setupWhole = [System.IO.File]::ReadAllText($setupPs1)
 $busBlock = [regex]::Match($setupWhole, '(?s)if \(-not \$HasNvidiaSmi\) \{\s*\$presenceScan = Invoke-BoundedVideoControllerScan.*?\n\}')
 Check "setup.ps1's bus promotion block was found (bites)" ($busBlock.Success)
@@ -408,14 +317,7 @@ Check "install.ps1 is where the release is consumed" (
 Check "setup.ps1's tag helper does not act on it, for the same reason it does not floor" (
     (Get-FunctionText $setupPs1 "Get-PytorchCudaTag") -notmatch 'NvidiaPresenceDriverRelease')
 
-# But setup's ROUTER must, and for a while it did not. Get-PytorchCudaTag returns "" for a driver
-# it cannot place, and the arm below that answered cu126 for it. Once setup gained the same bus
-# promotion install.ps1 has, a pre-R450 host running setup.ps1 directly against a new or
-# incomplete venv reached that arm and was handed CUDA wheels its driver cannot load, while
-# install.ps1 answered CPU for the same machine. The two routers have to agree.
-#
-# Read as text because this is top-level script, not a function. Anchored on the ORDER, since an
-# arm placed after the cu126 fallback is dead code that reads exactly like a fix.
+# Anchored on ORDER: an arm after the cu126 fallback is dead code.
 $setupText = [System.IO.File]::ReadAllText($setupPs1)
 $nvArm = [regex]::Match($setupText, '(?s)\} elseif \(\$HasNvidiaSmi\) \{.*?\n\} elseif \(\$script:IsIntelXpu\)')
 Check "setup.ps1's NVIDIA routing arm was found (bites)" ($nvArm.Success)
@@ -430,23 +332,11 @@ if ($nvArm.Success) {
         $preR450 -ge 0 -and $cu126 -ge 0 -and $preR450 -lt $cu126)
     Check "and says why, rather than silently installing CPU wheels" (
         $arm -match 'predates R450')
-    # Saying "installing CPU wheels" is not installing them. The CPU arm installs the bare torch
-    # range when nothing pinned it, and an installed +cu build satisfies that range, so uv keeps
-    # the very wheel this arm just said the driver cannot load. The stale-venv pass cannot rescue
-    # it either: the expected family reads as unknown here, so $script:PinChangedForceReinstall
-    # stays false. Same flag mechanism the ROCm and XPU fallbacks already use.
     Check "and marks the demotion so the CPU arm really replaces the CUDA wheel" (
         $arm -match '(?s)-lt 450\)? \{[^}]*NvidiaPreR450CpuFallback = \$true')
     Check "and only when a CUDA wheel is actually installed" (
         $arm -match 'Test-CudaFamilyLeaf \$installedTorchTag\) \{ \$script:NvidiaPreR450CpuFallback = \$true \}')
 }
-# ------------------------------- the promotion has to reach the code that installs the wheels
-#
-# Two ways it did not. The fast path decides before the promotion runs, and nothing cleared
-# $SkipPythonDeps for NVIDIA the way the Intel and AMD checks do for theirs, so a verified
-# up-to-date CPU environment reported the GPU and kept CPU PyTorch on every subsequent run. And
-# when a pass did run, the CUDA arm asked for bare torch, which the installed CPU wheel already
-# satisfies, so uv kept it and the run reported success having installed nothing.
 $escapes = Get-FunctionText $setupPs1 "Invoke-FastPathEscapes"
 Check "setup.ps1's fast-path escapes were found (bites)" (-not [string]::IsNullOrWhiteSpace($escapes))
 if ($escapes) {
@@ -455,7 +345,6 @@ if ($escapes) {
         $escapes -match '(?s)NvidiaPresenceOnly[^}]*\$SkipPythonDeps = \$false')
     Check "and only when the installed wheel is a CPU one" (
         $escapes -match '\$installedTorchTag -eq "cpu"')
-    # Or it re-fires forever on a host that is deliberately staying on CPU.
     Check "a pre-R450 driver does not trigger it" (
         $escapes -match '\$_nvidiaPreR450' -and $escapes -match 'NvidiaPresenceDriverRelease -lt 450')
     Check "nor does a pin that sends this host somewhere else" (
@@ -468,8 +357,6 @@ if ($cudaArm.Success) {
         $cudaArm.Value -match '(?s)\$script:NvidiaPresenceOnly -and \$installedTorchTag -eq "cpu"[^}]*--force-reinstall')
 }
 
-# The flag has to be READ where the wheels are installed, or setting it changes nothing. Anchored
-# on the CPU arm's own force list, beside the two fallbacks that set theirs for the same reason.
 $cpuArm = [regex]::Match($setupText, '(?s)substep "installing PyTorch \(CPU-only\)\.\.\.".{0,3000}')
 Check "setup.ps1's CPU install arm was found (bites)" ($cpuArm.Success)
 if ($cpuArm.Success) {
@@ -478,10 +365,6 @@ if ($cpuArm.Success) {
     Check "the same way it does after the ROCm and XPU fallbacks (bites)" (
         $cpuArm.Value -match 'if \(\$ROCmCpuFallback\) \{ \$cpuForce = @\("--force-reinstall"\) \}')
 }
-# A bus-only host whose venv holds a +rocm or +xpu wheel left from a previous AMD or Intel card.
-# The stale check keeps it (expected family unknown) and bare torch on the CUDA index accepts it,
-# so before this the host kept a wheel with no device to use, where the merge base rebuilt it.
-# Executed, not pattern-matched: the helper, the fast-path escape and the CUDA arm's force.
 $staleHelper = Get-FunctionText $setupPs1 "Test-NvidiaPresenceStaleGpuWheel"
 Check "setup.ps1 defines Test-NvidiaPresenceStaleGpuWheel (bites)" (-not [string]::IsNullOrWhiteSpace($staleHelper))
 $staleEscape = $null
@@ -535,37 +418,23 @@ if ($staleHelper -and $staleEscape) {
     }
     $script:NvidiaPresenceOnly = $false; $script:NvidiaPresenceStaleGpuWheel = $null
 }
-# Reset per run, like the rest of the presence state: under `irm | iex` the script scope is the
-# caller's own session, and a flag left set from a previous run would force a reinstall that this
-# run never asked for.
 Check "the flag starts false on every run" (
     $setupText -match '(?m)^\$script:NvidiaPreR450CpuFallback = \$false$')
-# The bus-only host whose driver IS in the table. install.ps1 selects from the floor and setup did
-# not, so the two routers disagreed by two whole families: an R450 to R524 driver maps to CUDA 11.0
-# and install.ps1 picks cu118, while setup fell through to cu126, which that driver cannot load.
 if ($nvArm.Success) {
     $arm = $nvArm.Value
     Check "setup.ps1 selects from the recorded floor" (
         $arm -match '\$script:NvidiaPresenceCudaFloor')
-    # Only when nothing cu* is installed. An existing cu130 venv must not be pulled back to a
-    # FLOOR: that is the do-not-wipe escape (#9255), and it is why Get-PytorchCudaTag still
-    # returns empty rather than guessing.
     Check "and only when no CUDA family is already installed" (
         $arm -match '-not \(Test-CudaFamilyLeaf \$installedTorchTag\)[\s\S]{0,80}?NvidiaPresenceCudaFloor')
-    # Through the shared ladder, never by formatting the digits: CUDA 11.0 is served by cu118, and
-    # a leaf built from the digits would be "cu110", an index nothing publishes.
     Check "through the shared ladder rather than by formatting the digits" (
         $arm -match 'Get-CudaFamilyForVersion -Major \$floorMajor' -and
         $arm -notmatch 'cu\$floorMajor')
-    # And the same pre-Turing cap install.ps1 applies, since nothing here named a capability.
     Check "and applies the same pre-Turing cap" (
         $arm -match '\$floorMajor -gt 12 -or \(\$floorMajor -eq 12 -and \$floorMinor -gt 6\)')
     Check "and the pre-R450 arm still decides first" (
         $arm.IndexOf('NvidiaPresenceDriverRelease') -lt $arm.IndexOf('NvidiaPresenceCudaFloor'))
 }
 
-# One ladder, two callers, and it must be the SAME ladder install.ps1 uses or the two installers
-# hand one host different wheels. Compared as normalised text, then driven for real.
 $ladderFn = Get-FunctionText $setupPs1 "Get-CudaFamilyForVersion"
 Check "setup.ps1 names the ladder once (bites)" ($ladderFn.Length -gt 50)
 $ladderRows = [regex]::Matches($ladderFn, '(?m)^\s*(?:if|elseif|return)[^\r\n]*cu\d+[^\r\n]*$')
@@ -588,8 +457,6 @@ Check "both ladders have the same number of rungs" ($setupConds.Count -eq $insta
 Check "and the rungs test the same conditions in the same order" (
     ($setupConds -join '|') -eq ($installConds -join '|'))
 
-# Driven, because identical text is not the same as the same answer. These are the versions the
-# driver floor table actually produces, plus the boundaries either side of every rung.
 Invoke-Expression $ladderFn
 foreach ($row in @(
     @{ M = 10; N = 2; Want = "cpu" },
@@ -606,22 +473,13 @@ foreach ($row in @(
     Check "CUDA $($row.M).$($row.N) is served by $($row.Want)" (
         (Get-CudaFamilyForVersion -Major $row.M -Minor $row.N) -eq $row.Want)
 }
-# The one that made this a bug rather than a nicety: an R450 to R524 driver.
 Check "an R450 driver's floor lands on cu118, not a cu110 that does not exist" (
     (Get-CudaFamilyForVersion -Major 11 -Minor 0) -eq "cu118")
 
 Check "install.ps1 answers the same way for the same host" (
     (Get-FunctionText $installPs1 "Get-TorchIndexUrl") -match '(?s)NvidiaPresenceDriverRelease -lt 450[\s\S]{0,1200}?/cpu')
 
-# ------------------------------------------------- job 2b, the registry fallback is last resort
-#
-# These display-class keys outlive removed hardware and expose no ConfigManagerErrorCode, so a
-# stale NVIDIA entry cannot be told apart from a working card. Reading one as a verified GPU
-# would promote $HasNvidiaSmi, and that suppresses AMD and Intel detection as well as choosing
-# CUDA wheels. The fallback therefore exists only for a WMI repository that could not answer.
-#
-# The registry is shadowed here rather than left to this host: a Linux runner has no HKLM, so
-# without a stub every row below would pass for the wrong reason.
+# No HKLM on Linux: the registry is stubbed so rows cannot pass for the wrong reason.
 $script:RegistryConsulted = $false
 function Get-ChildItem {
     param([string]$LiteralPath, [switch]$Directory, [string]$Filter, $ErrorAction)
@@ -639,17 +497,13 @@ function Get-ItemProperty {
     return $null
 }
 
-# A WMI scan that FAILED is no answer, and the class keys cannot stand in for one. This used to
-# fall back to them, and a stale ven_10de entry (a removed eGPU, a swapped card) on an Intel UHD
-# laptop whose WMI timed out promoted $HasNvidiaSmi: CUDA wheels for a GPU that is gone and Intel
-# detection switched off. Presence now needs a current, healthy WMI record.
+# A failed scan must not fall back to stale class keys.
 $script:FakeAdapters = @()
 $script:FakeScanOk = $false
 $script:RegistryConsulted = $false
 Check "a WMI scan that could not answer is not presence, even with an NVIDIA class key" ((Test-NvidiaAdapterPresent) -eq $false)
 Check "and the registry was never consulted for presence" ($script:RegistryConsulted -eq $false)
 
-# A WMI scan that ANSWERED is evidence, even when the answer is "no NVIDIA here".
 foreach ($case in @(
     @{ N = "answered with no adapters at all"; A = @() },
     @{ N = "answered with an AMD adapter only"; A = @(Adapter "AMD Radeon RX 7900 XTX" "PCI\VEN_1002&DEV_744C" 0) },
@@ -664,14 +518,12 @@ foreach ($case in @(
     Check "and the registry was never consulted" ($script:RegistryConsulted -eq $false)
 }
 
-# A healthy adapter still short-circuits before the registry is reached at all.
 $script:FakeAdapters = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0)
 $script:FakeScanOk = $true
 $script:RegistryConsulted = $false
 Check "a healthy NVIDIA adapter answers from WMI alone" ((Test-NvidiaAdapterPresent) -eq $true)
 Check "and it did not need the registry either" ($script:RegistryConsulted -eq $false)
 
-# A registry with nothing NVIDIA in it must still be a no, or the gate above is untestable.
 function Get-ItemProperty {
     param([string]$LiteralPath, $ErrorAction)
     return [pscustomobject]@{ MatchingDeviceId = "PCI\\VEN_1002&DEV_744C" }
@@ -680,25 +532,15 @@ $script:FakeAdapters = @()
 $script:FakeScanOk = $false
 Check "a failed scan with no NVIDIA in the registry is still absent" ((Test-NvidiaAdapterPresent) -eq $false)
 
-# Both files must drop the fallback, or setup.ps1 keeps the defect install.ps1 just lost.
 foreach ($file in @($installPs1, $setupPs1)) {
     Check "$(Split-Path -Leaf $file) never reads presence from the class keys" (
         (Get-FunctionText $file "Test-NvidiaAdapterPresent") -notmatch 'Get-NvidiaRegistryAdapter|Control\\Class')
 }
 
-# ------------------------------------------ the fallback's own entry names a driver version too
-#
-# The presence check is not the only reader. A host in this fallback has WMI down, so
-# $Scan.Adapters is empty and the floor had nothing to read: the routing below then took the
-# unknown-version default of cu126, which an R450 to R524 driver cannot load. The class-key entry
-# carries DriverVersion in the same spelling Win32_VideoController reports it, so the answer was
-# there all along and was being discarded after the presence check.
 function Get-ItemProperty {
     param([string]$LiteralPath, $ErrorAction)
     if ("$LiteralPath" -eq "fake::0000") {
-        # 31.0.15.3699 is the Windows display-driver form of NVIDIA release 536.99, which is the
-        # form both WMI and this key report. R536 sits between the 535 and 545 rows, so its floor
-        # is CUDA 12.2: a row that only a version READ FROM THE REGISTRY can produce.
+        # R536 floors to CUDA 12.2, a value only the registry version can produce.
         return [pscustomobject]@{
             MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1"
             DriverVersion = "31.0.15.3699"
@@ -715,9 +557,6 @@ $regFloor = @(Get-NvidiaAdapterCudaFloor)
 Check "and it becomes a CUDA floor of 12.2 rather than nothing" (
     $regFloor.Count -eq 2 -and [int]$regFloor[0] -eq 12 -and [int]$regFloor[1] -eq 2)
 
-# Several NVIDIA subkeys, and the first one does not name a version. A machine with retained
-# driver configurations carries exactly that, and returning the first match would report the GPU
-# and lose the floor, which is the whole reason this hands back an entry rather than a yes/no.
 function Get-ChildItem {
     param([string]$LiteralPath, [switch]$Directory, [string]$Filter, $ErrorAction)
     if ("$LiteralPath" -match 'Control\\Class') {
@@ -748,10 +587,6 @@ Check "a later entry that names a version wins over an earlier one that does not
     (Get-NvidiaAdapterDriverRelease) -eq 536)
 Check "and presence is still not read from the class keys" ((Test-NvidiaAdapterPresent) -eq $false)
 
-# Two entries that disagree read as unknown, not as whichever came first. These keys outlive the
-# hardware and enumeration order says nothing about which adapter is live, so a stale newer entry
-# would pick wheels an older current driver cannot load, and a stale pre-R450 entry would demote a
-# current GPU to CPU. Unknown is already handled: presence stands, the floor does not.
 function Get-ItemProperty {
     param([string]$LiteralPath, $ErrorAction)
     if ("$LiteralPath" -eq "fake::0000") {
@@ -766,9 +601,6 @@ Check "two entries naming different releases read as unknown" ($null -eq (Get-Nv
 Check "and yield no floor either" ($null -eq (Get-NvidiaAdapterCudaFloor))
 Check "and disagreeing entries are not presence either" ((Test-NvidiaAdapterPresent) -eq $false)
 
-# Two spellings of ONE release are agreement, not conflict: these entries can spell the same
-# driver differently, and comparing the strings rather than the releases would throw the floor
-# away on a machine that never disagreed with itself.
 function Get-ItemProperty {
     param([string]$LiteralPath, $ErrorAction)
     if ("$LiteralPath" -eq "fake::0000") {
@@ -781,7 +613,6 @@ function Get-ItemProperty {
 }
 Check "two spellings of one release still name it" ((Get-NvidiaAdapterDriverRelease) -eq 536)
 
-# And with NO entry naming a version, the versionless one is still the presence answer.
 function Get-ItemProperty {
     param([string]$LiteralPath, $ErrorAction)
     if ("$LiteralPath" -match '^fake::000[01]$') {
@@ -792,7 +623,6 @@ function Get-ItemProperty {
 Check "with no version anywhere there is still no presence" ((Test-NvidiaAdapterPresent) -eq $false)
 Check "and the release stays unknown" ($null -eq (Get-NvidiaAdapterDriverRelease))
 
-# Back to one subkey for the rows below.
 function Get-ChildItem {
     param([string]$LiteralPath, [switch]$Directory, [string]$Filter, $ErrorAction)
     if ("$LiteralPath" -match 'Control\\Class') {
@@ -802,7 +632,6 @@ function Get-ChildItem {
     return @()
 }
 
-# Bites control: an entry with no DriverVersion is still unknown, not a guess.
 function Get-ItemProperty {
     param([string]$LiteralPath, $ErrorAction)
     if ("$LiteralPath" -eq "fake::0000") {
@@ -813,8 +642,6 @@ function Get-ItemProperty {
 Check "an entry with no version stays unknown" ($null -eq (Get-NvidiaAdapterDriverRelease))
 Check "and yields no floor" ($null -eq (Get-NvidiaAdapterCudaFloor))
 
-# And a scan that ANSWERED never reaches the registry for a version either: the same evidence rule
-# the presence check follows, or a stale key would set the family for a card that is gone.
 function Get-ItemProperty {
     param([string]$LiteralPath, $ErrorAction)
     if ("$LiteralPath" -eq "fake::0000") {
@@ -832,11 +659,6 @@ Check "a scan that answered takes no version from the registry" (
     $null -eq (Get-NvidiaAdapterDriverRelease))
 Check "and never consulted it" ($script:RegistryConsulted -eq $false)
 
-# The OTHER half of the same exclusivity question, which for a while read a different source.
-# Test-NvidiaAdapterPresent fell back to the class keys when WMI could not answer and
-# Test-OtherVendorAdapterPresent did not, so a broken WMI repository on a hybrid NVIDIA plus Arc
-# host saw NVIDIA and no alternative: the promotion fired, $HasNvidiaSmi suppressed the Intel
-# branch, and the machine lost the XPU wheels it gets today.
 foreach ($case in @(
     @{ N = "an Arc in the class keys";        Id = "PCI\\VEN_8086&DEV_56A0"; Desc = "Intel(R) Arc(TM) A770 Graphics"; Want = $true },
     @{ N = "a Data Center GPU";               Id = "PCI\\VEN_8086&DEV_0BD5"; Desc = "Intel(R) Data Center GPU Max 1100"; Want = $true },
@@ -858,8 +680,6 @@ foreach ($case in @(
     Check "  and the registry really was the source" ($script:RegistryConsulted -eq $true)
 }
 
-# Same last-resort gate as the NVIDIA side. A scan that ANSWERED is evidence either way, and a
-# stale class key must not be allowed to block a promotion the live inventory permits.
 $script:CaseId = "PCI\\VEN_1002&DEV_744C"
 $script:CaseDesc = "AMD Radeon RX 7900 XTX"
 $script:FakeAdapters = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0)
@@ -871,53 +691,34 @@ Check "and the registry was never consulted" ($script:RegistryConsulted -eq $fal
 foreach ($file in @($installPs1, $setupPs1)) {
     Check "$(Split-Path -Leaf $file) gates the other-vendor fallback on a failed scan too" (
         (Get-FunctionText $file "Test-OtherVendorAdapterPresent") -match 'if \(\$Scan\.Ok\) \{ return \$false \}')
-    # Read from the same shared pattern, not a second copy: DriverDesc is the registry's spelling
-    # of Name, and the question is still "will the XPU route serve this", not "is it Intel".
     Check "$(Split-Path -Leaf $file) asks the shared XPU pattern of DriverDesc" (
         (Get-FunctionText $file "Test-OtherVendorAdapterPresent") -match 'DriverDesc[\s\S]{0,60}Get-XpuCapableNameRegex')
 }
 
-# ------------------------------------------------------- job 3, the wheel it actually leads to
-#
-# This is the half that was missing when the branch was first written, and leaving it out made the
-# whole thing a net regression: promoting the flag without giving the selector a version produced
-# $HasNvidiaSmi true, AMD detection suppressed, and a CPU index anyway. Measured, not reasoned
-# about, by running the real Get-TorchIndexUrl.
+# Runs the real Get-TorchIndexUrl: promoting without a version used to still yield a CPU index.
 $idxAst = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [ref]$null, [ref]$null)
 foreach ($n in @("Get-TorchIndexUrl", "Trim-IndexPathSlashes", "Get-CudaFamilyCappedForPreTuring")) {
     $f = @($idxAst.FindAll({ param($x)
         $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true))
     if ($f.Count -ge 1) { Invoke-Expression $f[0].Extent.Text }
 }
-# Stubbed only where real hardware is needed. Get-NvidiaCu126Verdict returns "" on a host with no
-# compute capability to inspect, which is exactly what it returns here.
 function Get-NvidiaCu126Verdict { param($a, $b) return "" }
 function Get-NvidiaLibraryInventory { return $script:Inv }
 function Invoke-NvidiaSmiBounded { param($Exe, $Arguments) return $script:Banner }
 function substep { param($a, $b) $script:Said = "$a" }
 
 foreach ($case in @(
-    # The ordinary non-NVIDIA host. Must stay SILENT and CPU: this branch is reached by every AMD,
-    # Intel and CPU-only machine, and making it loud would warn all of them.
+    # Must stay SILENT: every AMD, Intel and CPU-only host reaches this.
     @{ N = "an AMD, Intel or CPU-only host";        Exe = $null; Inv = $null; Pres = $false; Floor = $null; Want = "cpu";   Loud = $false },
-    # A presence-only host has NO compute capability from any source, so the pre-Turing cap
-    # cannot fire: Get-NvidiaCu126Verdict is handed no nvidia-smi and no caps and returns "".
-    # A driver floor of 12.8 or 13.0 would then pick a family whose PyTorch 2.11 wheels start at
-    # sm_75, and a pre-Turing card (a V100 is sm_70) would install torch and fail at the first
-    # kernel. Unknown capability stops at cu126 whatever the driver says it could carry.
+    # No compute capability, so unknown stops at cu126 (pre-Turing).
     @{ N = "presence-only with a 12.8 driver";      Exe = $null; Inv = $null; Pres = $true;  Floor = @(12,8); Want = "cu126"; Loud = $true },
     @{ N = "presence-only with a 12.6 driver";      Exe = $null; Inv = $null; Pres = $true;  Floor = @(12,6); Want = "cu126"; Loud = $true },
     @{ N = "presence-only with a 13.0 driver";      Exe = $null; Inv = $null; Pres = $true;  Floor = @(13,0); Want = "cu126"; Loud = $true },
     @{ N = "presence-only with an 11.0 driver";     Exe = $null; Inv = $null; Pres = $true;  Floor = @(11,0); Want = "cu118"; Loud = $true },
     @{ N = "presence-only with no driver version";  Exe = $null; Inv = $null; Pres = $true;  Floor = $null;   Want = "cu126"; Loud = $true },
-    # A version WAS readable and it is below every row of the table. Pre-R450 drivers carry no
-    # CUDA runtime any offered wheel can use, so a CUDA family here downloads gigabytes that
-    # cannot run. CPU is the honest answer, and it is the answer this host got before the
-    # promotion existed; the only change is that it is no longer silent.
     @{ N = "presence-only on a pre-R450 driver"; Exe = $null; Inv = $null; Pres = $true; Floor = $null; Release = 445; Want = "cpu"; Loud = $true },
     @{ N = "presence-only on R450 exactly";      Exe = $null; Inv = $null; Pres = $true; Floor = @(11,0); Release = 450; Want = "cu118"; Loud = $true },
-    # Unknown is NOT too old: a driver whose version could not be read at all keeps the
-    # conservative CUDA family rather than being demoted to CPU with it.
+    # Unknown is NOT too old.
     @{ N = "presence-only with an unreadable driver version"; Exe = $null; Inv = $null; Pres = $true; Floor = $null; Release = $null; Want = "cu126"; Loud = $true }
 )) {
     $NvidiaSmiExe = $case.Exe
@@ -933,8 +734,6 @@ foreach ($case in @(
         [bool]$script:Said -eq $case.Loud)
 }
 
-# The cap is not silent. A host whose driver could carry 13.0 and which nonetheless gets cu126
-# is told why and told the override, or the user has no way to ask for the other answer.
 $NvidiaSmiExe = $null
 $script:Inv = $null
 $script:Banner = ""
@@ -946,13 +745,10 @@ $null = Get-TorchIndexUrl
 Check "the capped row explains the cap" ($script:Said -match 'compute capability')
 Check "the capped row names the override" ($script:Said -match 'UNSLOTH_TORCH_INDEX_FAMILY')
 
-# The floor is still read: a driver too old for cu126 must not be lifted UP to it by the cap.
 $script:NvidiaPresenceCudaFloor = @(11,0)
 $script:Said = ""
 Check "the cap lowers and never raises" ((("" + (Get-TorchIndexUrl)) -replace '^.*/', '') -eq "cu118")
 
-# The rows this must NOT have touched. Every other path into the selector keeps its old answer,
-# which is what makes the change additive rather than a rewrite of wheel selection.
 foreach ($case in @(
     @{ N = "nvidia-smi with a readable banner"; Exe = "C:\it.exe"; Inv = $null; Banner = "CUDA Version: 12.8"; Want = "cu128"; Loud = $false },
     @{ N = "nvidia-smi with an unreadable banner"; Exe = "C:\it.exe"; Inv = $null; Banner = "broken"; Want = "cu126"; Loud = $true },
@@ -972,7 +768,6 @@ foreach ($case in @(
         [bool]$script:Said -eq $case.Loud)
 }
 
-# And an explicit pin still beats everything, including the new branch.
 $env:UNSLOTH_TORCH_INDEX_FAMILY = "cu118"
 try {
     $script:NvidiaPresenceOnly = $true
@@ -981,13 +776,7 @@ try {
         (("" + (Get-TorchIndexUrl)) -replace '^.*/', '') -eq "cu118")
 } finally { Remove-Item Env:UNSLOTH_TORCH_INDEX_FAMILY -ErrorAction SilentlyContinue }
 
-# ------------------------------------------------ the promotion widens torch selection only
-#
-# A presence-only promotion sets $HasNvidiaSmi, but install_llama_prebuilt.py never sees the PCI
-# bus and still picks a CPU bundle for that host. Every llama.cpp and CUDA-toolkit site therefore
-# reads $HasNvidiaDriverEvidence (real nvidia-smi or driver library). Reading the promoted flag
-# there called a working CPU bundle wrong on every update (delete and redownload), forced a
-# source rebuild, and made the source build demand a CUDA toolkit or exit.
+# install_llama_prebuilt.py never sees the bus, so llama.cpp sites read $HasNvidiaDriverEvidence.
 $setupAstErrors = $null
 $setupAst = [System.Management.Automation.Language.Parser]::ParseFile($setupPs1, [ref]$null, [ref]$setupAstErrors)
 Check "setup.ps1 parses" (-not $setupAstErrors)
@@ -1009,7 +798,6 @@ foreach ($needle in @(
     '$nvidia = $HasNvidiaDriverEvidence')) {
     Check "setup.ps1 carries: $needle" ($setupAst.Extent.Text.Contains($needle))
 }
-# The definition itself, evaluated: presence-only is not driver evidence, real evidence is.
 $defAst = $setupAst.FindAll({ param($n)
     $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
     "$($n.Left)" -eq '$HasNvidiaDriverEvidence' }, $true)
@@ -1027,11 +815,7 @@ foreach ($case in @(
 }
 $script:NvidiaPresenceOnly = $false
 
-# ------------------------------------------------------ codex round: scan reuse, Basic Display, Arc
-#
-# (1) The bounded scan is taken once per run. The promotion and the Intel route both ask, and on a
-# host whose WMI hangs each ask used to wait out the full 15 s bound. The REAL function is run
-# here, with the job cmdlets replaced, so the count of Start-Job calls is the count of waits.
+# (1) One bounded scan per run: Start-Job calls are counted on the REAL function.
 foreach ($file in @($installPs1, $setupPs1)) {
     $leaf = Split-Path -Leaf $file
     $scanText = Get-FunctionText $file "Invoke-BoundedVideoControllerScan"
@@ -1073,8 +857,6 @@ foreach ($file in @($installPs1, $setupPs1)) {
     } $scanText
     Check "${leaf}: an answered scan is reused with the same adapters" (
         $r.N -eq 1 -and $r.B.Ok -eq $true -and @($r.B.Names)[0] -eq "NVIDIA GeForce RTX 4090")
-    # The reset has to run before the first scan of a run, or `irm | iex` twice in one session
-    # would serve the first run's adapters to the second.
     $text = [System.IO.File]::ReadAllText($file)
     $reset = $text.IndexOf('$script:VideoControllerScanResult = $null')
     $firstCall = $text.IndexOf('$presenceScan = Invoke-BoundedVideoControllerScan')
@@ -1083,10 +865,7 @@ foreach ($file in @($installPs1, $setupPs1)) {
         $text.IndexOf('$_gpuScan = Invoke-BoundedVideoControllerScan', $firstCall) -gt $firstCall)
 }
 
-# (2) An NVIDIA card on Microsoft's Basic Display driver. The card is on the bus, the CUDA driver is
-# not, and before the promotion the host got CPU wheels with AMD / Intel detection intact. Same
-# again now, with a hint. Only an NVIDIA-shaped version promotes: no version at all is no evidence
-# of the NVIDIA driver either, and base gave that host CPU wheels, so it declines the same way.
+# (2) Basic Display or no version: no promotion, same as base.
 foreach ($case in @(
     @{ N = "Basic Display 10.0.19041.3636";  V = "10.0.19041.3636"; Want = $true },
     @{ N = "Basic Display 10.0.22621.1";     V = "10.0.22621.1";    Want = $true },
@@ -1113,8 +892,6 @@ Check "a disabled Basic Display NVIDIA adapter is not counted either way" ((Test
 $script:FakeAdapters = @(Adapter "Microsoft Basic Display Adapter" "ROOT\BASICDISPLAY" 0 "10.0.19041.3636")
 Check "a non-NVIDIA Basic Display adapter is not an NVIDIA card without its driver" ((Test-NvidiaAdapterWithoutNvidiaDriver) -eq $false)
 
-# The promotion block itself, executed from each file with the helpers above: this is what decides
-# $HasNvidiaSmi, so it is what must equal base for Basic Display.
 function Get-PromotionBlock($file) {
     $errors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$errors)
@@ -1149,13 +926,9 @@ foreach ($file in @($installPs1, $setupPs1)) {
         @{ N = "Basic Display with no DriverVersion"; A = @(Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_2684" 0 $null); Want = $false; Hint = $true },
         @{ N = "Basic Display with an empty DriverVersion"; A = @(Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_2684" 0 ""); Want = $false; Hint = $true },
         @{ N = "Basic Display plus Intel UHD";     A = @((Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_2684" 0 "10.0.19041.3636"), (Adapter "Intel(R) UHD Graphics" "PCI\VEN_8086&DEV_9A49" 0 "31.0.101.1")); Want = $false; Hint = $true },
-        # A Meteor Lake "Intel(R) Graphics" is outside the Arc pattern, so only the environment's
-        # PyTorch can say it serves XPU. Proven: the Intel route keeps it, as it did before.
         @{ N = "an NVIDIA driver plus a Meteor Lake GPU whose PyTorch has proven XPU"; A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" 0 "32.0.101.6078")); Want = $false; Hint = $false; Xpu = "True" },
         @{ N = "an NVIDIA driver plus a Meteor Lake GPU with no XPU runtime";            A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" 0 "32.0.101.6078")); Want = $true;  Hint = $false; Xpu = "False" },
-        # Incomplete Intel records. The Intel route base ran here asks the environment's PyTorch with
-        # no WMI precondition and classifies by name alone, never by PNP ID or status, so each of
-        # these took XPU wheels on base and must still decline the promotion.
+        # Base's Intel route ignored PNP ID and status, so these must still decline.
         @{ N = "an NVIDIA driver plus a Meteor Lake with no status, PyTorch XPU proven"; A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" $null "32.0.101.6078")); Want = $false; Hint = $false; Xpu = "True" },
         @{ N = "an NVIDIA driver plus a Meteor Lake with no PNP ID, PyTorch XPU proven"; A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Graphics" $null 0 "32.0.101.6078")); Want = $false; Hint = $false; Xpu = "True" },
         @{ N = "an NVIDIA driver and no Intel row at all, PyTorch XPU proven";           A = @(Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"); Want = $false; Hint = $false; Xpu = "True" },
@@ -1163,9 +936,7 @@ foreach ($file in @($installPs1, $setupPs1)) {
         @{ N = "an NVIDIA driver plus an Arc with no PNP ID, no XPU runtime";            A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Arc(TM) A770 Graphics" $null 0 "32.0.101.6078")); Want = $false; Hint = $false; Xpu = "False" },
         @{ N = "an NVIDIA driver plus a disabled Arc, no XPU runtime";                   A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Arc(TM) A770 Graphics" "PCI\VEN_8086&DEV_56A0" 22 "32.0.101.6078")); Want = $false; Hint = $false; Xpu = "False" },
         @{ N = "an NVIDIA driver plus an AMD adapter with no status";                    A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "AMD Radeon(TM) Graphics" "PCI\VEN_1002&DEV_15BF" $null "31.0.21001.45002")); Want = $false; Hint = $false; Xpu = "False" },
-        # UHD with no status is still UHD: the Intel route never served it, so it still does not block.
         @{ N = "an NVIDIA driver plus a UHD with no status, no XPU runtime";             A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) UHD Graphics 770" "PCI\VEN_8086&DEV_4680" $null "31.0.101.1")); Want = $true; Hint = $false; Xpu = "False" },
-        # A record the checks cannot read (a status that is not a number) must decline, not abort the run.
         @{ N = "an unreadable status";                                                   A = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" "bogus" "32.0.15.6094"); Want = $false; Hint = $false }
     )) {
         $script:PromoXpu = if ($case.Xpu) { $case.Xpu } else { "False" }
@@ -1185,8 +956,7 @@ foreach ($file in @($installPs1, $setupPs1)) {
         Check "$leaf, NVIDIA on $($case.N): driver hint printed = $($case.Hint)" ($hinted -eq $case.Hint)
     }
 }
-# setup.ps1's Intel route on base asked the environment Get-ProbableStudioVenvDir names, which is
-# not $VenvDir when a stage root is set. An XPU runtime proven there must decline the promotion too.
+# Base asked Get-ProbableStudioVenvDir, which is not $VenvDir under a stage root.
 $emptyVenv = Join-Path ([System.IO.Path]::GetTempPath()) ("promo-empty-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $emptyVenv | Out-Null
 $script:PromoXpu = "True"
@@ -1205,9 +975,7 @@ $script:FakeProbableVenv = $null
 $script:PromoXpu = "False"
 Remove-Item -LiteralPath $emptyVenv -Recurse -Force -ErrorAction SilentlyContinue
 
-# The scan's own cleanup. -ErrorAction does not quiet a terminating error, and one thrown by
-# Remove-Job in the finally used to escape the scan and, from the promotion's call site, abort the
-# whole install or update. Base only ever called the scan inside the Intel route's try.
+# A terminating Remove-Job error must not escape the scan.
 foreach ($file in @($installPs1, $setupPs1)) {
     $leaf = Split-Path -Leaf $file
     $scanText = Get-FunctionText $file "Invoke-BoundedVideoControllerScan"
@@ -1231,11 +999,9 @@ $script:VideoControllerScanResult = $null
 $script:NvidiaPresenceOnly = $false
 Remove-Item -LiteralPath $promoVenv -Recurse -Force -ErrorAction SilentlyContinue
 
-# (3) A localized or OEM-branded Arc. WMI's name carries no ASCII "Intel", so the name alone reads
-# as a non-XPU Intel part and the promotion used to fire and suppress the Intel route, which on
-# base reconciles that name through the registry and reaches XPU. The gate asks the same question.
+# (3) A localized Arc is reconciled through the registry, as the Intel route does.
 $script:FakeRegistryNames = @()
-# "Intel" in katakana, spelled by code point so the file stays ASCII.
+# "Intel" in katakana, by code point so the file stays ASCII.
 $jp = -join [char[]](0x30A4, 0x30F3, 0x30C6, 0x30EB)
 foreach ($case in @(
     @{ N = "a Japanese Arc reconciled by the registry"; W = "$jp(R) Arc(TM) A770 Graphics";
@@ -1255,7 +1021,6 @@ foreach ($case in @(
     Check "NVIDIA plus $($case.N): the gate $(if ($case.Blocks) { 'blocks' } else { 'allows' }) promotion" (
         (Test-OtherVendorAdapterPresent) -eq $case.Blocks)
 }
-# A registry that cannot be read reads as "not reconciled", which is what the gate said before.
 $script:FakeRegistryThrows = $true
 $script:FakeRegistryNames = @("Intel $jp(R) Arc(TM) A770 Graphics")
 $script:FakeAdapters = @(
@@ -1265,7 +1030,6 @@ Check "an unreadable registry does not throw out of the gate and does not block"
     (Test-OtherVendorAdapterPresent) -eq $false)
 $script:FakeRegistryThrows = $false
 $script:FakeRegistryNames = @()
-# The reconciliation must be the SAME one the Intel route uses: its registry helper, its pattern.
 foreach ($file in @($installPs1, $setupPs1)) {
     $leaf = Split-Path -Leaf $file
     $gate = Get-FunctionText $file "Test-OtherVendorAdapterPresent"
@@ -1278,11 +1042,6 @@ foreach ($file in @($installPs1, $setupPs1)) {
     Check "$leaf defines it exactly once" (([regex]::Matches($text, 'function Get-IntelRegistryAdapterNames')).Count -eq 1)
 }
 
-# ------------------------------------------------------------------- a proven XPU runtime
-#
-# The promotion switches the Intel route off, and that route also serves an Intel GPU outside the
-# Arc pattern once the existing environment's PyTorch has proven XPU. Such a host took XPU wheels
-# before the promotion existed, so it must keep them: the promotion declines there.
 Invoke-Expression (Get-FunctionText $setupPs1 "Test-IntelXpuRuntimeProven")
 $script:ProbeCalls = 0
 $script:ProbeAnswer = @{ Ok = $true; Output = "True" }
@@ -1314,9 +1073,6 @@ $script:ProbeThrows = $false
 $script:ProbeAnswer = @{ Ok = $true; Output = "True" }
 Check "no environment to ask is not proven" (
     (Test-IntelXpuRuntimeProven -Scan (& $scanOf @($mtl, $rtx)) -PythonExe (Join-Path $fakePy "missing")) -eq $false)
-# WMI is not a precondition. The Intel route base ran on these hosts asked the same environment
-# whatever the display inventory said, so an Intel row missing its status or PNP ID, or missing
-# altogether, still took XPU wheels there and must still count as proven here.
 foreach ($case in @(
     @{ N = "no Intel row at all";       A = @($rtx) },
     @{ N = "an Intel row with no status"; A = @((Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" $null), $rtx) },
@@ -1330,8 +1086,6 @@ foreach ($case in @(
         (Test-IntelXpuRuntimeProven -Scan $scan -PythonExe $fakePy) -eq $true -and $script:ProbeCalls -eq 1)
 }
 Remove-Item -LiteralPath $fakePy -Force -ErrorAction SilentlyContinue
-# Both promotion sites ask it, and install.ps1 also honours the verdict it preserved from the
-# environment a rerun moved aside.
 foreach ($file in @($installPs1, $setupPs1)) {
     $leaf = Split-Path -Leaf $file
     $text = [System.IO.File]::ReadAllText($file)

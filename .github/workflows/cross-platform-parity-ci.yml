@@ -348,9 +348,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -File tests\studio\test_install_lock_excludes_aliases.ps1
-      # The presence backstop decides whether a host with no NVIDIA tooling gets CUDA or CPU
-      # wheels, and setting its flag suppresses AMD and Intel detection, so both legs run it for
-      # the same reason the discovery tests do.
       - name: NVIDIA adapter presence tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_nvidia_adapter_presence.ps1
