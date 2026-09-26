@@ -1839,6 +1839,8 @@ class FastBaseModel:
             or (not text_only and hasattr(auto_config, "vision_config"))
         )
         auto_processor = AutoProcessor if (needs_processor or is_whisper) else AutoTokenizer
+        # Such repo-code VLMs may still ship an AutoProcessor (Nemotron-3-Nano-Omni); try it first, keep AutoTokenizer when it has no image processor (DeepSeek-OCR).
+        try_repo_processor = is_vlm_config and auto_processor is AutoTokenizer
 
         model_type_arch = model_types[0]
         if model_type_arch == "siglip":
@@ -2568,16 +2570,33 @@ class FastBaseModel:
                     _tok = None
                     _err = _e
             else:
+                _tok = None
+                if try_repo_processor:
+                    try:
+                        _tok = AutoProcessor.from_pretrained(
+                            tokenizer_name,
+                            padding_side = "left",
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            cache_dir = kwargs.get("cache_dir"),
+                            local_files_only = lfo,
+                            revision = _tokenizer_revision,
+                        )
+                    except Exception:
+                        _tok = None
+                    if not (hasattr(_tok, "image_processor") and hasattr(_tok, "tokenizer")):
+                        _tok = None
                 try:
-                    _tok = auto_processor.from_pretrained(
-                        tokenizer_name,
-                        padding_side = "left",
-                        token = token,
-                        trust_remote_code = trust_remote_code,
-                        cache_dir = kwargs.get("cache_dir"),
-                        local_files_only = lfo,
-                        revision = _tokenizer_revision,
-                    )
+                    if _tok is None:
+                        _tok = auto_processor.from_pretrained(
+                            tokenizer_name,
+                            padding_side = "left",
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            cache_dir = kwargs.get("cache_dir"),
+                            local_files_only = lfo,
+                            revision = _tokenizer_revision,
+                        )
                 except Exception as _e:
                     _err = _e
                     try:
