@@ -83,6 +83,8 @@ from core.training.diffusion_train_common import (
     _restore_perf_flags,
     h3_train_unsupported_reason,
     native_bf16_supported,
+    native_bf16_supported_xpu,
+    resolve_train_device,
     resolve_train_steps,
     train_recipe_overrides,
 )
@@ -313,6 +315,7 @@ def _load_transformer(cfg, device, base_precision):
             cfg.base_model,
             subfolder = "transformer",
             quantization_config = quant,
+            device_map = {"": device},
             torch_dtype = torch.bfloat16,
             token = cfg.hf_token,
             cache_dir = cache_dir,
@@ -479,13 +482,18 @@ def run_h3_lora_training(
             save_on_stop = False
         return True
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = resolve_train_device()
     if device == "cuda" and not native_bf16_supported():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
             "this CUDA device does not support bf16."
         )
-    weight_dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    if device == "xpu" and not native_bf16_supported_xpu():
+        raise ValueError(
+            "This trainer requires a bfloat16-capable GPU; this XPU device does not "
+            "support bf16 natively."
+        )
+    weight_dtype = torch.bfloat16 if device in ("cuda", "xpu") else torch.float32
 
     # allow_modular: this loop loads through ModularPipeline.from_pretrained, and a local MiniMax-H3
     # pipeline carries modular_model_index.json and no model_index.json, so the conventional shape
@@ -544,6 +552,8 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     gc.collect()
     if device == "cuda":
         torch.cuda.empty_cache()
+    elif device == "xpu":
+        torch.xpu.empty_cache()
 
     # Phase 2: the clip cache. One canvas for the run, from the FIRST clip's aspect ratio: every other clip is
     # cover-cropped onto it, so a mixed-aspect dataset trains on one geometry.
@@ -598,6 +608,8 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     gc.collect()
     if device == "cuda":
         torch.cuda.empty_cache()
+    elif device == "xpu":
+        torch.xpu.empty_cache()
 
     # Phase 3: the denoiser.
     base_precision = cfg.base_precision if cfg.base_precision != "auto" else "nf4"
@@ -670,8 +682,8 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     patch = tuple(transformer.config.patch_size)
     index_sampler = PermutationBatchSampler(len(clip_paths), rng)
     autocast = (
-        torch.autocast(device_type = "cuda", dtype = torch.bfloat16)
-        if device == "cuda"
+        torch.autocast(device_type = device, dtype = torch.bfloat16)
+        if device in ("cuda", "xpu")
         else nullcontext()
     )
     stopped = False

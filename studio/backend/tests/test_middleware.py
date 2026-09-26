@@ -266,6 +266,24 @@ class TestMaxBodyMiddleware:
         assert cap == upload_request_limit_bytes()  # DB-aware cap + multipart overhead
         assert cap > default_request_body_limit_bytes()  # not the plain default body cap
 
+    def test_library_uploads_are_capped_before_parsing(self, main_module):
+        from utils.upload_limits import (
+            LIBRARY_UPLOAD_MAX_BYTES,
+            default_request_body_limit_bytes,
+            upload_request_limit_bytes,
+        )
+
+        assert "/api/library" in main_module._BODY_PROTECTED_PREFIXES
+        for path in ("/api/library/uploads", "/api/library/uploads/"):
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+                upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
+            ), path
+        path = "/api/library/uploads/abc/text"
+        assert path not in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+        assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+            default_request_body_limit_bytes()
+        )
+
     def test_diffusion_dataset_json_subroutes_keep_default_cap(self, main_module):
         # The exact-path passthrough must NOT sweep in the JSON sub-routes under the same prefix: a prefix match would let a large
         # caption/import body bypass the default JSON cap and be buffered up to the far larger upload limit.
@@ -1368,3 +1386,87 @@ class TestCspHfEndpoints:
         lan = TestClient(main_module.app, client = ("192.168.1.50", 40000))
         lan_expected = "https://huggingface.co" if "127.0.0.1" in endpoint else endpoint
         assert lan.get("/api/health").json()["hf_endpoint"] == lan_expected
+
+
+class TestRemoteAccessCORS:
+    """Publishing a tunnel must admit the tunnel, not every origin.
+
+    In plain --api-only (the desktop shell's own launch mode) the startup allowlist is the five
+    Tauri origins. Turning on Settings > Remote access used to replace that at request time with
+    unconditional reflection plus Access-Control-Allow-Credentials, on the loopback socket too, so
+    any page the user had open could read the local API's unauthenticated responses.
+    """
+
+    TUNNEL = "https://demo-abc.trycloudflare.com"
+
+    @staticmethod
+    def _client(main_module, allow_origins):
+        from utils.host_policy import cors_origins_for_mode
+
+        app = FastAPI()
+        app.state.cloudflare_url = None
+
+        @app.get("/api/auth/status")
+        async def _status():
+            return {"ok": True}
+
+        app.add_middleware(
+            main_module.RemoteAccessCORSMiddleware,
+            remote_access_state = app.state,
+            allow_origins = allow_origins or cors_origins_for_mode(api_only = True, secure = False),
+            allow_credentials = True,
+            allow_methods = ["*"],
+            allow_headers = ["*"],
+            max_age = 60,
+        )
+        return app, TestClient(app)
+
+    def _allowed(self, client, origin):
+        response = client.get("/api/auth/status", headers = {"Origin": origin})
+        return response.headers.get("access-control-allow-origin")
+
+    def _preflight(self, client, origin):
+        return client.options(
+            "/api/auth/status",
+            headers = {
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization",
+            },
+        ).status_code
+
+    def test_a_published_tunnel_does_not_admit_an_arbitrary_origin(self, main_module):
+        app, client = self._client(main_module, None)
+        app.state.cloudflare_url = self.TUNNEL
+
+        for origin in ("https://evil.example", "null", "http://127.0.0.1:9999"):
+            assert self._allowed(client, origin) is None, origin
+            assert self._preflight(client, origin) == 400, origin
+
+    def test_the_tunnel_origin_itself_is_admitted(self, main_module):
+        app, client = self._client(main_module, None)
+        app.state.cloudflare_url = self.TUNNEL + "/"
+
+        # Default port and trailing slash are canonicalised, as _canonical_origin documents.
+        for origin in (self.TUNNEL, self.TUNNEL + ":443"):
+            assert self._allowed(client, origin) == origin, origin
+            assert self._preflight(client, origin) == 200, origin
+
+        app.state.cloudflare_url = None
+        assert self._allowed(client, self.TUNNEL) is None
+
+    def test_the_desktop_app_keeps_its_origin_either_way(self, main_module):
+        app, client = self._client(main_module, None)
+
+        for published in (None, self.TUNNEL):
+            app.state.cloudflare_url = published
+            assert self._allowed(client, "tauri://localhost") == "tauri://localhost"
+            assert self._preflight(client, "tauri://localhost") == 200
+
+    def test_the_browser_served_default_is_unchanged(self, main_module):
+        """Outside plain api-only the startup list is already ["*"]; nothing here narrows it."""
+        app, client = self._client(main_module, ["*"])
+
+        for published in (None, self.TUNNEL):
+            app.state.cloudflare_url = published
+            assert self._allowed(client, "https://evil.example") == "https://evil.example"

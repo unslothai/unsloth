@@ -38,6 +38,8 @@ from functools import lru_cache
 
 from core._torchao_stub import is_stubbed, torch_is_rocm
 
+from .diffusion_nvfp4_flag import nvfp4_blocked, nvfp4_disabled_message
+
 TE_QUANT_FP8 = "fp8"
 TE_QUANT_NVFP4 = "nvfp4"
 TE_QUANT_INT8 = "int8"
@@ -79,7 +81,44 @@ def normalize_te_quant(value: Optional[str]) -> Optional[str]:
         raise ValueError(
             f"Unsupported text_encoder_quant '{value}'. Use one of: {', '.join(TE_QUANT_MODES)}."
         )
+    if nvfp4_blocked(normalized):
+        raise ValueError(nvfp4_disabled_message("text_encoder_quant"))
     return normalized
+
+
+def te_quant_is_auto(value: Optional[str]) -> bool:
+    """Whether ``value`` is the UNSET side of the text-encoder tri-state (unset / "" / "auto").
+
+    ``normalize_te_quant`` folds "none" and "off" into the same None, which is right for every
+    caller that only needs a scheme, and wrong for the one that has to tell "choose for me" from
+    "leave it alone". Reads the raw request, so it must run before normalising.
+    """
+    if value is None:
+        return True
+    normalized = str(value).strip().lower().replace("-", "_")
+    return not normalized or normalized == "auto"
+
+
+def resolve_te_quant_request(
+    value: Optional[str], auto_scheme: Optional[str]
+) -> tuple[Optional[str], bool]:
+    """``(mode, auto_selected)`` for a raw text-encoder request on a family offering ``auto_scheme``.
+
+    The tri-state: unset / "auto" takes ``auto_scheme`` (the family's ``te_quant_auto``, None on a
+    family that has not opted in); "none" / "off" pins the released bf16 encoder; an explicit
+    scheme pins that scheme. ``auto_selected`` is what keeps an auto pick from being reported as a
+    request the caller made, and from REFUSING the load when it does not engage: nobody asked for
+    it, so falling back to dense is the correct outcome rather than an error.
+
+    Raises ValueError for an unsupported explicit value, via ``normalize_te_quant``.
+    """
+    if not te_quant_is_auto(value):
+        return normalize_te_quant(value), False
+    if auto_scheme is None or nvfp4_blocked(auto_scheme):
+        return None, False
+    # Validate the family's own field rather than trusting it: a typo here would otherwise reach
+    # quantize_text_encoders as an unknown mode on every default load of that family.
+    return normalize_te_quant(auto_scheme), True
 
 
 def effective_te_quant(mode: Optional[str], family: Optional[str]) -> Optional[str]:
@@ -130,6 +169,8 @@ def te_quant_supported(target: Any, mode: str) -> bool:
     each backend needs -- fp8 dtype (fp8), fp8 GEMM sm_89+ (fp8_dynamic), int8 sm_80+ (int8),
     Blackwell sm_100+ (nvfp4)."""
     if getattr(target, "device", None) != "cuda":
+        return False
+    if nvfp4_blocked(mode):
         return False
     # Torchao modes cannot use the Windows stub or ROCm's non-SM capability values. Plain fp8 is only a dtype cast and
     # remains supported.

@@ -1792,8 +1792,7 @@ DEFAULT_SYSTEM_MESSAGE["qwen3-thinking"] = None
 
 # =========================================== Liquid-LFM2
 liquid_lfm2_template = \
-'''
-{{bos_token}}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
+'''{{bos_token}}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
 ' + message['content'] + '<|im_end|>' + '
 '}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
 ' }}{% endif %}'''
@@ -1811,10 +1810,10 @@ DEFAULT_SYSTEM_MESSAGE["lfm-2.5"] = None
 starling_template = \
 """{{ bos_token }}
 {%- for message in messages %}
-    {{ 'GPT4 Correct ' + message['role'].title() + ': ' + message['content'] + '<|end_of_turn|>' }}
+    {{- 'GPT4 Correct ' + message['role'].title() + ': ' + message['content'] + '<|end_of_turn|>' }}
 {%- endfor %}
 {%- if add_generation_prompt %}
-    {{ 'GPT4 Correct Assistant:' }}
+    {{- 'GPT4 Correct Assistant:' }}
 {%- endif %}"""
 
 # Ollama from https://ollama.com/library/starling-lm:7b/blobs/4b21bfc435b4
@@ -1829,12 +1828,10 @@ DEFAULT_SYSTEM_MESSAGE["starling"] = None
 # =========================================== Yi-chat
 
 yi_chat_template = \
-"""
-{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
+"""{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
 ' + message['content'] + '<|im_end|>' + '
 '}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
-' }}{% endif %}
-"""
+' }}{% endif %}"""
 
 # Ollama from https://ollama.com/library/yi:34b-chat/blobs/62fbfd9ed093
 yi_chat_ollama = _ollama_template("yi-chat")

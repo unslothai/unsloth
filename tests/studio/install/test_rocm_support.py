@@ -1395,15 +1395,19 @@ GPU: 2
         # (no reinstall loop once the correct gfx wheel is present).
         assert f(f"{amd}/gfx120X-all", "2.11.0+rocm7.13.0") is False
         assert f(f"{amd}/gfx1150", "2.11.0+rocm7.13.0") is False
-        # A NON-2.11 gfx pin (gfx110X-all/gfx90a/gfx908) tracks the default <2.11 spec: a
+        # A NON-2.11 gfx pin (gfx90a/gfx908) tracks the default <2.11 spec: a
         # correct 2.10+rocm wheel is NOT a mismatch, a 2.11 build is.
-        assert f(f"{amd}/gfx110X-all", "2.10.0+rocm6.4") is False
         assert f(f"{amd}/gfx90a", "2.10.0+rocm6.3") is False
         assert f(f"{amd}/gfx908", "2.10.0+rocm7.0") is False
-        assert f(f"{amd}/gfx110X-all", "2.11.0+rocm7.2") is True
+        assert f(f"{amd}/gfx90a", "2.11.0+rocm7.2") is True
+        # gfx103X-all / gfx110X-all are floored: a 2.10 per-arch build IS a mismatch.
+        assert f(f"{amd}/gfx103X-all", "2.10.0+rocm7.13.0") is True
+        assert f(f"{amd}/gfx110X-all", "2.10.0+rocm6.4") is True
+        assert f(f"{amd}/gfx103X-all", "2.11.0+rocm7.13.0") is False
+        assert f(f"{amd}/gfx110X-all", "2.11.0+rocm7.13.0") is False
         # A non-2.11 gfx pin over an untagged (no +rocm) wheel is a mismatch even
         # when torch is already <2.11: a CPU/CUDA build never satisfies the ROCm pin.
-        assert f(f"{amd}/gfx110X-all", "2.10.0") is True
+        assert f(f"{amd}/gfx908", "2.10.0") is True
         assert f(f"{amd}/gfx90a", "2.10.0") is True
         # A major-only rocm pin (rocm7) compares on the major alone: rocm6.x mismatches,
         # any rocm7.x satisfies it, an untagged wheel never does, a bare +rocm is lenient.
@@ -1509,13 +1513,13 @@ GPU: 2
     def test_non211_gfx_pin_over_210_rocm_no_reinstall(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
     ):
-        """A gfx110X-all pin (NOT in the 2.11 allowlist) over a correct 2.10+rocm
+        """A gfx90a pin (NOT in the 2.11 allowlist) over a correct 2.10+rocm
         wheel must NOT be flagged stale -- the install path uses the default <2.11
         specs for that arch, so re-flagging would reinstall-loop on every update."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = _MARK + "2.10.0+rocm6.4|6.4.12345|\n"
-        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx110X-all"}
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx90a"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
             with patch("os.path.isdir", return_value = True):
@@ -3013,7 +3017,14 @@ class TestInstallShStructure:
                 )
 
     def test_cuda_precedence(self):
-        """ROCm detection runs only when NVIDIA is absent (check runtime ordering in get_torch_index_url)."""
+        """ROCm detection runs only when NVIDIA is absent, or when ROCm was ASKED for.
+
+        The automatic profile still gives CUDA precedence: that is the guarantee, and a
+        false AMD positive would swap a working install. The one exception is an
+        explicit UNSLOTH_FORCE_ROCM_TORCH request, which is the only route a mixed
+        NVIDIA+AMD host has to its AMD card (#10450), so any AMD probe reached before
+        the no-NVIDIA branch has to be guarded by that request and nothing else.
+        """
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         body = _extract_sh_function_body(source, "get_torch_index_url")
@@ -3023,15 +3034,42 @@ class TestInstallShStructure:
         no_nvidia_branch = body.find('if [ "$_nvidia_detected" -eq 0 ]')
         if no_nvidia_branch < 0:
             no_nvidia_branch = body.find('if [ -z "$_smi" ]')
-        rocm_call = body.find("_has_amd_rocm_gpu")
         assert nvidia_call >= 0, "get_torch_index_url should call _has_usable_nvidia_gpu"
         assert no_nvidia_branch >= 0, "get_torch_index_url should gate ROCm on no-nvidia branch"
         assert (
-            rocm_call > no_nvidia_branch
-        ), "ROCm detection should sit inside the 'no NVIDIA' branch"
-        assert (
             nvidia_call < no_nvidia_branch
         ), "NVIDIA detection should run before the no-NVIDIA branch"
+
+        # The automatic path is unchanged: an AMD probe still sits inside the branch.
+        assert (
+            body.find("_has_amd_rocm_gpu", no_nvidia_branch) > no_nvidia_branch
+        ), "ROCm detection should sit inside the 'no NVIDIA' branch"
+
+        # Anything earlier has to be the explicit request, judged on the shell statement
+        # it belongs to rather than on the whole file: a bare probe before the branch
+        # would give AMD precedence over CUDA on every automatic install.
+        #
+        # Comment lines are dropped first, since the comment explaining the guard names
+        # the probe it guards, and continuation lines are then joined, since the guard
+        # and the probe sit either side of a backslash.
+        lines = [
+            line
+            for line in body[:no_nvidia_branch].splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        statement, guarded = [], []
+        for line in lines:
+            statement.append(line)
+            if not line.rstrip().endswith("\\"):
+                guarded.append(" ".join(statement))
+                statement = []
+        for stmt in guarded:
+            if "_has_amd_rocm_gpu" not in stmt:
+                continue
+            assert "_rocm_torch_explicitly_requested" in stmt, (
+                "an AMD probe before the no-NVIDIA branch must be guarded by "
+                f"_rocm_torch_explicitly_requested, got: {stmt.strip()!r}"
+            )
 
     def test_bitsandbytes_amd_install(self):
         """install.sh should install bitsandbytes for AMD when ROCm detected."""
@@ -6897,14 +6935,15 @@ class TestStrixRocm71Override:
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         # The 2.11 constraint block must switch on $_torch_index_leaf, not the full
         # $TORCH_INDEX_URL (a */gfx* match false-positives on a mirror base path). Only the
-        # _grouped_mm-bug gfx families (gfx120X-all / gfx1151 / gfx1150 / gfx1152) go to 2.11;
-        # a bare gfx* would also floor gfx110X-all/gfx90a/gfx908, left bare on purpose.
+        # _grouped_mm-bug gfx families (gfx120X-all / gfx1151 / gfx1150 / gfx1152 /
+        # gfx103X-all / gfx110X-all) go to 2.11; a bare gfx* would also floor
+        # gfx90a/gfx908, left bare on purpose.
         assert (
-            'case "$_torch_index_leaf" in\n    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152)'
+            'case "$_torch_index_leaf" in\n    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152|gfx103x-all|gfx110x-all)'
             in source
         ), (
             "the torch>=2.11 constraint must match the specific gfx leaves that need "
-            "it (rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152), not a bare gfx* or the URL"
+            "it (rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152|gfx103x-all|gfx110x-all), not a bare gfx* or the URL"
         )
 
     def test_amd_rocm_mirror_env_var_respected(self):

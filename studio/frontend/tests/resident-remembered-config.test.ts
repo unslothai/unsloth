@@ -71,6 +71,30 @@ test("a record under the raw identifier still wins over the repo alias", () => {
   );
 });
 
+test("a cached repo loaded without a quant moves its snapshot-path record to the repo id", () => {
+  store.clear();
+  const snapshot = "/hf/models--mlx-community--Model-4bit/snapshots/abc";
+  const repo = "mlx-community/Model-4bit";
+  savePerModelConfig(snapshot, null, config(2));
+
+  // The settings panel reads the repo id alone, so both readers must settle on one record.
+  assert.equal(
+    resolveResidentInitialConfig(snapshot, null).config.nParallel,
+    2,
+  );
+  assert.equal(resolveInitialConfig(repo, null).config.nParallel, 2);
+  assert.equal(resolveInitialConfig(snapshot, null).remembered, false);
+
+  // What the panel saved under the repo id outranks the stale path record, as on a Hub handoff.
+  savePerModelConfig(snapshot, null, config(6));
+  savePerModelConfig(repo, null, config(8));
+  assert.equal(
+    resolveResidentInitialConfig(snapshot, null).config.nParallel,
+    8,
+  );
+  assert.equal(resolveInitialConfig(snapshot, null).remembered, false);
+});
+
 test("the quant still separates two variants of one cached repo", () => {
   store.clear();
   savePerModelConfig(REPO_ID, "Q4_K_M", config(4));
@@ -80,6 +104,63 @@ test("the quant still separates two variants of one cached repo", () => {
     false,
   );
 });
+
+for (const modelId of [
+  "/home/u/.lmstudio/models/unsloth/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf",
+  String.raw`C:\Users\u\.lmstudio\models\unsloth\Qwen3-0.6B-GGUF\Qwen3-0.6B-Q4_K_M.gguf`,
+  "Qwen3-0.6B-Q4_K_M.gguf",
+]) {
+  test(`a resident standalone GGUF restores the settings saved by the picker: ${modelId}`, () => {
+    store.clear();
+    savePerModelConfig(modelId, null, {
+      ...config(2),
+      customContextLength: 4096,
+    });
+
+    const resolved = resolveResidentInitialConfig(modelId, "Q4_K_M");
+    assert.equal(resolved.remembered, true);
+    assert.equal(resolved.config.customContextLength, 4096);
+    assert.equal(resolved.config.nParallel, 2);
+  });
+}
+
+for (const modelId of [
+  "/home/u/.lmstudio/models/unsloth/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf",
+  "Qwen3-0.6B-Q4_K_M.gguf",
+]) {
+  test(`a record the picker keyed by the quant label before #7473 is still read: ${modelId}`, () => {
+    store.clear();
+    savePerModelConfig(modelId, "Q4_K_M", config(5));
+
+    // Only the label is on disk, so the fallback is what answers.
+    const resolved = resolveResidentInitialConfig(modelId, "Q4_K_M");
+    assert.equal(resolved.remembered, true);
+    assert.equal(resolved.config.nParallel, 5);
+
+    // A record under the path still wins over the older labelled one.
+    savePerModelConfig(modelId, null, config(6));
+    assert.equal(
+      resolveResidentInitialConfig(modelId, "Q4_K_M").config.nParallel,
+      6,
+    );
+  });
+}
+
+for (const modelId of [
+  "/home/u/.lmstudio/models/unsloth/Qwen3-0.6B-GGUF",
+  "org/model.gguf",
+]) {
+  test(`a model containing several GGUF variants keeps their settings separate: ${modelId}`, () => {
+    store.clear();
+    savePerModelConfig(modelId, null, config(8));
+    savePerModelConfig(modelId, "Q4_K_M", config(2));
+    savePerModelConfig(modelId, "Q8_0", config(4));
+
+    assert.equal(resolveResidentInitialConfig(modelId, "Q4_K_M").config.nParallel, 2);
+    assert.equal(resolveResidentInitialConfig(modelId, "Q8_0").config.nParallel, 4);
+    assert.equal(resolveResidentInitialConfig(modelId, "Q6_K").remembered, false);
+  });
+}
 
 test("a stem two models can share is never read as an alias", () => {
   store.clear();

@@ -65,14 +65,14 @@ test("the modifier hardcodes neither theme", () => {
 // inset is gone the two agree. If the banner is restyled, this fails.
 test("the shared vars still match the update banner's shadow", () => {
   assert.match(BANNER, /shadow-\[0_2px_8px_-2px_rgba\(0,0,0,0\.16\)\]/);
-  assert.match(BANNER, /dark:shadow-\[0_8px_28px_-6px_rgba\(0,0,0,0\.28\)\]/);
+  assert.match(BANNER, /dark:shadow-\[0_8px_28px_-6px_var\(--background\)\]/);
   const light = rule(".menu-soft-surface,");
   assert.match(light, /--menu-soft-shadow: rgba\(0, 0, 0, 0\.16\)/);
   assert.match(light, /--menu-soft-offset-y: 2px/);
   assert.match(light, /--menu-soft-blur: 8px/);
   assert.match(light, /--menu-soft-spread: -2px/);
   const dark = rule(".dark .menu-soft-surface,");
-  assert.match(dark, /--menu-soft-shadow: rgba\(0, 0, 0, 0\.28\)/);
+  assert.match(dark, /--menu-soft-shadow: var\(--background\)/);
   assert.match(dark, /--menu-soft-offset-y: 8px/);
   assert.match(dark, /--menu-soft-blur: 28px/);
   assert.match(dark, /--menu-soft-spread: -6px/);
@@ -81,10 +81,12 @@ test("the shared vars still match the update banner's shadow", () => {
 // The banner paints bg-white/dark:bg-card, the card bg-popover. Same colour in
 // every theme, so the surfaces match; this pins that they stay equal.
 test("popover and card resolve to the same colour in every theme", () => {
-  const popover = [...CSS.matchAll(/^\t*--popover:\s*([^;]+);/gm)].map((m) =>
-    m[1].trim(),
+  // Both are authored as -base and derived together through the contrast
+  // slider (index.css), so comparing the authored values compares the result.
+  const popover = [...CSS.matchAll(/^\t*--popover-base:\s*([^;]+);/gm)].map(
+    (m) => m[1].trim(),
   );
-  const card = [...CSS.matchAll(/^\t*--card:\s*([^;]+);/gm)].map((m) =>
+  const card = [...CSS.matchAll(/^\t*--card-base:\s*([^;]+);/gm)].map((m) =>
     m[1].trim(),
   );
   assert.ok(popover.length > 0);

@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 # Run as a plain script (not via pytest), so prepend the dir to sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -24,7 +24,9 @@ from _playwright_robust import (  # noqa: E402
     install_wall_clock_watchdog,
     is_benign_page_error,
     recover_or_replace_page,
+    report_failing_step,
     robust_evaluate,
+    step_budget_s,
     wait_for_first,
     wait_for_health,
     click_forced,
@@ -71,12 +73,26 @@ WHEEL_DEADLINE_S = 30.0
 # indefinitely.
 WHEEL_DEADLINE_MAX_S = 75.0
 
+# Per-step ceilings. A step that overruns its own stops the run there, named, instead of the
+# steps after it each waiting out their own timeouts until the 720s wall. The largest step
+# (Compare: two 60s bubble waits plus a 60s composer mount; Settings: up to 75s of wheel
+# wait) fits in a quarter of this. Setup retries itself and has no ceiling of its own; the
+# whole-run wall still bounds it. Both stretch with STUDIO_UI_TURN_TIMEOUT_MS, the knob the
+# slow lanes already raise, and with STUDIO_PW_STEP_BUDGET_SCALE.
+_SLOW_LANE = max(1.0, TURN_TIMEOUT_MS / 180_000)
+STEP_BUDGET_S = step_budget_s(240 * _SLOW_LANE)
+NO_STEP_CEILING = 0
+
 _n = [0]
 _failed: list[str] = []
+_watchdog = None  # armed below
 
 
-def step(s: str) -> None:
+def step(s: str, budget_s: float | None = None) -> None:
+    """Start step `s`; it may run `budget_s` (default STEP_BUDGET_S) before the run stops."""
     print(f"[ui-extra] STEP {s}", flush = True)
+    if _watchdog is not None:
+        _watchdog.begin_step(s, STEP_BUDGET_S if budget_s is None else budget_s)
 
 
 def info(s: str) -> None:
@@ -113,11 +129,15 @@ def page_crashed(pg, exc: Exception) -> bool:
 
 
 with sync_playwright() as p:
+    # The wall stays a whole-run cap (this script never kicked it): begin_step() restarts the
+    # inactivity budget, so the same number is also passed as the total no step can move.
     _watchdog = install_wall_clock_watchdog(
         WALL_TIMEOUT_S,
         label = "ui-extra",
         info = info,
+        total_deadline_s = WALL_TIMEOUT_S,
     )
+    report_failing_step(_watchdog, label = "ui-extra")
     # Health pre-flight: bash-side health wait can pass before the auth DB migrates on macos-14.
     wait_for_health(BASE, timeout = 30.0, info = info)
     # Chromium launch args: see tests/studio/_playwright_robust.py.
@@ -243,7 +263,7 @@ with sync_playwright() as p:
             info(f"WARN: screenshot {name} failed: {_shoot_err}")
 
     # Setup: change-password through the UI + model load.
-    step("setup: change-password + model load")
+    step("setup: change-password + model load", NO_STEP_CEILING)
     # 3-attempt retry: form re-renders mid-fill on macos-14 can detach the password fields.
     form_err: Exception | None = None
     for _form_attempt in range(3):
@@ -440,10 +460,17 @@ with sync_playwright() as p:
         )
         soft_fail(f"Compare nav not found: {missing} never appeared")
     else:
-        page.wait_for_timeout(1500)
+        # The compare view and its composer, instead of a fixed 1.5 s after the click.
+        view = wait_for_first(page.locator('[data-tour="chat-compare-view"]'), timeout_ms = 15_000)
+        if view is not None:
+            wait_for_first(
+                page.get_by_placeholder(re.compile(r"Send to both models", re.I)).or_(
+                    view.locator("textarea")
+                ),
+                timeout_ms = 10_000,
+            )
         shoot("02-compare-opened")
-        view = page.locator('[data-tour="chat-compare-view"]').first
-        if view.count() == 0:
+        if view is None:
             soft_fail("[data-tour='chat-compare-view'] not found after Compare click")
         else:
             ok_count_before = len(page.locator('[data-role="assistant"]').all())
@@ -463,6 +490,7 @@ with sync_playwright() as p:
                 cmp_composer.press("Enter")
                 # Expect 2 new assistant bubbles (one per pane). Panes have no explicit model in this CI flow so the
                 # backend may reject; downgrade to runtime_warn but keep the structural assertions.
+                first_pair_arrived = False
                 try:
                     page.wait_for_function(
                         """(want) => {
@@ -474,6 +502,7 @@ with sync_playwright() as p:
                         timeout = 60_000,
                     )
                     info("OK Compare: 2 new assistant bubbles after first prompt")
+                    first_pair_arrived = True
                 except Exception as exc:
                     runtime_warn(
                         f"Compare: 2 bubbles didn't appear (panes likely "
@@ -481,26 +510,32 @@ with sync_playwright() as p:
                     )
                 shoot("03-compare-after-A")
 
-                # Second prompt -> 4 total new bubbles (same runtime-flaky caveat).
-                cmp_composer.fill("Reply with: B")
-                cmp_composer.press("Enter")
-                try:
-                    page.wait_for_function(
-                        """(want) => {
-                            return document.querySelectorAll(
-                                '[data-role="assistant"]'
-                            ).length >= want;
-                        }""",
-                        arg = ok_count_before + 4,
-                        timeout = 60_000,
-                    )
-                    info("OK Compare: 4 total new assistant bubbles after second prompt")
-                except Exception as exc:
+                # Second prompt -> 4 total new bubbles (same runtime-flaky caveat). Only worth waiting for when the
+                # first pair came: panes that answered nothing in 60 s will not answer twice as much in the next 60.
+                if not first_pair_arrived:
                     runtime_warn(
-                        f"Compare: 4 bubbles didn't appear (panes likely "
-                        f"have no model selected): {exc!r}"
+                        "Compare: skipped the second prompt's 60s wait; the first prompt's bubbles never appeared"
                     )
-                shoot("04-compare-after-B")
+                else:
+                    cmp_composer.fill("Reply with: B")
+                    cmp_composer.press("Enter")
+                    try:
+                        page.wait_for_function(
+                            """(want) => {
+                                return document.querySelectorAll(
+                                    '[data-role="assistant"]'
+                                ).length >= want;
+                            }""",
+                            arg = ok_count_before + 4,
+                            timeout = 60_000,
+                        )
+                        info("OK Compare: 4 total new assistant bubbles after second prompt")
+                    except Exception as exc:
+                        runtime_warn(
+                            f"Compare: 4 bubbles didn't appear (panes likely "
+                            f"have no model selected): {exc!r}"
+                        )
+                    shoot("04-compare-after-B")
 
     # Back to single chat for subsequent steps.
     page.goto(f"{BASE}/chat")
@@ -510,7 +545,8 @@ with sync_playwright() as p:
     # 2. Recipes editor.
     step("Recipes editor: click first template + Preview dialog")
     page.goto(f"{BASE}/data-recipes")
-    page.wait_for_timeout(1500)
+    # The route is rendered once its template list is, not after a fixed 1.5 s.
+    wait_for_first(page.locator('[data-tour="recipes-templates"] button'), timeout_ms = 15_000)
     shoot("05-recipes-list")
     # Template cards render as <button> elements.
     templates = page.locator("main button").filter(has_not_text = re.compile(r"^(\+|Create)"))
@@ -522,7 +558,15 @@ with sync_playwright() as p:
         try:
             templates.first.scroll_into_view_if_needed()
             templates.first.click()
-            page.wait_for_timeout(2000)
+            # What the click opens: the React-Flow editor, a dialog, or (for the first `main button`, which is the
+            # "New Recipe" trigger) its menu. Wait for whichever arrives, not a fixed 2 s.
+            wait_for_first(
+                page.locator(
+                    ".react-flow__renderer, .react-flow, [data-testid*='react-flow'], "
+                    "[role='dialog'], [role='menu']"
+                ),
+                timeout_ms = 15_000,
+            )
             shoot("06-recipe-opened")
             # The recipe-studio canvas uses React-Flow; look for the renderer.
             canvas = page.locator(
@@ -539,7 +583,13 @@ with sync_playwright() as p:
     # 3. Export route.
     step(f"Export route ({'chat-only self-gated' if chat_only else 'form fields'})")
     page.goto(f"{BASE}/export")
-    page.wait_for_timeout(1500)
+    # Either the export form's CTA or the chat-only gate, instead of a fixed 1.5 s.
+    wait_for_first(
+        page.locator('[data-tour="export-cta"]').or_(
+            page.get_by_text(re.compile(r"Export unavailable", re.I))
+        ),
+        timeout_ms = 15_000,
+    )
     shoot("07-export")
     if chat_only:
         if "/export" not in page.url:
@@ -557,22 +607,14 @@ with sync_playwright() as p:
             soft_fail("[data-tour='export-cta'] not found in /export")
         else:
             info("OK [data-tour='export-cta'] visible")
-        # HF-token field is lazy-loaded behind a disclosure; poll for ~8s and log at info (non-blocking).
-        hf_token = None
-        for _try in range(8):
-            page.wait_for_timeout(1000)
-            for cand in (
-                page.get_by_placeholder(re.compile(r"hf[_\\.\\-]", re.I)).first,
-                page.locator(
-                    'input[placeholder*="token" i], input[placeholder*="huggingface" i]'
-                ).first,
-                page.locator('input[name="hf_token"], input[id*="hf-token"]').first,
-            ):
-                if cand.count() > 0:
-                    hf_token = cand
-                    break
-            if hf_token is not None:
-                break
+        # HF-token field is lazy-loaded behind a disclosure; wait up to the same ~8s for any of its locators and log
+        # at info (non-blocking). Ends as soon as one is there instead of polling once a second.
+        hf_token = wait_for_first(
+            page.get_by_placeholder(re.compile(r"hf[_\\.\\-]", re.I))
+            .or_(page.locator('input[placeholder*="token" i], input[placeholder*="huggingface" i]'))
+            .or_(page.locator('input[name="hf_token"], input[id*="hf-token"]')),
+            timeout_ms = 8_000,
+        )
         if hf_token is not None:
             info("OK HF token input visible")
         else:
@@ -585,7 +627,15 @@ with sync_playwright() as p:
     # 4. Unsloth training route.
     step(f"Unsloth route ({'chat-only redirect' if chat_only else 'tabs + sections'})")
     page.goto(f"{BASE}/studio")
-    page.wait_for_timeout(1500)
+    # The redirect (chat-only) or the training page's own anchors, instead of a fixed 1.5 s.
+    if chat_only:
+        try:
+            page.wait_for_url(lambda u: "/studio" not in u, timeout = 15_000)
+        except Exception:
+            pass  # the check below reports it
+    else:
+        wait_for_first(page.locator('[data-tour="studio-params"]'), timeout_ms = 15_000)
+        wait_for_first(page.get_by_role("tab"), timeout_ms = 5_000)
     shoot("08-studio")
     if chat_only:
         if "/studio" in page.url:
@@ -619,14 +669,13 @@ with sync_playwright() as p:
         info("OK Chat Dictate control is type=button")
 
     page.keyboard.press("Control+,")
-    page.wait_for_timeout(800)
-    settings = page.get_by_role("dialog").first
-    if settings.count() == 0:
+    # The dialog itself, not 800 ms; five seconds per shortcut is still far past any render.
+    settings = wait_for_first(page.get_by_role("dialog"), timeout_ms = 5_000)
+    if settings is None:
         # macOS shortcut is Cmd-,.
         page.keyboard.press("Meta+,")
-        page.wait_for_timeout(800)
-        settings = page.get_by_role("dialog").first
-    if settings.count() == 0:
+        settings = wait_for_first(page.get_by_role("dialog"), timeout_ms = 5_000)
+    if settings is None:
         soft_fail("Settings dialog didn't open with Cmd/Ctrl-,")
     else:
         shoot("09-settings-open")
@@ -650,7 +699,20 @@ with sync_playwright() as p:
                 continue
             try:
                 btn.click()
-                page.wait_for_timeout(400)
+                # The active tab carries the animated pill; its content renders in the same commit. Then give the body
+                # up to 5 s to fill, instead of reading it 400 ms after the click. Both are best-effort: the length
+                # check below still decides.
+                try:
+                    btn.locator("span.bg-accent").first.wait_for(state = "attached", timeout = 5_000)
+                    page.wait_for_function(
+                        """() => {
+                            const dialog = document.querySelector('[role="dialog"]');
+                            return !!dialog && (dialog.innerText || '').trim().length > 30;
+                        }""",
+                        timeout = 5_000,
+                    )
+                except Exception:
+                    pass
                 # Tab body must be non-empty.
                 body_text = page.evaluate(
                     """() => {
@@ -873,8 +935,16 @@ with sync_playwright() as p:
         # cosmetic teardown rather than re-raise TargetClosedError on it.
         if not page.is_closed():
             shoot("10-settings-tabs-visited")
-            page.keyboard.press("Escape")
-            page.wait_for_timeout(300)
+            # Cosmetic teardown, best-effort as the fixed pause was. The first Escape may only close the voice
+            # picker's popover, so a dialog still up after it gets a second one.
+            dialogs = page.get_by_role("dialog")
+            for _escape in range(2):
+                page.keyboard.press("Escape")
+                try:
+                    expect(dialogs).to_have_count(0, timeout = 2_000)
+                    break
+                except AssertionError:
+                    pass
         info(f"visited Settings tabs: {seen_tabs}")
         if not seen_tabs:
             soft_fail("no Settings tabs were visitable")

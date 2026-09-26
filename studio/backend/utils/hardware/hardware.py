@@ -4180,8 +4180,44 @@ def _rocm_linux_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) -> D
             continue
         _used, sysfs_total = entry
         torch_total = dev.get("total_gb") or 0.0
-        if sysfs_total > 0 and torch_total - sysfs_total > 0.1 * torch_total:
-            shared[index] = round(torch_total - sysfs_total, 2)
+        if sysfs_total <= 0:
+            # sysfs could not be read for this card, so the split is genuinely
+            # UNKNOWN and the index stays absent. WSL reaches here.
+            continue
+        excess = torch_total - sysfs_total
+        # A readable sysfs total that torch does not exceed means the whole torch
+        # budget IS the driver's dedicated heap, i.e. the host-backed part is a
+        # measured ZERO. Omitting the index said "unknown" instead, and the tile
+        # renders unknown as "all of it is host memory": on a gfx1151 whose
+        # mem_info_vram_total is the full 64 GiB carve-out, Settings > System read
+        # `0.00 GiB VRAM + 64.00 GiB shared`. Measured on the AMD CI Strix Halo
+        # against main; unsloth#7449 defect 1.
+        #
+        # The 0.1 band is the threshold for BELIEVING an excess, not for publishing a
+        # figure at all. It is NOT a rounding allowance: both totals carry 0.01 GiB, so
+        # rounding cannot reach a whole GiB, and a 4 GiB gap on a 64 GiB part is a real
+        # disagreement between two sources that count different things.
+        #
+        # Inside the band the split is genuinely undecided, and all three answers are
+        # imperfect. Publishing the excess would call the budget shared (see the caller:
+        # host_gb > 0 sets shared_memory, which collapses several rows into one pool) on
+        # a difference we do not trust. Omitting the index renders as "all of it is host
+        # memory", which IS unsloth#7449 defect 1 and the thing this function exists to
+        # stop. Zero attributes the disagreement to the dedicated heap, which is the
+        # smallest error of the three: at 64 vs 60 GiB it overstates dedicated memory by
+        # 4 GiB, where omitting understates it by all 64.
+        #
+        # Not settled on hardware: neither AMD CI runner has a small BIOS carve-out, so
+        # the in-band case was never measured, only reasoned about.
+        # sysfs far ABOVE torch is not a small disagreement, it is a different scope:
+        # a partitioned device where sysfs reports the whole card and torch reports one
+        # partition. `_rocm_system_wide_vram_by_index` treats a mismatch over the same
+        # 10% as a scope change in EITHER direction, and publishing 0.0 here would call
+        # the whole partition dedicated, overstating independent capacity in the
+        # direction that admits a load. Leave the index absent, which means unknown.
+        if -excess > 0.1 * torch_total:
+            continue
+        shared[index] = round(excess, 2) if excess > 0.1 * torch_total else 0.0
     return shared
 
 
@@ -5063,7 +5099,13 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
         except Exception:
             continue
 
-    return resolve_attention_implementation(model_class, config_copy)
+    impl = resolve_attention_implementation(model_class, config_copy)
+    # A per-sub-config mapping collapses to the decoder's name for the frozenset lookup. Inlined
+    # because callers stub the unsloth import.
+    if isinstance(impl, dict):
+        named = [value for key, value in impl.items() if key != "" and value is not None]
+        impl = named[0] if named else impl.get("", "eager")
+    return impl
 
 
 def _estimate_fp16_model_size_bytes_from_config(config) -> Optional[int]:
@@ -5282,6 +5324,15 @@ def estimate_required_model_memory_gb(
 _CONCRETE_GFX_ARCH = re.compile(r"^gfx[0-9][0-9a-f]{2,4}$")
 
 
+def _props_gfx_arch(props) -> str:
+    # gcnArchName alone leaves the map empty on AMD SDK / Radeon wheels.
+    for attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+        arch = (getattr(props, attr, "") or "").split(":")[0].strip().lower()
+        if arch:
+            return arch
+    return ""
+
+
 def rocm_gpu_ids_without_torch_kernels() -> set[int]:
     """PHYSICAL ids of visible ROCm GPUs the installed torch wheel has no kernels for. Compares what the device PRESENTS, not its silicon, so HSA_OVERRIDE_GFX_VERSION keeps working (#7624). Every uncertainty fails OPEN, the opposite of the bf16 gate: one unreadable device is skipped rather than voiding the probe, which would restore the known-uncovered card and re-break #8792."""
     try:
@@ -5346,12 +5397,7 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
                 props = torch.cuda.get_device_properties(ordinal)
             except Exception:
                 continue
-            # gcnArchName alone leaves the map empty on AMD SDK / Radeon wheels.
-            arch = ""
-            for attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
-                arch = (getattr(props, attr, "") or "").split(":")[0].strip().lower()
-                if arch:
-                    break
+            arch = _props_gfx_arch(props)
             if not arch:
                 logger.debug("Torch arch gate: device %s reports no arch; not gating it", ordinal)
                 continue
@@ -5372,6 +5418,60 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
     except Exception as e:
         logger.debug("torch arch coverage probe failed: %s", e)
         return set()
+
+
+def _torch_kernel_arch_tokens() -> list[str]:
+    try:
+        import torch
+        return sorted(
+            {
+                str(arch).split(":")[0].strip().lower()
+                for arch in (torch.cuda.get_arch_list() or ())
+                if str(arch).strip()
+            }
+        )
+    except Exception:
+        return []
+
+
+def _describe_rocm_gpus(gpu_ids) -> list[str]:
+    """Best-effort labels keyed by PHYSICAL id, for an error message only; never a gate."""
+    wanted = {int(gpu_id) for gpu_id in gpu_ids}
+    labels: Dict[int, str] = {}
+    try:
+        import torch
+
+        count = torch.cuda.device_count()
+        physical_ids = _get_parent_visible_gpu_spec()["numeric_ids"]
+        if physical_ids is None or count > len(physical_ids):
+            physical_ids = list(range(count))
+        for ordinal, physical in enumerate(physical_ids[:count]):
+            if physical not in wanted:
+                continue
+            props = torch.cuda.get_device_properties(ordinal)
+            arch = _props_gfx_arch(props)
+            detail = ", ".join(
+                part for part in (str(getattr(props, "name", "") or ""), arch) if part
+            )
+            labels[physical] = f"GPU {physical} ({detail})" if detail else f"GPU {physical}"
+    except Exception as e:
+        logger.debug("Could not describe GPUs %s: %s", sorted(wanted), e)
+    return [labels.get(gpu_id, f"GPU {gpu_id}") for gpu_id in sorted(wanted)]
+
+
+def reject_gpu_ids_without_torch_kernels(gpu_ids) -> None:
+    """Explicit picks bypass the #8792 auto-select skip; without this the worker dies with hipErrorInvalidImage."""
+    uncovered = sorted(
+        set(int(gpu_id) for gpu_id in gpu_ids) & rocm_gpu_ids_without_torch_kernels()
+    )
+    if not uncovered:
+        return
+    built_for = ", ".join(_torch_kernel_arch_tokens()) or "other GPU architectures"
+    raise ValueError(
+        f"{', '.join(_describe_rocm_gpus(uncovered))} cannot run the PyTorch build this Unsloth Studio installed, "
+        f"which has kernels for {built_for} only. Pick another GPU, or reinstall Unsloth "
+        f"Studio for that card."
+    )
 
 
 def auto_select_gpu_ids(
@@ -5563,6 +5663,7 @@ def prepare_gpu_selection(
 
     if gpu_ids:
         resolved = resolve_requested_gpu_ids(gpu_ids)
+        reject_gpu_ids_without_torch_kernels(resolved)
         metadata = {
             "selection_mode": "explicit",
             "selected_gpu_ids": resolved,
@@ -5806,8 +5907,19 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                 shared_host_gb = _rocm_linux_shared_pool_host_gb_by_index(torch_devices)
                 for td in torch_devices:
                     if td["index"] in shared_host_gb:
-                        td["shared_memory"] = True
-                        td["shared_memory_host_backed_gb"] = shared_host_gb[td["index"]]
+                        host_gb = shared_host_gb[td["index"]]
+                        # A measured ZERO is an answer, not a miss: it says the whole
+                        # budget is the driver's dedicated heap. Publish it either way,
+                        # because the consumer renders an ABSENT figure as "all of it is
+                        # host memory" and that is how a 64 GiB carve-out came out as
+                        # `0.00 GiB VRAM + 64.00 GiB shared` (unsloth#7449 defect 1).
+                        td["shared_memory_host_backed_gb"] = host_gb
+                        # But only call the budget shared when some of it really is.
+                        # `shared_memory` additionally means "several rows are views of
+                        # ONE pool", which collapses them; a two-socket MI300A with no
+                        # host-backed part must stay additive.
+                        if host_gb > 0:
+                            td["shared_memory"] = True
             elif IS_ROCM and platform.system() == "Windows":
                 shared_host_gb = _windows_rocm_shared_pool_host_gb_by_index(torch_devices)
                 for td in torch_devices:

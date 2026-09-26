@@ -179,12 +179,12 @@ def _activate_transformers_version(model_name: str, hf_token: str | None = None)
 
 @contextlib.contextmanager
 def _offline_window_if_unreachable(step = "loading"):
-    """Force HF offline for a network-touching step (transformers version activation, or the
-    load preflights that hit the Hub) when the endpoint is unreachable, then restore the prior
-    env. Keeps a no-network export from hanging on Hub calls that run before load_checkpoint's
-    own probe, while letting this persistent worker re-decide per operation once back online.
+    """Force HF offline for a network-touching step (transformers version activation, the load
+    preflights that hit the Hub, or a local export) when the endpoint is unreachable, then
+    restore the prior env. Keeps a no-network export from hanging or failing on Hub calls, while
+    letting this persistent worker re-decide per operation once back online.
 
-    Post-ML-import (the load preflights), huggingface_hub has already read its in-process
+    Post-ML-import (load preflights, exports), huggingface_hub has already read its in-process
     offline constant and cached sessions, so env alone is too late: defer to the loader's
     _force_hf_offline (env + in-process flags + session reset). Pre-import (activation),
     huggingface_hub is not loaded yet, so setting the env vars suffices for its urllib probes."""
@@ -456,7 +456,6 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
                 imatrix_file = cmd.get("imatrix_file"),
                 private = cmd.get("private", False),
-                gguf_shard_size = cmd.get("gguf_shard_size"),
             )
         elif export_type == "lora":
             success, message, output_path = backend.export_lora_adapter(
@@ -682,7 +681,15 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                     _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "export":
-                _handle_export(backend, cmd, resp_queue)
+                # Re-probed per export: connectivity may change after loading. A push needs the Hub,
+                # so pinning it offline for the whole export would only make the push fail.
+                export_window = (
+                    contextlib.nullcontext()
+                    if cmd.get("push_to_hub")
+                    else _offline_window_if_unreachable(step = "exporting")
+                )
+                with export_window:
+                    _handle_export(backend, cmd, resp_queue)
 
             elif cmd_type == "cleanup":
                 _handle_cleanup(backend, resp_queue)

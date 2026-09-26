@@ -23,6 +23,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.previewSharing.sectionTitle",
     "settings.general.previewSharing.enableLabel",
     "settings.general.previewSharing.revokeLabel",
+    "settings.general.managedProviderUrls.sectionTitle",
+    "settings.general.managedProviderUrls.enableLabel",
     "settings.general.rag.sectionTitle",
     "settings.general.rag.embeddingModel",
     "settings.general.helperLlm.sectionTitle",
@@ -67,6 +69,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.pointerCursors.label",
     "settings.appearance.custom.reduceMotion.label",
     "settings.appearance.custom.uiFontSize.label",
+    "settings.appearance.custom.interfaceScale.label",
     "settings.appearance.custom.codeFontSize.label",
     "settings.appearance.custom.fontSmoothing.label",
     "settings.appearance.layout.compactSidebar",
@@ -88,6 +91,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.storage.modelsFolder",
     "settings.resources.storage.futureDownloads",
     "settings.resources.storage.systemDisk",
+    "settings.resources.storage.caches.label",
     "settings.resources.environment.title",
     "settings.resources.environment.backend",
     "settings.resources.environment.python",
@@ -110,17 +114,37 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
     "settings.chat.autoCompact",
-    "settings.chat.compactionStyle",
     "settings.profile.greetingSloth",
-    "settings.chat.thinking.collapseByDefault",
-    "settings.chat.tools.collapseByDefault",
+    "settings.chat.thinking.visibility",
+    "settings.chat.tools.visibility",
+    "settings.chat.tools.foldIntoThinking",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
     "settings.chat.webSearch.images",
     "settings.chat.modelDisclaimer",
+    "settings.chat.inlineReadAloud",
+    "settings.chat.inlineEditResponse",
     "settings.chat.projectsSection",
     "settings.chat.groups.menu.title",
+  ],
+  library: [
+    "settings.library.storageSection",
+    "settings.library.locationsSection",
+    "settings.library.cardSize",
+    "settings.library.imageLayout",
+    "settings.library.showCardDates",
+    "settings.library.startTab",
+    "settings.library.sort",
+    "settings.library.suggestedLimit",
+    "settings.library.tabsSection",
+    "settings.library.contentSection",
+    "settings.library.showChatAttachments",
+    "settings.library.showChatToolFiles",
+    "settings.library.showGeneratedMedia",
+    "settings.library.categoryFineTunes",
+    "settings.library.confirmDelete",
+    "settings.library.reset",
   ],
   // Chat data management moved to the Data tab; keep these rows findable there.
   data: [
@@ -135,6 +159,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.data.archivedVideos",
     "settings.data.archivedAudio",
     "settings.data.uploadedFiles",
+    "settings.library.dataStorage",
     "settings.chat.exportHistory",
     "settings.chat.exportConversations",
     "settings.chat.importChats",
@@ -144,6 +169,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.title",
     "settings.apiKeys.description",
     "settings.apiKeys.accessTokens",
+    "settings.apiKeys.decisionApi.title",
   ],
   // The two cards label themselves in English in every locale, so keys naming them
   // would never match their own anchor. The header carries both entries instead.
@@ -243,7 +269,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.debugging.logSection",
     "settings.debugging.source",
     "settings.debugging.path",
-    "settings.debugging.refreshSection",
     "settings.debugging.mode",
     "settings.debugging.keywords",
   ],
@@ -285,10 +310,6 @@ export function createSettingsSearchIndex({
       // and searching Settings for "repair" answered "No settings found."
       "settings.general.repairInstall.label",
     ],
-    appearance: [
-      ...SETTINGS_SEARCH_INDEX.appearance,
-      "settings.appearance.custom.interfaceScale.label",
-    ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
     ),
@@ -305,6 +326,10 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  // "purge", "prune" and the tool names are in none of the labels, so the row
+  // the feature is named after was unreachable by search.
+  "settings.resources.storage.caches.label":
+    "settings.resources.storage.caches.keywords",
   // mlock, vram, ulimit and pin are in none of these labels, so search
   // missed the rows the feature is named after.
   "settings.resources.modelMemory.title":
@@ -314,5 +339,8 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.resources.modelMemory.noRamReserve":
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
-  "settings.chat.compactionStyle": "settings.chat.autoCompactKeywords",
+  // These rows are labelled with what they are, so the verbs people search for live here.
+  "settings.chat.thinking.visibility": "settings.chat.visibilityKeywords",
+  "settings.chat.tools.visibility": "settings.chat.visibilityKeywords",
+  "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
 };

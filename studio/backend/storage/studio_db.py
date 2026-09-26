@@ -7,6 +7,8 @@ Like auth/storage.py (module-level functions, raw sqlite3, per-function connecti
 and PRAGMA foreign_keys = ON for CASCADE deletes.
 """
 
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -20,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 
 from utils.account_context import is_owner_context
@@ -31,6 +33,7 @@ from utils.paths import (
     studio_db_path,
 )
 from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
+from utils.paths.path_utils import macos_volume_ignores_case
 from utils.paths.scan_folder_health import is_readable_dir
 from utils.paths.sensitive import (
     contains_sensitive_path_component as _shared_contains_sensitive_path_component,
@@ -80,9 +83,24 @@ def is_denied_system_path(path: str) -> bool:
     keeps Linux removable-media mounts browseable. Expects an already-resolved (realpath) path so
     symlinks cannot escape into a denied subtree.
     """
-    is_win = platform.system() == "Windows"
-    check = os.path.normcase(path) if is_win else path
+    system = platform.system()
+    fold = system == "Darwin" and macos_volume_ignores_case(path)
+    if system == "Windows":
+        check = os.path.normcase(path)
+        # realpath() keeps an extended-length prefix: \\?\C:\Windows is C:\Windows, and
+        # \\?\UNC\server\share is \\server\share. Self-contained: tests lift this function out.
+        for extended, plain in (("\\\\?\\unc\\", "\\\\"), ("\\\\?\\", "")):
+            if check.startswith(extended):
+                check = plain + check[len(extended) :]
+                break
+    elif fold:
+        # APFS and HFS+ ignore case unless formatted case-sensitive: /LIBRARY is /Library.
+        check = path.casefold()
+    else:
+        check = path
     for prefix in _denied_path_prefixes():
+        if fold:
+            prefix = prefix.casefold()
         if check == prefix or check.startswith(prefix + os.sep):
             if prefix == "/run" and is_linux_run_media_path(check):
                 continue
@@ -102,7 +120,7 @@ _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
-_CHAT_ATTACHMENT_INVENTORY_VERSION = 1
+_CHAT_ATTACHMENT_INVENTORY_VERSION = 3
 
 
 def _project_slug(name: str) -> str:
@@ -423,6 +441,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             anthropic_code_exec_container_id TEXT,
             forked_from_thread_id TEXT,
             forked_from_message_id TEXT,
+            fork_boundary_message_id TEXT,
+            fork_title_base TEXT,
             settings_json TEXT,
             FOREIGN KEY(project_id) REFERENCES chat_projects(id) ON DELETE CASCADE
         )
@@ -453,6 +473,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN forked_from_thread_id TEXT")
     if "forked_from_message_id" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN forked_from_message_id TEXT")
+    # Null on forks taken before this column: those threads simply show no divider.
+    if "fork_boundary_message_id" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN fork_boundary_message_id TEXT")
+    # The name a fork numbers from, written when it is made and cleared when it is renamed.
+    # Null on every earlier row, which then numbers from its whole title.
+    if "fork_title_base" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN fork_title_base TEXT")
     if "updated_at" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN updated_at INTEGER")
         # Floor at created_at: forked threads copy older ancestor messages, so the fork's creation time wins.
@@ -1308,12 +1335,33 @@ def _close_keeper(conn: sqlite3.Connection) -> None:
         logger.warning("Could not close the studio.db WAL keeper: %s", exc)
 
 
+#: Called when a keeper is closed, so modules holding their own long-lived connections can drop
+#: them too. Closing the keeper is meant to leave the database checkpointed and its -wal gone
+#: (#9934), and any other open connection silently prevents that.
+_keeper_close_listeners: list[Callable[[], None]] = []
+
+
+def on_wal_keeper_closed(listener: Callable[[], None]) -> None:
+    _keeper_close_listeners.append(listener)
+
+
+def _notify_keeper_closed() -> None:
+    for listener in tuple(_keeper_close_listeners):
+        try:
+            listener()
+        except Exception:
+            logger.warning("A WAL keeper close listener failed", exc_info = True)
+
+
 def close_wal_keeper_for(path: str | Path) -> None:
     db_path = Path(path).resolve()
     with _wal_keeper_lock:
         conn = _wal_keepers.pop(db_path, None)
         if conn is not None:
             _close_keeper(conn)
+    # Unconditionally: journal_mode=WAL declines on filesystems without shared memory, so those
+    # installs never have a keeper to close, and the caller still means "let go of this database".
+    _notify_keeper_closed()
 
 
 def close_wal_keeper() -> None:
@@ -1322,6 +1370,7 @@ def close_wal_keeper() -> None:
             _close_keeper(conn)
         _wal_keepers.clear()
         _wal_unsupported.clear()
+    _notify_keeper_closed()
 
 
 def create_run(
@@ -1931,6 +1980,8 @@ def _chat_thread_from_row(row: sqlite3.Row, include_settings: bool = True) -> di
         "anthropicCodeExecContainerId": data.get("anthropic_code_exec_container_id"),
         "forkedFromThreadId": data.get("forked_from_thread_id"),
         "forkedFromMessageId": data.get("forked_from_message_id"),
+        "forkBoundaryMessageId": data.get("fork_boundary_message_id"),
+        "forkTitleBase": data.get("fork_title_base"),
     }
     if include_settings:
         thread["settings"] = _json_loads(data.get("settings_json"), None)
@@ -1992,8 +2043,8 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, settings_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, fork_boundary_message_id, fork_title_base, settings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
@@ -2012,6 +2063,19 @@ def upsert_chat_thread(thread: dict) -> dict:
                 anthropic_code_exec_container_id = excluded.anthropic_code_exec_container_id,
                 forked_from_thread_id = excluded.forked_from_thread_id,
                 forked_from_message_id = excluded.forked_from_message_id,
+                -- fork_boundary_message_id is deliberately absent. It is set once, on the insert
+                -- that makes the fork, and moved only by the prune that deletes the row it names.
+                -- A whole-record writer carries whatever it read, which may predate that move, so
+                -- on conflict the stored anchor always wins.
+                -- Server-managed on an existing row, like the anchor above: the payload never
+                -- contributes, since a writer carries whatever it read and a base it saw can
+                -- already have been cleared by a rename it did not see. The title decides alone.
+                -- A new one drops the base; the same one keeps whatever is stored.
+                fork_title_base = CASE
+                    WHEN excluded.title = chat_threads.title
+                    THEN chat_threads.fork_title_base
+                    ELSE NULL
+                END,
                 -- an absent snapshot keeps the stored one: most writers rebuild the record without it.
                 settings_json = COALESCE(excluded.settings_json, chat_threads.settings_json)
             """,
@@ -2030,6 +2094,8 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread.get("anthropicCodeExecContainerId"),
                 thread.get("forkedFromThreadId"),
                 thread.get("forkedFromMessageId"),
+                thread.get("forkBoundaryMessageId"),
+                thread.get("forkTitleBase"),
                 json.dumps(thread["settings"]) if thread.get("settings") is not None else None,
             ),
         )
@@ -2104,6 +2170,16 @@ def update_chat_thread(
         if key in patch:
             assignments.append(f"{column} = ?")
             values.append(value)
+    # A rename ends the generated name, so the base it numbered from goes with it. Auto-titling
+    # lands here too, and it is a rename like any other. Only an actual change, though: renaming a
+    # pair patches every thread in it, so one can be sent the title it already has, and clearing
+    # there would cost its next fork a number. The right-hand side reads the pre-update row, so
+    # this compares the stored title against the incoming one. Same rule as the upsert's.
+    if "title" in patch:
+        assignments.append(
+            "fork_title_base = CASE WHEN title = ? THEN fork_title_base ELSE NULL END"
+        )
+        values.append(patch.get("title"))
     if not assignments and settings_write is None:
         return get_chat_thread(id)
 
@@ -3707,6 +3783,9 @@ def sync_chat_messages(
             for message_id, stored_parent in _parents_of(conn, thread_id, reseat_candidates).items()
             if stored_parent is not None and stored_parent in pruned
         }
+        # Same repair for the fork divider's anchor: walked from the stored chain before the
+        # delete, since afterwards the row it names is gone and the walk has nothing to follow.
+        reseat_boundary = _fork_boundary_reseat(conn, thread_id, pruned)
         _raise_if_chat_message_thread_conflicts(
             conn,
             thread_id,
@@ -3782,6 +3861,11 @@ def sync_chat_messages(
                     (thread_id, *chunk),
                 )
             _reseat_protected_messages(conn, thread_id, reseat_parents)
+            if reseat_boundary is not _NO_RESEAT:
+                conn.execute(
+                    "UPDATE chat_threads SET fork_boundary_message_id = ? WHERE id = ?",
+                    (reseat_boundary, thread_id),
+                )
             _recompute_chat_thread_updated_at(conn, thread_id)
         elif reconciled_messages:
             _bump_chat_thread_updated_at(
@@ -3814,6 +3898,47 @@ def _parents_of(conn, thread_id: str, message_ids: set) -> dict:
         ).fetchall()
         if str(row["id"]) in message_ids
     }
+
+
+# Distinct from None, which is a boundary to clear: the thread kept none of its inherited history.
+_NO_RESEAT = object()
+
+
+def _fork_boundary_reseat(conn, thread_id: str, pruned: set):
+    """Where a fork's divider moves when the message it sits under is pruned: up to the last
+    inherited message that survived, or off entirely. Left on a deleted row it matches nothing
+    and the fork's history loses its close for good. `_NO_RESEAT` means leave it alone."""
+    if not pruned:
+        return _NO_RESEAT
+    row = conn.execute(
+        "SELECT fork_boundary_message_id FROM chat_threads WHERE id = ?", (thread_id,)
+    ).fetchone()
+    boundary = row["fork_boundary_message_id"] if row is not None else None
+    if boundary is None or boundary not in pruned:
+        return _NO_RESEAT
+    return _surviving_visible_ancestor(conn, thread_id, boundary, pruned)
+
+
+def _surviving_visible_ancestor(
+    conn: sqlite3.Connection, thread_id: str, message_id: str, pruned: set
+) -> "str | None":
+    """The nearest ancestor of `message_id` that survives `pruned` and paints a row.
+
+    The divider rides the row it names, so an ancestor the thread renders as nothing cannot
+    carry it; landing there loses the divider as surely as landing on a deleted row does.
+    None when no visible inherited history is left, which is a boundary to clear."""
+    seen = {message_id}
+    candidate = _surviving_parent_id(conn, thread_id, message_id, pruned)
+    while candidate is not None and candidate not in seen:
+        seen.add(candidate)
+        row = conn.execute(
+            "SELECT role FROM chat_messages WHERE thread_id = ? AND id = ?",
+            (thread_id, candidate),
+        ).fetchone()
+        if row is not None and row["role"] in _RENDERED_MESSAGE_ROLES:
+            return candidate
+        candidate = _surviving_parent_id(conn, thread_id, candidate, pruned)
+    return None
 
 
 def _reseat_protected_messages(conn, thread_id: str, reseat_parents: dict) -> None:
@@ -3884,11 +4009,60 @@ def _detach_research_message_json(
     )
 
 
+class ChatForkActiveGenerationError(RuntimeError):
+    """A durable generation prevents copying a settled chat."""
+
+
+_FORK_TITLE_SUFFIX = re.compile(r"^(?P<base>.*?)\s*\((?P<n>\d+)\)\s*$", re.DOTALL)
+
+# Roles the thread paints a row for. Mirrors threadMessageKind in
+# components/assistant-ui/thread-message-slot.ts, which is pinned from the other side by
+# thread-message-slot.test.ts. Only used to place the fork divider, which rides a row.
+_RENDERED_MESSAGE_ROLES = frozenset({"user", "assistant"})
+
+
+def _title_family(conn: sqlite3.Connection, base: str) -> list[tuple[str, str]]:
+    """Every chat named `base` or `base (n)`, as (id, title)."""
+    return [
+        (row["id"], row["title"] or "")
+        for row in conn.execute(
+            "SELECT id, title FROM chat_threads WHERE title = ? OR title LIKE ? ESCAPE '\\'",
+            (base, _like_escape(base) + " (%)"),
+        )
+    ]
+
+
+def fork_base_of(src: Mapping) -> str:
+    """The name a fork of `src` numbers from.
+
+    A generated title carries the base it was built from, so "Notes (1)" gives "Notes"
+    however its family fares later: the source can be deleted or renamed and the next
+    fork is still "Notes (2)". Anything else numbers from its whole title, which is what
+    keeps a chat the user named "Budget (2026)" out of the suffix rule. The base is
+    cleared on rename, so a fork renamed to "Report (2026)" lands there too.
+    """
+    stored = (src["fork_title_base"] or "").strip()
+    return stored or (src["title"] or "").strip()
+
+
+def _next_fork_title(conn: sqlite3.Connection, base: str) -> str:
+    """Lowest free `base (n)`, n >= 1. Called inside the fork's write lock, so two
+    concurrent forks of one chat cannot pick the same number."""
+    taken: set[int] = set()
+    for _id, title in _title_family(conn, base):
+        match = _FORK_TITLE_SUFFIX.match(title)
+        if match and match.group("base").strip() == base:
+            taken.add(int(match.group("n")))
+    n = 1
+    while n in taken:
+        n += 1
+    return f"{base} ({n})"
+
+
 def fork_chat_thread(
     source_thread_id: str,
-    branch_message_id: str,
+    branch_message_id: Optional[str],
     new_thread_id: str,
-    new_title: str,
     created_at: int,
     id_factory,
 ) -> Optional[dict]:
@@ -3896,6 +4070,8 @@ def fork_chat_thread(
     the new thread dict (with messages copied) or None if source missing. Reset both code-exec
     container ids; the per-provider snapshot is handled by the route layer. `id_factory()` produces
     fresh message uuids, injected for testability."""
+    from storage.research_runs_db import ACTIVE_STATUSES as active_research_statuses
+
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -3907,40 +4083,86 @@ def fork_chat_thread(
         if src is None:
             conn.rollback()
             return None
-        branch_row = conn.execute(
-            "SELECT * FROM chat_messages WHERE thread_id = ? AND id = ?",
-            (source_thread_id, branch_message_id),
-        ).fetchone()
+        # admission and copying share the write lock, including the gap before supervisor registration.
+        research_status_placeholders = ",".join("?" for _ in active_research_statuses)
+        if (
+            _active_chat_generation_run_ids(conn, {source_thread_id})
+            or conn.execute(
+                f"SELECT 1 FROM research_runs WHERE thread_id = ? "
+                f"AND status IN ({research_status_placeholders}) LIMIT 1",
+                (source_thread_id, *sorted(active_research_statuses)),
+            ).fetchone()
+            is not None
+        ):
+            raise ChatForkActiveGenerationError(
+                "This chat is still generating. Fork it once it finishes."
+            )
+        rows = conn.execute(
+            """SELECT * FROM chat_messages WHERE thread_id = ?
+               ORDER BY created_at,
+                 CASE role WHEN 'system' THEN 0 WHEN 'user' THEN 1
+                           WHEN 'assistant' THEN 2 ELSE 99 END,
+                 id""",
+            (source_thread_id,),
+        ).fetchall()
+        by_id = {row["id"]: row for row in rows}
+        branch_row = (
+            (rows[-1] if rows else None)
+            if branch_message_id is None
+            else by_id.get(branch_message_id)
+        )
         if branch_row is None:
             conn.rollback()
             return None
+        branch_message_id = branch_row["id"]
+        # match the runtime's sequential legacy prefix while preserving recorded branches and later roots.
+        parents: dict[str, Optional[str]] = {}
+        previous_id = None
+        saw_recorded_parent = False
+        for row in rows:
+            parent = row["parent_id"]
+            parents[row["id"]] = (
+                previous_id if parent is None and not saw_recorded_parent else parent
+            )
+            if parent is not None:
+                saw_recorded_parent = True
+            previous_id = row["id"]
         ancestry: list[sqlite3.Row] = []
         cursor_row = branch_row
         seen: set[str] = set()
         while cursor_row is not None and cursor_row["id"] not in seen:
             ancestry.append(cursor_row)
             seen.add(cursor_row["id"])
-            parent = cursor_row["parent_id"]
-            if not parent:
-                break
-            cursor_row = conn.execute(
-                "SELECT * FROM chat_messages WHERE thread_id = ? AND id = ?",
-                (source_thread_id, parent),
-            ).fetchone()
+            cursor_row = by_id.get(parents[cursor_row["id"]])
         ancestry.reverse()  # root .. branch msg
         id_map: dict[str, str] = {row["id"]: id_factory() for row in ancestry}
         src_dict = dict(src)
+        # Named from the row this transaction read, under the write lock: a title taken
+        # before it could be renamed by another tab, and the number could already be gone.
+        base = fork_base_of(src)
+        title = _next_fork_title(conn, base)
+        # Anchor for the "Continued from chat" divider. Not derivable later: copies keep the
+        # source's timestamps and take fresh ids. The last message that PAINTS one, not simply
+        # the last copied: an imported chat can end on a system message, which renders as no row
+        # at all (threadMessageKind), and the divider rides the row it anchors to. Picking it in
+        # the frontend instead would mean reading the whole message list in every row, which is
+        # what the thread's render budget forbids. None when nothing inherited is visible.
+        boundary_row = next(
+            (row for row in reversed(ancestry) if row["role"] in _RENDERED_MESSAGE_ROLES), None
+        )
+        boundary_message_id = id_map[boundary_row["id"]] if boundary_row is not None else None
         conn.execute(
             """
             INSERT INTO chat_threads
                 (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at,
                  openai_code_exec_container_id, anthropic_code_exec_container_id,
-                 forked_from_thread_id, forked_from_message_id, settings_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?)
+                 forked_from_thread_id, forked_from_message_id, fork_boundary_message_id,
+                 fork_title_base, settings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?, ?, ?)
             """,
             (
                 new_thread_id,
-                new_title,
+                title,
                 src_dict["model_type"],
                 src_dict.get("model_id") or "",
                 src_dict.get("model_gguf_variant"),
@@ -3949,6 +4171,8 @@ def fork_chat_thread(
                 int(created_at),
                 source_thread_id,
                 branch_message_id,
+                boundary_message_id,
+                base,
                 src_dict.get("settings_json"),
             ),
         )
@@ -3961,7 +4185,7 @@ def fork_chat_thread(
                 (
                     id_map[row["id"]],
                     new_thread_id,
-                    id_map.get(row["parent_id"]) if row["parent_id"] else None,
+                    id_map.get(parents[row["id"]]),
                     row["role"],
                     content_json,
                     row["attachments_json"],
@@ -3991,6 +4215,41 @@ def fork_chat_thread(
             "SELECT * FROM chat_threads WHERE id = ?", (new_thread_id,)
         ).fetchone()
         return _chat_thread_from_row(thread_row) if thread_row is not None else None
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def remap_chat_thread_document_ids(thread_id: str, document_ids: dict[str, str]) -> None:
+    if not document_ids:
+        return
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_chat_attachment_inventory_current(conn)
+        rows = conn.execute(
+            "SELECT id, content_json, attachments_json, metadata_json FROM chat_messages "
+            "WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchall()
+        for row in rows:
+            content_json, metadata_json = row["content_json"], row["metadata_json"]
+            for old, new in document_ids.items():
+                content_json = content_json.replace(old, new)
+                metadata_json = metadata_json and metadata_json.replace(old, new)
+            if (content_json, metadata_json) != (row["content_json"], row["metadata_json"]):
+                conn.execute(
+                    "UPDATE chat_messages SET content_json = ?, metadata_json = ? "
+                    "WHERE thread_id = ? AND id = ?",
+                    (content_json, metadata_json, thread_id, row["id"]),
+                )
+                _replace_chat_attachment_inventory(
+                    conn, row["id"], row["attachments_json"], content_json
+                )
+        _mark_chat_attachment_inventory_clean(conn)
+        conn.commit()
     except Exception:
         conn.rollback()
         raise
@@ -4085,6 +4344,9 @@ def _blob_part_base64_len(part: dict) -> int:
         data = audio.get("data")
         if isinstance(data, str) and _is_locally_stored_blob(data):
             return len(data)
+    data = part.get("data")
+    if part.get("type") == "file" and isinstance(data, str) and _is_locally_stored_blob(data):
+        return len(data.rsplit(",", 1)[-1])
     return 0
 
 
@@ -4096,9 +4358,9 @@ def _attachment_content_parts(attachment: dict) -> list[dict]:
 
 
 def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
-    """Approximate stored size of one attachment's content parts. Image and audio parts hold base64
-    payloads (decoded bytes ~= 3/4 of the encoded length); text parts count their character length.
-    None when there is no sizable content."""
+    """Approximate stored size of one attachment's content parts. Image, audio and file (video)
+    parts hold base64 payloads (decoded bytes ~= 3/4 of the encoded length); text parts count their
+    character length. None when there is no sizable content."""
     total = 0
     found = False
     for part in _attachment_content_parts(attachment):
@@ -4112,6 +4374,46 @@ def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
             total += len(text.encode("utf-8", errors = "ignore"))
             found = True
     return total if found else None
+
+
+_AUDIO_FORMAT_TYPES = {
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "ogg": "audio/ogg",
+    "flac": "audio/flac",
+}
+
+
+def _content_part_audio_type(audio: Any) -> Optional[str]:
+    """An audio part's type: its data URL's, its format's, or else its bytes' own header, since a
+    compare chat stores bare base64 with neither."""
+    data = audio
+    if isinstance(audio, dict):
+        known = _AUDIO_FORMAT_TYPES.get(str(audio.get("format") or "").lower())
+        if known:
+            return known
+        data = audio.get("data")
+    if not isinstance(data, str):
+        return None
+    data = data.strip()
+    if data[:5].lower() == "data:":
+        header, _, data = data.partition(",")
+        declared = header[5:].split(";", 1)[0].strip().lower()
+        if declared.startswith("audio/"):
+            return declared
+    try:
+        head = base64.b64decode(data[:16])
+    except (binascii.Error, ValueError):
+        return None
+    if head.startswith(b"RIFF") and head[8:12] == b"WAVE":
+        return "audio/wav"
+    if head.startswith(b"ID3") or (len(head) > 1 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0):
+        return "audio/mpeg"
+    if head.startswith(b"OggS"):
+        return "audio/ogg"
+    if head.startswith(b"fLaC"):
+        return "audio/flac"
+    return None
 
 
 def _content_part_attachments(content_json: Optional[str]) -> list[dict]:
@@ -4134,7 +4436,9 @@ def _content_part_attachments(content_json: Optional[str]) -> list[dict]:
         kind, value = payload
         content_type = None
         part_name = part.get("name")
-        if isinstance(value, str) and value[:5].lower() == "data:":
+        if kind == "audio":
+            content_type = _content_part_audio_type(value)
+        elif isinstance(value, str) and value[:5].lower() == "data:":
             content_type = value[5:].split(";", 1)[0].split(",", 1)[0] or None
         out.append(
             {
@@ -4475,6 +4779,9 @@ def upsert_app_setting_map_entry(
     *,
     fill_absent_fields: bool = False,
     coupled_fields: tuple[tuple[str, ...], ...] = (),
+    keep_first_writer: bool = False,
+    ambiguous_field: str | None = None,
+    delete_if_entry_equals: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Set (or delete, when entry_value is falsy) one sub-entry of a dict-valued app setting,
     atomically under BEGIN IMMEDIATE so concurrent writers to other sub-entries cannot drop each
@@ -4488,7 +4795,18 @@ def upsert_app_setting_map_entry(
     filling would take a qualifier from this browser and leave the value it qualifies as the server
     wrote it: a stored ``gpu_ids`` in one index space, relabelled with the other space's
     ``gpu_index_kind``, points at a different GPU while looking stored. A group any part of which is
-    held is skipped whole."""
+    held is skipped whole.
+
+    ``keep_first_writer`` leaves an entry that already exists as it is, and with
+    ``ambiguous_field`` also collapses that one field to None when the stored value differs from
+    the incoming one. The comparison happens inside this transaction on purpose: a caller that
+    read the map first and decided outside it loses the race it is there to detect, since two
+    writers can both read "absent" and then each write its own value, and the last one wins with
+    an attribution that is no longer true.
+
+    ``delete_if_entry_equals`` removes the entry only when it is still exactly the one the
+    caller wrote, which is how a writer takes back a record for a call that then failed without
+    taking back a later writer's."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -4514,9 +4832,23 @@ def upsert_app_setting_map_entry(
                 current[entry_key] = merged
             else:
                 current[entry_key] = entry_value
+        elif keep_first_writer and entry_value and entry_key in current:
+            stored = current[entry_key]
+            if not isinstance(stored, dict) or ambiguous_field is None:
+                conn.rollback()
+                return current
+            if stored.get(ambiguous_field) in (None, entry_value.get(ambiguous_field)):
+                conn.rollback()
+                return current
+            current[entry_key] = {**stored, ambiguous_field: None}
         elif entry_value:
             current[entry_key] = entry_value
         else:
+            if delete_if_entry_equals is not None and (
+                current.get(entry_key) != delete_if_entry_equals
+            ):
+                conn.rollback()
+                return current
             current.pop(entry_key, None)
         now = datetime.now(timezone.utc).isoformat()
         conn.execute(

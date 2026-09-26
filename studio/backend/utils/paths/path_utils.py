@@ -303,6 +303,47 @@ def reset_cache_case_resolution_state() -> None:
         _CACHE_CASE_RESOLUTION_STATS[key] = 0
 
 
+def _comparable_path(path, pathmod) -> str:
+    """*path* spelled the way two paths are compared: on Windows without the extended-length
+    prefix, which realpath keeps on one side only for a long path, and case folded."""
+    text = os.fspath(path)
+    if pathmod.sep == "\\":
+        if text[:8].upper() == "\\\\?\\UNC\\":
+            text = "\\\\" + text[8:]
+        elif text[:4] == "\\\\?\\":
+            text = text[4:]
+    return pathmod.normcase(pathmod.normpath(text))
+
+
+def is_path_within(
+    path,
+    root,
+    *,
+    allow_root: bool = False,
+    pathmod = os.path,
+) -> bool:
+    """Whether resolved *path* sits inside resolved *root*.
+
+    commonpath rather than a prefix test: a drive root already ends in a separator, and ``C:\\a``
+    must not contain ``C:\\ab``. Paths on different drives are simply not inside."""
+    candidate, base = _comparable_path(path, pathmod), _comparable_path(root, pathmod)
+    try:
+        common = pathmod.commonpath([candidate, base])
+    except ValueError:
+        return False
+    return common == base and (allow_root or candidate != base)
+
+
+def same_path(
+    left,
+    right,
+    *,
+    pathmod = os.path,
+) -> bool:
+    """Whether two resolved paths are one, compared as ``is_path_within`` compares them."""
+    return _comparable_path(left, pathmod) == _comparable_path(right, pathmod)
+
+
 def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
     import subprocess
     if not _IS_WSL:
@@ -319,8 +360,11 @@ def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
         ).stdout.strip()
         if not windows_path:
             return False
-        argument = f"/select,{windows_path}" if is_file else windows_path
-        subprocess.Popen(["explorer.exe", argument])
+        subprocess.Popen(
+            ["explorer.exe", "/select,", windows_path]
+            if is_file
+            else ["explorer.exe", windows_path]
+        )
         return True
     except (OSError, subprocess.SubprocessError):
         return False
@@ -358,10 +402,35 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
         cmd = ["open", "-R", target] if is_file else ["open", target]
         subprocess.Popen(cmd)
     elif os.name == "nt":
-        if is_file:
-            subprocess.Popen(["explorer", f"/select,{target}"])
+        if is_file and '"' not in target:
+            subprocess.Popen(f'explorer /select,"{target}"')
+        elif is_file:
+            os.startfile(str(path.parent))  # noqa: S606 - local user's own file manager
         else:
             os.startfile(target)  # noqa: S606 - local user's own file manager
     elif not _wsl_reveal_in_explorer(path, is_file):
         # No cross-desktop "select file" standard on Linux; open the directory.
         subprocess.Popen(["xdg-open", str(path.parent) if is_file else target])
+
+
+# pathconf's _PC_CASE_SENSITIVE on macOS, which Python has no name for.
+_PC_CASE_SENSITIVE = 11
+
+
+def macos_volume_ignores_case(path: str) -> bool:
+    """Whether the macOS volume holding ``path`` (or its nearest folder that exists) ignores case,
+    as APFS and HFS+ do unless formatted case-sensitive. True off macOS, where only a test acting
+    as macOS asks."""
+    if sys.platform != "darwin":
+        return True
+    probe = path
+    while True:
+        try:
+            return os.pathconf(probe, _PC_CASE_SENSITIVE) == 0
+        except FileNotFoundError:
+            parent = os.path.dirname(probe)
+            if not parent or parent == probe:
+                return True
+            probe = parent
+        except (OSError, ValueError):
+            return True

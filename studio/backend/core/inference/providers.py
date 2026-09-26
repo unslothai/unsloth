@@ -25,6 +25,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-6-astra",
+            "gpt-6-luna",
+            "gpt-6-sol",
         ],
         "model_capabilities": {
             "gpt-5.4": {"vision": True, "studio_tools": True},
@@ -34,6 +36,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "gpt-5.6-sol": {"vision": True, "studio_tools": True},
             "gpt-5.6-terra": {"vision": True, "studio_tools": True},
             "gpt-6-astra": {"vision": True, "studio_tools": True},
+            "gpt-6-luna": {"vision": True, "studio_tools": True},
+            "gpt-6-sol": {"vision": True, "studio_tools": True},
         },
         "supports_streaming": True,
         "supports_vision": True,
@@ -405,6 +409,22 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_chat_template_kwargs": True,
         "hidden": True,
     },
+    "lemonade": {
+        "display_name": "AMD NPU (FastFlowLM)",
+        "base_url": "",
+        "default_models": [],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "Unsloth-managed Lemonade serving FastFlowLM on the AMD NPU.",
+        # FastFlowLM 1.0.3 parses min_p into an integer, so 0.05 arrives as 0.
+        "body_omit": ("min_p",),
+        "hidden": True,
+        "managed": True,
+    },
     "openrouter": {
         "display_name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
@@ -449,6 +469,12 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
 
 def get_provider_info(provider_type: str) -> dict[str, Any] | None:
     return PROVIDER_REGISTRY.get(provider_type)
+
+
+def get_connectable_provider_info(provider_type: str) -> dict[str, Any] | None:
+    """Return a user-configurable provider, excluding Studio-managed runtimes."""
+    info = PROVIDER_REGISTRY.get(provider_type)
+    return None if info is None or info.get("managed") else info
 
 
 def get_base_url(provider_type: str) -> str | None:
@@ -608,6 +634,21 @@ _METADATA_NETWORK = ipaddress.ip_network("169.254.0.0/16")
 # URLs that resolve to a non-public address. Off by default, because loopback and
 # LAN endpoints are the normal case (Ollama, llama.cpp, vLLM, custom gateways).
 _BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
+
+# Named in one place: a managed account meets this refusal from save, send and recipe alike.
+MANAGED_PRIVATE_URL_HINT = (
+    " The installation owner can allow private and LAN addresses in Settings > General."
+)
+MANAGED_PUBLIC_ONLY_TEXT = "Managed accounts may only use public-network provider base URLs."
+
+
+def managed_private_url_hint() -> str:
+    """The hint, omitted when the environment lock means the owner cannot act on it either."""
+    return "" if os.environ.get(_BLOCK_PRIVATE_ENV) == "1" else MANAGED_PRIVATE_URL_HINT
+
+
+def managed_public_only_reason() -> str:
+    return MANAGED_PUBLIC_ONLY_TEXT + managed_private_url_hint()
 
 
 # An all-numeric host is an IPv4 literal to the resolver, in decimal, octal or
@@ -858,6 +899,16 @@ def _managed_account_caller() -> bool:
     return not is_owner_context()
 
 
+def _managed_private_urls_allowed() -> bool:
+    """True when the owner has opened private provider addresses to managed accounts.
+
+    Imported here, not at module scope: tests/test_provider_base_url_validation.py loads this
+    module standalone.
+    """
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
+    return get_managed_private_provider_urls_allowed()
+
+
 def _reject_non_public(hostname: str, port: int | None, scheme: str, reason: str) -> None:
     """Raise when ``hostname`` is, or resolves to, a non-public address."""
     try:
@@ -901,7 +952,7 @@ def public_provider_address(url: str) -> str:
     hostname = (parts.hostname or "").rstrip(".")
     if not hostname:
         raise ValueError("Provider URL must contain a hostname.")
-    reason = "Managed accounts may only use public-network provider base URLs."
+    reason = managed_public_only_reason()
     try:
         addresses = [ipaddress.ip_address(_canonical_host(hostname))]
     except ValueError:
@@ -919,6 +970,47 @@ def public_provider_address(url: str) -> str:
     return str(addresses[0])
 
 
+METADATA_REFUSED_REASON = "Cloud metadata endpoints cannot be used as a provider base URL."
+
+
+def provider_address_excluding_metadata(url: str) -> str:
+    """Resolve ``url``'s host now and return one address to dial, refusing only metadata services.
+
+    For a caller the owner has allowed private addresses. Re-resolving rather than trusting the
+    save-time check is the point: a name is free to answer 169.254.169.254 afterwards.
+    """
+    import socket
+
+    parts = urlsplit(url)
+    hostname = (parts.hostname or "").rstrip(".")
+    if not hostname:
+        raise ValueError("Provider URL must contain a hostname.")
+    literal = True
+    try:
+        addresses = [ipaddress.ip_address(_canonical_host(hostname))]
+    except ValueError:
+        literal = False
+        try:
+            infos = socket.getaddrinfo(
+                _transport_host(hostname),
+                parts.port or (443 if parts.scheme == "https" else 80),
+                type = socket.SOCK_STREAM,
+            )
+        except (OSError, UnicodeError) as exc:
+            raise ValueError("Provider base URL hostname could not be resolved.") from exc
+        addresses = [ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]) for info in infos]
+    if not addresses:
+        raise ValueError("Provider base URL hostname could not be resolved.")
+    # The same split the validator makes, so a URL that saves is one that dials. A typed literal
+    # gets `_metadata_host`, which reads all of 169.254.0.0/16 as the metadata service; a DNS
+    # answer gets `_metadata_address`, which does not, because that range is also where a
+    # self-assigned host or an mDNS name lands.
+    refuses = _metadata_host if literal else _metadata_address
+    if any(refuses(str(ip)) for ip in addresses):
+        raise ValueError(METADATA_REFUSED_REASON)
+    return str(addresses[0])
+
+
 def validate_provider_base_url(base_url: str) -> str:
     """Return a normalized provider base URL, or raise ``ValueError``.
 
@@ -930,7 +1022,9 @@ def validate_provider_base_url(base_url: str) -> str:
     stay valid -- Ollama, llama.cpp, vLLM and custom gateways rely on them. A
     caller-supplied hostname is resolved far enough to apply the metadata block
     to DNS aliases of it; rejecting other private addresses stays opt-in for the
-    owner, and is always on for a managed account (as managed MCP servers are).
+    owner, and is on for a managed account until the owner turns it off for the
+    installation (``utils.managed_provider_url_settings``), which is how a team
+    sharing one LAN model server gets to use it from more than one account.
 
     Normalization is strip + trailing-slash removal only (what the client did
     before), so validating an already-validated URL returns it unchanged.
@@ -969,14 +1063,13 @@ def validate_provider_base_url(base_url: str) -> str:
             "Provider base URL points at a private address, which is disabled on this "
             f"server ({_BLOCK_PRIVATE_ENV}=1).",
         )
-    elif _managed_account_caller() and not _public_registry_hostname(hostname):
-        # Caller-controlled egress must not reach the owner's loopback models or LAN.
-        _reject_non_public(
-            hostname,
-            port,
-            scheme,
-            "Managed accounts may only use public-network provider base URLs.",
-        )
+    elif (
+        _managed_account_caller()
+        and not _public_registry_hostname(hostname)
+        and not _managed_private_urls_allowed()
+    ):
+        # Caller-controlled egress: the owner's loopback and LAN, unless the owner opened them.
+        _reject_non_public(hostname, port, scheme, managed_public_only_reason())
 
     return raw.rstrip("/")
 
@@ -996,7 +1089,7 @@ def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any
     """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
-        if info.get("hidden") and not include_hidden:
+        if (info.get("hidden") and not include_hidden) or info.get("managed"):
             continue
         result.append(
             {

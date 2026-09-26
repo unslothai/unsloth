@@ -19,7 +19,9 @@ import {
   type ChatSearch,
   clearNewChatDraft,
   hydrateModelDisclaimerPreference,
+  openFolderAsProject,
   StopRunningChatsDialog,
+  useOpeningFolder,
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useExportRuntimeLifecycle } from "@/features/export";
@@ -31,14 +33,22 @@ import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
   SettingsDialogMount,
+  stepInterfaceScale,
+  triggerShortcut,
+  useInterfaceScaleStore,
   useSettingsDialogStore,
   useShortcut,
+  useShortcutAvailable,
 } from "@/features/settings";
+import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
+import { useNativePathLeasesSupported } from "@/features/native-intents";
+import { useRagAvailabilityStore } from "@/features/rag";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { type TranslationKey, useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import {
   Outlet,
   createRootRoute,
@@ -61,6 +71,8 @@ import {
   useState,
 } from "react";
 import { AppProvider } from "../provider";
+import { useDesktopShellReady } from "../desktop-shell-ready";
+import { useAppMenuActions } from "../use-app-menu-actions";
 
 declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
@@ -155,6 +167,15 @@ function PersonalizationSyncMount() {
   return null;
 }
 
+// A full disk is not a training problem, so the warning cannot live on the
+// training route: it belongs to whichever route the user happens to be on when
+// space runs out. Mounted here it subscribes once for the session, and stays
+// subscribed across navigation, instead of coming and going with /studio.
+function LowDiskNoticeMount() {
+  useLowDiskNotice();
+  return null;
+}
+
 // The chat settings are the installation's, and the Models page and the model
 // picker read them too, so hydration cannot wait for ChatPage to mount.
 function ChatSettingsHydrationMount() {
@@ -226,6 +247,7 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/",
   "/chat",
   "/projects",
+  "/library",
   "/hub",
   "/login",
   "/signup",
@@ -378,6 +400,7 @@ function RootLayout() {
 
   // Same persistent mount for /audio so generation UI state survives leaving the tab.
   const isAudioRoute = pathname === "/audio";
+  const isLibraryRoute = pathname === "/library";
   const [audioMounted, setAudioMounted] = useState(isAudioRoute);
   if (isAudioRoute && !audioMounted) {
     setAudioMounted(true);
@@ -488,6 +511,49 @@ function RootLayout() {
     enabled: routeShortcutEnabled,
   });
 
+  // The desktop File and View menus. Open Folder links the folder, so it needs path leases and RAG.
+  const pathLeasesSupported = useNativePathLeasesSupported();
+  const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
+  const openingFolder = useOpeningFolder();
+  const desktopShellReady = useDesktopShellReady();
+  // Menu items for web shortcuts are live exactly while a mounted handler would take them.
+  const sidebarMounted = useShortcutAvailable("toggleSidebar", isTauri);
+  const findMounted = useShortcutAvailable("findInPage", isTauri);
+  const previousChatMounted = useShortcutAvailable("previousChat", isTauri);
+  const nextChatMounted = useShortcutAvailable("nextChat", isTauri);
+  const viaShortcut = (id: Parameters<typeof triggerShortcut>[0], mounted: boolean) =>
+    mounted ? () => void triggerShortcut(id) : null;
+  const zoomBy = (direction: 1 | -1) => () => {
+    const scale = useInterfaceScaleStore.getState();
+    scale.setScale(stepInterfaceScale(scale.scale, direction));
+  };
+  useAppMenuActions({
+    "new-chat": routeShortcutEnabled ? () => startNewChat() : null,
+    "new-temporary-chat": routeShortcutEnabled
+      ? () => startNewChat({ incognito: true, standalone: true })
+      : null,
+    "open-folder":
+      routeShortcutEnabled && pathLeasesSupported && !ragUnavailable && !openingFolder
+        ? () =>
+            void openFolderAsProject().then((project) => {
+              if (!project) return;
+              const chatRuntime = useChatRuntimeStore.getState();
+              chatRuntime.setActiveThreadId(null);
+              chatRuntime.setActiveProjectId(project.id);
+              void navigate({ to: "/chat", search: { project: project.id } });
+            })
+        : null,
+    "toggle-sidebar": viaShortcut("toggleSidebar", sidebarMounted),
+    "find": viaShortcut("findInPage", findMounted),
+    "previous-chat": viaShortcut("previousChat", previousChatMounted),
+    "next-chat": viaShortcut("nextChat", nextChatMounted),
+    "back": routeShortcutEnabled ? () => window.history.back() : null,
+    "forward": routeShortcutEnabled ? () => window.history.forward() : null,
+    "zoom-in": zoomBy(1),
+    "zoom-out": zoomBy(-1),
+    "actual-size": () => useInterfaceScaleStore.getState().reset(),
+  }, desktopShellReady);
+
   // Workspaces. The shell is mounted on every route, so the chords live here.
   const goTo = (to: string) => () => void navigate({ to });
   // Carry the frozen search back: a bare /chat is a fresh chat, so switching
@@ -548,6 +614,7 @@ function RootLayout() {
       <PersonalizationSyncMount />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
+      {!isAuthFlowRoute && <LowDiskNoticeMount />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
       {!isAuthFlowRoute && <ApiMonitorOverlay />}
       <HfTokenWarningDialog />
@@ -571,7 +638,14 @@ function RootLayout() {
           <AppSidebar />
           <SidebarEdgeTrigger />
           <SidebarInset
-            className={isChatLike ? "overflow-hidden" : "overflow-y-auto"}
+            className={
+              isChatLike
+                ? "overflow-hidden"
+                : // Reserve the scrollbar so the Library does not shift when it appears.
+                  isLibraryRoute
+                  ? "overflow-y-auto [scrollbar-gutter:stable]"
+                  : "overflow-y-auto"
+            }
           >
             <Navbar />
             <div
