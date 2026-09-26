@@ -3409,7 +3409,7 @@ _mirror_failed_host() {
     fi
 }
 
-# No network call: mainland China time zone or resolver (Alibaba 100.100.2.136/138, Tencent 183.60.83.19/82.98).
+# No network call: a mainland China time zone, or a resolver from a mainland public DNS or cloud (the addresses below).
 _mirror_in_china() {
     _mcn_tz=${TZ:-}
     [ -n "$_mcn_tz" ] || _mcn_tz=$(cat /etc/timezone 2>/dev/null) || true
