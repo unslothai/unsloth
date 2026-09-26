@@ -229,8 +229,6 @@ export const ja = {
       organizeChats: "チャットを整理",
       organizeProjects: "プロジェクトを整理",
       sortPinnedChats: "ピン留めチャットを並べ替え",
-      moveUp: "上へ移動",
-      moveDown: "下へ移動",
     },
     dialog: {
       deleteChat: {

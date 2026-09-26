@@ -225,8 +225,6 @@ export const zhCN = {
       organizeChats: "整理对话",
       organizeProjects: "整理项目",
       sortPinnedChats: "对置顶对话排序",
-      moveUp: "上移",
-      moveDown: "下移",
     },
     dialog: {
       deleteChat: {
