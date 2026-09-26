@@ -3397,6 +3397,8 @@ class SdCppDiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
+        # Interface parity only: the activation guard is diffusers-only.
+        allow_oversized: bool = False,
     ) -> dict[str, Any]:
         import tempfile
 

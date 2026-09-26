@@ -197,6 +197,16 @@ test("the panel adopts a shared server config without overwriting a live edit", 
   );
 });
 
+test("the panel strips llama-server arguments from a non-GGUF row", () => {
+  // An API auto-switch applies the row to MLX and safetensors loads too, so the panel shows it.
+  assert.match(PANEL, /target\.isGguf \? loadManagedLlamaFlags\(\) : null,/);
+  assert.match(PANEL, /\(row\) => panelOverrideRow\(row, target\.isGguf\)/);
+  assert.match(
+    PANEL,
+    /const local = target\.isGguf\s*\?\s*configRef\.current\.llamaExtraArgs\s*:\s*undefined;/,
+  );
+});
+
 test("hydration detects a newer save or forget", () => {
   const modelId = "unsloth/Hydration-Race-GGUF";
   const variant = "Q4_K_M";

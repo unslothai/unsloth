@@ -73,7 +73,7 @@ interface ModelRowMenuDelete {
   description: ReactNode;
   /** Repo (and quant) to preview the delete for, so the dialog can state what it actually reclaims
    *  and what shared assets it leaves behind. Omit to keep the plain wording. */
-  impact?: { repoId: string; variant?: string | null };
+  impact?: { repoId: string; variant?: string | null; cachePath?: string | null };
   successMessage: string;
   disabled?: boolean;
   onConfirm: () => Promise<void> | void;
@@ -116,6 +116,7 @@ export function ModelRowMenu({
     deleteOpen && Boolean(del?.impact),
     del?.impact?.repoId ?? "",
     del?.impact?.variant,
+    del?.impact?.cachePath,
   );
   const [updateOpen, setUpdateOpen] = useState(false);
 
