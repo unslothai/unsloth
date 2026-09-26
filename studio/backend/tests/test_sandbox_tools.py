@@ -5387,7 +5387,9 @@ class TestEgressHostParsingAndTracking:
     @pytest.mark.parametrize(
         "code",
         [
-            pytest.param("import requests\nrequests.get('https://u:p@pypi.org/simple/')", id = "userinfo"),
+            pytest.param(
+                "import requests\nrequests.get('https://u:p@pypi.org/simple/')", id = "userinfo"
+            ),
             pytest.param(
                 "import requests\nclass A:\n    s = requests.Session()\nA.s.get('https://pypi.org/simple/')",
                 id = "class_attribute_allowlisted",
