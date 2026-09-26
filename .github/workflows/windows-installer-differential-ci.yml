@@ -70,7 +70,7 @@ concurrency:
   # `installer-differential` now share a group of their own, so they cancel each other and never a
   # measurement.
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'installer-differential') && 'unrelated-label' || 'measure' }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'

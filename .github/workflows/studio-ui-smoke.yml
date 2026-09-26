@@ -108,7 +108,7 @@ concurrency:
   # in 37 minutes cancelled three consecutive main runs of this workflow and none
   # completed. Detection survives on the tip, since the tree is cumulative;
   # per-commit attribution does not.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
