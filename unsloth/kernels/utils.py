@@ -1060,7 +1060,12 @@ def fast_dequantize(
     return _fast_dequantize_bnb(W, quant_state, out = out, use_global_buffer = use_global_buffer)
 
 
-def fast_gemv(X, W, quant_state, out = None):
+def fast_gemv(
+    X,
+    W,
+    quant_state,
+    out = None,
+):
     if type(quant_state) is Int4QuantState:
         return _int4_matmul(X, W, quant_state, out = out)
     return _fast_gemv_bnb(X, W, quant_state, out = out)

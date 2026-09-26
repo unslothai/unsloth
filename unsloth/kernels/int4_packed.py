@@ -229,7 +229,6 @@ def _gemv_kernel(
     pid_n = tl.program_id(0)
     pid_k = tl.program_id(1)
     m = tl.program_id(2)
-    BLOCK_K: tl.constexpr = BLOCK_KP * PF
     rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
     acc = tl.zeros((BLOCK_N,), dtype = tl.float32)
     n_k = tl.cdiv(KP, BLOCK_KP)
@@ -276,9 +275,6 @@ def _launch_args(packed, qs):
     return args
 
 
-_args_tail = _launch_args
-
-
 class _on_device:
     """``torch.cuda.device`` only when ``device`` is not already current (the context costs a few us)."""
 
@@ -299,7 +295,12 @@ class _on_device:
             self.ctx.__exit__(*exc)
 
 
-def int4_dequantize(packed, qs, dtype = None, out = None):
+def int4_dequantize(
+    packed,
+    qs,
+    dtype = None,
+    out = None,
+):
     """``[N, K]`` dense decode of a packed weight (exact)."""
     dtype = dtype or qs.dtype or torch.bfloat16
     (P, S, Z, G), (N, K, KP), (sp, ss, sz), meta = _launch_args(packed, qs)
@@ -323,7 +324,11 @@ def int4_dequantize(packed, qs, dtype = None, out = None):
     return out
 
 
-def int4_dequantize_weight(W, qs, dtype = None):
+def int4_dequantize_weight(
+    W,
+    qs,
+    dtype = None,
+):
     """``fast_dequantize`` contract: ``W`` is the packed weight or its ``.t()``; returns the matching dense view."""
     if W.stride(-1) != 1 and W.dim() == 2 and W.shape[1] == qs.shape[0]:
         return int4_dequantize(W.t(), qs, dtype).t()
@@ -340,7 +345,12 @@ def _sm_count(index):
 GEMV_MAX_ROWS = 4
 
 
-def int4_matmul(x, packed, qs, out = None):
+def int4_matmul(
+    x,
+    packed,
+    qs,
+    out = None,
+):
     """``x @ W.T`` for packed ``W``; ``x`` is ``[..., K]``."""
     shape = x.shape
     x2 = x.reshape(-1, shape[-1])

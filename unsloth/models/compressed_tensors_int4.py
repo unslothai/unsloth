@@ -145,7 +145,6 @@ class Int4PackedLinear(nn.Linear):
 
     def dequantize_weight(self, dtype = None):
         from ..kernels.int4_packed import int4_dequantize
-
         qs = self.quant_state
         return int4_dequantize(self._parameters["weight_packed"], qs, dtype or qs.dtype)
 
@@ -160,7 +159,9 @@ class Int4PackedLinear(nn.Linear):
             dtype, device = probe.dtype, probe.device
         except Exception:
             dtype = device = None
-        frozen = {n: self._parameters.pop(n) for n in list(self._parameters) if n.startswith("weight_")}
+        frozen = {
+            n: self._parameters.pop(n) for n in list(self._parameters) if n.startswith("weight_")
+        }
         try:
             result = super()._apply(fn, *args, **kwargs)
         finally:
@@ -185,7 +186,13 @@ class Int4PackedLinear(nn.Linear):
         )
 
 
-def make_int4_packed_linear(module, scheme, shapes, dtype, device = "meta"):
+def make_int4_packed_linear(
+    module,
+    scheme,
+    shapes,
+    dtype,
+    device = "meta",
+):
     """``Int4PackedLinear`` shell for ``module`` whose parameters take the checkpoint tensors as-is.
 
     ``shapes`` maps suffix (``weight_packed`` ...) to ``(shape, torch dtype)`` read from the header."""

@@ -190,7 +190,9 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
                 "Decompressing each weight on the fly and re-quantizing to bitsandbytes 4-bit "
                 "(no 16-bit copy on disk)."
             )
-        print(f"Unsloth: Checkpoint is compressed-tensors packed INT{'/'.join(map(str, bits))}. {how}")
+        print(
+            f"Unsloth: Checkpoint is compressed-tensors packed INT{'/'.join(map(str, bits))}. {how}"
+        )
     return plan
 
 
@@ -477,7 +479,11 @@ def _decompress_one_triton(scheme, packed, scale, shape, zero_point, g_idx, dtyp
     except Exception:
         return None
     rows = packed.shape[0]
-    cols = int(shape[1]) if shape is not None and shape.numel() == 2 else packed.shape[1] * (32 // bits)
+    cols = (
+        int(shape[1])
+        if shape is not None and shape.numel() == 2
+        else packed.shape[1] * (32 // bits)
+    )
     group = int(weights.group_size) if strategy == "group" and weights.group_size else cols
     if scale.shape[0] != rows or cols > packed.shape[1] * (32 // bits):
         return None
@@ -819,7 +825,6 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
             drop_load_only_conversions(model)
             if getattr(self, "_unsloth_int4_packed", None):
                 from .compressed_tensors_int4 import finalize_int4_packed_linears
-
                 finalize_int4_packed_linears(model, self._unsloth_ct_dtype)
             return super()._process_model_after_weight_loading(model, **kwargs)
 

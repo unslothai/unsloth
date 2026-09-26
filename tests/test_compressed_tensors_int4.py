@@ -30,7 +30,6 @@ from unsloth.models.compressed_tensors_bnb import _transformers_supports_weight_
 
 try:
     import compressed_tensors  # noqa: F401
-
     HAS_CT = True
 except Exception:
     HAS_CT = False
@@ -42,7 +41,16 @@ needs_gpu = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA devic
 needs_ct = pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
 
 
-def _packed_layer(out_f, in_f, bits, group_size, symmetric, actorder, scale_dtype, strategy = "group"):
+def _packed_layer(
+    out_f,
+    in_f,
+    bits,
+    group_size,
+    symmetric,
+    actorder,
+    scale_dtype,
+    strategy = "group",
+):
     from compressed_tensors.compressors import BaseCompressor
     from compressed_tensors.quantization import QuantizationScheme, QuantizationArgs
     from compressed_tensors.quantization.utils import calculate_qparams
@@ -92,7 +100,9 @@ CASES = [
 @needs_gpu
 @needs_ct
 @pytest.mark.parametrize("bits,group,sym,actorder,scale_dtype,strategy", CASES)
-def test_kernels_decode_bit_exact_and_multiply_like_dense(bits, group, sym, actorder, scale_dtype, strategy):
+def test_kernels_decode_bit_exact_and_multiply_like_dense(
+    bits, group, sym, actorder, scale_dtype, strategy
+):
     from unsloth.kernels.int4_packed import (
         Int4QuantState,
         int4_dequantize,
@@ -130,7 +140,9 @@ def test_kernels_decode_bit_exact_and_multiply_like_dense(bits, group, sym, acto
 
 
 @needs_gpu
-@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
 @pytest.mark.parametrize("variant", ["symmetric", "asymmetric", "actorder", "int8"])
 def test_packed_route_keeps_the_checkpoint_weights_exactly(variant, tmp_path, monkeypatch):
     from unsloth import FastLanguageModel
@@ -173,7 +185,9 @@ def test_packed_route_keeps_the_checkpoint_weights_exactly(variant, tmp_path, mo
 
 
 @needs_gpu
-@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
 def test_packed_route_lora_trains_merges_and_unmerges(tmp_path, monkeypatch):
     from unsloth import FastLanguageModel
     from unsloth.models.compressed_tensors_int4 import Int4PackedLinear
@@ -189,7 +203,15 @@ def test_packed_route_lora_trains_merges_and_unmerges(tmp_path, monkeypatch):
         model,
         r = 4,
         lora_alpha = 8,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
     )
     model.train()
     ids = torch.randint(0, 256, (2, 16), device = "cuda:0")
@@ -247,7 +269,10 @@ def test_adopt_swaps_plain_linears_and_leaves_routers_to_the_decompress_converte
     swapped, leftover = adopt_int4_packed_linears(model, ct_config, [path], torch.bfloat16)
     assert swapped == ["proj"] and leftover == ["gate"]
     assert isinstance(model.proj, Int4PackedLinear)
-    assert model.proj.weight_packed.dtype == torch.int32 and model.proj.weight_packed.shape == (16, 8)
+    assert model.proj.weight_packed.dtype == torch.int32 and model.proj.weight_packed.shape == (
+        16,
+        8,
+    )
     # The fp32 scale is kept as stored (a bf16 cast would round it).
     assert model.proj.weight_scale.dtype == torch.float32
     assert type(model.gate) is Router
