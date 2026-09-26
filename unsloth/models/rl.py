@@ -2842,6 +2842,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += pad_to_multiple_of
 
     # Check for loss_type = dr_grpo and scale_rewards for GRPO; DAPO uses per-token loss, so BNPO loss is used. See huggingface/trl#3130 (comment 2746947835).
+    # TRL >= 0.22 defaults scale_rewards to "group" (= True).
     if "loss_type" in call_args and "scale_rewards" in call_args:
         check_dr_grpo = (
             "if loss_type.lower() == 'dr_grpo':\n"
@@ -2851,8 +2852,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "if loss_type.lower() == 'dr_grpo':\n"
             "    if scale_rewards == None:\n"
             "        scale_rewards = True\n"
-            "    elif scale_rewards == True:\n"
-            "        print('Unsloth: The Dr GRPO paper recommends setting `scale_rewards` to False! Will override. Set it to `None` to force False.')\n"
+            "    elif scale_rewards == True or scale_rewards == 'group':\n"
+            "        print('Unsloth: The Dr GRPO paper recommends setting `scale_rewards` to False! Will override. Set it to `None` to keep scaling.')\n"
             "        scale_rewards = False\n"
             "elif loss_type.lower() == 'dapo':\n"
             "    if mask_truncated_completions != True:\n"
