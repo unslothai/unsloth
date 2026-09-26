@@ -1777,24 +1777,47 @@ def _get_remote_composite_text_only(
         return None
     qc = getattr(text_config, "quantization_config", None)
     if qc is not None:
-        text_config.quantization_config = _strip_skip_module_prefix(qc, prefix)
+        qc = _strip_skip_module_prefix(qc, prefix)
+        if qc is None:
+            return None
+        text_config.quantization_config = qc
     return text_config, {"^" + re.escape(prefix): ""}, text_names
 
 
+_QC_MODULE_NAME_FIELDS = (
+    "llm_int8_skip_modules",
+    "modules_to_not_convert",
+    "ignore",  # compressed-tensors, modelopt
+    "exclude_modules",
+)
+
+
 def _strip_skip_module_prefix(qc, prefix):
-    # llm_int8_skip_modules named from the wrapper root -> names relative to the text model.
+    # Module names given from the wrapper root -> names relative to the text model.
+    # None when an entry names the prefix in a form that cannot be rebased (a `re:` regex), so the caller keeps the full model.
     is_dict = isinstance(qc, dict)
-    skip = (
-        qc.get("llm_int8_skip_modules") if is_dict else getattr(qc, "llm_int8_skip_modules", None)
-    )
-    if not skip:
+    stem = re.compile(r"(?:^|[^A-Za-z0-9_])" + re.escape(prefix.rstrip(".")) + r"\\?\.")
+    updates = {}
+    for field in _QC_MODULE_NAME_FIELDS:
+        names = qc.get(field) if is_dict else getattr(qc, field, None)
+        if not names or not isinstance(names, (list, tuple)):
+            continue
+        remapped = []
+        for name in names:
+            if isinstance(name, str) and name.startswith(prefix):
+                name = name[len(prefix) :]
+            elif isinstance(name, str) and stem.search(name):
+                return None
+            remapped.append(name)
+        updates[field] = list(dict.fromkeys(remapped))
+    if not updates:
         return qc
-    remapped = list(dict.fromkeys(n[len(prefix) :] if n.startswith(prefix) else n for n in skip))
     qc = dict(qc) if is_dict else copy.copy(qc)
-    if is_dict:
-        qc["llm_int8_skip_modules"] = remapped
-    else:
-        qc.llm_int8_skip_modules = remapped
+    for field, names in updates.items():
+        if is_dict:
+            qc[field] = names
+        else:
+            setattr(qc, field, names)
     return qc
 
 
@@ -1805,7 +1828,7 @@ def _rebase_user_quantization_config(kwargs, key_mapping):
         return
     for pattern, replacement in key_mapping.items():
         if pattern.startswith("^") and not replacement:
-            qc = _strip_skip_module_prefix(qc, re.sub(r"\\(.)", r"\1", pattern[1:]))
+            qc = _strip_skip_module_prefix(qc, re.sub(r"\\(.)", r"\1", pattern[1:])) or qc
     kwargs["quantization_config"] = qc
 
 

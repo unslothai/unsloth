@@ -49,7 +49,7 @@ _HELPERS = (
     "_adapter_fits_text_model",
 )
 
-_CONSTANTS = ("_REMOTE_CODE_HUB_KWARGS",)
+_CONSTANTS = ("_REMOTE_CODE_HUB_KWARGS", "_QC_MODULE_NAME_FIELDS")
 
 
 def _ns():
@@ -319,6 +319,44 @@ def test_skip_modules_are_rebased_on_the_text_model(tmp_path):
     out = ns["_strip_skip_module_prefix"](qc, "llm.")
     assert out["llm_int8_skip_modules"] == ["lm_head", "vision_model", "model.layers.0.mlp"]
     assert qc["llm_int8_skip_modules"][0] == "llm.lm_head"  # input not mutated
+
+
+def test_every_module_name_field_is_rebased(tmp_path):
+    # compressed-tensors / modelopt checkpoints (Nemotron-Omni FP8, AWQ) list unquantized modules as `ignore`.
+    ns = _ns()
+    qc = {
+        "quant_method": "compressed-tensors",
+        "ignore": ["language_model.lm_head", "NemotronHMamba2Mixer", r"re:.*\.mixer\.in_proj.*"],
+        "modules_to_not_convert": ["language_model.backbone.layers.0.mixer.conv1d", "vision_model"],
+        "exclude_modules": ["language_model.backbone.layers.12*"],
+    }
+    out = ns["_strip_skip_module_prefix"](qc, "language_model.")
+    assert out["ignore"] == ["lm_head", "NemotronHMamba2Mixer", r"re:.*\.mixer\.in_proj.*"]
+    assert out["modules_to_not_convert"] == ["backbone.layers.0.mixer.conv1d", "vision_model"]
+    assert out["exclude_modules"] == ["backbone.layers.12*"]
+
+
+def test_regex_naming_the_prefix_keeps_the_full_model(tmp_path):
+    ns = _ns()
+    qc = {
+        "quant_method": "compressed-tensors",
+        "ignore": [r"re:.*language_model\.backbone\.layers\.\d+\.mixer\.in_proj$"],
+    }
+    assert ns["_strip_skip_module_prefix"](qc, "language_model.") is None
+    # An unrelated name that merely contains the stem is not a reason to decline.
+    assert (
+        ns["_strip_skip_module_prefix"](
+            {"ignore": ["vision_language_model.proj"]}, "language_model."
+        )
+        is not None
+    )
+    repo, _ = _write_repo(tmp_path)
+    parent = _load_parent_config(repo)
+    parent.quantization_config = qc
+    assert ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True) is None
+    kw = {"quantization_config": dict(qc)}
+    ns["_rebase_user_quantization_config"](kw, {r"^language_model\.": ""})
+    assert kw["quantization_config"] == qc  # a caller's regex is left as given
 
 
 def test_merge_key_mapping_keeps_user_entries_on_top():
