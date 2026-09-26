@@ -258,7 +258,7 @@ def planner_quantization_kwargs(
 
 
 def compressed_tensors_prepared_config(model_config):
-    """`model_config` when `check_and_disable_bitsandbytes_loading` armed the on-the-fly re-quantization of a compressed-tensors packed checkpoint on it, else None. The planner has to size that load from this object: the checkpoint's own quantization config is gone from it and bitsandbytes 4-bit is what the load applies."""
+    """`model_config` if armed for packed compressed-tensors re-quantization (plan must size from it), else None."""
     if model_config is None:
         return None
     try:
@@ -1600,9 +1600,7 @@ def _checkpointed_layer_forward(original):
         if not args and "hidden_states" in kwargs:
             # A reentrant checkpoint only tracks gradients through positional tensors.
             args = (kwargs.pop("hidden_states"),)
-        # Any other keyword tensor that needs a gradient (Kimi-K3's block_residual, carried from
-        # layer to layer) goes positional too: held by closure it stays tied to the previous
-        # layers' graph, so every recompute re-ran their backward inside its own.
+        # Grad-requiring kwargs (Kimi-K3 block_residual) go positional: a closure ties recompute to earlier layers.
         grad_keys = [k for k, v in kwargs.items() if torch.is_tensor(v) and v.requires_grad]
         n_args = len(args)
         grad_values = tuple(kwargs.pop(k) for k in grad_keys)
@@ -1624,13 +1622,7 @@ def _checkpointed_layer_forward(original):
 
 
 def install_remote_gradient_checkpointing(model, verbose = True):
-    """Remote-code backbones (the DeepSeek-V3 port Kimi-K2.7 ships) carry a
-    `self.gradient_checkpointing` flag their decoder loop never reads, so
-    `gradient_checkpointing_enable()` sets a flag nothing acts on and every activation is
-    still kept. Wrap the decoder layers of such a backbone so the flag really checkpoints.
-    Only remote-code backbones are touched, never a layer that is already a transformers
-    `GradientCheckpointingLayer`, and the wrapper is inert while the flag is False.
-    Returns the class names wrapped."""
+    """Wrap decoder layers of remote-code backbones whose loop ignores `self.gradient_checkpointing`."""
     import types
     import weakref
 
@@ -1658,8 +1650,7 @@ def install_remote_gradient_checkpointing(model, verbose = True):
             if not getattr(cls.__dict__.get("forward"), "_unsloth_manual_checkpoint", False):
                 cls.forward = _checkpointed_layer_forward(cls.forward)
                 wrapped.append(cls.__name__)
-            # A device_map load wraps `forward` in an accelerate hook that keeps the bound
-            # original as `_old_forward`; point it at the wrapper or the patch is never reached.
+            # device_map hooks keep the bound original in `_old_forward`.
             if "_old_forward" in vars(layer):
                 layer._old_forward = types.MethodType(cls.forward, layer)
     wrapped = sorted(set(wrapped))
@@ -1673,20 +1664,14 @@ def install_remote_gradient_checkpointing(model, verbose = True):
 
 
 def enable_composite_gradient_checkpointing(model, verbose = True):
-    """A remote-code composition (Kimi-K2.7: `KimiK25ForConditionalGeneration` holding a
-    `DeepseekV3ForCausalLM`) often leaves `supports_gradient_checkpointing` at its False
-    default on the outer class while the language model inside supports it. transformers'
-    `gradient_checkpointing_enable` refuses on the outer flag alone, although the enable
-    itself walks every submodule. When an inner PreTrainedModel supports checkpointing, mark
-    the outer class as supporting it too. Returns True when the flag was set."""
+    """Mark a remote-code outer class checkpointable when an inner PreTrainedModel is (Kimi-K2.7)."""
     try:
         from transformers import PreTrainedModel
     except Exception:
         return False
     if not isinstance(model, PreTrainedModel):
         return False
-    # For every remote-code model, including one whose outer class already declares support:
-    # the flag is what transformers checks, the wrapper is what makes it do anything.
+    # Always install: the flag is what transformers checks, the wrapper makes it act.
     install_remote_gradient_checkpointing(model, verbose = verbose)
     if getattr(type(model), "supports_gradient_checkpointing", False):
         return False
@@ -2109,9 +2094,9 @@ def check_and_disable_bitsandbytes_loading(
     revision = None,
     hub_kwargs = None,
 ):
-    """Disable bitsandbytes loading (load_in_4bit/load_in_8bit) when the model already carries a non-bitsandbytes quantization config. Returns ``(load_in_4bit, load_in_8bit, quant_method)``, with both flags False if they were disabled and quant_method the detected method or None. ``rewrite_modelopt`` converts ModelOpt FP8 to fp8; pass False when vLLM loads it natively.
+    """Disable bnb flags for non-bnb quantized checkpoints; returns ``(load_in_4bit, load_in_8bit, quant_method)``.
 
-    ``requantize_packed`` lets a compressed-tensors packed INT4/INT8 checkpoint be re-quantized to bitsandbytes 4-bit on the fly. Pass False when the weights are not going through the transformers loader as 4-bit at all (``fast_inference``, where vLLM reads the packed checkpoint itself, and ``full_finetuning``, which turns 4-bit off after this call): arming there would strip the checkpoint's own quantization config with nothing left to consume the plan."""
+    ``requantize_packed = False`` under fast_inference / full_finetuning: nothing would consume the plan."""
     quant_method = get_quant_type(model_config)
     if quant_method is None:
         # Also under vLLM: it reads the file itself, but the bitsandbytes flags must still drop.
@@ -2128,11 +2113,7 @@ def check_and_disable_bitsandbytes_loading(
     if quant_method is None or quant_method == "bitsandbytes":
         return load_in_4bit, load_in_8bit, quant_method
 
-    # A compressed-tensors packed INT4 / INT8 weight-only checkpoint (W4A16, W8A16) can be
-    # decompressed one tensor at a time while it streams in and re-quantized to bitsandbytes
-    # 4-bit, which is the only form PEFT can attach a LoRA to. When that applies the
-    # checkpoint's own quantization config is dropped from `model_config` here and
-    # `load_in_4bit` stays on.
+    # Packed compressed-tensors: drop its quant config here and keep load_in_4bit for on-the-fly bnb re-quantization.
     if (
         requantize_packed
         and load_in_4bit
@@ -2166,10 +2147,7 @@ def check_and_disable_bitsandbytes_loading(
 
 
 def quantization_config_selects_bnb_4bit(quantization_config):
-    """True when an explicit ``quantization_config`` (None, a dict or a config object) leaves the load on bitsandbytes 4-bit.
-
-    The packed compressed-tensors re-quantization hands its plan to the bitsandbytes 4-bit quantizer, so a caller who
-    passes any other quantizer (8-bit bitsandbytes, GPTQ, AWQ) must not have the checkpoint's own config stripped."""
+    """True when ``quantization_config`` keeps the load on bnb 4-bit; other quantizers must keep the checkpoint config."""
     if quantization_config is None:
         return True
     if isinstance(quantization_config, dict):

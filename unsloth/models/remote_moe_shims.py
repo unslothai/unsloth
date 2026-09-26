@@ -11,30 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Training forwards for remote MoE code that only ships an inference path.
-
-The DeepSeek-V3 modeling file that Kimi-K2.7 (and every other DeepSeek-V3 derived
-`trust_remote_code` checkpoint) carries is an inference port: `MoEGate.forward`
-asserts `not self.training` in front of its no-aux-loss routing, and
-`DeepseekV3MoE.forward` computes the expert mix only under `if not self.training`,
-through a `@torch.no_grad()` `moe_infer`. In train mode the block raises, and with
-the assert removed it would return an unbound `y`.
-
-`prepare_remote_moe_for_training(model)` repairs both on the checkpoint's dynamically
-created classes and nowhere else:
-
-* the gate runs its own routing code with the training assert bypassed. The maths is
-  unchanged and already differentiable (the selected weights are gathered from the
-  sigmoid scores), so the router trains the way transformers' native DeepSeek-V3
-  router does;
-* the MoE block gets a training path that dispatches tokens to their experts and
-  sums the weighted outputs with autograd on, the same computation as `moe_infer`
-  without `no_grad` and without the expert-parallel branch. Eval mode still takes the
-  checkpoint's own `moe_infer`.
-
-Everything is keyed on structure (class names plus the attributes the port defines),
-never on the repo name, and is a no-op for transformers' own models.
-"""
+"""Train-mode forwards for DeepSeek-V3-derived remote MoE ports (Kimi-K2.7, sarvam) whose gate
+asserts `not self.training` and whose block only computes under no-grad `moe_infer`. Keyed on
+structure, never repo name; no-op for transformers' own models."""
 
 import functools
 
@@ -76,12 +55,9 @@ def _calls_moe_infer(nodes) -> bool:
 
 
 def _has_own_training_dispatch(body) -> bool:
-    """Whether a `self.training` branch computes the output itself: non-empty and not
-    through the no-grad `moe_infer`."""
     import ast
 
     def value_in_training(node):
-        """The predicate's value with self.training True: True, False or None (unknown)."""
         if isinstance(node, ast.Attribute) and node.attr == "training":
             return True
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
@@ -97,8 +73,6 @@ def _has_own_training_dispatch(body) -> bool:
         return None
 
     def training_branches(branch):
-        """The branches of this `if` that training can reach, when its test reads self.training
-        (at any depth of and / or / not)."""
         test = branch.test
         if not any(isinstance(n, ast.Attribute) and n.attr == "training" for n in ast.walk(test)):
             return []
@@ -118,10 +92,7 @@ def _has_own_training_dispatch(body) -> bool:
 
 
 def _forward_has_no_training_branch(cls) -> bool:
-    """Inference-only ports reach the no-grad `moe_infer` in training or leave training
-    empty (sarvam's `else:` calls it too; Kimi's port has no `else:`); training-capable
-    DeepSeek-V2/V3 code dispatches its own experts under `self.training`, in either branch
-    order. Only the former is shimmed. A forward whose source cannot be read is left alone."""
+    """True for inference-only ports (training reaches `moe_infer` or nothing); unreadable source -> False."""
     import ast
     import inspect
     import textwrap
@@ -137,8 +108,7 @@ def _forward_has_no_training_branch(cls) -> bool:
 
 
 def is_remote_deepseek_moe(module) -> bool:
-    # Matched on structure rather than class name: DeepSeek-derived remote code renames the
-    # block (sarvam's `SarvamMLAMoE`) but keeps the same inference-only port.
+    # Structural match: derived code renames the block (sarvam's `SarvamMLAMoE`).
     cls = type(module)
     return (
         _is_remote_code(cls)
@@ -154,8 +124,7 @@ def _gate_forward_without_training_assert(original):
     def forward(self, hidden_states):
         if not self.training:
             return original(self, hidden_states)
-        # `training` is a plain attribute on nn.Module; the gate has no children, so
-        # flipping it for the call changes nothing but the assert.
+        # Gate has no children: flipping `training` only bypasses the assert.
         self.training = False
         try:
             return original(self, hidden_states)
@@ -167,7 +136,6 @@ def _gate_forward_without_training_assert(original):
 
 
 def _moe_train_dispatch(block, x, topk_idx, topk_weight):
-    """Differentiable version of the port's `moe_infer` for a single rank."""
     num_tokens, top_k = topk_idx.shape
     experts = block.experts
     flat_idx = topk_idx.reshape(-1)
@@ -204,8 +172,7 @@ def _moe_forward_with_training_path(original):
         topk_idx, topk_weight = self.gate(hidden_states)
         flat = hidden_states.view(-1, hidden_states.shape[-1])
         y = _moe_train_dispatch(self, flat, topk_idx, topk_weight).view(*orig_shape)
-        # DeepSeek ports only create `shared_experts` when `n_shared_experts` is set, and
-        # others (sarvam: `num_shared_experts`) store None, so the module itself decides.
+        # Config key varies (sarvam: `num_shared_experts`); the module decides.
         shared = getattr(self, "shared_experts", None)
         if shared is not None:
             y = y + shared(identity)
@@ -216,12 +183,7 @@ def _moe_forward_with_training_path(original):
 
 
 def _rebind_accelerate_hook(module):
-    """Point an accelerate hook attached during loading at the shimmed forward.
-
-    A `device_map` load wraps every dispatched module's `forward` before the shims run and
-    keeps the bound original as `module._old_forward`, so a class-level patch is never reached
-    from `module(...)` on a multi-GPU model: Kimi-K2.7-Code on four cards still hit the gate's
-    `assert not self.training`. Single-GPU loads have no hook and nothing to rebind."""
+    # device_map hooks keep the bound original in `_old_forward`, bypassing class patches (multi-GPU Kimi hit the assert).
     if "_old_forward" not in vars(module):
         return False
     import types
@@ -231,14 +193,11 @@ def _rebind_accelerate_hook(module):
 
 
 def prepare_remote_moe_for_training(model, verbose = True):
-    """Patch the remote DeepSeek-style gate and MoE classes found in `model` so the block
-    runs in train mode. Idempotent; returns the names of the classes it patched."""
+    """Idempotent; returns the names of the patched classes."""
     patched = []
     seen = set()
     shimmed_classes = set()
-    # A gate is patched only when the MoE block that owns it is the inference-only port: a
-    # training-capable block's gate computes its auxiliary routing loss in train mode, and
-    # running it in eval mode would silently drop that loss.
+    # Only gates of inference-only blocks: eval mode would drop a trainable gate's aux loss.
     shimmable_gates = set()
     for module in model.modules():
         gate = getattr(module, "gate", None)
@@ -253,7 +212,6 @@ def prepare_remote_moe_for_training(model, verbose = True):
         seen.add(cls)
         current = cls.__dict__.get("forward")
         if getattr(current, "_unsloth_remote_moe_shim", False):
-            # Already patched in an earlier call; a hook attached since still needs rebinding.
             shimmed_classes.add(cls)
             _rebind_accelerate_hook(module)
             continue
