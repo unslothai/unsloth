@@ -62,8 +62,6 @@ CHAT_QUIET_S = 0.6
 
 _step = [0]
 _watchdog = None
-# /api/chat requests in flight and when the last one started or ended; see settle().
-_chat_traffic = {"inflight": 0, "last": 0.0}
 
 
 def step(message, budget_s = None):
@@ -74,23 +72,34 @@ def step(message, budget_s = None):
         _watchdog.begin_step(name, STEP_BUDGET_S if budget_s is None else budget_s)
 
 
-def track_chat_traffic(page):
-    def is_chat(request):
-        return "/api/chat/" in request.url
-
-    def started(request):
-        if is_chat(request):
-            _chat_traffic["inflight"] += 1
-            _chat_traffic["last"] = time.monotonic()
-
-    def ended(request):
-        if is_chat(request):
-            _chat_traffic["inflight"] = max(0, _chat_traffic["inflight"] - 1)
-            _chat_traffic["last"] = time.monotonic()
-
-    page.on("request", started)
-    page.on("requestfinished", ended)
-    page.on("requestfailed", ended)
+# Counts this document's in-flight fetches to the thread and settings endpoints, which carry
+# the snapshot GET and the debounced writes; see settle(). Counted in the page because the
+# Playwright request events left some of these open forever across the sign-in navigation.
+CHAT_TRAFFIC_JS = """
+(() => {
+    const traffic = (window.__chatTraffic = { inflight: 0, last: performance.now() });
+    const realFetch = window.fetch;
+    window.fetch = function (input, init) {
+        let path = "";
+        try {
+            path = new URL(String((input && input.url) || input), location.href).pathname;
+        } catch (_e) {}
+        if (!path.startsWith("/api/chat/threads") && !path.startsWith("/api/chat/settings")) {
+            return realFetch.apply(this, arguments);
+        }
+        traffic.inflight += 1;
+        traffic.last = performance.now();
+        const done = () => {
+            traffic.inflight -= 1;
+            traffic.last = performance.now();
+        };
+        return realFetch.apply(this, arguments).then(
+            (response) => { done(); return response; },
+            (error) => { done(); throw error; },
+        );
+    };
+})();
+"""
 
 
 def fail(message):
@@ -333,14 +342,16 @@ def settle(page):
         state = "visible", timeout = TIMEOUT_MS
     )
     # the snapshot arrives on a GET, and the pin write is debounced behind it. Instead of a fixed
-    # 1.2 s, wait until /api/chat has been quiet for longer than that debounce.
-    wait_until(
-        lambda: _chat_traffic["inflight"] == 0
-        and time.monotonic() - _chat_traffic["last"] >= CHAT_QUIET_S,
-        timeout_s = TIMEOUT_MS / 1000,
-        what = "/api/chat traffic to settle",
-        interval_s = 0.05,
-        page = page,
+    # 1.2 s, wait until those endpoints have been quiet for longer than that debounce.
+    page.wait_for_function(
+        """([quietMs]) => {
+            const traffic = window.__chatTraffic;
+            return !!traffic && traffic.inflight === 0
+                && performance.now() - traffic.last >= quietMs;
+        }""",
+        arg = [CHAT_QUIET_S * 1000],
+        polling = 50,
+        timeout = TIMEOUT_MS,
     )
 
 
@@ -485,9 +496,9 @@ def main():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(args = ["--no-sandbox", "--disable-dev-shm-usage"])
         context = browser.new_context(viewport = {"width": 1280, "height": 900})
+        context.add_init_script(CHAT_TRAFFIC_JS)
         page = context.new_page()
         page.set_default_timeout(TIMEOUT_MS)
-        track_chat_traffic(page)
         page_errors = []
         page.on("pageerror", lambda e: page_errors.append(str(e)))
 
