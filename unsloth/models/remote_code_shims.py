@@ -164,7 +164,7 @@ def _fill_missing_loss(cls):
 
     def _loss_from(output, labels, kwargs):
         logits = (
-            output["logits"]
+            output.get("logits", None)
             if isinstance(output, dict)
             else output[0]
             if isinstance(output, tuple)
@@ -224,6 +224,7 @@ def _fill_missing_loss(cls):
         returns_loss = self.__dict__.get(state_key, None)
         if labels is None or returns_loss is True:
             return original(self, *args, **kwargs)
+        output = None
         if returns_loss is None:
             try:
                 output = original(self, *args, **kwargs)
@@ -231,7 +232,7 @@ def _fill_missing_loss(cls):
                     self.__dict__[state_key] = True
                     return output
             except (AttributeError, TypeError, KeyError):
-                pass
+                output = None
             self.__dict__[state_key] = False
             print(
                 f"Unsloth: `{cls.__name__}.forward` accepts `labels` but returns no loss, "
@@ -239,8 +240,12 @@ def _fill_missing_loss(cls):
             )
         kwargs = dict(kwargs)
         kwargs.pop("labels")
-        output = original(self, *args, **kwargs)
-        loss = _loss_from(output, labels, kwargs)
+        # Reuse the probe's logits: a second forward would hold two graphs at once.
+        loss = None if output is None else _loss_from(output, labels, kwargs)
+        if loss is None:
+            del output
+            output = original(self, *args, **kwargs)
+            loss = _loss_from(output, labels, kwargs)
         if loss is None:
             raise RuntimeError(
                 f"Unsloth: `{cls.__name__}.forward` returned neither a loss nor logits, so no loss can be trained on."

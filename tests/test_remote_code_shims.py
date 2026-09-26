@@ -285,3 +285,33 @@ def test_positional_labels_reach_the_synthesized_loss(model):
     by_position = model(ids, ids)
     assert by_position.loss is not None
     torch.testing.assert_close(by_position.loss, by_keyword.loss)
+
+
+def test_a_forward_without_a_loss_runs_once_on_the_probing_call():
+    """A second forward would hold both autograd graphs at once."""
+    from unsloth.models.remote_code_shims import apply_remote_code_shims
+
+    calls = []
+
+    class NoLoss(Outer):
+        def forward(
+            self,
+            input_ids = None,
+            labels = None,
+            **kwargs,
+        ):
+            calls.append(labels is not None)
+            return CausalLMOutputWithPast(logits = self.lm_head(self.model(input_ids)))
+
+    NoLoss.__module__ = "transformers_modules.tiny_remote.modeling_tiny"
+    torch.manual_seed(0)
+    model = NoLoss(TinyConfig())
+    apply_remote_code_shims(model)
+    ids = torch.randint(0, 32, (2, 6))
+    out = model(input_ids = ids, labels = ids)
+    assert calls == [True]
+    from transformers.loss.loss_utils import ForCausalLMLoss
+
+    torch.testing.assert_close(out.loss, ForCausalLMLoss(out.logits, ids, 32))
+    model(input_ids = ids, labels = ids)
+    assert calls == [True, False]
