@@ -472,12 +472,29 @@ def _gallery(kind: str) -> _Gallery:
     return _Gallery(module, getattr(module, records), getattr(module, resolve), *rest)
 
 
+def _listed_file(gallery: _Gallery, root: Path, record_id: str) -> Optional[Path]:
+    """What ``gallery.resolve`` answers for an id its own listing just gave, without looking the
+    folder up and resolving it again per file, which made a large Library slow to open on Windows.
+    A plain file in the folder cannot lead out of it; a symlink still goes through the full check."""
+    if not gallery.module._ID_RE.match(record_id):
+        return None
+    path = root / f"{record_id}.{gallery.extension}"
+    try:
+        mode = path.lstat().st_mode
+    except OSError:
+        return None
+    if stat.S_ISREG(mode):
+        return path
+    return gallery.resolve(record_id) if stat.S_ISLNK(mode) else None
+
+
 def _gallery_items(kind: str) -> list[dict]:
     gallery = _gallery(kind)
+    root = gallery.module.gallery_dir()
     items = []
     for archived in (False, True):
         for record in gallery.records(archived = archived):
-            path = gallery.resolve(record["id"])
+            path = _listed_file(gallery, root, record["id"])
             try:
                 size = path.stat().st_size if path is not None else None
             except OSError:

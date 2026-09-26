@@ -413,6 +413,33 @@ def test_a_clip_counts_its_recipe_toward_what_it_takes_on_disk(client, monkeypat
     assert "storageBytes" not in items[f"image:{image}"]
 
 
+def test_listed_images_are_sized_without_resolving_each_but_links_are_still_checked(
+    client, monkeypatch, tmp_path
+):
+    from core.inference import image_gallery
+
+    monkeypatch.setattr(library, "_SOURCES", (library._image_items,))
+    plain, inside, outside = (_gallery_image(p) for p in ("Plain", "Inside", "Outside"))
+    folder = image_gallery.gallery_dir()
+    elsewhere = tmp_path / "elsewhere.png"
+    os.replace(folder / f"{outside}.png", elsewhere)
+    kept = folder / f"{inside}.png"
+    os.replace(kept, folder / "kept.bin")
+    try:
+        os.symlink(folder / "kept.bin", kept)
+        os.symlink(elsewhere, folder / f"{outside}.png")
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    resolved = []
+    real = image_gallery.image_path
+    monkeypatch.setattr(image_gallery, "image_path", lambda i: resolved.append(i) or real(i))
+    items = _items(client)[0]
+    assert items[f"image:{plain}"]["sizeBytes"] == (folder / f"{plain}.png").stat().st_size
+    assert items[f"image:{inside}"]["sizeBytes"] == kept.stat().st_size
+    assert items[f"image:{outside}"]["sizeBytes"] is None
+    assert sorted(resolved) == sorted([inside, outside])
+
+
 def test_generated_audio_and_video_are_listed_and_deleted(client, monkeypatch):
     import routes.video as video_routes
     from core.inference import audio_gallery, video_gallery
