@@ -207,6 +207,11 @@ def sdpa_math_only(target: Any) -> bool:
     return SDPA_MATH in available and not any(k in available for k in _SDPA_SUBQUADRATIC)
 
 
+def sdpa_subquadratic_confirmed(target: Any) -> bool:
+    """True only when a sub-quadratic SDPA kernel was seen to run; an unanswered probe is False."""
+    return any(k in _SDPA_SUBQUADRATIC for k in available_sdpa_kernels(target))
+
+
 SDPA_MATH_ONLY_MESSAGE = (
     "attention has no fused kernel on this device, so it will run on the SDPA math backend, "
     "which materialises the full attention score matrix (batch x heads x tokens x tokens, 4 bytes "

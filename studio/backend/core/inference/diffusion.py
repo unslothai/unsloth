@@ -18,6 +18,7 @@ in the arbiter the routes call, not here.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import contextvars
 import functools
 import inspect
 import json
@@ -104,6 +105,7 @@ from .diffusion_memory import (
     OFFLOAD_NONE,
     OFFLOAD_STREAMING,
     apply_memory_plan,
+    calibrated_image_activation,
     engage_vae_tiling,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
@@ -153,6 +155,7 @@ from .diffusion_attention import (
     apply_attention_backend,
     normalize_attention_backend,
     sdpa_math_only,
+    sdpa_subquadratic_confirmed,
     select_attention_backend,
     _ensure_attention_backend_installed,
 )
@@ -1563,6 +1566,43 @@ def _dense_candidate_is_prequant(
         )
     except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the decline
         return False
+
+
+# The speed tier of the load being planned; unset outside a load, which plans at the max tier's activations.
+_PLANNED_SPEED_MODE: contextvars.ContextVar[Any] = contextvars.ContextVar("_PLANNED_SPEED_MODE")
+_SPEED_UNKNOWN = object()
+
+
+def _plans_at_requested_speed(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Run ``fn`` with its keyword ``speed_mode`` visible to every memory plan it builds."""
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        token = _PLANNED_SPEED_MODE.set(kwargs.get("speed_mode"))
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _PLANNED_SPEED_MODE.reset(token)
+
+    return wrapper
+
+
+def _calibrated_activation(fam: Any, target: Any) -> Any:
+    """Measured planning activations, only where they were measured: NVIDIA with a sub-quadratic attention kernel."""
+    if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
+        return None
+    requested = _PLANNED_SPEED_MODE.get(_SPEED_UNKNOWN)
+    try:
+        max_speed = requested is _SPEED_UNKNOWN or normalize_speed_mode(requested) == SPEED_MAX
+    except ValueError:
+        max_speed = True
+    activation = calibrated_image_activation(getattr(fam, "name", None), max_speed = max_speed)
+    if activation is None:
+        return None
+    try:
+        return activation if sdpa_subquadratic_confirmed(target) else None
+    except Exception:  # noqa: BLE001 - unprobed attention keeps the flat estimate
+        return None
 
 
 def _quadratic_attention(target: Any, engaged_backend: Optional[str] = None) -> bool:
@@ -3209,6 +3249,7 @@ class DiffusionBackend:
             logger.warning("diffusion.te_prequant_plan_failed: %s", exc)
             return {}
 
+    @_plans_at_requested_speed
     def _pipeline_planned_denoiser_scheme(
         self,
         fam: Any,
@@ -4687,6 +4728,7 @@ class DiffusionBackend:
         return DiffusionBackend._union_over_cached_revs(base, _params, staged_dir) * 2
 
     @_account_owned_load
+    @_plans_at_requested_speed
     def load_pipeline(
         self,
         repo_id: str,
@@ -7579,6 +7621,7 @@ class DiffusionBackend:
             runtime_headroom_mib = runtime_headroom,
             requested_mode = memory_mode,
             explicit_offload = cpu_offload,
+            calibrated_activation = _calibrated_activation(fam, target),
         )
 
     @staticmethod
