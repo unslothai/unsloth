@@ -15,7 +15,9 @@ import {
   acceleratorLabel,
   connectionKind,
   formatGb,
+  gpuGroups,
   gpuPool,
+  vramPercent,
 } from "@/features/settings/components/linked-instance-format";
 import type { useLinkedInstancesOverview } from "@/features/settings/hooks/use-linked-instances-overview";
 import { cn } from "@/lib/utils";
@@ -121,23 +123,50 @@ function InstanceCard({
                   indicatorClassName={cn(pct > 90 && "bg-amber-500")}
                 />
               ) : null}
-              {gpus.length > 1
-                ? gpus.map((gpu, i) => (
-                    <div
-                      // biome-ignore lint/suspicious/noArrayIndexKey: identical cards share a name
-                      key={i}
-                      className="flex flex-wrap items-baseline justify-between gap-x-2 text-ui-10 text-muted-foreground"
-                    >
-                      <span>{gpu.name}</span>
-                      <span className="tabular-nums">
-                        {gpu.vram_used_gb != null
-                          ? `${gpu.vram_used_gb.toFixed(1)} / `
-                          : ""}
-                        {formatGb(gpu.vram_total_gb)}
+              {gpus.length > 1 ? (
+                <>
+                  <div className="flex flex-col text-ui-10 text-muted-foreground">
+                    {gpuGroups(gpus).map(({ name, count }) => (
+                      <span key={name}>
+                        {count > 1 ? `${count}× ` : ""}
+                        {name}
                       </span>
-                    </div>
-                  ))
-                : null}
+                    ))}
+                  </div>
+                  {/* One cell per card, so a busy or full card stands out at any count. */}
+                  <div
+                    className="grid gap-[3px]"
+                    // Rows of up to 8, so 4, 8 and 16 cards all land on even rows.
+                    style={{
+                      gridTemplateColumns: `repeat(${Math.min(gpus.length, 8)}, minmax(0, 1fr))`,
+                    }}
+                  >
+                    {gpus.map((gpu, i) => {
+                      const cell = vramPercent(gpu);
+                      return (
+                        <span
+                          // biome-ignore lint/suspicious/noArrayIndexKey: identical cards share a name
+                          key={i}
+                          title={`GPU ${i} · ${gpu.name}${
+                            gpu.vram_total_gb != null
+                              ? ` · ${gpu.vram_used_gb != null ? `${gpu.vram_used_gb.toFixed(1)} / ` : ""}${formatGb(gpu.vram_total_gb)}`
+                              : ""
+                          }`}
+                          className="h-2 overflow-hidden rounded-[3px] bg-foreground/10"
+                        >
+                          <span
+                            className={cn(
+                              "block h-full bg-primary",
+                              cell != null && cell > 90 && "bg-amber-500",
+                            )}
+                            style={{ width: `${cell ?? 0}%` }}
+                          />
+                        </span>
+                      );
+                    })}
+                  </div>
+                </>
+              ) : null}
             </div>
           ) : (
             <span className="text-ui-11 text-muted-foreground">
