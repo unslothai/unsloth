@@ -10,7 +10,7 @@ The properties pinned here:
 * static, display and decision-critical reads each keep their own TTL;
 * a Studio load/unload/train invalidation forces the next fit check to read afresh;
 * a slow CLI holds a caller for its own timeout, not for the child's lifetime;
-* a stale answer for a fit check can only UNDERSTATE free memory;
+* a fit check never gets an old reading, only a new CLI or NVML one;
 * failures and a missing CLI are passed through uncached, as before.
 """
 
@@ -415,7 +415,7 @@ def test_a_child_the_kernel_cannot_reap_does_not_hold_the_caller(monkeypatch):
         # than after the 12 s the stuck child takes to be reaped.
         assert out["available"] is False
         assert time.monotonic() - t0 < 6.5
-    # The second caller joined the stuck child instead of starting another one.
+    # The second caller neither started another child behind the stuck one nor took its answer.
     assert len(calls) == 1
     gpu_query.reset()
 
@@ -435,26 +435,40 @@ def test_slow_cli_answers_a_display_read_from_the_last_good_value(smi, monkeypat
     assert out == good
 
 
-def test_slow_cli_answers_a_fit_check_conservatively(smi, llama_probe, monkeypatch):
-    """Stale is allowed for a fit check only as the LOWEST free seen since the last load."""
+def test_slow_cli_never_answers_a_fit_check_from_an_old_reading(smi, llama_probe, monkeypatch):
+    """Another process can allocate between readings, so no earlier sample may stand in."""
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_CRITICAL_TTL", "0")
     monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 4.0)
-    for free in ((150000, 160000), (90000, 170000), (120000, 175000)):
-        smi.set_free(*free)
-        llama_probe()
-    smi.set_free(182000, 182000)  # what a hung CLI would have said, had it answered
+    assert llama_probe() == [(0, 180000, 183359), (1, 170000, 183359)]
+    smi.set_free(1000, 1000)  # another process took nearly all of both GPUs
     smi.set(delay = 12.0)
-    monkeypatch.setattr(
-        gpu_query,
-        "run_nvidia_smi",
-        _with_timeout(gpu_query.run_nvidia_smi, 0.5),
-    )
+    monkeypatch.setattr(gpu_query, "run_nvidia_smi", _with_timeout(gpu_query.run_nvidia_smi, 0.5))
+    # Nothing new to answer with: the caller's own fallback chain (here: none) decides, as before.
+    assert llama_probe() == []
+    assert gpu_query.stats()["stale_served"] == 0
+
+
+def test_a_fit_check_does_not_join_an_old_child(smi, monkeypatch):
+    """On a slow driver an in-flight child may describe memory from seconds ago: a fit
+    check neither takes its answer nor starts another child behind it."""
+    monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 4.0)
+    smi.set(delay = 3.0)
+    argv = ["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"]
+    kw = dict(timeout = 5, capture_output = True, text = True)
+    first = threading.Thread(target = lambda: gpu_query.run_nvidia_smi(argv, **kw))
+    first.start()
+    time.sleep(1.5)
     t0 = time.monotonic()
-    rows = llama_probe()
-    assert time.monotonic() - t0 < 3.0
-    # Per GPU, the minimum free across the window, never the newest or a higher value.
-    assert rows == [(0, 90000, 183359), (1, 160000, 183359)]
-    assert gpu_query.stats()["conservative_served"] == 1
+    with pytest.raises(subprocess.TimeoutExpired):
+        gpu_query.run_nvidia_smi(argv, **kw)
+    assert time.monotonic() - t0 < 0.5
+    # With NVML available the fit check gets a new reading from it instead.
+    nvml = [{"index": i, "memory_total_mib": 183359, "memory_free_mib": 1000} for i in (0, 1)]
+    monkeypatch.setattr(gpu_query, "_nvml_rows", lambda timeout: nvml)
+    out = gpu_query.run_nvidia_smi(argv, **kw)
+    assert out.stdout.split() == ["0,", "1000", "1,", "1000"]
+    first.join()
+    assert smi.calls("--query-gpu=index,memory.free") == 1
 
 
 def test_no_stale_fit_answer_across_a_load(smi, llama_probe, monkeypatch):

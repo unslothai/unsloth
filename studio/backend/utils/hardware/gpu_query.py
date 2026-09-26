@@ -26,10 +26,13 @@ Each query is put in one of three categories from its arguments:
 ``critical``
     The same live queries anywhere else: VRAM fit checks, llama.cpp layer placement,
     GPU auto-selection, training memory checks. Fresh for
-    ``UNSLOTH_GPU_QUERY_CRITICAL_TTL`` seconds (1), never served stale while the CLI is
-    answering, and discarded by :func:`invalidate_gpu_memory`, which Studio calls when it
-    loads or unloads a model or starts or stops training. Code that polls for a change
-    (VRAM settle loops, fenced readings) opts out entirely with :func:`fresh_reads`.
+    ``UNSLOTH_GPU_QUERY_CRITICAL_TTL`` seconds (1), never served stale, never joined to a
+    child started more than that long ago, and discarded by :func:`invalidate_gpu_memory`,
+    which Studio calls when it loads or unloads a model or starts or stops training.
+    Memory other processes allocate is only seen by a new reading, so this 1 s is the
+    whole window in which a fit check can miss it (one nvidia-smi run already takes
+    ~0.1-0.2 s). Code that polls for a change (VRAM settle loops, fenced readings) opts
+    out entirely with :func:`fresh_reads`.
 
 Concurrent identical queries share one child process (single flight), so at most one
 nvidia-smi per distinct command line is ever running and a page load no longer starts one
@@ -37,18 +40,17 @@ CLI per panel on a driver that is already congested.
 
 Timeouts: ``subprocess.run(timeout=...)`` kills the child and then waits for it without a
 deadline, so on a driver whose ioctls block a 5 second timeout turned into 25-100 seconds.
-Here the child runs on a daemon thread and the caller waits only its own timeout. The child
-may keep running (up to ``UNSLOTH_GPU_QUERY_BACKGROUND_TIMEOUT``, 120 s) and its answer
-fills the cache for the next caller. When the caller's wait expires the helper answers,
-in order, from:
+Here the child runs on a daemon thread and the caller waits only its own timeout. A static
+or display child may keep running (up to ``UNSLOTH_GPU_QUERY_BACKGROUND_TIMEOUT``, 120 s)
+and its answer fills the cache for the next caller; a critical child keeps the caller's
+own timeout, since a late answer is of no use to a fit check. When the caller's wait
+expires the helper answers, in order, from:
 
-1. the last good answer: any age for ``static``, up to 300 s for ``display``; for
-   ``critical`` only a sample taken since the last Studio load/unload and at most 60 s
-   old, rewritten to the HIGHEST memory.used and LOWEST memory.free seen in that window,
-   so it can only understate free memory;
+1. the last good answer, for ``static`` (any age) and ``display`` (up to 60 s) only. A
+   fit check never gets an old reading: another process may have allocated since;
 2. NVML, through ``studio/nvidia_probe.py`` in a child with a deadline, for
-   ``--query-gpu`` lists it can answer (memory.used is reported as total - free, which
-   again can only understate free memory);
+   ``--query-gpu`` lists it can answer. This is a new reading (memory.used is reported as
+   total - free, which can only understate free memory);
 3. otherwise the original ``TimeoutExpired`` is raised and the caller's own fallback (for
    some callers, torch) runs exactly as before.
 
@@ -59,7 +61,6 @@ through and never cached, so hosts without NVIDIA hardware behave exactly as bef
 
 from __future__ import annotations
 
-import collections
 import contextlib
 import copy
 import contextvars
@@ -106,8 +107,7 @@ _STATIC_FIELDS = frozenset(
 )
 _STATIC_SUBCOMMANDS = frozenset({"-L", "--list-gpus", "topo"})
 
-_DISPLAY_MAX_STALE_S = 300.0
-_CRITICAL_MAX_STALE_S = 60.0
+_DISPLAY_MAX_STALE_S = 60.0
 _SLOW_BACKOFF_S = 30.0
 # How long a caller waits on a driver already known to be slow before taking a fallback.
 _SLOW_WAIT_S = 1.0
@@ -236,7 +236,6 @@ class _Stats:
     hits: int = 0
     coalesced: int = 0
     stale_served: int = 0
-    conservative_served: int = 0
     nvml_served: int = 0
     timeouts: int = 0
     background_refreshes: int = 0
@@ -244,8 +243,6 @@ class _Stats:
 
 _lock = threading.Lock()
 _cache: dict[tuple, _Entry] = {}
-# Live samples per key for the conservative critical fallback: (at, gen, stdout).
-_history: dict[tuple, collections.deque] = {}
 _inflight: dict[tuple, _Flight] = {}
 _static_gen = 0
 # Bumped by reset(): a child that outlives a reset must not refill the emptied cache.
@@ -279,7 +276,6 @@ def reset() -> None:
     with _lock:
         _reset_epoch += 1
         _cache.clear()
-        _history.clear()
         _inflight.clear()
         _static_gen += 1
         _slow_until = 0.0
@@ -347,9 +343,6 @@ def _run_child(flight: _Flight, argv: list, kind: str, kwargs: dict) -> None:
                         static_gen = flight.static_gen,
                         started = flight.started,
                     )
-                if kind != STATIC:
-                    hist = _history.setdefault(flight.key, collections.deque(maxlen = 64))
-                    hist.append((flight.started, flight.gen, stdout))
     except BaseException as exc:  # handed to the waiters, never raised on this thread
         flight.exc = exc
         if isinstance(exc, subprocess.TimeoutExpired) and flight.epoch == _reset_epoch:
@@ -361,12 +354,20 @@ def _run_child(flight: _Flight, argv: list, kind: str, kwargs: dict) -> None:
         flight.done.set()
 
 
-def _start_or_join(key: tuple, argv: list, kind: str, kwargs: dict, timeout: float) -> _Flight:
-    """The in-flight child for this key, or a new one. A critical caller never joins a
-    child started before the last invalidation: it could report pre-load memory."""
+def _start_or_join(
+    key: tuple, argv: list, kind: str, kwargs: dict, timeout: float
+) -> Optional[_Flight]:
+    """The in-flight child for this key, or a new one. A non-static caller never joins a
+    child started before the last invalidation: it could report pre-load memory.
+
+    None for a critical caller when the child in flight is older than the critical TTL:
+    its answer may describe memory from long before the fit check, and starting another
+    child behind one the driver is still holding only piles more onto a stuck driver."""
     with _lock:
         flight = _inflight.get(key)
         if flight is not None and (kind == STATIC or flight.gen == _events.generation()):
+            if kind == CRITICAL and time.monotonic() - flight.started > ttl_for(CRITICAL):
+                return None
             _stats.coalesced += 1
             return flight
         flight = _Flight(
@@ -378,7 +379,9 @@ def _start_or_join(key: tuple, argv: list, kind: str, kwargs: dict, timeout: flo
         )
         _inflight[key] = flight
     child_kwargs = dict(kwargs)
-    child_kwargs["timeout"] = max(float(timeout), _background_timeout())
+    child_kwargs["timeout"] = (
+        float(timeout) if kind == CRITICAL else max(float(timeout), _background_timeout())
+    )
     thread = _Thread(
         target = _run_child,
         args = (flight, argv, kind, child_kwargs),
@@ -400,53 +403,6 @@ def _flight_outcome(flight: _Flight, argv: list, timeout: float) -> subprocess.C
 
 
 # ── Fallbacks when the CLI did not answer in time ─────────────────────────────
-
-
-def _parse_csv(stdout: str) -> list[list[str]]:
-    return [[p.strip() for p in line.split(",")] for line in stdout.strip().splitlines()]
-
-
-def _conservative_stale(key: tuple, argv: list) -> Optional[str]:
-    """The newest recent sample with memory.used raised to its window maximum and
-    memory.free lowered to its window minimum. None when nothing safe is available."""
-    fields = _query_fields(argv)
-    if not fields or not _nounits(argv):
-        return None
-    now = time.monotonic()
-    with _lock:
-        samples = [
-            stdout
-            for at, gen, stdout in _history.get(key, ())
-            if gen == _events.generation() and now - at <= _CRITICAL_MAX_STALE_S
-        ]
-    if not samples:
-        return None
-    parsed = [_parse_csv(s) for s in samples]
-    newest = parsed[-1]
-    width = len(fields)
-    if any(len(rows) != len(newest) for rows in parsed) or any(
-        len(row) != width for rows in parsed for row in rows
-    ):
-        return None
-    # Rows are combined by position, so every sample must list the same GPUs in the same order.
-    if "index" in fields:
-        col = fields.index("index")
-        if any([row[col] for row in rows] != [row[col] for row in newest] for rows in parsed):
-            return None
-    out_rows = [list(row) for row in newest]
-    for col, name in enumerate(fields):
-        if name not in ("memory.used", "memory.free"):
-            continue
-        for r in range(len(out_rows)):
-            values = []
-            for rows in parsed:
-                try:
-                    values.append(float(rows[r][col]))
-                except ValueError:
-                    return None
-            pick = max(values) if name == "memory.used" else min(values)
-            out_rows[r][col] = str(int(pick)) if pick.is_integer() else str(pick)
-    return "\n".join(", ".join(row) for row in out_rows) + "\n"
 
 
 def _nvml_rows(timeout: float) -> Optional[list[dict]]:
@@ -492,7 +448,7 @@ def _nvml_rows(timeout: float) -> Optional[list[dict]]:
         result = entry.result
     else:
         flight = _start_or_join(key, argv, CRITICAL, kwargs, timeout)
-        if not flight.done.wait(timeout):
+        if flight is None or not flight.done.wait(timeout):
             return None
         if flight.exc is not None or flight.result is None:
             return None
@@ -565,15 +521,6 @@ def _fallback(
             with _lock:
                 _stats.stale_served += 1
             return _copy(entry.result)
-    if kind == CRITICAL:
-        stdout = _conservative_stale(key, argv)
-        if stdout is not None:
-            with _lock:
-                _stats.conservative_served += 1
-            logger.info(
-                "nvidia-smi did not answer in time; using the most conservative recent reading"
-            )
-            return subprocess.CompletedProcess(list(argv), 0, stdout, "")
     if nvml_fallback and kind != STATIC:
         stdout = _nvml_csv(argv, min(timeout, _NVML_TIMEOUT_S))
         if stdout is not None:
@@ -661,6 +608,13 @@ def run_nvidia_smi(
         return _copy(entry.result)
 
     flight = _start_or_join(key, argv, kind, kwargs, timeout)
+    if flight is None:
+        # A critical read and the CLI has been busy on this query for longer than its TTL:
+        # behave as a timeout (a new NVML reading, else the caller's own fallback).
+        answer = _fallback(key, argv, kind, timeout, nvml_fallback)
+        if answer is not None:
+            return answer
+        raise subprocess.TimeoutExpired(argv, timeout)
     # On a driver that just timed out, do not hold the caller for the whole timeout when a
     # safe answer already exists; if none does, keep waiting as before.
     first_wait = min(timeout, _SLOW_WAIT_S) if driver_slow() else timeout
