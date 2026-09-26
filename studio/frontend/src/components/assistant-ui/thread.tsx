@@ -322,6 +322,7 @@ import { flushResourcesSync } from "@assistant-ui/tap";
 import {
   AttachmentIcon,
   Bookmark02Icon,
+  Cancel01Icon,
   CodeIcon,
   Copy01Icon,
   Delete02Icon,
@@ -6426,6 +6427,8 @@ const ComposerToolsMenu: FC<{
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
   );
+  const allToolsOff = useChatRuntimeStore((s) => s.allToolsOff);
+  const setAllToolsOff = useChatRuntimeStore((s) => s.setAllToolsOff);
   const deepResearchEnabled = useChatRuntimeStore((s) => s.deepResearchEnabled);
   const setDeepResearchEnabled = useChatRuntimeStore((s) => s.setDeepResearchEnabled);
   const incognito = useChatRuntimeStore((s) => s.incognito);
@@ -6870,6 +6873,20 @@ const ComposerToolsMenu: FC<{
           />
           Code
           {codeToolsEnabled && !codeDisabled ? (
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto"
+            />
+          ) : null}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className={allToolsOff ? "text-primary font-medium" : undefined}
+          onSelect={() => setAllToolsOff(!allToolsOff)}
+        >
+          <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />
+          Disable tools
+          {allToolsOff ? (
             <HugeiconsIcon
               icon={Tick02Icon}
               strokeWidth={2}

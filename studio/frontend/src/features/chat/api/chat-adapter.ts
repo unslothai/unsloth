@@ -197,6 +197,7 @@ import {
   providerSupportsFastMode,
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
+import { anyToolPillOn, resolveEnableTools } from "./all-tools-off";
 import { ragScopeContextLength } from "./rag-context-length";
 import {
   type PendingImageEditReference,
@@ -1963,6 +1964,7 @@ export async function buildLocalTokenCountExtras(
     toolsEnabled,
     artifactsEnabled,
     mcpEnabledForChat,
+    allToolsOff,
     ragEnabled,
     ragSource,
     ragMode,
@@ -1981,7 +1983,7 @@ export async function buildLocalTokenCountExtras(
   // tools-on default answer and the server renders a catalog the completion does not.
   // No budget, because the completion sends none either, so a policy that injects tools
   // past this false gets the server default on both sides.
-  if (!supportsTools) {
+  if (!resolveEnableTools(supportsTools, allToolsOff)) {
     return { enable_tools: false, bypass_permissions: bypassPermissions };
   }
 
@@ -1996,13 +1998,15 @@ export async function buildLocalTokenCountExtras(
     (skill) => skill.valid && !skill.shadowed && skill.enabled,
   );
   if (
-    !toolsEnabled &&
-    !codeToolsEnabled &&
-    !artifactsEnabled &&
-    !mcpEnabledForChat &&
-    !ragOn &&
-    !deepResearchEnabled &&
-    !hasEnabledSkills
+    !anyToolPillOn({
+      toolsEnabled,
+      codeToolsEnabled,
+      artifactsEnabled,
+      mcpEnabledForChat,
+      ragOn,
+      deepResearchArmed: deepResearchEnabled,
+      hasEnabledSkills,
+    })
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
     // along because `--enable-tools` still outranks that false in _effective_enable_tools.
@@ -4755,6 +4759,7 @@ export function createOpenAIStreamAdapter(
         imageToolsEnabled,
         artifactsEnabled,
         mcpEnabledForChat,
+        allToolsOff,
         confirmToolCalls,
         bypassPermissions,
         permissionMode,
@@ -6272,16 +6277,19 @@ export function createOpenAIStreamAdapter(
                 : {}),
               // studioLocalCodeTools, not codeToolsEnabled: a Code pill that resolved to the provider's
               // sandbox is a hosted request and belongs below, where this body would 400 on permission_mode.
-              ...(supportsStudioToolsForThisTurn &&
-              (toolsEnabled ||
-                studioLocalCodeTools.length > 0 ||
-                mcpEnabledForChat ||
-                ragEnabled ||
-                projectRagEnabled ||
-                hasEnabledSkills ||
-                // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
-                // only for a request that asked for the loop at all.
-                deepResearchArmed)
+              ...(resolveEnableTools(
+                supportsStudioToolsForThisTurn &&
+                  (toolsEnabled ||
+                    studioLocalCodeTools.length > 0 ||
+                    mcpEnabledForChat ||
+                    ragEnabled ||
+                    projectRagEnabled ||
+                    hasEnabledSkills ||
+                    // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
+                    // only for a request that asked for the loop at all.
+                    deepResearchArmed),
+                allToolsOff,
+              )
                 ? {
                     enable_tools: true,
                     enabled_tools: [
@@ -6360,10 +6368,13 @@ export function createOpenAIStreamAdapter(
                         }
                       : {}),
                   }
-                : webSearchEnabledForThisTurn ||
-                    webFetchEnabledForThisTurn ||
-                    codeExecEnabledForThisTurn ||
-                    imageGenerationEnabledForThisTurn
+                : resolveEnableTools(
+                      webSearchEnabledForThisTurn ||
+                        webFetchEnabledForThisTurn ||
+                        codeExecEnabledForThisTurn ||
+                        imageGenerationEnabledForThisTurn,
+                      allToolsOff,
+                    )
                   ? {
                       enable_tools: true,
                       enabled_tools: [
@@ -6487,15 +6498,18 @@ export function createOpenAIStreamAdapter(
               : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,
             ...(deepResearchArmed ? { deep_research_armed: true } : {}),
-            ...(supportsTools &&
-              (toolsEnabled ||
-                codeToolsEnabled ||
-                renderHtmlToolEnabledForThisTurn ||
-                mcpEnabledForChat ||
-                ragEnabled ||
-                projectRagEnabled ||
-                hasEnabledSkills ||
-                deepResearchArmed)
+            ...(resolveEnableTools(
+              supportsTools &&
+                (toolsEnabled ||
+                  codeToolsEnabled ||
+                  renderHtmlToolEnabledForThisTurn ||
+                  mcpEnabledForChat ||
+                  ragEnabled ||
+                  projectRagEnabled ||
+                  hasEnabledSkills ||
+                  deepResearchArmed),
+              allToolsOff,
+            )
               ? {
                   enable_tools: true,
                   enabled_tools: [
