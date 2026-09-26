@@ -402,7 +402,24 @@ def test_loader_and_vision_call_the_remote_branch_only_after_the_family_gate():
     i_family = loader.index("family_decoder = text_class is not None and _is_family_text_decoder(")
     i_remote = loader.index("_get_remote_composite_text_only(")
     assert i_family < i_remote
-    assert "if not family_decoder:" in loader
+    assert "if not family_decoder or type(text_config) is type(model_config):" in loader
+
+
+def test_wrapper_returned_as_its_own_text_config_still_tries_the_plan(tmp_path):
+    # InternVL: get_text_config() is the wrapper config, so the family check passes on the wrapper itself.
+    repo, _ = _write_repo(tmp_path, alias = False, name = "self_text")
+    parent = _load_parent_config(repo)
+    text = parent.get_text_config()
+    assert type(text) is type(parent) and text.model_type.startswith(parent.model_type)
+    loader = LOADER_PATH.read_text(encoding = "utf-8")
+    vision = VISION_PATH.read_text(encoding = "utf-8")
+    assert "if not family_decoder or type(text_config) is type(model_config):" in loader
+    assert "if not family_decoder or type(text_config) is type(parent_config):" in vision
+    # A declined plan still falls back to the family branch, as before.
+    assert loader.index("if remote_text_only is not None:") < loader.index(
+        "elif not family_decoder:"
+    )
+    assert vision.index("if remote_text_only is not None:") < vision.index("elif family_decoder:")
 
 
 def test_transformers_4_keeps_the_full_model(tmp_path, monkeypatch):

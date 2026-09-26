@@ -1819,15 +1819,13 @@ class FastBaseModel:
                 force_download = kwargs.get("force_download", None),
                 trust_remote_code = trust_remote_code,
             )
-            if text_class is not None and _is_family_text_decoder(
+            family_decoder = text_class is not None and _is_family_text_decoder(
                 getattr(parent_config, "model_type", ""),
                 getattr(text_config, "model_type", ""),
-            ):
-                auto_config = text_config
-                auto_model = AutoModelForCausalLM
-                _apply_text_only_key_mapping(kwargs, parent_config, text_config)
-                text_only_decoder = True
-            else:
+            )
+            remote_text_only = None
+            # get_text_config() returns the repo-code parent itself when it only has llm_config (InternVL), so the family check compares the wrapper with itself.
+            if not family_decoder or type(text_config) is type(parent_config):
                 remote_text_only = _get_remote_composite_text_only(
                     parent_config,
                     model_name,
@@ -1842,12 +1840,17 @@ class FastBaseModel:
                     cache_dir = kwargs.get("cache_dir"),
                     code_revision = kwargs.get("code_revision"),
                 )
-                if remote_text_only is not None:
-                    auto_config, _text_key_mapping = remote_text_only[:2]
-                    auto_model = AutoModelForCausalLM
-                    _merge_key_mapping(kwargs, _text_key_mapping)
-                    _rebase_user_quantization_config(kwargs, _text_key_mapping)
-                    text_only_decoder = True
+            if remote_text_only is not None:
+                auto_config, _text_key_mapping = remote_text_only[:2]
+                auto_model = AutoModelForCausalLM
+                _merge_key_mapping(kwargs, _text_key_mapping)
+                _rebase_user_quantization_config(kwargs, _text_key_mapping)
+                text_only_decoder = True
+            elif family_decoder:
+                auto_config = text_config
+                auto_model = AutoModelForCausalLM
+                _apply_text_only_key_mapping(kwargs, parent_config, text_config)
+                text_only_decoder = True
         elif text_only and auto_model in [
             AutoModelForVision2Seq,
             AutoModelForImageTextToText,
