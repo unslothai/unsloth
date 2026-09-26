@@ -4902,6 +4902,12 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	}
 }
 
+/* The chat header overlays the thread, and the window controls share its row: start
+   the classic Windows scrollbar below it. */
+:root.client-windows .aui-thread-viewport::-webkit-scrollbar-track {
+	margin-top: var(--thread-header-offset, 0px);
+}
+
 /* Run settings: always reserve the scrollbar gutter so the header close
    button keeps its position whether or not the scrollbar is showing. */
 .run-settings-scroll {

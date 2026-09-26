@@ -254,7 +254,7 @@ test("the conversation reserves the space the notice overlay takes", () => {
   // 0px so every surface without a notice keeps exactly the padding it had.
   assert.match(
     thread,
-    /pt-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\+var\(--studio-chat-notice-height,0px\)\)\]/,
+    /\[--thread-header-offset:calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\+var\(--studio-chat-notice-height,0px\)\)\] pt-\[var\(--thread-header-offset\)\]/,
   );
   // And the fade moves down with it, or it would dissolve behind the opaque bar.
   const fade = slice(page, "chat-header-fade", '"');
