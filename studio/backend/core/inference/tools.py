@@ -18437,7 +18437,9 @@ def _check_signal_escape_patterns(code: str):
                                 destinations.append((kw.value, True, "host"))
                             else:
                                 destinations.append((_UNREADABLE, True, "host"))
-                    if kw.arg == "connect_kwargs" and any(c.startswith("fabric.") for c in recognised):
+                    if kw.arg == "connect_kwargs" and any(
+                        c.startswith("fabric.") for c in recognised
+                    ):
                         # Fabric passes these to `SSHClient.connect`, so a `sock` routes the session.
                         keys = list(kw.value.keys) if isinstance(kw.value, ast.Dict) else []
                         known = isinstance(kw.value, ast.Dict)
