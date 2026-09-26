@@ -178,10 +178,19 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
     setattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, plan)
     if verbose:
         bits = sorted({int(g["weights"]["num_bits"]) for g in plan["config_groups"].values()})
-        print(
-            f"Unsloth: Checkpoint is compressed-tensors packed INT{'/'.join(map(str, bits))}. "
-            f"Decompressing each weight on the fly and re-quantizing to bitsandbytes 4-bit (no 16-bit copy on disk)."
-        )
+        from .compressed_tensors_int4 import int4_packed_route_enabled, int4_packed_supported_plan
+
+        if int4_packed_route_enabled() and int4_packed_supported_plan(plan):
+            how = (
+                "Keeping its Linear weights packed and decoding them exactly per use "
+                f"(set {'UNSLOTH_COMPRESSED_TENSORS_INT4'}=nf4 to re-quantize to bitsandbytes 4-bit instead)."
+            )
+        else:
+            how = (
+                "Decompressing each weight on the fly and re-quantizing to bitsandbytes 4-bit "
+                "(no 16-bit copy on disk)."
+            )
+        print(f"Unsloth: Checkpoint is compressed-tensors packed INT{'/'.join(map(str, bits))}. {how}")
     return plan
 
 
@@ -214,6 +223,78 @@ def _checkpoint_keys(checkpoint_files) -> list:
         except Exception:
             continue
     return keys
+
+
+_SAFETENSORS_DTYPES = {
+    "I8": torch.int8,
+    "I16": torch.int16,
+    "I32": torch.int32,
+    "I64": torch.int64,
+    "U8": torch.uint8,
+    "F16": torch.float16,
+    "BF16": torch.bfloat16,
+    "F32": torch.float32,
+    "F64": torch.float64,
+}
+
+
+def _packed_tensor_meta(checkpoint_files) -> dict:
+    """``{module: {suffix: (shape, dtype)}}`` for every packed module, from the shard headers only."""
+    from safetensors import safe_open
+
+    meta: dict = {}
+    for path in checkpoint_files or []:
+        if not str(path).endswith(".safetensors"):
+            continue
+        with safe_open(str(path), framework = "pt") as f:
+            for key in f.keys():
+                module, _, suffix = key.rpartition(".")
+                if suffix not in _PACKED_SUFFIXES:
+                    continue
+                piece = f.get_slice(key)
+                dtype = _SAFETENSORS_DTYPES.get(piece.get_dtype())
+                if dtype is None:
+                    return {}
+                meta.setdefault(module, {})[suffix] = (tuple(piece.get_shape()), dtype)
+    return {m: v for m, v in meta.items() if "weight_packed" in v}
+
+
+def adopt_int4_packed_linears(model, ct_config, checkpoint_files, dtype) -> list:
+    """Swap every packed plain ``nn.Linear`` for an ``Int4PackedLinear`` shell; all or nothing.
+
+    Stacked MoE experts (no per-expert Linear) stay with their decompress converter."""
+    from torch import nn
+    from .compressed_tensors_int4 import Int4PackedLinear, make_int4_packed_linear
+
+    meta = _packed_tensor_meta(checkpoint_files)
+    if not meta:
+        return []
+    swaps = []
+    for name, shapes in meta.items():
+        try:
+            module = model.get_submodule(name)
+        except AttributeError:
+            module = None
+        if isinstance(module, Int4PackedLinear):
+            continue
+        if type(module) is not nn.Linear:
+            if module is None and ".experts." in name:
+                continue
+            # A renamed prefix (composite checkpoints) or an unexpected module: keep the NF4 route.
+            return []
+        scheme = _scheme_for_module(ct_config, name, module)
+        weights = scheme.weights
+        if int(weights.num_bits) not in (2, 4, 8):
+            return []
+        if shapes["weight_packed"][0][0] != module.out_features:
+            return []
+        swaps.append((name, module, scheme, shapes))
+    for name, module, scheme, shapes in swaps:
+        parent_name, _, child = name.rpartition(".")
+        parent = model.get_submodule(parent_name) if parent_name else model
+        device = module.weight.device if module.weight is not None else "meta"
+        setattr(parent, child, make_int4_packed_linear(module, scheme, shapes, dtype, device))
+    return [name for name, *_ in swaps]
 
 
 def _generalize(name: str) -> str:
@@ -376,7 +457,46 @@ def _scheme_for_module(ct_config, name: str, module: Optional[torch.nn.Module]):
     return groups[0]
 
 
+def _decompress_one_triton(scheme, packed, scale, shape, zero_point, g_idx, dtype):
+    """Exact Triton decode (bit-identical to compressed-tensors) for CUDA tensors; ``None`` otherwise."""
+    if packed.device.type != "cuda" or dtype not in (torch.bfloat16, torch.float16, torch.float32):
+        return None
+    weights = scheme.weights
+    bits = int(weights.num_bits)
+    strategy = str(getattr(weights.strategy, "value", weights.strategy)).lower()
+    if bits not in (2, 4, 8) or strategy not in ("group", "channel") or scale.dim() != 2:
+        return None
+    if getattr(torch.version, "hip", None):
+        return None
+    try:
+        from ..kernels.int4_packed import Int4QuantState, int4_dequantize
+    except Exception:
+        return None
+    rows = packed.shape[0]
+    cols = int(shape[1]) if shape is not None and shape.numel() == 2 else packed.shape[1] * (32 // bits)
+    group = int(weights.group_size) if strategy == "group" and weights.group_size else cols
+    if scale.shape[0] != rows or cols > packed.shape[1] * (32 // bits):
+        return None
+    qs = Int4QuantState(
+        scale,
+        None if weights.symmetric else zero_point,
+        g_idx if g_idx is not None and g_idx.device.type == "cuda" and -1 not in g_idx else None,
+        (rows, cols),
+        bits,
+        group,
+        dtype,
+    )
+    if not weights.symmetric and zero_point is None:
+        return None
+    if g_idx is not None and qs.g_idx is None:
+        return None
+    return int4_dequantize(packed, qs, dtype)
+
+
 def _decompress_one(compressor, scheme, packed, scale, shape, zero_point, g_idx, dtype):
+    fast = _decompress_one_triton(scheme, packed, scale, shape, zero_point, g_idx, dtype)
+    if fast is not None:
+        return fast
     state = {"weight_packed": packed, "weight_scale": scale}
     if shape is not None and shape.numel():
         state["weight_shape"] = shape
@@ -628,6 +748,7 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
         _unsloth_ct_dtype = None
         _unsloth_dtype_plan = None
         _unsloth_plan_dicts = ()
+        _unsloth_int4_packed = ()
 
         def _process_model_before_weight_loading(self, model, **kwargs):
             config = getattr(model, "config", None)
@@ -658,6 +779,22 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     return merged
 
                 model._get_dtype_plan = _get_dtype_plan
+                self._unsloth_int4_packed = []
+                from .compressed_tensors_int4 import (
+                    int4_packed_route_enabled,
+                    int4_packed_supported_plan,
+                )
+
+                if int4_packed_route_enabled() and int4_packed_supported_plan(plan):
+                    self._unsloth_int4_packed = adopt_int4_packed_linears(
+                        model, self._unsloth_ct_config, kwargs.get("checkpoint_files"), dtype
+                    )
+                    if self._unsloth_int4_packed:
+                        # Load the checkpoint tensors as stored: a cast would change the int32 words and
+                        # round a fp32 scale.
+                        self._unsloth_dtype_plan[
+                            r"\.weight_(packed|scale|zero_point|g_idx|shape)$"
+                        ] = None
             return super()._process_model_before_weight_loading(model, **kwargs)
 
         def _process_model_after_weight_loading(self, model, **kwargs):
@@ -672,6 +809,10 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     config.__dict__.pop(UNSLOTH_COMPRESSED_TENSORS_ATTR, None)
             # Load-only: save_pretrained would reverse them into packed names without metadata.
             drop_load_only_conversions(model)
+            if getattr(self, "_unsloth_int4_packed", None):
+                from .compressed_tensors_int4 import finalize_int4_packed_linears
+
+                finalize_int4_packed_linears(model, self._unsloth_ct_dtype)
             return super()._process_model_after_weight_loading(model, **kwargs)
 
         def _unsloth_keep_storage_dtype(self, target_patterns):
@@ -724,13 +865,14 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                         )
                         self._unsloth_keep_storage_dtype(conv._original_target_patterns)
                 updated.append(conv)
-            updated.append(
-                WeightConverter(
-                    source_patterns = [s + "$" for s in _PACKED_SUFFIXES],
-                    target_patterns = "weight",
-                    operations = [op_cls(ct_config, dtype, stacked = False)],
+            if not getattr(self, "_unsloth_int4_packed", None):
+                updated.append(
+                    WeightConverter(
+                        source_patterns = [s + "$" for s in _PACKED_SUFFIXES],
+                        target_patterns = "weight",
+                        operations = [op_cls(ct_config, dtype, stacked = False)],
+                    )
                 )
-            )
             # Call up the MRO so a composed subclass's hook still runs.
             parent = getattr(super(), "update_weight_conversions", None)
             if parent is None:
