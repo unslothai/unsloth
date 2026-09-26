@@ -6210,6 +6210,23 @@ _pick_radeon_wheel() {
     esac
 }
 
+# True when torch $1 (X.Y) can run torch.compile, which Unsloth needs to train, on the Python named by the Radeon wheel tag $2 (cpXY). Dynamo reached Python 3.13 in torch 2.6 and 3.14 in torch 2.10; older tags are covered by the torch floor already. The Radeon repo can still carry an older torch for a newer Python: rocm-rel-6.4 has torch 2.5.1 as its only cp313 build, and installing that leaves a venv that imports but fails "Dynamo is not supported on Python 3.13+" on the first training step.
+_radeon_torch_compiles_for_pytag() {
+    case "$2" in
+        cp313) _rtc_need=6 ;;
+        cp314) _rtc_need=10 ;;
+        *) return 0 ;;
+    esac
+    _rtc_major="${1%%.*}"
+    _rtc_minor="${1#*.}"
+    _rtc_minor="${_rtc_minor%%.*}"
+    case "$_rtc_major$_rtc_minor" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$_rtc_major" -gt 2 ] && return 0
+    [ "$_rtc_major" -eq 2 ] && [ "$_rtc_minor" -ge "$_rtc_need" ]
+}
+
 # ── ROCm-on-WSL bootstrap for AMD Strix Halo (gfx1151) ───────────────────────
 # Idempotent, no-op without librocdxg, best-effort; sudo-tee when not root.
 _persist_rocm_wsl_dropin() {
@@ -7783,6 +7800,15 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                         _target_minor=$((_target_minor - 1))
                         _attempts=$((_attempts + 1))
                     done
+                fi
+
+                # A matched set can still be unusable for training on this Python; the ROCm index
+                # carries newer builds for it (rocm6.4 has torch 2.9.1 for cp313).
+                _sel_torch_ver=$(_extract_version "$_torch_whl" "torch")
+                if [ "$_radeon_versions_match" = true ] && [ -n "$_sel_torch_ver" ] && \
+                   ! _radeon_torch_compiles_for_pytag "$_sel_torch_ver" "$_RADEON_PYTAG"; then
+                    substep "[WARN] Radeon repo's newest $_RADEON_PYTAG PyTorch is $_sel_torch_ver, which cannot run torch.compile on this Python" "$C_WARN"
+                    _radeon_versions_match=false
                 fi
 
                 if [ -z "$_torch_whl" ] || [ -z "$_tv_whl" ] || [ -z "$_ta_whl" ] || \
