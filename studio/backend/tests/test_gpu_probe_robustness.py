@@ -68,7 +68,6 @@ def _detect(
         return hw._detect_hardware_locked()
 
 
-
 def test_a_raising_cuda_probe_falls_through_to_a_working_xpu(monkeypatch):
     assert _detect(monkeypatch, _fake_torch(cuda_raises = True, xpu = True)) == hw.DeviceType.XPU
     assert hw.CHAT_ONLY is False
@@ -92,7 +91,6 @@ def test_a_raising_xpu_probe_is_a_measured_cpu_host_not_a_detection_failure(monk
 def test_the_winner_is_unchanged_when_every_probe_succeeds(monkeypatch):
     assert _detect(monkeypatch, _fake_torch(cuda = True, xpu = True)) == hw.DeviceType.CUDA
     assert _detect(monkeypatch, _fake_torch(xpu = True)) == hw.DeviceType.XPU
-
 
 
 @pytest.mark.parametrize(
@@ -139,7 +137,6 @@ def test_a_linux_intel_host_is_told_the_pin_instead_of_a_repair_that_reinstalls_
     message = hw._gpu_present_but_unusable_message("training", ("torch_cpu_build", "2.11.0+cpu"))
     assert ("UNSLOTH_TORCH_INDEX_FAMILY=xpu" in message) is pinned
     assert ("Repair installation" in message) is not pinned
-
 
 
 @pytest.mark.parametrize("present", [True, False])
