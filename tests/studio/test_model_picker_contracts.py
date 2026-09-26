@@ -16,7 +16,7 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
-from tests.studio._js_source import assert_guard_holds, split_operands
+from tests.studio._js_source import assert_guard_holds, balanced, depth_zero_split
 
 WORKDIR = Path(__file__).resolve().parents[2]
 FRONTEND = WORKDIR / "studio" / "frontend" / "src"
@@ -854,19 +854,39 @@ def test_partial_safetensors_download_keeps_delete_menu():
     assert guard.endswith("&& ("), guard
     guard = guard[: -len("&& (")]
 
-    def stopped_partial(operand):
+    # Parsed with JavaScript's precedence: `||` binds loosest, so a guard splits into its
+    # `||` alternatives first and each alternative into its `&&` conjuncts. Splitting `&&`
+    # first would read `a || (b && c) && d` as `(a || (b && c)) && d` and miss that `d`
+    # restricts the partial branch.
+    def unwrap(text):
+        text = text.strip()
+        while text.startswith("(") and text.endswith(")") and balanced(text[1:-1]):
+            text = text[1:-1].strip()
+        return text
+
+    def alternatives(text):
+        return [unwrap(part) for part in depth_zero_split(unwrap(text), "||")]
+
+    def conjuncts(text):
+        return [unwrap(part) for part in depth_zero_split(unwrap(text), "&&")]
+
+    def stopped_partial(alternative):
         # Exactly `isPartial && !downloading`, isPartial possibly one of several OR'd sources.
         # Any further conjunct is a further restriction on a stopped partial, so it fails.
-        parts = split_operands(operand, "&&")
+        parts = conjuncts(alternative)
         return (
             len(parts) == 2
             and "!downloading" in parts
-            and any("isPartial" in split_operands(part, "||") for part in parts)
+            and any("isPartial" in alternatives(part) for part in parts)
         )
 
+    # Somewhere under the guard's outer conjuncts (the managed-repo check applies to every
+    # branch alike) sits `isDownloaded || <stopped partial>`.
     assert any(
-        "isDownloaded" in alternatives and any(stopped_partial(alt) for alt in alternatives)
-        for alternatives in (split_operands(part, "||") for part in split_operands(guard, "&&"))
+        "isDownloaded" in alternatives(conjunct)
+        and any(stopped_partial(alt) for alt in alternatives(conjunct))
+        for branch in alternatives(guard)
+        for conjunct in conjuncts(branch)
     ), guard
 
 
