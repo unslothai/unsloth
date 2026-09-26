@@ -29,7 +29,7 @@ from starlette.background import BackgroundTask
 
 from hub.browser_session import signed_in
 from utils.client_ip import client_ip
-from utils.hf_endpoint import endpoint_is_reachable_by
+from utils.hf_endpoint import endpoint_is_reachable_by, is_loopback_host
 
 HUB_PREFIX = "/api/hub/proxy"
 DATASETS_SERVER_PREFIX = "/api/hub/datasets-server-proxy"
@@ -107,6 +107,13 @@ def _rebase_link(link: str, upstream: str, base: str) -> str:
     return ", ".join(parts)
 
 
+def _saved_only(endpoint: str) -> bool:
+    """A redirect's Location would name an endpoint the owner-only settings route keeps private."""
+    from utils.hub_settings import saved_only_endpoints
+
+    return endpoint in saved_only_endpoints()
+
+
 def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: bool) -> APIRouter:
     """``anonymous_pages`` redirects credential-less loads outside ``/api`` (README images,
     repository links) to the endpoint without contacting it."""
@@ -133,6 +140,7 @@ def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: b
                 or not anonymous_pages
                 or segments[1:2] == ["api"]
                 or not endpoint_is_reachable_by(endpoint, client_ip(request))
+                or (_saved_only(endpoint) and not is_loopback_host(client_ip(request)))
             ):
                 return _refuse(401, "Sign in again to browse the Hub.")
             return RedirectResponse(target, status_code = 302)

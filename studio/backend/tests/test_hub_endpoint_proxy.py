@@ -113,3 +113,18 @@ def test_the_relay_tag_is_not_a_bare_hash_of_the_endpoint():
     tag = endpoint_proxy._tag(endpoint)
     assert tag == endpoint_proxy._tag(endpoint) and len(tag) == 12
     assert tag != hashlib.sha256(endpoint.encode()).hexdigest()[:12]
+
+
+@pytest.mark.parametrize("peer, location", [("127.0.0.1", True), ("203.0.113.9", False)])
+def test_an_anonymous_redirect_names_a_saved_endpoint_only_to_a_loopback_browser(
+    proxy, monkeypatch, peer, location
+):
+    import utils.hub_settings as hub_settings
+
+    client, seen, state = proxy
+    state["session"] = False
+    monkeypatch.setattr(endpoint_proxy, "client_ip", lambda _request: peer)
+    monkeypatch.setattr(hub_settings, "_saved_only_endpoints", frozenset({MIRROR}), raising = False)
+    page = client.get(f"{HUB}/org/m/resolve/main/a.png")
+    assert (page.status_code, "location" in page.headers) == ((302, True) if location else (401, False))
+    assert seen == []
