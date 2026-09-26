@@ -1492,7 +1492,7 @@ class TestTheSkipGateAuditsTheArm64FilteredFile:
                 ):
                     callers.setdefault(node.name, []).append(ast.unparse(sub.args[0]))
         assert callers == {
-            "pip_install": ["req"],
+            "_pip_install_once": ["req"],
             "pip_install_try": ["req"],
             "_closure_record": ["req"],
             "_requirements_satisfied": ["req"],

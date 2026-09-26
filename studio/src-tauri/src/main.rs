@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_layout;
+mod app_menu;
 mod commands;
 #[cfg(target_os = "linux")]
 mod debian_update;
@@ -1610,10 +1611,13 @@ fn setup_quit_menu(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .accelerator("CmdOrCtrl+Q")
         .build(app)?;
     app_menu.append(&quit)?;
+    app_menu::setup_app_menus(app, &menu)?;
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
         if event.id() == APP_QUIT_MENU_ID {
             request_quit(app);
+        } else {
+            app_menu::handle_menu_event(app, event.id().as_ref());
         }
     });
     Ok(())
@@ -2091,6 +2095,19 @@ fn main() {
 
     let mut context = tauri::generate_context!();
     extend_csp_with_hf_endpoints(&mut context);
+    // Restore while hidden, else the 760x560 setup size overwrites the saved layout.
+    let restore_initial_layout = dirs::config_dir().is_some_and(|dir| {
+        app_layout::should_restore_initial_window_state(
+            &dir.join(&context.config().identifier),
+            tauri_plugin_window_state::DEFAULT_FILENAME,
+        )
+    });
+    info!("Native saved app layout restore enabled: {restore_initial_layout}");
+    let mut window_state = tauri_plugin_window_state::Builder::new()
+        .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED);
+    if !restore_initial_layout {
+        window_state = window_state.skip_initial_state("main");
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -2108,12 +2125,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(
-            tauri_plugin_window_state::Builder::new()
-                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
-                .skip_initial_state("main")
-                .build(),
-        )
+        .plugin(window_state.build())
+        .manage(app_layout::NativeLayoutRestored(
+            std::sync::atomic::AtomicBool::new(restore_initial_layout),
+        ))
         .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
         .manage(new_training_activity_state())
@@ -2126,11 +2141,13 @@ fn main() {
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
         .invoke_handler(tauri::generate_handler![
+            app_menu::set_app_menu_actions,
             set_training_active,
             set_renderer_activity,
             app_layout::has_initialized_app_window_layout,
             app_layout::mark_app_window_layout_initialized,
             app_layout::reset_app_window_layout_initialized,
+            app_layout::take_native_layout_restored,
             commands::check_install_status,
             commands::desktop_preflight,
             commands::start_install,
