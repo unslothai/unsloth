@@ -76,7 +76,7 @@ def sizes(monkeypatch):
     import huggingface_hub
     import torch
 
-    state = {"checkpoint": 13, "free": [80], "hub_raises": False}
+    state = {"checkpoint": 13, "free": [80], "hub_raises": False, "calls": [], "probes": 0}
     GiB = 2**30
 
     class _Sibling:
@@ -87,8 +87,10 @@ def sizes(monkeypatch):
         def model_info(
             self,
             repo_id,
+            revision = None,
             files_metadata = False,
         ):
+            state["calls"].append((repo_id, revision))
             if state["hub_raises"]:
                 raise OSError("offline")
             half = int(state["checkpoint"] * GiB / 2)
@@ -103,7 +105,11 @@ def sizes(monkeypatch):
     monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: len(state["free"]))
-    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (int(state["free"][i] * GiB), 0))
+    def _mem_get_info(i):
+        state["probes"] += 1
+        return (int(state["free"][i] * GiB), 0)
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", _mem_get_info)
     return state
 
 
@@ -141,6 +147,7 @@ def _run_branch(
         "_mxfp4_lora_keeps_experts_packed": _helper(),
         "model_name": "openai/gpt-oss-20b",
         "kwargs": {},
+        "_revision": None,
     }
     node = _dequantize_branch()
     code = ast.Module(body = [node], type_ignores = [])
@@ -246,3 +253,26 @@ def test_placement_strategy_sizes_a_local_checkpoint(zoo, sizes, tmp_path):
     assert _helper()("mxfp4", False, "auto", str(tmp_path)) is False
     sizes["free"] = [1.0]
     assert _helper()("mxfp4", False, "auto", str(tmp_path)) is True
+
+
+def test_placement_strategy_sizes_the_pinned_revision(zoo, sizes):
+    _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b", None, "refs/pr/7")
+    assert sizes["calls"][-1] == ("openai/gpt-oss-120b", "refs/pr/7")
+    _run_branch(False, "mxfp4", False, device_map = "auto")
+    assert sizes["calls"][-1] == ("openai/gpt-oss-20b", None)
+
+
+def test_zero_accelerator_capacity_counts_as_offload(zoo, sizes):
+    sizes["checkpoint"], sizes["free"] = 13, [80, 80]
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b", {0: 0, 1: 0}) is False
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b", {"cpu": "200GiB"}) is False
+
+
+def test_no_sizing_without_the_packed_path(zoo, sizes, monkeypatch):
+    # An unsloth_zoo without keep_mxfp4_experts_packed (or one that declines) must not touch
+    # the Hub or the accelerators.
+    zoo["keep"] = False
+    assert _helper()("mxfp4", False, "sequential", "openai/gpt-oss-20b") is False
+    monkeypatch.setitem(sys.modules, ZOO_MXFP4, types.ModuleType(ZOO_MXFP4))
+    assert _helper()("mxfp4", False, "sequential", "openai/gpt-oss-20b") is False
+    assert sizes["calls"] == [] and sizes["probes"] == 0

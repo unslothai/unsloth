@@ -1185,6 +1185,7 @@ def _mxfp4_lora_keeps_experts_packed(
     device_map = None,
     model_name = None,
     max_memory = None,
+    revision = None,
 ):
     """Whether a LoRA load of an MXFP4 checkpoint should take unsloth_zoo's packed-experts path.
 
@@ -1207,6 +1208,17 @@ def _mxfp4_lora_keeps_experts_packed(
         str(value) in ("cpu", "disk") for value in device_map.values()
     ):
         return False
+    # The capability check comes first, so an unsloth_zoo without the packed path never
+    # triggers the Hub lookup or the accelerator probe below.
+    try:
+        from unsloth_zoo.temporary_patches.mxfp4 import keep_mxfp4_experts_packed
+    except Exception:
+        return False
+    try:
+        if not keep_mxfp4_experts_packed():
+            return False
+    except Exception:
+        return False
     if isinstance(device_map, str) and device_map in (
         "auto",
         "balanced",
@@ -1228,36 +1240,36 @@ def _mxfp4_lora_keeps_experts_packed(
                 )
             else:
                 from huggingface_hub import HfApi
-                info = HfApi().model_info(str(model_name), files_metadata = True)
+
+                # The revision the config and weights are loaded from, not the default branch.
+                info = HfApi().model_info(
+                    str(model_name), revision = revision, files_metadata = True
+                )
                 checkpoint_bytes = sum(
                     (sibling.size or 0)
                     for sibling in (info.siblings or ())
                     if sibling.rfilename.endswith(".safetensors")
                 )
+            probed = torch.cuda.is_available() and torch.cuda.device_count() > 0
             free_bytes = 0
-            for index in range(torch.cuda.device_count() if torch.cuda.is_available() else 0):
+            for index in range(torch.cuda.device_count() if probed else 0):
                 free = torch.cuda.mem_get_info(index)[0]
                 budget = (max_memory or {}).get(index, (max_memory or {}).get(str(index)))
                 if isinstance(budget, str):
                     from accelerate.utils import convert_file_size_to_int
+
                     budget = convert_file_size_to_int(budget)
                 if isinstance(budget, int):
                     free = min(free, budget)
                 elif max_memory and budget is None:
                     free = 0  # a max_memory that leaves this card out
                 free_bytes += free
-            if checkpoint_bytes and free_bytes and checkpoint_bytes > 0.9 * free_bytes:
+            # Zero measured capacity (every card excluded or capped at 0) spills everything.
+            if checkpoint_bytes and probed and checkpoint_bytes > 0.9 * free_bytes:
                 return False
         except Exception:
             pass
-    try:
-        from unsloth_zoo.temporary_patches.mxfp4 import keep_mxfp4_experts_packed
-    except Exception:
-        return False
-    try:
-        return bool(keep_mxfp4_experts_packed())
-    except Exception:
-        return False
+    return True
 
 
 def _get_total_transformer_layers(model):
@@ -1786,6 +1798,7 @@ class FastBaseModel:
                             device_map,
                             model_name,
                             kwargs.get("max_memory", None),
+                            _revision,
                         )
                     ) and "dequantize" in inspect.signature(quantizer).parameters:
                         quantizer_kwargs["dequantize"] = True
