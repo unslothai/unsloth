@@ -1189,6 +1189,7 @@ def _mxfp4_lora_keeps_experts_packed(
     variant = None,
     cache_dir = None,
     subfolder = None,
+    local_files_only = False,
 ):
     """Whether a LoRA load of an MXFP4 checkpoint should take unsloth_zoo's packed-experts path.
 
@@ -1222,7 +1223,7 @@ def _mxfp4_lora_keeps_experts_packed(
     # unsloth_zoo only learns about offload once transformers resolves the map, after this
     # config is built, so an explicit map that offloads is checked here.
     if isinstance(device_map, dict) and any(
-        str(value) in ("cpu", "disk") for value in device_map.values()
+        str(value).split(":")[0] in ("cpu", "disk") for value in device_map.values()
     ):
         return False
     if isinstance(device_map, str) and device_map.split(":")[0] in ("cpu", "disk"):
@@ -1252,20 +1253,26 @@ def _mxfp4_lora_keeps_experts_packed(
             import torch
 
             prefix = subfolder.strip("/") + "/" if subfolder else ""
-            weights = re.compile(
-                "model" + (re.escape("." + variant) if variant else "") + r"(-\d+-of-\d+)?\.safetensors"
-            )
+            tag = re.escape("." + variant) if variant else ""
+            formats = [
+                re.compile("model" + tag + r"(-\d+-of-\d+)?\.safetensors"),
+                re.compile("pytorch_model" + tag + r"(-\d+-of-\d+)?\.bin"),
+            ]
 
             def weight_bytes(files):
                 # What from_pretrained reads: model.safetensors or its model-0000N-of-0000M
                 # shards, of the selected variant (model.<variant>...) in the selected
-                # subfolder. Never gpt-oss's original/, consolidated.safetensors or adapters.
-                total = 0
+                # subfolder, else pytorch_model.bin and its shards. Never gpt-oss's
+                # original/, consolidated.safetensors or adapters.
+                totals = [0, 0]
                 for name, size in files:
                     name = name.replace(os.sep, "/")
-                    if name.startswith(prefix) and weights.fullmatch(name[len(prefix) :]):
-                        total += size or 0
-                return total
+                    if not name.startswith(prefix):
+                        continue
+                    for i, pattern in enumerate(formats):
+                        if pattern.fullmatch(name[len(prefix) :]):
+                            totals[i] += size or 0
+                return totals[0] or totals[1]
 
             def folder_files(folder):
                 folder = os.path.join(folder, prefix) if prefix else folder
@@ -1283,6 +1290,8 @@ def _mxfp4_lora_keeps_experts_packed(
                 try:
                     from huggingface_hub import HfApi
 
+                    if local_files_only:
+                        raise OSError("local_files_only: no Hub lookup")
                     # The revision the config and weights are loaded from, not the default branch.
                     info = HfApi().model_info(
                         str(model_name), revision = revision, files_metadata = True
@@ -1300,7 +1309,7 @@ def _mxfp4_lora_keeps_experts_packed(
                         revision = revision,
                         cache_dir = cache_dir,
                         local_files_only = True,
-                        allow_patterns = ["*.safetensors"],
+                        allow_patterns = ["*.safetensors", "*.bin"],
                     )
                     checkpoint_bytes = weight_bytes(folder_files(folder))
             # The backend accelerate fills: CUDA / ROCm, else Intel XPU.
@@ -1873,6 +1882,7 @@ class FastBaseModel:
                             kwargs.get("variant", None),
                             kwargs.get("cache_dir", None),
                             kwargs.get("subfolder", None),
+                            kwargs.get("local_files_only", False),
                         )
                     ) and "dequantize" in inspect.signature(quantizer).parameters:
                         quantizer_kwargs["dequantize"] = True

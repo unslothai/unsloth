@@ -414,3 +414,33 @@ def test_unset_device_map_follows_the_default_device(zoo, sizes, monkeypatch):
     assert _run_branch(False, "mxfp4", False, device_map = None) is False
     monkeypatch.setattr(torch, "get_default_device", lambda: torch.device("cuda", 0))
     assert _helper()("mxfp4", False, None) is True
+
+
+def test_indexed_cpu_in_an_explicit_map_keeps_native_load(zoo, sizes):
+    import torch
+
+    for cpu in ("cpu:0", torch.device("cpu", 0)):
+        assert _helper()("mxfp4", False, {"model.layers.0": 0, "model.layers.1": cpu}) is False
+    assert sizes["calls"] == [] and sizes["probes"] == []
+
+
+def test_pytorch_bin_checkpoints_are_sized(zoo, sizes, tmp_path):
+    sizes["checkpoint"], sizes["free"] = 0, [80]
+    sizes["extra"] = [("pytorch_model-00001-of-00002.bin", 45), ("pytorch_model-00002-of-00002.bin", 45)]
+    assert _helper()("mxfp4", False, "auto", "org/repo") is False
+    # With safetensors present those are what is loaded, not the .bin copy as well.
+    sizes["checkpoint"] = 40
+    assert _helper()("mxfp4", False, "auto", "org/repo") is True
+    (tmp_path / "pytorch_model.bin").write_bytes(b"0" * 8192)
+    sizes["free"] = [4096 / 2**30]
+    assert _helper()("mxfp4", False, "auto", str(tmp_path)) is False
+
+
+def test_local_files_only_skips_the_hub_lookup(zoo, sizes, tmp_path):
+    sizes["free"] = [4096 / 2**30]
+    (tmp_path / "model.safetensors").write_bytes(b"0" * 8192)
+    sizes["snapshot"] = str(tmp_path)
+    helper = _helper()
+    assert helper("mxfp4", False, "auto", "openai/gpt-oss-20b", None, None, None, None, None, True) is False
+    assert sizes["calls"] == []
+    assert sizes["snapshot_calls"][-1][1]["local_files_only"] is True
