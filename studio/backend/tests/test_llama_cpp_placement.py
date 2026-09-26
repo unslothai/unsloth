@@ -1820,6 +1820,61 @@ def test_an_explicit_tensor_split_leaves_the_shared_heap_uncredited(tmp_path, mo
     )
 
 
+def test_manual_layer_split_emits_explicit_split_mode(tmp_path):
+    """A manual multi-GPU layer load must declare --split-mode layer so the
+    backend's intent is unambiguous and cannot be flipped by inherited state.
+    Regression for unslothai/unsloth#10549."""
+    backend, gguf = _backend_non_vulkan(
+        tmp_path,
+        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)],
+    )
+    backend._get_gguf_size_bytes = lambda _path: 1 * 1024**3
+    backend._n_layers = 32
+
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 33,
+        gpu_ids = [0, 1],
+        tensor_split = [3, 1],
+        tensor_parallel = False,
+    )["cmd"]
+
+    assert backend.tensor_parallel is False
+    assert "--split-mode" in cmd
+    assert cmd[cmd.index("--split-mode") + 1] == "layer"
+    assert "--tensor-split" in cmd
+    assert cmd[cmd.index("--tensor-split") + 1] == "3,1"
+
+
+def test_manual_layer_split_scrubs_inherited_split_mode_env(tmp_path, monkeypatch):
+    """A manual multi-GPU layer load must ignore LLAMA_ARG_SPLIT_MODE=none in the
+    parent environment, so planning and the child both agree with the emitted
+    --split-mode layer."""
+    monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "none")
+    backend, gguf = _backend_non_vulkan(
+        tmp_path,
+        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)],
+    )
+    backend._get_gguf_size_bytes = lambda _path: 1 * 1024**3
+    backend._n_layers = 32
+
+    captured = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 33,
+        gpu_ids = [0, 1],
+        tensor_split = [3, 1],
+        tensor_parallel = False,
+    )
+
+    assert captured["env"].get("LLAMA_ARG_SPLIT_MODE") is None
+    assert "--split-mode" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--split-mode") + 1] == "layer"
+
+
 def test_auto_tensor_parallel_honors_user_tensor_split_when_planner_returns_none(tmp_path):
     """When auto tensor planning decides an even split is safe, the user's
     per-GPU ratio must still be emitted instead of being silently ignored.
