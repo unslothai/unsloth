@@ -337,9 +337,7 @@ _FP8_WEIGHT_DTYPES = tuple(
 
 
 def has_mxfp4_base(*projs):
-    """Whether any of ``projs`` (LoRA-wrapped or not) keeps its weight packed in MXFP4. The fused
-    LoRA kernels keep the 16-bit weight they are handed alive until the backward, so layers on
-    a packed base use the PEFT forward, whose base call dequantizes again in backward instead."""
+    """MXFP4-packed base: fused LoRA kernels would hold the 16-bit weight until backward, so use PEFT."""
     return any(
         getattr(type(getattr(p, "base_layer", p)), "_unsloth_mxfp4_packed_linear", False)
         for p in projs

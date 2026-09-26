@@ -270,8 +270,6 @@ def _keys(
 
 def test_key_scan_needs_every_expert_projection_and_nothing_else():
     assert packed_expert_prefixes(_keys()) == {"model.layers.0.mlp": E, "model.layers.1.mlp": E}
-    # A partly packed layer disables the whole scan: its remaining keys would otherwise be
-    # claimed by the stacking converters and dropped as unexpected.
     assert packed_expert_prefixes(_keys(drop = "model.layers.1.mlp.experts.2.w3.weight_scale")) == {}
     extra = ("model.layers.0.mlp.experts.0.w1.weight_shape",)
     assert packed_expert_prefixes(_keys(extra = extra)) == {}
@@ -318,8 +316,6 @@ def test_swap_replaces_every_packed_layer_on_meta():
 
 def test_swap_is_all_or_nothing():
     _, model = _tiny_model("transformers_modules.k3c_swap_b.modeling_tinymoe")
-    # Layer 1's experts are not all packed: layer 0 must not be swapped either, so no
-    # stacking converter can claim layer 1's keys.
     keys = _keys(drop = "model.layers.1.mlp.experts.0.w2.weight_packed")
     assert _swap_planned_stacks(model, keys, torch.bfloat16) == []
     # One packed layer that no module matches.
@@ -384,8 +380,6 @@ def test_expert_lora_stays_opt_in():
 
 
 def test_a_target_list_naming_expert_paths_opts_packed_experts_in():
-    """PEFT matches list entries as dotted suffixes, so `experts.3.w1` or the full module path of
-    one per-expert Linear named it before stacking; those must not be dropped silently."""
     _, model = _tiny_model("transformers_modules.k3c_lora_paths.modeling_tinymoe")
     _swap_planned_stacks(model, _keys(), torch.bfloat16)
     stack = next(n for n, m in model.named_modules() if type(m).__name__ == "Mxfp4StackedExperts")
@@ -402,8 +396,6 @@ def test_a_target_list_naming_expert_paths_opts_packed_experts_in():
 
 
 def test_packed_experts_are_found_under_peft_wrappers():
-    """Expert LoRA wraps `block.experts` in PEFT ParamWrappers (one per parameter); the block
-    must still dispatch to the packed stacks, or it falls back to the port's `len(experts)`."""
     from unsloth.models.remote_moe_shims import _is_packed_experts
 
     _, model = _tiny_model("transformers_modules.k3c_wrapped.modeling_tinymoe")
@@ -686,9 +678,6 @@ def test_compressed_tensors_route_stacks_the_adopted_experts_verbatim():
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 @pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
 def test_remote_code_checkpoint_16bit_load_keeps_packed_stacks(tmp_path, monkeypatch):
-    """A 16-bit load (and any load on transformers without the converter hook) goes through
-    compressed-tensors' own quantizer: its MXFP4 modules are adopted, then each MoE layer's
-    experts are stacked once the weights are in."""
     from transformers import AutoModelForCausalLM
     from unsloth.models.mxfp4_compressed_linear import install_compressed_tensors_keep_packed
 
@@ -741,8 +730,6 @@ def _packed_tiny_model(name):
 
 
 def test_full_save_writes_the_checkpoints_per_expert_keys(tmp_path):
-    """A full save of packed (or merged dense) stacks writes `experts.<i>.w1 / w2 / w3.weight`, the
-    names the remote code loads, drops the MXFP4 config, and leaves the model as it was."""
     from unsloth_zoo.temporary_patches import mxfp4 as mx
 
     mx.patch_save_pretrained_mxfp4()
@@ -820,8 +807,6 @@ def test_dense_save_config_skips_the_dense_modules_under_bitsandbytes():
     reason = "needs compressed-tensors and the transformers 5.8+ loader",
 )
 def test_a_kept_packed_load_registers_no_decompress_op():
-    """Every packed module stays packed, so nothing may be routed through the decompressor;
-    declined, the decompress catch-all is back."""
     from transformers import BitsAndBytesConfig
     from transformers.quantizers import auto as quantizers_auto
     from unsloth.models.compressed_tensors_bnb import (
@@ -899,8 +884,6 @@ def test_packed_expert_targets_follow_the_finetune_family_flags(flags, experts, 
 def test_auto_targets_keep_packed_experts_as_they_kept_the_per_expert_linears(
     kwargs, experts, monkeypatch
 ):
-    """The auto regex is built after stacking, so it no longer names w1 / w2 / w3; before
-    stacking it selected them, and the default and all-linear still must."""
     mod, _ = _tiny_model("transformers_modules.k3s_auto.modeling_tinymoe")
     model = mod.TinyMoeForCausalLM(mod.TinyMoeConfig(num_hidden_layers = 1)).to(torch.bfloat16)
     _swap_planned_stacks(model, _keys(layers = 1), torch.bfloat16)
@@ -926,8 +909,6 @@ def test_a_regex_target_string_opts_packed_experts_in(monkeypatch):
 
 
 def test_nothing_stays_packed_without_the_zoo_full_save_support(monkeypatch):
-    """A kept-packed model saves loadable checkpoints only through unsloth_zoo's save patch; an
-    unsloth_zoo without it keeps the previous route instead."""
     from unsloth_zoo.temporary_patches import mxfp4 as zoo_mxfp4
 
     monkeypatch.delenv("UNSLOTH_MXFP4_KEEP_PACKED", raising = False)
@@ -936,8 +917,6 @@ def test_nothing_stays_packed_without_the_zoo_full_save_support(monkeypatch):
     assert not keep_mxfp4_experts_packed(_mxfp4_plan())
 
 
-# A training-capable remote MoE (DeepSeek-V2/V3 style): its own `if self.training:` branch loops
-# over the experts, so the remote MoE shim leaves it alone.
 TRAINING_MODELING = MODELING.replace(
     """        if not self.training:
             y = self.moe_infer(hidden_states, topk_idx, topk_weight)
@@ -956,9 +935,6 @@ TRAINING_MODELING = MODELING.replace(
 
 
 def test_only_blocks_the_remote_moe_shim_dispatches_are_stacked():
-    """A stack runs only through the shim's dispatch: a block the shim leaves alone (its own
-    training branch, or expert parallel) would index or iterate the stack itself, which breaks
-    under an expert LoRA wrapper. Such experts stay packed one Linear each instead."""
     assert TRAINING_MODELING != MODELING
     _, model = _tiny_model(
         "transformers_modules.k3s_train_branch.modeling_tinymoe", source = TRAINING_MODELING
@@ -973,8 +949,6 @@ def test_only_blocks_the_remote_moe_shim_dispatches_are_stacked():
 
 
 def test_a_packed_linear_without_its_scale_is_not_kept_packed():
-    """Every packed weight needs its scale in the checkpoint: kept packed, a missing one would be
-    left as uninitialised bytes (the loader only reports it as missing)."""
     _, model = _tiny_model("transformers_modules.k3s_noscale.modeling_tinymoe")
     extra = ("model.layers.0.proj.weight_packed", "model.layers.0.proj.weight_scale")
     assert plan_mxfp4_keep_packed(model, _keys(extra = extra)).linears == ["layers.0.proj"]
@@ -983,9 +957,6 @@ def test_a_packed_linear_without_its_scale_is_not_kept_packed():
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_compressed_tensors_route_stacking_stages_gate_up_then_down():
-    """Stacking a layer's adopted experts allocates the gate_up stack, moves w1 / w3 into it
-    (freeing them), and only then the down stack: the transient is the gate_up stack, not the
-    whole layer on top of its per-expert bytes."""
     from unsloth.models.mxfp4_compressed_linear import stack_packed_expert_linears
 
     mod, _ = _tiny_model("transformers_modules.k3s_ct_peak.modeling_tinymoe")

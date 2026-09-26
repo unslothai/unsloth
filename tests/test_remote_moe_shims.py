@@ -497,9 +497,6 @@ def test_a_compound_training_predicate_is_recognised(predicate, trains_in_body):
         sys.modules.pop(module.__name__, None)
 
 
-# moonshotai/Kimi-K3's modeling_kimi_linear.py: a latent MoE. The experts run in a smaller
-# hidden size between `routed_expert_down_proj` and `routed_expert_up_proj` (with an RMSNorm),
-# the gate is not DeepSeek's `MoEGate`, and training raises instead of leaving `y` unbound.
 _KIMI_SRC = """
 import torch
 import torch.nn.functional as F
@@ -596,8 +593,6 @@ def _kimi_module(name):
 
 
 def test_a_latent_moe_trains_through_its_own_projections():
-    """Kimi-K3: the training path must keep the port's latent down/up projections, norm and
-    shared experts, so train mode gives the eval output and every piece gets a gradient."""
     torch.manual_seed(0)
     mod = _kimi_module("transformers_modules.tiny_kimi_k3.modeling_kimi_linear")
     block = mod.KimiSparseMoeBlock(mod.Cfg())

@@ -2934,8 +2934,7 @@ class FastBaseModel:
                 ]
         # Remember the caller's ORIGINAL explicit leaf list for MoE expert detection: routing it through get_peft_regex adds the full "mlp|feed_forward|ffn|dense" block even for attention-only leaves, so keying on that regex would train the experts. Only the auto path relies on the regex.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
-        # The auto regex is built after packed MXFP4 experts were stacked, so it no longer names
-        # their per-expert Linears, which it selected before stacking.
+        # Auto regex is built after MXFP4 expert stacking, so it no longer names per-expert Linears.
         _auto_targets = target_modules is None or target_modules == "all-linear"
 
         # get_peft_regex drops these (no attention/MLP ancestor) and LoRA on them never trains, so redirect before scoping, matching FastLanguageModel.
@@ -3088,7 +3087,6 @@ class FastBaseModel:
                     ] or None
             from .remote_moe_shims import packed_expert_target_parameters
 
-            # The scoped selection: a family scoped out keeps its packed experts untargeted too.
             if _auto_targets and finetune_mlp_modules and finetune_language_layers:
                 _packed_leaves = ("w1", "w2", "w3")
             elif isinstance(_moe_module_detect, (list, tuple, str)):

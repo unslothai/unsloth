@@ -35,9 +35,6 @@ _SUPPORTED_FORMATS = ("pack-quantized", "mxfp4-pack-quantized")
 
 
 def _weights_supported(fmt: str, weights: dict) -> bool:
-    """Whether a config group's weight scheme is one this module can decompress per tensor:
-    integer weight-only 2 to 8 bit for ``pack-quantized``, and the OCP MX FP4 layout (E2M1
-    values, one E8M0 scale per 32) for ``mxfp4-pack-quantized``."""
     kind = str(weights.get("type", "int")).lower()
     bits = int(weights.get("num_bits", 0) or 0)
     if fmt == "mxfp4-pack-quantized":
@@ -46,7 +43,6 @@ def _weights_supported(fmt: str, weights: dict) -> bool:
 
 
 def _describe(plan: dict) -> str:
-    """``INT4``, ``INT4/INT8`` or ``MXFP4``: what the log line calls the packed checkpoint."""
     names = set()
     top = plan.get("format")
     for group in (plan.get("config_groups") or {}).values():
@@ -111,16 +107,7 @@ def _transformers_supports_weight_converters() -> bool:
 
 
 def compressed_tensors_bnb_plan(config) -> Optional[dict]:
-    """Return the compressed-tensors quantization dict when ``config`` describes a checkpoint
-    this module can re-quantize on the fly into bitsandbytes 4-bit, else ``None``.
-
-    Accepted: ``quant_method`` compressed-tensors (or the legacy ``sparseml`` spelling),
-    ``format`` pack-quantized with every config group an integer weight-only scheme, or
-    ``format`` mxfp4-pack-quantized with every group FP4 in groups of 32 (Kimi-K3); no
-    activation quantization and no sparsity compression. FP8, NVFP4 (which also needs a
-    per-tensor global scale), activation quantized (W8A8) and sparse checkpoints are left to
-    their own loaders.
-    """
+    """Quant dict for weight-only, non-sparse pack-quantized (int) or mxfp4-pack-quantized checkpoints; else ``None``."""
     quant = _quant_dict(config)
     if quant is None:
         return None
@@ -421,7 +408,6 @@ def _decompress_one(compressor, scheme, packed, scale, shape, zero_point, g_idx,
     if shape is not None and shape.numel():
         state["weight_shape"] = shape
     else:
-        # int32 words for pack-quantized, uint8 bytes (two FP4 values each) for mxfp4.
         storage_bits = 8 if packed.dtype == torch.uint8 else 32
         pack_factor = storage_bits // int(scheme.weights.num_bits)
         state["weight_shape"] = torch.tensor([packed.shape[0], packed.shape[1] * pack_factor])
@@ -451,8 +437,6 @@ class _DecompressPackedWeights:
 
     def _compressor(self, scheme):
         from compressed_tensors.compressors import BaseCompressor
-
-        # A group that does not name its own format uses the checkpoint's.
         fmt = scheme.format or getattr(self.ct_config, "format", None) or "pack-quantized"
         return BaseCompressor.get_value_from_registry(str(fmt))
 
@@ -613,17 +597,7 @@ class _WithOriginalSources:
         return getattr(self.op, name)
 
 
-# ---------------------------------------------------------------------------------------------
-# MXFP4 weights that stay packed
-# ---------------------------------------------------------------------------------------------
-#
-# A checkpoint that ships in MXFP4 (Kimi-K3's routed experts) stays in MXFP4. Each MoE layer's
-# ModuleList of per-expert w1 / w2 / w3 Linears is swapped, before any weight loads, for one
-# unsloth_zoo `Mxfp4StackedExperts`, and the per-expert packed bytes and e8m0 scales are stacked
-# straight into it by the converters below. Every other packed Linear becomes one
-# `Mxfp4PackedLinear` that the loader fills under the checkpoint's own names. Nothing is
-# decompressed or bitsandbytes quantized; the forward dequantizes per use.
-# UNSLOTH_MXFP4_KEEP_PACKED=0 keeps the previous decompress-and-requantize path.
+# MXFP4 stays packed: MoE experts -> Mxfp4StackedExperts, other Linears -> Mxfp4PackedLinear (UNSLOTH_MXFP4_KEEP_PACKED=0 opts out).
 
 _PACKED_EXPERT_KEY = re.compile(r"^(.*)\.experts\.(\d+)\.(w[123])\.weight_(packed|scale)$")
 _STACKED_EXPERT_TARGETS = (
@@ -635,7 +609,6 @@ _STACKED_EXPERT_TARGETS = (
 
 
 def _plan_is_mxfp4(plan) -> bool:
-    """Every config group of ``plan`` is ``mxfp4-pack-quantized``."""
     if not isinstance(plan, dict):
         return False
     top = plan.get("format")
@@ -646,9 +619,7 @@ def _plan_is_mxfp4(plan) -> bool:
 
 
 def _zoo_saves_packed_modules() -> bool:
-    """unsloth_zoo's full-save patch, which writes kept-packed modules (and Linears a merge made
-    dense) under the checkpoint's own names, is installed. Without it a full save of a
-    kept-packed model writes a checkpoint nothing reloads."""
+    """Without unsloth_zoo's packed save patch a full save writes a checkpoint nothing reloads."""
     try:
         from transformers import PreTrainedModel
         from unsloth_zoo.temporary_patches import mxfp4 as zoo_mxfp4
@@ -661,15 +632,12 @@ def _zoo_saves_packed_modules() -> bool:
 
 
 def keep_mxfp4_experts_packed(plan) -> bool:
-    """Whether an all-MXFP4 checkpoint keeps its packed weights packed (the default)."""
     from .mxfp4_compressed_linear import mxfp4_keep_packed_enabled
     return mxfp4_keep_packed_enabled() and _plan_is_mxfp4(plan) and _zoo_saves_packed_modules()
 
 
 def packed_expert_prefixes(keys) -> dict:
-    """``{moe prefix: expert count}`` for every MoE layer whose experts' w1, w2 and w3 are all
-    stored as MXFP4 bytes plus scales, with nothing else (shape, zero point) alongside. Empty
-    when any layer is only partly so: the stacking converters would claim its keys too."""
+    """{moe prefix: expert count}; empty if any layer is only partly packed (converters would claim its keys)."""
     seen: dict = {}
     for key in keys:
         match = _PACKED_EXPERT_KEY.match(key)
@@ -699,8 +667,6 @@ def _prefix_for(name: str, prefixes: dict) -> Optional[str]:
 
 
 def _plain_expert_shape(experts) -> Optional[tuple]:
-    """(hidden, intermediate) when every expert is w1 / w3 (hidden -> intermediate) and w2
-    (intermediate -> hidden) bias-free Linears with an ``act_fn``, else None."""
     first = experts[0]
     hidden = intermediate = None
     for expert in experts:
@@ -724,9 +690,7 @@ def _plain_expert_shape(experts) -> Optional[tuple]:
 
 
 def _swappable_expert_blocks(model, prefixes) -> Optional[list]:
-    """``[(name, block, prefix, (hidden, intermediate))]`` for every MoE block whose experts the
-    checkpoint packs. ``None`` when any of them is not the plain remote-code layout a stack
-    replaces (or unsloth_zoo has no stacks): then no layer is stacked."""
+    """``None`` unless every packed MoE block is the plain remote-code layout: all or nothing."""
     try:
         from unsloth_zoo.mxfp4_stacked_experts import Mxfp4StackedExperts  # noqa: F401
     except Exception:
@@ -741,7 +705,7 @@ def _swappable_expert_blocks(model, prefixes) -> Optional[list]:
         prefix = _prefix_for(name, prefixes)
         if prefix is None:
             continue
-        # A stack runs only through the remote MoE shim's dispatch, so only blocks it takes.
+        # A stack runs only through the remote MoE shim's dispatch.
         if (
             prefixes[prefix] != len(experts)
             or getattr(module, "ep_size", 1) > 1
@@ -784,10 +748,7 @@ def _swap_in_stacks(blocks, dtype) -> list:
 
 
 def _match_packed_linears(model, keys) -> Optional[dict]:
-    """``{module name: module}`` for the Linear each packed checkpoint module loads into, or
-    ``None`` when any packed module has no per-Linear home in ``model`` (a merged expert
-    stack, or a name the loader renames). Checkpoint and model names may differ by leading
-    components (``model.`` / ``language_model.`` prefixes)."""
+    """Linear per packed checkpoint module (names may differ by leading prefixes); ``None`` if any has no home."""
     prefixes = [k[: -len(".weight_packed")] for k in keys if k.endswith(".weight_packed")]
     if not prefixes:
         return None
@@ -820,18 +781,13 @@ def _match_packed_linears(model, keys) -> Optional[dict]:
 
 
 class Mxfp4KeepPackedPlan:
-    """What of an all-MXFP4 checkpoint stays packed: ``blocks`` (the remote-code MoE blocks
-    whose experts become one stack each) and ``linears`` (every other packed Linear's name)."""
-
     def __init__(self, blocks, linears):
         self.blocks = blocks
         self.linears = linears
 
 
 def plan_mxfp4_keep_packed(model, keys) -> Optional[Mxfp4KeepPackedPlan]:
-    """Plan an all-or-nothing keep-packed load of ``keys`` into ``model``. ``None`` (nothing
-    stays packed; the existing route loads the checkpoint) when there is nothing packed, when a
-    MoE layer is packed only in part, or when a packed module has no home in ``model``."""
+    """All-or-nothing keep-packed plan; ``None`` falls back to the existing decompress route."""
     packed = [k[: -len(".weight_packed")] for k in keys if k.endswith(".weight_packed")]
     if not packed:
         return None
@@ -864,11 +820,7 @@ def _keep_packed_linears(
     ct_config,
     dtype = None,
 ) -> int:
-    """Swap each named Linear for an empty ``Mxfp4PackedLinear`` in compressed-tensors' layout
-    (uint8 ``weight_packed`` / ``weight_scale``, the checkpoint's names), so the loader copies
-    the packed bytes in as they are."""
     from .mxfp4_compressed_linear import make_mxfp4_packed_linear
-
     for name in names:
         old = model.get_submodule(name)
         parent_name, _, child = name.rpartition(".")
@@ -887,9 +839,6 @@ def _keep_packed_linears(
 
 
 class _StackPackedExperts:
-    """transformers ``ConversionOps``: every expert's packed bytes (or scales) of one
-    projection, or of w1 then w3, into the stacked layout ``Mxfp4StackedExperts`` loads."""
-
     def __init__(self, scales: bool):
         self.scales = scales
 
@@ -1000,11 +949,9 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                 if not isinstance(dtype, torch.dtype):
                     dtype = getattr(model, "dtype", None) or torch.bfloat16
                 self._unsloth_ct_dtype = dtype
-                # Keep every packed tensor in its storage dtype through materialisation.
                 keys = _checkpoint_keys(kwargs.get("checkpoint_files"))
                 self._unsloth_dtype_plan = packed_weight_dtype_plan(keys)
-                # An MXFP4 checkpoint stays MXFP4, all or nothing: expert stacks swapped in now,
-                # every other packed Linear after bitsandbytes has laid out the 16-bit ones.
+                # Stacks swapped in now; packed Linears after bitsandbytes lays out the 16-bit ones.
                 keep = (
                     plan_mxfp4_keep_packed(model, keys) if keep_mxfp4_experts_packed(plan) else None
                 )
@@ -1056,7 +1003,6 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
             return super()._process_model_after_weight_loading(model, **kwargs)
 
         def _unsloth_stacking_converters(self, WeightConverter, stack_cls):
-            """Per-expert packed bytes and scales stacked into each MoE layer's stacks."""
             if not self._unsloth_packed_experts:
                 return []
             converters = []
@@ -1088,8 +1034,6 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
             if ct_config is None:
                 return super().update_weight_conversions(weight_conversions)
             if getattr(self, "_unsloth_keep_packed", False):
-                # Every packed module stays packed: the stacks load through the converters below,
-                # the Mxfp4PackedLinears under their own names, and nothing is decompressed.
                 return (
                     list(weight_conversions)
                     + self._unsloth_stacking_converters(WeightConverter, stack_cls)

@@ -54,8 +54,6 @@ except Exception:
 
 from unsloth.models.compressed_tensors_bnb import _transformers_supports_weight_converters
 
-# The bitsandbytes route needs the transformers 5 loader's `update_weight_conversions`
-# (5.5+); on 5.4 an MXFP4 checkpoint loads through compressed-tensors' own quantizer.
 HAS_CONVERTERS = _transformers_supports_weight_converters()
 
 try:
@@ -223,9 +221,6 @@ def test_weight_property_is_an_exact_read_only_decode():
 
 
 def _ct_compressed_model(targets_ignore = (), groups = None):
-    """Three Linears laid out by compressed-tensors itself: quantization config applied, then
-    compressed in memory, with its decompress-on-first-forward hook registered. ``groups``
-    replaces the one MXFP4 group targeting every Linear."""
     from compressed_tensors.compressors import ModelCompressor
     from compressed_tensors.quantization import QuantizationConfig, apply_quantization_config
 
@@ -465,8 +460,6 @@ def test_fast_lora_paths_see_a_transient_decode_and_skip_the_fused_kernels():
 
 
 def _lora_pair(bias = False, scale_range = None):
-    """PEFT LoRA on a packed Linear and on an nn.Linear holding its exact decode, with the same
-    non-zero adapter weights."""
     peft = pytest.importorskip("peft")
     packed = _filled(32, 64, bias = bias)
     if scale_range is not None:
@@ -506,8 +499,6 @@ def test_peft_lora_on_a_packed_linear_matches_the_dense_decode(bias):
 
 
 def test_peft_merge_densifies_exactly_and_unmerge_restores_the_packed_bytes():
-    # Moderate scales and a fixed input: with weights up to 2**23 the bf16 merged-vs-unmerged
-    # comparison below cancels catastrophically for some random inputs.
     packed_model, dense_model = _lora_pair(scale_range = (118, 134))
     x = torch.randn(3, 64, generator = torch.Generator().manual_seed(0)).to(torch.bfloat16)
     base = packed_model.base_model.model[0].base_layer
@@ -538,8 +529,6 @@ def test_peft_merge_densifies_exactly_and_unmerge_restores_the_packed_bytes():
 
 
 def _write_tiny_mxfp4_llama(root):
-    """A 2-layer Llama with every Linear but lm_head packed MXFP4 by compressed-tensors'
-    compressor. Returns (packed_dir, bf16_dir) where bf16_dir holds the exact decode."""
     from safetensors.torch import save_file
     from transformers import LlamaConfig, LlamaForCausalLM
     from compressed_tensors.compressors import BaseCompressor
@@ -722,8 +711,6 @@ def test_mxfp4_checkpoint_stays_packed_and_matches_its_bf16_decode(
     with torch.no_grad():
         assert torch.equal(model_a(input_ids = ids).logits, model_b(input_ids = ids).logits)
     losses_a = _lora_losses(model_a)
-    # Packed layers take the PEFT forward instead of the fused LoRA kernels (those keep the 16-bit
-    # weight until backward); the reference takes the same path, so the losses are bit-identical.
     from unsloth.kernels import apply_lora_o, apply_lora_qkv
 
     for layer in model_a.model.layers:
@@ -759,9 +746,6 @@ def _plain_logits(path, ids):
 @needs_zoo_packed_save
 @_apply(needs_gpu_loader_any)
 def test_full_and_merged_saves_reload_in_plain_transformers(tmp_path, monkeypatch):
-    """A full save writes each packed Linear as its dense `weight` with no MXFP4 config, and a
-    merged_16bit export decodes the packed checkpoint and folds the LoRA in: both reload in
-    plain transformers and equal the in-memory merged model."""
     from safetensors import safe_open
     from unsloth import FastLanguageModel
 
@@ -847,9 +831,6 @@ def _decompress_requests():
 @pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
 @pytest.mark.parametrize("request_kwargs", _decompress_requests(), ids = lambda kw: next(iter(kw)))
 def test_an_explicit_decompress_request_keeps_the_stock_route(request_kwargs, tmp_path):
-    """`run_compressed=False` (transformers 5.4) and `dequantize=True` (5.5+) ask compressed-tensors
-    to decompress after the weights load: nothing may be adopted, or the adopted modules would
-    lose their packed bytes to that decompress and fail on the first forward."""
     from transformers import AutoModelForCausalLM, CompressedTensorsConfig
     from unsloth.models.mxfp4_compressed_linear import install_compressed_tensors_keep_packed
 
@@ -874,8 +855,6 @@ def test_an_explicit_decompress_request_keeps_the_stock_route(request_kwargs, tm
 
 @pytest.mark.parametrize("cast", [torch.float16, torch.float32])
 def test_a_dtype_cast_reaches_the_merge_and_unmerge(cast):
-    """`.to(dtype)` / `.half()` / `.float()` leave the uint8 bytes alone but must move the decode
-    dtype with them, or a PEFT merge writes a weight in the old dtype and the merged forward fails."""
     packed_model, dense_model = _lora_pair(scale_range = (118, 134))  # inside fp16's range
     packed_model.to(cast)
     dense_model.to(cast)
@@ -899,8 +878,6 @@ def test_a_dtype_cast_reaches_the_merge_and_unmerge(cast):
 @needs_zoo_packed_save
 @pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
 def test_the_sixteen_bit_route_decodes_in_the_load_dtype(tmp_path):
-    """transformers 5.x does not hand the load dtype to the quantizer: the adopted modules take
-    the model's dtype, and a PEFT merge on them runs."""
     peft = pytest.importorskip("peft")
     from transformers import AutoModelForCausalLM
     from unsloth.models.mxfp4_compressed_linear import install_compressed_tensors_keep_packed
@@ -924,8 +901,6 @@ def test_the_sixteen_bit_route_decodes_in_the_load_dtype(tmp_path):
 
 @pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
 def test_adoption_declines_a_scheme_that_also_quantizes_activations():
-    """The packed forward only dequantizes the weight; compressed-tensors' own forward also
-    quantizes the input. Adopting such a module would silently drop that."""
     from unsloth.models.mxfp4_compressed_linear import is_mxfp4_scheme
 
     activations = {
@@ -954,8 +929,6 @@ def test_adoption_declines_a_scheme_that_also_quantizes_activations():
 
 @pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
 def test_adoption_declines_when_another_compressed_format_needs_the_hook():
-    """An FP8 module keeps its compressed weight under `weight`; compressed-tensors' model-wide
-    hook still has to decompress it, so the MXFP4 modules are not adopted either."""
     fp8 = {
         "num_bits": 8,
         "type": "float",
@@ -983,9 +956,6 @@ def test_adoption_declines_when_another_compressed_format_needs_the_hook():
 
 @pytest.mark.parametrize("init", ["pissa", "olora"])
 def test_initialisers_that_rewrite_the_base_weight_refuse_a_packed_base(init):
-    """PiSSA / OLoRA (and CorDA, LoftQ, LoRA-GA) subtract their initial adapter from the base
-    weight. On a packed base that write lands in a throwaway decode while the adapter keeps its
-    value, which silently changes the model: refuse instead."""
     peft = pytest.importorskip("peft")
     holder = nn.Sequential(_filled(32, 64))
     with pytest.raises(NotImplementedError, match = "packed in MXFP4"):
@@ -1016,9 +986,6 @@ def test_the_sixteen_bit_route_declines_without_the_zoo_full_save_support(tmp_pa
 @needs_zoo_packed_save
 @_apply(needs_gpu_loader)
 def test_a_partly_merged_bitsandbytes_route_model_saves_and_reloads(tmp_path):
-    """4-bit route, LoRA on q_proj only, merge_and_unload, full save: the merged q_proj is a
-    dense Linear now, the other packed Linears are written dense, and plain transformers reloads
-    both as dense Linears (not bitsandbytes ones) with the in-memory model's outputs."""
     from transformers import AutoModelForCausalLM
     from unsloth import FastLanguageModel
 
@@ -1048,9 +1015,6 @@ def test_a_partly_merged_bitsandbytes_route_model_saves_and_reloads(tmp_path):
 
 
 def test_merge_and_unmerge_under_an_accelerate_hook():
-    """A dispatched model wraps each module's forward and keeps the original as `_old_forward`;
-    the class swaps of a merge and unmerge must carry it along, or the merged forward still runs
-    the packed one on a module whose packed bytes were set aside."""
     pytest.importorskip("accelerate")
     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
@@ -1071,8 +1035,6 @@ def test_merge_and_unmerge_under_an_accelerate_hook():
 @needs_zoo_packed_save
 @_apply(needs_gpu_loader_any)
 def test_the_sixteen_bit_route_plans_only_mxfp4_checkpoints(tmp_path, monkeypatch):
-    """Every compressed-tensors load passes through the hook; one that is not all MXFP4 (INT4
-    Kimi-K2.7 has half a million keys) must not have its keys read or planned."""
     import importlib.util
     import unsloth.models.compressed_tensors_bnb as ctb
     from transformers import AutoModelForCausalLM
@@ -1103,8 +1065,6 @@ def test_the_sixteen_bit_route_plans_only_mxfp4_checkpoints(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("spelling", ["compressed-tensors", "compressed_tensors", "sparseml"])
 def test_every_compressed_tensors_spelling_installs_the_keep_packed_hook(spelling, monkeypatch):
-    """A 16-bit load (requantize_packed=False) never reaches the re-quantization branch, so the
-    keep-packed hook must be installed for every spelling that branch accepts."""
     from types import SimpleNamespace
     from unsloth.models import loader_utils, mxfp4_compressed_linear
 

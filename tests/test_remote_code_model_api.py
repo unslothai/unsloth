@@ -133,8 +133,6 @@ def test_native_classes_are_left_alone():
 
 
 def test_only_the_output_embedding_is_mapped_onto_the_input_embedding():
-    """A 4.x list may also name keys the remote code shares itself (a projection reused across
-    layers); mapping those onto the input embedding would tie them to the wrong tensor."""
     if not _is_transformers5():
         return
     mod = _remote_module("transformers_modules.tiny_remote_d.modeling_tiny")

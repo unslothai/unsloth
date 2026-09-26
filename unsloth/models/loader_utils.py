@@ -2114,16 +2114,10 @@ def check_and_disable_bitsandbytes_loading(
         return load_in_4bit, load_in_8bit, quant_method
 
     if str(quant_method).lower() in ("compressed-tensors", "compressed_tensors", "sparseml"):
-        # An MXFP4 checkpoint stays MXFP4 on every compressed-tensors route, not only the
-        # bitsandbytes one below, whichever spelling its config uses.
         from .mxfp4_compressed_linear import install_compressed_tensors_keep_packed
         install_compressed_tensors_keep_packed()
 
-    # A compressed-tensors packed INT4 / INT8 weight-only checkpoint (W4A16, W8A16) can be
-    # decompressed one tensor at a time while it streams in and re-quantized to bitsandbytes
-    # 4-bit, which is the only form PEFT can attach a LoRA to. When that applies the
-    # checkpoint's own quantization config is dropped from `model_config` here and
-    # `load_in_4bit` stays on.
+    # Packed compressed-tensors: drop its quant config here and keep load_in_4bit for on-the-fly bnb re-quantization.
     if (
         requantize_packed
         and load_in_4bit

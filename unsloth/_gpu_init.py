@@ -336,7 +336,6 @@ fix_transformers_is_torch_fx_available()
 # modules are imported and patched when a checkpoint's own modeling file runs,
 # not on every `import unsloth`.
 fix_transformers5_image_processing_reexports()
-# Remote code written for 4.x: OutputRecorder import, tie_weights keywords, list-form tied keys.
 fix_transformers5_remote_code_model_api()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and

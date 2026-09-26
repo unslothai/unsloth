@@ -755,8 +755,6 @@ def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(
     from unsloth import FastLanguageModel
 
     if variant == "mxfp4":
-        # MXFP4 stays packed by default (tests/test_mxfp4_compressed_linear.py); this is the
-        # opt-out bitsandbytes route.
         monkeypatch.setenv("UNSLOTH_MXFP4_KEEP_PACKED", "0")
     packed_dir, bf16_dir = _write_tiny_packed_llama(
         str(tmp_path),

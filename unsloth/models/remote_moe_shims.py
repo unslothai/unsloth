@@ -59,8 +59,6 @@ def _calls_moe_infer(nodes) -> bool:
 
 
 def _has_own_training_dispatch(body) -> bool:
-    """Whether a `self.training` branch computes the output itself: non-empty, not only a
-    raise, and not through the no-grad `moe_infer`."""
     import ast
 
     def value_in_training(node):
@@ -88,7 +86,6 @@ def _has_own_training_dispatch(body) -> bool:
         return [branch.body] if value else [branch.orelse]
 
     def only_raises(branch):
-        """Kimi-K3's port refuses training with `else: raise NotImplementedError(...)`."""
         return all(
             isinstance(stmt, (ast.Raise, ast.Pass))
             or (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))
@@ -154,16 +151,13 @@ _MISSING = object()
 
 
 def _is_packed_experts(experts) -> bool:
-    # unsloth_zoo's Mxfp4StackedExperts: the routed experts of an MXFP4 checkpoint kept packed,
-    # possibly under PEFT ParamWrappers for expert LoRA.
     while hasattr(experts, "base_layer"):
         experts = experts.base_layer
     return getattr(type(experts), "_unsloth_mxfp4_stacked_experts", False) is True
 
 
 def _packed_moe_dispatch(block, x, topk_idx, topk_weight):
-    """`moe_infer` for packed MXFP4 experts: one grouped GEMM per projection, called through
-    the experts module so a PEFT expert LoRA wrapper around it still applies."""
+    # Through the experts module so a PEFT expert LoRA wrapper still applies.
     return block.experts(x, topk_idx, topk_weight)
 
 
@@ -195,14 +189,7 @@ def _moe_train_dispatch(block, x, topk_idx, topk_weight):
 
 
 def _moe_forward_with_training_path(original):
-    """Run the port's own forward in train mode, with the block and its gate reporting
-    eval and `moe_infer` swapped for the differentiable dispatch on this instance only.
-
-    Everything the port does around the expert mix is kept as written: DeepSeek adds the
-    shared experts, Kimi-K3's latent MoE wraps the mix in `routed_expert_down_proj`, an
-    RMSNorm and `routed_expert_up_proj`. Rebuilding the forward instead would feed the
-    experts the full hidden size and skip those projections."""
-
+    # Reuse the port's forward (eval flags, swapped moe_infer): rebuilding it would skip Kimi-K3's latent projections.
     @functools.wraps(original)
     def forward(self, hidden_states):
         if getattr(self, "ep_size", 1) > 1:
@@ -214,9 +201,7 @@ def _moe_forward_with_training_path(original):
         gate = getattr(self, "gate", None)
         gate_was_training = isinstance(gate, torch.nn.Module) and gate.training
         own = self.__dict__.get("moe_infer", _MISSING)
-        # `training` is a plain attribute; flipping it on the block and its gate changes
-        # only their own `if not self.training` / `assert not self.training` checks, the
-        # experts and projections below keep their train-mode flags.
+        # Plain attribute flip: children keep their train-mode flags.
         self.training = False
         if gate_was_training:
             gate.training = False
@@ -290,7 +275,6 @@ def prepare_remote_moe_for_training(model, verbose = True):
 
 
 def _names_a_packed_expert(entry, stack, leaf):
-    """Whether list entry `entry` is a dotted suffix of some `{stack}.<index>.{leaf}`."""
     parts = entry.split(".")
     template = stack.split(".") + [None, leaf]
     if len(parts) > len(template):
@@ -302,16 +286,8 @@ def _names_a_packed_expert(entry, stack, leaf):
 
 
 def packed_expert_target_parameters(model, target_parameters, requested_leaves):
-    """Expert LoRA on packed MXFP4 experts is opt in, as it was on their per-expert Linears.
-
-    The automatic MoE detection sees the stacks' `gate_up_proj` / `down_proj` and would add
-    them for the default MLP targets; drop those, and add them back only for the leaves that
-    named the per-expert Linears (`w1` / `w3` share the fused `gate_up_proj`, `w2` is
-    `down_proj`). A regex string names them when it matches their original module names, as
-    PEFT's `re.fullmatch` would have before stacking; a list entry when it is a dotted suffix
-    of one (`w1`, `experts.3.w1`, the full path), as PEFT's list matching would have. A stack
-    trains every expert, so a single named expert opts its whole stack in, and only its stack
-    when the request names some layers only."""
+    """Packed MXFP4 expert LoRA stays opt in: keep a stack's gate_up_proj (w1/w3) / down_proj (w2) only if
+    the request named its pre-stacking expert Linears, matched as PEFT would (regex fullmatch / dotted suffix)."""
     counts = {}
     for name, m in model.named_modules():
         if _is_packed_experts(m):

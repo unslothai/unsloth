@@ -2697,10 +2697,6 @@ _REMOTE_MODEL_API_FLAG = "_unsloth_remote_model_api"
 
 
 def _tie_weights_accepting_new_keywords(own, accepted):
-    """``own`` (a remote class's ``tie_weights`` override written for 4.x) wrapped so the keywords
-    transformers 5 passes (``missing_keys``, ``recompute_mapping``) are dropped when it does not
-    take them; anything it does take is forwarded unchanged."""
-
     @functools.wraps(own)
     def tie_weights(self, *args, **kwargs):
         return own(self, *args, **{k: v for k, v in kwargs.items() if k in accepted})
@@ -2727,11 +2723,7 @@ def _patch_remote_model_class(cls, new_keywords):
 
 
 def _legacy_tied_weights_mapping(model, keys):
-    """5 wants ``_tied_weights_keys`` as ``{target: source}``. A 4.x list only named keys that
-    may be tied; the one tie 4.x itself made from it is the output embedding onto the input
-    embedding, so only the output embedding's weight is mapped (resolved on the instance, where
-    both parameter names are known). Any other key, such as a projection shared between layers
-    by the remote code itself, gets no source rather than a wrong one."""
+    """4.x list -> 5.x {target: source}; only the output embedding is tied (the one tie 4.x made), other keys get no source rather than a wrong one."""
     try:
         embedding = model.get_input_embeddings()
         output = model.get_output_embeddings()
@@ -2756,22 +2748,9 @@ def _legacy_tied_weights_mapping(model, keys):
 
 
 def fix_transformers5_remote_code_model_api():
-    """Let 4.x-era remote modeling code (moonshotai/Kimi-K3's ``modeling_kimi_linear.py``) import
-    and build on transformers 5, which changed three model-side APIs it relies on:
-
-    * ``transformers.utils.generic.OutputRecorder`` moved to ``transformers.utils.output_capturing``;
-      the remote module fails at import with ``ImportError: cannot import name 'OutputRecorder'``.
-      Restored as an alias, which has to happen before the remote module is imported.
-    * ``tie_weights`` is called with ``missing_keys`` / ``recompute_mapping``; a 4.x override
-      ``def tie_weights(self)`` raises ``TypeError`` from ``post_init``. Remote subclasses get a
-      wrapper that drops the keywords they do not accept.
-    * ``_tied_weights_keys`` became a ``{target: source}`` mapping; a 4.x list raises
-      ``AttributeError: 'list' object has no attribute 'keys'``. A list is turned into the mapping
-      onto the model's own input embeddings in ``post_init``, the 4.x meaning.
-
-    Only classes from ``transformers_modules`` are touched, and each part is a no-op on a
-    transformers that still has the old API (4.57), so native models keep 5.x's behaviour.
-    """
+    """Transformers 5 shims for 4.x remote code (Kimi-K3): OutputRecorder alias (before remote import),
+    tie_weights dropping new keywords, list _tied_weights_keys -> mapping. Only transformers_modules
+    classes; no-op on 4.57."""
     try:
         import transformers.utils.generic as generic
     except Exception:
@@ -2798,8 +2777,6 @@ def fix_transformers5_remote_code_model_api():
     @functools.wraps(original_post_init)
     def post_init(self, *args, **kwargs):
         keys = getattr(self, "_tied_weights_keys", None)
-        # 4.x reads the list itself; only the 5.x loader (the one with the new tie_weights
-        # keywords) needs the mapping.
         if (
             new_keywords
             and isinstance(keys, (list, tuple))
