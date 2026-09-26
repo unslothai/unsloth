@@ -5131,11 +5131,11 @@ export function HubModelPicker({
       return keys;
     }
 
-    // Pinned rows sit above the Unsloth heading on the On Device tab. Fine-tunes do not wait
-    // for the cache scan, since they render before it settles.
+    // Pinned rows sit above the Unsloth heading on the On Device tab. They render before the
+    // cache scan settles, so their keys do not wait for it either.
     if (section === "downloaded" && !pinnedCollapsed && pinnedRows.length > 0) {
       keys.push(
-        ...pinnedRows.filter((row) => cachedReady || row.fineTuned).map((row) =>
+        ...pinnedRows.map((row) =>
           row.entry
             ? pinnedSoleQuantRows.has(row.key)
               ? makeModelOptionKey("downloaded-gguf", row.entry.repoId)
