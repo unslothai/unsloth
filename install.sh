@@ -5195,8 +5195,7 @@ get_torch_index_url() {
                     echo "$_base/cpu"; return ;;
             esac
             # Normalise to major.minor; 6.5+ clips to rocm6.4, 7.3+ caps to rocm7.2.
-            # Captured so the cap can be named below. Leading ( on every pattern: bash 3.2 (macOS /bin/sh) misparses a bare
-            # pattern) inside $(...) as the end of the substitution and aborts the whole script.
+            # Leading ( on every arm: bash 3.2 (macOS /bin/sh) ends $(...) at a bare pattern) and aborts the script.
             _rocm_index=$(case "$_rocm_tag" in
                 (rocm6.0|rocm6.0.*) echo "$_base/rocm6.0" ;;
                 (rocm6.1|rocm6.1.*) echo "$_base/rocm6.1" ;;
@@ -5211,8 +5210,7 @@ get_torch_index_url() {
                 (*)
                     echo "$_base/rocm7.2" ;;
             esac)
-            # A silent cap reads as failed detection (#7264, #9932, #10657). No UNSLOTH_TORCH_INDEX_FAMILY
-            # hint: newer leaves carry nothing inside _TORCH_CEILING, so pinning one fails to resolve.
+            # No UNSLOTH_TORCH_INDEX_FAMILY hint: newer leaves have nothing inside _TORCH_CEILING (#10657).
             _rocm_leaf=${_rocm_index##*/}
             if [ "$_rocm_tag" != "$_rocm_leaf" ]; then
                 echo "[INFO] No validated PyTorch for ROCm ${_rocm_tag#rocm}; capping to the $_rocm_leaf index (its wheels bundle their own runtime, so this is expected)." >&2

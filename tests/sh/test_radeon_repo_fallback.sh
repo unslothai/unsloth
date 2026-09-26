@@ -56,15 +56,12 @@ assert_eq "HTTP 503 -> outage, inconclusive" \
 assert_eq "HTTP 429 -> rate limit, inconclusive" \
     "fail answered=inconclusive" "$(run_fetch 22 429)"
 
-# 2) Connection refused (7).
 assert_eq "connection refused -> inconclusive" \
     "fail answered=inconclusive" "$(run_fetch 7 000)"
 
-# 3) Timeout (28).
 assert_eq "timeout -> inconclusive" \
     "fail answered=inconclusive" "$(run_fetch 28 000)"
 
-# 4) Served listing.
 _curl_dir=$(mktemp -d)
 cat > "$_curl_dir/curl" <<'STUB'
 #!/bin/sh
@@ -143,7 +140,6 @@ assert_eq "no curl, wget HTTP error -> inconclusive" \
 assert_eq "no curl, wget network failure -> inconclusive" \
     "fail answered=inconclusive" "$(run_fetch_wget 4)"
 
-# 7) The not-published arm precedes the unreachable arm.
 _answered_line=$(grep -n 'elif \[ "\$_RADEON_HOST_ANSWERED" = true \]; then' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _unreachable_line=$(grep -n 'Radeon repo unreachable' "$INSTALL_SH" | head -1 | cut -d: -f1)
 assert_eq "not-published arm precedes the unreachable arm" "yes" \

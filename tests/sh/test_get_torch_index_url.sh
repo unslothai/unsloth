@@ -671,19 +671,16 @@ _result=$(run_func_stderr "$_dir")
 assert_contains "ROCm 7.14 cap is explained on stderr" "$_result" "No validated PyTorch for ROCm 7.14;"
 rm -rf "$_dir"
 
-# 53) A validated version stays silent.
 _dir=$(make_mock_amd_smi "7.2")
 _result=$(run_func_stderr "$_dir")
 assert_not_contains "ROCm 7.2 prints no cap note" "$_result" "No validated PyTorch"
 rm -rf "$_dir"
 
-# 54) Below the newest leaf: rocm6.3 is served as itself.
 _dir=$(make_mock_amd_smi "6.3")
 _result=$(run_func_stderr "$_dir")
 assert_not_contains "ROCm 6.3 prints no cap note" "$_result" "No validated PyTorch"
 rm -rf "$_dir"
 
-# 55) 6.5+ clips to rocm6.4.
 _dir=$(make_mock_amd_smi "6.5")
 _result=$(run_func "$_dir")
 assert_eq "ROCm 6.5 -> rocm6.4 (clipped)" "https://download.pytorch.org/whl/rocm6.4" "$_result"
@@ -691,8 +688,7 @@ _result=$(run_func_stderr "$_dir")
 assert_contains "ROCm 6.5 clip is explained on stderr" "$_result" "No validated PyTorch for ROCm 6.5;"
 rm -rf "$_dir"
 
-# 56) bash 3.2 (macOS /bin/sh) ends $(...) at a bare `pattern)`, aborting the whole script: every
-# arm of the captured case needs its leading (.
+# bash 3.2 (macOS /bin/sh) ends $(...) at a bare `pattern)`.
 _bare_arms=$(sed -n '/_rocm_index=\$(case "\$_rocm_tag" in/,/^[[:space:]]*esac)/p' "$INSTALL_SH" \
     | grep -v '^[[:space:]]*esac)' | grep -E '^[[:space:]]*[^([:space:]#][^[:space:]]*\)' || true)
 _n_arms=$(sed -n '/_rocm_index=\$(case "\$_rocm_tag" in/,/^[[:space:]]*esac)/p' "$INSTALL_SH" | grep -cE '^[[:space:]]*\(' || true)
