@@ -25,6 +25,7 @@ export {
   loadModel,
   unloadModel,
   notifyChatHistoryUpdated,
+  notifyChatProjectsUpdated,
   removeScanFolder,
   revealCachedModel,
   revealFineTunedModel,
