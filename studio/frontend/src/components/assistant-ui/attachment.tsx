@@ -52,6 +52,7 @@ import {
   File01Icon,
   File02Icon,
   TextAlignLeft01Icon,
+  Video01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronRightIcon, PlusIcon, XIcon } from "lucide-react";
@@ -69,9 +70,15 @@ import {
 } from "react";
 import { ScrollPane } from "./scroll-pane";
 
+// The video adapter types every clip it takes as video/*. Checked before the audio names, which
+// include .mp4 and .webm.
+const isVideoAttachment = (attachment: unknown): boolean =>
+  /^video\//i.test((attachment as { contentType?: string }).contentType ?? "");
+
 const AttachmentThumb: FC = () => {
   const src = useAttachmentImageSrc();
   const name = useAuiState(({ attachment }) => attachment.name);
+  const isVideo = useAuiState(({ attachment }) => isVideoAttachment(attachment));
   const contentType = useAuiState(
     ({ attachment }) =>
       (attachment as { file?: File }).file?.type ??
@@ -93,7 +100,11 @@ const AttachmentThumb: FC = () => {
     <div className="flex h-full w-full items-center justify-center">
       <HugeiconsIcon
         icon={
-          isAudioAttachment(name, contentType) ? AudioWave01Icon : File02Icon
+          isVideo
+            ? Video01Icon
+            : isAudioAttachment(name, contentType)
+              ? AudioWave01Icon
+              : File02Icon
         }
         strokeWidth={2}
         className="size-6 text-muted-foreground"
@@ -481,6 +492,7 @@ const AttachmentUI: FC = () => {
       case "document":
         return "Document";
       case "file":
+        if (isVideoAttachment(attachment)) return "Video";
         return isAudioAttachment(
           attachment.name,
           (attachment as { file?: File }).file?.type ?? "",

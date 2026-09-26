@@ -206,8 +206,13 @@ test("attaching no longer needs a loaded model, only a capable one when one is l
 test("every attachment opens in the Library's viewer, from the composer and from a message", async () => {
   const preview = await readSrcAsync("components/assistant-ui/attachment-preview.tsx");
   const viewer = await readSrcAsync("components/assistant-ui/attachment-document-dialog.tsx");
-  // Images, source and text files, clips and documents all go through one frame.
-  for (const dialog of ["AttachmentImageDialog", "AttachmentTextDialog", "AttachmentAudioDialog"]) {
+  // Images, source and text files, clips, videos and documents all go through one frame.
+  for (const dialog of [
+    "AttachmentImageDialog",
+    "AttachmentTextDialog",
+    "AttachmentAudioDialog",
+    "AttachmentVideoDialog",
+  ]) {
     const body = preview.slice(preview.indexOf(`const ${dialog}: FC`));
     assert.match(body, /^[\s\S]*?<AttachmentViewer\n/, dialog);
   }
@@ -258,4 +263,9 @@ test("a sent text file downloads whole, not the capped preview", async () => {
   const preview = await readSrcAsync("components/assistant-ui/attachment-preview.tsx");
   assert.match(preview, /new Blob\(\[attachmentBodyText\(sentText\)\]/);
   assert.doesNotMatch(preview, /new Blob\(\[ready\.text\]/);
+});
+
+test("a composer clip reads as a video, not by its .mp4 name as audio", () => {
+  assert.match(ATTACHMENT, /if \(isVideoAttachment\(attachment\)\) return "Video";\n\s*return isAudioAttachment\(/);
+  assert.match(ATTACHMENT, /isVideo\n\s*\? Video01Icon\n\s*: isAudioAttachment\(name, contentType\)/);
 });

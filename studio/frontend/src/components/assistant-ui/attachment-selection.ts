@@ -5,15 +5,20 @@ import { documentKind } from "@/components/file-viewer/kind";
 import { isAudioAttachment } from "@/features/chat/attachment-content";
 
 /** "document": shown as it looks (pages, a grid, slides or rendered markdown), not as text. */
-export type AttachmentPreviewKind = "image" | "audio" | "text" | "document";
+export type AttachmentPreviewKind = "image" | "audio" | "video" | "text" | "document";
 
 export type AttachmentAudioPart = { data: string; format: string };
+
+/** A sent clip's file part: raw base64, or a data URL, under a video MIME type. */
+export type AttachmentVideoPart = { data: string; mimeType: string };
 
 type AttachmentContentPart = {
   type: string;
   text?: string;
   image?: string;
   audio?: AttachmentAudioPart;
+  data?: string;
+  mimeType?: string;
 };
 
 export type AttachmentSelection = {
@@ -23,6 +28,7 @@ export type AttachmentSelection = {
   file: File | undefined;
   image: string | undefined;
   audio: AttachmentAudioPart | undefined;
+  video: AttachmentVideoPart | undefined;
   text: string | undefined;
   /** A sent document whose original file the server kept (features/chat/attachment-originals). */
   hasOriginal: boolean;
@@ -30,6 +36,7 @@ export type AttachmentSelection = {
 
 const MARKDOWN_NAME = /\.(md|markdown|mdx)$/i;
 const DELIMITED_NAME = /\.(csv|tsv)$/i;
+const VIDEO_MIME = /^video\//i;
 
 /** Whether the viewer has content: the file, a kept original, or full text (markdown, CSV). */
 function isViewableDocument(
@@ -69,9 +76,17 @@ export const selectAttachmentSource = ({
     (attachment as { contentType?: string }).contentType ||
     undefined;
   const audio = parts.find((part) => part.type === "audio")?.audio;
+  const video = parts.find(
+    (part): part is AttachmentContentPart & AttachmentVideoPart =>
+      part.type === "file" && Boolean(part.data) && VIDEO_MIME.test(part.mimeType ?? ""),
+  );
   const isImage = attachment.type === "image";
+  // Before audio: the audio names include .mp4 and .webm, which a clip shares.
+  const isVideo = !isImage && !audio && (!!video || VIDEO_MIME.test(contentType ?? ""));
   const isAudio =
-    !isImage && (!!audio || isAudioAttachment(attachment.name, contentType));
+    !isImage &&
+    !isVideo &&
+    (!!audio || isAudioAttachment(attachment.name, contentType));
   const text = parts
     .filter((part) => part.type === "text")
     .map((part) => part.text)
@@ -80,10 +95,19 @@ export const selectAttachmentSource = ({
   const isDocument =
     !isImage &&
     !isAudio &&
+    !isVideo &&
     isViewableDocument(attachment.name, contentType, file, hasOriginal, Boolean(text));
 
   return {
-    kind: isImage ? "image" : isAudio ? "audio" : isDocument ? "document" : "text",
+    kind: isImage
+      ? "image"
+      : isVideo
+        ? "video"
+        : isAudio
+          ? "audio"
+          : isDocument
+            ? "document"
+            : "text",
     name: attachment.name,
     contentType,
     file,
@@ -91,6 +115,7 @@ export const selectAttachmentSource = ({
       ? parts.find((part) => part.type === "image")?.image
       : undefined,
     audio: isImage ? undefined : audio,
+    video: isVideo ? video : undefined,
     text: text || undefined,
     hasOriginal,
   };

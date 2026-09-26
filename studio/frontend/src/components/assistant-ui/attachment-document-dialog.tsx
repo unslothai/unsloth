@@ -45,7 +45,7 @@ export const AttachmentViewer: FC<{
   source: Pick<AttachmentSource, "name" | "contentType">;
   meta: string;
   media: boolean;
-  noun: "image" | "clip" | "file";
+  noun: "image" | "video" | "clip" | "file";
   redactFromReload: boolean;
   /** The attachment's bytes, for the download and the chat. Unset while they are not ready. */
   load?: () => Promise<Blob>;

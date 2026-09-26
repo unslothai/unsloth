@@ -5,7 +5,7 @@
 
 // Every attachment opens in the Library's viewer, from the composer and from a sent message:
 // images zoom as they do there, documents show their pages, grid or slides, source files their
-// highlighted code, web pages render, and clips play. Nothing is read until a viewer opens.
+// highlighted code, web pages render, and clips and videos play. Nothing is read until a viewer opens.
 
 import {
   AttachmentDocumentDialog,
@@ -17,6 +17,7 @@ import {
 } from "@/components/assistant-ui/attachment-viewer-meta";
 import { AudioPlayer } from "@/components/assistant-ui/audio-player";
 import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
+import type { AttachmentVideoPart } from "@/components/assistant-ui/attachment-selection";
 import {
   type AttachmentSource,
   useAttachmentSource,
@@ -368,6 +369,59 @@ const AttachmentAudioDialog: FC<
   );
 };
 
+/** A sent clip's file part as a URL the player can read. The part may already be a data URL. */
+const attachmentVideoSrc = (video: AttachmentVideoPart): string =>
+  video.data.startsWith("data:") ? video.data : `data:${video.mimeType};base64,${video.data}`;
+
+/** The player, and, as for audio, the only place a sent clip's data URL is built. */
+const AttachmentVideoBody: FC<{ source: AttachmentSource; onError: () => void }> = ({
+  source,
+  onError,
+}) => {
+  const src = useMemo(
+    () => source.src ?? (source.video ? attachmentVideoSrc(source.video) : undefined),
+    [source.src, source.video],
+  );
+  return src ? (
+    <video src={src} controls autoPlay onError={onError} className="size-full object-contain" />
+  ) : null;
+};
+
+const AttachmentVideoDialog: FC<
+  PropsWithChildren<{ source: AttachmentSource; redactFromReload?: boolean }>
+> = ({ children, source, redactFromReload = false }) => {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const { file, src, video } = source;
+  return (
+    <AttachmentViewer
+      trigger={children}
+      open={open}
+      onOpenChange={setOpen}
+      source={source}
+      meta={attachmentViewerMeta(source, file?.size)}
+      media={!failed}
+      noun="video"
+      redactFromReload={redactFromReload}
+      // Built on click, like the player's: a sent clip is only base64 until someone asks for it.
+      load={
+        file
+          ? () => Promise.resolve(file)
+          : src || video
+            ? () => fetchBlob(src ?? attachmentVideoSrc(video!))
+            : undefined
+      }
+    >
+      {failed ? (
+        <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>
+      ) : (
+        <AttachmentVideoBody source={source} onError={() => setFailed(true)} />
+      )}
+    </AttachmentViewer>
+  );
+};
+
 export const AttachmentPreviewDialog: FC<
   /** Composer attachments are local and unsent, so keep them out of the reload snapshot. */
   PropsWithChildren<{ redactFromReload?: boolean }>
@@ -389,6 +443,16 @@ export const AttachmentPreviewDialog: FC<
       <AttachmentAudioDialog source={source} redactFromReload={redactFromReload}>
         {children}
       </AttachmentAudioDialog>
+    ) : (
+      children
+    );
+  }
+
+  if (source.kind === "video") {
+    return source.src || source.video ? (
+      <AttachmentVideoDialog source={source} redactFromReload={redactFromReload}>
+        {children}
+      </AttachmentVideoDialog>
     ) : (
       children
     );

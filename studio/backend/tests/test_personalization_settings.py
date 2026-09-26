@@ -617,6 +617,41 @@ def test_personalization_legacy_chat_width_presence(monkeypatch):
     assert body["appearance"]["customization"]["uiFont"] == "Arial"
 
 
+def test_personalization_legacy_attachment_display_presence(monkeypatch):
+    store = {
+        pers.PERSONALIZATION_SETTING_KEY: {
+            "appearance": {"customization": {"chatWidth": "wide"}},
+        }
+    }
+    client = _shared_setup_1(monkeypatch, store)
+    body = client.get("/api/settings/personalization").json()
+    assert body["customizationSaved"] is True
+    assert body["composerAttachmentsSaved"] is False
+    assert body["sentAttachmentsSaved"] is False
+    assert body["appearance"]["customization"]["composerAttachments"] == "cards"
+    assert body["appearance"]["customization"]["sentAttachments"] == "auto"
+
+    put = client.put(
+        "/api/settings/personalization",
+        json = {"appearance": {"customization": {"composerAttachments": "compact"}}},
+    )
+    assert put.status_code == 200
+    body = client.get("/api/settings/personalization").json()
+    assert body["composerAttachmentsSaved"] is True
+    assert body["sentAttachmentsSaved"] is False
+    assert body["appearance"]["customization"]["composerAttachments"] == "compact"
+
+    put = client.put(
+        "/api/settings/personalization",
+        json = {"appearance": {"customization": {"sentAttachments": "chips"}}},
+    )
+    assert put.status_code == 200
+    body = client.get("/api/settings/personalization").json()
+    assert body["sentAttachmentsSaved"] is True
+    assert body["appearance"]["customization"]["sentAttachments"] == "chips"
+    assert body["appearance"]["customization"]["composerAttachments"] == "compact"
+
+
 @pytest.mark.parametrize("width", ["standard", "wide", "full"])
 def test_personalization_saved_chat_width_survives_stale_write(monkeypatch, width):
     store = {
