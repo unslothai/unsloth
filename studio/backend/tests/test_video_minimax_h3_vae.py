@@ -978,13 +978,17 @@ def test_enabling_cudnn_benchmark_mid_decode_lands_after_it(monkeypatch, _ampere
     [
         ((7, 5), False),
         ((8, 0), True),
-        ((8, 9), True),
+        ((8, 6), False),
+        ((8, 9), False),
+        ((9, 0), False),
         ((10, 0), True),
         ((12, 0), True),
         (RuntimeError("no GPU"), False),
     ],
 )
-def test_the_audio_vae_keeps_the_search_before_ampere(monkeypatch, capability, installs):
+def test_the_audio_vae_keeps_the_search_where_it_was_not_measured_to_gain_nothing(
+    monkeypatch, capability, installs
+):
     def probe(device = None):
         if isinstance(capability, Exception):
             raise capability

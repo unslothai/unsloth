@@ -1178,12 +1178,15 @@ def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
     return True
 
 
+# Where skipping the audio VAE's cudnn.benchmark search was measured to cost at most ~1.4% (1.2 ms) per steady-state
+# call: A100, B200, RTX PRO 6000. It still won 17-19% on a T4 and 2-8% on an L4, so those and unmeasured GPUs keep it.
+_AUDIO_VAE_NO_SEARCH_CAPABILITIES = frozenset({(8, 0), (10, 0), (12, 0)})
+
+
 def _audio_vae_search_gains_nothing() -> bool:
-    """sm80+ (TF32 convs): the heuristic pick matched the searched one on A100, B200 and RTX PRO 6000. On a T4 the
-    search still won 17-19% per call, so pre-Ampere cards, and any failed probe, keep it."""
     try:
         import torch
-        return torch.cuda.get_device_capability()[0] >= 8
+        return tuple(torch.cuda.get_device_capability()) in _AUDIO_VAE_NO_SEARCH_CAPABILITIES
     except Exception:  # noqa: BLE001
         return False
 
