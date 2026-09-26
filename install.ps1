@@ -2790,9 +2790,14 @@ exit 1
         }
         foreach ($candidate in $candidates) {
             if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
-            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+            # Under Stop an unreadable directory makes Test-Path throw; that rules out this
+            # candidate only, and the next one (or the lexical rung) still gets its turn.
+            $isFile = $false
+            try { $isFile = Test-Path -LiteralPath $candidate -PathType Leaf } catch {}
+            if (-not $isFile) { continue }
             # Probe the interpreter's own directory: $PSScriptRoot is empty under `irm | iex`.
-            $probeDir = [System.IO.Path]::GetDirectoryName($candidate)
+            $probeDir = $null
+            try { $probeDir = [System.IO.Path]::GetDirectoryName($candidate) } catch {}
             if ([string]::IsNullOrWhiteSpace($probeDir)) { continue }
             $probe = Invoke-StudioEarlyPython -Exe $candidate -Path $probeDir
             if (-not [string]::IsNullOrWhiteSpace($probe)) {
@@ -2817,6 +2822,7 @@ exit 1
                   "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
                   "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
         $proc = $null
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $Exe
@@ -2845,6 +2851,10 @@ exit 1
                 return $null
             }
             if ($proc.ExitCode -ne 0) { return $null }
+            # A child the interpreter left running can hold stdout open after it exits, so the
+            # deadline bounds the read as well as the exit.
+            $left = [Math]::Max(0, $TimeoutMs - [int]$clock.ElapsedMilliseconds)
+            if (-not $stdout.Wait($left)) { return $null }
             # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
             $answer = "$($stdout.Result)"
             if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
@@ -2868,7 +2878,9 @@ exit 1
         if ($script:StudioPythonFinalPathCache.ContainsKey($Path)) {
             return $script:StudioPythonFinalPathCache[$Path]
         }
-        $exe = Get-StudioEarlyPython
+        # An optional rung: whatever goes wrong choosing an interpreter declines to the lexical one.
+        $exe = $null
+        try { $exe = Get-StudioEarlyPython } catch {}
         # Not cached: the re-probe once $VenvDir is known may still find an interpreter.
         if (-not $exe) { return $null }
         $answer = Invoke-StudioEarlyPython -Exe $exe -Path $Path
