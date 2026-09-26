@@ -730,20 +730,27 @@ def _flex_attn_impl_for(config, other_attn_implementation):
 def _flash_unsupported_sub_configs(config):
     """{sub-config: fallback} for towers lacking flash, which Transformers rejects (LFM2-VL SigLIP2)."""
     try:
-        from transformers import AutoModel
-        mapping = AutoModel._model_mapping
+        from transformers import AutoModel, AutoModelForCausalLM
+        mappings = (AutoModel._model_mapping, AutoModelForCausalLM._model_mapping)
     except Exception:
         return {}
+    # Encoder-decoder composites (Donut, MusicGen) name their towers "encoder" / "decoder".
+    declared = getattr(config, "sub_configs", None) or ()
     out = {}
     for field_name, child_config in _config_items(config):
-        if not (isinstance(field_name, str) and field_name.endswith("_config")):
+        if not isinstance(field_name, str):
+            continue
+        if not (field_name.endswith("_config") or field_name in declared):
             continue
         if not hasattr(child_config, "model_type"):
             continue
-        try:
-            child_class = mapping[type(child_config)]
-        except Exception:
-            continue
+        child_class = None
+        for mapping in mappings:
+            try:
+                child_class = mapping[type(child_config)]
+                break
+            except Exception:
+                continue
         if isinstance(child_class, (list, tuple)):
             child_class = child_class[0] if child_class else None
         if child_class is None:
