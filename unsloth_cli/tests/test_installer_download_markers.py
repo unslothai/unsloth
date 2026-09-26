@@ -97,6 +97,7 @@ def _sh_harness(child: str) -> str:
 {_extract_default()}
 {_extract("_uv_download_markers")}
 {_extract("_ric_tee")}
+{_extract("_ric_run")}
 {_extract("_run_install_cmd_once")}
 {_extract("run_install_cmd")}
 run_install_cmd "install PyTorch" sh -c '{child}'

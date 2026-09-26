@@ -213,10 +213,16 @@ _uv_download_markers() {
 }
 
 run_install_cmd() {
+    # Nothing armed (outside mainland China): the plain runner, set -e and all.
+    if [ -z "${_UNSLOTH_MIRROR_SPARE:-}" ]; then
+        _run_install_cmd_once "$@"
+        return
+    fi
     _run_install_cmd_once "$@" || _mirror_retry_install "$?" "$@"
 }
 
 _mirror_retry_install() {
+    [ -n "${_UNSLOTH_MIRROR_SPARE:-}" ] || return "$1"
     _mri_rc=$1
     _mri_label=$2
     shift 2
@@ -250,6 +256,15 @@ _mirror_retry_install() {
     fi
 }
 
+_ric_run() {
+    if "$@" 2>&1; then
+        _cmd_rc=0
+    else
+        _cmd_rc=$?
+    fi
+    printf '%s' "$_cmd_rc" > "$_rcf"
+}
+
 # No tee (minimal images) only loses the mirror retry.
 _ric_tee() {
     if command -v tee >/dev/null 2>&1; then tee "$1"; else cat; fi
@@ -258,7 +273,7 @@ _ric_tee() {
 _run_install_cmd_once() {
     _label="$1"
     shift
-    rm -f "${_ric_log:-}"
+    [ -z "${_ric_log:-}" ] || rm -f "$_ric_log"
     _ric_log=""
     if [ -n "${_ric_torch_mirror:-}" ]; then
         _ric_n=$#
@@ -274,24 +289,23 @@ _run_install_cmd_once() {
     case " $* " in
         *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS -u UV_CONFIG_FILE UV_NO_CONFIG=1 "$@" ;;
     esac
-    _log=$(mktemp)
     if _is_verbose; then
         # Stream through the redactor; the rc file carries the exit code (no pipefail in sh).
         _rcf=$(mktemp)
         tauri_stream_log stdout "OUTPUT_CLEAR" "$_label"
-        {
-            if "$@" 2>&1; then
-                _cmd_rc=0
-            else
-                _cmd_rc=$?
-            fi
-            printf '%s' "$_cmd_rc" > "$_rcf"
-        } | _ric_tee "$_log" | _uv_download_markers "" "$UNSLOTH_DL_MARKER_MIN_BYTES" | _redact_install_output
+        # A copy of the output is kept only for an armed mirror retry to read.
+        _log=""
+        if [ -n "${_UNSLOTH_MIRROR_SPARE:-}" ]; then
+            _log=$(mktemp)
+            _ric_run "$@" | _ric_tee "$_log" | _uv_download_markers "" "$UNSLOTH_DL_MARKER_MIN_BYTES" | _redact_install_output
+        else
+            _ric_run "$@" | _uv_download_markers "" "$UNSLOTH_DL_MARKER_MIN_BYTES" | _redact_install_output
+        fi
         _rc=$(cat "$_rcf" 2>/dev/null || echo 1)
         rm -f "$_rcf"
         _rc=${_rc:-1}
         if [ "$_rc" -eq 0 ] 2>/dev/null; then
-            rm -f "$_log"
+            [ -z "$_log" ] || rm -f "$_log"
             tauri_clear_install_error "$_label recovered"
             return 0
         fi
@@ -300,6 +314,7 @@ _run_install_cmd_once() {
         step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
         return "$_rc"
     fi
+    _log=$(mktemp)
     _rcf=$(mktemp)
     tauri_stream_log stderr "OUTPUT_CLEAR" "$_label"
     # rc file because the marker filter is a pipe, and plain sh reports only its last stage.
@@ -322,7 +337,7 @@ _run_install_cmd_once() {
     step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
     _redact_install_output "$_log" >&2
     tauri_stream_log stderr "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
-    _ric_log=$_log
+    if [ -n "${_UNSLOTH_MIRROR_SPARE:-}" ]; then _ric_log=$_log; else rm -f "$_log"; fi
     return $_rc
 }
 
@@ -1322,6 +1337,7 @@ _cleanup_install_temporaries() {
     [ -n "${_UIP_STAGE:-}" ] && rm -f "$_UIP_STAGE" 2>/dev/null || true
     [ -n "${_UIP_STAGE2:-}" ] && rm -f "$_UIP_STAGE2" 2>/dev/null || true
     [ -n "${_ROCM_TAG_MEMO_DIR:-}" ] && rm -rf "$_ROCM_TAG_MEMO_DIR" 2>/dev/null || true
+    [ -n "${_ric_log:-}" ] && rm -f "$_ric_log" 2>/dev/null || true
     # The probe's ceiling is held by this shell, so a cancel during one would otherwise leave the
     # candidate (and, under monitor mode, its whole group) running with nobody left to stop it.
     if [ -n "${_UV_PROBE_TARGET:-}" ] && [ -n "${_UV_PROBE_PID:-}" ]; then
@@ -3401,15 +3417,24 @@ _mirror_in_china() {
     case "${_mcn_tz#:}" in
         *Asia/Shanghai|*Asia/Chongqing|*Asia/Chungking|*Asia/Harbin|*Asia/Urumqi|*Asia/Kashgar|PRC|*/PRC) return 0 ;;
     esac
-    grep -Eqs '^[[:space:]]*nameserver[[:space:]]+(223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[45]|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98))[[:space:]]*$' /etc/resolv.conf /run/systemd/resolve/resolv.conf
+    grep -Eqs '^[[:space:]]*nameserver[[:space:]]+(223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[0459]|182\.254\.116\.116|119\.28\.28\.28|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98))[[:space:]]*$' /etc/resolv.conf /run/systemd/resolve/resolv.conf
+}
+
+# Decided once per process; when off, a retry state inherited from a parent is dropped so nothing downstream acts on it.
+_mirror_enabled() {
+    if [ -z "${_mirror_on:-}" ]; then
+        case "${UNSLOTH_MIRROR_FALLBACK:-}" in
+            0|false|False|FALSE|no|off) _mirror_on=no ;;
+            1|true|True|TRUE|yes|on) _mirror_on=yes ;;
+            *) if _mirror_in_china; then _mirror_on=yes; else _mirror_on=no; fi ;;
+        esac
+        [ "$_mirror_on" = yes ] || unset _UNSLOTH_MIRROR_SPARE
+    fi
+    [ "$_mirror_on" = yes ]
 }
 
 _mirror_fallback() {
-    case "${UNSLOTH_MIRROR_FALLBACK:-}" in
-        0|false|False|FALSE|no|off) return 0 ;;
-        1|true|True|TRUE|yes|on) ;;
-        *) _mirror_in_china || return 0 ;;
-    esac
+    _mirror_enabled || return 0
     [ -z "${_UNSLOTH_MIRROR_PROBED:-}" ] || return 0
     command -v curl >/dev/null 2>&1 || return 0
     [ "${1:-}" = spare ] || export _UNSLOTH_MIRROR_PROBED=1

@@ -974,21 +974,29 @@ function Wait-MirrorProbe {
     return $results
 }
 
+# Resolvers from .NET, not Get-DnsClientServerAddress, which loads a module and a CIM session on every run.
+function Get-MirrorDnsServers {
+    try {
+        [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object { $_.OperationalStatus -eq 'Up' } |
+            ForEach-Object { $_.GetIPProperties().DnsAddresses } | ForEach-Object { "$_" }
+    } catch {}
+}
+
 # No network call: a mainland China time zone, or a resolver from a mainland public DNS or cloud, as _mirror_in_china in install.sh.
 function Test-MirrorInChina {
     try { if ((Get-TimeZone).Id -in 'China Standard Time', 'Asia/Shanghai', 'Asia/Chongqing', 'Asia/Chungking', 'Asia/Harbin', 'Asia/Urumqi', 'Asia/Kashgar', 'PRC') { return $true } } catch {}
-    try {
-        $servers = @(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { $_.ServerAddresses })
-        if ($servers -match '^(223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[45]|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98))$') { return $true }
-    } catch {}
-    return $false
+    return [bool](@(Get-MirrorDnsServers) -match '^(223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[0459]|182\.254\.116\.116|119\.28\.28\.28|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98))$')
 }
 
 function Invoke-MirrorFallback {
     param([switch]$SpareOnly)
     $optIn = "$env:UNSLOTH_MIRROR_FALLBACK".Trim()
-    if ($optIn -match '^(0|false|no|off)$' -or $env:_UNSLOTH_MIRROR_PROBED) { return }
-    if ($optIn -notmatch '^(1|true|yes|on)$' -and -not (Test-MirrorInChina)) { return }
+    # When off, a retry state inherited from a parent is dropped so nothing downstream acts on it.
+    if ($optIn -match '^(0|false|no|off)$' -or ($optIn -notmatch '^(1|true|yes|on)$' -and -not (Test-MirrorInChina))) {
+        Remove-Item Env:_UNSLOTH_MIRROR_SPARE -ErrorAction SilentlyContinue
+        return
+    }
+    if ($env:_UNSLOTH_MIRROR_PROBED) { return }
     if (-not $SpareOnly) { $env:_UNSLOTH_MIRROR_PROBED = '1' }
     $cernet = 'https://tuna.mirrors.cernet.edu.cn'
     $npmMirror = 'https://registry.npmmirror.com'
@@ -2737,9 +2745,15 @@ function Invoke-SetupCommand {
         $global:LASTEXITCODE = 0
         if ($script:UnslothVerbose -and -not $AlwaysQuiet) {
             # PS 5.1 turns stderr records into $? = $false even on exit 0; redact per record.
-            $lines = @()
-            & $Command 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable lines | ForEach-Object { Redact-InstallOutput $_ } | Out-Host
-            $script:SetupCommandOutput = $lines -join "`n"
+            if ($env:_UNSLOTH_MIRROR_SPARE) {
+                # Kept only for an armed mirror retry to read.
+                $lines = @()
+                & $Command 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable lines | ForEach-Object { Redact-InstallOutput $_ } | Out-Host
+                $script:SetupCommandOutput = $lines -join "`n"
+            } else {
+                & $Command 2>&1 | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+                $script:SetupCommandOutput = ''
+            }
         } else {
             $output = & $Command 2>&1 | Out-String
             $script:SetupCommandOutput = $output
@@ -2855,6 +2869,7 @@ function substep {
 }
 
 function Invoke-NpmMirrorRetry {
+    if (-not $env:_UNSLOTH_MIRROR_SPARE) { return $false }
     if ((Get-MirrorFailedHost -Output $script:SetupCommandOutput -Ran npm) -ne 'npm') { return $false }
     $pairs = @(Pop-MirrorSpare npm)
     if (-not $pairs) { return $false }

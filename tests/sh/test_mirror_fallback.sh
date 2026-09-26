@@ -87,6 +87,9 @@ for SH in dash bash; do
     out=$(_run "$SH" MOCK_CN=0 MOCK_PYPI=blocked MOCK_TORCH=blocked MOCK_NPM=blocked _AFTER='echo "SPARE=${_UNSLOTH_MIRROR_SPARE-unset} PROBED=${_UNSLOTH_MIRROR_PROBED-unset}"')
     assert_eq "[$SH] outside China: nothing probed, switched, armed or exported" "SPARE=unset PROBED=unset" "$out$(cat "$_WORK/curl.log")"
     assert_eq "[$SH] outside China: no retry is armed either" "SPARE=unset" "$(_run "$SH" MOCK_CN=0 _MF_ARGS=spare _AFTER='echo "SPARE=${_UNSLOTH_MIRROR_SPARE-unset}"')"
+    assert_eq "[$SH] outside China: a retry state inherited from a parent is dropped" "SPARE=unset" "$(_run "$SH" MOCK_CN=0 _MF_ARGS=spare _UNSLOTH_MIRROR_SPARE='pypi|UV_DEFAULT_INDEX=https://x' _AFTER='echo "SPARE=${_UNSLOTH_MIRROR_SPARE-unset}"')"
+    assert_eq "[$SH] UNSLOTH_MIRROR_FALLBACK=0: a retry state inherited from a parent is dropped" "SPARE=unset" "$(_run "$SH" UNSLOTH_MIRROR_FALLBACK=0 _UNSLOTH_MIRROR_SPARE='pypi|UV_DEFAULT_INDEX=https://x' _AFTER='echo "SPARE=${_UNSLOTH_MIRROR_SPARE-unset}"')"
+    assert_eq "[$SH] the location is read once per process" "1" "$(env -i PATH=/usr/bin:/bin TZ=UTC "$SH" -c ". '$_WORK/block.sh'; n=0; _mirror_in_china() { n=\$((n+1)); false; }; _mirror_fallback spare; _mirror_fallback; _mirror_fallback; echo \$n")"
     for _on in 1 true yes on; do
         assert_contains "[$SH] outside China, UNSLOTH_MIRROR_FALLBACK=$_on opts in" "$(_run "$SH" MOCK_CN=0 UNSLOTH_MIRROR_FALLBACK=$_on MOCK_PYPI=blocked)" "UV_DEFAULT_INDEX=$M/pypi/web/simple"
     done
@@ -96,7 +99,7 @@ for SH in dash bash; do
         assert_eq "[$SH] TZ=$_tz is mainland China" "yes" "$(_cn TZ=$_tz)"
     done
     sed "s#/etc/resolv.conf /run/systemd/resolve/resolv.conf#$_WORK/resolv.conf#" "$_WORK/block.sh" > "$_WORK/block_dns.sh"
-    for _ns in "100.100.2.136 yes" "183.60.83.19 yes" "223.5.5.5 yes" "114.114.114.114 yes" "8.8.8.8 no" "100.100.100.100 no" "1.1.1.1 no"; do
+    for _ns in "100.100.2.136 yes" "183.60.83.19 yes" "223.5.5.5 yes" "114.114.114.114 yes" "114.114.115.119 yes" "182.254.116.116 yes" "8.8.8.8 no" "100.100.100.100 no" "1.1.1.1 no"; do
         printf 'search example\nnameserver %s\n' "${_ns% *}" > "$_WORK/resolv.conf"
         assert_eq "[$SH] resolver ${_ns% *} in UTC: China=${_ns#* }" "${_ns#* }" "$(env -i PATH=/usr/bin:/bin TZ=UTC "$SH" -c ". '$_WORK/block_dns.sh'; _mirror_in_china && echo yes || echo no")"
     done
@@ -237,7 +240,7 @@ _failed_host() { printf '%s\n' "$1" > "$_WORK/fail.log"; sh -c ". '$_WORK/block.
 assert_eq "failed host: the default each transport failure names; unsynced for a version or package not found; none for another host" "pypi torch pypi npm python unsynced unsynced unsynced none" "$(for _o in "$_fail_uv_timeout" "$_fail_uv_503" "$_fail_pip_timeout" "$_fail_npm" "$_fail_python" "$_fail_nover" "$_fail_uv_lag" "$_fail_pip_lag" "$_fail_git"; do _failed_host "$_o"; done | paste -sd' ' -)"
 assert_eq "failed host: a stalled download names no URL, so the host that ran it; none when another URL is named" "torch none none" "$({ _failed_host "$_fail_uv_stall" torch; _failed_host "$_fail_uv_stall"; _failed_host "$_fail_git" pypi; } | paste -sd' ' -)"
 
-{ cat "$_WORK/block.sh"; for _f in run_install_cmd _mirror_retry_install _ric_tee _run_install_cmd_once run_install_cmd_retry; do sed -n "/^$_f() {/,/^}/p" "$INSTALL_SH"; done; } > "$_WORK/retry.sh"
+{ cat "$_WORK/block.sh"; for _f in run_install_cmd _mirror_retry_install _ric_tee _ric_run _run_install_cmd_once run_install_cmd_retry; do sed -n "/^$_f() {/,/^}/p" "$INSTALL_SH"; done; } > "$_WORK/retry.sh"
 mkdir -p "$_WORK/uvbin"
 cat > "$_WORK/uvbin/uv" <<'EOF'
 #!/bin/sh
@@ -265,6 +268,19 @@ assert_eq "retry: a PyPI transport failure reruns once on the mirror, which late
 assert_eq "retry: ... also when the output was streamed (verbose)" "RUN pip install foo |STEP PyPI failed; retrying through $M/pypi/web/simple|RUN pip install foo $M/pypi/web/simple|RC 0 INDEX=$M/pypi/web/simple TORCH=https://download.pytorch.org/whl/cu128 SPARE=torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_uv_timeout" VERBOSE=1)"
 assert_eq "retry: a version not found, with nothing spared behind the mirror, keeps the default and its spares" "RUN pip install foo |RC 7 INDEX= TORCH=https://download.pytorch.org/whl/cu128 SPARE=pypi|UV_DEFAULT_INDEX=$M/pypi/web/simple torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_nover")"
 assert_eq "retry: a failed mirror rerun restores the default for later steps" "RUN pip install foo |STEP PyPI failed; retrying through $M/pypi/web/simple|RUN pip install foo $M/pypi/web/simple|RC 8 INDEX= TORCH=https://download.pytorch.org/whl/cu128 SPARE=torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_uv_timeout" MIRROR_FAILS=1)"
+mkdir -p "$_WORK/tmpd"
+for _vb in "" 1; do
+    assert_eq "retry: nothing armed (outside China${_vb:+, verbose}): one run, the original code, no retry" "RUN pip install foo |RC 7 INDEX= TORCH=https://download.pytorch.org/whl/cu128 SPARE=" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_uv_timeout" _UNSLOTH_MIRROR_SPARE= TMPDIR="$_WORK/tmpd" VERBOSE=$_vb)"
+    assert_eq "retry: nothing armed (outside China${_vb:+, verbose}): no output copy left behind" "0" "$(ls -A "$_WORK/tmpd" | wc -l | tr -d ' ')"
+done
+_abort=$(env -i PATH="$_WORK/uvbin:/usr/bin:/bin" TMPDIR="$_WORK/no-such-dir" FAIL=x sh -c "
+step() { :; }; tauri_stream_log() { :; }; tauri_clear_install_error() { :; }; _redact_install_output() { cat; }; _is_verbose() { false; }
+_uv_download_markers() { cat; }
+. '$_WORK/retry.sh'
+set -e
+run_install_cmd deps uv pip install foo 3>&1
+echo AFTER" 2>/dev/null || true)
+assert_eq "retry: nothing armed: set -e still stops the installer where it failed, as before" "" "$_abort"
 assert_eq "retry: a torch transport failure reruns on the mirror's index, and later torch steps follow" "RUN pip install torch --default-index https://download.pytorch.org/whl/cu128 |STEP download.pytorch.org failed; retrying through $M/pytorch/whl|RUN pip install torch --default-index $M/pytorch/whl/cu128 |RC 0 INDEX= TORCH=$M/pytorch/whl/cu128 SPARE=pypi|UV_DEFAULT_INDEX=$M/pypi/web/simple|RUN pip install torchvision --default-index $M/pytorch/whl/cu128 |RC 0" "$(_pipe _retry 'run_install_cmd torch uv pip install torch --default-index https://download.pytorch.org/whl/cu128' FAIL="$_fail_uv_stall" THEN='run_install_cmd tv uv pip install torchvision --default-index https://download.pytorch.org/whl/cu128')"
 assert_eq "retry: the retrying runner gives the default every attempt before the mirror (a stall naming no URL is its PyPI)" "RUN pip install foo |RUN pip install foo |STEP PyPI failed; retrying through $M/pypi/web/simple|RUN pip install foo $M/pypi/web/simple|RC 0" "$(_pipe _retry 'run_install_cmd_retry deps uv pip install foo' FAIL="$_fail_uv_stall" UNSLOTH_INSTALL_RETRIES=2 | sed 's/ INDEX=.*//')"
 assert_eq "retry: a pinned command is not moved to the PyPI mirror" "RUN pip install x --index-url https://download.pytorch.org/whl/cu128 |RC 7" "$(_pipe _retry 'run_install_cmd x uv pip install x --index-url https://download.pytorch.org/whl/cu128' FAIL="$_fail_uv_timeout" | sed 's/ INDEX=.*//')"

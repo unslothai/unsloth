@@ -96,13 +96,16 @@ function Wait-MirrorProbe($Probe) {
 $real = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-MirrorInChina' }, $true)[0].Extent.Text
 Invoke-Expression $real
 function Get-TimeZone { [pscustomobject]@{ Id = $script:tz } }
-function Get-DnsClientServerAddress { if ($null -eq $script:dns) { throw 'no DnsClient module' }; [pscustomobject]@{ ServerAddresses = $script:dns } }
+$realDns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-MirrorDnsServers' }, $true)[0].Extent.Text
+Invoke-Expression $realDns
+Check "location: the .NET resolver list reads without throwing" ($null -eq $(try { @(Get-MirrorDnsServers) | Out-Null; $null } catch { $_ }))
+function Get-MirrorDnsServers { $script:dns }
 foreach ($case in @(@('China Standard Time', $null, $true), @('Asia/Shanghai', $null, $true), @('Taipei Standard Time', $null, $false), @('UTC', $null, $false),
-        @('UTC', @('8.8.8.8', '100.100.2.136'), $true), @('UTC', @('223.5.5.5'), $true), @('UTC', @('100.100.100.100', '1.1.1.1'), $false))) {
+        @('UTC', @('8.8.8.8', '100.100.2.136'), $true), @('UTC', @('223.5.5.5'), $true), @('UTC', @('114.114.115.119'), $true), @('UTC', @('182.254.116.116'), $true), @('UTC', @('100.100.100.100', '1.1.1.1'), $false))) {
     $script:tz = $case[0]; $script:dns = $case[1]
     Check "location: time zone $($case[0]), resolvers $($case[1] -join ',') -> China=$($case[2])" ((Test-MirrorInChina) -eq $case[2])
 }
-Remove-Item Function:Get-TimeZone, Function:Get-DnsClientServerAddress
+Remove-Item Function:Get-TimeZone, Function:Get-MirrorDnsServers
 function Test-MirrorInChina { $script:inChina }
 
 function Run($mock, $envs = @{}, [switch]$SpareOnly, [switch]$Abroad) {
@@ -118,6 +121,8 @@ try {
     Run @{ pypi = 'blocked'; torch = 'blocked'; npm = 'blocked' } -Abroad
     Check "outside China: nothing probed, switched, armed or exported" ($script:probed.Count -eq 0 -and $script:lines.Count -eq 0 -and -not $env:UV_DEFAULT_INDEX -and -not $env:_UNSLOTH_MIRROR_SPARE -and -not $env:_UNSLOTH_MIRROR_PROBED)
     Run @{} -Abroad -SpareOnly; Check "outside China: no retry is armed either" (-not $env:_UNSLOTH_MIRROR_SPARE)
+    Run @{} @{ _UNSLOTH_MIRROR_SPARE = 'pypi|UV_DEFAULT_INDEX=https://x' } -Abroad -SpareOnly; Check "outside China: a retry state inherited from a parent is dropped" (-not $env:_UNSLOTH_MIRROR_SPARE)
+    Run @{} @{ _UNSLOTH_MIRROR_SPARE = 'pypi|UV_DEFAULT_INDEX=https://x'; UNSLOTH_MIRROR_FALLBACK = '0' } -SpareOnly; Check "UNSLOTH_MIRROR_FALLBACK=0: a retry state inherited from a parent is dropped" (-not $env:_UNSLOTH_MIRROR_SPARE)
     Run @{ pypi = 'blocked' } @{ UNSLOTH_MIRROR_FALLBACK = '1' } -Abroad; Check "outside China, UNSLOTH_MIRROR_FALLBACK=1 opts in" ($env:UV_DEFAULT_INDEX -eq "$M/pypi/web/simple")
     Run @{ pypi = 'blocked' } @{ UNSLOTH_MIRROR_FALLBACK = '0' }; Check "in China, UNSLOTH_MIRROR_FALLBACK=0 still opts out" ($script:probed.Count -eq 0 -and -not $env:UV_DEFAULT_INDEX)
     Check "fast hosts never touch a mirror" (-not ($script:probed -match 'cernet|npmmirror'))

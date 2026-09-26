@@ -9420,6 +9420,9 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
     only when it worked. None when there is no such host.
     """
     global _PYTORCH_WHL_BASE
+    # Nothing armed (outside mainland China): skip scanning what may be megabytes of output.
+    if not os.environ.get("_UNSLOTH_MIRROR_SPARE", "").strip():
+        return None
     text = output.decode("utf-8", "replace")
     torch = any(_PYTORCH_DEFAULT_WHL in arg for arg in args)
     if not _MIRROR_TRANSPORT_ERROR.search(text):

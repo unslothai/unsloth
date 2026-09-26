@@ -317,15 +317,24 @@ _mirror_in_china() {
     case "${_mcn_tz#:}" in
         *Asia/Shanghai|*Asia/Chongqing|*Asia/Chungking|*Asia/Harbin|*Asia/Urumqi|*Asia/Kashgar|PRC|*/PRC) return 0 ;;
     esac
-    grep -Eqs '^[[:space:]]*nameserver[[:space:]]+(223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[45]|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98))[[:space:]]*$' /etc/resolv.conf /run/systemd/resolve/resolv.conf
+    grep -Eqs '^[[:space:]]*nameserver[[:space:]]+(223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[0459]|182\.254\.116\.116|119\.28\.28\.28|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98))[[:space:]]*$' /etc/resolv.conf /run/systemd/resolve/resolv.conf
+}
+
+# Decided once per process; when off, a retry state inherited from a parent is dropped so nothing downstream acts on it.
+_mirror_enabled() {
+    if [ -z "${_mirror_on:-}" ]; then
+        case "${UNSLOTH_MIRROR_FALLBACK:-}" in
+            0|false|False|FALSE|no|off) _mirror_on=no ;;
+            1|true|True|TRUE|yes|on) _mirror_on=yes ;;
+            *) if _mirror_in_china; then _mirror_on=yes; else _mirror_on=no; fi ;;
+        esac
+        [ "$_mirror_on" = yes ] || unset _UNSLOTH_MIRROR_SPARE
+    fi
+    [ "$_mirror_on" = yes ]
 }
 
 _mirror_fallback() {
-    case "${UNSLOTH_MIRROR_FALLBACK:-}" in
-        0|false|False|FALSE|no|off) return 0 ;;
-        1|true|True|TRUE|yes|on) ;;
-        *) _mirror_in_china || return 0 ;;
-    esac
+    _mirror_enabled || return 0
     [ -z "${_UNSLOTH_MIRROR_PROBED:-}" ] || return 0
     command -v curl >/dev/null 2>&1 || return 0
     [ "${1:-}" = spare ] || export _UNSLOTH_MIRROR_PROBED=1
@@ -1401,10 +1410,12 @@ fi
 STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"
 RUNTIME_ROOT="${STAGE_ROOT:-$STUDIO_HOME}"
 VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
-_mirror_spare_pwd=$PWD
-cd "$SCRIPT_DIR"
-_mirror_fallback spare
-cd "$_mirror_spare_pwd" 2>/dev/null || :
+if _mirror_enabled; then
+    _mirror_spare_pwd=$PWD
+    cd "$SCRIPT_DIR"
+    _mirror_fallback spare
+    cd "$_mirror_spare_pwd" 2>/dev/null || :
+fi
 
 # Same uv cache install.sh chose, for the same reasons.
 #
