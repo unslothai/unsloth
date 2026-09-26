@@ -555,7 +555,9 @@ export function ChatProvidersSettings({
   }
 
   function selectAllModels() {
-    setSelectedModelIds([...availableModels]);
+    setSelectedModelIds((prev) => [
+      ...new Set([...prev, ...filteredAvailableModels]),
+    ]);
   }
 
   function clearModelSelection() {
