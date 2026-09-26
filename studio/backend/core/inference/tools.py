@@ -19460,6 +19460,27 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
     return body, text[len(body) :]
 
 
+MAX_TOOL_TEXT_CHARS = 256_000
+_TOOL_TEXT_TRUNCATION_NOTICE = (
+    "\n\n... (tool result truncated to 256,000 chars for the model; "
+    "the full output is not retained in model context.)"
+)
+
+
+def cap_tool_text(text: str) -> str:
+    """Cap model-bound tool text at ``MAX_TOOL_TEXT_CHARS``, appending the truncation notice.
+
+    Idempotent, and mirrored by ``capToolText`` in the frontend. The card result and the
+    frontend-only envelopes are never passed through here.
+    """
+    if len(text) <= MAX_TOOL_TEXT_CHARS:
+        return text
+    if text.endswith(_TOOL_TEXT_TRUNCATION_NOTICE):
+        return text
+    head, _on_boundary = _head_whole_lines(text, MAX_TOOL_TEXT_CHARS)
+    return head + _TOOL_TEXT_TRUNCATION_NOTICE
+
+
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
     """``text`` cut to at most ``limit`` characters, and whether it ended on a line break.
 
