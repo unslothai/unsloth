@@ -119,6 +119,14 @@ export const ContextUsageBar: FC<
               </span>
             </div>
           )}
+          {state.processedTokens !== null && (
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-muted-foreground">Processed this pass</span>
+              <span className="font-mono tabular-nums">
+                {formatTokenCountFull(state.processedTokens)}
+              </span>
+            </div>
+          )}
           {percent !== null || state.hasUsageDetails ? (
             <div className="my-0.5 border-t border-border/40" />
           ) : null}
