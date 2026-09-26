@@ -393,6 +393,7 @@ def apply_speed_optims(
 
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
     applied["channels_last"] = _vae_channels_last(pipe, logger)
+    # Near-lossless, not bit-identical, so never on "off" (returned above).
     applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
 
     if on_cuda:
@@ -506,11 +507,10 @@ def _vae_channels_last(pipe: Any, logger: Any) -> bool:
 
 
 def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> bool:
-    """Decode an fp32-pinned video VAE (Wan) in fp16 with channels_last_3d convs, on NVIDIA sm75+.
+    """Decode an fp32-pinned video VAE (Wan) in fp16 with channels_last(_3d) convs on NVIDIA sm75+; encoder stays fp32.
 
-    The pin guards bf16 WEIGHTS (banding); fp16 keeps 3 more mantissa bits and Wan's decoder peaks near 230 against fp16's
-    65504. The layout is not optional: fp16 in NCDHW is slower than fp32, and channels_last_3d alone slows HV1.5 / LTX-2,
-    so only this path converts rank-5 weights. The encoder stays fp32 and a non-finite decode reruns and stays in fp32.
+    The pin guards against bf16 weights (banding); fp16 keeps 3 more mantissa bits. fp16 NCDHW is slower than fp32 and
+    channels_last_3d alone slows HV1.5 / LTX-2, so rank-5 layouts change only here. A non-finite decode reruns in fp32.
     """
     if not getattr(family, "vae_force_fp32", False) or getattr(target, "device", None) != "cuda":
         return False
