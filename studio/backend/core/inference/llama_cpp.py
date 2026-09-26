@@ -25306,6 +25306,9 @@ class LlamaCppBackend:
                                 and not _env_places_tensors_on_cpu()
                                 and not _device_selection_is_cpu(extra_args, os.environ)
                                 and not _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
+                                and not _env_fixes_gpu_layers()
+                                # At the native ceiling the true max above it was never searched.
+                                and max_available_ctx < native_ctx_for_cap
                             ):
                                 _q8_fits = False
                                 if planned_flash_attn and (

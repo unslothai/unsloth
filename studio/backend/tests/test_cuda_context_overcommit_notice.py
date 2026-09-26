@@ -265,3 +265,25 @@ def test_no_notice_for_a_deliberate_cpu_placement(tmp_path, monkeypatch, extra_a
         tmp_path, monkeypatch, model_gb = 18, n_ctx = 131072, extra_args = extra_args
     )
     assert "does not fit in this GPU's memory" not in warning
+
+
+def test_no_notice_when_an_inherited_env_fixes_the_layer_count(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", "20")
+    warning = _launch_explicit_ctx(tmp_path, monkeypatch, model_gb = 18, n_ctx = 131072)
+    assert "does not fit in this GPU's memory" not in warning
+
+
+def test_no_largest_context_claimed_at_the_native_ceiling(tmp_path, monkeypatch):
+    """Past the native window the sweep stops at native, so the true maximum is unknown."""
+    monkeypatch.setattr(LlamaCppBackend, "_context_length", 32768, raising = False)
+    from test_llama_cpp_placement import _backend as _placement_backend, _launch
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    backend, gguf = _placement_backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_context_length", 32768)
+    backend._get_gguf_size_bytes = lambda _path: 14 * GIB
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 96 * 1024
+    backend._estimate_compute_buffer_bytes = lambda **k: 1
+    _launch(backend, gguf, n_ctx = 131072)
+    assert "The largest that fits is 32,768" not in (backend.last_load_warning or "")
