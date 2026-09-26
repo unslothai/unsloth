@@ -133,6 +133,17 @@ export async function loginWithPassword(
   return response.json();
 }
 
+export type OIDCConfigResponse = {
+  enabled: boolean;
+  display_name?: string | null;
+};
+
+export async function fetchOIDCConfig(): Promise<OIDCConfigResponse> {
+  const response = await fetch(apiUrl("/api/auth/oidc/config"));
+  if (!response.ok) return { enabled: false };
+  return response.json();
+}
+
 /** Only a rejected single-mode submit probes for an account created since page load. */
 export async function loginFromForm(
   mode: LoginMode,

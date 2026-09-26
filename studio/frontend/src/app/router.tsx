@@ -16,6 +16,7 @@ import { Route as videoRoute } from "./routes/video";
 import { Route as audioRoute } from "./routes/audio";
 import { Route as indexRoute } from "./routes/index";
 import { Route as loginRoute } from "./routes/login";
+import { Route as oidcCallbackRoute } from "./routes/oidc-callback";
 import { Route as hubRoute } from "./routes/hub";
 import { Route as projectsRoute } from "./routes/projects";
 import { Route as libraryRoute } from "./routes/library";
@@ -26,6 +27,7 @@ import { Route as studioRoute } from "./routes/studio";
 const routeTree = rootRoute.addChildren([
   indexRoute,
   loginRoute,
+  oidcCallbackRoute,
   changePasswordRoute,
   hubRoute,
   settingsRoute,
