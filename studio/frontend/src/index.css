@@ -4886,19 +4886,25 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: oklch(0.72 0 0 / 0.4);
 }
 
-/* Chromium ignores ::-webkit-scrollbar styling while scrollbar-width/color are
-   set; on Windows reset both (:hover too, or it flips back) to restore it. */
+/* Chromium ignores ::-webkit-scrollbar styling while scrollbar-width/color are set, and
+   its standard Windows scrollbar draws arrow buttons. Reset both everywhere on Windows
+   (:hover too, or the reveal rules flip it back); scrollbar-width stays overridable, so
+   the !important and inline hides still win. */
 @supports selector(::-webkit-scrollbar) {
-	:root.client-windows .sidebar-scroll-fade,
-	:root.client-windows .sidebar-scroll-fade:hover,
-	:root.client-windows .run-settings-scroll,
-	:root.client-windows .run-settings-scroll:hover,
-	:root.client-windows .aui-thread-viewport,
-	:root.client-windows .aui-thread-viewport:hover,
-	:root.client-windows .hover-scrollbar,
-	:root.client-windows .hover-scrollbar:hover {
+	:root.client-windows *,
+	:root.client-windows *:hover {
 		scrollbar-width: auto;
-		scrollbar-color: auto;
+		scrollbar-color: auto !important;
+	}
+
+	/* Set inline for Firefox, which this block never reaches. */
+	:root.client-windows [data-radix-select-viewport] {
+		scrollbar-width: auto !important;
+	}
+
+	/* The unlayered thin default kept these visible; keep them so, without arrows. */
+	:root.client-windows .no-scrollbar::-webkit-scrollbar {
+		display: block;
 	}
 }
 
