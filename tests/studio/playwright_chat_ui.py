@@ -1902,6 +1902,7 @@ with sync_playwright() as p:
         step("theme toggle x3 with computed-color assertion")
         observed = []
         typography_states = []
+
         def wait_menu_closed(timeout_ms):
             try:
                 page.wait_for_function(
@@ -1952,7 +1953,9 @@ with sync_playwright() as p:
                 page.keyboard.press("Escape")
                 soft_fail(f"theme cycle {cycle + 1}: theme menuitem missing")
                 break
-            was_dark = robust_evaluate(page, "() => document.documentElement.classList.contains('dark')")
+            was_dark = robust_evaluate(
+                page, "() => document.documentElement.classList.contains('dark')"
+            )
             # Click with fallbacks: a small CI viewport can push the item off-screen (force=True still needs it in
             # viewport). Fall back to scroll-into-view, then a synthetic evaluate() .click() that skips Playwright's
             # viewport check.
@@ -2110,7 +2113,9 @@ with sync_playwright() as p:
         if expected_url_pat:
             # Wait for the route change itself, not 800 ms; the check below still decides.
             try:
-                page.wait_for_url(lambda u: re.search(expected_url_pat, u) is not None, timeout = 10_000)
+                page.wait_for_url(
+                    lambda u: re.search(expected_url_pat, u) is not None, timeout = 10_000
+                )
             except Exception:
                 pass
         if expected_url_pat and not re.search(expected_url_pat, page.url):
