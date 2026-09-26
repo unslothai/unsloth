@@ -57,9 +57,7 @@ export interface PerModelConfig {
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
   selectedGpuIndexKind?: GpuIndexKind | null;
-  /** --tensor-split, one weight per GPU in picker order. Never stored: it is positional against the
-   *  GPU set, so it lives only in the editor and the resident load. `undefined` leaves the runtime's
-   *  split alone; `null` asks for llama.cpp's own distribution. */
+  /** --tensor-split per GPU in picker order; never stored. `undefined` keeps the runtime's split, `null` = default. */
   tensorSplit?: number[] | null;
 }
 

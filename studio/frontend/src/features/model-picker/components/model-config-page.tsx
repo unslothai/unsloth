@@ -787,9 +787,7 @@ function GpuMemorySettings({
   // The list order IS the device order the backend pins, so a re-checked GPU goes
   // to the end rather than back to its numeric slot.
   const orderedGpuIds = selectedGpuIds ?? gpuContext.ids ?? [];
-  // --tensor-split is emitted only for Manual with a fixed layer count on 2+ GPUs, so the shares
-  // show exactly then. Layer counts under layer split; percentages under Tensor Parallelism, where
-  // every GPU holds a slice of each layer and the values are only a ratio.
+  // Mirrors the backend's --tensor-split gate. Layer counts, or percent under Tensor Parallelism.
   const splitTotal = Math.max(0, Math.min(gpuLayers, gpuLayersMax));
   const showSplit =
     !isDiffusion &&
@@ -803,8 +801,7 @@ function GpuMemorySettings({
   const tensorSplit = config.tensorSplit ?? null;
   const splitIsCustom =
     tensorSplit != null && tensorSplit.length === orderedGpuIds.length;
-  // Untouched, the rows show a VRAM-proportional split, close to llama.cpp's own default, and send
-  // nothing. The first edit starts from there.
+  // Untouched: show a VRAM-proportional split (near llama.cpp's default) and send nothing.
   const splitShares = showSplit
     ? distributeByWeight(
         splitScale,
@@ -826,8 +823,7 @@ function GpuMemorySettings({
     update({
       selectedGpuIds: next,
       selectedGpuIndexKind: gpuIndexKind,
-      // Positional: a different set of GPUs invalidates it, and the backend would drop a length
-      // mismatch anyway.
+      // Positional, so a different GPU set invalidates it.
       tensorSplit: nextSplit,
     });
   };
@@ -851,7 +847,6 @@ function GpuMemorySettings({
     if (from < 0 || to < 0 || to >= orderedGpuIds.length) return;
     const next = [...orderedGpuIds];
     [next[from], next[to]] = [next[to], next[from]];
-    // A share belongs to its GPU, so it moves with the row.
     let nextSplit: number[] | null = null;
     if (splitIsCustom) {
       nextSplit = [...tensorSplit];
@@ -923,7 +918,6 @@ function GpuMemorySettings({
             value={Math.max(GPU_LAYERS_AUTO, Math.min(gpuLayers, gpuLayersMax))}
             min={GPU_LAYERS_AUTO}
             max={gpuLayersMax}
-            // At Auto the split is hidden and no longer applies, so it goes with the fixed count.
             onChange={(v) =>
               update(v < 0 ? { gpuLayers: v, tensorSplit: null } : { gpuLayers: v })
             }
@@ -990,7 +984,6 @@ function GpuMemorySettings({
                     ? ` · ${Math.round(d.memoryTotalGb)} GiB`
                     : ""}
                 </span>
-                {/* Only a selected row has a share; showSplit already rules out diffusion. */}
                 {showSplit && isGpuChecked(d.index) && (
                   <div className="ml-auto flex shrink-0 items-center gap-1">
                     <NumericValueInput

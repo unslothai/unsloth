@@ -1541,8 +1541,7 @@ export function useChatModelRuntime() {
               });
             },
             parallelSlots: managedFlags?.defaultParallelSlots || null,
-            // Never stored, so only the config page's editor puts one on the pick; otherwise the store is the
-            // only place it can come from, and the reset clears it
+            // Never stored: only the config page's editor puts one on the pick, else the store (cleared on reset)
             splitRatio:
               pendingConfig?.tensorSplit !== undefined
                 ? pendingConfig.tensorSplit
@@ -2044,7 +2043,6 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.gpuLayers ?? stateBeforeUnload.gpuLayers;
           let loadNCpuMoe =
             pendingLoadConfig?.nCpuMoe ?? stateBeforeUnload.nCpuMoe;
-          // Only the config page's editor carries a split; a saved config leaves it undefined.
           let loadSplitRatio =
             pendingLoadConfig?.tensorSplit !== undefined
               ? pendingLoadConfig.tensorSplit

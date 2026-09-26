@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The GPUs picker's per-row share (unslothai/unsloth#11474): how much of the model each
-// selected card gets, sent as tensor_split. Positional against the selected set, and never
-// stored per model.
+// GPUs picker per-row share sent as tensor_split (unslothai/unsloth#11474).
 
 import assert from "node:assert/strict";
 import test from "node:test";

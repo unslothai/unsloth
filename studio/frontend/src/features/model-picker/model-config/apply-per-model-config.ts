@@ -24,7 +24,6 @@ function cleanTemplate(value: string | null | undefined): string | null {
   return value?.trim() ? value : null;
 }
 
-/** A split needs two GPUs and some weight to say anything; otherwise llama.cpp's default applies. */
 function cleanTensorSplit(value: number[] | null | undefined): number[] | null {
   if (!value || value.length < 2) {
     return null;
@@ -89,8 +88,7 @@ export function applyPerModelConfigToRuntime(
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
     // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is a standing
     // preference so an absent mode falls back to the persisted one. The per-GPU split is never
-    // remembered, so only an editor that set one carries it. The GPU pick is reconciled against
-    // the GPUs present now. A diffusion
+    // remembered. The GPU pick is reconciled against the GPUs present now. A diffusion
     // config is sanitized to gpuMemoryMode "auto" because the mode does not apply, not because
     // the user chose Auto: writing that into the live standing preference would strand the session
     // on Auto, since the load skips saveGpuMemoryMode for diffusion and the next ordinary GGUF
@@ -147,7 +145,7 @@ export function currentRuntimePerModelConfig(
     disableVision: s.disableVision ?? false,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous model's GPU Memory
-    // settings back. The split rides along for that rollback, though it is never stored.
+    // settings back, split included (never stored).
     gpuMemoryMode: s.gpuMemoryMode,
     gpuLayers: s.gpuLayers,
     nCpuMoe: s.nCpuMoe,
