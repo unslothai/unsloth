@@ -2050,6 +2050,31 @@ exit 0
     )
 
 
+def test_a_late_prepare_rollback_keeps_what_initialize_studio_recorded(tmp_path):
+    """The rollback saved its older baseline copy over the install roots Initialize-Studio had just recorded."""
+    _drive_stages(
+        tmp_path,
+        r"""
+function Get-SacState { [pscustomobject]@{ Policies = @(if (Test-Path -LiteralPath $NOISG_DEST) { [pscustomobject]@{ PolicyID = '{aaaa}'; IsEnforced = $true } }) } }
+function Test-AuditPolicyEvaluating { $true }
+function Initialize-Studio($dir, $prepare) {
+    $path = Join-Path $dir 'baseline.json'
+    $b = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    $b | Add-Member -Force NoteProperty StudioInstalledByProbe $true
+    $b | Add-Member -Force NoteProperty StudioInstallRoots @('C:\probe-root')
+    Save-ProbeBaseline $b $path
+    throw 'STUDIO-TIMEOUT'
+}
+$Label = 'late2'
+try { Invoke-Prepare; exit 71 } catch { if ("$_" -ne 'STUDIO-TIMEOUT') { Write-Host "$_"; exit 72 } }
+$b = Read-Baseline 'late2'
+if ($false -ne $b.AuditPolicyApplied) { exit 73 }
+if ($true -ne $b.StudioInstalledByProbe -or @($b.StudioInstallRoots).Count -ne 1) { exit 74 }
+exit 0
+""",
+    )
+
+
 def test_revert_keeps_the_baseline_pending_when_the_policy_list_is_unreadable(tmp_path):
     """A failed CiTool -lp became an empty list, so revert read 'cannot tell' as 'removed' and spent the baseline."""
     names = [

@@ -923,8 +923,10 @@ function Invoke-Prepare {
             } elseif ($stillActive) {
                 Write-Warning "the audit policy $NOISG_GUID was removed but is still active until Windows restarts; restart, then run .\sac-probe.ps1 -Stage revert -Label $Label"
             } else {
-                $baseline.AuditPolicyApplied = $false
-                Save-ProbeBaseline $baseline $baselinePath
+                # Re-read: Initialize-Studio may have recorded the roots it created since $baseline was loaded.
+                $saved = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+                $saved.AuditPolicyApplied = $false
+                Save-ProbeBaseline $saved $baselinePath
                 Write-Host 'audit policy rolled back'
             }
         } catch {
