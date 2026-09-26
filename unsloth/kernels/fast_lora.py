@@ -150,19 +150,7 @@ class LoRA_MLP(torch.autograd.Function):
             downB.t(),
         )
 
-        if (
-            downW.dtype == torch.float8_e4m3fn
-            and downW_quant is not None
-            and downW_quant.ndim == 2
-            and downW_quant.numel() > 1
-            and (downW_quant.shape[1] == 1 or downW.shape[0] == downW.shape[1])
-        ):
-            # Row scales, or any scale grid on a square downW: downW.t() hides which axis they index.
-            downW_dequant = fast_dequantize(downW, downW_quant)
-            DW = matmul_lora(dY, downW_dequant.t(), None, downB, downA, downS)
-            del downW_dequant
-        else:
-            DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
+        DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
         DW, e, g = _backward_function(DW, e, g)
         h, df, de = DW, e, g
 
