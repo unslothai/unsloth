@@ -406,3 +406,110 @@ def test_modelscope_adapter_is_reached_past_a_configured_proxy(store, monkeypatc
         _http.close_session()
         adapter.shutdown()
         closed.close()
+
+
+def test_modelscope_keeps_a_system_proxy(store, monkeypatch):
+    # macOS / Windows: getproxies() = environment proxies OR the system (SCDynamicStore / registry) ones.
+    import urllib.request
+    import hub.modelscope.router as modelscope
+
+    system = {"http": "http://10.0.0.1:7890", "https": "http://10.0.0.1:7890"}
+    for name in (
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(
+        urllib.request,
+        "getproxies",
+        lambda: urllib.request.getproxies_environment() or dict(system),
+    )
+    monkeypatch.setattr(modelscope, "internal_endpoint", lambda: "http://127.0.0.1:1234")
+    try:
+        hub_settings.set_hub_source("modelscope")
+        hub_settings.set_hub_source("huggingface")
+        assert urllib.request.getproxies().get("https") == system["https"]
+    finally:
+        hub_settings.set_hub_source("huggingface")
+
+
+def test_live_switch_does_not_abort_a_streaming_download(store, monkeypatch):
+    import http.server
+    import threading
+    import hub.modelscope.router as modelscope
+    from huggingface_hub.utils import _http
+
+    started, release = threading.Event(), threading.Event()
+
+    class Slow(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(6 * 65536))
+            self.end_headers()
+            self.wfile.write(b"x" * 65536)
+            self.wfile.flush()
+            started.set()
+            release.wait(10)
+            for _ in range(5):
+                time.sleep(0.2)
+                self.wfile.write(b"x" * 65536)
+                self.wfile.flush()
+
+        def log_message(self, *_a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.setenv(name, "127.0.0.1")  # the test server itself is reachable
+    monkeypatch.setattr(modelscope, "internal_endpoint", lambda: "http://localhost:1234")
+    out = {}
+
+    def stream():
+        try:
+            with _http.get_session().stream("GET", f"http://127.0.0.1:{server.server_port}/") as r:
+                out["n"] = sum(len(c) for c in r.iter_bytes())
+        except Exception as exc:  # noqa: BLE001
+            out["error"] = repr(exc)
+
+    _http.close_session()
+    t = threading.Thread(target = stream)
+    t.start()
+    try:
+        assert started.wait(10)
+        hub_settings.set_hub_source("modelscope")
+        release.set()
+        t.join(10)
+        assert out == {"n": 6 * 65536}
+    finally:
+        release.set()
+        hub_settings.set_hub_source("huggingface")
+        server.shutdown()
+
+
+def test_modelscope_switch_survives_huggingface_hub_0x(store, monkeypatch):
+    # 0.36.x (Python 3.9 installs) has requests sessions and no close_session / _CLIENT_LOCK.
+    import types
+    import hub.modelscope.router as modelscope
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub.utils._http",
+        types.SimpleNamespace(reset_sessions = lambda: None),
+    )
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setattr(modelscope, "internal_endpoint", lambda: "http://127.0.0.1:1234")
+    try:
+        assert hub_settings.set_hub_source("modelscope").source == "modelscope"
+        assert "127.0.0.1" in os.environ["NO_PROXY"].split(",")
+    finally:
+        hub_settings.set_hub_source("huggingface")

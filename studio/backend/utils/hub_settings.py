@@ -193,10 +193,11 @@ def apply_hub_settings() -> None:
 
 def _bypass_proxy_for(url: str) -> None:
     """Keep the loopback adapter off a configured proxy: httpx proxies 127.0.0.1 too unless NO_PROXY lists it."""
-    from urllib.request import getproxies
+    # Environment proxies only: on macOS / Windows an env no_proxy makes getproxies() skip the system proxy.
+    from urllib.request import getproxies_environment
 
     host = urlsplit(url).hostname
-    proxies = getproxies()
+    proxies = getproxies_environment()
     if not host or not any(proxies.get(k) for k in ("http", "all")):
         return
     names = [n for n in ("no_proxy", "NO_PROXY") if n in os.environ] or ["no_proxy", "NO_PROXY"]
@@ -207,9 +208,12 @@ def _bypass_proxy_for(url: str) -> None:
             os.environ[name] = ",".join([*entries, host])
             changed = True
     http = sys.modules.get("huggingface_hub.utils._http")
-    if changed and http is not None:
-        # Its shared client read the proxies when it was built; the next call rebuilds it.
-        http.close_session()
+    lock = getattr(http, "_CLIENT_LOCK", None)
+    if changed and lock is not None and hasattr(http, "_GLOBAL_CLIENT"):
+        # huggingface_hub 1.x reads proxies once per shared client: drop it, never close it
+        # (closing aborts downloads streaming on it). 0.x requests sessions read env per request.
+        with lock:
+            http._GLOBAL_CLIENT = None
 
 
 def _refresh_imported_hub_libraries() -> None:
