@@ -13,6 +13,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { isTouchClick } from "@/components/ui/touch-click";
 import { usePlatformStore } from "@/config/env";
 import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import { ApiProviderLogo } from "@/features/chat";
@@ -1222,15 +1223,28 @@ function ModelRow({
     setTappedOpen(false);
     setTooltipOpen(false);
   };
+  // Keyboard focus opened it, so the pointer leaving the name does not close it.
+  const onNamePointerLeave = (event: React.PointerEvent) => {
+    if (event.pointerType === "touch") return;
+    if (nameRef.current?.closest("button")?.matches(":focus-visible")) {
+      window.clearTimeout(nameHoverTimer.current);
+      return;
+    }
+    onNameLeave();
+  };
   // Read at pointerdown: the trigger closes an open tooltip before the click lands.
-  const openAtTap = useRef(false);
+  // Null without pointer events, where nothing closes it first.
+  const openAtTap = useRef<boolean | null>(null);
   const onNameDown = (event: React.PointerEvent) => {
     if (event.pointerType === "touch") openAtTap.current = tooltipOpen;
   };
+  const hasTooltip = Boolean(vramTooltipText || tooltipText || hubUrl || formatDot);
   // Like hover on iOS: the first tap shows the details, the next one picks the row.
   const onNameClick = (event: React.MouseEvent) => {
-    if ((event.nativeEvent as Partial<PointerEvent>).pointerType !== "touch") return;
-    if (openAtTap.current) {
+    const wasOpen = openAtTap.current ?? tooltipOpen;
+    openAtTap.current = null;
+    if (!hasTooltip || !isTouchClick(event)) return;
+    if (wasOpen) {
       onNameLeave();
       return;
     }
@@ -1310,9 +1324,7 @@ function ModelRow({
               ref={nameRef}
               onPointerEnter={onNameEnter}
               onPointerDown={onNameDown}
-              onPointerLeave={(event) => {
-                if (event.pointerType !== "touch") onNameLeave();
-              }}
+              onPointerLeave={onNamePointerLeave}
               onClick={onNameClick}
             >
               {name}
