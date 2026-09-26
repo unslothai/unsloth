@@ -685,6 +685,21 @@ def test_eager_vae_decode_layout_unchanged_off_nvidia(monkeypatch, backend, devi
     assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
 
 
+@pytest.mark.parametrize(
+    "dtype, expect_channels_last", [("torch.bfloat16", True), ("float16", True), ("torch.float32", False)]
+)
+def test_offloaded_eager_decode_keeps_channels_last_unless_fp32(monkeypatch, dtype, expect_channels_last):
+    # An eager 16-bit contiguous decode peaks ~0.63 GiB/MP higher; an fp32 one is smaller contiguous.
+    torch = _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    pipe.vae.dtype = dtype
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_EAGER, offload_active = True
+    )
+    assert applied["channels_last"] is expect_channels_last
+    assert pipe.vae.mem_format == (torch.channels_last if expect_channels_last else torch.contiguous_format)
+
+
 def test_compiled_vae_decode_keeps_channels_last(monkeypatch):
     torch = _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)

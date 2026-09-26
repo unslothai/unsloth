@@ -445,7 +445,7 @@ def apply_speed_optims(
         )
 
     if applied["channels_last"] and not _channels_last_decode_wins(
-        pipe, target, applied["compiled_vae_decode"]
+        pipe, target, applied["compiled_vae_decode"], offload_active
     ):
         applied["channels_last"] = not _vae_contiguous(pipe, logger)
 
@@ -982,28 +982,29 @@ def _vae_contiguous(pipe: Any, logger: Any) -> bool:
         return False
 
 
-def _channels_last_decode_wins(pipe: Any, target: Any, compiled_decode: bool) -> bool:
-    """On NVIDIA, channels_last only pays off in a compiled 16-bit decode.
+def _channels_last_decode_wins(
+    pipe: Any, target: Any, compiled_decode: bool, offload_active: bool = False
+) -> bool:
+    """Whether channels_last VAE weights beat contiguous ones for this decode, as measured on NVIDIA (T4 to B200).
 
-    Eager CUDA GroupNorm has no NHWC kernel, so each norm copies NHWC -> NCHW and back: an eager channels_last decode
-    measured 0.56-0.78x (T4, A100, RTX PRO 6000, B200). Compiled, Inductor owns the layout and channels_last weights
-    measured 1.04-1.33x in bf16, 1.0x in fp16 and 0.89x in fp32 (T4). Other backends were not measured: unchanged."""
+    Eager CUDA GroupNorm has no NHWC kernel, so each norm copies NHWC -> NCHW and back with a strided copy: an eager
+    16-bit channels_last decode measured 0.56-0.78x, but contiguous peaks ~0.63 GiB/MP higher (cuDNN's own layout
+    transforms), so offloaded low-VRAM loads keep channels_last. Compiled, Inductor owns the layout: channels_last
+    measured 0.98-1.33x in 16-bit at a lower peak. An fp32 decode is faster and no larger contiguous, eager (1.4x) or
+    compiled (1.1x). Other backends were not measured: unchanged."""
     if getattr(target, "backend", "cuda") != "cuda" or getattr(target, "device", None) != "cuda":
         return True
-    if not compiled_decode:
-        return False
     vae = getattr(pipe, "vae", None)
-    dtype = str(getattr(vae, "dtype", ""))
-    if dtype.endswith("float32"):
-        return False
-    # SDXL pipelines upcast a force_upcast fp16 VAE to fp32 for the decode.
     config = getattr(vae, "config", None)
-    force_upcast = bool(getattr(config, "force_upcast", False))
-    return not (
-        force_upcast
+    # SDXL pipelines upcast a force_upcast fp16 VAE to fp32 for the decode.
+    fp32_decode = str(getattr(vae, "dtype", "")).endswith("float32") or (
+        bool(getattr(config, "force_upcast", False))
         and _is_float16(getattr(vae, "dtype", None))
         and _denoiser_unet(pipe) is not None
     )
+    if fp32_decode:
+        return False
+    return compiled_decode or offload_active
 
 
 def _guard_compiled_decode(
