@@ -130,8 +130,7 @@ def keep_cpu_weights_on_offload(pipe: Any, logger: Any = None) -> int:
     if callable(enable) and not getattr(enable, _KEEP_ATTR, False):
 
         def _enable(*args: Any, **kwargs: Any) -> Any:
-            # diffusers re-enables after every call with pipe.to("cpu"), which would copy the last module run (the VAE)
-            # back to the host; offloading it through its kept hook first leaves that move nothing to copy.
+            # The re-enable after every call starts with pipe.to("cpu"), which would copy back the module run last.
             _offload_through_kept_hooks(pipe, CpuOffload, logger)
             out = enable(*args, **kwargs)
             _wrap_cpu_offload_hooks(pipe, CpuOffload, logger)
@@ -168,7 +167,6 @@ def _offload_through_kept_hooks(
 
 
 def _gguf_parameter_class() -> Optional[type]:
-    # Only present once diffusers has loaded a GGUF checkpoint, so this never imports the gguf package itself.
     module = sys.modules.get("diffusers.quantizers.gguf.utils")
     return getattr(module, "GGUFParameter", None) if module is not None else None
 
@@ -179,7 +177,7 @@ def _keepable(param: Any) -> bool:
     data = param.data
     if type(data) is torch.Tensor:
         return True
-    # A GGUF weight is plain packed bytes; its quant type lives on the Parameter object, which the swap never replaces.
+    # GGUF weights are packed bytes; the quant type lives on the Parameter, which the swap never replaces.
     gguf = _gguf_parameter_class()
     return gguf is not None and type(param) is gguf and type(data) is gguf
 
