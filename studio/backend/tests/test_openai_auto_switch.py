@@ -338,6 +338,191 @@ def test_flag_off_never_loads(monkeypatch):
     assert rec.calls == []
 
 
+def _cold_start_empty_backend(monkeypatch):
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("_B", (), {"active_model_name": None})(),
+    )
+
+
+def test_cold_start_does_not_load_when_auto_switch_off(monkeypatch):
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend(loaded_id = None),
+        ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        enabled = False,
+    )
+    _cold_start_empty_backend(monkeypatch)
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert rec.calls == []
+
+
+def test_cold_start_reload_only_does_not_load_last_local_when_auto_switch_off(monkeypatch):
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend(loaded_id = None),
+        ("unsloth/A-GGUF", "Q4_K_M", "unsloth/A-GGUF"),
+        enabled = False,
+    )
+    _cold_start_empty_backend(monkeypatch)
+    monkeypatch.setattr(
+        settings_route,
+        "_read_last_local_model",
+        lambda _s: {"id": "unsloth/A-GGUF", "kind": "gguf", "gguf_variant": "Q4_K_M"},
+    )
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            inference_route._RELOAD_ONLY_MODEL, object(), "tester"
+        )
+    )
+    assert rec.calls == []
+
+
+def test_cold_start_loads_requested_model_when_auto_switch_on(monkeypatch):
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend(loaded_id = None),
+        ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        enabled = True,
+    )
+    _cold_start_empty_backend(monkeypatch)
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "unsloth/B-GGUF"
+    assert rec.calls[0].gguf_variant == "Q4_K_M"
+
+
+def test_cold_start_reload_only_loads_last_local_when_auto_switch_on(monkeypatch):
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend(loaded_id = None),
+        ("unsloth/A-GGUF", "Q4_K_M", "unsloth/A-GGUF"),
+        enabled = True,
+    )
+    _cold_start_empty_backend(monkeypatch)
+    monkeypatch.setattr(
+        settings_route,
+        "_read_last_local_model",
+        lambda _s: {"id": "unsloth/A-GGUF", "kind": "gguf", "gguf_variant": "Q4_K_M"},
+    )
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            inference_route._RELOAD_ONLY_MODEL, object(), "tester"
+        )
+    )
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "unsloth/A-GGUF"
+
+
+def test_keyless_cold_start_does_not_load_a_model_that_is_not_last_local(monkeypatch):
+    import auth.authentication as authentication
+
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend(loaded_id = None),
+        ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        enabled = False,
+    )
+    _cold_start_empty_backend(monkeypatch)
+    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert rec.calls == []
+
+
+def test_keyless_cold_start_does_not_load_even_when_auto_switch_on(monkeypatch):
+    import auth.authentication as authentication
+
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend(loaded_id = None),
+        ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        enabled = True,
+    )
+    _cold_start_empty_backend(monkeypatch)
+    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert rec.calls == []
+
+
+def test_keyless_cold_start_reload_only_loads_last_local(monkeypatch):
+    import auth.authentication as authentication
+
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend(loaded_id = None),
+        ("unsloth/A-GGUF", "Q4_K_M", "unsloth/A-GGUF"),
+        enabled = False,
+    )
+    _cold_start_empty_backend(monkeypatch)
+    monkeypatch.setattr(
+        settings_route,
+        "_read_last_local_model",
+        lambda _s: {"id": "unsloth/A-GGUF", "kind": "gguf", "gguf_variant": "Q4_K_M"},
+    )
+    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            inference_route._RELOAD_ONLY_MODEL, object(), "tester"
+        )
+    )
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "unsloth/A-GGUF"
+
+
+def test_keyless_cold_start_loads_when_request_names_last_local(monkeypatch):
+    import auth.authentication as authentication
+
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend(loaded_id = None),
+        ("unsloth/A-GGUF", "Q4_K_M", "unsloth/A-GGUF"),
+        enabled = False,
+    )
+    _cold_start_empty_backend(monkeypatch)
+    monkeypatch.setattr(
+        settings_route,
+        "_read_last_local_model",
+        lambda _s: {"id": "unsloth/A-GGUF", "kind": "gguf", "gguf_variant": "Q4_K_M"},
+    )
+    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
+    _run_hook("unsloth/A-GGUF:Q4_K_M")
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "unsloth/A-GGUF"
+
+
+def test_cold_start_loads_named_model_when_idle_ttl_is_configured(monkeypatch):
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend(loaded_id = None),
+        ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        enabled = False,
+    )
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    _cold_start_empty_backend(monkeypatch)
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "unsloth/B-GGUF"
+
+
+def test_last_local_cold_start_resolves_a_non_gguf_record_by_bare_id(monkeypatch):
+    seen = []
+
+    def _resolve(ref, **kw):
+        seen.append((ref, kw.get("include_companion_scope")))
+        return ("/weights/Qwen", None, "unsloth/Qwen", True)
+
+    monkeypatch.setattr(
+        settings_route,
+        "_read_last_local_model",
+        lambda _s: {"id": "unsloth/Qwen", "kind": "model"},
+    )
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
+    result = asyncio.run(inference_route._resolve_last_local_model_for_cold_start("tester"))
+    assert seen == [("unsloth/Qwen", True)]
+    assert result == ("/weights/Qwen", None, "unsloth/Qwen", True)
+
+
 def test_unknown_model_falls_through(monkeypatch):
     backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
     _run_hook("gpt-4o-mini")
