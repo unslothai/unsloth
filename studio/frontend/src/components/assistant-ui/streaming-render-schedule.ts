@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import remend from "remend";
-import { type BlockProps, parseMarkdownIntoBlocks } from "streamdown";
+import { type BlockProps } from "streamdown";
+import { parseMarkdownIntoBlocks } from "../../lib/parse-markdown-blocks.ts";
 
 // How far behind the live edge a block has to be before it can be retained.
 // The block list interleaves "\n\n" separators, so this is about four

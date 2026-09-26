@@ -7,7 +7,7 @@ import { mathFromMarkdown } from "mdast-util-math";
 import { gfm } from "micromark-extension-gfm";
 import { math } from "micromark-extension-math";
 import remend from "remend";
-import { parseMarkdownIntoBlocks } from "streamdown";
+import { parseMarkdownIntoBlocks } from "../../lib/parse-markdown-blocks.ts";
 
 // Cheap gate: a bullet marker then only thematic-break punctuation. Not
 // asterisk specific, `- --verbose` and `* ___under___` flash too.
