@@ -318,7 +318,12 @@ def test_planner_gets_the_prepared_config_instead_of_rebuilding_it(monkeypatch):
     # An unsloth_zoo whose planner cannot take the object declines the plan instead of handing it a config it would size wrong.
     seen.clear()
 
-    def old_plan(model_name, *, max_memory = None, **kwargs):
+    def old_plan(
+        model_name,
+        *,
+        max_memory = None,
+        **kwargs,
+    ):
         seen.update(kwargs)
         return None
 

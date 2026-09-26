@@ -2088,7 +2088,9 @@ class FastBaseModel:
         # A compressed-tensors packed checkpoint re-quantized to bitsandbytes on the fly has had its own quantization config dropped from auto_config; the repo's config.json would size it as compressed-tensors and refuse the bitsandbytes flags.
         if _planner_config is None and compressed_tensors_prepared_config(auto_config) is not None:
             _planner_config = auto_config
-            _planner_config_reason = "this unsloth_zoo cannot plan from the prepared config of a re-quantized checkpoint"
+            _planner_config_reason = (
+                "this unsloth_zoo cannot plan from the prepared config of a re-quantized checkpoint"
+            )
         # Same failure from the other direction: num_labels (or an explicit auto_model) loads a task head whose `score` replaces the planned lm_head, and dispatch refuses a map with no score.weight.
         if _planner_skip_reason is None:
             _planner_skip_reason = planner_class_mismatch_reason(
