@@ -67,12 +67,16 @@ function context(
     projectSort: "manual",
     pinnedChatIds: new Set(["p1"]),
     pinnedProjectIds: new Set(["work"]),
+    sectionByChatId: {},
+    sectionByProjectId: {},
+    sectionSort: () => "manual",
     orders: {
       pinned: ["work", "p1"],
       projects: ["home", "misc"],
       recents: ["r1", "r2"],
       projectChats: (projectId) =>
         ({ work: ["c1", "c2"], home: ["c3"], misc: [] })[projectId] ?? [],
+      sections: () => [],
     },
     ...overrides,
   };
@@ -200,7 +204,9 @@ test("a folder reorder or unpin switches a sorted Projects list to Manual", () =
 // A pinned project chat shows in Pinned only; its own folder unpins it.
 test("a pinned chat is listed once and drops back into its folder unpinned", () => {
   assert.ok(
-    APP_SIDEBAR.includes("items.filter((item) => !pinnedIdSet.has(item.id))"),
+    APP_SIDEBAR.includes(
+      "(item) => !pinnedIdSet.has(item.id) && !sectionByChatId[item.id],",
+    ),
     "a folder still lists its pinned chats",
   );
   const ctx = context({
@@ -729,8 +735,10 @@ test("an empty Projects section still shows where a folder would land", () => {
   // empty section draws a row. A zero-height box is skipped by elementsFromPoint.
   assert.match(
     APP_SIDEBAR,
-    /\{visibleProjectRecords\.length === 0 && \(\n\s*<SidebarMenuItem>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\("shell\.navigation\.allProjectsPinned"\)\}/,
+    /\{visibleProjectRecords\.length === 0 && \(\n\s*<SidebarMenuItem>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\(\n\s*projects\.length === 0\n\s*\? "shell\.navigation\.noProjects"\n\s*: projects\.some\(\(project\) => sectionByProjectId\[project\.id\]\)\n\s*\? "shell\.navigation\.allProjectsFiled"\n\s*: "shell\.navigation\.allProjectsPinned",/,
   );
+  // With no projects at all the section stays, once they have loaded, and says so.
+  assert.match(EN, /noProjects: "No projects",/);
   assert.match(EN, /allProjectsPinned: "All projects pinned",/);
 });
 
@@ -856,7 +864,9 @@ test("every row and section is wired to the planner", () => {
     'scope: RECENTS_ORDER_SCOPE,\n                        ids: recentRowIds,\n                        section: "recents",',
     'orderedIds: projectRowIds,\n                          section: "projects",',
   ]) {
-    assert.ok(APP_SIDEBAR.includes(wiring), `missing ${wiring}`);
+    // Whitespace-free, since the sections are drawn by functions at their own indent.
+    const flat = (text: string) => text.replace(/\s+/g, "");
+    assert.ok(flat(APP_SIDEBAR).includes(flat(wiring)), `missing ${wiring}`);
   }
 });
 
@@ -1064,11 +1074,11 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
   );
   assert.match(
     APP_SIDEBAR,
-    /const move = effects\.moveChat;\n\s*if \(!move\) \{\n(?:\s*\/\/[^\n]*\n)*\s*applyOrders\(\);\n\s*return;\n\s*\}/,
+    /const move = effects\.moveChat;\n\s*if \(!move\) \{\n(?:\s*\/\/[^\n]*\n)*\s*applyFiling\(\);\n\s*applyOrders\(\);\n\s*return;\n\s*\}/,
   );
   assert.match(
     APP_SIDEBAR,
-    /\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)\n\s*\.then\(\(moved\) => \{\n\s*if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;\n(?:\s*\/\/[^\n]*\n)*\s*applyOrders\(ordersBefore, sortPicked\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
+    /\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)\n\s*\.then\(\(moved\) => \{\n\s*if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;\n(?:\s*\/\/[^\n]*\n)*\s*applyFiling\(\);\n\s*applyOrders\(ordersBefore, sortPicked\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
   );
   // And nothing else in commitDrop writes an order on its own.
   const commit = APP_SIDEBAR.slice(
@@ -1110,13 +1120,18 @@ test("a sort picked while a move is in flight is not overwritten", () => {
   // for it would leave the slot written into a list still sorted, undoing the drop.
   assert.match(
     commit,
-    /const stopWatchingSort = switching\n\s*\? useSidebarOrganizationStore\.subscribe\(\(now, before\) => \{\n\s*sortPicked \|\|=\n\s*switching === "pinned"\n\s*\? now\.pinnedSort !== before\.pinnedSort\n\s*: now\.chatSort !== before\.chatSort;\n\s*\}\)\n\s*: \(\) => \{\};/,
+    /const stopWatchingSort = switching\n\s*\? useSidebarOrganizationStore\.subscribe\(\(now, before\) => \{\n\s*sortPicked \|\|=\n\s*switchedListSort\(now, switching\) !== switchedListSort\(before, switching\);\n\s*\}\)\n\s*: \(\) => \{\};/,
+  );
+  // Each list reads its own sort, custom sections included.
+  assert.match(
+    APP_SIDEBAR,
+    /if \(list === "pinned"\) return state\.pinnedSort;\n\s*if \(list === "projects"\) return state\.projectSort;\n\s*const sectionId = customSectionIdOf\(list\);/,
   );
   assert.match(commit, /const switching = effects\.switchSort;/);
   // Only the path that waits. Nothing can come between a drop and a switch applied in the turn.
   assert.match(
     commit,
-    /if \(!move\) \{\n(?:\s*\/\/[^\n]*\n)*\s*applyOrders\(\);\n\s*return;\n\s*\}/,
+    /if \(!move\) \{\n(?:\s*\/\/[^\n]*\n)*\s*applyFiling\(\);\n\s*applyOrders\(\);\n\s*return;\n\s*\}/,
   );
   // Read before applyOrders, whose own setChatSort would otherwise trip the watch it reads.
   assert.match(commit, /applyOrders\(ordersBefore, sortPicked\);/);
@@ -1214,8 +1229,8 @@ test("a chat can be dropped after a folder that ends the Pinned list", () => {
   // Part of the layout, not summoned by the drag: a row mounting at drag start shifts every
   // section below it after the pointer was sampled, and the cue and the drop then disagree.
   const pinnedMenu = APP_SIDEBAR.slice(
-    APP_SIDEBAR.indexOf('{/* Pinned: folders and chats in one list'),
-    APP_SIDEBAR.indexOf("{/* One folder per unpinned project."),
+    APP_SIDEBAR.indexOf("function renderPinnedSection(): ReactNode {"),
+    APP_SIDEBAR.indexOf("function renderCustomSection("),
   );
   assert.ok(pinnedMenu.length > 0, "the Pinned section moved");
   assert.match(

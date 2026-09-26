@@ -190,6 +190,9 @@ export const ja = {
       noChats: "チャットなし",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "すべてのプロジェクトをピン留め済み",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "すべてのプロジェクトがピン留め済みまたはセクション内にあります",
+      noProjects: "プロジェクトはありません",
       showMore: "もっと見る",
       showLess: "表示を減らす",
       settings: "設定",
@@ -236,6 +239,9 @@ export const ja = {
       inOneList: "1つのリストで",
       sortChatsBy: "チャットの並び順",
       sortPinnedBy: "ピン留めの並び順",
+      sortProjectsBy: "プロジェクトの並び順",
+      name: "名前",
+      dateCreated: "作成日",
       priority: "優先度",
       lastUpdated: "最終更新",
       manualOrder: "手動で並べ替え",
@@ -243,6 +249,31 @@ export const ja = {
       organizeChats: "チャットを整理",
       organizeProjects: "プロジェクトを整理",
       sortPinnedChats: "ピン留めチャットを並べ替え",
+      // Header of the menu's section-visibility toggles.
+      show: "表示",
+      newSection: "新しいセクション",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "新しいセクション",
+      createDescription: "チャットやプロジェクトを自由にグループ化できます",
+      namePlaceholder: "セクション名",
+      create: "セクションを作成",
+      renameTitle: "セクション名を変更",
+      renameDescription: "このセクションに新しい名前を付けます",
+      rename: "セクション名を変更",
+      delete: "セクションを削除",
+      // Row menu submenu that files a chat or project into a section.
+      section: "セクション",
+      moveToSection: "セクションへ移動",
+      newSectionEllipsis: "新しいセクション…",
+      noSection: "セクションなし",
+      // Shown in a section with nothing filed in it yet.
+      empty: "ここにチャットやプロジェクトをドラッグ",
+      sectionOptions: "セクションのオプション",
+      newChatInSection: "{name} に新しいチャット",
+      deleted: "セクション「{name}」を削除しました",
+      undo: "元に戻す",
     },
     dialog: {
       deleteChat: {

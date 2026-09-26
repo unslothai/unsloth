@@ -314,3 +314,13 @@ test("Back and Forward follow page history, and zoom steps the interface scale",
   assert.match(ROOT, /"zoom-out": zoomBy\(-1\)/);
   assert.match(ROOT, /"actual-size": \(\) => useInterfaceScaleStore\.getState\(\)\.reset\(\)/);
 });
+
+test("Help items reuse the icon of the Settings tab they open", () => {
+  const dialog = readSrc("features/settings/settings-dialog.tsx");
+  const tabIcon = (id: string) =>
+    dialog.match(new RegExp(`id: "${id}",\\s*labelKey: "[^"]+",\\s*icon: (\\w+)`))?.[1];
+  const helpIcon = (action: string) => HELP.match(new RegExp(`"${action}": \\{[^}]*icon: (\\w+)`))?.[1];
+  assert.equal(helpIcon("help-keyboard-shortcuts"), tabIcon("keyboard-shortcuts"));
+  assert.equal(helpIcon("help-troubleshooting"), tabIcon("debugging"));
+  assert.equal(helpIcon("help-system-status"), tabIcon("resources"));
+});

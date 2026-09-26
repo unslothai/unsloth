@@ -191,6 +191,9 @@ export const de = {
       noChats: "Keine Chats",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Alle Projekte angepinnt",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "Alle Projekte sind angeheftet oder in Abschnitten",
+      noProjects: "Keine Projekte",
       showMore: "Mehr anzeigen",
       showLess: "Weniger anzeigen",
       settings: "Einstellungen",
@@ -237,6 +240,9 @@ export const de = {
       inOneList: "In einer Liste",
       sortChatsBy: "Chats sortieren nach",
       sortPinnedBy: "Angeheftete sortieren nach",
+      sortProjectsBy: "Projekte sortieren nach",
+      name: "Name",
+      dateCreated: "Erstellungsdatum",
       priority: "Priorität",
       lastUpdated: "Zuletzt aktualisiert",
       manualOrder: "Manuelle Reihenfolge",
@@ -244,6 +250,31 @@ export const de = {
       organizeChats: "Chats organisieren",
       organizeProjects: "Projekte organisieren",
       sortPinnedChats: "Angeheftete Chats sortieren",
+      // Header of the menu's section-visibility toggles.
+      show: "Anzeigen",
+      newSection: "Neuer Abschnitt",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "Neuer Abschnitt",
+      createDescription: "Gruppiere Chats und Projekte ganz nach Belieben",
+      namePlaceholder: "Name des Abschnitts",
+      create: "Abschnitt erstellen",
+      renameTitle: "Abschnitt umbenennen",
+      renameDescription: "Gib diesem Abschnitt einen neuen Namen",
+      rename: "Abschnitt umbenennen",
+      delete: "Abschnitt löschen",
+      // Row menu submenu that files a chat or project into a section.
+      section: "Abschnitt",
+      moveToSection: "In Abschnitt verschieben",
+      newSectionEllipsis: "Neuer Abschnitt…",
+      noSection: "Kein Abschnitt",
+      // Shown in a section with nothing filed in it yet.
+      empty: "Chats oder Projekte hierher ziehen",
+      sectionOptions: "Abschnittsoptionen",
+      newChatInSection: "Neuer Chat in {name}",
+      deleted: "Abschnitt „{name}“ gelöscht",
+      undo: "Rückgängig",
     },
     dialog: {
       deleteChat: {

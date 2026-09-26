@@ -186,6 +186,9 @@ export const zhCN = {
       noChats: "无对话",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "所有项目均已置顶",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "所有项目均已置顶或归入分区",
+      noProjects: "暂无项目",
       showMore: "显示更多",
       showLess: "显示更少",
       settings: "设置",
@@ -232,6 +235,9 @@ export const zhCN = {
       inOneList: "合并为一个列表",
       sortChatsBy: "对话排序方式",
       sortPinnedBy: "置顶排序方式",
+      sortProjectsBy: "项目排序方式",
+      name: "名称",
+      dateCreated: "创建日期",
       priority: "优先级",
       lastUpdated: "最近更新",
       manualOrder: "手动排序",
@@ -239,6 +245,31 @@ export const zhCN = {
       organizeChats: "整理对话",
       organizeProjects: "整理项目",
       sortPinnedChats: "对置顶对话排序",
+      // Header of the menu's section-visibility toggles.
+      show: "显示",
+      newSection: "新建分区",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "新建分区",
+      createDescription: "按你的喜好对对话和项目进行分组",
+      namePlaceholder: "分区名称",
+      create: "创建分区",
+      renameTitle: "重命名分区",
+      renameDescription: "为此分区取一个新名称",
+      rename: "重命名分区",
+      delete: "删除分区",
+      // Row menu submenu that files a chat or project into a section.
+      section: "分区",
+      moveToSection: "移至分区",
+      newSectionEllipsis: "新建分区…",
+      noSection: "无分区",
+      // Shown in a section with nothing filed in it yet.
+      empty: "将对话或项目拖到此处",
+      sectionOptions: "分区选项",
+      newChatInSection: "在 {name} 中新建聊天",
+      deleted: "已删除分区“{name}”",
+      undo: "撤销",
     },
     dialog: {
       deleteChat: {

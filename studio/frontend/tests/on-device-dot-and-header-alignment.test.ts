@@ -639,14 +639,15 @@ test("list header actions end where a hovered row's action does", () => {
   );
 });
 
-test("all three list headers take the same alignment", () => {
-  // Pinned, Projects and Recents share one class string, and none is nudged on its own.
+test("every list header takes the same alignment", () => {
+  // Pinned, the custom sections, Projects and Recents share one class string, and none is
+  // nudged on its own.
   // They are drop zones, so the class list is spread over lines.
   const shared = (
     SIDEBAR.match(
       /"sidebar-sticky-label sidebar-sticky-label-following group\/sidebar-header gap-1",\n\s*headerInset,/g,
     ) ?? []
   ).length;
-  assert.equal(shared, 3, "Pinned, Projects and Recents");
+  assert.equal(shared, 4, "Pinned, custom sections, Projects and Recents");
   assert.ok(!SIDEBAR.includes("translate-x-[2px]"));
 });

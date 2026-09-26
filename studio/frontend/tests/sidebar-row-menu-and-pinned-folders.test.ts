@@ -186,7 +186,7 @@ test("a pinned folder is a row of Pinned, not of Projects", () => {
     APP_SIDEBAR.indexOf("const sidebarProjectRecords = useMemo("),
     APP_SIDEBAR.indexOf("const visibleProjectRecords"),
   );
-  assert.match(records, /\.filter\(\(p\) => !pinnedProjectIdSet\.has\(p\.id\)\)/);
+  assert.match(records, /\.filter\(\(p\) => !pinnedProjectIdSet\.has\(p\.id\) && !sectionByProjectId\[p\.id\]\)/);
   assert.ok(
     !records.includes("pinnedProjectIds"),
     "the Projects list still folds the pinned folders in",
@@ -194,13 +194,13 @@ test("a pinned folder is a row of Pinned, not of Projects", () => {
   // The header owns "New project", so its test counts every project, pinned or not.
   assert.match(
     APP_SIDEBAR,
-    /const projectsSectionConfigured =\n\s*organizeBy === "project" && projects\.length > 0;/,
+    /const projectsSectionConfigured =\n\s*organizeBy === "project" &&\n\s*!projectsSectionHidden &&\n\s*\(projects\.length > 0 \|\| projectsLoaded\);/,
   );
   assert.match(
     APP_SIDEBAR,
     /const projectsSectionRendered =\n[\s\S]{0,200}?projectsSectionConfigured;/,
   );
-  assert.match(APP_SIDEBAR, /\{projectsSectionRendered && \(/);
+  assert.match(APP_SIDEBAR, /if \(!projectsSectionRendered\) return null;/);
 });
 
 // Moving a folder into Pinned must not undo an order the user had already dragged it into: the
@@ -255,9 +255,15 @@ test("the walk reads the rows in the order Pinned draws them", () => {
     APP_SIDEBAR,
     /const pinnedSectionChatItems = useMemo\(\n\s*\(\) =>\n\s*chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\(\(row\) =>\n\s*row\.kind === "project"\n\s*\? folderChatItems\(true, \[row\.project\]\)\n\s*: \[row\.item\],/,
   );
+  // The walk reads pinnedItems then projectItems, so the two are every section above Recents in
+  // the order the user dragged them into, split at Pinned.
   assert.match(
     APP_SIDEBAR,
-    /pinnedItems: pinnedSectionChatItems,\n\s*projectItems: sectionProjectChatItems,/,
+    /pinnedItems: upToPinnedChatItems,\n(?:\s*\/\/[^\n]*\n)*\s*projectItems: belowPinnedChatItems,/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /for \(const key of orderedSectionKeys\) \{\n\s*const items =\n\s*key === PINNED_SECTION_KEY\n\s*\? pinnedSectionChatItems\n\s*: key === PROJECTS_SECTION_KEY\n\s*\? sectionProjectChatItems/,
   );
 });
 
@@ -297,12 +303,12 @@ test("the sort options are names, with nothing written under them", () => {
     APP_SIDEBAR.indexOf("const ORGANIZE_OPTIONS"),
   );
   assert.ok(!options.includes("hint"), "the sort options still carry captions");
-  assert.match(APP_SIDEBAR, /\{CHAT_SORT_OPTIONS\.map\(\(option\) => \(/);
-  const menu = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("{CHAT_SORT_OPTIONS.map("));
+  // Every sort opens as a submenu of plain names, ticked on the right like the rest of the menu.
   assert.match(
-    menu.slice(0, menu.indexOf("</DropdownMenuRadioGroup>")),
-    /className=\{menuRadioItemClass\}\n\s*>\n\s*\{t\(option\.key\)\}/,
+    APP_SIDEBAR,
+    /\{config\.options\.map\(\(option\) => \(\n\s*<DropdownMenuRadioItem key=\{option\.value\} value=\{option\.value\}>\n\s*\{t\(option\.key\)\}\n\s*<\/DropdownMenuRadioItem>/,
   );
+  assert.match(APP_SIDEBAR, /options: CHAT_SORT_OPTIONS,/);
   // And the strings go with them, in every language.
   for (const key of ["priorityHint", "lastUpdatedHint", "manualOrderHint"]) {
     assert.ok(!APP_SIDEBAR.includes(key), `${key} is still read`);

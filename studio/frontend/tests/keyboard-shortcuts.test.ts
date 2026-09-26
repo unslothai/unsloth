@@ -1268,6 +1268,11 @@ test("a collapsed sidebar section is not published for the chords", async () => 
     APP_SIDEBAR,
     /chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\(/,
   );
+  // A custom section closes on its own, as Pinned does, and takes only its own rows.
+  assert.match(
+    APP_SIDEBAR,
+    /visibleCustomSections\.flatMap\(\(section\) =>\n\s*collapsedSectionIds\.has\(section\.id\)\n\s*\? \[\]/,
+  );
   assert.match(
     APP_SIDEBAR,
     /chatListsOnScreen && chatOpen \? sortedRecentChatItems/,
@@ -1285,7 +1290,7 @@ test("a collapsed sidebar section is not published for the chords", async () => 
   // In one list every project chat is a Recents row, so a folder must not list it again.
   assert.match(APP_SIDEBAR, /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\)/);
   // And the published lists are the filtered ones.
-  assert.match(APP_SIDEBAR, /pinnedItems: pinnedSectionChatItems,/);
+  assert.match(APP_SIDEBAR, /pinnedItems: upToPinnedChatItems,/);
   assert.match(APP_SIDEBAR, /recentItems: visibleRecentItems,/);
 });
 
@@ -1604,6 +1609,7 @@ test("the published chat lists stop where the sidebar stops", async () => {
   for (const group of [
     /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\) return \[\];/,
     /chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\([\s\S]*?: \[\],/,
+    /const customSectionChatItems = useMemo\(\(\) => \{\n\s*const bySection = new Map<string, SidebarItem\[\]>\(\);\n\s*if \(!chatListsOnScreen\) return bySection;/,
     /\(chatListsOnScreen && chatOpen \? sortedRecentChatItems : \[\]\)/,
   ]) {
     assert.match(APP_SIDEBAR, group);
@@ -1617,12 +1623,13 @@ test("the published chat lists stop where the sidebar stops", async () => {
   );
   assert.match(
     APP_SIDEBAR,
-    /const renderedChatItems = useMemo\(\n\s*\(\) => \[\n\s*\.\.\.pinnedSectionChatItems,\n\s*\.\.\.sectionProjectChatItems,\n\s*\.\.\.visibleRecentItems,/,
+    /const renderedChatItems = useMemo\(\n\s*\(\) => \[\.\.\.upToPinnedChatItems, \.\.\.belowPinnedChatItems, \.\.\.visibleRecentItems\],/,
   );
   // Gating the arrays is enough because nothing renders from them.
   const rendered = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("return (", selectAll));
   for (const name of [
     "pinnedSectionChatItems",
+    "customSectionChatItems",
     "visibleRecentItems",
     "renderedChatItems",
     "sectionProjectChatItems",

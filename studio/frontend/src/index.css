@@ -2727,6 +2727,51 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 4px 14px var(--background);
 	}
 
+	/* The sidebar's own menus open over the sidebar, which is the menus' own color in dark: a hair
+	   more lift in light, and a step lighter than the sidebar in dark, so they stand apart. */
+	.unsloth-plus-menu.sidebar-menu[data-slot] {
+		box-shadow:
+			0 4px 14px -3px rgba(0, 0, 0, 0.2),
+			0 1px 3px rgba(0, 0, 0, 0.05);
+	}
+
+	/* ChatGPT's menu type: the system face at 14px on 36px rows, with larger icons. Scaled like
+	   every other UI size, so the font size setting still reaches it. */
+	.unsloth-plus-menu.sidebar-menu[data-slot] {
+		font-family: ui-sans-serif, -apple-system, system-ui, "Segoe UI", Helvetica, "Apple Color Emoji", Arial, sans-serif;
+		--icon-size: calc(1.125rem * var(--ui-font-scale, 1));
+	}
+
+	/* Both classes, to outrank the compact sizing .sidebar-row-menu gives every row further down. */
+	.unsloth-plus-menu.sidebar-row-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="dropdown-menu-checkbox-item"],
+			[data-slot="dropdown-menu-radio-item"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
+		) {
+		@apply py-2 text-ui-14;
+		font-weight: 400;
+		line-height: calc(1.25rem * var(--ui-font-scale, 1));
+	}
+
+	/* And its dark colors, taken off ChatGPT's own menu: #2b2b2b under #ededed ink, #3e3e3e rules
+	   and a salmon Delete. Mixed from the palette, so the default dark lands on exactly those and
+	   another palette keeps its own hue. */
+	.dark .unsloth-plus-menu.sidebar-menu[data-slot] {
+		background-color: color-mix(in srgb, var(--card), white 2%);
+		color: color-mix(in srgb, var(--foreground), white 45%);
+		--destructive: #ed716a;
+	}
+
+	.dark .unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-separator"],
+			[data-slot="context-menu-separator"]
+		) {
+		background-color: color-mix(in srgb, var(--card), white 11%);
+	}
+
 	/* Compact items; also applied to portaled sub-content. */
 	.unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
@@ -2776,6 +2821,32 @@ html[data-chat-font] .aui-root {
 			[data-slot="context-menu-label"]
 		) {
 		@apply pl-2.5 pr-2.5 py-1 text-ui-11;
+	}
+
+	/* Checkbox and radio rows (a sidebar header menu's Show toggles and sorts) shaped like the rows
+	   beside them, their tick kept clear on the right. */
+	.unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-checkbox-item"],
+			[data-slot="dropdown-menu-radio-item"]
+		) {
+		@apply gap-2.5 pl-2.5 pr-8;
+		border-radius: 10px;
+	}
+
+	.unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-checkbox-item-indicator"],
+			[data-slot="dropdown-menu-radio-item-indicator"]
+		) {
+		@apply right-2.5;
+	}
+
+	.unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-checkbox-item"],
+			[data-slot="dropdown-menu-radio-item"]
+		)
+		svg {
+		width: var(--icon-size) !important;
+		height: var(--icon-size) !important;
 	}
 
 	/* Active (green) items keep their primary text and icon color on hover. */
