@@ -1069,12 +1069,16 @@ def _reportable_hf_endpoints(request) -> dict:
     Cloudflare tunnel the peer IS loopback, being the local cloudflared process
     rather than the visitor, and an address it cannot determine reads as remote.
     """
+    from utils.hub_settings import saved_only_endpoints
+
+    # The owner-only settings route guards a saved endpoint; the browser reaches it through the relay.
+    hidden = saved_only_endpoints()
     reported = {}
     for key, value in (
         ("hf_endpoint", browser_hf_endpoint()),
         ("hf_datasets_server", get_hf_datasets_server()),
     ):
-        if _endpoint_is_reachable_by(value, client_ip(request)):
+        if value not in hidden and _endpoint_is_reachable_by(value, client_ip(request)):
             reported[key] = value
         else:
             reported[key] = _HF_ENDPOINT_DEFAULTS[key]
