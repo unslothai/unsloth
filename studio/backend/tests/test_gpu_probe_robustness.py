@@ -105,7 +105,9 @@ def test_the_winner_is_unchanged_when_every_probe_succeeds(monkeypatch):
         ("garbage", None),
     ],
 )
-def test_the_pci_device_id_tells_an_xpu_card_from_other_intel_graphics(tmp_path, device_id, xpu_class):
+def test_the_pci_device_id_tells_an_xpu_card_from_other_intel_graphics(
+    tmp_path, device_id, xpu_class
+):
     (tmp_path / "device").write_text(device_id + "\n", encoding = "utf-8")
     assert hw._intel_pci_device_is_xpu_class(str(tmp_path)) is xpu_class
 
