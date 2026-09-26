@@ -301,12 +301,25 @@ def _run_sage_probe(device: str, dtype: Any) -> str:
     return ""
 
 
+def _indexed_cuda_device(device: str) -> str:
+    """Bare "cuda" as the card it means on this thread. Callers pin a selected ordinal with
+    ``set_device`` and pass the un-indexed name, so the memo must not carry one card's answer to another."""
+    if device != "cuda":
+        return device
+    try:
+        import torch
+        return f"cuda:{torch.cuda.current_device()}"
+    except Exception:  # noqa: BLE001 - unreadable: keep the bare name
+        return device
+
+
 def _sage_kernel_runs(target: Any, logger: Any = None) -> Optional[bool]:
     """True when SageAttention runs on ``target``, False when its kernel raised, None when the probe
     could not be asked. Only False blocks, so an unanswerable probe keeps the requested backend."""
     device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
     if not device.startswith("cuda"):
         return None
+    device = _indexed_cuda_device(device)
     dtype = getattr(target, "dtype", None)
     key = (device, str(dtype))
     error = _SAGE_PROBE_CACHE.get(key)

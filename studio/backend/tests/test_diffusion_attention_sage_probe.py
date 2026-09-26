@@ -53,6 +53,7 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(att, "_ensure_attention_backend_installed", lambda *a, **k: None)
     monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
     monkeypatch.setattr(att, "warn_if_sdpa_math_only", lambda *a, **k: False)
+    monkeypatch.setattr(att, "_indexed_cuda_device", lambda device: device)
 
 
 def _stub_probe(
@@ -167,3 +168,27 @@ def test_run_probe_raises_when_the_package_is_missing(monkeypatch):
     monkeypatch.setitem(__import__("sys").modules, "sageattention", None)
     with pytest.raises(ImportError):
         att._run_sage_probe("cpu", None)
+
+
+def test_bare_cuda_is_keyed_by_the_card_pinned_on_this_thread(monkeypatch):
+    # Video loads pin the selected ordinal with set_device and pass device="cuda"; on a mixed host a
+    # verdict for one card must not be reused for another.
+    seen: list = []
+    current = {"card": 0}
+    monkeypatch.setattr(
+        att, "_indexed_cuda_device", lambda d: f"cuda:{current['card']}" if d == "cuda" else d
+    )
+    monkeypatch.setattr(
+        att,
+        "_run_sage_probe",
+        lambda d, dt: seen.append(d) or ("" if d == "cuda:1" else _UNSUPPORTED),
+    )
+    bare = types.SimpleNamespace(device = "cuda", dtype = "bf16")
+    assert att._sage_kernel_runs(bare) is False
+    current["card"] = 1
+    assert att._sage_kernel_runs(bare) is True
+    assert seen == ["cuda:0", "cuda:1"]
+
+
+def test_indexed_cuda_device_leaves_indexed_names_alone():
+    assert att._indexed_cuda_device("cuda:3") == "cuda:3"
