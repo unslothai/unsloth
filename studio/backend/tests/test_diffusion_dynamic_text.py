@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Prompt-length dims compiled dynamic from the first forward (``diffusion_dynamic_text.py``)."""
-
 from __future__ import annotations
 
 import pytest

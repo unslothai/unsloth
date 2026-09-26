@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Compile a DiT's prompt-length inputs dynamic from its first forward (``dynamic_sources``, scoped to the forward
-by hooks), so a new prompt length never recompiles. Only prompt-sized inputs: blanket ``dynamic=True`` hits torchao
-CantSplit."""
+"""Mark a DiT's prompt-length inputs dynamic (``dynamic_sources``, scoped to its forward) so a new prompt length
+never recompiles; blanket ``dynamic=True`` hits torchao CantSplit."""
 
 from __future__ import annotations
 
