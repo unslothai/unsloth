@@ -6001,6 +6001,29 @@ exit 0
         return $table
     }
 
+    # Bounded out of process like Get-StudioVolumeList: without Python this rung is the common one,
+    # and a degraded WMI repository never returns.
+    function Get-StudioWmiProcessImageRows {
+        param(
+            [scriptblock]$Query = {
+                Get-CimInstance -ClassName Win32_Process -ErrorAction Stop | Select-Object ProcessId, ExecutablePath
+            },
+            [int]$TimeoutSeconds = 15
+        )
+        $job = $null
+        try {
+            $job = Start-Job -ScriptBlock $Query
+            if (Wait-Job -Job $job -Timeout $TimeoutSeconds) {
+                return @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
+            }
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
+        } catch {
+        } finally {
+            if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+        }
+        return @()
+    }
+
     function Get-StudioProcessImagePath {
         param([Parameter(Mandatory = $true)][int]$ProcessId)
         $process = $null
@@ -6033,13 +6056,11 @@ exit 0
         # Queried once per run, not once per process: this is the slow rung.
         if ($null -eq $script:StudioProcessImageTable) {
             $script:StudioProcessImageTable = @{}
-            try {
-                foreach ($row in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) {
-                    if (-not [string]::IsNullOrWhiteSpace($row.ExecutablePath)) {
-                        $script:StudioProcessImageTable[[int]$row.ProcessId] = [string]$row.ExecutablePath
-                    }
+            foreach ($row in @(Get-StudioWmiProcessImageRows)) {
+                if ($row -and -not [string]::IsNullOrWhiteSpace($row.ExecutablePath)) {
+                    $script:StudioProcessImageTable[[int]$row.ProcessId] = [string]$row.ExecutablePath
                 }
-            } catch {}
+            }
         }
         if ($script:StudioProcessImageTable.ContainsKey($ProcessId)) {
             return $script:StudioProcessImageTable[$ProcessId]

@@ -200,6 +200,7 @@ def _process_helpers(source: str) -> str:
             "Get-StudioFinalPath",
             "Test-StudioProtectedPathMatch",
             "Get-StudioPythonProcessImageTable",
+            "Get-StudioWmiProcessImageRows",
             "Get-StudioProcessImagePath",
             "Get-RunningStudioVenvProcesses",
         )

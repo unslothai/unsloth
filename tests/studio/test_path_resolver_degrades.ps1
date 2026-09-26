@@ -58,7 +58,7 @@ Check "the deleted-type rule can fire at all" ($banSelfTest -match [regex]::Esca
 $fns = @(
     "Write-StudioFinalPathDegraded", "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Get-StudioEarlyPython", "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython", "Get-StudioPythonFinalPath",
-    "Resolve-StudioFinalPathInfo", "Get-StudioPythonProcessImageTable", "Get-StudioProcessImagePath"
+    "Resolve-StudioFinalPathInfo", "Get-StudioPythonProcessImageTable", "Get-StudioWmiProcessImageRows", "Get-StudioProcessImagePath"
 )
 $src = @()
 foreach ($fn in $fns) {

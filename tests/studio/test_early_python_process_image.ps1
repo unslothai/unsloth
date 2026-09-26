@@ -20,7 +20,7 @@ if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 ha
 foreach ($name in @(
     "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython", "Get-StudioEarlyPython",
     "New-StudioChildScriptDirectory", "Test-StudioChildScriptDirectoryElevated",
-    "Get-StudioPythonProcessImageTable", "Get-StudioProcessImagePath",
+    "Get-StudioPythonProcessImageTable", "Get-StudioWmiProcessImageRows", "Get-StudioProcessImagePath",
     # What Get-StudioEarlyPython reaches on Windows: the elevation gate and its helpers. Off
     # Windows it never calls them, which is how a missing one once passed here and failed CI.
     "Get-StudioSystem32Tool", "Test-StudioPathUnderAdminRoot",
@@ -38,7 +38,13 @@ foreach ($name in @(
 if ($env:OS -eq "Windows_NT") { function Test-StudioChildScriptDirectoryElevated { return $false } }
 
 function Get-Process { param($Id, $ErrorAction) throw "no such process" }
-function Get-CimInstance { param($ClassName, $ErrorAction) throw "WMI is unavailable" }
+$realWmiRows = ${function:Get-StudioWmiProcessImageRows}
+Check "a WMI query that never returns is abandoned at the deadline" (
+    (Measure-Command { $rows = @(& $realWmiRows -Query { Start-Sleep -Seconds 60 } -TimeoutSeconds 2) }).TotalSeconds -lt 20 -and
+    $rows.Count -eq 0)
+Check "control: a WMI query that answers returns its rows" (
+    @(& $realWmiRows -Query { [pscustomobject]@{ ProcessId = 9; ExecutablePath = "C:\x.exe" } }).ExecutablePath -eq "C:\x.exe")
+function Get-StudioWmiProcessImageRows { return @() }
 function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
 
 function Reset-RungState {
@@ -185,13 +191,13 @@ try {
     Reset-RungState
     $savedTable = ${function:Get-StudioPythonProcessImageTable}
     function Get-StudioPythonProcessImageTable { throw "interpreter discovery failed" }
-    function Get-CimInstance { param($ClassName, $ErrorAction)
+    function Get-StudioWmiProcessImageRows {
         return @([pscustomobject]@{ ProcessId = 55; ExecutablePath = "C:\w\python.exe" }) }
     $threw = $null; $viaWmi = $null
     try { $viaWmi = Get-StudioProcessImagePath -ProcessId 55 } catch { $threw = $_ }
     Check "a table probe that throws still reaches the WMI rung" (
         $null -eq $threw -and $viaWmi -eq "C:\w\python.exe")
-    function Get-CimInstance { param($ClassName, $ErrorAction) throw "WMI is unavailable" }
+    function Get-StudioWmiProcessImageRows { return @() }
     ${function:Get-StudioPythonProcessImageTable} = $savedTable
 
     # Validating the answer is part of the null-on-error contract: an access error declines.
