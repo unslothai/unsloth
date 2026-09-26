@@ -8487,7 +8487,9 @@ exit 0
             }
         } catch {
         } finally {
-            if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+            # -ErrorAction only quiets a reported error. A terminating one thrown here would escape the
+            # catch above and, from the presence promotion's call, abort the run; the answer is in hand.
+            if ($job) { try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue } catch {} }
         }
         $script:VideoControllerScanResult = $result
         return $result
@@ -8585,8 +8587,8 @@ exit 0
     # 10.0.19041.3636 instead of NVIDIA's 3x.0.1x.xxxx: the card is there, but no CUDA driver is, and
     # CUDA wheels cannot load. Before the promotion existed such a host got CPU wheels and kept its
     # AMD and Intel detection, so it must still get exactly that. An adapter that reports NO version is
-    # not this case, since nothing says the NVIDIA driver is missing, and one adapter with an NVIDIA
-    # version or no version is enough to answer no.
+    # read the same way: nothing shows an NVIDIA driver there either, and base gave that host CPU wheels
+    # too. Only one adapter with an NVIDIA-shaped version is enough to answer no.
     function Test-NvidiaAdapterWithoutNvidiaDriver {
         param($Scan = $null)
         if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
@@ -8596,7 +8598,7 @@ exit 0
             if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
             if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
             $version = "$($adapter.DriverVersion)"
-            if ([string]::IsNullOrWhiteSpace($version)) { return $false }
+            if ([string]::IsNullOrWhiteSpace($version)) { $foreign = $true; continue }
             if ($null -ne (Get-NvidiaDriverRelease -DriverVersion $version)) { return $false }
             $foreign = $true
         }
@@ -8663,17 +8665,10 @@ exit 0
         # whose name is outside the Arc pattern (Meteor Lake's "Intel(R) Graphics") once the existing
         # environment's PyTorch has proven XPU works. That host took XPU wheels before the promotion
         # existed, so a CUDA index for a card no driver library answered for would be a trade down.
-        # Probed only when a healthy Intel adapter is on the bus; any failure reads as not proven.
-        if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
-        $intel = $false
-        foreach ($adapter in @($Scan.Adapters)) {
-            if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_8086') { continue }
-            if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
-            if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
-            $intel = $true
-            break
-        }
-        if (-not $intel) { return $false }
+        # Asked whatever WMI says. That route asks the same environment with no WMI precondition at all,
+        # so requiring a healthy Intel record first (one with no status, no PNP ID, or no Intel row)
+        # promoted NVIDIA on a host it served with XPU. $Scan is kept so callers are unchanged. Any
+        # failure reads as not proven.
         if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $false }
         try {
             $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code 'import torch; print(torch.xpu.is_available())'
@@ -8686,11 +8681,29 @@ exit 0
     function Test-OtherVendorAdapterPresent {
         param($Scan = $null)
         if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        # The Intel route's own name classification, as it runs: a WMI name matching the XPU pattern, or
+        # a localized / OEM-branded one whose display class key description contains it and matches, takes
+        # XPU wheels whatever that record's PNP ID or status, since the route reads neither. A record
+        # missing them was XPU before the promotion existed, so it must still block it here. A registry
+        # that cannot be read is not reconciled, which is what the route concludes too.
+        if ($Scan.Ok) {
+            $scanNames = @($Scan.Names | Where-Object { $_ } | ForEach-Object { "$_" })
+            if (@($scanNames | Where-Object { $_ -match (Get-XpuCapableNameRegex) }).Count -gt 0) { return $true }
+            try {
+                foreach ($regName in @(Get-IntelRegistryAdapterNames)) {
+                    if ("$regName" -notmatch (Get-XpuCapableNameRegex)) { continue }
+                    foreach ($wmiName in $scanNames) {
+                        if ("$regName".Contains($wmiName)) { return $true }
+                    }
+                }
+            } catch {}
+        }
         foreach ($adapter in @($Scan.Adapters)) {
             # 1002 is AMD/ATI, 8086 is Intel. Virtual and basic display adapters carry neither.
             if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_(1002|8086)') { continue }
-            if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
-            if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+            # An adapter known to be faulted or disabled is not an alternative. One whose status did not
+            # come back is not known to be either, and on this side unknown declines the promotion.
+            if ($null -ne $adapter.ConfigManagerErrorCode -and [int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
             # An Intel adapter only counts as an ALTERNATIVE if the XPU route can serve it. The
             # commonest machine in this whole population is a laptop with an NVIDIA GPU and Intel
             # UHD or Iris integrated graphics, and UHD gets no XPU wheels: counting it would block
@@ -8702,27 +8715,9 @@ exit 0
             # through a name-to-gfx table rather than a short allowlist, so deciding capability here
             # would mean duplicating that table and drifting from it. Any healthy AMD adapter still
             # blocks the promotion.
-            if ("$($adapter.PNPDeviceID)" -match '(?i)ven_8086' -and
-                "$($adapter.Name)" -notmatch (Get-XpuCapableNameRegex)) {
-                # A localized or OEM-branded Arc name carries no ASCII "Intel", so the name alone says UHD.
-                # The Intel route reconciles such a name against the display class keys and reaches XPU
-                # anyway, so the same reconciliation is asked here: the registry entry whose description
-                # contains this WMI name, judged by the same pattern. Only a reconciled Arc blocks; any
-                # failure reads as not reconciled, which is the answer this check gave before.
-                $reconciledXpu = $false
-                try {
-                    $wmiName = "$($adapter.Name)"
-                    if ($wmiName) {
-                        foreach ($regName in @(Get-IntelRegistryAdapterNames)) {
-                            if ("$regName".Contains($wmiName) -and "$regName" -match (Get-XpuCapableNameRegex)) {
-                                $reconciledXpu = $true
-                                break
-                            }
-                        }
-                    }
-                } catch { $reconciledXpu = $false }
-                if (-not $reconciledXpu) { continue }
-            }
+            #
+            # Every Intel name the XPU route serves, localized ones included, was answered above.
+            if ("$($adapter.PNPDeviceID)" -match '(?i)ven_8086') { continue }
             return $true
         }
         # Mirrors Test-NvidiaAdapterPresent exactly, and it has to: that helper falls back to the
@@ -8893,24 +8888,31 @@ exit 0
             $_presenceRollbackPy = Join-Path $script:StudioVenvRollbackDir "Scripts\python.exe"
             if (Test-Path -LiteralPath $_presenceRollbackPy) { $_presenceXpuPy = $_presenceRollbackPy }
         }
-        if ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
-            (Test-NvidiaAdapterWithoutNvidiaDriver -Scan $presenceScan)) {
-            # The card is on the bus but Windows runs it on a generic driver, so there is no CUDA driver
-            # for any wheel to load. Not promoted: CPU wheels and AMD / Intel detection, exactly as
-            # before this check existed. Said once, because the fix is on the user's side.
-            Write-StudioLine "   NVIDIA GPU found without the NVIDIA driver; install the NVIDIA driver and re-run for GPU support" -ForegroundColor Yellow
-        } elseif ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
-            -not (Test-OtherVendorAdapterPresent -Scan $presenceScan) -and
-            -not $script:StudioPreservedXpuVerdict -and
-            -not (Test-IntelXpuRuntimeProven -Scan $presenceScan -PythonExe $_presenceXpuPy)) {
-            $HasNvidiaSmi = $true
-            $script:NvidiaPresenceOnly = $true
-            $script:NvidiaPresenceCudaFloor = Get-NvidiaAdapterCudaFloor -Scan $presenceScan
-            # Recorded separately, because the floor answers $null both for a driver too old for
-            # the table and for no readable version at all, and those two want opposite answers.
-            $script:NvidiaPresenceDriverRelease = Get-NvidiaAdapterDriverRelease -Scan $presenceScan
-            Write-StudioLine "   NVIDIA GPU found on the PCI bus; nvidia-smi and the driver library are both unavailable" -ForegroundColor Gray
-        }
+        # Anything below that throws declines the promotion, which is where this host was before it
+        # existed; the flags are set only once every answer is in hand. Base only ever read the scan
+        # inside the Intel route's try.
+        try {
+            if ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
+                (Test-NvidiaAdapterWithoutNvidiaDriver -Scan $presenceScan)) {
+                # The card is on the bus but Windows runs it on a generic driver, so there is no CUDA driver
+                # for any wheel to load. Not promoted: CPU wheels and AMD / Intel detection, exactly as
+                # before this check existed. Said once, because the fix is on the user's side.
+                Write-StudioLine "   NVIDIA GPU found without the NVIDIA driver; install the NVIDIA driver and re-run for GPU support" -ForegroundColor Yellow
+            } elseif ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
+                -not (Test-OtherVendorAdapterPresent -Scan $presenceScan) -and
+                -not $script:StudioPreservedXpuVerdict -and
+                -not (Test-IntelXpuRuntimeProven -Scan $presenceScan -PythonExe $_presenceXpuPy)) {
+                $_presenceFloor = Get-NvidiaAdapterCudaFloor -Scan $presenceScan
+                # Recorded separately, because the floor answers $null both for a driver too old for
+                # the table and for no readable version at all, and those two want opposite answers.
+                $_presenceRelease = Get-NvidiaAdapterDriverRelease -Scan $presenceScan
+                $HasNvidiaSmi = $true
+                $script:NvidiaPresenceOnly = $true
+                $script:NvidiaPresenceCudaFloor = $_presenceFloor
+                $script:NvidiaPresenceDriverRelease = $_presenceRelease
+                Write-StudioLine "   NVIDIA GPU found on the PCI bus; nvidia-smi and the driver library are both unavailable" -ForegroundColor Gray
+            }
+        } catch {}
     }
     # nvidia-smi was already resolved above and never asked which card it found, so the
     # banner said "NVIDIA GPU detected" on every NVIDIA host alike. compute_cap is the

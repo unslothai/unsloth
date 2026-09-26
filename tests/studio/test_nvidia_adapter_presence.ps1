@@ -378,7 +378,7 @@ foreach ($file in @($installPs1, $setupPs1)) {
     $text = [System.IO.File]::ReadAllText($file)
     $leaf = Split-Path -Leaf $file
     Check "$leaf records the driver release at the promotion site" (
-        $text -match '\$script:NvidiaPresenceDriverRelease = Get-NvidiaAdapterDriverRelease')
+        $text -match '\$_presenceRelease = Get-NvidiaAdapterDriverRelease -Scan \$presenceScan[\s\S]{0,800}?\$script:NvidiaPresenceDriverRelease = \$_presenceRelease')
     Check "$leaf records it beside the floor, from the same scan" (
         $text -match 'Get-NvidiaAdapterCudaFloor -Scan \$presenceScan[\s\S]{0,400}?Get-NvidiaAdapterDriverRelease -Scan \$presenceScan')
     Check "$leaf initialises the release to null" (
@@ -1085,14 +1085,16 @@ foreach ($file in @($installPs1, $setupPs1)) {
 
 # (2) An NVIDIA card on Microsoft's Basic Display driver. The card is on the bus, the CUDA driver is
 # not, and before the promotion the host got CPU wheels with AMD / Intel detection intact. Same
-# again now, with a hint. An NVIDIA-shaped version, or no version at all, still promotes.
+# again now, with a hint. Only an NVIDIA-shaped version promotes: no version at all is no evidence
+# of the NVIDIA driver either, and base gave that host CPU wheels, so it declines the same way.
 foreach ($case in @(
     @{ N = "Basic Display 10.0.19041.3636";  V = "10.0.19041.3636"; Want = $true },
     @{ N = "Basic Display 10.0.22621.1";     V = "10.0.22621.1";    Want = $true },
     @{ N = "an NVIDIA driver 560.94";        V = "32.0.15.6094";    Want = $false },
     @{ N = "a pre-R450 NVIDIA driver 442.50"; V = "26.21.14.4250";  Want = $false },
-    @{ N = "no DriverVersion at all";        V = $null;             Want = $false },
-    @{ N = "an empty DriverVersion";         V = "";                Want = $false }
+    @{ N = "no DriverVersion at all";        V = $null;             Want = $true },
+    @{ N = "an empty DriverVersion";         V = "";                Want = $true },
+    @{ N = "a blank DriverVersion";          V = "  ";              Want = $true }
 )) {
     $script:FakeAdapters = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0 $case.V)
     Check "an NVIDIA adapter with $($case.N) reads as no-NVIDIA-driver = $($case.Want)" (
@@ -1102,6 +1104,10 @@ $script:FakeAdapters = @(
     (Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_1C03" 0 "10.0.19041.3636"),
     (Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0 "32.0.15.6094"))
 Check "one adapter on the NVIDIA driver is enough to answer no" ((Test-NvidiaAdapterWithoutNvidiaDriver) -eq $false)
+$script:FakeAdapters = @(
+    (Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_1C03" 0 $null),
+    (Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0 "32.0.15.6094"))
+Check "a versionless adapter next to one on the NVIDIA driver still answers no" ((Test-NvidiaAdapterWithoutNvidiaDriver) -eq $false)
 $script:FakeAdapters = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 22 "10.0.19041.3636")
 Check "a disabled Basic Display NVIDIA adapter is not counted either way" ((Test-NvidiaAdapterWithoutNvidiaDriver) -eq $false)
 $script:FakeAdapters = @(Adapter "Microsoft Basic Display Adapter" "ROOT\BASICDISPLAY" 0 "10.0.19041.3636")
@@ -1126,6 +1132,12 @@ New-Item -ItemType Directory -Force -Path $promoVenv | Out-Null
 $promoPy = Join-Path $promoVenv "Scripts\python.exe"
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $promoPy) | Out-Null
 Set-Content -LiteralPath $promoPy -Value "" -NoNewline
+$promoTorch = Join-Path $promoVenv "Lib\site-packages\torch"
+New-Item -ItemType Directory -Force -Path $promoTorch | Out-Null
+Set-Content -LiteralPath (Join-Path $promoTorch "version.py") -Value "__version__ = '2.8.0+xpu'"
+Invoke-Expression (Get-FunctionText $setupPs1 "Test-VenvTorchIsXpu")
+$script:FakeProbableVenv = $null
+function Get-ProbableStudioVenvDir { return $script:FakeProbableVenv }
 foreach ($file in @($installPs1, $setupPs1)) {
     $leaf = Split-Path -Leaf $file
     $promo = Get-PromotionBlock $file
@@ -1133,15 +1145,31 @@ foreach ($file in @($installPs1, $setupPs1)) {
     foreach ($case in @(
         @{ N = "Basic Display (10.0.19041.3636)"; A = @(Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_2684" 0 "10.0.19041.3636"); Want = $false; Hint = $true },
         @{ N = "an NVIDIA driver (560.94)";        A = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0 "32.0.15.6094");   Want = $true;  Hint = $false },
-        @{ N = "no DriverVersion";                 A = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0 $null);            Want = $true;  Hint = $false },
+        @{ N = "no DriverVersion";                 A = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0 $null);            Want = $false; Hint = $true },
+        @{ N = "Basic Display with no DriverVersion"; A = @(Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_2684" 0 $null); Want = $false; Hint = $true },
+        @{ N = "Basic Display with an empty DriverVersion"; A = @(Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_2684" 0 ""); Want = $false; Hint = $true },
         @{ N = "Basic Display plus Intel UHD";     A = @((Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_2684" 0 "10.0.19041.3636"), (Adapter "Intel(R) UHD Graphics" "PCI\VEN_8086&DEV_9A49" 0 "31.0.101.1")); Want = $false; Hint = $true },
         # A Meteor Lake "Intel(R) Graphics" is outside the Arc pattern, so only the environment's
         # PyTorch can say it serves XPU. Proven: the Intel route keeps it, as it did before.
         @{ N = "an NVIDIA driver plus a Meteor Lake GPU whose PyTorch has proven XPU"; A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" 0 "32.0.101.6078")); Want = $false; Hint = $false; Xpu = "True" },
-        @{ N = "an NVIDIA driver plus a Meteor Lake GPU with no XPU runtime";            A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" 0 "32.0.101.6078")); Want = $true;  Hint = $false; Xpu = "False" }
+        @{ N = "an NVIDIA driver plus a Meteor Lake GPU with no XPU runtime";            A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" 0 "32.0.101.6078")); Want = $true;  Hint = $false; Xpu = "False" },
+        # Incomplete Intel records. The Intel route base ran here asks the environment's PyTorch with
+        # no WMI precondition and classifies by name alone, never by PNP ID or status, so each of
+        # these took XPU wheels on base and must still decline the promotion.
+        @{ N = "an NVIDIA driver plus a Meteor Lake with no status, PyTorch XPU proven"; A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" $null "32.0.101.6078")); Want = $false; Hint = $false; Xpu = "True" },
+        @{ N = "an NVIDIA driver plus a Meteor Lake with no PNP ID, PyTorch XPU proven"; A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Graphics" $null 0 "32.0.101.6078")); Want = $false; Hint = $false; Xpu = "True" },
+        @{ N = "an NVIDIA driver and no Intel row at all, PyTorch XPU proven";           A = @(Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"); Want = $false; Hint = $false; Xpu = "True" },
+        @{ N = "an NVIDIA driver plus an Arc with no status, no XPU runtime";            A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Arc(TM) A770 Graphics" "PCI\VEN_8086&DEV_56A0" $null "32.0.101.6078")); Want = $false; Hint = $false; Xpu = "False" },
+        @{ N = "an NVIDIA driver plus an Arc with no PNP ID, no XPU runtime";            A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Arc(TM) A770 Graphics" $null 0 "32.0.101.6078")); Want = $false; Hint = $false; Xpu = "False" },
+        @{ N = "an NVIDIA driver plus a disabled Arc, no XPU runtime";                   A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Arc(TM) A770 Graphics" "PCI\VEN_8086&DEV_56A0" 22 "32.0.101.6078")); Want = $false; Hint = $false; Xpu = "False" },
+        @{ N = "an NVIDIA driver plus an AMD adapter with no status";                    A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "AMD Radeon(TM) Graphics" "PCI\VEN_1002&DEV_15BF" $null "31.0.21001.45002")); Want = $false; Hint = $false; Xpu = "False" },
+        # UHD with no status is still UHD: the Intel route never served it, so it still does not block.
+        @{ N = "an NVIDIA driver plus a UHD with no status, no XPU runtime";             A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) UHD Graphics 770" "PCI\VEN_8086&DEV_4680" $null "31.0.101.1")); Want = $true; Hint = $false; Xpu = "False" },
+        # A record the checks cannot read (a status that is not a number) must decline, not abort the run.
+        @{ N = "an unreadable status";                                                   A = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" "bogus" "32.0.15.6094"); Want = $false; Hint = $false }
     )) {
         $script:PromoXpu = if ($case.Xpu) { $case.Xpu } else { "False" }
-        $got = & { param($promo, $adapters)
+        $got = try { & { param($promo, $adapters)
             $VenvDir = $promoVenv; $VenvPython = $promoPy
             $script:StudioPreservedXpuVerdict = $false; $script:StudioVenvRollbackDir = $null
             $script:FakeAdapters = $adapters; $script:FakeScanOk = $null
@@ -1151,12 +1179,55 @@ foreach ($file in @($installPs1, $setupPs1)) {
             $script:NvidiaPresenceOnly = $false; $script:NvidiaSmiRejected = $false
             . ([scriptblock]::Create($promo))
             [pscustomobject]@{ Has = $HasNvidiaSmi; Only = $script:NvidiaPresenceOnly; Lines = @($script:Lines) }
-        } $promo $case.A
+        } $promo $case.A } catch { [pscustomobject]@{ Has = "threw: $($_.Exception.Message)"; Only = $null; Lines = @() } }
         Check "$leaf, NVIDIA on $($case.N): promoted = $($case.Want)" ($got.Has -eq $case.Want -and $got.Only -eq $case.Want)
         $hinted = [bool](@($got.Lines) -match 'without the NVIDIA driver')
         Check "$leaf, NVIDIA on $($case.N): driver hint printed = $($case.Hint)" ($hinted -eq $case.Hint)
     }
 }
+# setup.ps1's Intel route on base asked the environment Get-ProbableStudioVenvDir names, which is
+# not $VenvDir when a stage root is set. An XPU runtime proven there must decline the promotion too.
+$emptyVenv = Join-Path ([System.IO.Path]::GetTempPath()) ("promo-empty-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $emptyVenv | Out-Null
+$script:PromoXpu = "True"
+$script:FakeProbableVenv = $promoVenv
+$got = try { & { param($promo)
+    $VenvDir = $emptyVenv; $VenvPython = Join-Path $emptyVenv "Scripts\python.exe"
+    $script:FakeAdapters = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" 0 "32.0.101.6078"))
+    $script:FakeScanOk = $null
+    function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
+    $HasNvidiaSmi = $false; $script:NvidiaPresenceOnly = $false; $script:NvidiaSmiRejected = $false
+    . ([scriptblock]::Create($promo))
+    $HasNvidiaSmi
+} (Get-PromotionBlock $setupPs1) } catch { "threw: $($_.Exception.Message)" }
+Check "setup.ps1 declines where the studio-home environment has proven XPU and the stage root has none" ($got -eq $false)
+$script:FakeProbableVenv = $null
+$script:PromoXpu = "False"
+Remove-Item -LiteralPath $emptyVenv -Recurse -Force -ErrorAction SilentlyContinue
+
+# The scan's own cleanup. -ErrorAction does not quiet a terminating error, and one thrown by
+# Remove-Job in the finally used to escape the scan and, from the promotion's call site, abort the
+# whole install or update. Base only ever called the scan inside the Intel route's try.
+foreach ($file in @($installPs1, $setupPs1)) {
+    $leaf = Split-Path -Leaf $file
+    $scanText = Get-FunctionText $file "Invoke-BoundedVideoControllerScan"
+    $r = try { & {
+        param($scanText)
+        function Start-Job { param($ScriptBlock) return [pscustomobject]@{ Id = 1 } }
+        function Wait-Job { param($Job, $Timeout) return $Job }
+        function Receive-Job { param($Job, $ErrorAction)
+            [pscustomobject]@{ Name = "NVIDIA GeForce RTX 4090"; PNPDeviceID = "PCI\VEN_10DE&DEV_2684"; ConfigManagerErrorCode = 0; DriverVersion = "32.0.15.6094" } }
+        function Stop-Job { param($Job, $ErrorAction) }
+        function Remove-Job { param($Job, [switch]$Force, $ErrorAction) throw "job cleanup failed" }
+        . ([scriptblock]::Create($scanText))
+        $script:VideoControllerScanResult = $null
+        Invoke-BoundedVideoControllerScan
+    } $scanText } catch { "threw: $($_.Exception.Message)" }
+    Check "${leaf}: a throwing job cleanup does not escape the scan" ($r -isnot [string])
+    Check "${leaf}: and the answer it already had is kept" ($r -isnot [string] -and $r.Ok -eq $true)
+}
+$script:VideoControllerScanResult = $null
+
 $script:NvidiaPresenceOnly = $false
 Remove-Item -LiteralPath $promoVenv -Recurse -Force -ErrorAction SilentlyContinue
 
@@ -1243,12 +1314,21 @@ $script:ProbeThrows = $false
 $script:ProbeAnswer = @{ Ok = $true; Output = "True" }
 Check "no environment to ask is not proven" (
     (Test-IntelXpuRuntimeProven -Scan (& $scanOf @($mtl, $rtx)) -PythonExe (Join-Path $fakePy "missing")) -eq $false)
-$script:ProbeCalls = 0
-Check "an NVIDIA-only host is never probed" (
-    (Test-IntelXpuRuntimeProven -Scan (& $scanOf @($rtx)) -PythonExe $fakePy) -eq $false -and $script:ProbeCalls -eq 0)
-Check "a faulted Intel adapter is not probed either" (
-    (Test-IntelXpuRuntimeProven -Scan (& $scanOf @((Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" 43), $rtx)) -PythonExe $fakePy) -eq $false -and
-    $script:ProbeCalls -eq 0)
+# WMI is not a precondition. The Intel route base ran on these hosts asked the same environment
+# whatever the display inventory said, so an Intel row missing its status or PNP ID, or missing
+# altogether, still took XPU wheels there and must still count as proven here.
+foreach ($case in @(
+    @{ N = "no Intel row at all";       A = @($rtx) },
+    @{ N = "an Intel row with no status"; A = @((Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" $null), $rtx) },
+    @{ N = "an Intel row with no PNP ID"; A = @((Adapter "Intel(R) Graphics" $null 0), $rtx) },
+    @{ N = "a scan that did not answer"; A = @() }
+)) {
+    $script:ProbeCalls = 0
+    $scan = & $scanOf $case.A
+    if ($case.A.Count -eq 0) { $scan.Ok = $false }
+    Check "a proven XPU runtime is proven with $($case.N)" (
+        (Test-IntelXpuRuntimeProven -Scan $scan -PythonExe $fakePy) -eq $true -and $script:ProbeCalls -eq 1)
+}
 Remove-Item -LiteralPath $fakePy -Force -ErrorAction SilentlyContinue
 # Both promotion sites ask it, and install.ps1 also honours the verdict it preserved from the
 # environment a rerun moved aside.
@@ -1258,7 +1338,7 @@ foreach ($file in @($installPs1, $setupPs1)) {
     $promo = $text.Substring($text.IndexOf('$presenceScan = Invoke-BoundedVideoControllerScan'))
     $promo = $promo.Substring(0, $promo.IndexOf('NvidiaPresenceOnly = $true'))
     Check "$leaf declines the promotion where PyTorch has proven XPU" (
-        $promo -match '-not \(Test-IntelXpuRuntimeProven -Scan \$presenceScan')
+        $promo -match 'Test-IntelXpuRuntimeProven -Scan \$presenceScan')
 }
 $installText = [System.IO.File]::ReadAllText($installPs1)
 $installPromo = $installText.Substring($installText.IndexOf('$presenceScan = Invoke-BoundedVideoControllerScan'))
