@@ -90,6 +90,8 @@ def test_customization_defaults():
     assert c.chatFont is None
     assert c.uiFontSize is None
     assert c.chatWidth == "standard"
+    assert c.composerAttachments == "cards"
+    assert c.sentAttachments == "auto"
     assert [(i.id, i.visible) for i in c.sidebarMenu] == [
         ("api", True),
         ("darkMode", True),
@@ -115,6 +117,14 @@ def test_customization_invalid_values_rejected():
         PersonalizationPayload.model_validate({"appearance": {"customization": {"uiFontSize": 99}}})
     with pytest.raises(ValidationError):
         PersonalizationPayload.model_validate({"appearance": {"customization": {"contrast": 500}}})
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            {"appearance": {"customization": {"composerAttachments": "huge"}}}
+        )
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            {"appearance": {"customization": {"sentAttachments": "grid"}}}
+        )
     with pytest.raises(ValidationError):
         PersonalizationPayload.model_validate(
             {"appearance": {"customization": {"reduceMotion": "sometimes"}}}
@@ -500,6 +510,8 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                 "headingFont": "Avenir Next",
                 "chatFont": "Georgia",
                 "chatWidth": "full",
+                "composerAttachments": "compact",
+                "sentAttachments": "chips",
                 "codeFont": None,
                 "importedFonts": [
                     {"name": "SF Pro Text", "dataUrl": "data:font/woff2;base64,AAAA"}

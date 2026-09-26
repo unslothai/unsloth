@@ -86,7 +86,10 @@ test("the audio data URL is built in the dialog, not on every attachment tile", 
     true,
     "the audio data URL is built outside AttachmentAudioBody",
   );
-  assert.match(preview, /<DialogContent[\s\S]*<AttachmentAudioBody/);
+  // The viewer renders its body only while open, so the join waits for a click.
+  assert.match(preview, /<AttachmentViewer[\s\S]*<AttachmentAudioBody/);
+  const viewer = readSrc("components/assistant-ui/attachment-document-dialog.tsx");
+  assert.match(viewer, /\{open && children\}/);
 });
 
 // A plain text/document attachment must keep working: the control that has to

@@ -1267,6 +1267,21 @@ export const ptBR = {
           wide: "Ampla",
           full: "Largura total",
         },
+        composerAttachments: {
+          label: "Anexos no campo de texto",
+          description:
+            "Cartões grandes que aumentam o campo de texto ou uma fileira compacta de miniaturas.",
+          cards: "Cartões grandes",
+          compact: "Miniaturas compactas",
+        },
+        sentAttachments: {
+          label: "Anexos nas mensagens enviadas",
+          description:
+            "Uma lista com o tipo de cada arquivo ou pequenas etiquetas. O modo automático muda para etiquetas com mais de seis arquivos.",
+          auto: "Automático",
+          list: "Lista",
+          chips: "Etiquetas",
+        },
         reset: "Redefinir",
         resetAll: "Redefinir personalização",
         preferencesTitle: "Preferências",

@@ -86,7 +86,8 @@ function sourceBetween(path: string, start: string, end: string): string {
 test("attachment and send gates forward projector fallback state", () => {
   const attachmentGate = sourceBetween(
     "../src/features/chat/runtime-provider.tsx",
-    "const unavailableReason = getImageInputUnavailableReason({",
+    // Skipped only while no model is loaded; the send gate below covers that file.
+    ": getImageInputUnavailableReason({",
     "if (unavailableReason)",
   );
   assert.match(

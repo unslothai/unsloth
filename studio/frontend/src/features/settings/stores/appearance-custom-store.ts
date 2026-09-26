@@ -38,6 +38,10 @@ const guardedLocalStorage: StateStorage = {
 
 export type ReduceMotionSetting = "system" | "on" | "off";
 export type ChatWidthSetting = "standard" | "wide" | "full";
+/** Files waiting in the composer: large cards that wrap, or the compact strip of tiles. */
+export type ComposerAttachmentsSetting = "cards" | "compact";
+/** Files in a sent message: a list that collapses to chips past six files, or always one. */
+export type SentAttachmentsSetting = "auto" | "list" | "chips";
 
 export type CustomModeColors = {
   accent: string | null;
@@ -235,6 +239,8 @@ export type AppearanceCustomization = {
   headingFont: string | null;
   chatFont: string | null;
   chatWidth: ChatWidthSetting;
+  composerAttachments: ComposerAttachmentsSetting;
+  sentAttachments: SentAttachmentsSetting;
   codeFont: string | null;
   importedFonts: ImportedFont[];
   /** UI font size in px. null = app default (15). */
@@ -268,6 +274,8 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   headingFont: null,
   chatFont: null,
   chatWidth: "standard",
+  composerAttachments: "cards",
+  sentAttachments: "auto",
   codeFont: null,
   importedFonts: [],
   uiFontSize: null,
@@ -482,6 +490,12 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
       source.chatWidth === "wide" || source.chatWidth === "full"
         ? source.chatWidth
         : "standard",
+    composerAttachments:
+      source.composerAttachments === "compact" ? "compact" : "cards",
+    sentAttachments:
+      source.sentAttachments === "list" || source.sentAttachments === "chips"
+        ? source.sentAttachments
+        : "auto",
     codeFont: sanitizeFont(source.codeFont),
     importedFonts: sanitizeImportedFonts(source.importedFonts),
     uiFontSize: sanitizeSize(source.uiFontSize, UI_FONT_SIZE_RANGE),

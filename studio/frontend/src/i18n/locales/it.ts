@@ -1244,6 +1244,21 @@ export const it = {
           wide: "Ampia",
           full: "Larghezza piena",
         },
+        composerAttachments: {
+          label: "Allegati nel campo di testo",
+          description:
+            "Schede grandi che ingrandiscono il campo di testo, oppure una riga compatta di riquadri.",
+          cards: "Schede grandi",
+          compact: "Riquadri compatti",
+        },
+        sentAttachments: {
+          label: "Allegati nei messaggi inviati",
+          description:
+            "Un elenco con il tipo di ogni file, oppure piccole etichette. Automatico passa alle etichette oltre i sei file.",
+          auto: "Automatico",
+          list: "Elenco",
+          chips: "Etichette",
+        },
         reset: "Ripristina",
         resetAll: "Ripristina la personalizzazione",
         preferencesTitle: "Preferenze",

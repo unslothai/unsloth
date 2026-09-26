@@ -3853,6 +3853,9 @@ class PersonalizationCustomization(BaseModel):
     uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
     codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
     chatWidth: Literal["standard", "wide", "full"] = "standard"
+    # How attached files look in the composer and in sent messages.
+    composerAttachments: Literal["cards", "compact"] = "cards"
+    sentAttachments: Literal["auto", "list", "chips"] = "auto"
     contrast: int = Field(50, ge = 0, le = 100)
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"

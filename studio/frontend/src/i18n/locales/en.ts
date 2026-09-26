@@ -1257,6 +1257,21 @@ export const en = {
           wide: "Wide",
           full: "Full width",
         },
+        composerAttachments: {
+          label: "Attachments in the composer",
+          description:
+            "Large cards that grow the message box, or a compact row of tiles.",
+          cards: "Large cards",
+          compact: "Compact tiles",
+        },
+        sentAttachments: {
+          label: "Attachments in sent messages",
+          description:
+            "A list with each file's type, or small chips. Auto switches to chips past six files.",
+          auto: "Auto",
+          list: "List",
+          chips: "Chips",
+        },
         reset: "Reset",
         resetAll: "Reset customization",
         preferencesTitle: "Preferences",

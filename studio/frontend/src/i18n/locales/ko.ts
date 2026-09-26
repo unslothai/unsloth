@@ -1250,6 +1250,21 @@ export const ko = {
           wide: "넓게",
           full: "전체 너비",
         },
+        composerAttachments: {
+          label: "입력창의 첨부 파일",
+          description:
+            "입력창을 키우는 큰 카드 또는 작은 타일 한 줄로 표시합니다.",
+          cards: "큰 카드",
+          compact: "작은 타일",
+        },
+        sentAttachments: {
+          label: "보낸 메시지의 첨부 파일",
+          description:
+            "각 파일의 형식을 보여 주는 목록 또는 작은 칩으로 표시합니다. 자동은 파일이 6개를 넘으면 칩으로 바뀝니다.",
+          auto: "자동",
+          list: "목록",
+          chips: "칩",
+        },
         reset: "초기화",
         resetAll: "사용자 지정 초기화",
         preferencesTitle: "환경설정",
