@@ -384,8 +384,9 @@ DISABLE_SDPA_MODEL_NAMES = [
     "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
     "gpt_oss",
 ]
-_FLASH_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4")
+_FLASH_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4", "mllama")
 # deepseek_v4's custom attention is sdpa/flash-incompatible: force eager, and it is excluded above so an explicit request cannot re-enable the crash.
+# mllama declares flash support, but its vision and cross attention modules have no is_causal, which the flash path reads.
 _EAGER_ONLY_PREFIXES = ("gemma3n", "deepseek_v4")
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
@@ -998,6 +999,8 @@ def _get_max_attention_head_dim(config):
 def _get_flash_attention_disable_reason(config):
     model_type = _config_get(config, "model_type", "").lower()
     if _is_flash_excluded(model_type):
+        if model_type == "mllama":
+            return "mllama vision and cross attention do not run under Flash Attention 2"
         return f"{model_type} uses custom sink attention kernels"
     max_head_dim = _get_max_attention_head_dim(config)
     if max_head_dim is not None and max_head_dim > _FLASH_ATTENTION_MAX_HEAD_DIM:
