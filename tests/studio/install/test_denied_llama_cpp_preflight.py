@@ -40,6 +40,7 @@ SHARED_FUNCTIONS = (
     "Test-MirrorConfigured",
     "Start-MirrorProbe",
     "Wait-MirrorProbe",
+    "Test-MirrorInChina",
     "Invoke-MirrorFallback",
     "Get-MirrorName",
     "Set-MirrorEnv",

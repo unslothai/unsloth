@@ -3198,7 +3198,7 @@ case "$OS" in
 esac
 
 # ── BEGIN mirror fallback (kept identical in install.sh and studio/setup.sh) ──
-# Swaps a default host below 1 MiB/s or unreachable for its mirror when faster; user-set sources untouched; UNSLOTH_MIRROR_FALLBACK=0 disables.
+# Only in mainland China (or UNSLOTH_MIRROR_FALLBACK=1): swaps a default host below 1 MiB/s or unreachable for its mirror when faster; user-set sources untouched; UNSLOTH_MIRROR_FALLBACK=0 disables.
 _MIRROR_CERNET="https://tuna.mirrors.cernet.edu.cn"
 _MIRROR_PYPI="$_MIRROR_CERNET/pypi/web/simple"
 _MIRROR_NPM="https://registry.npmmirror.com"
@@ -3393,9 +3393,22 @@ _mirror_failed_host() {
     fi
 }
 
+# No network call: a mainland China time zone, or a resolver from a mainland public DNS or cloud (Alibaba 100.100.2.136/138, Tencent 183.60.83.19/82.98). Everyone else keeps the installer as it was before the fallback.
+_mirror_in_china() {
+    _mcn_tz=${TZ:-}
+    [ -n "$_mcn_tz" ] || _mcn_tz=$(cat /etc/timezone 2>/dev/null) || true
+    [ -n "$_mcn_tz" ] || _mcn_tz=$(readlink /etc/localtime 2>/dev/null) || true
+    case "${_mcn_tz#:}" in
+        *Asia/Shanghai|*Asia/Chongqing|*Asia/Chungking|*Asia/Harbin|*Asia/Urumqi|*Asia/Kashgar|PRC|*/PRC) return 0 ;;
+    esac
+    grep -Eqs '^[[:space:]]*nameserver[[:space:]]+(223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[45]|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98))[[:space:]]*$' /etc/resolv.conf /run/systemd/resolve/resolv.conf
+}
+
 _mirror_fallback() {
     case "${UNSLOTH_MIRROR_FALLBACK:-}" in
         0|false|False|FALSE|no|off) return 0 ;;
+        1|true|True|TRUE|yes|on) ;;
+        *) _mirror_in_china || return 0 ;;
     esac
     [ -z "${_UNSLOTH_MIRROR_PROBED:-}" ] || return 0
     command -v curl >/dev/null 2>&1 || return 0

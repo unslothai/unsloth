@@ -73,6 +73,7 @@ _run() {
         "$_shell" -c "$_flags
 C_WARN=; step() { echo \"STEP \$2\"; }; substep() { echo \"SUBSTEP \$1\"; }
 . '$_WORK/block.sh'
+_mirror_in_china() { [ \"\${MOCK_CN:-1}\" = 1 ]; }
 _mirror_fallback \${_MF_ARGS:-}
 eval \"\${_AFTER:-}\"
 for _v in $_VARS; do eval \"[ -z \\\"\\\${\$_v+x}\\\" ] || echo \\\"\$_v=\\\$\$_v\\\"\"; done"
@@ -83,6 +84,27 @@ for SH in dash bash; do
     command -v "$SH" >/dev/null 2>&1 || { echo "  SKIP: $SH not installed"; continue; }
     out=$(_run "$SH")
     assert_eq "[$SH] fast hosts export and print nothing" "" "$out"
+    out=$(_run "$SH" MOCK_CN=0 MOCK_PYPI=blocked MOCK_TORCH=blocked MOCK_NPM=blocked _AFTER='echo "SPARE=${_UNSLOTH_MIRROR_SPARE-unset} PROBED=${_UNSLOTH_MIRROR_PROBED-unset}"')
+    assert_eq "[$SH] outside China: nothing probed, switched, armed or exported" "SPARE=unset PROBED=unset" "$out$(cat "$_WORK/curl.log")"
+    assert_eq "[$SH] outside China: no retry is armed either" "SPARE=unset" "$(_run "$SH" MOCK_CN=0 _MF_ARGS=spare _AFTER='echo "SPARE=${_UNSLOTH_MIRROR_SPARE-unset}"')"
+    for _on in 1 true yes on; do
+        assert_contains "[$SH] outside China, UNSLOTH_MIRROR_FALLBACK=$_on opts in" "$(_run "$SH" MOCK_CN=0 UNSLOTH_MIRROR_FALLBACK=$_on MOCK_PYPI=blocked)" "UV_DEFAULT_INDEX=$M/pypi/web/simple"
+    done
+    assert_eq "[$SH] in China, UNSLOTH_MIRROR_FALLBACK=0 still opts out" "" "$(_run "$SH" UNSLOTH_MIRROR_FALLBACK=0 MOCK_PYPI=blocked)$(cat "$_WORK/curl.log")"
+    _cn() { env -i PATH=/usr/bin:/bin "$@" "$SH" -c ". '$_WORK/block.sh'; _mirror_in_china && echo yes || echo no"; }
+    for _tz in Asia/Shanghai :Asia/Chongqing /usr/share/zoneinfo/Asia/Urumqi PRC; do
+        assert_eq "[$SH] TZ=$_tz is mainland China" "yes" "$(_cn TZ=$_tz)"
+    done
+    sed "s#/etc/resolv.conf /run/systemd/resolve/resolv.conf#$_WORK/resolv.conf#" "$_WORK/block.sh" > "$_WORK/block_dns.sh"
+    for _ns in "100.100.2.136 yes" "183.60.83.19 yes" "223.5.5.5 yes" "114.114.114.114 yes" "8.8.8.8 no" "100.100.100.100 no" "1.1.1.1 no"; do
+        printf 'search example\nnameserver %s\n' "${_ns% *}" > "$_WORK/resolv.conf"
+        assert_eq "[$SH] resolver ${_ns% *} in UTC: China=${_ns#* }" "${_ns#* }" "$(env -i PATH=/usr/bin:/bin TZ=UTC "$SH" -c ". '$_WORK/block_dns.sh'; _mirror_in_china && echo yes || echo no")"
+    done
+    if ! grep -Eqs '^[[:space:]]*nameserver[[:space:]]+(223[.]5[.]5[.]5|223[.]6[.]6[.]6|119[.]29[.]29[.]29|114[.]114[.]11[45][.]11[45]|180[.]76[.]76[.]76|1[.]2[.]4[.]8|210[.]2[.]4[.]8|100[.]100[.]2[.]13[68]|183[.]60[.]8[23][.](19|98))' /etc/resolv.conf /run/systemd/resolve/resolv.conf; then
+        for _tz in UTC America/New_York Asia/Hong_Kong Asia/Taipei Asia/Singapore; do
+            assert_eq "[$SH] TZ=$_tz is not mainland China" "no" "$(_cn TZ=$_tz)"
+        done
+    fi
     assert_eq "[$SH] fast hosts never touch a mirror" "" "$(grep -E 'cernet|npmmirror' "$_WORK/curl.log" || true)"
     assert_eq "[$SH] defaults are timed one at a time" "no" "$([ -f "$_WORK/curl.log.overlap" ] && echo overlap || echo no)"
     assert_contains "[$SH] a curl that rejects the probe counts as no answer" "$(_run "$SH" MOCK_OLD_CURL=1 MOCK_PYPI=blocked)" "UV_DEFAULT_INDEX=$M/pypi/web/simple"

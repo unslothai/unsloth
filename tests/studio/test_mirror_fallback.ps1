@@ -92,15 +92,34 @@ function Wait-MirrorProbe($Probe) {
     }
     return $out
 }
-function Run($mock, $envs = @{}, [switch]$SpareOnly) {
+# The real location check, against stand-ins for the time zone and resolver cmdlets.
+$real = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-MirrorInChina' }, $true)[0].Extent.Text
+Invoke-Expression $real
+function Get-TimeZone { [pscustomobject]@{ Id = $script:tz } }
+function Get-DnsClientServerAddress { if ($null -eq $script:dns) { throw 'no DnsClient module' }; [pscustomobject]@{ ServerAddresses = $script:dns } }
+foreach ($case in @(@('China Standard Time', $null, $true), @('Asia/Shanghai', $null, $true), @('Taipei Standard Time', $null, $false), @('UTC', $null, $false),
+        @('UTC', @('8.8.8.8', '100.100.2.136'), $true), @('UTC', @('223.5.5.5'), $true), @('UTC', @('100.100.100.100', '1.1.1.1'), $false))) {
+    $script:tz = $case[0]; $script:dns = $case[1]
+    Check "location: time zone $($case[0]), resolvers $($case[1] -join ',') -> China=$($case[2])" ((Test-MirrorInChina) -eq $case[2])
+}
+Remove-Item Function:Get-TimeZone, Function:Get-DnsClientServerAddress
+function Test-MirrorInChina { $script:inChina }
+
+function Run($mock, $envs = @{}, [switch]$SpareOnly, [switch]$Abroad) {
     foreach ($n in $names) { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
     foreach ($k in $envs.Keys) { Set-Item "Env:$k" $envs[$k] }
+    $script:inChina = -not $Abroad
     $script:mock = $mock; $script:seen = @(); $script:lines = @(); $script:probed = @(); $script:protocols = @(); $script:badRange = $false; $script:timing = $false; $script:overlap = $false
     Invoke-MirrorFallback -SpareOnly:$SpareOnly
 }
 $pypiMirror = "$M/pypi/web/simple"
 try {
     Run @{}; Check "fast hosts export and print nothing" (-not $env:UV_DEFAULT_INDEX -and -not $env:UNSLOTH_NPM_REGISTRY -and $script:lines.Count -eq 0)
+    Run @{ pypi = 'blocked'; torch = 'blocked'; npm = 'blocked' } -Abroad
+    Check "outside China: nothing probed, switched, armed or exported" ($script:probed.Count -eq 0 -and $script:lines.Count -eq 0 -and -not $env:UV_DEFAULT_INDEX -and -not $env:_UNSLOTH_MIRROR_SPARE -and -not $env:_UNSLOTH_MIRROR_PROBED)
+    Run @{} -Abroad -SpareOnly; Check "outside China: no retry is armed either" (-not $env:_UNSLOTH_MIRROR_SPARE)
+    Run @{ pypi = 'blocked' } @{ UNSLOTH_MIRROR_FALLBACK = '1' } -Abroad; Check "outside China, UNSLOTH_MIRROR_FALLBACK=1 opts in" ($env:UV_DEFAULT_INDEX -eq "$M/pypi/web/simple")
+    Run @{ pypi = 'blocked' } @{ UNSLOTH_MIRROR_FALLBACK = '0' }; Check "in China, UNSLOTH_MIRROR_FALLBACK=0 still opts out" ($script:probed.Count -eq 0 -and -not $env:UV_DEFAULT_INDEX)
     Check "fast hosts never touch a mirror" (-not ($script:probed -match 'cernet|npmmirror'))
     Run @{ pypi = 'slow'; torch = 'slow'; node = 'slow'; npm = 'slow'; astral = 'slow' }; Check "defaults are timed one at a time, on 1 MiB within 1.5 s or 4 s; indexes on 1 KiB within 4 s" (-not $script:overlap -and -not $script:badRange)
     Run @{ torch = 'blocked' }

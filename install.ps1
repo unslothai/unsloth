@@ -4282,7 +4282,7 @@ exit 1
         return "$reason Nothing was installed."
     }
 
-    # Mirror fallback, as _mirror_fallback in install.sh; UNSLOTH_MIRROR_FALLBACK=0 disables.
+    # Mirror fallback, as _mirror_fallback in install.sh: mainland China only unless UNSLOTH_MIRROR_FALLBACK=1; =0 disables.
     function Test-MirrorConfigured {
         param([ValidateSet('uv', 'pip')][string]$Tool)
         if ($Tool -eq 'uv') {
@@ -4366,9 +4366,21 @@ exit 1
         return $results
     }
 
+    # No network call: a mainland China time zone, or a resolver from a mainland public DNS or cloud, as _mirror_in_china in install.sh.
+    function Test-MirrorInChina {
+        try { if ((Get-TimeZone).Id -in 'China Standard Time', 'Asia/Shanghai', 'Asia/Chongqing', 'Asia/Chungking', 'Asia/Harbin', 'Asia/Urumqi', 'Asia/Kashgar', 'PRC') { return $true } } catch {}
+        try {
+            $servers = @(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { $_.ServerAddresses })
+            if ($servers -match '^(223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[45]|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98))$') { return $true }
+        } catch {}
+        return $false
+    }
+
     function Invoke-MirrorFallback {
         param([switch]$SpareOnly)
-        if ("$env:UNSLOTH_MIRROR_FALLBACK".Trim() -match '^(0|false|no|off)$' -or $env:_UNSLOTH_MIRROR_PROBED) { return }
+        $optIn = "$env:UNSLOTH_MIRROR_FALLBACK".Trim()
+        if ($optIn -match '^(0|false|no|off)$' -or $env:_UNSLOTH_MIRROR_PROBED) { return }
+        if ($optIn -notmatch '^(1|true|yes|on)$' -and -not (Test-MirrorInChina)) { return }
         if (-not $SpareOnly) { $env:_UNSLOTH_MIRROR_PROBED = '1' }
         $cernet = 'https://tuna.mirrors.cernet.edu.cn'
         $npmMirror = 'https://registry.npmmirror.com'
