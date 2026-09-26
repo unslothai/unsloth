@@ -43,6 +43,21 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Colab VMs this machine started; kept until stopped because they bill until then.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS colab_sessions (
+            session TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            gpu TEXT NOT NULL,
+            auth TEXT,
+            runner TEXT,
+            distro TEXT,
+            instance_id TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
     conn.commit()
 
 
@@ -189,3 +204,66 @@ def delete_instance(instance_id: str) -> bool:
 
 def get_api_key(instance_id: str) -> Optional[str]:
     return credential_secrets.get_secret(LINKED_INSTANCE_API_KEY_KIND, instance_id)
+
+
+_COLAB_COLUMNS = ("session", "name", "gpu", "auth", "runner", "distro", "instance_id", "created_at")
+
+
+def record_colab_session(
+    session: str,
+    name: str,
+    gpu: str,
+    *,
+    auth: Optional[str] = None,
+    runner: Optional[str] = None,
+    distro: Optional[str] = None,
+) -> None:
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO colab_sessions "
+                "(session, name, gpu, auth, runner, distro, instance_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
+                (session, name, gpu, auth, runner, distro, datetime.now(timezone.utc).isoformat()),
+            )
+    finally:
+        conn.close()
+
+
+def set_colab_session_instance(session: str, instance_id: str) -> None:
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE colab_sessions SET instance_id = ? WHERE session = ?", (instance_id, session)
+            )
+    finally:
+        conn.close()
+
+
+def get_colab_session(session: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM colab_sessions WHERE session = ?", (session,)).fetchone()
+        return {c: row[c] for c in _COLAB_COLUMNS} if row else None
+    finally:
+        conn.close()
+
+
+def list_colab_sessions() -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT * FROM colab_sessions ORDER BY created_at").fetchall()
+        return [{c: r[c] for c in _COLAB_COLUMNS} for r in rows]
+    finally:
+        conn.close()
+
+
+def delete_colab_session(session: str) -> None:
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("DELETE FROM colab_sessions WHERE session = ?", (session,))
+    finally:
+        conn.close()

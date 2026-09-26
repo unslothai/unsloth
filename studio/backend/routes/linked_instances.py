@@ -4,13 +4,19 @@
 """CRUD and health checks for linked Unsloth Studio instances. Owner-only, UI session only."""
 
 import asyncio
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from core import colab_launcher
 from core.inference import linked_instances
 from hub.services.models import account_access
 from models.linked_instances import (
+    ColabCapability,
+    ColabLaunchJob,
+    ColabLaunchRequest,
+    ColabSession,
     LinkedInstance,
     LinkedInstanceCreate,
     LinkedInstanceInfo,
@@ -71,6 +77,53 @@ async def linked_instances_info():
     instances = await asyncio.to_thread(linked_instances_db.list_instances)
     results = await asyncio.gather(*(linked_instances.fetch_info(i) for i in instances))
     return [LinkedInstanceInfo(id = i["id"], **r) for i, r in zip(instances, results)]
+
+
+@router.get(
+    "/colab/capability", response_model = ColabCapability, dependencies = [Depends(_require_owner_ui)]
+)
+async def colab_capability():
+    return await asyncio.to_thread(colab_launcher.capability)
+
+
+@router.get(
+    "/colab/launch", response_model = Optional[ColabLaunchJob], dependencies = [Depends(_require_owner_ui)]
+)
+async def colab_launch_status():
+    return colab_launcher.current_job()
+
+
+@router.post("/colab/launch", response_model = ColabLaunchJob, dependencies = [Depends(_require_owner_ui)])
+async def colab_launch(payload: ColabLaunchRequest):
+    try:
+        return await asyncio.to_thread(colab_launcher.start_launch, payload.gpu, payload.name)
+    except ValueError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+
+
+@router.post(
+    "/colab/launch/cancel", response_model = Optional[ColabLaunchJob], dependencies = [Depends(_require_owner_ui)]
+)
+async def colab_launch_cancel():
+    return colab_launcher.cancel_launch()
+
+
+@router.get(
+    "/colab/sessions", response_model = list[ColabSession], dependencies = [Depends(_require_owner_ui)]
+)
+async def colab_sessions():
+    return await asyncio.to_thread(colab_launcher.list_sessions)
+
+
+@router.post("/colab/sessions/{session}/stop", dependencies = [Depends(_require_owner_ui)])
+async def colab_stop(session: str):
+    try:
+        await asyncio.to_thread(colab_launcher.stop_session, session)
+    except KeyError as exc:
+        raise HTTPException(status_code = 404, detail = "Colab session not found") from exc
+    except colab_launcher.LaunchError as exc:
+        raise HTTPException(status_code = 502, detail = str(exc)) from exc
+    return {"stopped": True}
 
 
 @router.post("", response_model = LinkedInstance, dependencies = [Depends(_require_owner_ui)])

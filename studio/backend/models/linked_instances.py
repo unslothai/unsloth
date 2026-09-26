@@ -69,3 +69,42 @@ class LinkedInstanceInfo(BaseModel):
     disk_total_gb: Optional[float] = None
     disk_free_gb: Optional[float] = None
     uptime_seconds: Optional[float] = None
+
+
+class ColabCapability(BaseModel):
+    state: str = Field(..., description = "ready, unsupported, missing_cli, kernel_client or signed_out")
+    ready: bool
+    message: str
+    setup: list[str] = Field(default_factory = list, description = "One-time commands to run, in order")
+    runner: Optional[str] = Field(None, description = "native or wsl")
+    distro: Optional[str] = None
+    auth: Optional[str] = None
+    detail: Optional[str] = None
+
+
+class ColabLaunchRequest(BaseModel):
+    gpu: str = Field(..., max_length = 8)
+    name: str = Field(..., max_length = 32)
+
+
+class ColabLaunchJob(BaseModel):
+    id: str
+    name: str
+    gpu: str
+    session: str
+    stage: str
+    state: str
+    error: Optional[str] = None
+    setup: list[str] = Field(default_factory = list)
+    instance_id: Optional[str] = None
+    started_at: str
+    finished_at: Optional[str] = None
+    log: list[str] = Field(default_factory = list)
+
+
+class ColabSession(BaseModel):
+    session: str
+    name: str
+    gpu: str
+    instance_id: Optional[str] = None
+    created_at: str
