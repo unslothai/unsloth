@@ -174,6 +174,8 @@ test("a reorder in a sorted list switches it to Manual order", () => {
 
 // A folder drop switches a sorted Projects list to Manual.
 test("a folder reorder or unpin switches a sorted Projects list to Manual", () => {
+  // Alt + arrow and Move up/down take the same switch.
+  assert.ok(APP_SIDEBAR.includes("sort: { value: projectSort, set: setProjectSort }"));
   const home = folder("home", "projects", PROJECT_ORDER_SCOPE);
   const miscRow = folderRow("projects", PROJECT_ORDER_SCOPE, "misc");
   const reorder = plannedDrop(

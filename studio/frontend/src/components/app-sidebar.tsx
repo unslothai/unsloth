@@ -365,8 +365,8 @@ const DROP_INTO_HEADER_CUE =
 // The sort a list is on and its setter: a reorder switches a sorted list to Manual, or the
 // sort would undo the drop.
 type RowSort = {
-  value: SidebarChatSort;
-  set: (next: SidebarChatSort) => void;
+  value: SidebarChatSort | SidebarProjectSort;
+  set: (next: "manual") => void;
 };
 // The list a chat row is rendered in: its ids, for shift-click ranges and for the order a drag
 // rewrites; the sort a drop switches to Manual; and, where the list is a folder's or Recents',
@@ -4636,6 +4636,7 @@ export function AppSidebar() {
                           scope: PROJECT_ORDER_SCOPE,
                           orderedIds: projectRowIds,
                           section: "projects",
+                          sort: { value: projectSort, set: setProjectSort },
                         }),
                       )}
                       {/* Every project is pinned, so the section is drawn with nothing in it. The
