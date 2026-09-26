@@ -330,7 +330,8 @@ jobs:
           $quantize = Get-ChildItem -LiteralPath $server.Directory.FullName -Filter 'llama-quantize.exe' | Select-Object -First 1
           if ($quantize) {
             & $quantize.FullName --help 2>&1 | Out-Null
-            Write-Host "llama-quantize --help exited $LASTEXITCODE (only its load matters)"
+            Add-Content -Path $env:GITHUB_ENV -Value "QUANTIZE_EXIT=$LASTEXITCODE"
+            Write-Host "llama-quantize --help exited $LASTEXITCODE"
           } else {
             Write-Host '::warning::llama-quantize.exe is not in the bundle, so only llama-server was loaded'
           }
@@ -374,6 +375,7 @@ jobs:
           }
           $events = @()
           $ours = @()
+          $seen = -1
           foreach ($attempt in 1..10) {
             $events = @()
             try {
@@ -398,7 +400,9 @@ jobs:
               } catch { }
               $tail -and $subject -like "*$tail*" -and (& $fromPolicy $_)
             })
-            if ($ours.Count -gt 0) { break }
+            # Settled: events for later loads can land after the first one.
+            if ($ours.Count -gt 0 -and $ours.Count -eq $seen) { break }
+            $seen = $ours.Count
             if ($attempt -lt 10) { Start-Sleep -Seconds 3 }
           }
 
@@ -409,7 +413,13 @@ jobs:
           }
           if ($rows) { $rows | Format-Table -AutoSize | Out-String | Write-Host }
 
-          # An allow needs a load that completed.
+          # An allow needs a load that completed. --help may exit 1; a negative code is the loader's NTSTATUS.
+          if ($ours.Count -eq 0 -and $env:QUANTIZE_EXIT -and [int]$env:QUANTIZE_EXIT -lt 0) {
+            Write-Host "::error::llama-quantize failed to load (exit $env:QUANTIZE_EXIT) and no 3076 names the shipped runtime; no verdict"
+            "## App Control audit (signature-only)`n`nNo verdict: llama-quantize failed to load (exit $env:QUANTIZE_EXIT).`n" |
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            exit 1
+          }
           if ($ours.Count -eq 0 -and $env:EXERCISE_EXIT -ne '0') {
             Write-Host "::error::llama-server --version exited '$env:EXERCISE_EXIT' and no 3076 names the shipped runtime, so the load may never have happened; no verdict"
             "## App Control audit (signature-only)`n`nNo verdict: llama-server --version exited '$env:EXERCISE_EXIT', so the runtime was not shown to load under the policy.`n" |

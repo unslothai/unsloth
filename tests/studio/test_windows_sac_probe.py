@@ -931,7 +931,7 @@ def test_the_app_control_verdict_polls_before_reporting_an_allow():
     _has(
         verdict,
         "foreach ($attempt in 1..10) {",
-        "if ($ours.Count -gt 0) { break }",
+        "if ($ours.Count -gt 0 -and $ours.Count -eq $seen) { break }",
         "Start-Sleep -Seconds 3",
     )
     _before(verdict, "foreach ($attempt in 1..10) {", '$tail -and $subject -like "*$tail*"')
@@ -1957,3 +1957,14 @@ def test_the_audit_loads_every_shipped_entry_point():
     body = _step("id", "exercise")
     assert "& $server.FullName --version" in body
     assert "& $quantize.FullName --help" in body, "llama-quantize loads its own impl DLL"
+
+
+def test_a_quantize_that_failed_to_load_gives_no_verdict():
+    _has(_text(WORKFLOW), 'Add-Content -Path $env:GITHUB_ENV -Value "QUANTIZE_EXIT=$LASTEXITCODE"')
+    _has(_verdict(), "[int]$env:QUANTIZE_EXIT -lt 0", "llama-quantize failed to load")
+
+
+def test_the_event_poll_waits_for_the_count_to_settle():
+    verdict = _verdict()
+    _has(verdict, "$ours.Count -gt 0 -and $ours.Count -eq $seen) { break }", "$seen = $ours.Count")
+    _lacks(verdict, "if ($ours.Count -gt 0) { break }")
