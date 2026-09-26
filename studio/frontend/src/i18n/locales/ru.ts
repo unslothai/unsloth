@@ -190,6 +190,9 @@ export const ru = {
       noChats: "Нет чатов",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Все проекты закреплены",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "Все проекты закреплены или находятся в разделах",
+      noProjects: "Нет проектов",
       showMore: "Показать больше",
       showLess: "Показать меньше",
       settings: "Настройки",
@@ -235,14 +238,38 @@ export const ru = {
       byProject: "По проектам",
       inOneList: "Одним списком",
       sortChatsBy: "Сортировать чаты по",
-      sortPinnedBy: "Сортировать закреплённые по",
-      priority: "Приоритету",
       lastUpdated: "Последнему обновлению",
       manualOrder: "Вручную",
       switchedToManual: "Ручной порядок: перетащите строки, чтобы изменить порядок",
       organizeChats: "Настроить чаты",
       organizeProjects: "Настроить проекты",
       sortPinnedChats: "Сортировать закреплённые чаты",
+      // Header of the menu's section-visibility toggles.
+      show: "Показывать",
+      newSection: "Новый раздел",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "Новый раздел",
+      createDescription: "Группируйте чаты и проекты как угодно",
+      namePlaceholder: "Название раздела",
+      create: "Создать раздел",
+      renameTitle: "Переименовать раздел",
+      renameDescription: "Дайте этому разделу новое название",
+      edit: "Изменить",
+      remove: "Удалить раздел",
+      markAllRead: "Отметить все как прочитанные",
+      // Row menu submenu that files a chat or project into a section.
+      section: "Раздел",
+      moveToSection: "Переместить в раздел",
+      newSectionEllipsis: "Новый раздел…",
+      noSection: "Без раздела",
+      // Shown in a section with nothing filed in it yet.
+      empty: "Перетащите сюда чаты или проекты",
+      sectionOptions: "Параметры раздела",
+      newChatInSection: "Новый чат в «{name}»",
+      deleted: "Раздел «{name}» удалён",
+      undo: "Отменить",
     },
     dialog: {
       deleteChat: {

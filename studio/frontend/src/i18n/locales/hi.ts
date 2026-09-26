@@ -191,6 +191,9 @@ export const hi = {
       noChats: "कोई चैट नहीं",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "सभी प्रोजेक्ट पिन किए गए",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "सभी प्रोजेक्ट पिन किए गए हैं या सेक्शन में हैं",
+      noProjects: "कोई प्रोजेक्ट नहीं",
       showMore: "और दिखाएं",
       showLess: "कम दिखाएं",
       settings: "सेटिंग्स",
@@ -236,14 +239,38 @@ export const hi = {
       byProject: "प्रोजेक्ट के अनुसार",
       inOneList: "एक ही सूची में",
       sortChatsBy: "चैट क्रमबद्ध करें",
-      sortPinnedBy: "पिन किए गए क्रमबद्ध करें",
-      priority: "प्राथमिकता",
       lastUpdated: "अंतिम अपडेट",
       manualOrder: "मैन्युअल क्रम",
       switchedToManual: "अब मैन्युअल क्रम: पंक्तियाँ खींचकर क्रम बदलें",
       organizeChats: "चैट व्यवस्थित करें",
       organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
+      // Header of the menu's section-visibility toggles.
+      show: "दिखाएँ",
+      newSection: "नया सेक्शन",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "नया सेक्शन",
+      createDescription: "चैट और प्रोजेक्ट को अपनी पसंद से समूहित करें",
+      namePlaceholder: "सेक्शन का नाम",
+      create: "सेक्शन बनाएँ",
+      renameTitle: "सेक्शन का नाम बदलें",
+      renameDescription: "इस सेक्शन को नया नाम दें",
+      edit: "संपादित करें",
+      remove: "सेक्शन हटाएँ",
+      markAllRead: "सभी को पढ़ा हुआ चिह्नित करें",
+      // Row menu submenu that files a chat or project into a section.
+      section: "सेक्शन",
+      moveToSection: "सेक्शन में ले जाएँ",
+      newSectionEllipsis: "नया सेक्शन…",
+      noSection: "कोई सेक्शन नहीं",
+      // Shown in a section with nothing filed in it yet.
+      empty: "चैट या प्रोजेक्ट यहाँ खींचें",
+      sectionOptions: "सेक्शन विकल्प",
+      newChatInSection: "{name} में नई चैट",
+      deleted: "सेक्शन “{name}” हटाया गया",
+      undo: "पूर्ववत करें",
     },
     dialog: {
       deleteChat: {

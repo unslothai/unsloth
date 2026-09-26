@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { SparklesGlyph } from "@/lib/sparkles-icon";
-import { Tick02Icon } from "@/lib/tick-icon";
+import { MenuTickIcon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -138,7 +138,7 @@ export function PermissionModeMenuItems({
           </span>
           {permissionMode === option.value ? (
             <HugeiconsIcon
-              icon={Tick02Icon}
+              icon={MenuTickIcon}
               strokeWidth={2}
               className="ml-auto mt-0.5 size-4 shrink-0"
             />

@@ -4,9 +4,10 @@
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import * as React from "react";
 
-import { Tick02Icon } from "@/lib/tick-icon";
-import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { MenuTickIcon } from "@/lib/tick-icon";
+import { MenuChevronRightIcon } from "@/lib/chevron-icons";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { snapInlinePadding, useSnappedPaddingRef } from "@/lib/snap-padding";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -40,19 +41,24 @@ function DropdownMenuContent({
   align = "start",
   sideOffset = 0,
   children,
+  ref,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+  const snappedRef = useSnappedPaddingRef(ref);
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
+        ref={snappedRef}
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
         align={align}
         className={cn(
+          // Width in whole pixels: Firefox draws a row's hover pill a device pixel off centre in a
+          // menu of fractional width (padding and margin are rounded as it mounts).
           // The 3px alignment nudge must be margin, not translate: a transform
           // here makes this scroll container the containing block for nested
           // position:fixed submenu wrappers, clipping every submenu.
-          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 bg-popover text-popover-foreground min-w-48 max-w-[calc(100vw-32px)] rounded-lg p-1 duration-100 z-50 max-h-(--radix-dropdown-menu-content-available-height) w-[calc(var(--radix-dropdown-menu-trigger-width)_+_6px*var(--ui-space-scale,1))] data-[align=start]:-ml-[calc(3px*var(--ui-space-scale,1))] data-[align=end]:ml-[calc(3px*var(--ui-space-scale,1))] origin-(--radix-dropdown-menu-content-transform-origin) flex flex-col overflow-hidden",
+          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 bg-popover text-popover-foreground min-w-48 max-w-[calc(100vw-32px)] rounded-lg p-1 duration-100 z-50 max-h-(--radix-dropdown-menu-content-available-height) w-[round(calc(var(--radix-dropdown-menu-trigger-width)_+_6px*var(--ui-space-scale,1)),1px)] data-[align=start]:-ml-[calc(3px*var(--ui-space-scale,1))] data-[align=end]:ml-[calc(3px*var(--ui-space-scale,1))] origin-(--radix-dropdown-menu-content-transform-origin) flex flex-col overflow-hidden",
           className,
         )}
         {...props}
@@ -112,18 +118,18 @@ function DropdownMenuCheckboxItem({
     <DropdownMenuPrimitive.CheckboxItem
       data-slot="dropdown-menu-checkbox-item"
       className={cn(
-        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-[11px] py-2 pr-8 pl-3 text-sm [&_svg:not([class*='size-'])]:size-4 relative flex cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-[11px] py-2 pr-9 pl-3 text-sm [&_svg:not([class*='size-'])]:size-4 relative flex cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       checked={checked}
       {...props}
     >
       <span
-        className="pointer-events-none absolute right-2 flex items-center justify-center pointer-events-none"
+        className="pointer-events-none absolute right-3 flex items-center justify-center"
         data-slot="dropdown-menu-checkbox-item-indicator"
       >
         <DropdownMenuPrimitive.ItemIndicator>
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} />
         </DropdownMenuPrimitive.ItemIndicator>
       </span>
       {children}
@@ -151,17 +157,17 @@ function DropdownMenuRadioItem({
     <DropdownMenuPrimitive.RadioItem
       data-slot="dropdown-menu-radio-item"
       className={cn(
-        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-[11px] py-2 pr-8 pl-3 text-sm [&_svg:not([class*='size-'])]:size-4 relative flex cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-[11px] py-2 pr-9 pl-3 text-sm [&_svg:not([class*='size-'])]:size-4 relative flex cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       {...props}
     >
       <span
-        className="pointer-events-none absolute right-2 flex items-center justify-center pointer-events-none"
+        className="pointer-events-none absolute right-3 flex items-center justify-center"
         data-slot="dropdown-menu-radio-item-indicator"
       >
         <DropdownMenuPrimitive.ItemIndicator>
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} />
         </DropdownMenuPrimitive.ItemIndicator>
       </span>
       {children}
@@ -210,7 +216,7 @@ function DropdownMenuShortcut({
     <span
       data-slot="dropdown-menu-shortcut"
       className={cn(
-        "text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground ml-auto text-xs tracking-widest",
+        "text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground ml-auto -mr-[0.1em] text-xs tracking-widest",
         className,
       )}
       {...props}
@@ -252,7 +258,7 @@ function DropdownMenuSubTrigger({
     >
       {children}
       <HugeiconsIcon
-        icon={ChevronRightStandardIcon}
+        icon={MenuChevronRightIcon}
         strokeWidth={1.5}
         className="ml-auto size-[calc(12px*var(--ui-space-scale,1))]"
       />
@@ -280,6 +286,7 @@ function DropdownMenuSubContent({
       resizeObserverRef.current = null;
       assignRef(ref, element);
       if (!element) return;
+      snapInlinePadding(element);
 
       const updateContentWidth = () => {
         setContentWidth(element.offsetWidth);

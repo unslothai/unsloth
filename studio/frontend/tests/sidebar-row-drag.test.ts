@@ -54,6 +54,7 @@ function plannedDrop(
 const APP_SIDEBAR = await readSrcAsync("components/app-sidebar.tsx");
 const HOOK = await readSrcAsync("features/chat/hooks/use-sidebar-drag.ts");
 const EN = await readSrcAsync("i18n/locales/en.ts");
+const CSS = await readSrcAsync("index.css");
 
 // Two folders, "work" pinned and "home" not; chats c1 and c2 in work, c3 in home, r1 and r2 in
 // Recents, and p1 pinned from Recents. Pinned is one list: the folder, then the chat.
@@ -62,17 +63,21 @@ function context(
 ): SidebarDropContext {
   return {
     organizeBy: "project",
-    chatSort: "priority",
+    chatSort: "updated",
     pinnedSort: "manual",
     projectSort: "manual",
     pinnedChatIds: new Set(["p1"]),
     pinnedProjectIds: new Set(["work"]),
+    sectionByChatId: {},
+    sectionByProjectId: {},
+    sectionSort: () => "manual",
     orders: {
       pinned: ["work", "p1"],
       projects: ["home", "misc"],
       recents: ["r1", "r2"],
       projectChats: (projectId) =>
         ({ work: ["c1", "c2"], home: ["c3"], misc: [] })[projectId] ?? [],
+      sections: () => [],
     },
     ...overrides,
   };
@@ -200,7 +205,9 @@ test("a folder reorder or unpin switches a sorted Projects list to Manual", () =
 // A pinned project chat shows in Pinned only; its own folder unpins it.
 test("a pinned chat is listed once and drops back into its folder unpinned", () => {
   assert.ok(
-    APP_SIDEBAR.includes("items.filter((item) => !pinnedIdSet.has(item.id))"),
+    APP_SIDEBAR.includes(
+      "(item) => !pinnedIdSet.has(item.id) && !sectionByChatId[item.id],",
+    ),
     "a folder still lists its pinned chats",
   );
   const ctx = context({
@@ -729,8 +736,10 @@ test("an empty Projects section still shows where a folder would land", () => {
   // empty section draws a row. A zero-height box is skipped by elementsFromPoint.
   assert.match(
     APP_SIDEBAR,
-    /\{visibleProjectRecords\.length === 0 && \(\n\s*<SidebarMenuItem>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\("shell\.navigation\.allProjectsPinned"\)\}/,
+    /\{visibleProjectRecords\.length === 0 && \(\n\s*<SidebarMenuItem>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\(\n\s*projects\.length === 0\n\s*\? "shell\.navigation\.noProjects"\n\s*: projects\.some\(\(project\) => sectionByProjectId\[project\.id\]\)\n\s*\? "shell\.navigation\.allProjectsFiled"\n\s*: "shell\.navigation\.allProjectsPinned",/,
   );
+  // With no projects at all the section stays, once they have loaded, and says so.
+  assert.match(EN, /noProjects: "No projects",/);
   assert.match(EN, /allProjectsPinned: "All projects pinned",/);
 });
 
@@ -856,7 +865,9 @@ test("every row and section is wired to the planner", () => {
     'scope: RECENTS_ORDER_SCOPE,\n                        ids: recentRowIds,\n                        section: "recents",',
     'orderedIds: projectRowIds,\n                          section: "projects",',
   ]) {
-    assert.ok(APP_SIDEBAR.includes(wiring), `missing ${wiring}`);
+    // Whitespace-free, since the sections are drawn by functions at their own indent.
+    const flat = (text: string) => text.replace(/\s+/g, "");
+    assert.ok(flat(APP_SIDEBAR).includes(flat(wiring)), `missing ${wiring}`);
   }
 });
 
@@ -1064,11 +1075,11 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
   );
   assert.match(
     APP_SIDEBAR,
-    /const move = effects\.moveChat;\n\s*if \(!move\) \{\n(?:\s*\/\/[^\n]*\n)*\s*applyOrders\(\);\n\s*return;\n\s*\}/,
+    /const move = effects\.moveChat;\n\s*if \(!move\) \{\n(?:\s*\/\/[^\n]*\n)*\s*applyFiling\(\);\n\s*applyOrders\(\);\n\s*return;\n\s*\}/,
   );
   assert.match(
     APP_SIDEBAR,
-    /\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)\n\s*\.then\(\(moved\) => \{\n\s*if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;\n(?:\s*\/\/[^\n]*\n)*\s*applyOrders\(ordersBefore, sortPicked\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
+    /\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)\n\s*\.then\(\(moved\) => \{\n\s*if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;\n(?:\s*\/\/[^\n]*\n)*\s*applyFiling\(\);\n\s*applyOrders\(ordersBefore, sortPicked\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
   );
   // And nothing else in commitDrop writes an order on its own.
   const commit = APP_SIDEBAR.slice(
@@ -1110,13 +1121,18 @@ test("a sort picked while a move is in flight is not overwritten", () => {
   // for it would leave the slot written into a list still sorted, undoing the drop.
   assert.match(
     commit,
-    /const stopWatchingSort = switching\n\s*\? useSidebarOrganizationStore\.subscribe\(\(now, before\) => \{\n\s*sortPicked \|\|=\n\s*switching === "pinned"\n\s*\? now\.pinnedSort !== before\.pinnedSort\n\s*: now\.chatSort !== before\.chatSort;\n\s*\}\)\n\s*: \(\) => \{\};/,
+    /const stopWatchingSort = switching\n\s*\? useSidebarOrganizationStore\.subscribe\(\(now, before\) => \{\n\s*sortPicked \|\|=\n\s*switchedListSort\(now, switching\) !== switchedListSort\(before, switching\);\n\s*\}\)\n\s*: \(\) => \{\};/,
+  );
+  // Each list reads its own sort, custom sections included.
+  assert.match(
+    APP_SIDEBAR,
+    /if \(list === "pinned"\) return state\.pinnedSort;\n\s*if \(list === "projects"\) return state\.projectSort;\n\s*const sectionId = customSectionIdOf\(list\);/,
   );
   assert.match(commit, /const switching = effects\.switchSort;/);
   // Only the path that waits. Nothing can come between a drop and a switch applied in the turn.
   assert.match(
     commit,
-    /if \(!move\) \{\n(?:\s*\/\/[^\n]*\n)*\s*applyOrders\(\);\n\s*return;\n\s*\}/,
+    /if \(!move\) \{\n(?:\s*\/\/[^\n]*\n)*\s*applyFiling\(\);\n\s*applyOrders\(\);\n\s*return;\n\s*\}/,
   );
   // Read before applyOrders, whose own setChatSort would otherwise trip the watch it reads.
   assert.match(commit, /applyOrders\(ordersBefore, sortPicked\);/);
@@ -1214,8 +1230,8 @@ test("a chat can be dropped after a folder that ends the Pinned list", () => {
   // Part of the layout, not summoned by the drag: a row mounting at drag start shifts every
   // section below it after the pointer was sampled, and the cue and the drop then disagree.
   const pinnedMenu = APP_SIDEBAR.slice(
-    APP_SIDEBAR.indexOf('{/* Pinned: folders and chats in one list'),
-    APP_SIDEBAR.indexOf("{/* One folder per unpinned project."),
+    APP_SIDEBAR.indexOf("function renderPinnedSection(): ReactNode {"),
+    APP_SIDEBAR.indexOf("function renderCustomSection("),
   );
   assert.ok(pinnedMenu.length > 0, "the Pinned section moved");
   assert.match(
@@ -1246,7 +1262,7 @@ test("a chat can be dropped after a folder that ends the Pinned list", () => {
 // springs open under it, and when the sidebar re-renders, and only the frame loop is there to
 // see it. The release hit-tests the layout as it is, so the cue has to as well.
 test("the edge keeps scrolling while the pointer rests on it", () => {
-  assert.match(HOOK, /const onFrame = \(\) => \{[^]*?frame = requestAnimationFrame\(onFrame\);\n\s*edgeScroll\(at\.y\);\n\s*track\(at\.x, at\.y\);/);
+  assert.match(HOOK, /const onFrame = \(\) => \{[^]*?frame = requestAnimationFrame\(onFrame\);\n\s*edgeScroll\(at\.y\);\n\s*if \(ghost\.current\) placeGhost\(ghost\.current, at\.y\);\n\s*track\(at\.x, at\.y\);/);
   // Unconditionally: a re-aim only on the frames that scrolled leaves every other cause stale.
   assert.ok(!/if \(edgeScroll\(/.test(HOOK));
   // Started with the drag and cancelled with it, and it stops itself if the drag is gone.
@@ -1255,6 +1271,36 @@ test("the edge keeps scrolling while the pointer rests on it", () => {
   assert.match(HOOK, /if \(!sidebarDragSource\(\)\) \{\n\s*frame = 0;\n\s*return;\n\s*\}/);
   // track no longer scrolls: one driver, or a move and a frame would both step the list.
   assert.ok(!/const track = useCallback\(\n\s*\(x: number, y: number\) => \{\n\s*(auto|edge)Scroll/.test(HOOK));
+});
+
+// A carried chat or folder lifts as a copy under the pointer, as a section header does, while the
+// row it came from dims. The copy is DOM the hook draws and moves itself: no render per move.
+test("a carried row lifts a copy that follows the pointer", () => {
+  // Lifted when the press becomes a drag, from the row's face, and kept inside its list.
+  assert.match(HOOK, /started = true;\n\s*scroller\.current = scrollerOf\(row\);\n\s*ghost\.current = liftRow\(/);
+  assert.match(HOOK, /const face = row\.querySelector<HTMLElement>\(ROW_FACE_SELECTOR\);/);
+  assert.match(HOOK, /Math\.min\(Math\.max\(y - ghost\.grab, view\.top\), view\.bottom - height\)/);
+  assert.match(HOOK, /translate3d\(0, \$\{Math\.round\(top\)\}px, 0\)/);
+  // A picture only: no drop zone, row key, id, test id or open-chat mark rides along, so no hit
+  // test, lookup or test finds it, and it takes no pointer.
+  for (const attr of ["DROP_ZONE_ATTR", "ROW_KEY_ATTR", '"id"', '"data-active"', '"data-testid"', '"data-thread-id"']) {
+    assert.match(HOOK, new RegExp(`GHOST_DROPPED_ATTRS = \\[[^\\]]*${attr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  }
+  assert.match(CSS, /\.sidebar-row-ghost \* \{\n\s*pointer-events: none;/);
+  // Every way a drag ends takes it down: clear() is the one exit.
+  assert.match(HOOK, /const clear = useCallback\(\(\) => \{[^]*?ghost\.current\?\.element\.remove\(\);\n\s*ghost\.current = null;/);
+  // The row it came from dims as a section does, bare of its pressed look.
+  assert.equal(APP_SIDEBAR.match(/draggingRow\?\.id === (item|project)\.id && "opacity-40"/g)?.length, 2);
+  assert.match(CSS, /body\.sidebar-row-dragging \[data-sidebar="menu-button"\]:active \{\n\s*background-color: transparent;/);
+});
+
+test("a dropped row slides from where it was let go, unless motion is reduced", () => {
+  assert.match(HOOK, /const from = ghost\.current\?\.element\.getBoundingClientRect\(\)\.top \?\? null;\n\s*clear\(\);/);
+  assert.match(HOOK, /onDrop\(aimed\.outcome, dragged\);\n\s*if \(from !== null && !optionsRef\.current\.reducedMotion\?\.\(\)\) settleRow\(dragged, from\);/);
+  assert.match(APP_SIDEBAR, /onDrop: \(plan\) => commitDrop\(plan\),\n\s*reducedMotion: prefersReducedMotion,/);
+  // A folder carries its open chats: the spots naming it slide with its row, each once.
+  assert.match(HOOK, /zone\.folderId === item\.id &&/);
+  assert.match(HOOK, /!all\.some\(\(other\) => other !== element && other\.contains\(element\)\)/);
 });
 
 // The window hears every pointer, not just the one that pressed the row. Without this a finger

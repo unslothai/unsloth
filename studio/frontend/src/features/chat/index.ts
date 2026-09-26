@@ -143,6 +143,11 @@ export {
   DRAG_THRESHOLD_PX,
   DRAGGING_BODY_CLASS,
 } from "./hooks/use-sidebar-drag";
+export {
+  useSectionDrag,
+  SECTION_ATTR,
+  type SectionLanding,
+} from "./hooks/use-section-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
@@ -160,13 +165,22 @@ export {
   RECENTS_ORDER_SCOPE,
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   useSidebarOrganizationStore,
+  customSectionScope,
+  customSectionIdOf,
+  normalizeSectionName,
+  CUSTOM_SECTION_NAME_MAX,
+  PROJECTS_SECTION_KEY,
+  PINNED_SECTION_KEY,
+  resolveSectionOrder,
 } from "./stores/sidebar-organization-store";
 export type {
+  SidebarCustomSection,
   SidebarChatSort,
   SidebarProjectSort,
   SidebarOrganizeBy,
 } from "./stores/sidebar-organization-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
+export { SectionNameDialog } from "./components/section-name-dialog";
 export {
   usePromptQueueUI,
   type PromptQueueUIEntry,

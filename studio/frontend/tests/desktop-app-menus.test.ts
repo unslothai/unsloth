@@ -314,3 +314,26 @@ test("Back and Forward follow page history, and zoom steps the interface scale",
   assert.match(ROOT, /"zoom-out": zoomBy\(-1\)/);
   assert.match(ROOT, /"actual-size": \(\) => useInterfaceScaleStore\.getState\(\)\.reset\(\)/);
 });
+
+test("Help items reuse the icon of the Settings tab they open", () => {
+  const dialog = readSrc("features/settings/settings-dialog.tsx");
+  const tabIcon = (id: string) =>
+    dialog.match(new RegExp(`id: "${id}",\\s*labelKey: "[^"]+",\\s*icon: (\\w+)`))?.[1];
+  const helpIcon = (action: string) => HELP.match(new RegExp(`"${action}": \\{[^}]*icon: (\\w+)`))?.[1];
+  for (const [action, tab] of [
+    ["help-keyboard-shortcuts", "keyboard-shortcuts"],
+    ["help-troubleshooting", "debugging"],
+    ["help-system-status", "resources"],
+  ]) {
+    // Both sides must be found: two misses would compare equal and pass.
+    const icon = tabIcon(tab);
+    assert.ok(icon, `the ${tab} tab's icon`);
+    assert.equal(helpIcon(action), icon, action);
+  }
+});
+
+test("About Unsloth uses the info icon Studio uses everywhere else", () => {
+  const sidebar = readSrc("components/app-sidebar.tsx");
+  const about = sidebar.slice(0, sidebar.indexOf('{t("shell.helpMenu.about")}'));
+  assert.match(about.slice(about.lastIndexOf("<HugeiconsIcon")), /^<HugeiconsIcon icon=\{InformationCircleIcon\}/);
+});

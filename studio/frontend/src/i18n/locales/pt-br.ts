@@ -190,6 +190,9 @@ export const ptBR = {
       noChats: "Nenhum chat",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Todos os projetos fixados",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "Todos os projetos estão fixados ou em seções",
+      noProjects: "Nenhum projeto",
       showMore: "Mostrar mais",
       showLess: "Mostrar menos",
       settings: "Configurações",
@@ -235,14 +238,38 @@ export const ptBR = {
       byProject: "Por projeto",
       inOneList: "Em uma lista",
       sortChatsBy: "Ordenar conversas por",
-      sortPinnedBy: "Ordenar fixadas por",
-      priority: "Prioridade",
       lastUpdated: "Última atualização",
       manualOrder: "Ordem manual",
       switchedToManual: "Ordem manual: arraste as linhas para reordenar",
       organizeChats: "Organizar conversas",
       organizeProjects: "Organizar projetos",
       sortPinnedChats: "Ordenar conversas fixadas",
+      // Header of the menu's section-visibility toggles.
+      show: "Mostrar",
+      newSection: "Nova seção",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "Nova seção",
+      createDescription: "Agrupe conversas e projetos como quiser",
+      namePlaceholder: "Nome da seção",
+      create: "Criar seção",
+      renameTitle: "Renomear seção",
+      renameDescription: "Dê um novo nome a esta seção",
+      edit: "Editar",
+      remove: "Remover seção",
+      markAllRead: "Marcar tudo como lido",
+      // Row menu submenu that files a chat or project into a section.
+      section: "Seção",
+      moveToSection: "Mover para seção",
+      newSectionEllipsis: "Nova seção…",
+      noSection: "Sem seção",
+      // Shown in a section with nothing filed in it yet.
+      empty: "Arraste conversas ou projetos para cá",
+      sectionOptions: "Opções da seção",
+      newChatInSection: "Novo chat em {name}",
+      deleted: "Seção “{name}” excluída",
+      undo: "Desfazer",
     },
     dialog: {
       deleteChat: {

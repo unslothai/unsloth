@@ -151,6 +151,9 @@ export const it = {
       noChats: "Nessuna chat",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Tutti i progetti fissati",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "Tutti i progetti sono fissati o in sezioni",
+      noProjects: "Nessun progetto",
       showMore: "Mostra altro",
       showLess: "Mostra meno",
       settings: "Impostazioni",
@@ -196,14 +199,38 @@ export const it = {
       byProject: "Per progetto",
       inOneList: "In un solo elenco",
       sortChatsBy: "Ordina le chat per",
-      sortPinnedBy: "Ordina i fissati per",
-      priority: "Priorità",
       lastUpdated: "Ultimo aggiornamento",
       manualOrder: "Ordine manuale",
       switchedToManual: "Ordinamento manuale: trascina le righe per riordinarle",
       organizeChats: "Organizza le chat",
       organizeProjects: "Organizza i progetti",
       sortPinnedChats: "Ordina le chat fissate",
+      // Header of the menu's section-visibility toggles.
+      show: "Mostra",
+      newSection: "Nuova sezione",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "Nuova sezione",
+      createDescription: "Raggruppa chat e progetti come preferisci",
+      namePlaceholder: "Nome della sezione",
+      create: "Crea sezione",
+      renameTitle: "Rinomina sezione",
+      renameDescription: "Assegna un nuovo nome a questa sezione",
+      edit: "Modifica",
+      remove: "Rimuovi sezione",
+      markAllRead: "Segna tutto come letto",
+      // Row menu submenu that files a chat or project into a section.
+      section: "Sezione",
+      moveToSection: "Sposta nella sezione",
+      newSectionEllipsis: "Nuova sezione…",
+      noSection: "Nessuna sezione",
+      // Shown in a section with nothing filed in it yet.
+      empty: "Trascina qui chat o progetti",
+      sectionOptions: "Opzioni della sezione",
+      newChatInSection: "Nuova chat in {name}",
+      deleted: "Sezione «{name}» eliminata",
+      undo: "Annulla",
     },
     dialog: {
       deleteChat: {

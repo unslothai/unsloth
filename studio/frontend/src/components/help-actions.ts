@@ -5,12 +5,12 @@ import { type SettingsTab, settingsTabVisible, useSettingsDialogStore } from "@/
 import type { TranslationKey } from "@/i18n";
 import { openLink } from "@/lib/open-link";
 import {
-  ActivityIcon,
   Book03Icon,
-  KeyboardIcon,
+  ComputerTerminal01Icon,
+  CpuIcon,
+  EnergyRectangleIcon,
   MessageNotification01Icon,
   NewReleasesIcon,
-  Wrench01Icon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 
@@ -29,12 +29,13 @@ export const HELP_GROUPS: HelpAction[][] = [
   ["help-troubleshooting", "help-system-status", "help-send-feedback"],
 ];
 
+/** Icons match where each item leads: its Settings tab, or the About page's link. */
 export const HELP_ITEMS: Record<HelpAction, { label: TranslationKey; icon: IconSvgElement }> = {
   "help-documentation": { label: "shell.helpMenu.documentation", icon: Book03Icon },
-  "help-keyboard-shortcuts": { label: "shell.helpMenu.keyboardShortcuts", icon: KeyboardIcon },
+  "help-keyboard-shortcuts": { label: "shell.helpMenu.keyboardShortcuts", icon: EnergyRectangleIcon },
   "help-whats-new": { label: "shell.helpMenu.whatsNew", icon: NewReleasesIcon },
-  "help-troubleshooting": { label: "shell.helpMenu.troubleshooting", icon: Wrench01Icon },
-  "help-system-status": { label: "shell.helpMenu.systemStatus", icon: ActivityIcon },
+  "help-troubleshooting": { label: "shell.helpMenu.troubleshooting", icon: ComputerTerminal01Icon },
+  "help-system-status": { label: "shell.helpMenu.systemStatus", icon: CpuIcon },
   "help-send-feedback": { label: "shell.helpMenu.sendFeedback", icon: MessageNotification01Icon },
 };
 

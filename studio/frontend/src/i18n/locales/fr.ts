@@ -191,6 +191,9 @@ export const fr = {
       noChats: "Aucune discussion",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Tous les projets sont epingles",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "Tous les projets sont épinglés ou dans des sections",
+      noProjects: "Aucun projet",
       showMore: "Afficher plus",
       showLess: "Afficher moins",
       settings: "Paramètres",
@@ -236,14 +239,38 @@ export const fr = {
       byProject: "Par projet",
       inOneList: "Dans une seule liste",
       sortChatsBy: "Trier les discussions par",
-      sortPinnedBy: "Trier les épinglés par",
-      priority: "Priorité",
       lastUpdated: "Dernière mise à jour",
       manualOrder: "Ordre manuel",
       switchedToManual: "Tri manuel : faites glisser les lignes pour les réorganiser",
       organizeChats: "Organiser les discussions",
       organizeProjects: "Organiser les projets",
       sortPinnedChats: "Trier les discussions épinglées",
+      // Header of the menu's section-visibility toggles.
+      show: "Afficher",
+      newSection: "Nouvelle section",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "Nouvelle section",
+      createDescription: "Regroupez les discussions et les projets comme vous le souhaitez",
+      namePlaceholder: "Nom de la section",
+      create: "Créer la section",
+      renameTitle: "Renommer la section",
+      renameDescription: "Donnez un nouveau nom à cette section",
+      edit: "Modifier",
+      remove: "Retirer la section",
+      markAllRead: "Tout marquer comme lu",
+      // Row menu submenu that files a chat or project into a section.
+      section: "Section",
+      moveToSection: "Déplacer vers une section",
+      newSectionEllipsis: "Nouvelle section…",
+      noSection: "Aucune section",
+      // Shown in a section with nothing filed in it yet.
+      empty: "Faites glisser des discussions ou des projets ici",
+      sectionOptions: "Options de la section",
+      newChatInSection: "Nouveau chat dans {name}",
+      deleted: "Section « {name} » supprimée",
+      undo: "Annuler",
     },
     dialog: {
       deleteChat: {
