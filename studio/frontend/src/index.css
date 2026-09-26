@@ -653,7 +653,7 @@
    Flavor themes (Theme > More themes). Each sets --th-* seeds per mode; the
    block below maps them onto the --*-base tokens, so contrast and custom
    colors still apply. */
-:root:where([data-palette="blue-raspberry"], [data-palette="blueberry"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette] {
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette] {
 	--background: var(--th-bg);
 	--foreground-base: var(--th-fg);
 	--card-base: var(--th-surface);
@@ -703,13 +703,13 @@
 }
 
 /* Lift the dark composer slightly; flavor cards sit close to the page. */
-:root:where([data-palette="blue-raspberry"], [data-palette="blueberry"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette].dark
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette].dark
 	:is(.chat-composer-surface, .unsloth-composer-surface) {
 	background-color: color-mix(in srgb, var(--card), var(--th-fg) 4%);
 }
 
 /* Collapsed rail takes the page color, as it does in dark mode. */
-:root:where([data-palette="blue-raspberry"], [data-palette="blueberry"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette]:not(.dark)
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette]:not(.dark)
 	[data-collapsible="icon"] [data-sidebar="sidebar"] {
 	--sidebar-surface: var(--background);
 }
@@ -730,42 +730,6 @@
 		0 4px 20px 4px var(--background);
 }
 
-
-/* Blue Raspberry */
-:root[data-palette="blue-raspberry"]:not(.dark) {
-	--th-bg: #f4f9fd;
-	--th-surface: #e9f2fa;
-	--th-raised: #deebf6;
-	--th-hover: #d2e3f2;
-	--th-border: #c7dbee;
-	--th-fg: #0f2233;
-	--th-muted: #3f5a70;
-	--th-subtle: #7f97ab;
-	--th-accent: #0077c8;
-	--th-accent-fg: #ffffff;
-	--th-chart-1: #0077c8;
-	--th-chart-2: #d6336c;
-	--th-chart-3: #1f9e8a;
-	--th-chart-4: #c98a1e;
-	--th-chart-5: #7a4fd1;
-}
-:root[data-palette="blue-raspberry"].dark {
-	--th-bg: #0f1520;
-	--th-surface: #141c2a;
-	--th-raised: #1a2434;
-	--th-hover: #212c3f;
-	--th-border: #283449;
-	--th-fg: #dcebf8;
-	--th-muted: #9fb8cf;
-	--th-subtle: #6a8399;
-	--th-accent: #38b6ff;
-	--th-accent-fg: #07121d;
-	--th-chart-1: #38b6ff;
-	--th-chart-2: #ff5c8a;
-	--th-chart-3: #5fe0c0;
-	--th-chart-4: #ffc85c;
-	--th-chart-5: #b08cff;
-}
 
 /* Blueberry */
 :root[data-palette="blueberry"]:not(.dark) {
@@ -801,6 +765,42 @@
 	--th-chart-3: #b48cff;
 	--th-chart-4: #6fd6a8;
 	--th-chart-5: #ff8fb1;
+}
+
+/* Butterfly Pea */
+:root[data-palette="butterfly-pea"]:not(.dark) {
+	--th-bg: #f4f9fd;
+	--th-surface: #e9f2fa;
+	--th-raised: #deebf6;
+	--th-hover: #d2e3f2;
+	--th-border: #c7dbee;
+	--th-fg: #0f2233;
+	--th-muted: #3f5a70;
+	--th-subtle: #7f97ab;
+	--th-accent: #0077c8;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #0077c8;
+	--th-chart-2: #d6336c;
+	--th-chart-3: #1f9e8a;
+	--th-chart-4: #c98a1e;
+	--th-chart-5: #7a4fd1;
+}
+:root[data-palette="butterfly-pea"].dark {
+	--th-bg: #0f1520;
+	--th-surface: #141c2a;
+	--th-raised: #1a2434;
+	--th-hover: #212c3f;
+	--th-border: #283449;
+	--th-fg: #dcebf8;
+	--th-muted: #9fb8cf;
+	--th-subtle: #6a8399;
+	--th-accent: #38b6ff;
+	--th-accent-fg: #07121d;
+	--th-chart-1: #38b6ff;
+	--th-chart-2: #ff5c8a;
+	--th-chart-3: #5fe0c0;
+	--th-chart-4: #ffc85c;
+	--th-chart-5: #b08cff;
 }
 
 /* Cherry */

@@ -18,7 +18,7 @@ export const FLAVOR_THEME_IDS = [
   "honey",
   "taro",
   "espresso",
-  "blue-raspberry",
+  "butterfly-pea",
   "macaron",
   "wasabi",
   "earl-grey",
@@ -114,8 +114,8 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     light: { accent: "#8a5a33", background: "#faf6f2", foreground: "#2b201a" },
     dark: { accent: "#d69a5e", background: "#1c1613", foreground: "#eadfd6" },
   },
-  "blue-raspberry": {
-    name: "Blue Raspberry",
+  "butterfly-pea": {
+    name: "Butterfly Pea",
     light: { accent: "#0077c8", background: "#f4f9fd", foreground: "#0f2233" },
     dark: { accent: "#38b6ff", background: "#0f1520", foreground: "#dcebf8" },
   },
