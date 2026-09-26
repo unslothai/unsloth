@@ -204,7 +204,7 @@ new one, so a `revert` after it restores the machine as it is now rather than as
 it was before a run that has already been undone. `collect` refuses a label that
 was never prepared rather than exporting unrelated events.
 
-`collect` after `revert` keeps only the events from before the revert completed.
+`collect` refuses a label whose `revert` already completed: collect first, then revert.
 
 `prepare` refuses a new label while another label has not been reverted, including
 one kept under a different `-WorkDir` (tracked under

@@ -1239,19 +1239,17 @@ function Invoke-Collect {
         throw "no window-start.txt under ${dir}: prepare did not run for label '$Label', so there is no event window to collect"
     }
     $start = [datetime]::Parse((Get-Content -LiteralPath $startPath -Raw).Trim())
-    # The same window checks run makes, plus an end: nothing after a completed revert is this run's.
-    $end = $null
+    # The same window checks run makes: a reverted label no longer carries the state its events are judged by.
     $collectBaselinePath = Join-Path $dir 'baseline.json'
     if (Test-Path -LiteralPath $collectBaselinePath) {
         $collectBaseline = Get-Content -LiteralPath $collectBaselinePath -Raw | ConvertFrom-Json
+        if ($collectBaseline.RevertCompletedAt) {
+            throw "label '$Label' was reverted at $($collectBaseline.RevertCompletedAt); collect runs before revert, since revert clears the audit-policy state collect attributes events by and the log keeps growing past the run. Run prepare, run and collect for this label again."
+        }
         $prepared = $null
         try { $prepared = [datetime]::Parse([string]$collectBaseline.CapturedAt, [cultureinfo]::InvariantCulture) } catch { }
         if ($prepared -and $start -lt $prepared) {
             throw "the event window on disk opened at $($start.ToString('o')), before this label's baseline was captured at $($prepared.ToString('o')), so it belongs to an earlier run. Run prepare for label '$Label' again first."
-        }
-        if ($collectBaseline.RevertCompletedAt) {
-            $end = [datetime]::Parse([string]$collectBaseline.RevertCompletedAt, [cultureinfo]::InvariantCulture)
-            Write-Warning "label '$Label' was reverted at $($end.ToString('o')); only events before then are collected"
         }
     }
     Write-Section "Events since $($start.ToString('o'))"
@@ -1261,7 +1259,6 @@ function Invoke-Collect {
     $events = @()
     try {
         $events = @(Read-SettledCiEvents $start $CI_EVENT_IDS)
-        if ($end) { $events = @($events | Where-Object { $_.TimeCreated -le $end }) }
         if ($events.Count -eq 0) { Write-Host 'no CodeIntegrity events in the window' }
     } catch {
         # Only "nothing matched" is an empty window, and Read-SettledCiEvents already treats it as one.
