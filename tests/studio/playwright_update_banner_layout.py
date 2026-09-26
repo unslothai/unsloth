@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -41,7 +42,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     install_wall_clock_watchdog,
+    report_failing_step,
+    step_budget_s,
     wait_for_health,
+    wait_for_settled,
 )
 
 # The wall this suite did not have, matching playwright_chat_ui.py and playwright_extra_ui.py. It has six raw
@@ -61,8 +65,9 @@ PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 # The web check fires 5s after mount and the llama.cpp one after 1s; this is the ceiling on waiting for them, not the
 # wait itself.
 SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLE_MS", "9000"))
-# What the cards need after they mount, to animate in and lay out.
-SETTLED_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLED_MS", "900"))
+# The ceiling on the cards animating in and laying out after they mount. Waited for as a condition (every card holds
+# one box with nothing animating for a few frames), so this is how long a card may take, not how long each one does.
+SETTLED_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLED_MS", "10000"))
 
 # Must match the name use-web-update-check.ts reads. Kept short rather than zero so the card still arrives after
 # first paint, which is the situation the layout checks exist for.
@@ -232,9 +237,15 @@ RESIZE_SWEEP = [
     (320, 568),
 ]
 
-# What a resize needs before it has settled: the ResizeObserver, the placement it feeds, and the reflow after that.
-# Nothing is fetched, so this is short.
-RESIZE_SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_RESIZE_MS", "700"))
+# The ceiling on a resize settling: the ResizeObserver, the placement it feeds, and the reflow after that. Waited for
+# as a condition, like SETTLED_MS.
+RESIZE_SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_RESIZE_MS", "10000"))
+
+# Per-phase ceilings. A phase that overruns its own stops the run there, named, instead of every later phase waiting out
+# its own timeouts until the 720s wall. A viewport pass boots three routes at up to SETTLE_MS each; the resize sweep
+# walks 23 sizes. Stretched by STUDIO_PW_STEP_BUDGET_SCALE for slower lanes.
+PHASE_BUDGET_S = step_budget_s(180)
+SWEEP_BUDGET_S = step_budget_s(420)
 
 # The four runtime status endpoints the loaded models card reads, shaped as
 # tests/studio/playwright_loaded_models_indicator.py has them. Only chat holds anything: one loaded model is all it
@@ -364,14 +375,26 @@ FONT_SCALE_VIEWPORTS = [(921, 534), (390, 500), (320, 480)]
 UI_FONT_SIZE_MAX = 20
 UI_FONT_SIZE_DEFAULT = 15
 UI_FONT_SIZE_CSS_BASE = 16
+# --ui-font-scale as a number, read through a length since the property itself is a calc().
+# --ui-space-scale the same way: the card's max width is calc(448px * var(--ui-space-scale, 1)) since #11648.
+UI_SPACE_SCALE_JS = "(() => { const probe = document.createElement('div'); probe.style.cssText = 'position:absolute;visibility:hidden;width:calc(10000px * var(--ui-space-scale, 1))'; document.body.appendChild(probe); const px = parseFloat(getComputedStyle(probe).width); probe.remove(); return String(px / 10000); })()"
+UI_FONT_SCALE_JS = "(() => { const probe = document.createElement('div'); probe.style.cssText = 'position:absolute;visibility:hidden;width:calc(10000px * var(--ui-font-scale, 1))'; document.body.appendChild(probe); const px = parseFloat(getComputedStyle(probe).width); probe.remove(); return String(px / 10000); })()"
 APPEARANCE_STORE_VERSION = 5
 
 failures: list[str] = []
 checks = [0]
+_watchdog = [None]
 
 
 def info(s: str) -> None:
     print(f"[banner] {s}", flush = True)
+
+
+def phase(name: str, budget_s: float = PHASE_BUDGET_S) -> None:
+    """Start phase `name`; it may run `budget_s` before the run stops, naming it."""
+    info(f"STEP {name}")
+    if _watchdog[0] is not None:
+        _watchdog[0].begin_step(name, budget_s)
 
 
 def check(
@@ -684,8 +707,10 @@ def measure(page, label: str) -> dict:
             f"{name}={seen}",
         )
     if facts["cardLayoutWidth"] is not None:
-        # 448px is the card's max width and 2rem the viewport inset it keeps.
-        want = min(448, view["width"] - 32)
+        # 448px at the default size is the card's max width, scaled with the UI since #11648, and 2rem the
+        # viewport inset it keeps.
+        space = float(page.evaluate("() => " + UI_SPACE_SCALE_JS))
+        want = min(448 * space, view["width"] - 32)
         # Asked of the layout box, not the painted one. A scrollbar that takes its width out of the rail's content box
         # shrinks the card's layout width, which is the whole subject here; the card's enter animation (opacity 0,
         # y 12, scale .96 -- see components/*/update-banner.tsx) shrinks only the painted one, and measuring that
@@ -695,7 +720,7 @@ def measure(page, label: str) -> dict:
         check(
             f"{label}: the card keeps its full width whatever the scrollbar does",
             abs(facts["cardLayoutWidth"] - want) <= 1,
-            f"cardLayoutWidth={facts['cardLayoutWidth']} want={want} "
+            f"cardLayoutWidth={facts['cardLayoutWidth']} want={want} spaceScale={space} "
             f"cardPaintedWidth={facts['cardWidth']} "
             f"railGutter={facts['railGutterPx']} scrolls={facts['railScrolls']} "
             f"why={json.dumps(facts['widthWhy'], sort_keys = True)}",
@@ -861,7 +886,40 @@ def settle_stack(
         seen = now
         if stable >= 2:
             return
+        # Kept: the poll interval of this stability loop, which already ends as soon as the rail holds still.
         page.wait_for_timeout(gap_ms)
+
+
+def settle_cards(page, timeout_ms: int = SETTLED_MS) -> None:
+    """Wait for the rail and each card in it to hold one box with nothing animating.
+
+    Replaces a fixed pause after mount or resize: it ends as soon as the stack is still, and on a runner slow enough
+    that the pause was not enough it keeps waiting instead of measuring mid-transition. A stack that never settles is
+    reported and measured anyway, so the checks, not this wait, say what is wrong with it.
+    """
+    for selector in (
+        '[data-testid="overlay-rail"]',
+        '[data-testid="web-update-banner"]',
+        '[data-testid="llama-update-banner"]',
+    ):
+        target = page.locator(selector)
+        if target.count() == 0:
+            continue
+        # In short slices, each on a freshly resolved element: wait_for_settled holds one element handle, and a card
+        # React remounts mid-wait leaves that handle detached, which would read as "never settled" until the timeout.
+        deadline = time.monotonic() + timeout_ms / 1000
+        while True:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                info(f"WARN {selector} did not settle within {timeout_ms}ms; measuring anyway")
+                break
+            if target.count() == 0:
+                break
+            try:
+                wait_for_settled(target, timeout_ms = min(2_000, remaining_ms))
+                break
+            except PlaywrightTimeoutError:
+                continue
 
 
 def boot(page, path: str) -> None:
@@ -877,7 +935,7 @@ def boot(page, path: str) -> None:
             # or where.
             pass
     # The banners animate in, and a box measured mid-transition is not the box.
-    page.wait_for_timeout(SETTLED_MS)
+    settle_cards(page)
     settle_stack(page)
     landed = page.evaluate("location.pathname")
     if landed.startswith(("/login", "/change-password")):
@@ -1007,11 +1065,15 @@ def main() -> int:
         return 1
 
     with sync_playwright() as p:
-        install_wall_clock_watchdog(
+        # begin_step() restarts the inactivity budget, so the same number is also passed as the total no phase can
+        # move: the wall stays the whole-run cap it always was.
+        _watchdog[0] = install_wall_clock_watchdog(
             WALL_TIMEOUT_S,
             label = "ui-update-banner",
             info = info,
+            total_deadline_s = WALL_TIMEOUT_S,
         )
+        report_failing_step(_watchdog[0], label = "ui-update-banner")
         launch_kwargs: dict = {"headless": True}
         if PLAYWRIGHT_BROWSER == "chromium":
             launch_kwargs["args"] = chromium_launch_args()
@@ -1024,6 +1086,7 @@ def main() -> int:
 
         llama_payload = [LLAMA_STATUS]
         for width, height in VIEWPORTS[2:5] if SPOT else VIEWPORTS:
+            phase(f"update cards at {width}x{height}")
             context = browser.new_context(
                 viewport = {"width": width, "height": height},
                 reduced_motion = "reduce",
@@ -1073,7 +1136,18 @@ def main() -> int:
                 toggle = page.locator('[data-testid="web-update-release-notes-toggle"]')
                 if toggle.count() == 1:
                     toggle.click()
-                    page.wait_for_timeout(1500)
+                    # Expanded, then still, instead of a fixed 1.5 s.
+                    try:
+                        page.wait_for_selector(
+                            '[data-testid="web-update-release-notes-toggle"][aria-expanded="true"]',
+                            state = "attached",
+                            timeout = 10_000,
+                        )
+                    except PlaywrightTimeoutError:
+                        info(
+                            f"WARN {size} {name}: the notes toggle never reported aria-expanded=true"
+                        )
+                    settle_cards(page)
                     measure(page, f"{size} {name} expanded")
                     toggle.click()
                 if path == "/":
@@ -1094,6 +1168,7 @@ def main() -> int:
 
         # Exercise the compact app card omitted by the notes-bearing fixtures.
         for width, height in NO_PREVIEW_VIEWPORTS[:1] if SPOT else NO_PREVIEW_VIEWPORTS:
+            phase(f"app card with no notes preview at {width}x{height}")
             context = browser.new_context(
                 viewport = {"width": width, "height": height},
                 reduced_motion = "reduce",
@@ -1121,7 +1196,7 @@ def main() -> int:
             if toggle.count() == 1:
                 toggle.click()
                 panel.wait_for(state = "visible", timeout = 10_000)
-                page.wait_for_timeout(SETTLED_MS)
+                settle_cards(page)
                 measure(page, f"{width}x{height} with no preview, expanded")
             context.close()
 
@@ -1130,6 +1205,7 @@ def main() -> int:
         # the rail and move the whole stack. That is the case to check.
         # #8346 ships it off by default, so nothing above this point sees it.
         for width, height in INDICATOR_VIEWPORTS:
+            phase(f"loaded models indicator in the rail at {width}x{height}")
             context = browser.new_context(
                 viewport = {"width": width, "height": height},
                 reduced_motion = "reduce",
@@ -1189,6 +1265,7 @@ def main() -> int:
             browser.close()
             return 1 if failures else 0
 
+        phase("resize sweep and restore cycles", SWEEP_BUDGET_S)
         # One page, many window sizes.
         # Every check the core matrix runs, at every resolution in RESIZE_SWEEP, for the price of one boot: the cards
         # are already mounted and a resize is all a maximise or a restore ever is. It also exercises the path a fresh
@@ -1209,13 +1286,12 @@ def main() -> int:
         boot(page, "/")
         for width, height in RESIZE_SWEEP:
             page.set_viewport_size({"width": width, "height": height})
-            # Long enough for the ResizeObserver, the placement it feeds and the reflow that follows. Short because
-            # nothing is being fetched.
-            page.wait_for_timeout(RESIZE_SETTLE_MS)
+            # The ResizeObserver, the placement it feeds and the reflow that follows, waited for rather than slept.
+            settle_cards(page, RESIZE_SETTLE_MS)
             settle_stack(page)
             measure(page, f"{width}x{height} resized")
         page.set_viewport_size({"width": 1280, "height": 830})
-        page.wait_for_timeout(RESIZE_SETTLE_MS)
+        settle_cards(page, RESIZE_SETTLE_MS)
         page.screenshot(path = str(ART / "resize-sweep-end.png"))
 
         # Parked small and brought back. A minimised window cannot be photographed, but the restore is where a cached
@@ -1223,9 +1299,10 @@ def main() -> int:
         # merely looking tidy.
         for (small_w, small_h), (back_w, back_h) in RESTORE_CYCLES:
             page.set_viewport_size({"width": small_w, "height": small_h})
-            page.wait_for_timeout(RESIZE_SETTLE_MS)
+            # Parked long enough to have laid out small, or the restore restores nothing.
+            settle_cards(page, RESIZE_SETTLE_MS)
             page.set_viewport_size({"width": back_w, "height": back_h})
-            page.wait_for_timeout(RESIZE_SETTLE_MS)
+            settle_cards(page, RESIZE_SETTLE_MS)
             restored = measure(page, f"{back_w}x{back_h} restored from {small_w}x{small_h}")
             fresh_context = browser.new_context(
                 viewport = {"width": back_w, "height": back_h},
@@ -1267,6 +1344,7 @@ def main() -> int:
         set_ui_font_size(session["access_token"], UI_FONT_SIZE_MAX)
         try:
             for width, height in FONT_SCALE_VIEWPORTS:
+                phase(f"{UI_FONT_SIZE_MAX}px type at {width}x{height}")
                 context = browser.new_context(
                     viewport = {"width": width, "height": height},
                     reduced_motion = "reduce",
@@ -1281,14 +1359,14 @@ def main() -> int:
                     context.route(pattern, stub(payload))
                 page = context.new_page()
                 boot(page, "/")
-                scale = page.evaluate(
-                    "() => getComputedStyle(document.documentElement)"
-                    ".getPropertyValue('--ui-font-scale').trim()"
-                )
+                # Resolved through a length: since #11648 --ui-font-scale is a calc() of the size and interface
+                # scales, which reads back as that expression, so comparing the raw string to the default always
+                # said "scaled" and this check could not fail.
+                scale = float(page.evaluate("() => " + UI_FONT_SCALE_JS))
                 check(
                     f"{width}x{height} at {UI_FONT_SIZE_MAX}px: the type is actually scaled",
-                    scale not in ("", str(UI_FONT_SIZE_DEFAULT / UI_FONT_SIZE_CSS_BASE)),
-                    f"--ui-font-scale={scale!r}, so the rest of this pass proves nothing",
+                    abs(scale - UI_FONT_SIZE_DEFAULT / UI_FONT_SIZE_CSS_BASE) > 1e-3,
+                    f"--ui-font-scale resolved to {scale!r}, the default, so the rest of this pass proves nothing",
                 )
                 measure(page, f"{width}x{height} at {UI_FONT_SIZE_MAX}px")
                 page.screenshot(path = str(ART / f"{width}x{height}-font{UI_FONT_SIZE_MAX}.png"))

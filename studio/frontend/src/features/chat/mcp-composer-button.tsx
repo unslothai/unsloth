@@ -324,13 +324,13 @@ export function McpComposerButton({
             >
               <HugeiconsIcon
                 icon={McpServerIcon}
-                className="size-[15px]"
+                className="size-[calc(15px*var(--ui-space-scale,1))]"
                 strokeWidth={2}
               />
               <XIcon className="composer-pill-x" />
             </span>
             <span>MCP</span>
-            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[15px]" />
+            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -338,7 +338,7 @@ export function McpComposerButton({
           align="start"
           sideOffset={0}
           avoidCollisions={true}
-          className="unsloth-plus-menu mcp-menu w-[232px]"
+          className="unsloth-plus-menu mcp-menu w-[calc(232px*var(--ui-space-scale,1))]"
         >
           <DropdownMenuLabel>MCP Servers</DropdownMenuLabel>
           {usable ? null : (

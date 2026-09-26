@@ -761,7 +761,10 @@ def fp8_linear(
 
 def module_forward_patch(forward_function, scale_attr = "weight_scale"):
     def patched_forward(self, X):
-        return forward_function(X, self.weight, getattr(self, scale_attr))
+        out = forward_function(X, self.weight, getattr(self, scale_attr))
+        # The kernels take no bias, so a biased Linear (Qwen2-style q/k/v) adds it here; fbgemm keeps it fp32.
+        bias = self._parameters.get("bias")
+        return out if bias is None else out + bias.to(out.dtype)
 
     return patched_forward
 

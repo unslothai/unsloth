@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getHfDatasetsServerBase, getHfEndpoint } from "@/lib/hf-endpoint";
+import {
+  getHfDatasetsServerBase,
+  getHfEndpoint,
+  hasDatasetsServer,
+} from "@/lib/hf-endpoint";
 import { LruMap } from "./lru-map";
 import { fetchWithTimeout } from "./network";
 import { fingerprintToken } from "./token-fingerprint";
@@ -209,6 +213,7 @@ export function fetchDatasetSize(
   tokenOrSignal?: string | AbortSignal,
   signal?: AbortSignal,
 ): Promise<DatasetSizeInfo | null> {
+  if (!hasDatasetsServer()) return Promise.resolve(null);
   const resolvedToken =
     typeof tokenOrSignal === "string" ? tokenOrSignal : undefined;
   const resolvedSignal =

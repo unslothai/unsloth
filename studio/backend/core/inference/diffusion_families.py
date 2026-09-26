@@ -20,6 +20,8 @@ from pathlib import Path, PurePosixPath
 from typing import NamedTuple, Optional, Sequence
 from utils.paths.path_utils import is_appledouble_metadata
 
+from .diffusion_nvfp4_flag import nvfp4_blocked
+
 
 # Runtime->route contract: the /images/generate route matches these messages EXACTLY for a 409 (vs a 500), so both
 # engines raise them verbatim.
@@ -99,6 +101,19 @@ class DiffusionFamily:
     # True for families whose text-to-image pipeline ALSO accepts reference image(s) (FLUX.2 ``image``): no
     # ``strength``, size from width/height.
     reference: bool = False
+    # True when the text-to-image pipeline also follows edit instructions over ``image`` (Qwen-Image-2.1), at the
+    # requested size. Never inferred from ``reference``: a reference family is not necessarily trained to edit.
+    unified_edit: bool = False
+    # Condition images per call, INCLUDING the init image; overflow is refused, never sliced.
+    max_condition_images: int = 4
+    condition_image_mode: str = "RGB"
+    dimension_multiple: int = 16
+    max_output_side: int = 2048
+    max_output_pixels: int = 2048 * 2048
+    # Accepted condition-image preprocessing resolutions (square side, by area); empty = no such control.
+    reference_resolutions: tuple[int, ...] = field(default_factory = tuple)
+    # Activation-guard cost of one condition pixel relative to one output pixel.
+    condition_pixel_weight: float = 1.0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
     aliases: tuple[str, ...] = field(default_factory = tuple)
     # True for families whose activations overflow float16 (-> black image); the backend promotes a resolved float16
@@ -156,6 +171,8 @@ class DiffusionFamily:
     # carries the upstream base in its tag name whatever tree was built, so the tag cannot answer
     # this, and a custom SD_CLI_PATH build has no record at all.
     sd_cpp_arch_marker: Optional[str] = None
+    # Literal an sd.cpp build carries once it can EDIT this family; the arch marker proves text-to-image only.
+    sd_cpp_edit_marker: Optional[str] = None
     # True when Unsloth can TRAIN a LoRA on this family; the training-start path refuses a non-trainable family up
     # front.
     trainable: bool = False
@@ -198,6 +215,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("black-forest-labs/flux.1-dev", "fp8", "unsloth/FLUX.1-dev-FP8"),
             ("black-forest-labs/flux.1-krea-dev", "int8", "unsloth/FLUX.1-Krea-dev-FP8"),
             ("black-forest-labs/flux.1-krea-dev", "fp8", "unsloth/FLUX.1-Krea-dev-FP8"),
+            # schnell ONLY: dev and Krea-dev would download it just for _validate_checkpoint to refuse.
+            ("black-forest-labs/flux.1-schnell", "nvfp4", "unsloth/FLUX.1-schnell-NVFP4"),
         ),
         # Pre-cast T5-XXL (9.52 -> 5.90 GB; CLIP-L stays dense). One artifact serves schnell/dev/Krea-dev (T5 shards
         # are byte-identical).
@@ -332,6 +351,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_variant_repos = (
             ("qwen/qwen-image-2512", "int8", "unsloth/Qwen-Image-2512-FP8"),
             ("qwen/qwen-image-2512", "fp8", "unsloth/Qwen-Image-2512-FP8"),
+            # Policy ``qwen2512_m120_attn8_v1``, 2512 only: Qwen/Qwen-Image keeps its nvfp4 deny.
+            ("qwen/qwen-image-2512", "nvfp4", "unsloth/Qwen-Image-2512-NVFP4"),
         ),
         # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). Always was independent of the DiT scheme rules.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
@@ -371,6 +392,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_repos = (
             ("int8", "unsloth/Qwen-Image-2.1-FP8"),
             ("fp8", "unsloth/Qwen-Image-2.1-FP8"),
+            ("nvfp4", "unsloth/Qwen-Image-2.1-NVFP4"),
         ),
         # The artifacts are safetensors, not the historical torch.save pickle, so the family has to
         # NAME them: every derived fallback ends in .pt, and without these rows the loader would ask
@@ -396,6 +418,18 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # passes. Without this flag diffusion.py refuses reference images for this family and the
         # capability ships dark.
         reference = True,
+        # Model card: ten inputs, alpha kept for the VAE, 32 px grid (16x VAE, 2x2 token groups), 2K presets up to
+        # 2400 x 1792. ``reference_resolutions`` maps to the pipeline's ``output_resolution``.
+        unified_edit = True,
+        max_condition_images = 10,
+        condition_image_mode = "RGBA",
+        dimension_multiple = 32,
+        max_output_side = 2752,
+        max_output_pixels = 2400 * 1792,
+        reference_resolutions = (512, 1024, 2048),
+        # Condition tokens are prefilled once into a KV cache, not denoised per step. Measured on an RTX 3090: about
+        # 2.5-2.7 GiB per 1024-square condition image against the estimator's 8 GiB per output megapixel.
+        condition_pixel_weight = 0.32,
         aliases = ("qwen_image_21", "qwenimage21", "qwen-image-21"),
         # Built by us from Qwen/Qwen-Image-2.1 itself: the same 238 tensors under upstream's own
         # names, cast fp32 -> bf16 and written as one file, because sd-cli takes --vae as a single
@@ -422,16 +456,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # 5.0), with the per-tensor precision the dynamic recipe assigns. Measured on this host
         # against the 2.1-capable build, one prompt at 1024 with 20 steps and a shared seed:
         # LPIPS 0.02894 / SSIM 0.95908 between the two, 36.5 s against 39.0 s, both coherent.
-        # Text to image only, which is all this family exposes (edit is False, and there are no
-        # img2img / inpaint pipelines). Upstream's docs/qwen_image_2.1.md requires a separate
-        # mmproj through --llm_vision before a GGUF encoder can do image editing; turning editing
-        # on here without adding it would load an encoder that logs "vision disabled" and carry on.
+        # The vision projector (--llm_vision) is what native editing needs; text-to-image never reads it (a fixed-seed
+        # render is byte-identical with and without it). Listed here so download, readiness and delete guards see it.
         sd_cpp_text_encoders = (
             (
                 "unsloth/Qwen3-VL-8B-Instruct-GGUF",
                 "Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf",
                 "llm",
             ),
+            ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision"),
         ),
         sd_cpp_sampling_method = "euler",
         # No flow shift on purpose. Qwen-Image pins 3.0, but upstream sd.cpp selects a
@@ -443,6 +476,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # release (both sd-cli and sd-server, CPU and CUDA) carries this literal, and the five
         # older ones, including the previous pin, do not.
         sd_cpp_arch_marker = "qwen_image_2_1",
+        # The edit path's no-projector refusal: in the pinned build, absent from the one before it.
+        sd_cpp_edit_marker = "Qwen Image 2.1 editing requires Qwen3-VL vision weights",
     ),
     DiffusionFamily(
         name = "z-image",
@@ -452,6 +487,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_repos = (
             ("int8", "unsloth/Z-Image-Turbo-FP8"),
             ("fp8", "unsloth/Z-Image-Turbo-FP8"),
+            ("nvfp4", "unsloth/Z-Image-Turbo-NVFP4"),
         ),
         # Both hosted checkpoints are baked from the distilled Turbo transformer, so the undistilled base has none and
         # must quantize its own dense weights.
@@ -821,6 +857,7 @@ _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
 # credentials, so a complete local snapshot must keep being used rather than re-pulled from the mirror.
 _UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512"),
+    ("Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1"),
     ("Qwen/Qwen-Image", "unsloth/Qwen-Image"),
     ("Qwen/Qwen-Image-Edit-2511", "unsloth/Qwen-Image-Edit-2511"),
     ("black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"),
@@ -1060,6 +1097,8 @@ def prefer_ungated_mirror(
 
     Declines to today's behaviour under ``UNSLOTH_DIFFUSION_NO_MIRROR``, for a local path, or when
     the upstream already satisfies the load from cache and switching would re-pull tens of GiB.
+    Under that opt-out a mirror id picked directly maps back to its upstream, cached or not: even
+    a cached mirror is listed on the Hub before it loads.
     ``files`` sharpens that last test to the names about to be fetched; without it any weight
     counts.
 
@@ -1069,8 +1108,10 @@ def prefer_ungated_mirror(
     is unused, kept so callers need not care.
     """
     del hf_token  # noqa: F841 -- signature stability only
+    if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+        return base if _is_local_path(base) else canonical_base(base)
     mirror = mirror_repo(base)
-    if not mirror or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+    if not mirror:
         return base
     # a local path is never a Hub id: rewriting one sends loads the other sites resolve on disk to the Hub, skipping
     # the copy already downloaded
@@ -1098,6 +1139,11 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.2-klein-base", 50, 4.0),
     ("flux.2-klein", 4, 1.0),
     ("flux.2-dev", 28, 4.0),  # full (non-distilled)
+    # Qwen-Image-2.1: 40 steps, no guidance. Before the generic qwen-image key.
+    ("qwen-image-2.1", 40, 1.0),
+    ("qwen-image-21", 40, 1.0),
+    ("qwen_image_21", 40, 1.0),
+    ("qwenimage21", 40, 1.0),
     ("qwen-image", 20, 4.0),
     ("z-image", 20, 4.0),
     # Lumina Image 2.0 card: 50 steps, guidance 4 (plus cfg_trunc_ratio 0.25, which the loader passes itself).
@@ -1145,6 +1191,8 @@ def family_prequant_repo(
     close enough that planning around it costs nothing, since the base_model_id validation
     refuses the artifact well after the plan was made. A base whose weights really differ belongs
     in ``prequant_excluded_bases``, which returns None here instead."""
+    if nvfp4_blocked(scheme):
+        return None
     # Both tables are keyed on lowercased upstream ids.
     base = canonical_base(base_repo).lower()
     if base:
@@ -1286,6 +1334,66 @@ def pipeline_class_requirement(pipeline_class: str) -> tuple[Optional[str], bool
 _UNRELEASED_MIN_DIFFUSERS = frozenset({"0.41.0"})
 
 
+_DIFFUSERS_MAIN_PIN = Path(__file__).resolve().parents[2] / "requirements" / "diffusers-main.txt"
+_DIFFUSERS_MAIN_COMMIT_RE = re.compile(
+    r"github\.com/(?P<repo>[^/\s]+/[^/@\s]+?)(?:\.git)?@(?P<commit>[0-9a-fA-F]{40})\b"
+)
+
+
+# Leads every refusal: a desktop install has no terminal, so pip spellings come second.
+DIFFUSERS_UPDATE_REMEDY = (
+    "Update Unsloth to install it (in the desktop app: Settings, Check for updates; from a "
+    "terminal: unsloth studio update), then restart Unsloth."
+)
+DIFFUSERS_MAIN_RESTART_REMEDY = (
+    "Restart Unsloth: on start it installs this pinned build by itself when it can reach "
+    "github.com. If that still fails, update Unsloth (in the desktop app: Settings, Check for "
+    "updates)."
+)
+
+
+def _diffusers_main_archive_remedy() -> str:
+    """A remedy line a reader can actually run, naming the commit this build wants.
+
+    The old text said "re-run the installer, or pip install -r diffusers-main.txt". Both resolve
+    the same ``git+https`` requirement, so both fail for the one cause that produces this refusal
+    most often, a host with no working git, and the reader is sent round the loop that put them
+    here. The installer now falls back to the zip for that case, so re-running is once again real
+    advice, and the zip is quoted beside it because it is the fix that needs no git and no
+    installer run at all.
+
+    Read out of the pin file rather than hardcoded, so the commit in the message cannot drift from
+    the commit that is installed. An unreadable or unrecognised pin file degrades to advice that is
+    still true, just less specific, because a refusal that says nothing is worse than one that
+    cannot name the SHA.
+    """
+    generic = (
+        f"{DIFFUSERS_MAIN_RESTART_REMEDY} On a pip or server install, re-run the Unsloth installer "
+        "(leaving UNSLOTH_DIFFUSERS_MAIN unset), which installs it from a zip archive when git is "
+        "missing."
+    )
+    try:
+        text = _DIFFUSERS_MAIN_PIN.read_text(encoding = "utf-8-sig")
+    except (OSError, ValueError):
+        return generic
+    for line in text.splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        found = _DIFFUSERS_MAIN_COMMIT_RE.search(stripped)
+        if found is None:
+            continue
+        url = (
+            f"https://github.com/{found.group('repo')}/archive/"
+            f"{found.group('commit').lower()}.zip"
+        )
+        return (
+            f"{generic} To install it by hand from a terminal with no git at all: "
+            f'pip install "diffusers @ {url}"'
+        )
+    return generic
+
+
 def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> str:
     """The refusal text: what is missing, what is installed, and a remedy this interpreter can
     actually carry out."""
@@ -1293,17 +1401,21 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
     if minimum is None:
         return (
             f"'{family_name}' needs a newer diffusers ({pipeline_class}); this environment has "
-            f"diffusers {installed}. Upgrade with: pip install -U diffusers."
+            f"diffusers {installed}. {DIFFUSERS_UPDATE_REMEDY} On a plain pip install: "
+            "pip install -U diffusers."
         )
     if minimum in _UNRELEASED_MIN_DIFFUSERS:
+        remedy = _diffusers_main_archive_remedy()
         return (
             f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}), which has not been "
             f"released yet; this environment has diffusers {installed}. Unsloth installs a pinned "
-            "build of diffusers main for this, so re-run the Unsloth installer (and leave "
-            "UNSLOTH_DIFFUSERS_MAIN unset), or install it directly with: pip install -r "
-            "studio/backend/requirements/diffusers-main.txt"
+            "build of diffusers main for this and that build is not here, which almost always "
+            "means the install had no working git (check with: git --version) or could not reach "
+            f"github.com. {remedy}"
         )
-    remedy = f"Upgrade with: pip install -U 'diffusers>={minimum}'."
+    remedy = (
+        f"{DIFFUSERS_UPDATE_REMEDY} On a plain pip install: pip install -U 'diffusers>={minimum}'."
+    )
     if needs_py310:
         remedy += (
             f" diffusers dropped Python 3.9 in {_DIFFUSERS_DROPPED_PY39}, so that release needs "
@@ -1396,7 +1508,8 @@ def assert_pipeline_class_available(
         if strict:
             raise ValueError(
                 f"'{family_name}' needs diffusers ({pipeline_class}), which this environment "
-                f"cannot import: {exc}. Install or repair it with: pip install -U diffusers."
+                f"cannot import: {exc}. {DIFFUSERS_UPDATE_REMEDY} On a plain pip install, repair it "
+                "with: pip install -U diffusers."
             ) from None
         return
 

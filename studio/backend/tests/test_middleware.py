@@ -266,6 +266,24 @@ class TestMaxBodyMiddleware:
         assert cap == upload_request_limit_bytes()  # DB-aware cap + multipart overhead
         assert cap > default_request_body_limit_bytes()  # not the plain default body cap
 
+    def test_library_uploads_are_capped_before_parsing(self, main_module):
+        from utils.upload_limits import (
+            LIBRARY_UPLOAD_MAX_BYTES,
+            default_request_body_limit_bytes,
+            upload_request_limit_bytes,
+        )
+
+        assert "/api/library" in main_module._BODY_PROTECTED_PREFIXES
+        for path in ("/api/library/uploads", "/api/library/uploads/"):
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+                upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
+            ), path
+        path = "/api/library/uploads/abc/text"
+        assert path not in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+        assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+            default_request_body_limit_bytes()
+        )
+
     def test_diffusion_dataset_json_subroutes_keep_default_cap(self, main_module):
         # The exact-path passthrough must NOT sweep in the JSON sub-routes under the same prefix: a prefix match would let a large
         # caption/import body bypass the default JSON cap and be buffered up to the far larger upload limit.
@@ -1452,3 +1470,24 @@ class TestRemoteAccessCORS:
         for published in (None, self.TUNNEL):
             app.state.cloudflare_url = published
             assert self._allowed(client, "https://evil.example") == "https://evil.example"
+
+
+def test_health_reports_the_default_for_a_settings_saved_endpoint(main_module, monkeypatch):
+    from starlette.requests import Request
+    import utils.hub_settings as hub_settings
+
+    local = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1)})
+    monkeypatch.setenv("HF_ENDPOINT", "https://hub.internal")
+    monkeypatch.setenv("HF_DATASETS_SERVER", "https://hub.internal")
+    monkeypatch.setattr(hub_settings, "_saved_only_endpoints", frozenset(), raising = False)
+    assert main_module._reportable_hf_endpoints(local) == {
+        "hf_endpoint": "https://hub.internal",
+        "hf_datasets_server": "https://hub.internal",
+    }
+    monkeypatch.setattr(
+        hub_settings, "_saved_only_endpoints", frozenset({"https://hub.internal"}), raising = False
+    )
+    assert main_module._reportable_hf_endpoints(local) == {
+        "hf_endpoint": "https://huggingface.co",
+        "hf_datasets_server": "https://datasets-server.huggingface.co",
+    }

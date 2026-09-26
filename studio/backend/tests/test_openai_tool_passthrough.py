@@ -96,6 +96,19 @@ _BLUE_PNG_B64 = (
 )
 
 
+# Wall-clock bound for the cancel-drain tests: sized for a loaded runner, only ever reached when something is genuinely
+# stuck. The worker starts on a thread-pool thread, so a start wait of 1.0s measured scheduling, not the route, and
+# failed as `assert False` on loaded Backend CI shards (on main 8849f481d, and again on #11644). #10008 raised it, but
+# its hunk landed on the tool twin of the test it named, which kept the 1.0s bound along with three others shaped
+# like it.
+_DRAIN_BUDGET_S = 30.0
+
+# How long each stub worker keeps running after it sees the cancel flag. A route that drains its worker waits this out
+# before it raises; one that skips the drain raises first, and `assert released.is_set()` catches it. Without it that
+# catch rests on the assertion running inside the worker's 5 ms poll, which a slow runner need not honour.
+_WORKER_LINGER_S = 0.3
+
+
 @pytest.fixture(autouse = True)
 def _reset_admission_queues():
     reset_llama_admission_queues()
@@ -5211,6 +5224,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -5244,12 +5258,14 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             assert await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
             pending = asyncio.create_task(iterator.__anext__())
-            assert await asyncio.to_thread(started.wait, 1.0)
+            assert await asyncio.to_thread(
+                started.wait, _DRAIN_BUDGET_S
+            ), "the worker never started"
 
             await asyncio.sleep(0)
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(pending, timeout = 1.0)
+                await asyncio.wait_for(pending, timeout = _DRAIN_BUDGET_S)
 
             assert released.is_set()
             [entry] = monitor.snapshot()
@@ -5419,6 +5435,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -5455,12 +5472,14 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             assert await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
             pending = asyncio.create_task(iterator.__anext__())
-            assert await asyncio.to_thread(started.wait, 1.0)
+            assert await asyncio.to_thread(
+                started.wait, _DRAIN_BUDGET_S
+            ), "the worker never started"
 
             await asyncio.sleep(0)
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(pending, timeout = 1.0)
+                await asyncio.wait_for(pending, timeout = _DRAIN_BUDGET_S)
 
             assert released.is_set()
             [entry] = monitor.snapshot()
@@ -6132,6 +6151,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -6167,11 +6187,11 @@ class TestGgufVisionToolRouting:
             # not on this code, and it went red once on a runner busy with the
             # rest of the backend suite. Failing here still takes seconds, and
             # the assertion is unchanged.
-            assert await asyncio.to_thread(started.wait, self._DRAIN_BUDGET_S)
+            assert await asyncio.to_thread(started.wait, _DRAIN_BUDGET_S)
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout = self._DRAIN_BUDGET_S)
+                await asyncio.wait_for(task, timeout = _DRAIN_BUDGET_S)
 
             # Waited on, not sampled. Cancelling the task unblocks the awaiting
             # coroutine; it does not join the worker, which is off polling
@@ -6179,7 +6199,7 @@ class TestGgufVisionToolRouting:
             # instant the await returns is a race that happens to be won on an
             # idle box, and it is the drain itself that matters, not whether it
             # had already finished by the time we looked.
-            assert await asyncio.to_thread(released.wait, self._DRAIN_BUDGET_S)
+            assert await asyncio.to_thread(released.wait, _DRAIN_BUDGET_S)
             assert get_llama_admission_queue("http://llama.tool.test").snapshot().active == 0
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
@@ -6288,11 +6308,6 @@ class TestGgufVisionToolRouting:
         assert json.loads(response.body)["choices"][0]["message"]["content"] == "reply"
         assert captured["perf_callback"] is None
 
-    # Wall-clock bound for the cancel drain. Only ever hit when something is
-    # genuinely stuck, so it is sized for a loaded runner rather than for the
-    # ~5ms this takes when it works.
-    _DRAIN_BUDGET_S = 30.0
-
     def test_non_streaming_gguf_cancel_drains_worker(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():
@@ -6304,6 +6319,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -6327,11 +6343,13 @@ class TestGgufVisionToolRouting:
             task = asyncio.create_task(
                 openai_chat_completions(payload, request = self._Request(), current_subject = "test")
             )
-            assert await asyncio.to_thread(started.wait, 1.0)
+            assert await asyncio.to_thread(
+                started.wait, _DRAIN_BUDGET_S
+            ), "the worker never started"
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout = 1.0)
+                await asyncio.wait_for(task, timeout = _DRAIN_BUDGET_S)
 
             assert released.is_set()
             [entry] = monitor.snapshot()
@@ -8477,11 +8495,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                         break
                     await asyncio.sleep(0.01)
                 body = body_holder["body"]
-                assert await asyncio.to_thread(body.started.wait, 1.0)
+                assert await asyncio.to_thread(
+                    body.started.wait, _DRAIN_BUDGET_S
+                ), "the worker never started"
 
                 pending.cancel()
                 with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(pending, timeout = 1.0)
+                    await asyncio.wait_for(pending, timeout = _DRAIN_BUDGET_S)
             finally:
                 aclose = getattr(iterator, "aclose", None)
                 if aclose is not None:

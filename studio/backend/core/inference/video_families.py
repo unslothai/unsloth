@@ -21,6 +21,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .diffusion_nvfp4_flag import nvfp4_blocked, without_nvfp4
+
 # The request model's ceiling on num_frames, declared HERE so the shape gate and the bound cannot drift: the gate's
 # refusal names the lattice point above the request, and suggesting one the request model would itself reject is a
 # dead end. VideoGenerateRequest imports this for its `le`.
@@ -100,6 +102,7 @@ class VideoFamily:
     # parameters), so 0.55 x 66.3 GB over-states it by 16 GB and a hard refusal turns away a load that fits. Measured
     # from Hub file metadata (2026-08-09): MiniMax-H3-FP8.pt 20,260,192,855 bytes, MiniMax-H3-INT8.pt 20,253,894,865.
     prequant_resident_gb: Optional[float] = None
+    prequant_resident_gb_by_scheme: tuple[tuple[str, float], ...] = field(default_factory = tuple)
     # Per-variant overrides as (base_repo, scheme, repo_id), keyed on the LOWERCASED upstream base id. A pre-quantized
     # checkpoint is baked from ONE base's weights and the loader refuses it for any other base, so a variant that ships
     # its own denoiser needs its own entry; a variant without one falls through to prequant_repos and, if that
@@ -249,6 +252,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        prequant_repos = (("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),),
+        prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.pt"),),
+        prequant_resident_gb_by_scheme = (("nvfp4", 2.9),),
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
         aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
         has_audio = False,
@@ -276,6 +282,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        prequant_repos = (("nvfp4", "unsloth/Wan2.2-T2V-A14B-NVFP4"),),
+        prequant_filenames = (
+            ("nvfp4", "Wan2.2-T2V-A14B-NVFP4.pt"),
+            ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"),
+        ),
+        # BOTH experts: the plan subtracts one denoiser term and this family builds two.
+        prequant_resident_gb_by_scheme = (("nvfp4", 16.2),),
         aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,
         # is_moe drives the dual-DiT optimisation layers; cfg2_kwarg names the pipeline kwarg for transformer_2's
@@ -306,6 +319,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
+        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.pt"),),
+        prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
         # No bare "hunyuanvideo" alias: it would also claim the incompatible 1.0 repos.
         aliases = ("hunyuanvideo-1-5", "hunyuanvideo1.5", "hunyuanvideo1-5", "hv15"),
         has_audio = False,
@@ -331,6 +347,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+        # RTN, not GPTQ: the 720p transformer is separately trained; 480p corrections do not apply.
+        prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
+        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.pt"),),
+        prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
         aliases = ("hunyuanvideo-1.5-diffusers-720p_t2v", "hv15-720p"),
         has_audio = False,
         guidance_via_guider = True,
@@ -422,6 +442,8 @@ def video_family_prequant_repo(
     the refusal path of a load request, and a table typo must not turn a legitimate pick into a
     500. A family object that predates these fields simply has no hosted checkpoint.
     """
+    if nvfp4_blocked(scheme):
+        return None
     base = _prequant_base_key(base_repo)
     if base:
         for entry in getattr(fam, "prequant_variant_repos", ()) or ():
@@ -437,6 +459,26 @@ def video_family_prequant_repo(
         if entry_scheme == scheme and repo_id:
             return repo_id
     return None
+
+
+def video_family_prequant_resident_gb(fam: VideoFamily, scheme: str) -> Optional[float]:
+    """The MEASURED resident size in decimal GB of this family's hosted ``scheme`` denoiser."""
+    if nvfp4_blocked(scheme):
+        return None
+    for entry in getattr(fam, "prequant_resident_gb_by_scheme", ()) or ():
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        entry_scheme, resident_gb = entry
+        if entry_scheme == scheme and resident_gb:
+            try:
+                return float(resident_gb)
+            except (TypeError, ValueError):  # a malformed row is "not measured", never a 500
+                continue
+    measured = getattr(fam, "prequant_resident_gb", None)
+    try:
+        return float(measured) if measured else None
+    except (TypeError, ValueError):
+        return None
 
 
 def video_family_prequant_task_specific(fam: VideoFamily, scheme: str, task: str) -> bool:
@@ -499,7 +541,7 @@ def video_family_prequant_schemes(fam: VideoFamily, task: Optional[str] = None) 
             schemes.append(entry[1])
     if task:
         schemes = [s for s in schemes if video_family_prequant_available(fam, s, task = task)]
-    return tuple(schemes)
+    return without_nvfp4(schemes)
 
 
 def snap_num_frames(fam: VideoFamily, num_frames: int) -> int:

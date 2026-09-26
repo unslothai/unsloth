@@ -2538,11 +2538,12 @@ def test_the_suffixed_arch_reaches_that_branch_at_all(stack, monkeypatch):
     assert _inferred_install_args(stack, monkeypatch, "gfx1151:xnack-")
 
 
-@pytest.mark.parametrize("arch", ["gfx1102:xnack-", "gfx1030:sramecc-"])
+@pytest.mark.parametrize("arch", ["gfx90a:sramecc+:xnack-", "gfx908:xnack-"])
 def test_an_arch_outside_the_pin_table_is_still_bounded(stack, monkeypatch, arch):
     """The suffix strip opens this branch for archs the pin table does not name, and the fallback
     was three bare package names: those hosts reached an arch-index install with no companion
-    bound at all, where every other arch-index install carries one."""
+    bound at all, where every other arch-index install carries one. gfx103X / gfx110X joined the
+    pin table with unslothai/unsloth#11814, so CDNA is what is left outside it."""
     assert _inferred_install_args(stack, monkeypatch, arch) == list(
         stack._ROCM_ARCH_INDEX_TORCH_PKG_SPEC
     )

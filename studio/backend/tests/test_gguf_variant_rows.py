@@ -1112,7 +1112,7 @@ def test_every_branch_derives_the_default_from_the_root_rows():
     assert service._default_variant_candidates(rows[:1]) == ["distilled/model-Q6_K.gguf"]
     # No branch may call pick_best_gguf on the raw filenames any more.
     source = inspect.getsource(service)
-    assert source.count("pick_best_gguf(_default_variant_candidates(") == 4
+    assert source.count("pick_best_gguf(_default_variant_candidates(") == 5
     assert "pick_best_gguf(filenames)" not in source
 
 
