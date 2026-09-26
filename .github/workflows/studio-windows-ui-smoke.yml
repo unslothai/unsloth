@@ -32,7 +32,12 @@ on:
       - '.github/actions/uv-cache-save/action.yml'
       - 'pyproject.toml'
       # The Playwright drivers the two lanes run.
-      - 'tests/studio/**'
+      # The files under tests/studio the lanes execute, not all of it (hundreds of guard
+      # tests and PowerShell units no step here runs). run-studio-ui-lane.sh and the
+      # browser scripts run tests/studio/playwright_*.py as plain python, whose only
+      # local import is _playwright_robust.py.
+      - 'tests/studio/playwright_*.py'
+      - 'tests/studio/_playwright_robust.py'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       # Reached by the installer this workflow already triggers on, so a commit touching
@@ -67,7 +72,12 @@ on:
       - '.github/actions/uv-cache-restore/action.yml'
       - '.github/actions/uv-cache-save/action.yml'
       - 'pyproject.toml'
-      - 'tests/studio/**'
+      # The files under tests/studio the lanes execute, not all of it (hundreds of guard
+      # tests and PowerShell units no step here runs). run-studio-ui-lane.sh and the
+      # browser scripts run tests/studio/playwright_*.py as plain python, whose only
+      # local import is _playwright_robust.py.
+      - 'tests/studio/playwright_*.py'
+      - 'tests/studio/_playwright_robust.py'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       - 'studio/nvidia_probe.py'

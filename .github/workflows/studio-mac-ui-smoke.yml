@@ -43,7 +43,13 @@ on:
       - 'install.sh'
       - 'pyproject.toml'
       # The Playwright drivers and studio_api_smoke.py the phases run.
-      - 'tests/studio/**'
+      # The files under tests/studio the jobs execute, not all of it (hundreds of guard
+      # tests and PowerShell units no step here runs). The lanes run
+      # tests/studio/playwright_*.py scripts as plain python, whose only local import is
+      # _playwright_robust.py, and the API step runs studio_api_smoke.py.
+      - 'tests/studio/playwright_*.py'
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/studio_api_smoke.py'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
@@ -94,7 +100,13 @@ on:
       - 'unsloth_cli/**'
       - 'install.sh'
       - 'pyproject.toml'
-      - 'tests/studio/**'
+      # The files under tests/studio the jobs execute, not all of it (hundreds of guard
+      # tests and PowerShell units no step here runs). The lanes run
+      # tests/studio/playwright_*.py scripts as plain python, whose only local import is
+      # _playwright_robust.py, and the API step runs studio_api_smoke.py.
+      - 'tests/studio/playwright_*.py'
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/studio_api_smoke.py'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'

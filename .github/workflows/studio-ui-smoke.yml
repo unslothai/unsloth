@@ -37,7 +37,19 @@ on:
       # The Playwright test files themselves -- a PR that ONLY edits
       # the test must still trigger UI CI. Kept as a directory glob, which
       # test_stt_model_search_locator_contract.py asserts.
-      - 'tests/studio/**'
+      # The files under tests/ the jobs execute, not all of tests/studio (hundreds of
+      # guard tests and PowerShell units no step here runs). Every lane runs
+      # tests/studio/playwright_*.py scripts as plain python, and their only local
+      # imports are _playwright_robust.py and other playwright_* modules (log_budget
+      # comes from studio/backend/tests, listed above). The pytest step runs
+      # test_stt_model_search_locator_contract.py from the repo root, which loads
+      # tests/conftest.py, the tests package and tests/_shared.
+      - 'tests/studio/playwright_*.py'
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/test_stt_model_search_locator_contract.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       # Reached by the installer this workflow already triggers on, so a commit touching
@@ -78,7 +90,19 @@ on:
       - 'unsloth_cli/**'
       - 'install.sh'
       - 'pyproject.toml'
-      - 'tests/studio/**'
+      # The files under tests/ the jobs execute, not all of tests/studio (hundreds of
+      # guard tests and PowerShell units no step here runs). Every lane runs
+      # tests/studio/playwright_*.py scripts as plain python, and their only local
+      # imports are _playwright_robust.py and other playwright_* modules (log_budget
+      # comes from studio/backend/tests, listed above). The pytest step runs
+      # test_stt_model_search_locator_contract.py from the repo root, which loads
+      # tests/conftest.py, the tests package and tests/_shared.
+      - 'tests/studio/playwright_*.py'
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/test_stt_model_search_locator_contract.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       - 'studio/nvidia_probe.py'
