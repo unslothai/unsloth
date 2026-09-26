@@ -110,3 +110,50 @@ def test_optout_env_gate_precedes_subprocess_install() -> None:
     assert (
         env_line < install_line
     ), "the auto-install opt-out must be evaluated before any package install runs"
+
+
+def test_a_metadata_free_checkout_is_probed_before_any_install() -> None:
+    """No metadata is not the same as not installed.
+
+    A source checkout on PYTHONPATH carries no distribution metadata, so
+    importlib.metadata.version raises PackageNotFoundError. _llm_compressor_version_is_supported
+    counts that as supported, and the clean export subprocess can import it, so falling straight
+    through to pip re-resolves destructively over a working checkout, which is the whole failure
+    this guard exists to prevent. The subprocess probe must decide, and it is only reached where
+    the in-process import has already failed.
+    """
+    fn = _get_function("install_llm_compressor")
+
+    handler = None
+    for node in ast.walk(fn):
+        if isinstance(node, ast.ExceptHandler) and isinstance(node.type, ast.Name):
+            if node.type.id.endswith("PNF") or "PackageNotFound" in node.type.id:
+                handler = node
+                break
+    assert handler is not None, "expected a PackageNotFoundError handler in install_llm_compressor"
+
+    probes = [
+        n
+        for n in ast.walk(handler)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_llm_compressor_imports_cleanly"
+    ]
+    assert probes, (
+        "a metadata-free install falls through to pip without asking the clean subprocess "
+        "whether the export could have imported it"
+    )
+    assert any(
+        isinstance(n, ast.Return) for n in ast.walk(handler)
+    ), "the probe's answer must be able to skip the install, or asking it changes nothing"
+
+    def _is_check_call(n: ast.AST) -> bool:
+        return (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "check_call"
+        )
+
+    install_line = _first_lineno(fn, _is_check_call)
+    assert install_line is not None, "expected a subprocess install in the function"
+    assert probes[0].lineno < install_line, "the probe must run before any package install"

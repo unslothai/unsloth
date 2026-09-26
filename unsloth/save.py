@@ -1596,12 +1596,315 @@ def _compressed_quantize_pythonpath():
     return pp or None
 
 
+def _llm_compressor_version_is_supported():
+    """Whether the INSTALLED llmcompressor is one _LLM_COMPRESSOR_SPEC would have installed.
+
+    An out-of-range version is what the spec exists to correct, so neither the metadata
+    short-circuit nor a successful in-process import may accept it.
+
+    Unknown counts as supported: no metadata but importable is a source checkout, and a
+    missing `packaging` says nothing about the install, while the alternative in both cases
+    is the destructive pip re-resolve this guard avoids.
+    """
+    try:
+        from importlib.metadata import version as _iv
+        installed = _iv("llmcompressor")
+    except Exception:
+        return True
+    try:
+        from packaging.requirements import Requirement
+        return Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(installed, prereleases = True)
+    except Exception:
+        return True
+
+
+# What the last probe actually imported, for an error message that can name it. A pip
+# install cannot fix a checkout shadowing an in-range wheel, so the export has to say which
+# module the subprocess resolved rather than report a failed install.
+_LLM_COMPRESSOR_PROBE_RESULT: dict = {"imported": None, "version": None, "location": None}
+
+# A sitecustomize, or any dependency the import pulls in, can print before the probe's
+# answer. Read positionally, that banner became the "version" and the real version moved into
+# "location", so an out-of-range shadow reported an unparseable one, which counts as unknown,
+# which counts as usable. One tagged JSON record keeps the answer distinguishable.
+_LLM_COMPRESSOR_PROBE_SENTINEL = "__UNSLOTH_LLM_COMPRESSOR_PROBE__"
+
+
+def _llm_compressor_imports_cleanly():
+    """Is llm-compressor usable in the conditions the compressed export actually runs in?
+
+    Two questions, and metadata answers neither. An in-process import failure cannot tell
+    Unsloth's transformers patches, harmless because the export quantizes in an unpatched
+    subprocess, from an incomplete distribution, which is what pip fixes. And metadata
+    reports a DISTRIBUTION's version, not the code that gets imported: a checkout earlier on
+    sys.path shadows an installed wheel, so a stale in-range wheel blesses it.
+
+    So ask the subprocess, and ask it what it imported. The probe is written to a file and
+    run as `sys.executable <file>` with sys.path[0] pinned to the runner's directory, which
+    is how the export launches; `-c` adds the cwd instead, which made the probe more
+    permissive than the thing it is evidence about.
+
+    Unknown answers (a timeout, a python that will not spawn, no version to read) count as
+    usable, since falling through triggers the destructive re-resolve this guard avoids.
+    """
+    # Cleared first: a caller tells "the probe said no" from "it could not answer" by these,
+    # and a previous run's values would answer for this one.
+    _LLM_COMPRESSOR_PROBE_RESULT.update(imported = None, version = None, location = None)
+    runner_dir = os.path.dirname(os.path.abspath(__file__))
+    probe = (
+        "import sys\n"
+        f"sys.path[0] = {runner_dir!r}\n"
+        "from llmcompressor import oneshot\n"
+        "from llmcompressor.modifiers.quantization import QuantizationModifier\n"
+        "import json, llmcompressor\n"
+        "record = {'version': getattr(llmcompressor, '__version__', '') or '',\n"
+        "          'location': getattr(llmcompressor, '__file__', '') or ''}\n"
+        "sys.stdout.write('\\n' + "
+        + repr(_LLM_COMPRESSOR_PROBE_SENTINEL)
+        + " + ' ' + json.dumps(record) + '\\n')\n"
+    )
+    import tempfile
+
+    try:
+        with tempfile.TemporaryDirectory() as probe_dir:
+            probe_path = os.path.join(probe_dir, "unsloth_llm_compressor_probe.py")
+            with open(probe_path, "w", encoding = "utf-8") as handle:
+                handle.write(probe)
+            completed = subprocess.run(
+                [sys.executable, probe_path],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                # The import pulls in torch and transformers on a cold cache. Paid once, on
+                # a path where the in-process import already failed and a long merge is next.
+                timeout = 600,
+            )
+    except Exception:
+        return True
+    _LLM_COMPRESSOR_PROBE_RESULT["imported"] = completed.returncode == 0
+    if completed.returncode != 0:
+        return False
+    # The version of the code the import RESOLVED, not of a same-named distribution
+    # elsewhere. Unreadable or unparseable is unknown, which stays usable.
+    reported = (completed.stdout or b"").decode("utf8", "replace")
+    version = location = ""
+    for line in reversed(reported.splitlines()):
+        line = line.strip()
+        if not line.startswith(_LLM_COMPRESSOR_PROBE_SENTINEL):
+            continue
+        try:
+            import json
+
+            record = json.loads(line[len(_LLM_COMPRESSOR_PROBE_SENTINEL) :].strip())
+            version = str(record.get("version") or "").strip()
+            location = str(record.get("location") or "").strip()
+        except Exception:
+            pass
+        break
+    _LLM_COMPRESSOR_PROBE_RESULT["version"] = version or None
+    _LLM_COMPRESSOR_PROBE_RESULT["location"] = location or None
+    if not version:
+        return True
+    try:
+        from packaging.requirements import Requirement
+        return Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(version, prereleases = True)
+    except Exception:
+        return True
+
+
+def _path_entry_provides_llm_compressor(entry):
+    """Would a fresh interpreter find an ``llmcompressor`` to import under *entry*?
+
+    Asked of the import machinery, not the filesystem: a path entry is not always a
+    directory, and a .zip or .egg is searched by the zipimporter, which a shape check missed.
+    A NAMESPACE match does not count -- llm-compressor is a regular package, and counting any
+    same-named empty folder would let one on PYTHONPATH veto a good wheel.
+    """
+    try:
+        from importlib.machinery import PathFinder
+        spec = PathFinder.find_spec("llmcompressor", [entry])
+    except Exception:
+        return False
+    if spec is None:
+        return False
+    return spec.loader is not None and spec.origin not in (None, "namespace")
+
+
+def _version_satisfies_llm_compressor_spec(version):
+    """Whether *version* is one the pin allows. Absent or unparseable is False.
+
+    Unknown is False here, unlike in the usability checks: this is what overrides
+    out-of-range METADATA, so it has to be evidence rather than an absence of doubt.
+    """
+    if not version:
+        return False
+    try:
+        from packaging.requirements import Requirement
+        return Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(str(version), prereleases = True)
+    except Exception:
+        return False
+
+
+def _llm_compressor_module_version_is_in_range(module):
+    """POSITIVE evidence from the module itself: a version it declares, inside the pin."""
+    return _version_satisfies_llm_compressor_spec(getattr(module, "__version__", None))
+
+
+def _llm_compressor_module_is_usable(module):
+    """Whether the module THIS process imported is the one the export will get, in range.
+
+    Two ways a successful in-process import is not evidence. The export launches its runner
+    BY FILE, so sys.path[0] is the runner's directory and the cwd is nowhere on the path: a
+    checkout importable here only through the cwd dies there, after the whole merge. And the
+    version that matters is the imported module's, since a checkout earlier on sys.path
+    shadows a same-named wheel.
+
+    Unknown counts as usable (no ``__file__``, no ``__version__``, an unparseable spec):
+    the alternative is the destructive pip re-resolve this guard exists to avoid.
+    """
+    location = getattr(module, "__file__", None)
+    if location:
+        try:
+            location = os.path.abspath(location)
+            # Only what a FRESH `sys.executable <runner>` would have. NOT this process's
+            # sys.path: a runtime insert is not inherited, and accepting one passed a checkout
+            # the export cannot import, failing after the whole merge.
+            runner_dir = os.path.dirname(os.path.abspath(__file__))
+            roots = [runner_dir]
+            # An EMPTY component is the cwd, which the child absolutizes in at that
+            # position (verified on 3.13 with a trailing separator, the ordinary way one
+            # appears), so dropping it hid a cwd checkout the child imports first. An empty
+            # PYTHONPATH adds nothing at all, which is a different thing.
+            pythonpath = os.environ.get("PYTHONPATH", "")
+            if pythonpath:
+                roots += [entry or os.getcwd() for entry in pythonpath.split(os.pathsep)]
+            import sysconfig
+
+            # In site.main()'s order: stdlib, USER site, then the system site directories.
+            # The user site coming first is the point -- a checkout dropped there is what the
+            # child imports ahead of the cached wheel, and appending it last let the scan
+            # below stop at that wheel. Only when the interpreter enables it.
+            for key in ("stdlib", "platstdlib"):
+                configured = sysconfig.get_paths().get(key)
+                if configured:
+                    roots.append(configured)
+            try:
+                import site
+                if site.ENABLE_USER_SITE:
+                    user_site = site.getusersitepackages()
+                    if isinstance(user_site, str):
+                        roots.append(user_site)
+            except Exception:
+                pass
+            for key in ("purelib", "platlib"):
+                configured = sysconfig.get_paths().get(key)
+                if configured:
+                    roots.append(configured)
+            try:
+                import site
+                roots += list(site.getsitepackages())
+            except Exception:
+                pass
+            # The path entry the module would have to sit DIRECTLY under, since import
+            # reaches a top-level package as a child of an entry, not as any descendant.
+            parent = os.path.dirname(location)
+            if os.path.basename(location).startswith("__init__."):
+                parent = os.path.dirname(parent)
+            # Reachable is not resolved: the in-range wheel this process cached loses to a
+            # checkout on PYTHONPATH, which a fresh child searches first. So the roots stay
+            # in the child's ORDER, and an entry it reaches BEFORE this module's own
+            # disqualifies it.
+            entries = []
+            for entry in roots:
+                try:
+                    entry = os.path.abspath(entry)
+                except Exception:
+                    continue
+                if entry not in entries:
+                    entries.append(entry)
+            if parent not in entries:
+                return False
+            for entry in entries:
+                if entry == parent:
+                    break
+                if _path_entry_provides_llm_compressor(entry):
+                    # The child reaches that one first, so this module is not what it gets.
+                    # Falls through to the probe, which asks the child itself.
+                    return False
+        except Exception:
+            return True
+    reported = getattr(module, "__version__", None)
+    if not reported:
+        return True
+    try:
+        from packaging.requirements import Requirement
+        return Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(str(reported), prereleases = True)
+    except Exception:
+        return True
+
+
 def install_llm_compressor():
     """Import llm-compressor, installing a version-pinned copy on first use for FP8/FP4 export and pinning the current torch + transformers so pip does not upgrade them. UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1 forbids the auto-install. Returns (oneshot, QuantizationModifier)."""
+    # Gated on the version, not just importability, or an out-of-range release that imports
+    # is accepted here and the pin is decorative. And on the module actually imported, not on
+    # metadata: an import only this process can perform says nothing about the subprocess
+    # that does the quantizing.
+    metadata_supported = _llm_compressor_version_is_supported()
     try:
+        import llmcompressor
         from llmcompressor import oneshot
         from llmcompressor.modifiers.quantization import QuantizationModifier
-        return oneshot, QuantizationModifier
+
+        # Metadata answers for a DISTRIBUTION; the export imports a MODULE. An in-range
+        # checkout shadowing an out-of-range wheel is usable, and gating on metadata alone
+        # sent it to the destructive re-resolve this guard avoids, or failed outright under
+        # the opt-out. Overriding metadata takes POSITIVE evidence: a version the module
+        # declares, inside the pin. Unknown is enough only where metadata agrees.
+        if _llm_compressor_module_is_usable(llmcompressor) and (
+            metadata_supported or _llm_compressor_module_version_is_in_range(llmcompressor)
+        ):
+            return oneshot, QuantizationModifier
+    except Exception:
+        pass
+
+    # Installed but not importable in THIS process is not a reason to reinstall: the import can
+    # fail under Unsloth's transformers patches, and the compressed export quantizes in an
+    # isolated subprocess that re-imports cleanly. Reinstalling the version-capped, torch- and
+    # transformers-pinned spec makes pip backtrack destructively (numpy<2 built from source, and
+    # the export then fails), so only fall through to pip when it is genuinely absent.
+    try:
+        from importlib.metadata import version as _iv, PackageNotFoundError as _PNF
+        try:
+            _iv("llmcompressor")
+            # The same override for a checkout the in-process import cannot perform: the
+            # probe reports the version it RESOLVED, checked here rather than trusted.
+            probe_ok = _llm_compressor_imports_cleanly()
+            probe_named_a_version = _LLM_COMPRESSOR_PROBE_RESULT.get(
+                "imported"
+            ) is True and _version_satisfies_llm_compressor_spec(
+                _LLM_COMPRESSOR_PROBE_RESULT.get("version")
+            )
+            if probe_ok and (metadata_supported or probe_named_a_version):
+                # Present, supported, and importable in the same conditions the export runs
+                # under. The compressed-export subprocess performs the real import; the caller
+                # only uses this to trigger the install and fail fast, so returning None here
+                # is safe.
+                return None, None
+        except _PNF:
+            # No metadata is not the same as not installed: a source checkout on PYTHONPATH
+            # has none, _llm_compressor_version_is_supported counts unknown as supported, and
+            # if it also failed the in-process import above (Unsloth's transformers patches)
+            # pip would re-resolve destructively over a checkout the export could have used.
+            # The clean subprocess is the only thing that can tell the two apart, and it is
+            # asked only here, where the in-process import has already failed.
+            # A CONCLUSIVE yes, not merely "not a no": with no metadata there is no
+            # evidence a distribution exists at all, and the probe answers True for its own
+            # failures (a timeout, a python that will not spawn, no temp file), so an absent
+            # package skipped the install and failed in the runner after the whole merge.
+            if (
+                _llm_compressor_imports_cleanly()
+                and _LLM_COMPRESSOR_PROBE_RESULT.get("imported") is True
+            ):
+                return None, None
     except Exception:
         pass
 
@@ -1677,10 +1980,44 @@ def install_llm_compressor():
                 pass
 
     importlib.invalidate_caches()
+    # invalidate_caches only clears the FINDERS: a module already in sys.modules is returned
+    # untouched, so an out-of-range llmcompressor imported earlier in this process survived
+    # the install and the import below handed back the symbols the pin excludes. Dropped
+    # after the install, so the re-import goes to disk.
+    for name in [n for n in sys.modules if n == "llmcompressor" or n.startswith("llmcompressor.")]:
+        sys.modules.pop(name, None)
+    # pip leaves an already-satisfied requirement alone, and metadata is what satisfies it,
+    # so an out-of-range checkout shadowing an in-range wheel survives the install and the
+    # export resolves it again. Verified, and named in the error: no reinstall fixes a
+    # shadow.
+    if not _llm_compressor_imports_cleanly() and _LLM_COMPRESSOR_PROBE_RESULT.get("imported"):
+        # Imported and still not allowed: a shadow, not a failed install, which is below.
+        shadow = _LLM_COMPRESSOR_PROBE_RESULT
+        raise RuntimeError(
+            "Unsloth: llm-compressor is installed, but the copy this Python actually "
+            f"imports is {shadow.get('version') or 'an unknown version'} at "
+            f"{shadow.get('location') or 'an unknown location'}, which "
+            f"{_LLM_COMPRESSOR_SPEC} does not allow. It comes earlier on sys.path than the "
+            "installed distribution, so reinstalling cannot replace it: remove it from "
+            "PYTHONPATH (or from the current directory) and try again."
+        )
     try:
         from llmcompressor import oneshot
         from llmcompressor.modifiers.quantization import QuantizationModifier
     except Exception as e:
+        # Same two causes as before the install, told apart the same way. A good install can
+        # still fail to import HERE, since the patches are in this process and not in the
+        # subprocess that quantizes, and raising would kill an export about to work.
+        #
+        # A CONCLUSIVE yes, like the metadata-free path above: the probe answers True for its
+        # OWN failures (a timeout, a python that will not spawn), and taking that for a
+        # working install sent the export into the whole merge before the same subprocess
+        # failed or hung again. Unanswerable keeps the import error we already have.
+        if (
+            _llm_compressor_imports_cleanly()
+            and _LLM_COMPRESSOR_PROBE_RESULT.get("imported") is True
+        ):
+            return None, None
         raise RuntimeError(
             "Unsloth: llm-compressor was installed but could not be imported. "
             "Please restart your Python session and try again.\n"
