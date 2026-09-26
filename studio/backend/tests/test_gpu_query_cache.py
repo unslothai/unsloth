@@ -6,11 +6,11 @@ Driven by a real executable named ``nvidia-smi`` on PATH whose answers, latency 
 status each test controls, so the child-process, timeout and parsing paths all run for real.
 The properties pinned here:
 
-* concurrent identical queries start one child;
-* static, display and decision-critical reads each keep their own TTL;
-* a Studio load/unload/train invalidation forces the next fit check to read afresh;
+* concurrent identical static or display queries start one child;
+* static and display reads keep their own TTL; decision-critical reads have none;
+* a Studio load/unload/train invalidation forces the next display read to fetch afresh;
 * a slow CLI holds a caller for its own timeout, not for the child's lifetime;
-* a fit check never gets an old reading, only a new CLI or NVML one;
+* a fit check never gets a cached or shared reading, only its own new one;
 * failures and a missing CLI are passed through uncached, as before.
 """
 
@@ -169,13 +169,14 @@ def test_classification():
 # ── Coalescing ────────────────────────────────────────────────────────────────
 
 
-def test_concurrent_identical_queries_start_one_child(smi):
+def test_concurrent_identical_display_queries_start_one_child(smi):
     smi.set(delay = 0.6)
     results, errors = [], []
 
     def worker():
         try:
-            results.append(nvidia.get_visible_gpu_utilization([0, 1]))
+            with gpu_query.display_reads():
+                results.append(nvidia.get_visible_gpu_utilization([0, 1]))
         except Exception as e:  # pragma: no cover - surfaced below
             errors.append(e)
 
@@ -192,6 +193,17 @@ def test_concurrent_identical_queries_start_one_child(smi):
     assert gpu_query.stats()["coalesced"] >= 1
 
 
+def test_concurrent_fit_checks_each_run_the_cli(smi, llama_probe):
+    """A fit check never shares a reading: each one's sample is taken after it began."""
+    smi.set(delay = 0.3)
+    threads = [threading.Thread(target = llama_probe) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert smi.calls("memory.free") == 4
+
+
 def test_different_queries_are_not_merged(smi):
     nvidia.get_visible_gpu_utilization([0, 1])
     nvidia.get_primary_gpu_utilization()
@@ -201,17 +213,12 @@ def test_different_queries_are_not_merged(smi):
 # ── TTL per category ──────────────────────────────────────────────────────────
 
 
-def test_critical_reads_expire_after_their_ttl(smi, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_GPU_QUERY_CRITICAL_TTL", "0.3")
-    first = _free_by_index(nvidia.get_visible_gpu_utilization([0, 1]))
-    smi.set_free(1000, 1000)
-    # Inside the TTL: one child, same answer.
-    assert _free_by_index(nvidia.get_visible_gpu_utilization([0, 1])) == first
-    assert smi.calls("--query-gpu") == 1
-    time.sleep(0.4)
-    after = _free_by_index(nvidia.get_visible_gpu_utilization([0, 1]))
-    assert after == {0: round(1000 / 1024, 2), 1: round(1000 / 1024, 2)}
-    assert smi.calls("--query-gpu") == 2
+def test_fit_checks_always_read_afresh(smi, llama_probe):
+    """Another process's allocation raises no Studio event, so the next fit check must see it."""
+    assert llama_probe() == [(0, 180000, 183359), (1, 170000, 183359)]
+    smi.set_free(1000, 1000)  # another process took nearly all of both GPUs, no invalidation
+    assert llama_probe() == [(0, 1000, 183359), (1, 1000, 183359)]
+    assert smi.calls("memory.free") == 2
 
 
 def test_display_reads_are_served_stale_while_one_child_refreshes(smi, monkeypatch):
@@ -236,13 +243,11 @@ def test_display_reads_are_served_stale_while_one_child_refreshes(smi, monkeypat
 
 
 def test_display_ttl_does_not_leak_into_fit_checks(smi, monkeypatch):
-    """A display reading a few seconds old must never answer a critical read."""
+    """A cached display reading must never answer a critical read."""
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_DISPLAY_TTL", "60")
-    monkeypatch.setenv("UNSLOTH_GPU_QUERY_CRITICAL_TTL", "0.2")
     with gpu_query.display_reads():
         nvidia.get_visible_gpu_utilization([0, 1])
     smi.set_free(512, 512)
-    time.sleep(0.3)
     fresh = _free_by_index(nvidia.get_visible_gpu_utilization([0, 1]))
     assert fresh == {0: 0.5, 1: 0.5}
 
@@ -272,21 +277,37 @@ def test_static_inventory_is_cached_until_redetection(smi):
     assert smi.calls("memory.total") == 2
 
 
+def test_a_static_read_after_redetection_does_not_join_an_older_child(smi):
+    smi.set(delay = 0.6)
+    first = threading.Thread(target = nvidia.get_physical_gpu_count)
+    first.start()
+    time.sleep(0.2)
+    smi.state["gpus"] = smi.state["gpus"][:1]  # a GPU went away; re-detection follows
+    smi.save()
+    gpu_query.invalidate_static("redetect")
+    assert nvidia.get_physical_gpu_count() == 1
+    first.join(5)
+    assert smi.calls("-L") == 2
+
+
 # ── Invalidation on Studio's own load / unload / training ─────────────────────
 
 
-def test_fit_check_after_a_load_reads_afresh_inside_the_ttl(smi, llama_probe, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_GPU_QUERY_CRITICAL_TTL", "3600")
-    assert llama_probe() == [(0, 180000, 183359), (1, 170000, 183359)]
+def test_display_after_a_load_reads_afresh_inside_the_ttl(smi, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GPU_QUERY_DISPLAY_TTL", "3600")
+    with gpu_query.display_reads():
+        nvidia.get_visible_gpu_utilization([0, 1])
 
     @gpu_memory_events.invalidates_gpu_memory("test load")
     def load_model():
-        smi.set_free(100, 100)  # the model now occupies the cards
+        smi.set_free(1024, 1024)  # the model now occupies the cards
 
     load_model()
-    # Well inside the TTL, but the load invalidated it: the fit check sees the new low.
-    assert llama_probe() == [(0, 100, 183359), (1, 100, 183359)]
-    assert smi.calls("memory.free") == 2
+    # Well inside the TTL, but the load invalidated it: the panel shows the new low at once.
+    with gpu_query.display_reads():
+        after = _free_by_index(nvidia.get_visible_gpu_utilization([0, 1]))
+    assert after == {0: 1.0, 1: 1.0}
+    assert smi.calls("--query-gpu") == 2
 
 
 def test_studio_load_unload_and_training_methods_invalidate():
@@ -336,15 +357,20 @@ def test_invalidation_happens_even_when_the_load_fails():
 
 
 def test_a_child_started_before_an_invalidation_is_not_joined(smi, llama_probe):
-    """A fit check arriving after a load must not share a CLI call that began before it."""
+    """A display read arriving after a load must not share a CLI call that began before it."""
     smi.set(delay = 0.5)
     first_result = []
-    t = threading.Thread(target = lambda: first_result.append(llama_probe()))
+
+    def display_probe():
+        with gpu_query.display_reads():
+            return llama_probe()
+
+    t = threading.Thread(target = lambda: first_result.append(display_probe()))
     t.start()
     time.sleep(0.15)
     smi.set_free(64, 64)
     gpu_memory_events.invalidate_gpu_memory("load")
-    second = llama_probe()
+    second = display_probe()
     t.join(5)
     assert first_result == [[(0, 180000, 183359), (1, 170000, 183359)]]
     assert second == [(0, 64, 183359), (1, 64, 183359)]
@@ -358,19 +384,15 @@ def test_fresh_reads_always_run_the_cli(smi):
     assert smi.calls("--query-gpu") == 3
 
 
-def test_fresh_reads_give_up_early_on_a_driver_known_to_be_slow(smi, monkeypatch):
-    """A settle loop must not sit out the full timeout on every probe once the CLI has
-    already been seen to hang; it gets the TimeoutExpired and its own fallback runs."""
-    smi.set(delay = 6.0)
+def test_a_fit_check_waits_its_whole_timeout_on_a_slow_driver(smi):
+    """A driver that answers slowly must still be heard, as before, even after a timeout."""
+    smi.set(delay = 1.5)
     argv = ["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"]
-    with gpu_query.fresh_reads():
-        with pytest.raises(subprocess.TimeoutExpired):
-            gpu_query.run_nvidia_smi(argv, timeout = 0.5, capture_output = True, text = True)
-        assert gpu_query.driver_slow()
-        t0 = time.monotonic()
-        with pytest.raises(subprocess.TimeoutExpired):
-            gpu_query.run_nvidia_smi(argv, timeout = 5, capture_output = True, text = True)
-        assert time.monotonic() - t0 < 2.0
+    with pytest.raises(subprocess.TimeoutExpired):
+        gpu_query.run_nvidia_smi(argv, timeout = 0.5, capture_output = True, text = True)
+    assert gpu_query.driver_slow()
+    out = gpu_query.run_nvidia_smi(argv, timeout = 5, capture_output = True, text = True)
+    assert out.stdout.split() == ["0,", "180000", "1,", "170000"]
 
 
 # ── Slow / hung nvidia-smi ────────────────────────────────────────────────────
@@ -411,12 +433,12 @@ def test_a_child_the_kernel_cannot_reap_does_not_hold_the_caller(monkeypatch):
     for _ in range(2):
         t0 = time.monotonic()
         out = nvidia.get_visible_gpu_utilization([0, 1])
-        # The caller's own "unavailable" answer, as before, after its 5 s timeout rather
-        # than after the 12 s the stuck child takes to be reaped.
+        # The caller's own "unavailable" answer, as before, after its 5 s timeout (plus the
+        # 1 s reaping grace) rather than after the 12 s the stuck child takes to be reaped.
         assert out["available"] is False
-        assert time.monotonic() - t0 < 6.5
-    # The second caller neither started another child behind the stuck one nor took its answer.
-    assert len(calls) == 1
+        assert time.monotonic() - t0 < 7.0
+    # A fit check never shares a child, so each ran its own, as before.
+    assert len(calls) == 2
     gpu_query.reset()
 
 
@@ -437,7 +459,6 @@ def test_slow_cli_answers_a_display_read_from_the_last_good_value(smi, monkeypat
 
 def test_slow_cli_never_answers_a_fit_check_from_an_old_reading(smi, llama_probe, monkeypatch):
     """Another process can allocate between readings, so no earlier sample may stand in."""
-    monkeypatch.setenv("UNSLOTH_GPU_QUERY_CRITICAL_TTL", "0")
     monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 4.0)
     assert llama_probe() == [(0, 180000, 183359), (1, 170000, 183359)]
     smi.set_free(1000, 1000)  # another process took nearly all of both GPUs
@@ -448,31 +469,24 @@ def test_slow_cli_never_answers_a_fit_check_from_an_old_reading(smi, llama_probe
     assert gpu_query.stats()["stale_served"] == 0
 
 
-def test_a_fit_check_does_not_join_an_old_child(smi, monkeypatch):
-    """On a slow driver an in-flight child may describe memory from seconds ago: a fit
-    check neither takes its answer nor starts another child behind it."""
+def test_a_fit_check_does_not_join_an_older_child(smi, monkeypatch):
+    """On a slow driver an in-flight child may describe memory from seconds ago."""
     monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 4.0)
     smi.set(delay = 3.0)
     argv = ["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"]
     kw = dict(timeout = 5, capture_output = True, text = True)
     first = threading.Thread(target = lambda: gpu_query.run_nvidia_smi(argv, **kw))
     first.start()
-    time.sleep(1.5)
-    t0 = time.monotonic()
-    with pytest.raises(subprocess.TimeoutExpired):
-        gpu_query.run_nvidia_smi(argv, **kw)
-    assert time.monotonic() - t0 < 0.5
-    # With NVML available the fit check gets a new reading from it instead.
-    nvml = [{"index": i, "memory_total_mib": 183359, "memory_free_mib": 1000} for i in (0, 1)]
-    monkeypatch.setattr(gpu_query, "_nvml_rows", lambda timeout: nvml)
+    time.sleep(0.5)
+    smi.set(delay = 0)
+    smi.set_free(1000, 1000)
     out = gpu_query.run_nvidia_smi(argv, **kw)
     assert out.stdout.split() == ["0,", "1000", "1,", "1000"]
     first.join()
-    assert smi.calls("--query-gpu=index,memory.free") == 1
+    assert smi.calls("--query-gpu=index,memory.free") == 2
 
 
 def test_no_stale_fit_answer_across_a_load(smi, llama_probe, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_GPU_QUERY_CRITICAL_TTL", "0")
     monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 4.0)
     llama_probe()
     gpu_memory_events.invalidate_gpu_memory("load")
@@ -482,37 +496,15 @@ def test_no_stale_fit_answer_across_a_load(smi, llama_probe, monkeypatch):
     assert llama_probe() == []
 
 
-def test_slow_cli_falls_back_to_nvml_with_used_never_understated(smi, monkeypatch):
+def test_a_hung_cli_leaves_llama_cpp_its_own_mig_aware_fallback(smi, llama_probe, monkeypatch):
+    """The CLI timing out must reach llama.cpp's NVML branch, which knows MIG slices and
+    CUDA_VISIBLE_DEVICES, exactly as before; nothing may answer in its place."""
     monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 4.0)
-    monkeypatch.setattr(
-        gpu_query,
-        "_nvml_rows",
-        lambda timeout: [
-            {
-                "index": "0",
-                "uuid": "GPU-aaaa",
-                "name": "NVIDIA B200",
-                "memory_total_mib": "183359",
-                "memory_free_mib": "50000",
-            },
-            {
-                "index": "1",
-                "uuid": "GPU-bbbb",
-                "name": "NVIDIA B200",
-                "memory_total_mib": "183359",
-                "memory_free_mib": "60000",
-            },
-        ],
-    )
+    slice_rows = [(0, 5000, 10240)]
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory_nvml", staticmethod(lambda: slice_rows))
     smi.set(delay = 12.0)
     monkeypatch.setattr(gpu_query, "run_nvidia_smi", _with_timeout(gpu_query.run_nvidia_smi, 0.5))
-    out = nvidia.get_visible_gpu_utilization([0, 1])
-    assert out["available"] is True
-    used = {d["index"]: d["vram_used_gb"] for d in out["devices"]}
-    assert used == {0: round(133359 / 1024, 2), 1: round(123359 / 1024, 2)}
-    # Fields NVML cannot answer come back as unknown, not zero.
-    assert out["devices"][0]["gpu_utilization_pct"] is None
-    assert gpu_query.stats()["nvml_served"] == 1
+    assert llama_probe() == slice_rows
 
 
 def _with_timeout(fn, timeout):

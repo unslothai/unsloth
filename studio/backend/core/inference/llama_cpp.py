@@ -13230,9 +13230,8 @@ class LlamaCppBackend:
         try:
             from utils.hardware import gpu_query
 
-            # Decision-critical (placement / fit): at most ~1 s old and never reused across
-            # a Studio load or unload. When the CLI is hung the helper answers from a fresh
-            # NVML read (the same numbers the NVML branch below would get) or raises as before.
+            # Decision-critical (placement / fit): always a new reading, never a cached one.
+            # When the CLI is hung it raises as before, so the MIG-aware NVML branch below runs.
             result = gpu_query.run_nvidia_smi(
                 [
                     "nvidia-smi",
