@@ -2456,13 +2456,11 @@ class FastLlamaModel:
         user_config = kwargs.pop("config", None)
         block_swap_layers = kwargs.pop("block_swap_layers", 0)
         if block_swap_layers and kwargs.get("state_dict") is not None:
-            # The host tail is read from the checkpoint files, not from a caller state_dict.
             raise ValueError(
                 "Unsloth: from_pretrained(block_swap_layers = ...) does not take a state_dict; "
                 "save it as a safetensors checkpoint and load that."
             )
         if block_swap_layers and kwargs.get("quantization_config") is not None:
-            # The host tail is quantized from load_in_4bit alone and would ignore this config.
             raise ValueError(
                 "Unsloth: from_pretrained(block_swap_layers = ...) does not take a quantization_config; "
                 "pass load_in_4bit = True instead."
@@ -2470,7 +2468,6 @@ class FastLlamaModel:
         if block_swap_layers and (
             kwargs.get("gguf_file") or kwargs.get("use_safetensors") is False
         ):
-            # The host tail is read from safetensors; refuse before any download or load.
             raise ValueError(
                 "Unsloth: from_pretrained(block_swap_layers = ...) needs a safetensors checkpoint; "
                 "it does not support gguf_file or use_safetensors = False."
