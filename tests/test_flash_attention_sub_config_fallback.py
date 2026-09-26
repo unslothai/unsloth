@@ -107,11 +107,11 @@ def test_without_the_mapping_form_the_global_fallback_suits_every_tower(
 def test_encoder_decoder_towers_are_scoped_by_their_declared_names(monkeypatch):
     # Donut: flash-capable VisionEncoderDecoderModel over a DonutSwin encoder with neither flash nor SDPA.
     _flash_available(monkeypatch)
-    from transformers import DonutSwinConfig, MBartConfig, VisionEncoderDecoderConfig
+    from transformers import DonutSwinConfig, GPT2Config, VisionEncoderDecoderConfig
     from transformers import VisionEncoderDecoderModel
 
     config = VisionEncoderDecoderConfig.from_encoder_decoder_configs(
-        DonutSwinConfig(depths = [1, 1], num_heads = [2, 4]), MBartConfig(decoder_layers = 1)
+        DonutSwinConfig(depths = [1, 1], num_heads = [2, 4]), GPT2Config(n_layer = 1)
     )
     impl = _utils.resolve_attention_implementation(
         VisionEncoderDecoderModel, config, supports_sdpa = True
