@@ -66,6 +66,8 @@ export interface SelectedModelView {
   isPartial?: boolean;
   partialTransport?: string | null;
   partialResumable?: boolean;
+  /** Holds only a GGUF load's borrowed companions: deletable, but neither on device nor partial. */
+  companionPrefetch?: boolean;
   capabilities: Capability[];
   license: string | null;
   pipelineTag?: string;

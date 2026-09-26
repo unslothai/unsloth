@@ -213,6 +213,7 @@ import {
   loadVideoModel,
   unloadVideoModel,
 } from "./api";
+import { stopButtonLabel } from "@/features/images/lib/generation-stop";
 import { type Playback, fetchWithFreshLink, playWithMutedFallback, readPlayback } from "./viewer";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
 
@@ -1040,6 +1041,11 @@ function VideoGenerator({
   const [canReapply, setCanReapply] = useState(false);
 
   const [busy, setBusy] = useState<Busy>(null);
+  const [stopping, setStopping] = useState(false);
+  // A run ends via several paths (poll, refusal, reload): clear on any.
+  useEffect(() => {
+    if (busy !== "generating") setStopping(false);
+  }, [busy]);
   const [genStep, setGenStep] = useState<VideoGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // visibilitychange handler active while a generation poll runs: background tabs clamp
@@ -3326,9 +3332,12 @@ function VideoGenerator({
   }, [handleCancelLoad]);
 
   const handleCancelGenerate = useCallback(async () => {
+    setStopping(true);
     try {
-      await cancelVideoGeneration();
+      const { cancelled } = await cancelVideoGeneration();
+      if (!cancelled) setStopping(false);
     } catch {
+      setStopping(false);
       // The generation may have already finished; the poll/finally clears the UI.
     }
   }, []);
@@ -4295,7 +4304,7 @@ function VideoGenerator({
                 onClick={handleCancelGenerate}
               >
                 <Spinner className="mr-2 size-4" />
-                Cancel
+                {stopButtonLabel({ stopping, done: null, count: 1, idle: "Cancel" })}
               </Button>
             ) : (
               <Button

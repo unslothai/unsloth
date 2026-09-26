@@ -196,6 +196,13 @@ def _strix_needs_amd_arch_index(ver: tuple[int, int]) -> bool:
     return key is None or key < _ROCM_ARCH_INDEX_FLOOR
 
 
+# RDNA 4 below 7.13 reroutes to AMD's per-arch index (TheRock #5284); gfx120X-all is cp310+ only.
+_AMD_ARCH_INDEX_FLOOR_GFX: frozenset[str] = frozenset(
+    {"gfx1151", "gfx1150", "gfx1152"}
+    | ({"gfx1200", "gfx1201"} if sys.version_info >= (3, 10) else set())
+)
+
+
 # MI50 / Radeon VII (gfx906, Vega 20): rocm6.4+/7.x wheels bundle ROCm libraries
 # whose Tensile kernels dropped gfx906 (rocBLAS "TensileLibrary.dat ... not read
 # for gfx906", ROCm/TheRock#1844), failing at the first BLAS call. The rocm6.3
@@ -5584,13 +5591,13 @@ def _rocm_compat_reroute_pending(
     """Whether a compatibility reroute _ensure_rocm_torch performs has not been applied yet.
 
     Neither reroute is about missing kernels, so neither is visible to the wheel-family
-    question: Strix wants AMD's 7.13 build over any generic one below the floor, and gfx906
+    question: Strix / RDNA 4 want AMD's 7.13 build over any generic one below the floor, gfx906
     wants the last tag whose BLAS still carries it. Both compare against what is installed,
     so a host already on the right wheels keeps the fast path.
     """
     if not runtime_gfx:
         return False
-    if runtime_gfx in _HSA_SPOOFABLE_PHYSICAL_GFX and _strix_needs_amd_arch_index(ver):
+    if runtime_gfx in _AMD_ARCH_INDEX_FLOOR_GFX and _strix_needs_amd_arch_index(ver):
         return not _already_on_amd_arch_leaf(_GFX_TO_AMD_INDEX_ARCH.get(runtime_gfx), installed_ver)
     if _runtime_target_is_gfx906() and _gfx906_needs_legacy_index(ver):
         return _GFX906_LEGACY_TAG not in installed_ver
@@ -5953,8 +5960,7 @@ def _ensure_rocm_torch() -> None:
                 f"(studio/ROCM_RDNA2_APU.md) -- not installing ROCm torch for it.\n"
             )
             return
-        _strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
-        # Only the Strix reroute has a ROCm-version floor.
+        _strix_gfx = _AMD_ARCH_INDEX_FLOOR_GFX
         _detected_strix = (
             _strix_gfx.intersection(gfx_codes) if _strix_needs_amd_arch_index(ver) else set()
         )
@@ -5981,12 +5987,12 @@ def _ensure_rocm_torch() -> None:
                     "torchaudio>=2.11.0,<2.12.0",
                 )
                 _safe_print(
-                    f"   {_selected_gfx} (AMD Strix) is the runtime target with ROCm "
+                    f"   {_selected_gfx} is the runtime target with ROCm "
                     f"{ver[0]}.{ver[1]}.\n"
                     f"   Routing torch install to AMD's arch-specific index\n"
                     f"   ({_strip_index_url_credentials(_arch_index_url)}) which serves torch\n"
-                    f"   2.11.0+rocm7.13.0 with AMD's gfx1150/gfx1151 fixes (more reliable than\n"
-                    f"   the generic pytorch.org rocm7.2 index on ROCm 7.3+ hosts).\n"
+                    f"   2.11.0+rocm7.13.0 with AMD's fixes for this GPU (the generic pytorch.org\n"
+                    f"   wheels below 7.13 lack them).\n"
                 )
                 # Only on this branch: these wheels carry _selected_gfx kernels, so
                 # the runtime must stop reporting the spoofed arch or they have no
@@ -5997,8 +6003,8 @@ def _ensure_rocm_torch() -> None:
             else:
                 _gfx_str = ", ".join(sorted(_detected_strix))
                 _safe_print(
-                    f"   Strix GPU ({_gfx_str}) present but HIP_VISIBLE_DEVICES "
-                    f"selects a non-Strix runtime target ({_runtime_gfx});\n"
+                    f"   AMD per-gfx GPU ({_gfx_str}) present but HIP_VISIBLE_DEVICES "
+                    f"selects another runtime target ({_runtime_gfx});\n"
                     f"   skipping AMD per-gfx index override.\n"
                 )
 
