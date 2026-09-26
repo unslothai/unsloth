@@ -1163,7 +1163,6 @@ class TestEnsureRocmTorch:
 
     @pytest.mark.parametrize("gfx", ("gfx1200", "gfx1201"))
     def test_rocm_714_rdna4_routes_to_amd_arch_index(self, gfx):
-        """RDNA 4 on the rocm7.2 cap keeps the null _grouped_mm kernel; use AMD gfx120X-all."""
         mock_pip, _ = run_ensure_rocm_torch(
             "2.11.0+rocm7.2|7.14.60850|",
             _has_rocm_gpu = True,
@@ -2072,7 +2071,6 @@ class TestGfx1102Rocm64Floor:
         pip.assert_not_called()
 
     def test_rdna4_generic_64_wheel_moves_to_amd_arch_index(self, monkeypatch):
-        """RDNA 4 on a generic wheel below 7.13 lacks the _grouped_mm fix, so it moves."""
         pip = self._ensure_for_gfx(
             "gfx1200",
             monkeypatch,
@@ -2494,7 +2492,6 @@ class TestGfx1102Rocm64Floor:
             ("2.11.0+rocm7.2", "true", True),
             ("2.9.1+rocm6.4", "true", True),
             ("2.11.0+rocm7.13.0", "true", False),
-            # controls: not routed, so above the 6.4 floor it stays
             ("2.11.0+rocm7.2", "false", False),
         ),
     )
@@ -2513,7 +2510,6 @@ class TestGfx1102Rocm64Floor:
             # A 7.13 wheel for another family (a gfx1151 venv reused on RDNA 4) has no kernels.
             ("gfx1151", "gfx120x-all", True),
             ("gfx120X-all", "gfx1151", True),
-            # controls: the routed family, or an unreadable one, is left alone
             ("gfx120X-all", "gfx120x-all", False),
             ("gfx1151", "gfx1151", False),
             ("", "gfx120x-all", False),
@@ -2553,7 +2549,6 @@ class TestGfx1102Rocm64Floor:
         ),
     )
     def test_install_sh_routes_rdna4_below_713_to_amd_arch_index(self, gfx, leaf, expected):
-        """The rocm7.2 cap on a ROCm 7.14 host keeps RDNA 4's null _grouped_mm kernel."""
         preamble = f'export UNSLOTH_ROCM_GFX_ARCH="{gfx}"'
         assert self._install_sh_routing_result(preamble, leaf = leaf)[0] == expected
 
@@ -8422,7 +8417,6 @@ class _Py39(tuple):
 
 
 def test_python_39_keeps_rdna4_off_the_amd_arch_index(monkeypatch):
-    """gfx120X-all has no cp39 wheels; Strix keeps its route, as before."""
     monkeypatch.setattr(sys, "version_info", _Py39((3, 9, 18, "final", 0)))
     spec = importlib.util.spec_from_file_location("studio_install_python_stack_py39", _STACK_PATH)
     mod = importlib.util.module_from_spec(spec)

@@ -6026,7 +6026,6 @@ _amd_gpu_radeon=false
 _gfx_rocm64_target=false
 _gfx_rocm64_floor_maj=""
 _gfx_rocm64_floor_min=""
-# Set when torch routes to an AMD per-arch index; the migrated repair then needs 7.13+ from it.
 _amd_arch_index_routed=false
 _amd_arch_index_family=""
 if [ "$_torch_index_pinned" = false ]; then

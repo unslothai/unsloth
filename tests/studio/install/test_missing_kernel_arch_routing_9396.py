@@ -1231,7 +1231,6 @@ def test_generic_kernel_support_is_keyed_by_the_tag_the_version_selects(rocm_ver
 @pytest.mark.parametrize("gfx", ["gfx1200", "gfx1201"])
 @pytest.mark.parametrize("rocm_version", [(6, 0), (6, 3), (6, 4), (7, 1)])
 def test_rdna4_takes_the_amd_index_at_every_generic_tag(gfx, rocm_version):
-    """RDNA 4 lacks a working _grouped_mm below 7.13."""
     calls = _run_install(gfx_devices = (gfx,), rocm_version = rocm_version)
     assert f"{_AMD}/gfx120X-all/" in calls, calls
 
