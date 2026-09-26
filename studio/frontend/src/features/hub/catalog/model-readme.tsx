@@ -3,6 +3,7 @@
 
 import { useHfEndpoint } from "@/lib/hf-endpoint";
 import { Spinner } from "@/components/ui/spinner";
+import { usePlatformStore } from "@/config/env";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { LruMap } from "@/features/hub/lib/lru-map";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
@@ -28,6 +29,7 @@ import {
 } from "react";
 import type { ComponentProps } from "react";
 import { Streamdown, type Components } from "streamdown";
+import { stripColorFontTriggers } from "../lib/color-font-triggers";
 import {
   createReadmeUrlTransform,
   fetchReadme,
@@ -124,7 +126,13 @@ function hasReadmeContent(state: Pick<ReadmeState, "body" | "error">): boolean {
 
 function prepareReadmeBody(markdown: string): string {
   const { body } = stripFrontmatter(markdown);
-  const cleaned = stripChromeHeadings(body).trim();
+  let cleaned = stripChromeHeadings(body).trim();
+  // Linux only: the bundled WebKitGTK/Skia in the Complete AppImage asserts on
+  // some color-font (COLRv1) glyphs, e.g. flags and emoji, in arbitrary README
+  // content (#9453). Mac/Windows do not hit this renderer, so leave them be.
+  if (usePlatformStore.getState().deviceType === "linux") {
+    cleaned = stripColorFontTriggers(cleaned);
+  }
   if (cleaned.length <= README_RENDER_CHAR_LIMIT) return cleaned;
   return `${cleaned.slice(0, README_RENDER_CHAR_LIMIT).trimEnd()}${README_TRUNCATED_NOTICE}`;
 }
