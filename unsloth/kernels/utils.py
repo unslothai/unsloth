@@ -337,11 +337,30 @@ _FP8_WEIGHT_DTYPES = tuple(
 
 
 def has_mxfp4_base(*projs):
-    """MXFP4-packed base: fused LoRA kernels would hold the 16-bit weight until backward, so use PEFT."""
+    """A packed MXFP4 base that cannot hand its bytes to the fused LoRA kernels (they would then hold a 16-bit
+    weight until backward): use PEFT. Bases with ``mxfp4_quant_state`` pass ``weight_packed`` + that state instead."""
     return any(
-        getattr(type(getattr(p, "base_layer", p)), "_unsloth_mxfp4_packed_linear", False)
-        for p in projs
+        getattr(type(base), "_unsloth_mxfp4_packed_linear", False)
+        and getattr(type(base), "mxfp4_quant_state", None) is None
+        for base in (getattr(p, "base_layer", p) for p in projs)
     )
+
+
+def _packed_base(base_layer):
+    """(weight_packed, quant state) of a packed MXFP4 base, else None; QAT fake-quantizes the decoded weight instead."""
+    cls = type(base_layer)
+    if (
+        not getattr(cls, "_unsloth_mxfp4_packed_linear", False)
+        or getattr(cls, "mxfp4_quant_state", None) is None
+    ):
+        return None
+    if getattr(base_layer, "weight_fake_quantizer", None) is not None:
+        return None
+    return base_layer.weight_packed, base_layer.mxfp4_quant_state()
+
+
+def _is_packed_state(quant_state):
+    return getattr(type(quant_state), "_unsloth_packed_weight_state", False)
 
 
 def get_lora_parameters(proj):
@@ -350,7 +369,8 @@ def get_lora_parameters(proj):
     """
     # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
-    W = base_layer.weight
+    packed = _packed_base(base_layer)
+    W = base_layer.weight if packed is None else packed[0]
 
     # Optionally apply fake quantization to base layer weights for QAT.
     if hasattr(base_layer, "weight_fake_quantizer"):
@@ -372,6 +392,9 @@ def get_lora_parameters(proj):
         # bf16, so it has no quant state to carry the block size.
         if W_quant is not None:
             W_quant.block_size = W.block_size
+
+    if packed is not None:
+        W_quant = packed[1]
 
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None
@@ -407,7 +430,8 @@ def get_lora_parameters(proj):
 def get_lora_parameters_bias(proj):
     # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
-    W = base_layer.weight
+    packed = _packed_base(base_layer)
+    W = base_layer.weight if packed is None else packed[0]
 
     # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
     # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
@@ -423,6 +447,9 @@ def get_lora_parameters_bias(proj):
         # bf16, so it has no quant state to carry the block size.
         if W_quant is not None:
             W_quant.block_size = W.block_size
+
+    if packed is not None:
+        W_quant = packed[1]
 
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None, base_layer.bias
@@ -1063,8 +1090,12 @@ def fast_dequantize(
     out = None,
     use_global_buffer = False,
 ):
-    if type(quant_state) is Int4QuantState:
+    quant_type = type(quant_state)
+    if quant_type is Int4QuantState:
         return _int4_dequantize_weight(W, quant_state)
+    # A packed MXFP4 base hands in weight_packed (or its .t()) with a decoder as the quant state.
+    if getattr(quant_type, "_unsloth_packed_weight_state", False):
+        return quant_state.dequantize(W)
     return _fast_dequantize_bnb(W, quant_state, out = out, use_global_buffer = use_global_buffer)
 
 
@@ -1092,6 +1123,8 @@ def fast_linear_forward(
 
     if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
+    elif _is_packed_state(W_quant):
+        out = W_quant.matmul(X, W, out = out)
     elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant, bias)
     elif type(W_quant) is Int4QuantState:
@@ -1157,6 +1190,8 @@ def matmul_lora(
     elif type(W_quant) is Int4QuantState and W.stride(-1) == 1:
         # Forward orientation: few rows use the fused kernel, the rest decode once + cuBLAS.
         out = _int4_matmul(X, W, W_quant, out = out)
+    elif _is_packed_state(W_quant):
+        out = W_quant.matmul(X, W, out = out)
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = True)
         out = torch_matmul(X, W.t(), out = out)

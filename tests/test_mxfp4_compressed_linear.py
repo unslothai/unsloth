@@ -155,7 +155,11 @@ def test_zoo_kernel_and_torch_path_agree():
 
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("bias", [False, True])
-def test_forward_and_input_gradient_are_exact_and_save_only_packed_bytes(device, bias):
+def test_forward_and_input_gradient_are_exact_and_save_only_packed_bytes(device, bias, monkeypatch):
+    import unsloth.models.mxfp4_compressed_linear as mcl
+
+    # The decode + cuBLAS route is bit-exact; skinny inputs on CUDA take the fused GEMM (tested below).
+    monkeypatch.setattr(mcl, "_FUSED_MAX_ROWS", 0)
     torch.manual_seed(0)
     out_f, in_f = 96, 64
     packed, scale = _random_packed(out_f, in_f)
@@ -439,9 +443,14 @@ def test_device_move_carries_bytes_and_scales():
     assert module.weight.is_cuda
 
 
-def test_fast_lora_paths_see_a_transient_decode_and_skip_the_fused_kernels():
+def test_fast_lora_paths_get_the_packed_bytes_and_a_decoder_not_a_16bit_weight():
     peft = pytest.importorskip("peft")
-    from unsloth.kernels.utils import get_lora_parameters, get_lora_parameters_bias, has_mxfp4_base
+    from unsloth.kernels.utils import (
+        fast_dequantize,
+        get_lora_parameters,
+        get_lora_parameters_bias,
+        has_mxfp4_base,
+    )
 
     class Block(nn.Module):
         def __init__(self):
@@ -452,11 +461,110 @@ def test_fast_lora_paths_see_a_transient_decode_and_skip_the_fused_kernels():
     model = peft.get_peft_model(Block(), peft.LoraConfig(r = 4, target_modules = ["proj", "dense"]))
     proj = model.base_model.model.proj
     W, quant_state, A, B, scale = get_lora_parameters(proj)
-    assert W.dtype == torch.bfloat16 and quant_state is None and A is not None
-    assert torch.equal(W, proj.base_layer.dequantize_weight())
-    assert get_lora_parameters_bias(proj)[1] is None
-    assert has_mxfp4_base(proj) and has_mxfp4_base(proj.base_layer)
-    assert not has_mxfp4_base(model.base_model.model.dense)
+    # The fused kernels save W for backward: it must be the packed bytes, never a 16-bit decode.
+    assert W is proj.base_layer.weight_packed and A is not None
+    assert getattr(quant_state, "_unsloth_packed_weight_state", False)
+    dense = proj.base_layer.dequantize_weight()
+    assert torch.equal(fast_dequantize(W, quant_state), dense)
+    assert torch.equal(fast_dequantize(W.t(), quant_state), dense.t())
+    assert get_lora_parameters_bias(proj)[1] is quant_state
+    assert not has_mxfp4_base(proj) and not has_mxfp4_base(model.base_model.model.dense)
+
+
+def _mlp_lora_pair(hidden, inter):
+    peft = pytest.importorskip("peft")
+
+    class MLP(nn.Module):
+        def __init__(self, gate, up, down):
+            super().__init__()
+            self.gate_proj, self.up_proj, self.down_proj = gate, up, down
+
+    packed = [
+        _filled(inter, hidden, seed = 1),
+        _filled(inter, hidden, seed = 2),
+        _filled(hidden, inter, seed = 3),
+    ]
+    for module in packed:
+        module.weight_scale.data.clamp_(118, 126)
+    dense = []
+    for module in packed:
+        linear = nn.Linear(
+            module.in_features, module.out_features, bias = False, dtype = torch.bfloat16
+        )
+        linear.weight.data.copy_(module.dequantize_weight())
+        dense.append(linear)
+    models = []
+    for layers in (packed, dense):
+        model = peft.get_peft_model(
+            MLP(*layers),
+            peft.LoraConfig(
+                r = 8, lora_alpha = 16, target_modules = ["gate_proj", "up_proj", "down_proj"]
+            ),
+        ).cuda()
+        g = torch.Generator().manual_seed(5)
+        with torch.no_grad():
+            for name, param in sorted(model.named_parameters()):
+                if "lora_" in name:
+                    param.copy_((torch.randn(param.shape, generator = g) * 0.05).to(param.dtype))
+        models.append(model.base_model.model)
+    return models
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+@pytest.mark.parametrize("rows", [8, 256])
+def test_fused_lora_mlp_on_a_packed_base_matches_the_dense_base(rows):
+    """8 rows run the fused MXFP4 GEMM (bf16-rounding-level), 256 decode for cuBLAS (bit-exact)."""
+    from unsloth.kernels.fast_lora import apply_lora_mlp_swiglu, apply_lora_o
+
+    packed, dense = _mlp_lora_pair(64, 128)
+    x = torch.randn(
+        1, rows, 64, device = "cuda", generator = torch.Generator("cuda").manual_seed(0)
+    ).to(torch.bfloat16)
+    results = []
+    for mlp in (packed, dense):
+        xa = x.clone().requires_grad_()
+        with torch.autocast("cuda", dtype = torch.bfloat16):
+            y = apply_lora_mlp_swiglu(mlp, xa, inplace = False)
+            y = y + apply_lora_o(
+                type("O", (), {"o_proj": mlp.down_proj})(), y.new_ones(1, rows, 128) * 0.01
+            )
+        y.float().square().sum().backward()
+        lora_grads = [p.grad.float() for n, p in sorted(mlp.named_parameters()) if "lora_" in n]
+        results.append((y.float(), xa.grad.float(), lora_grads))
+    (ya, ga, la), (yb, gb, lb) = results
+    assert len(la) == len(lb) == 6
+    if rows > 64:
+        assert torch.equal(ya, yb) and torch.equal(ga, gb)
+        assert all(torch.equal(a, b) for a, b in zip(la, lb))
+    else:
+        rel = lambda a, b: ((a - b).abs().max() / b.abs().max().clamp_min(1e-6)).item()  # noqa: E731
+        assert rel(ya, yb) < 2e-2 and rel(ga, gb) < 2e-2
+        assert all(rel(a, b) < 3e-2 for a, b in zip(la, lb))
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+@pytest.mark.parametrize("rows", [1, 3, 64, 65, 300])
+@pytest.mark.parametrize("bias", [False, True])
+def test_packed_linear_forward_backward_close_to_the_dense_decode_on_cuda(rows, bias):
+    module = _filled(96, 160, bias = bias).cuda()
+    module.weight_scale.data.clamp_(118, 126)
+    dense = module.dequantize_weight()
+    x = torch.randn(rows, 160, device = "cuda", generator = torch.Generator("cuda").manual_seed(1)).to(
+        torch.bfloat16
+    )
+    xa, xb = x.clone().requires_grad_(), x.clone().requires_grad_()
+    ya = module(xa)
+    yb = torch.nn.functional.linear(
+        xb, dense, None if module.bias is None else module.bias.to(torch.bfloat16)
+    )
+    go = torch.randn_like(ya)
+    ya.backward(go)
+    yb.backward(go)
+    tol = dict(atol = 1e-1, rtol = 2e-2) if rows <= 64 else dict(atol = 0, rtol = 0)
+    torch.testing.assert_close(ya.float(), yb.float(), **tol)
+    torch.testing.assert_close(xa.grad.float(), xb.grad.float(), **tol)
+    with torch.no_grad():
+        torch.testing.assert_close(module(x).float(), ya.float(), atol = 0, rtol = 0)
 
 
 def _lora_pair(bias = False, scale_range = None):
@@ -708,16 +816,23 @@ def test_mxfp4_checkpoint_stays_packed_and_matches_its_bf16_decode(
     )
     model_b, _ = FastLanguageModel.from_pretrained(bf16_dir, load_in_4bit = False, **kw)
     ids = torch.randint(0, 256, (1, 16), device = "cuda:0")
+    import unsloth.models.mxfp4_compressed_linear as mcl
+
     with torch.no_grad():
-        assert torch.equal(model_a(input_ids = ids).logits, model_b(input_ids = ids).logits)
+        # 16 rows run the fused MXFP4 GEMM: bf16-rounding-level; the decode + cuBLAS route is bit-exact.
+        fused = model_a(input_ids = ids).logits
+        want = model_b(input_ids = ids).logits
+        torch.testing.assert_close(fused.float(), want.float(), atol = 5e-2, rtol = 2e-2)
+        monkeypatch.setattr(mcl, "_FUSED_MAX_ROWS", 0)
+        assert torch.equal(model_a(input_ids = ids).logits, want)
     losses_a = _lora_losses(model_a)
     from unsloth.kernels import apply_lora_o, apply_lora_qkv
 
+    # The fused LoRA kernels now take packed bases (weight_packed + a decoder, never a held 16-bit weight).
     for layer in model_a.model.layers:
-        assert "_unsloth_forward" not in layer.mlp.__dict__ and "forward" not in layer.mlp.__dict__
-        assert getattr(layer.self_attn, "apply_qkv", None) is not apply_lora_qkv
-        assert getattr(layer.self_attn, "apply_o", None) is not apply_lora_o
-    monkeypatch.setattr(llama_module, "has_mxfp4_base", lambda *projs: True)
+        assert "_unsloth_forward" in layer.mlp.__dict__ or "forward" in layer.mlp.__dict__
+        assert getattr(layer.self_attn, "apply_qkv", None) is apply_lora_qkv
+        assert getattr(layer.self_attn, "apply_o", None) is apply_lora_o
     assert losses_a == _lora_losses(model_b)
 
 

@@ -27,6 +27,8 @@ from torch import nn
 
 __all__ = [
     "Mxfp4PackedLinear",
+    "Mxfp4PackedState",
+    "mxfp4_packed_matmul",
     "mxfp4_keep_packed_enabled",
     "dequantize_mxfp4_packed",
     "is_mxfp4_scheme",
@@ -45,6 +47,10 @@ try:
     from unsloth_zoo.mxfp4_dequant import mxfp4_dequantize as _zoo_mxfp4_dequantize
 except Exception:
     _zoo_mxfp4_dequantize = None
+try:
+    from unsloth_zoo.mxfp4_gemm import mxfp4_gemm_available, mxfp4_matmul as _zoo_mxfp4_matmul
+except Exception:
+    _zoo_mxfp4_matmul = None
 
 _FP4_VALUES = (
     0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,
@@ -83,6 +89,45 @@ def dequantize_mxfp4_packed(
     return _dequantize_torch(blocks, scale, dtype)
 
 
+def _fused_max_rows():
+    # Rows up to which the fused GEMM (bytes decoded in registers) beats decode + cuBLAS; B200 sweep.
+    try:
+        return int(os.environ.get("UNSLOTH_MXFP4_FUSED_MAX_ROWS", "64"))
+    except ValueError:
+        return 64
+
+
+_FUSED_MAX_ROWS = _fused_max_rows()
+
+
+def mxfp4_packed_matmul(
+    x,
+    packed,
+    scale,
+    transpose = False,
+    out = None,
+    bias = None,
+):
+    """``x @ W^T (+ bias)`` (``transpose=False``) or ``x @ W`` for the packed ``[out, in / 2]`` weight, in x's dtype.
+    Skinny forward inputs (decode, small batches) never build the 16-bit weight; the rest decode it once for cuBLAS."""
+    rows = x.numel() // x.shape[-1] if x.shape[-1] else 0
+    # dX (transpose) stays on decode + cuBLAS: the fused kernel only wins it for a few wide shapes.
+    if (
+        not transpose
+        and _zoo_mxfp4_matmul is not None
+        and rows <= _FUSED_MAX_ROWS
+        and x.is_cuda
+        and mxfp4_gemm_available(x.device, x.dtype)
+    ):
+        return _zoo_mxfp4_matmul(x, packed, scale, trans = transpose, out = out, bias = bias)
+    weight = dequantize_mxfp4_packed(packed, scale, x.dtype)
+    if transpose:
+        return torch.matmul(x, weight, out = out)
+    if bias is not None or out is None:
+        return torch.nn.functional.linear(x, weight, bias)
+    return torch.matmul(x, weight.t(), out = out)
+
+
 def _compute_dtype(x):
     device_type = x.device.type
     try:
@@ -93,17 +138,16 @@ def _compute_dtype(x):
     return x.dtype
 
 
+def _packed_linear(x, packed, scale, bias, dtype):
+    return mxfp4_packed_matmul(
+        x.to(dtype), packed, scale, bias = None if bias is None else bias.to(dtype)
+    )
+
+
 class _Mxfp4PackedLinearFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, packed, scale, bias):
-        dtype = _compute_dtype(x)
-        weight = dequantize_mxfp4_packed(packed, scale, dtype)
-        out = torch.nn.functional.linear(
-            x.to(dtype),
-            weight,
-            None if bias is None else bias.to(dtype),
-        )
-        del weight
+        out = _packed_linear(x, packed, scale, bias, _compute_dtype(x))
         ctx.save_for_backward(packed, scale)
         ctx.x_dtype = x.dtype
         return out
@@ -113,9 +157,7 @@ class _Mxfp4PackedLinearFunction(torch.autograd.Function):
         packed, scale = ctx.saved_tensors
         grad_x = grad_bias = None
         if ctx.needs_input_grad[0]:
-            weight = dequantize_mxfp4_packed(packed, scale, grad_output.dtype)
-            grad_x = torch.matmul(grad_output, weight).to(ctx.x_dtype)
-            del weight
+            grad_x = mxfp4_packed_matmul(grad_output, packed, scale, transpose = True).to(ctx.x_dtype)
         if ctx.needs_input_grad[3]:
             grad_bias = grad_output.reshape(-1, grad_output.shape[-1]).sum(0)
         return grad_x, None, None, grad_bias
@@ -127,7 +169,28 @@ class Mxfp4PackedLinear(nn.Linear):
     compute_dtype = torch.bfloat16
 
     def forward(self, x):
-        return _Mxfp4PackedLinearFunction.apply(x, self.weight_packed, self.weight_scale, self.bias)
+        bias = self.bias
+        if torch.is_grad_enabled() and (
+            x.requires_grad or (bias is not None and bias.requires_grad)
+        ):
+            return _Mxfp4PackedLinearFunction.apply(x, self.weight_packed, self.weight_scale, bias)
+        # Inference / frozen input: no autograd node, less per-call overhead on the decode path.
+        return _packed_linear(x, self.weight_packed, self.weight_scale, bias, _compute_dtype(x))
+
+    def mxfp4_quant_state(self):
+        """What kernels.utils passes as the quant state next to ``weight_packed``, so fused LoRA never holds a 16-bit weight."""
+        state = self.__dict__.get("_unsloth_packed_state")
+        packed, scale = self._parameters["weight_packed"], self._parameters["weight_scale"]
+        if (
+            state is None
+            or state.packed is not packed
+            or state.scale is not scale
+            or state.dtype != self.compute_dtype
+        ):
+            state = self.__dict__["_unsloth_packed_state"] = Mxfp4PackedState(
+                packed, scale, self.compute_dtype
+            )
+        return state
 
     def dequantize_weight(self, dtype = None):
         return dequantize_mxfp4_packed(
@@ -158,6 +221,37 @@ class Mxfp4PackedLinear(nn.Linear):
             f"in_features={self.in_features}, out_features={self.out_features}, "
             f"bias={self.bias is not None}, format={MXFP4_FORMAT}"
         )
+
+
+def _is_transposed(W):
+    # W is weight_packed [out, in / 2] or its .t() view; only the view has a unit leading stride.
+    return W.dim() == 2 and W.stride(0) == 1 and W.stride(1) != 1
+
+
+class Mxfp4PackedState:
+    """Quant state for a packed base in Unsloth's LoRA kernels: ``W`` is ``weight_packed`` (or its ``.t()``)."""
+
+    _unsloth_packed_weight_state = True
+
+    def __init__(self, packed, scale, dtype):
+        self.packed, self.scale, self.dtype = packed, scale, dtype
+
+    def dequantize(
+        self,
+        W = None,
+        dtype = None,
+    ):
+        weight = dequantize_mxfp4_packed(self.packed, self.scale, dtype or self.dtype)
+        return weight.t() if W is not None and _is_transposed(W) else weight
+
+    def matmul(
+        self,
+        X,
+        W,
+        out = None,
+    ):
+        """``X @ D(W).t()`` where D(W) is W's 16-bit value, as matmul_lora computes it."""
+        return mxfp4_packed_matmul(X, self.packed, self.scale, transpose = _is_transposed(W), out = out)
 
 
 def is_mxfp4_scheme(scheme, default_format = None) -> bool:
