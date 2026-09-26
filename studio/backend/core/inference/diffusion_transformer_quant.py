@@ -225,7 +225,6 @@ _INT8_FAMILY_CONVROT_FILENAME: dict[str, str] = {
     "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
 }
 
-# Opt-in: unset keeps the plain int8 runtime path and hosted artifact.
 INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
 
 

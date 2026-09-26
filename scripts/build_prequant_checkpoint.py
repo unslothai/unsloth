@@ -130,13 +130,11 @@ def upload_destination(
         convrot_spec_for_scheme,
     )
 
-    # the opt-in rotated artifact has its own name, so it never overwrites the plain one
     family = getattr(fam, "name", None)
     rotated_name = convrot_prequant_filename(scheme, family) if rotated else None
     if rotated_name:
         spec_group = convrot_spec_for_scheme(scheme, family)[0]
         if convrot_group is not None and int(convrot_group) != spec_group:
-            # the canonical name is what opt-in loads fetch; only the runtime spec may publish there
             raise ValueError(
                 f"{rotated_name} is reserved for the ConvRot group {spec_group} build that matches "
                 f"the runtime path; a group {convrot_group} build needs --upload-filename."
