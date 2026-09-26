@@ -2235,8 +2235,17 @@ with sync_playwright() as p:
     if n_cards > 0:
         try:
             headings.first.scroll_into_view_if_needed()
+            list_url = page.url
             headings.first.click()
-            page.wait_for_load_state("domcontentloaded")
+            # An in-app route change: wait for the recipe's own URL, since the list page's <main>
+            # would satisfy a settle check before the detail route commits.
+            try:
+                page.wait_for_url(
+                    lambda u: u != list_url and re.search(r"/data-recipes/[^/?#]+", u) is not None,
+                    timeout = 10_000,
+                )
+            except Exception:
+                info(f"WARN recipe card click did not open a recipe route; current: {page.url}")
             wait_for_settled(page.locator("main"))
             shoot("15c-recipes-first-card")
             info("OK clicked first recipe card")
