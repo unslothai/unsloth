@@ -973,11 +973,6 @@ const META_COLUMN = {
   format: "min-[560px]:w-[calc(14px*var(--ui-space-scale,1))]",
 } as const;
 
-// One gutter for every row, gear or no gear, so the columns never shift by a button; the
-// buttons show on hover or while their menu is open.
-const ROW_ACTIONS_CLASS =
-  "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
-
 const downloadedRowButtonClassName =
   "bg-transparent pr-1 hover:bg-transparent focus-visible:bg-transparent dark:bg-transparent dark:hover:bg-transparent dark:focus-visible:bg-transparent";
 // Not focus-within: the dots menu returns focus to its trigger on close, so the row stayed lit
@@ -992,6 +987,11 @@ const downloadedRowShellClassName = (
     hasMemoryBar ? "rounded-2xl" : "rounded-full",
     selected && "bg-sidebar-accent",
   );
+
+// One gutter for every row, gear or no gear, so the columns never shift by a button; the
+// buttons show on hover or while their menu is open.
+const ROW_ACTIONS_CLASS =
+  "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
 
 // Drop line for a pinned-row drag, same as the sidebar's.
 const PINNED_DROP_CUE_BASE =
