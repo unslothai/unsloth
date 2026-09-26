@@ -5404,6 +5404,15 @@ class TestEgressHostParsingAndTracking:
                 "requests.get('https://pypi.org/')",
                 id = "environ_through_constant_getattr",
             ),
+            pytest.param(
+                "import paramiko\nc = paramiko.SSHClient()\nc.connect('pypi.org', 22, None, None, None, "
+                f"None, None, True, True, False, paramiko.ProxyCommand('nc {_H} 22'))",
+                id = "paramiko_positional_sock",
+            ),
+            pytest.param(
+                f"from fabric import Connection\nConnection('pypi.org', 'u', 22, None, Connection('{_H}'))",
+                id = "fabric_positional_gateway",
+            ),
         ],
     )
     def test_the_hostile_host_is_seen(self, code):
@@ -5427,6 +5436,10 @@ class TestEgressHostParsingAndTracking:
                 "from fabric import Connection\n"
                 "Connection('pypi.org', connect_kwargs = {'key_filename': '/k'}).run('id')",
                 id = "fabric_connect_kwargs_without_route",
+            ),
+            pytest.param(
+                "import paramiko\nc = paramiko.SSHClient()\nc.connect('pypi.org', 22, 'u', 'p')",
+                id = "paramiko_positional_without_route",
             ),
         ],
     )

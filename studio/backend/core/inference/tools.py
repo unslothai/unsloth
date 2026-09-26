@@ -17176,6 +17176,13 @@ def _check_signal_escape_patterns(code: str):
         "fabric.": ("gateway",),
         "asyncssh.": ("tunnel", "proxy_command"),
     }
+    # Positional spellings of the same routes (paramiko 5.0.0, fabric 3.2.3 signatures).
+    _ROUTE_POSITIONS = {
+        "paramiko.SSHClient.connect": {10: "sock"},
+        "paramiko.client.SSHClient.connect": {10: "sock"},
+        "fabric.Connection": {4: "gateway", 7: "connect_kwargs"},
+        "fabric.connection.Connection": {4: "gateway", 7: "connect_kwargs"},
+    }
     _UNREADABLE = ast.Name(id = "<unreadable>", ctx = ast.Load())
 
     def _is_no_proxy(key) -> bool:
@@ -18414,7 +18421,16 @@ def _check_signal_escape_patterns(code: str):
                         isinstance(found, ast.Constant) and found.value is None
                     ):
                         destinations.append((found, True, kind))
-                for kw in node.keywords or []:
+                routed = list(node.keywords or [])
+                for fq, positions in _ROUTE_POSITIONS.items():
+                    if fq in recognised:
+                        for index, arg in enumerate(node.args):
+                            if isinstance(arg, ast.Starred):
+                                routed.append(ast.keyword(arg = "sock", value = _UNREADABLE))
+                                break
+                            if index in positions:
+                                routed.append(ast.keyword(arg = positions[index], value = arg))
+                for kw in routed:
                     if isinstance(kw.value, ast.Constant) and kw.value.value is None:
                         continue
                     for prefix, routes in _ROUTE_KEYWORDS.items():
