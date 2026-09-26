@@ -235,6 +235,7 @@ import {
 import {
   shouldContinueGenerating,
   shouldReportGenerateError,
+  stopButtonLabel,
 } from "./lib/generation-stop";
 import {
   ALLOW_OVERSIZED_HINT,
@@ -1470,6 +1471,7 @@ export function ImagesPage({
 
   const [busy, setBusy] = useState<Busy>(null);
   const [genDone, setGenDone] = useState<number | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // visibilitychange handler active while a generation poll runs: background tabs clamp
@@ -4068,6 +4070,7 @@ export function ImagesPage({
     setGenStep(null);
     // Fresh run: a Stop from the PREVIOUS run must not cancel this one.
     cancelRequested.current = false;
+    setStopping(false);
     cancelAcked.current = false;
     // Per-run, like the two above: a cancel POST still outstanding from the PREVIOUS run would
     // leave the guard set and swallow this run's own Stop.
@@ -4229,6 +4232,7 @@ export function ImagesPage({
       setBusy(null);
       setGenDone(null);
       setGenStep(null);
+      setStopping(false);
     }
   }, [allowOversized, prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
@@ -4236,6 +4240,7 @@ export function ImagesPage({
   // races the run that is already finishing.
   const handleCancelGenerate = useCallback(async () => {
     cancelRequested.current = true;
+    setStopping(true);
     // One Stop on the wire at a time. The button stays enabled so the click still latches, but a
     // second POST would target whatever is active when IT arrives.
     const token = runToken.current;
@@ -4246,11 +4251,13 @@ export function ImagesPage({
     try {
       const { cancelled } = await cancelDiffusionGeneration(abort.signal);
       cancelAcked.current = Boolean(cancelled);
+      if (!cancelled) setStopping(false);
     } catch {
       // An abort means the next run dropped this one on purpose, so there is nothing to report.
       // Otherwise the request never landed and the denoise runs on, so the click is not handled.
       if (!abort.signal.aborted) {
         cancelAcked.current = false;
+        setStopping(false);
         toast.error("Could not reach the server to stop this generation; it is still running");
       }
     } finally {
@@ -5346,7 +5353,7 @@ export function ImagesPage({
                 onClick={handleCancelGenerate}
               >
                 <Spinner className="mr-2 size-4" />
-                {genDone != null && count > 1 ? `Stop (${genDone}/${count})` : "Stop"}
+                {stopButtonLabel({ stopping, done: genDone, count })}
               </Button>
             ) : (
               <Button
