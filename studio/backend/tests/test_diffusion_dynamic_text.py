@@ -103,6 +103,7 @@ def test_fingerprint_only_for_automatic_dynamic():
 
 def test_first_segment_start_stays_static():
     from torch._dynamo.variables.builder import is_dynamic_source as is_dynamic
+
     cfg = _cfg()
     before = cfg.dynamic_sources
     try:
@@ -180,6 +181,7 @@ def test_qwen_image_text_stream_is_armed():
 
 def test_qwen_image_hook_paths_match_on_regex_torch():
     from torch._dynamo.variables.builder import is_dynamic_source as is_dynamic
+
     cfg = _cfg()
     before = cfg.dynamic_sources
     try:
