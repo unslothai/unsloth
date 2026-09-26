@@ -43,6 +43,9 @@ export const en = {
       continued: "one \\\ntwo",
       joined: "Context " + "window usage",
       noted: "Context " /* note */ + "window usage",
+      upper: "context".toUpperCase(),
+      picked: flag ? "short" : "long",
+      last: "Last" // trailing comment
     },
   },
 };
@@ -72,6 +75,7 @@ def sample(tmp_path):
         ("settings.chat.hex", "Context window"),
         ("settings.chat.codePoint", "Smile \U0001f600"),
         ("settings.chat.continued", "one two"),
+        ("settings.chat.last", "Last"),
     ],
 )
 def test_a_key_resolves_by_its_full_path(sample, key, expected):
@@ -105,7 +109,12 @@ def test_a_label_is_quoted_as_a_css_string(label, selector):
 
 
 def test_a_concatenated_value_is_refused_not_truncated(sample):
-    for key in ("settings.chat.joined", "settings.chat.noted"):
+    for key in (
+        "settings.chat.joined",
+        "settings.chat.noted",
+        "settings.chat.upper",
+        "settings.chat.picked",
+    ):
         with pytest.raises(ValueError, match = "expression"):
             en_string(key, sample)
 
@@ -146,6 +155,34 @@ def test_every_key_the_studio_tests_ask_for_exists():
     assert not missing, f"keys asked for but not in {EN_LOCALE_TS.name}: {missing}"
 
 
+def _imports_catalog(path: Path) -> bool:
+    """Whether a module imports `_en_catalog`, in either `import` or `from ... import` form."""
+    import ast
+
+    for node in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))):
+        if isinstance(node, ast.Import) and any(a.name == "_en_catalog" for a in node.names):
+            return True
+        if isinstance(node, ast.ImportFrom) and node.module == "_en_catalog":
+            return True
+    return False
+
+
+@pytest.mark.parametrize(
+    "source, imports",
+    [
+        ("from _en_catalog import en_string\n", True),
+        ("import _en_catalog\n", True),
+        ("import os, _en_catalog as catalog\n", True),
+        ("# from _en_catalog import en_string\n", False),
+        ("x = 'from _en_catalog import en_string'\n", False),
+    ],
+)
+def test_both_import_forms_mark_a_catalog_driver(tmp_path, source, imports):
+    path = tmp_path / "driver.py"
+    path.write_text(source, encoding = "utf-8")
+    assert _imports_catalog(path) is imports
+
+
 COMPOSER_WORKFLOW = HERE.parents[1] / ".github" / "workflows" / "studio-composer-compatibility.yml"
 
 
@@ -169,8 +206,7 @@ def test_the_composer_workflow_runs_on_a_catalog_only_change():
     drivers = sorted(
         path.name
         for path in HERE.glob("*.py")
-        if not path.name.startswith(("test_", "_"))
-        and "from _en_catalog import" in path.read_text(encoding = "utf-8")
+        if not path.name.startswith(("test_", "_")) and _imports_catalog(path)
     )
     assert drivers, "no browser driver reads the catalog any more"
     # What a step runs, with shell comments dropped: a commented-out command runs nothing.

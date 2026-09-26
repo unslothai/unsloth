@@ -46,6 +46,9 @@ _TOKEN = re.compile(
     re.VERBOSE | re.DOTALL,
 )
 
+_STARTS_VALUE = re.compile(r"(?:\s|//[^\n]*|/\*.*?\*/)*[\"'`{]", re.S)
+_ENDS_PROPERTY = re.compile(r"(?:\s|//[^\n]*|/\*.*?\*/)*(?:,|\}|$)", re.S)
+
 _ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "0": "\0"}
 
 
@@ -128,6 +131,13 @@ def _flatten(source: str) -> dict[str, str]:
             # Tried before a plain string, so a quoted key followed by its colon is read as a key.
             raw = match.group("key")
             pending = raw if raw[0] not in "\"'`" else _decode(raw)
+            if not _STARTS_VALUE.match(source, match.end()):
+                # `flag ? "a" : "b"`, `labels.x` and the like: not a literal this reader can
+                # evaluate, so the key is recorded as an expression rather than left to pick up
+                # whichever literal comes next.
+                dotted = ".".join(p for p in [*path, pending] if p is not None)
+                strings[dotted] = _Expression("")
+                pending = None
         elif kind == "open":
             path.append(pending)
             pending = None
@@ -139,9 +149,11 @@ def _flatten(source: str) -> dict[str, str]:
             if pending is not None:
                 dotted = ".".join(p for p in [*path, pending] if p is not None)
                 value = _decode(match.group("string"))
-                # `"Context " + "window"` is an expression, not one literal; reading only the
-                # first piece would hand back a prefix of the label. Comments may sit between.
-                if re.match(r"(?:\s|//[^\n]*|/\*.*?\*/)*\+", source[match.end() :], re.S):
+                # A plain value is the whole property: the next significant token ends it. Anything
+                # else (`"a" + "b"`, `"a".toUpperCase()`, `flag ? "a" : "b"` read from its
+                # middle) is an expression, and reading only this literal would hand back the
+                # wrong label. Comments may sit before the terminator.
+                if not _ENDS_PROPERTY.match(source, match.end()):
                     value = _Expression(value)
                 strings[dotted] = value
             pending = None
