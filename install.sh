@@ -6026,8 +6026,7 @@ _amd_gpu_radeon=false
 _gfx_rocm64_target=false
 _gfx_rocm64_floor_maj=""
 _gfx_rocm64_floor_min=""
-# Set when torch is routed to an AMD per-arch index; the migrated repair then needs 7.13+
-# from that family.
+# Set when torch routes to an AMD per-arch index; the migrated repair then needs 7.13+ from it.
 _amd_arch_index_routed=false
 _amd_arch_index_family=""
 if [ "$_torch_index_pinned" = false ]; then
@@ -6050,8 +6049,7 @@ _rocm_leaf_below() {
     return 1
 }
 # 0 when the venv's torch has no identifiable rocm family at $2.$3 or newer, mirroring _installed_rocm_wheel_is_below in studio/install_python_stack.py
-# The AMD per-arch family the venv's torch runs on, read like _installed_rocm_wheel_family in
-# install_python_stack.py: off the `rocm` meta-package. Empty when unknown.
+# Venv torch's AMD per-arch family from the `rocm` meta-package (as install_python_stack.py); empty if unknown.
 _venv_torch_amd_family() {
     "$1" -c 'import re
 from importlib import metadata
@@ -6232,8 +6230,7 @@ case "$_torch_index_leaf" in
                 echo "  [WARN] (~/.bashrc, ~/.profile) as well, or the next terminal restores it." >&2
             fi
         fi
-        # RDNA 4 generic wheels below 7.13 have a null HIP _grouped_mm (TheRock #5284); use
-        # gfx120X-all. Leaf is rewritten so the rocm6.4 floor below cannot undo it.
+        # RDNA 4 generic wheels below 7.13 have a null HIP _grouped_mm (TheRock #5284); leaf rewritten so the rocm6.4 floor cannot undo it.
         _rdna4_gfx=""
         if [ "$_gfx906_env" != "gfx906" ]; then
             case "$_runtime_gfx" in
@@ -7119,8 +7116,7 @@ if [ "$_MIGRATED" = true ]; then
                  _venv_torch_rocm_below "$_VENV_PY" 7 13 ||
                  { _vfam=$(_venv_torch_amd_family "$_VENV_PY")
                    [ -n "$_vfam" ] && [ "$_vfam" != "${_amd_arch_index_family:-}" ]; }; }; then
-            # Below 7.13, or another GPU family's wheel: neither has kernels for this route.
-            # An unreadable family is left alone, as install_python_stack.py does.
+            # Below 7.13 or another family's wheel lacks kernels; an unreadable family is left alone.
             substep "reinstalling torch from the AMD per-arch index (the migrated wheels do not match it)..."
             _install_torch_default_index --force-reinstall
         fi

@@ -2548,7 +2548,6 @@ class TestGfx1102Rocm64Floor:
         (
             ("gfx1201", "rocm7.2", _RDNA4_LEAF),
             ("gfx1200", "rocm7.2", _RDNA4_LEAF),
-            # controls
             ("gfx1201", "rocm7.13", "rocm7.13"),
             ("gfx1100", "rocm7.2", "rocm7.2"),
         ),
