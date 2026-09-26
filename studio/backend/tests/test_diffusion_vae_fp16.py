@@ -136,3 +136,73 @@ def test_second_call_is_a_no_op():
     after_first = {k: v.clone() for k, v in vae.state_dict().items()}
     assert vf.enable_fp16_vae_decode(pipe, CUDA) is True
     assert all(torch.equal(after_first[k], v) for k, v in vae.state_dict().items())
+
+
+def _unet_pipe(vae):
+    return types.SimpleNamespace(vae = vae, unet = type("UNet2DConditionModel", (), {})())
+
+
+def test_studio_decode_compile_lands_inside_the_non_finite_check(monkeypatch):
+    from core.inference import diffusion_speed as ds
+
+    vae = _tiny_vae().to(torch.float16)
+    original = vae.decode
+    assert vf.enable_fp16_vae_decode(_unet_pipe(vae), CUDA) is True
+    wrapper = vae.__dict__["decode"]
+    compiled_targets = []
+
+    def fake_compile(fn, **kwargs):
+        compiled_targets.append(fn)
+        return fn
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    assert ds._compile_vae_decode(_unet_pipe(vae), None) is True
+    # The data-dependent check stays eager (outermost); only the real decode is compiled, so no graph break.
+    assert vae.__dict__["decode"] is wrapper
+    assert compiled_targets == [original]
+    assert wrapper._unsloth_decode_slot.decode is not original
+
+
+def test_decode_compile_failure_keeps_the_non_finite_check(monkeypatch):
+    from core.inference import diffusion_speed as ds
+
+    vae = _tiny_vae().to(torch.float16)
+    assert vf.enable_fp16_vae_decode(_unet_pipe(vae), CUDA) is True
+    wrapper = vae.__dict__["decode"]
+
+    def failing_compile(fn, **kwargs):
+        def lowering_fails(*args, **kw):
+            raise torch._dynamo.exc.Unsupported("lowering failed")
+
+        return lowering_fails
+
+    monkeypatch.setattr(torch, "compile", failing_compile)
+    assert ds._compile_vae_decode(_unet_pipe(vae), None) is True
+    fills = [0.5, float("nan"), 0.5]
+    dtypes = []
+
+    def decoder_forward(*args, **kwargs):
+        dtype = vae.post_quant_conv.weight.dtype
+        dtypes.append(dtype)
+        return torch.full((1, 3, 8, 8), fills[len(dtypes) - 1], dtype = dtype)
+
+    monkeypatch.setattr(vae.decoder, "forward", decoder_forward)
+    z = torch.zeros(1, 4, 2, 2, dtype = torch.float16)
+    assert torch.isfinite(vae.decode(z, return_dict = False)[0]).all()
+    # The failed compile fell back to eager inside the slot; the check is still in front of it.
+    assert vae.__dict__["decode"] is wrapper and vae._unsloth_compile_decode_error
+    out = vae.decode(z, return_dict = False)[0]
+    assert torch.isfinite(out).all() and out.dtype is torch.float32
+    assert dtypes == [torch.float16, torch.float16, torch.float32]
+    assert vae.config.force_upcast is True
+
+
+def test_declines_once_a_compiled_decode_owns_the_vae(monkeypatch):
+    from core.inference import diffusion_speed as ds
+
+    vae = _tiny_vae().to(torch.float16)
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+    assert ds._compile_vae_decode(_unet_pipe(vae), None) is True
+    # Wrapping now would leave the check behind the compile guard, whose eager fallback unwraps it (NaN frames).
+    assert vf.enable_fp16_vae_decode(_unet_pipe(vae), CUDA) is False
+    assert vae.config.force_upcast is True

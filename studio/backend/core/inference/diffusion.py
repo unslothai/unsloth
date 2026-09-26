@@ -6373,6 +6373,13 @@ class DiffusionBackend:
                         )
 
                     self._raise_if_load_cancelled(_load_token)
+                    # Before the speed optims, whose decode compile then lands inside the non-finite check. An explicit
+                    # `off` keeps the bit-identical fp32 decode.
+                    vae_fp16 = str(
+                        speed_mode or ""
+                    ).strip().lower() != SPEED_OFF and enable_fp16_vae_decode(
+                        pipe, target, logger = logger
+                    )
                     speed_applied = apply_speed_optims(
                         pipe,
                         target,
@@ -6384,12 +6391,9 @@ class DiffusionBackend:
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
-                    # After the speed optims, so the non-finite check sits outside a compiled decode. An explicit
-                    # `off` keeps the bit-identical fp32 decode.
-                    if str(speed_mode or "").strip().lower() != SPEED_OFF:
-                        speed_applied["vae_fp16_decode"] = enable_fp16_vae_decode(
-                            pipe, target, logger = logger
-                        )
+                    # Only ever sets the flag, so a video VAE half decode reported by the speed optims keeps it.
+                    if vae_fp16:
+                        speed_applied["vae_fp16_decode"] = True
                     self._raise_if_load_cancelled(_load_token)
                     if (
                         transformer_quant_engaged is not None
@@ -8047,6 +8051,8 @@ class DiffusionBackend:
             offload_active = state.offload_policy != OFFLOAD_NONE,
             logger = logger,
         )
+        if getattr(getattr(state.pipe, "vae", None), "_unsloth_fp16_decode", False):
+            speed_applied["vae_fp16_decode"] = True
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
         object.__setattr__(state, "speed_optims", tuple(k for k, v in speed_applied.items() if v))
         object.__setattr__(

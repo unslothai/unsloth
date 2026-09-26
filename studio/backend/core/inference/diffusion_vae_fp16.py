@@ -18,6 +18,7 @@ pipeline's fp32 upcast. The encode keeps its fp32 math.
 from __future__ import annotations
 
 import functools
+import types
 from typing import Any, Optional
 
 _SCALE_LOG2 = 8
@@ -88,6 +89,9 @@ def enable_fp16_vae_decode(
     config = getattr(vae, "config", None)
     if type(vae).__name__ != "AutoencoderKL" or not getattr(config, "force_upcast", False):
         return False
+    # A decode compiled before this would sit inside the check, and its eager fallback would unwrap it.
+    if getattr(vae, "_unsloth_compiled_decode", False):
+        return False
     try:
         import torch
 
@@ -115,6 +119,9 @@ def enable_fp16_vae_decode(
             if m is not None
         ]
         fell_back: list = []
+        # Studio's VAE decode compile lands in this slot, inside the non-finite check: a data-dependent check inside
+        # the compiled region would graph-break, and a compile failure restores the slot, never unwrapping the check.
+        slot = types.SimpleNamespace(decode = decode)
 
         def _fp32_call(fn: Any, parts: list, x: Any, *args: Any, **kwargs: Any) -> Any:
             for part in parts:
@@ -128,8 +135,8 @@ def enable_fp16_vae_decode(
         @functools.wraps(decode)
         def fp16_decode(z: Any, *args: Any, **kwargs: Any) -> Any:
             if fell_back or not torch.is_tensor(z) or z.dtype is not torch.float16:
-                return decode(z, *args, **kwargs)
-            out = decode(z, *args, **kwargs)
+                return slot.decode(z, *args, **kwargs)
+            out = slot.decode(z, *args, **kwargs)
             sample = out[0] if isinstance(out, tuple) else getattr(out, "sample", out)
             if not torch.is_tensor(sample) or bool(torch.isfinite(sample).all()):
                 return out
@@ -139,7 +146,7 @@ def enable_fp16_vae_decode(
                 )
             fell_back.append(True)
             vae.register_to_config(force_upcast = True)
-            return _fp32_call(decode, decode_parts, z, *args, **kwargs)
+            return _fp32_call(slot.decode, decode_parts, z, *args, **kwargs)
 
         # The pipelines upcast the whole VAE for an encode too; keep that math (encoder only) now the flag is off.
         @functools.wraps(encode)
@@ -148,6 +155,7 @@ def enable_fp16_vae_decode(
                 return encode(x, *args, **kwargs)
             return _fp32_call(encode, encode_parts, x, *args, **kwargs)
 
+        fp16_decode._unsloth_decode_slot = slot
         vae.decode = fp16_decode
         vae.encode = fp32_encode
         vae.register_to_config(force_upcast = False)
