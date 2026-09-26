@@ -487,7 +487,11 @@ def _modelscope_serves() -> bool:
     return active_source() == MODELSCOPE
 
 
-def _evaluate_unscanned_listing(model_name: str, hf_token: Optional[str]) -> FileSecurityDecision:
+def _evaluate_unscanned_listing(
+    model_name: str,
+    hf_token: Optional[str],
+    load_subdirs = (),
+) -> FileSecurityDecision:
     """ModelScope publishes no malware scan, so its "unavailable" is permanent, not transient:
     fail closed on pickle weights, as the offline gate does for a cached snapshot."""
     context = "ModelScope has no malware scan"
@@ -506,7 +510,10 @@ def _evaluate_unscanned_listing(model_name: str, hf_token: Optional[str]) -> Fil
         folder, _, name = _normalize_repo_path(str(path)).rpartition("/")
         by_dir.setdefault(folder, set()).add(name)
     blocked = []
+    roots = {"", *(_normalize_repo_path(str(d)).strip("/") for d in load_subdirs or ())}
     for folder, names in sorted(by_dir.items()):
+        if folder not in roots:
+            continue
         prefix = f"{folder}/" if folder else ""
         has_base = bool(names & {"model.safetensors", "model.safetensors.index.json"})
         has_adapter = "adapter_model.safetensors" in names
@@ -580,7 +587,7 @@ def evaluate_file_security(
                 load_subdirs = load_subdirs,
             )
         if _modelscope_serves():
-            return _evaluate_unscanned_listing(model_name, hf_token)
+            return _evaluate_unscanned_listing(model_name, hf_token, load_subdirs)
         return FileSecurityDecision(
             model_name, False, reason = "scan unavailable; allowed (fail-open)"
         )

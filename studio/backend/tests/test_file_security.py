@@ -686,13 +686,14 @@ def test_security_load_subdirs_yaml_fallback(monkeypatch):
         (["pytorch_model.bin.index.json", "shards/payload"], ["pytorch_model.bin.index.json"]),
         (["model.safetensors", "adapter_model.bin"], ["adapter_model.bin"]),
         (["LLM/pytorch_model.bin", "model.gguf"], ["LLM/pytorch_model.bin"]),
+        (["model.safetensors", "nemo/pytorch_model.bin"], []),
         (["model.gguf", "README.md"], []),
     ],
 )
 def test_modelscope_has_no_scan_so_pickle_weights_fail_closed(monkeypatch, files, blocked):
     monkeypatch.setenv("UNSLOTH_STUDIO_HUB_SOURCE", "modelscope")
     with _patch_status(None), patch("huggingface_hub.HfApi.list_repo_files", return_value = files):
-        d = evaluate_file_security("org/repo")
+        d = evaluate_file_security("org/repo", load_subdirs = ("LLM",))
     assert d.blocked is bool(blocked)
     assert [f["path"] for f in d.unsafe_files] == blocked
     if blocked:
