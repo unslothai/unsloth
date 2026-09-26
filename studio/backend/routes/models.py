@@ -4737,9 +4737,7 @@ def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
 
 
 def _one_shard_family_of(entries: list) -> list:
-    """*entries* narrowed to the single shard family the loader would open, as ``(rel, path, size)`` triples.
-    Same rule as ``hub.utils.gguf.group_gguf_variant_files``: every shard of one split GGUF shares a family,
-    two files that do not are two checkpoints, and the family kept is the one holding the first file."""
+    """``(rel, path, size)`` *entries* narrowed to the one shard set the loader opens, as ``hub.utils.gguf.group_gguf_variant_files``."""
     if len(entries) < 2:
         return list(entries)
     from hub.utils.gguf import gguf_shard_set

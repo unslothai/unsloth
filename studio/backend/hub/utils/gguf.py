@@ -798,7 +798,7 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
 
 
 def group_gguf_variant_files(entries) -> dict[str, tuple[str, int]]:
-    """``variant key -> (first filename, size of that variant's shard family)``. *entries* is an iterable of ``(path, size)`` for main GGUFs only, already filtered of mmproj, drafters and big-endian builds. Sizes are summed across the shards of ONE family, never across families: a repo that ships the same quant twice (``BF16/QwQ-32B-BF16-*`` beside ``BF16/QwQ-32B.BF16-*``) therefore advertises what a load would actually read rather than the total of both copies. The family kept is the one holding the lexicographically first file, which is the shard the lister and the loader open."""
+    """``variant key -> (first filename, summed size of ONE shard set)``: a quant shipped twice (``QwQ-32B-BF16-*`` beside ``QwQ-32B.BF16-*``, or whole beside split) keeps only the set holding the first file, the one the loader opens."""
     families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
     for path, size in entries:
         families.setdefault(gguf_variant_key(path), {}).setdefault(gguf_shard_set(path), []).append(

@@ -3122,16 +3122,7 @@ def list_gguf_variants(
 
 
 def _group_gguf_variant_files(entries: list[tuple[str, str, int]]) -> dict[str, tuple[str, int]]:
-    """``quant -> (first filename, size of that quant's shard family)``.
-
-    MIRROR of ``hub.utils.gguf.group_gguf_variant_files`` over ``(name, quant, size)`` triples.
-    Sizes are summed across the shards of ONE family, never across families: a repo shipping the
-    same quant twice (QwQ-32B's BF16 as ``QwQ-32B-BF16-*`` beside ``QwQ-32B.BF16-*``) would
-    otherwise charge both copies to a row the loader only ever opens one of, and
-    ``routes/inference.py`` bills this ``size_bytes`` to the VRAM guard, which then refuses a load
-    that fits. The family kept is the one holding the lexicographically first file, which is the
-    shard this lister advertises and the loader opens.
-    """
+    """MIRROR of ``hub.utils.gguf.group_gguf_variant_files`` over ``(name, quant, size)`` triples; ``routes/inference.py`` bills this size to the VRAM guard."""
     families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
     for name, quant, size in entries:
         families.setdefault(quant, {}).setdefault(_gguf_shard_set(name), []).append(

@@ -359,7 +359,7 @@ def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optiona
 
 
 def _one_shard_family(main_files: Sequence[ExpectedFile]) -> tuple[ExpectedFile, ...]:
-    """Narrow a variant's weight files to the single shard family a load would read. A repo can ship one quant twice under names that share a variant key, the same BF16 as ``QwQ-32B-BF16-*`` and ``QwQ-32B.BF16-*``, or one Q6_K under both ``Q6_K/`` and ``<model>-Q6_K/``; fetching both doubles the download and leaves the variant permanently short of its expected bytes, because the loader only ever opens one. Keep the family holding the lexicographically first file, the shard the lister advertises and the loader opens. A genuinely split GGUF is one family, so all of its shards survive untouched."""
+    """Narrow a variant's weight files to the one shard set the loader opens (see ``group_gguf_variant_files``); a genuine split keeps every shard."""
     if len(main_files) < 2:
         return tuple(main_files)
     families: dict[tuple[str, int], list[ExpectedFile]] = {}
