@@ -259,9 +259,10 @@ export const ptBR = {
       edit: "Editar",
       remove: "Remover seção",
       markAllRead: "Marcar tudo como lido",
-      // Row menu submenu that files a chat or project into a section.
-      section: "Seção",
-      moveToSection: "Mover para seção",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "Mover para",
+      sectionsHeading: "Seções",
+      removeFromProject: "Remover do projeto",
       newSectionEllipsis: "Nova seção…",
       removeFromSection: "Remover da seção",
       // Shown in a section with nothing filed in it yet.

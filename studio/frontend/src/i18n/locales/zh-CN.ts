@@ -255,9 +255,10 @@ export const zhCN = {
       edit: "编辑",
       remove: "移除分区",
       markAllRead: "全部标为已读",
-      // Row menu submenu that files a chat or project into a section.
-      section: "分区",
-      moveToSection: "移至分区",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "移动到",
+      sectionsHeading: "分区",
+      removeFromProject: "从项目中移除",
       newSectionEllipsis: "新建分区…",
       removeFromSection: "从分区中移除",
       // Shown in a section with nothing filed in it yet.

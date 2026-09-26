@@ -259,9 +259,10 @@ export const ru = {
       edit: "Изменить",
       remove: "Удалить раздел",
       markAllRead: "Отметить все как прочитанные",
-      // Row menu submenu that files a chat or project into a section.
-      section: "Раздел",
-      moveToSection: "Переместить в раздел",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "Переместить в",
+      sectionsHeading: "Разделы",
+      removeFromProject: "Убрать из проекта",
       newSectionEllipsis: "Новый раздел…",
       removeFromSection: "Убрать из раздела",
       // Shown in a section with nothing filed in it yet.

@@ -260,9 +260,10 @@ export const fr = {
       edit: "Modifier",
       remove: "Retirer la section",
       markAllRead: "Tout marquer comme lu",
-      // Row menu submenu that files a chat or project into a section.
-      section: "Section",
-      moveToSection: "Déplacer vers une section",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "Déplacer vers",
+      sectionsHeading: "Sections",
+      removeFromProject: "Retirer du projet",
       newSectionEllipsis: "Nouvelle section…",
       removeFromSection: "Retirer de la section",
       // Shown in a section with nothing filed in it yet.

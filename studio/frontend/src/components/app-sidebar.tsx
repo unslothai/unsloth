@@ -469,6 +469,7 @@ interface RowMenuParts {
     sideOffset?: number;
     alignOffset?: number;
   }>;
+  Label: ComponentType<{ children?: ReactNode }>;
 }
 
 const DROPDOWN_ROW_MENU: RowMenuParts = {
@@ -477,6 +478,7 @@ const DROPDOWN_ROW_MENU: RowMenuParts = {
   Sub: DropdownMenuSub,
   SubTrigger: DropdownMenuSubTrigger,
   SubContent: DropdownMenuSubContent,
+  Label: DropdownMenuLabel,
 };
 
 const CONTEXT_ROW_MENU: RowMenuParts = {
@@ -485,6 +487,7 @@ const CONTEXT_ROW_MENU: RowMenuParts = {
   Sub: ContextMenuSub,
   SubTrigger: ContextMenuSubTrigger,
   SubContent: ContextMenuSubContent,
+  Label: ContextMenuLabel,
 };
 
 // The kebab shows itself while its menu is open; the quick-action beside it was hover-only, so
@@ -4095,11 +4098,29 @@ export function AppSidebar() {
     if (target.selection) clearSelection();
   }
 
-  /** The "Section" submenu a row, or a selection of rows, files itself through. */
-  function renderSectionSubmenu(
+  /** Starts a section with the rows in it. */
+  function renderNewSectionItem(P: RowMenuParts, target: SectionTarget) {
+    return (
+      <P.Item
+        onSelect={() =>
+          setSectionDialog({
+            mode: "create",
+            chatIds: target.chatIds,
+            projectIds: target.projectIds,
+          })
+        }
+      >
+        <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
+        <span>{t("shell.sections.newSectionEllipsis")}</span>
+      </P.Item>
+    );
+  }
+
+  /** The sections a row, or a selection of rows, can be filed into: "Remove from section" where
+   *  there is one to leave, then every section. Nothing when there are no sections. */
+  function renderSectionDestinations(
     P: RowMenuParts,
     config: {
-      label: string;
       target: SectionTarget;
       /** The section every row is drawn in, which is not offered again. A pinned row keeps its
        *  section while Pinned draws it, and filing it there is how it goes back, so it has none. */
@@ -4107,61 +4128,70 @@ export function AppSidebar() {
       /** Whether any row is drawn in a section it was filed in, which "Remove from section"
        *  undoes. Not a pinned row: Pinned draws it, whatever section it goes back to. */
       anyFiled: boolean;
+      /** Headed, where the list shares a menu with projects. */
+      heading?: boolean;
     },
   ) {
     const { target } = config;
+    if (customSections.length === 0) return null;
+    return (
+      <>
+        {config.heading && <P.Label>{t("shell.sections.sectionsHeading")}</P.Label>}
+        {/* An action, so only where there is something to undo: greyed out it read as a label. */}
+        {config.anyFiled && (
+          <P.Item onSelect={() => fileSectionTarget(target, null)}>
+            <HugeiconsIcon icon={MinusSignCircleIcon} strokeWidth={1.75} className="size-icon" />
+            <span>{t("shell.sections.removeFromSection")}</span>
+          </P.Item>
+        )}
+        {customSections.map((section) => (
+          <P.Item
+            key={section.id}
+            disabled={config.current === section.id}
+            onSelect={() => fileSectionTarget(target, section.id)}
+          >
+            <HugeiconsIcon icon={LayerIcon} strokeWidth={1.75} className="size-icon" />
+            <span className="truncate">{section.name}</span>
+          </P.Item>
+        ))}
+      </>
+    );
+  }
+
+  /** "Move to" for rows that only sections take: a folder, or a selection. A chat's own menu adds
+   *  its projects to the same submenu. */
+  function renderSectionSubmenu(
+    P: RowMenuParts,
+    config: {
+      target: SectionTarget;
+      current: string | null;
+      anyFiled: boolean;
+    },
+  ) {
     return (
       <P.Sub>
         <P.SubTrigger>
-          <HugeiconsIcon icon={LayerIcon} strokeWidth={1.75} className="size-icon" />
-          <span>{config.label}</span>
+          <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
+          <span>{t("shell.sections.moveTo")}</span>
         </P.SubTrigger>
         <P.SubContent
           {...sidebarSubmenuOffsets}
           className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-52"
         >
-          <P.Item
-            onSelect={() =>
-              setSectionDialog({
-                mode: "create",
-                chatIds: target.chatIds,
-                projectIds: target.projectIds,
-              })
-            }
-          >
-            <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
-            <span>{t("shell.sections.newSectionEllipsis")}</span>
-          </P.Item>
+          {renderNewSectionItem(P, config.target)}
           {customSections.length > 0 && <P.Separator />}
-          {/* An action, so only where there is something to undo: greyed out it read as a label. */}
-          {config.anyFiled && (
-            <P.Item onSelect={() => fileSectionTarget(target, null)}>
-              <HugeiconsIcon icon={MinusSignCircleIcon} strokeWidth={1.75} className="size-icon" />
-              <span>{t("shell.sections.removeFromSection")}</span>
-            </P.Item>
-          )}
-          {customSections.map((section) => (
-            <P.Item
-              key={section.id}
-              disabled={config.current === section.id}
-              onSelect={() => fileSectionTarget(target, section.id)}
-            >
-              <HugeiconsIcon icon={LayerIcon} strokeWidth={1.75} className="size-icon" />
-              <span className="truncate">{section.name}</span>
-            </P.Item>
-          ))}
+          {renderSectionDestinations(P, config)}
         </P.SubContent>
       </P.Sub>
     );
   }
 
-  /** "Move to section" for a selection of several rows of one kind. */
+  /** "Move to" for a selection of several rows of one kind. */
   function renderBulkSectionSubmenu(kind: "chat" | "project", ids: string[]) {
     const assignments = kind === "chat" ? sectionByChatId : sectionByProjectId;
     const pinned = kind === "chat" ? pinnedIdSet : pinnedProjectIdSet;
     const sections = new Set(ids.map((id) => (pinned.has(id) ? null : assignments[id] ?? null)));
     return renderSectionSubmenu(CONTEXT_ROW_MENU, {
-      label: t("shell.sections.moveToSection"),
       target:
         kind === "chat"
           ? { chatIds: ids, selection: true }
@@ -4369,14 +4399,15 @@ export function AppSidebar() {
                 <OpenChatFolderUnavailableItem Item={P.Item} />
               )
             ) : null}
+            {/* Projects and sections in one place: both are where the chat is kept. */}
             <P.Sub>
               <P.SubTrigger>
                 <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
-                <span>Project</span>
+                <span>{t("shell.sections.moveTo")}</span>
               </P.SubTrigger>
               <P.SubContent
                 {...sidebarSubmenuOffsets}
-                className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-48"
+                className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-52"
               >
                 {/* Actions above the rule, destinations below it. */}
                 <P.Item
@@ -4388,6 +4419,7 @@ export function AppSidebar() {
                   <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
                   <span>New project</span>
                 </P.Item>
+                {renderNewSectionItem(P, { chatIds: [item.id] })}
                 <P.Sub>
                   <P.SubTrigger>
                     <HugeiconsIcon icon={FolderAttachmentIcon} strokeWidth={1.75} className="size-icon" />
@@ -4414,31 +4446,38 @@ export function AppSidebar() {
                     ))}
                   </P.SubContent>
                 </P.Sub>
-                <P.Separator />
-                <P.Item
-                  disabled={!item.projectId}
-                  onSelect={() => void moveChatToProject(item, null)}
-                >
-                  <span>Recents</span>
-                </P.Item>
-                {projects.map((project) => (
-                  <P.Item
-                    key={project.id}
-                    disabled={item.projectId === project.id}
-                    onSelect={() => void moveChatToProject(item, project.id)}
-                  >
-                    <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                    <span className="truncate">{project.name}</span>
-                  </P.Item>
-                ))}
+                {(projects.length > 0 || item.projectId) && (
+                  <>
+                    <P.Separator />
+                    <P.Label>{t("shell.navigation.projects")}</P.Label>
+                    {/* An action, as Remove from section is: only where there is a project to leave. */}
+                    {item.projectId && (
+                      <P.Item onSelect={() => void moveChatToProject(item, null)}>
+                        <HugeiconsIcon icon={MinusSignCircleIcon} strokeWidth={1.75} className="size-icon" />
+                        <span>{t("shell.sections.removeFromProject")}</span>
+                      </P.Item>
+                    )}
+                    {projects.map((project) => (
+                      <P.Item
+                        key={project.id}
+                        disabled={item.projectId === project.id}
+                        onSelect={() => void moveChatToProject(item, project.id)}
+                      >
+                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                        <span className="truncate">{project.name}</span>
+                      </P.Item>
+                    ))}
+                  </>
+                )}
+                {customSections.length > 0 && <P.Separator />}
+                {renderSectionDestinations(P, {
+                  target: { chatIds: [item.id] },
+                  current: pinnedIdSet.has(item.id) ? null : sectionByChatId[item.id] ?? null,
+                  anyFiled: !pinnedIdSet.has(item.id) && Boolean(sectionByChatId[item.id]),
+                  heading: true,
+                })}
               </P.SubContent>
             </P.Sub>
-            {renderSectionSubmenu(P, {
-              label: t("shell.sections.section"),
-              target: { chatIds: [item.id] },
-              current: pinnedIdSet.has(item.id) ? null : sectionByChatId[item.id] ?? null,
-              anyFiled: !pinnedIdSet.has(item.id) && Boolean(sectionByChatId[item.id]),
-            })}
             <P.Sub>
               <P.SubTrigger>
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
@@ -4795,7 +4834,6 @@ export function AppSidebar() {
             <span>Edit</span>
           </P.Item>
           {renderSectionSubmenu(P, {
-            label: t("shell.sections.section"),
             target: { projectIds: [project.id] },
             current: pinnedProjectIdSet.has(project.id) ? null : sectionByProjectId[project.id] ?? null,
             anyFiled: !pinnedProjectIdSet.has(project.id) && Boolean(sectionByProjectId[project.id]),

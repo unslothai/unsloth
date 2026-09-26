@@ -502,7 +502,7 @@ test("reordering Pinned keeps a pinned row's section for when it is unpinned", (
 test("each list header's menu carries only what that list is about, as in ChatGPT", () => {
   const menu = APP_SIDEBAR.slice(
     APP_SIDEBAR.indexOf("function renderSidebarHeaderMenu("),
-    APP_SIDEBAR.indexOf("function renderSectionSubmenu("),
+    APP_SIDEBAR.indexOf("function renderNewSectionItem("),
   );
   const branch = (from: string, to: string) =>
     menu.slice(menu.indexOf(from), to ? menu.indexOf(to) : undefined);

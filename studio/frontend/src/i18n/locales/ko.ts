@@ -257,9 +257,10 @@ export const ko = {
       edit: "편집",
       remove: "섹션 제거",
       markAllRead: "모두 읽음으로 표시",
-      // Row menu submenu that files a chat or project into a section.
-      section: "섹션",
-      moveToSection: "섹션으로 이동",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "이동",
+      sectionsHeading: "섹션",
+      removeFromProject: "프로젝트에서 제거",
       newSectionEllipsis: "새 섹션…",
       removeFromSection: "섹션에서 제거",
       // Shown in a section with nothing filed in it yet.

@@ -259,9 +259,10 @@ export const ja = {
       edit: "編集",
       remove: "セクションを削除",
       markAllRead: "すべて既読にする",
-      // Row menu submenu that files a chat or project into a section.
-      section: "セクション",
-      moveToSection: "セクションへ移動",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "移動先",
+      sectionsHeading: "セクション",
+      removeFromProject: "プロジェクトから削除",
       newSectionEllipsis: "新しいセクション…",
       removeFromSection: "セクションから削除",
       // Shown in a section with nothing filed in it yet.

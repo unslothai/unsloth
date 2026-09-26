@@ -260,9 +260,10 @@ export const hi = {
       edit: "संपादित करें",
       remove: "सेक्शन हटाएँ",
       markAllRead: "सभी को पढ़ा हुआ चिह्नित करें",
-      // Row menu submenu that files a chat or project into a section.
-      section: "सेक्शन",
-      moveToSection: "सेक्शन में ले जाएँ",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "यहाँ ले जाएँ",
+      sectionsHeading: "सेक्शन",
+      removeFromProject: "प्रोजेक्ट से हटाएँ",
       newSectionEllipsis: "नया सेक्शन…",
       removeFromSection: "सेक्शन से हटाएँ",
       // Shown in a section with nothing filed in it yet.

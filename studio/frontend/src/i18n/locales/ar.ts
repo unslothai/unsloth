@@ -257,9 +257,10 @@ export const ar = {
       edit: "تعديل",
       remove: "إزالة القسم",
       markAllRead: "تعليم الكل كمقروء",
-      // Row menu submenu that files a chat or project into a section.
-      section: "القسم",
-      moveToSection: "نقل إلى قسم",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "نقل إلى",
+      sectionsHeading: "الأقسام",
+      removeFromProject: "إزالة من المشروع",
       newSectionEllipsis: "قسم جديد…",
       removeFromSection: "إزالة من القسم",
       // Shown in a section with nothing filed in it yet.

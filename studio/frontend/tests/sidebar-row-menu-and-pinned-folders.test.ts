@@ -99,29 +99,36 @@ test("an empty open folder says it is empty", () => {
   assert.match(APP_SIDEBAR, /if \(chats\.length === 0\) rows \+= 1;/);
 });
 
-// The submenu holds actions and destinations. The rule separates them, actions above.
-test("the Project submenu puts its actions above the destinations", () => {
+// A chat's "Move to" holds actions and destinations, projects and sections together. A rule
+// separates the actions above from the destinations, each group under its heading.
+test("a chat's Move to submenu puts its actions above its projects and sections", () => {
   const sub = APP_SIDEBAR.slice(
-    APP_SIDEBAR.indexOf("<span>Project</span>"),
+    APP_SIDEBAR.indexOf("{/* Projects and sections in one place"),
     APP_SIDEBAR.indexOf("<span>Export</span>"),
   );
-  assert.ok(sub.length > 0, "the Project submenu moved");
-  const newProject = sub.indexOf("<span>New project</span>");
-  const sources = sub.indexOf("<span>Project sources</span>");
-  const rule = sub.indexOf("<P.Separator />");
-  const recents = sub.indexOf("<span>Recents</span>");
-  for (const [name, at] of Object.entries({
-    newProject,
-    sources,
-    rule,
-    recents,
-  })) {
-    assert.notEqual(at, -1, `${name} is gone from the Project submenu`);
+  assert.ok(sub.length > 0, "the Move to submenu moved");
+  const at = {
+    trigger: sub.indexOf('<span>{t("shell.sections.moveTo")}</span>'),
+    newProject: sub.indexOf("<span>New project</span>"),
+    newSection: sub.indexOf("{renderNewSectionItem(P, { chatIds: [item.id] })}"),
+    sources: sub.indexOf("<span>Project sources</span>"),
+    rule: sub.indexOf("<P.Separator />"),
+    projects: sub.indexOf('<P.Label>{t("shell.navigation.projects")}</P.Label>'),
+    removeProject: sub.indexOf('t("shell.sections.removeFromProject")'),
+    sections: sub.indexOf("heading: true,"),
+  };
+  for (const [name, index] of Object.entries(at)) {
+    assert.notEqual(index, -1, `${name} is gone from the Move to submenu`);
   }
-  assert.ok(newProject < sources, "Project sources is not under New project");
-  assert.ok(sources < rule, "Project sources fell below the rule");
-  assert.ok(rule < recents, "the destinations are not under the rule");
-  // The old wording is gone.
+  assert.ok(at.trigger < at.newProject && at.newProject < at.newSection && at.newSection < at.sources);
+  assert.ok(at.sources < at.rule && at.rule < at.projects && at.projects < at.removeProject);
+  assert.ok(at.removeProject < at.sections, "sections come after projects");
+  // Remove from project only where there is one to leave, not a greyed-out "Recents".
+  assert.match(sub, /\{item\.projectId && \(\n\s*<P\.Item onSelect=\{\(\) => void moveChatToProject\(item, null\)\}>/);
+  assert.ok(!sub.includes("<span>Recents</span>"));
+  // No separate Project or Section submenus any more.
+  assert.ok(!APP_SIDEBAR.includes("<span>Project</span>"));
+  assert.ok(!APP_SIDEBAR.includes('t("shell.sections.section")'));
   assert.ok(!APP_SIDEBAR.includes("<span>Move to project</span>"));
   assert.ok(!APP_SIDEBAR.includes("<span>Save to project sources</span>"));
 });
