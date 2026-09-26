@@ -55,6 +55,9 @@ def _host(
     for name, value in (env or {}).items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(stack, "IS_LINUX", linux)
+    # Pinned like IS_LINUX: on a Windows runner the module reads sys.platform as win32 and
+    # _ensure_rocm_torch takes its Windows branch, so the stubbed Linux host installs nothing.
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
     monkeypatch.setattr(stack, "NO_TORCH", no_torch)
     monkeypatch.setattr(stack, "_TORCH_BACKEND", backend)
     monkeypatch.setattr(stack.platform, "machine", lambda: machine)
