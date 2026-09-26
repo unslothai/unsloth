@@ -17,6 +17,7 @@ import {
   Parabola02Icon,
   PencilEdit02Icon,
   Plant01Icon,
+  Rocket01Icon,
   Shield02Icon,
   Tag01Icon,
   TagsIcon,
@@ -37,6 +38,7 @@ import {
   makeToolProfileConfig,
   makeSamplerConfig,
   makeSeedConfig,
+  makeTrainConfig,
   makeValidatorConfig,
 } from "../utils";
 
@@ -46,7 +48,8 @@ export type BlockKind =
   | "validator"
   | "expression"
   | "seed"
-  | "note";
+  | "note"
+  | "train";
 export type BlockType =
   | SamplerType
   | LlmType
@@ -60,6 +63,7 @@ export type BlockType =
   | "seed_local"
   | "seed_unstructured"
   | "seed_github"
+  | "train"
   | "model_provider"
   | "model_config"
   | "tool_config";
@@ -96,6 +100,7 @@ export type BlockDialogKey =
   | "model_provider"
   | "model_config"
   | "tool_config"
+  | "train"
   | "expression";
 
 export type BlockDefinition = {
@@ -144,6 +149,12 @@ export const BLOCK_GROUPS: BlockGroup[] = [
     title: "Notes",
     description: "Add markdown notes to document your flow.",
     icon: PencilEdit02Icon,
+  },
+  {
+    kind: "train",
+    title: "Train",
+    description: "Fine-tune a model on the dataset this recipe generates.",
+    icon: Rocket01Icon,
   },
 ];
 
@@ -376,6 +387,16 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     dialogKey: "markdown_note",
     createConfig: (id, existing) => makeMarkdownNoteConfig(id, existing),
   },
+  {
+    kind: "train",
+    type: "train",
+    title: "Train on this dataset",
+    description:
+      "Fine-tune a base model on the generated dataset and launch the run.",
+    icon: Rocket01Icon,
+    dialogKey: "train",
+    createConfig: (id, existing) => makeTrainConfig(id, existing),
+  },
 ];
 
 export function getBlocksForKind(kind: BlockKind): BlockDefinition[] {
@@ -436,6 +457,9 @@ export function getBlockDefinitionForConfig(
   }
   if (config.kind === "markdown_note") {
     return getBlockDefinition("note", "markdown_note");
+  }
+  if (config.kind === "train") {
+    return getBlockDefinition("train", "train");
   }
   return getBlockDefinition("expression", "expression");
 }
