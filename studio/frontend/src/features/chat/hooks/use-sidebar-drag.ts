@@ -64,9 +64,6 @@ export const DROP_CUE_CLASS = "sidebar-drop-cue";
  *  The section drag draws its line above its header's copy the same way. */
 const CUE_OVERLAY_CLASS = "sidebar-drop-cue-overlay";
 
-/** How long a dropped row takes to slide from where it was let go into its slot. */
-const SETTLE_MS = 180;
-
 /** How near an edge of the scroller the pointer scrolls the list, and by how much per frame. */
 export const EDGE_PX = 48;
 export const EDGE_STEP_PX = 12;
@@ -100,28 +97,6 @@ function zonesUnder(x: number, y: number): ZoneHit[] {
     }
   }
   return hits;
-}
-
-/** The end strip Recents draws past its last row. Recents is always the last list, so the empty
- *  sidebar below it is past the end of every list: a drop there lands where it would on the strip. */
-function zonePastRecents(x: number, y: number, list: Element | null): ZoneHit | null {
-  if (typeof document === "undefined") return null;
-  const tail = document.querySelector(
-    `[${ROW_KEY_ATTR}="${CSS.escape(rowKey(SIDEBAR_TAIL_SCOPE, "recents"))}"]`,
-  );
-  if (!tail) return null;
-  const rect = tail.getBoundingClientRect();
-  if (rect.height === 0 || y < rect.bottom || x < rect.left || x > rect.right) return null;
-  // Inside the list, not over the account row under it.
-  if (list && y > list.getBoundingClientRect().bottom) return null;
-  try {
-    const parsed = JSON.parse(tail.getAttribute(DROP_ZONE_ATTR) ?? "") as {
-      zone: SidebarDropZone;
-    };
-    return { zone: parsed.zone, closed: false, rect };
-  } catch {
-    return null;
-  }
 }
 
 /** Max distance between a row's bottom and the next row's top for them to share a gap. */
@@ -256,76 +231,6 @@ function placeGhost(ghost: RowGhost, y: number) {
   ghost.element.style.transform = `translate3d(0, ${Math.round(top)}px, 0)`;
 }
 
-/** What a drop zone says it is, or null if it cannot be read. */
-function zoneOf(element: Element): SidebarDropZone | null {
-  try {
-    return (JSON.parse(element.getAttribute(DROP_ZONE_ATTR) ?? "") as { zone: SidebarDropZone }).zone;
-  } catch {
-    return null;
-  }
-}
-
-/** Slides a dropped row from where its copy was let go into its new slot, and a folder's open
- *  chats with it. Read once the drop has redrawn the list, so it costs one pass per drop. */
-function settleRow(item: SidebarDragItem, from: number) {
-  // Two frames: the drop re-renders the sidebar, and the row is measured once it has moved.
-  requestAnimationFrame(() =>
-    requestAnimationFrame(() => {
-      let row: HTMLElement | null = null;
-      const moving: HTMLElement[] = [];
-      for (const element of document.querySelectorAll<HTMLElement>(`[${DROP_ZONE_ATTR}]`)) {
-        if (element.offsetHeight === 0) continue;
-        const zone = zoneOf(element);
-        if (!zone) continue;
-        const isRow = zone.row?.id === item.id && zone.row.kind === item.kind && !zone.header;
-        if (isRow && element.hasAttribute(ROW_KEY_ATTR)) {
-          // The copy of the row nearest where it was let go, should it be drawn twice.
-          const face = element.querySelector(ROW_FACE_SELECTOR) ?? element;
-          const top = face.getBoundingClientRect().top;
-          const best = row?.querySelector(ROW_FACE_SELECTOR) ?? row;
-          if (!best || Math.abs(top - from) < Math.abs(best.getBoundingClientRect().top - from)) {
-            row = element;
-          }
-        }
-        // A folder carries its open chats and its empty line: the spots that name it.
-        if (
-          item.kind === "project" &&
-          zone.folderId === item.id &&
-          zone.row?.kind !== "project" &&
-          !zone.header
-        ) {
-          moving.push(element);
-        }
-      }
-      if (!row) return;
-      const to = (row.querySelector(ROW_FACE_SELECTOR) ?? row).getBoundingClientRect().top;
-      const delta = from - to;
-      if (Math.abs(delta) < 2) return;
-      // Only the outermost of nested spots move, or a spot would move twice.
-      const all = [row, ...moving.filter((element) => element !== row)];
-      const slide = all.filter(
-        (element) => !all.some((other) => other !== element && other.contains(element)),
-      );
-      for (const element of slide) {
-        element.style.transition = "none";
-        element.style.transform = `translateY(${delta}px)`;
-        element.style.zIndex = "1";
-      }
-      row.getBoundingClientRect();
-      for (const element of slide) {
-        element.style.transition = `transform ${SETTLE_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1)`;
-        element.style.transform = "";
-      }
-      window.setTimeout(() => {
-        for (const element of slide) {
-          element.style.transition = "";
-          element.style.zIndex = "";
-        }
-      }, SETTLE_MS + 20);
-    }),
-  );
-}
-
 /** The list the row scrolls while it is carried: the nearest ancestor that actually scrolls. */
 export function scrollerOf(element: Element | null): HTMLElement | null {
   for (let node = element; node; node = node.parentElement) {
@@ -348,8 +253,6 @@ export interface UseSidebarDragOptions {
   onDrop: (plan: SidebarDropPlan, drag: SidebarDragItem) => void;
   /** Opens the closed folder or section the pointer rested on. */
   onSpringOpen?: (zone: SidebarDropZone) => void;
-  /** Read on drop: whether the row may slide into place or should just appear there. */
-  reducedMotion?: () => boolean;
 }
 
 export interface SidebarDragApi {
@@ -428,9 +331,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
       const dragged = sidebarDragSource();
       if (!dragged) return null;
       const context = optionsRef.current.context();
-      const under = zonesUnder(x, y);
-      const past = under.length === 0 ? zonePastRecents(x, y, scroller.current) : null;
-      for (const hit of past ? [past] : under) {
+      for (const hit of zonesUnder(x, y)) {
         const outcome = planSidebarDrop(
           dragged,
           hit.zone,
@@ -631,11 +532,9 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           if (escaped) return;
           const dragged = sidebarDragSource();
           const aimed = aim(released.clientX, released.clientY);
-          const from = ghost.current?.element.getBoundingClientRect().top ?? null;
           clear();
           if (dragged && aimed && aimed.outcome !== STAY) {
             optionsRef.current.onDrop(aimed.outcome, dragged);
-            if (from !== null && !optionsRef.current.reducedMotion?.()) settleRow(dragged, from);
           }
         }
 

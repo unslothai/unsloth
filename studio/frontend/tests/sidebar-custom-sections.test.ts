@@ -775,14 +775,6 @@ test("a saved automatic project sort, no longer offered, falls back to Manual", 
   }
 });
 
-test("a chat filed from its menu while its drop into a folder is in flight keeps that filing", () => {
-  assert.match(
-    APP_SIDEBAR,
-    /filedSince \|\|= now\.sectionByChatId\[item\.id\] !== before\.sectionByChatId\[item\.id\];/,
-  );
-  assert.match(APP_SIDEBAR, /if \(!filedSince\) applyFiling\(\);\n\s*applyOrders\(ordersBefore, sortPicked\);/);
-});
-
 test("custom sections re-measure the bottom fade when they change the list's height", () => {
   const deps = APP_SIDEBAR.slice(
     APP_SIDEBAR.indexOf("// Recompute bottom-fade on mount"),

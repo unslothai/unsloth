@@ -2243,7 +2243,6 @@ export function AppSidebar() {
       else setChatOpen(true);
     },
     onDrop: (plan) => commitDrop(plan),
-    reducedMotion: prefersReducedMotion,
   });
   const draggingRow = dnd.drag;
 
@@ -2329,22 +2328,18 @@ export function AppSidebar() {
     // written into a list still sorted, which is the drop ignored all over again.
     const switching = effects.switchSort;
     let sortPicked = false;
-    // The chat stays on screen in its old list until the move lands, so it can be filed from its
-    // menu meanwhile: that is the newer intent, and the drop's filing stands down for it.
-    let filedSince = false;
-    const stopWatchingSort = useSidebarOrganizationStore.subscribe((now, before) => {
-      if (switching) {
-        sortPicked ||=
-          switchedListSort(now, switching) !== switchedListSort(before, switching);
-      }
-      filedSince ||= now.sectionByChatId[item.id] !== before.sectionByChatId[item.id];
-    });
+    const stopWatchingSort = switching
+      ? useSidebarOrganizationStore.subscribe((now, before) => {
+          sortPicked ||=
+            switchedListSort(now, switching) !== switchedListSort(before, switching);
+        })
+      : () => {};
     const chain = (previous?.chain ?? Promise.resolve())
       .then(() => moveChatToProject(item, move.projectId))
       .then((moved) => {
         if (!moved || moves.get(item.id)?.generation !== generation) return;
         // Read before applyOrders, whose own switch would otherwise trip the watch.
-        if (!filedSince) applyFiling();
+        applyFiling();
         applyOrders(ordersBefore, sortPicked);
         if (unpinAfter) usePinnedChatsStore.getState().unpin(unpinAfter);
       })
@@ -5526,21 +5521,6 @@ export function AppSidebar() {
                         section: "recents",
                         sort: { value: chatSort, set: setChatSort },
                       }),
-                    )}
-                    {sortedRecentChatItems.length > 0 && (
-                      // The end of the list, as somewhere to aim; see Pinned's. The empty sidebar
-                      // below it aims here too (use-sidebar-drag.ts).
-                      <SidebarMenuItem
-                        aria-hidden
-                        className={cn(
-                          "relative z-[1] h-[calc(8px*var(--ui-space-scale,1))]",
-                          dropCueClass(SIDEBAR_TAIL_SCOPE, "recents"),
-                        )}
-                        {...dnd.dropZoneProps({
-                          section: "recents",
-                          blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "recents" },
-                        })}
-                      />
                     )}
                   </SidebarMenu>
                   {/* "No chats yet" only when there is truly no history:

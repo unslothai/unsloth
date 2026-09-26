@@ -1079,7 +1079,7 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
   );
   assert.match(
     APP_SIDEBAR,
-    /\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)\n\s*\.then\(\(moved\) => \{\n\s*if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;\n(?:\s*\/\/[^\n]*\n)*\s*if \(!filedSince\) applyFiling\(\);\n\s*applyOrders\(ordersBefore, sortPicked\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
+    /\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)\n\s*\.then\(\(moved\) => \{\n\s*if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;\n(?:\s*\/\/[^\n]*\n)*\s*applyFiling\(\);\n\s*applyOrders\(ordersBefore, sortPicked\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
   );
   // And nothing else in commitDrop writes an order on its own.
   const commit = APP_SIDEBAR.slice(
@@ -1121,7 +1121,7 @@ test("a sort picked while a move is in flight is not overwritten", () => {
   // for it would leave the slot written into a list still sorted, undoing the drop.
   assert.match(
     commit,
-    /const stopWatchingSort = useSidebarOrganizationStore\.subscribe\(\(now, before\) => \{\n\s*if \(switching\) \{\n\s*sortPicked \|\|=\n\s*switchedListSort\(now, switching\) !== switchedListSort\(before, switching\);\n\s*\}/,
+    /const stopWatchingSort = switching\n\s*\? useSidebarOrganizationStore\.subscribe\(\(now, before\) => \{\n\s*sortPicked \|\|=\n\s*switchedListSort\(now, switching\) !== switchedListSort\(before, switching\);\n\s*\}\)\n\s*: \(\) => \{\};/,
   );
   // Each list reads its own sort, custom sections included.
   assert.match(
@@ -1292,15 +1292,6 @@ test("a carried row lifts a copy that follows the pointer", () => {
   // The row it came from dims as a section does, bare of its pressed look.
   assert.equal(APP_SIDEBAR.match(/draggingRow\?\.id === (item|project)\.id && "opacity-40"/g)?.length, 2);
   assert.match(CSS, /body\.sidebar-row-dragging \[data-sidebar="menu-button"\]:active \{\n\s*background-color: transparent;/);
-});
-
-test("a dropped row slides from where it was let go, unless motion is reduced", () => {
-  assert.match(HOOK, /const from = ghost\.current\?\.element\.getBoundingClientRect\(\)\.top \?\? null;\n\s*clear\(\);/);
-  assert.match(HOOK, /onDrop\(aimed\.outcome, dragged\);\n\s*if \(from !== null && !optionsRef\.current\.reducedMotion\?\.\(\)\) settleRow\(dragged, from\);/);
-  assert.match(APP_SIDEBAR, /onDrop: \(plan\) => commitDrop\(plan\),\n\s*reducedMotion: prefersReducedMotion,/);
-  // A folder carries its open chats: the spots naming it slide with its row, each once.
-  assert.match(HOOK, /zone\.folderId === item\.id &&/);
-  assert.match(HOOK, /!all\.some\(\(other\) => other !== element && other\.contains\(element\)\)/);
 });
 
 // The window hears every pointer, not just the one that pressed the row. Without this a finger
@@ -1495,40 +1486,6 @@ test("a drop into a folder lights the folder, even while a line shows the slot",
   assert.match(HOOK, /\(key: string\): boolean => litRingKey\(plan\) === key/);
 });
 
-// The end of Recents: its strip past the last row, and the empty sidebar below it.
-test("a Recents chat dropped past the last row moves to the end", () => {
-  const tail: SidebarDropZone = {
-    section: "recents",
-    blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "recents" },
-  };
-  const plan = plannedDrop(
-    planSidebarDrop(chat("r1", "recents", RECENTS_ORDER_SCOPE, null), tail, "bottom", context()),
-  );
-  assert.deepEqual(plan.effects.orders, [{ scope: RECENTS_ORDER_SCOPE, ids: ["r2", "r1"] }]);
-  assert.deepEqual(plan.cue, { line: { rowKey: rowKey(RECENTS_ORDER_SCOPE, "r2"), edge: "bottom" } });
-  // Already last: nothing to do, and the section does not answer instead.
-  assert.equal(
-    planSidebarDrop(chat("r2", "recents", RECENTS_ORDER_SCOPE, null), tail, "bottom", context()),
-    STAY,
-  );
-  // A chat from elsewhere lands last too, as it does on the section.
-  const pinned = plannedDrop(
-    planSidebarDrop(chat("p1", "pinned", PINNED_ORDER_SCOPE, null), tail, "bottom", context()),
-  );
-  assert.deepEqual(pinned.effects.orders.at(-1)?.ids.at(-1), "p1");
-});
-
-test("Recents draws an end strip, and the empty sidebar below it aims there", () => {
-  assert.match(
-    APP_SIDEBAR,
-    /dropCueClass\(SIDEBAR_TAIL_SCOPE, "recents"\),\n\s*\)\}\n\s*\{\.\.\.dnd\.dropZoneProps\(\{\n\s*section: "recents",\n\s*blockEnd: \{ scope: SIDEBAR_TAIL_SCOPE, id: "recents" \},/,
-  );
-  assert.match(HOOK, /const past = under\.length === 0 \? zonePastRecents\(x, y, scroller\.current\) : null;/);
-  // Only below the strip and inside the list, not over the account row under it.
-  assert.match(HOOK, /y < rect\.bottom \|\| x < rect\.left \|\| x > rect\.right\) return null;/);
-  assert.match(HOOK, /if \(list && y > list\.getBoundingClientRect\(\)\.bottom\) return null;/);
-});
-
 test("the drop cue is drawn again above the carried row's copy", () => {
   // Every cue carries the marker the overlay looks for.
   for (const name of ["DROP_CUE_BASE", "DROP_INTO_CUE", "DROP_INTO_ROW_CUE"]) {
@@ -1538,6 +1495,10 @@ test("the drop cue is drawn again above the carried row's copy", () => {
   assert.match(HOOK, /track\(at\.x, at\.y\);\n\s*if \(ghost\.current\) placeCue\(ghost\.current\);/);
   assert.match(HOOK, /ghost\.current\?\.cue\.remove\(\);/);
   // Its border only: the tint under the copy would double.
-  assert.doesNotMatch(HOOK.slice(HOOK.indexOf("function placeCue"), HOOK.indexOf("function zoneOf")), /background/);
+  assert.doesNotMatch(HOOK.slice(HOOK.indexOf("function placeCue"), HOOK.indexOf("export function scrollerOf")), /background/);
+  // Only how the drag looks changed: where a row lands, and what the drop does, are as they were.
+  // No slide into place after the drop, and no drop past the end of Recents.
+  assert.doesNotMatch(HOOK, /settleRow|reducedMotion|zonePastRecents/);
+  assert.doesNotMatch(APP_SIDEBAR, /dropCueClass\(SIDEBAR_TAIL_SCOPE, "recents"\)/);
   assert.match(CSS, /\.sidebar-drop-cue-overlay \{\n\tposition: fixed;[\s\S]*?z-index: 61;[\s\S]*?pointer-events: none;/);
 });
