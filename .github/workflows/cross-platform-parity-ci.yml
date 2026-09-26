@@ -346,8 +346,7 @@ jobs:
       - name: Install lock alias-exclusion tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_install_lock_excludes_aliases.ps1
-      # Both legs: the lexical fallback it is compared against behaves differently on
-      # Windows PowerShell 5.1, which sees only the raw reparse target, than on pwsh 7.
+      # Both legs: the lexical fallback differs between Windows PowerShell 5.1 and pwsh 7.
       - name: Early Python path resolver tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_early_python_path_resolver.ps1

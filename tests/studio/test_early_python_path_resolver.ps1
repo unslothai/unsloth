@@ -131,8 +131,7 @@ try {
     if ($loopOk) {
         $loopAnswer = Get-StudioPythonFinalPath -Path $loopA
         Check "a link loop is not promoted to an exact identity" ([string]::IsNullOrWhiteSpace($loopAnswer))
-        # Test-Path reports the link itself (lstat / GetFileAttributes), so the walk stops AT the
-        # link rather than stripping it and resolving only the ancestor.
+        # Test-Path reports the link itself, so the walk stops AT the link.
         $loopChild = Resolve-StudioFinalPathInfo -Path (Join-Path $loopA "studio")
         Check "a missing path under a link loop is not exact" ($loopChild.Exact -eq $false)
     }
@@ -143,8 +142,7 @@ try {
         New-Item -ItemType SymbolicLink -Path $dangling -Target (Join-Path $tmp "gone") -ErrorAction Stop | Out-Null
         $danglingOk = $true
     } catch {
-        # Windows PowerShell 5.1 refuses a link to a missing target, so link first and then
-        # remove the target, which leaves the same dangling entry.
+        # 5.1 refuses a link to a missing target: link first, then remove the target.
         try {
             $gone = Join-Path $tmp "gone"
             New-Item -ItemType Directory -Force -Path $gone | Out-Null
@@ -159,9 +157,7 @@ try {
             $info = Resolve-StudioFinalPathInfo -Path $probePath
             Check "a dangling link is not exact (suffix '$suffix')" ($info.Exact -eq $false)
         }
-        # Where Test-Path follows the link and reports it missing, the walk strips it and hands
-        # the resolver an ordinary ancestor. The stripped entry is still a reparse point, and
-        # that alone has to keep the answer inexact.
+        # Where Test-Path follows the link, the stripped entry's reparse bit alone must keep it inexact.
         function Test-Path {
             param([string]$LiteralPath)
             if ($LiteralPath.StartsWith($dangling)) { return $false }
@@ -282,8 +278,7 @@ try {
     function Test-Path { param($LiteralPath, $PathType, $ErrorAction) $script:ReprobeCount++; return $false }
     $null = Get-StudioEarlyPython
     Check "a hit is not probed again" ($script:ReprobeCount -eq 0)
-    # A candidate that cannot be inspected (an unreadable directory throws under Stop) is skipped,
-    # and nothing escapes into the lock-name hash that calls this before the install lock.
+    # An uninspectable candidate (throws under Stop) is skipped without escaping.
     function Test-Path { param($LiteralPath, $PathType, $ErrorAction)
         throw [System.UnauthorizedAccessException]::new("Access to the path '$LiteralPath' is denied.") }
     $script:StudioEarlyPythonProbed = $false
