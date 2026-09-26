@@ -132,6 +132,7 @@ from .diffusion_memory import (
     vae_is_sliced,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
+from .media_decode_phase import decode_phase
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -1118,6 +1119,8 @@ class _GenState:
     first_step_at: float = 0.0
     # Computed once per step (in the callback) so it's stable between polls.
     eta_seconds: Optional[float] = None
+    # "decode" once pipe() enters its decoder, which runs after the last step callback.
+    phase: str = "denoise"
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -8888,6 +8891,13 @@ class DiffusionBackend:
                             # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
+                        # Per chunk: a later chunk denoises again after an earlier one decoded.
+                        gen.phase = "denoise"
+
+                        def _enter_decode_phase(gen = gen) -> None:
+                            gen.phase = "decode"
+                            gen.eta_seconds = None
+
                         try:
                             # torchao aten.to fails torch's aliasing check under inference_mode; model offload moves weights.
                             with (
@@ -8898,6 +8908,7 @@ class DiffusionBackend:
                                     else torch.inference_mode()
                                 ),
                                 protect_ctx,
+                                decode_phase(pipe, _enter_decode_phase),
                             ):
                                 out = render_thread.run(
                                     "diffusion", lambda: pipe(**chunk_kwargs).images
@@ -9060,6 +9071,7 @@ class DiffusionBackend:
                 "total_steps": 0,
                 "fraction": 0.0,
                 "eta_seconds": None,
+                "phase": "denoise",
             }
         return {
             "active": True,
@@ -9067,6 +9079,7 @@ class DiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
+            "phase": gen.phase,
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:

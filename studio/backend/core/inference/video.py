@@ -100,6 +100,7 @@ from .diffusion_memory import (
     settled_snapshot_device_memory,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
+from .media_decode_phase import decode_phase as _decode_phase
 from . import diffusion_render_thread as render_thread
 from .diffusion_speed import (
     SPEED_DEFAULT,
@@ -734,72 +735,8 @@ def _completed_step_poller(pump: Any, poll_seconds: float = 0.1):
         thread.join(timeout = 2.0)
 
 
-# The decoders a video pipeline may run after its denoise loop, in the order the modular MiniMax-H3
-# workflow runs them. Wrapping the bound method is the one hook every family shares.
-_DECODE_ATTRS = ("vae", "audio_vae")
-
-# How hard the end-of-denoise marker tries before it gives up and flips the phase at the host
-# position. The hold-off refuses without blocking, so most refusals are the 10 Hz poller holding
-# the lock for a couple of event queries; 20 tries 20 ms apart covers several poll ticks and costs
-# nothing when uncontended, while a real capture outlasts it and takes the host-position fallback.
 _BOUNDARY_MARK_ATTEMPTS = 20
 _BOUNDARY_MARK_RETRY_SECONDS = 0.02
-
-
-@contextlib.contextmanager
-def _decode_phase(pipe: Any, on_decode: Any):
-    """Flip the reported phase to "decode" the instant the decoder is entered.
-
-    HunyuanVideo-1.5, Wan and MiniMax-H3's modular workflow all run the decode INSIDE the pipeline
-    call with nothing between the denoise loop and it, so a phase set only after ``pipe()`` returns
-    reports the whole decode as the last denoise step. On H3 that decode plus its post-processing
-    is ~3.9 s of the render, and the VAE decode is the memory peak.
-
-    Note what this hook is and is not: it is the one HOST position that knows the denoise loop is
-    over, and nothing more. On a family where the host runs ahead of the device, the denoise
-    kernels can still be queued when it fires, so the caller must treat it as "mark the boundary",
-    not as "the denoise finished" -- see ``_CompletedStepTicker.mark_boundary``.
-
-    ``on_decode`` fires at most once per generation and must not raise. Every wrapper installed
-    here is removed again, including when the decode raises -- and restored to whatever was there,
-    since the speed layer may have already put a compiled decode in the instance ``__dict__``.
-    """
-    fired = {"done": False}
-    restore: list = []
-
-    def _wrap(original: Any):
-        def _decode(*args: Any, **kwargs: Any) -> Any:
-            if not fired["done"]:
-                fired["done"] = True
-                on_decode()
-            return original(*args, **kwargs)
-
-        return _decode
-
-    for name in _DECODE_ATTRS:
-        owner = getattr(pipe, name, None)
-        original = getattr(owner, "decode", None) if owner is not None else None
-        if not callable(original):
-            continue
-        had_own = "decode" in getattr(owner, "__dict__", {})
-        try:
-            owner.decode = _wrap(original)
-        except Exception:  # noqa: BLE001 -- a decoder that refuses assignment goes unreported
-            continue
-        restore.append((owner, original, had_own))
-    try:
-        yield
-    finally:
-        for owner, original, had_own in restore:
-            try:
-                if had_own:
-                    owner.decode = original
-                else:
-                    # Nothing was shadowing the class method, so leave nothing behind -- a bound
-                    # method parked in a module's __dict__ is a reference cycle back to the module.
-                    del owner.decode
-            except Exception:  # noqa: BLE001 -- cleanup is best-effort
-                pass
 
 
 def _assert_pick_is_not_speech(

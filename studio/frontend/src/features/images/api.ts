@@ -93,6 +93,8 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
+  // Absent (sd.cpp engine) means "denoise".
+  phase?: "denoise" | "decode" | null;
 }
 
 export interface DiffusionLoadProgress {
