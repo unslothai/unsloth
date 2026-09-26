@@ -17,12 +17,14 @@ run reports the drift instead of quietly fixing it.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -365,6 +367,29 @@ def _kill_tree(proc: subprocess.Popen) -> None:
     proc.wait()
 
 
+@contextlib.contextmanager
+def _timeout_signal_held():
+    """Defer SIGALRM (pytest-timeout's signal method) until the block has finished.
+
+    Masking the thread would not do: under xdist the kernel can hand the signal to another
+    thread, and CPython still runs the Python handler here at the next bytecode. So the handler
+    itself is swapped for one that only records the signal, and the signal is raised again once
+    the real handler is back. Windows has no SIGALRM, and pytest-timeout's thread method there
+    ends the whole process rather than raising into this one.
+    """
+    if not hasattr(signal, "SIGALRM") or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    held = []
+    previous = signal.signal(signal.SIGALRM, lambda signum, frame: held.append(signum))
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGALRM, previous)
+        if held:
+            signal.raise_signal(signal.SIGALRM)
+
+
 def _run_side_by_side(argvs: list[list[str]], log_dir: Path) -> list[tuple[int, str]]:
     """Run `argvs` at most `os.cpu_count()` at a time; (returncode, output) for each, in order.
 
@@ -384,7 +409,10 @@ def _run_side_by_side(argvs: list[list[str]], log_dir: Path) -> list[tuple[int, 
             while queued and len(running) < limit:
                 index, argv = queued.pop(0)
                 log = log_dir / f"{index}.log"
-                with open(log, "wb") as sink:
+                # Held across the launch: pytest-timeout's SIGALRM landing between Popen returning
+                # and the process being recorded would leave nothing for the finally to kill. A
+                # held signal is raised again once the process is recorded.
+                with _timeout_signal_held(), open(log, "wb") as sink:
                     running[index] = (
                         subprocess.Popen(argv, stdout = sink, stderr = subprocess.STDOUT, **_OWN_GROUP),
                         log,
@@ -467,14 +495,16 @@ def test_a_timeout_in_the_polling_loop_kills_the_running_formatters(tmp_path, mo
     wrapper = (
         "import subprocess, sys, time\n"
         "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
-        f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+        # Published whole: a reader never sees the file created but not yet written.
+        f"open({str(pid_file)!r} + '.tmp', 'w').write(str(child.pid))\n"
+        f"import os; os.replace({str(pid_file)!r} + '.tmp', {str(pid_file)!r})\n"
         "child.wait()\n"
     )
 
     def timeout(_seconds):
         # Let the wrapper start its child first, the way a real timeout lands mid-format.
         deadline = real_monotonic() + 30
-        while not pid_file.exists() and real_monotonic() < deadline:
+        while _read_pid(pid_file) is None and real_monotonic() < deadline:
             real_sleep(0.05)
         raise RuntimeError("stand-in for pytest-timeout")
 
@@ -484,12 +514,20 @@ def test_a_timeout_in_the_polling_loop_kills_the_running_formatters(tmp_path, mo
         _run_side_by_side([[sys.executable, "-c", wrapper]], tmp_path / "logs")
     assert started, "nothing was launched, so this proves nothing"
     assert all(proc.poll() is not None for proc in started), "a formatter outlived the timeout"
-    grandchild = int(pid_file.read_text())
+    grandchild = _read_pid(pid_file)
+    assert grandchild is not None, "the batch never started its child"
     for _ in range(100):
         if not _alive(grandchild):
             break
         real_sleep(0.05)
     assert not _alive(grandchild), "the formatter's own child outlived the timeout"
+
+
+def _read_pid(path: Path) -> int | None:
+    try:
+        return int(path.read_text())
+    except (OSError, ValueError):
+        return None
 
 
 def _alive(pid: int) -> bool:
@@ -515,3 +553,33 @@ def test_side_by_side_results_come_back_in_order(tmp_path):
     results = _run_side_by_side(argvs, tmp_path)
     assert [code for code, _ in results] == [0, 1, 0, 1, 0]
     assert [output.strip() for _, output in results] == ["0", "1", "2", "3", "4"]
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason = "pytest-timeout raises no signal here")
+def test_a_timeout_during_launch_still_kills_the_new_formatter(tmp_path, monkeypatch):
+    """The window between Popen returning and the process being recorded: a timeout landing
+    there must still leave the finally something to kill."""
+    started = []
+    real_popen = subprocess.Popen
+
+    def popen(*args, **kwargs):
+        started.append(real_popen(*args, **kwargs))
+        signal.raise_signal(signal.SIGALRM)  # arrives the moment Popen has returned
+        return started[-1]
+
+    def timeout(_signum, _frame):
+        raise RuntimeError("stand-in for pytest-timeout")
+
+    previous = signal.signal(signal.SIGALRM, timeout)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    try:
+        with pytest.raises(RuntimeError, match = "stand-in"):
+            _run_side_by_side(
+                [[sys.executable, "-c", "import time; time.sleep(120)"]], tmp_path / "logs"
+            )
+    finally:
+        signal.signal(signal.SIGALRM, previous)
+    assert started, "nothing was launched, so this proves nothing"
+    assert all(
+        proc.poll() is not None for proc in started
+    ), "the new formatter outlived the timeout"
