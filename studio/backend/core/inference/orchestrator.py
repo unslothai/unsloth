@@ -22,6 +22,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Generator, Mapping, Optional, Sequence, Tuple, Union
 from core.inference.audio_device import audio_device_forces_cpu
+from core.inference.context_refusal import ContextBudgetExceeded
 from core.inference.native_audio import NATIVE_AUDIO_TYPES, is_native_audio_model
 from core.inference.audio_errors import (
     AUDIO_UNSUPPORTED_CODE,
@@ -358,6 +359,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "max_context_length": model_info.get("max_context_length"),
         "requested_context_length": model_info.get("requested_context_length"),
         "context_length_enforced": model_info.get("context_length_enforced"),
+        "mlx_context_budget": model_info.get("mlx_context_budget"),
     }
 
 
@@ -1410,6 +1412,12 @@ class InferenceOrchestrator:
                     stats_holder["stats"] = resp.get("stats")
                 return
             elif rtype == "gen_error":
+                _budget = resp.get("context_budget")
+                if _budget:
+                    # Rebuilt rather than yielded as text: the route arms match on the type.
+                    raise ContextBudgetExceeded(
+                        _budget["request_tokens"], _budget["context_tokens"]
+                    )
                 yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
                 return
 

@@ -14,6 +14,7 @@ import time
 from collections import OrderedDict
 from contextlib import ExitStack, closing, contextmanager, nullcontext
 from typing import Optional, Generator
+from core.inference import context_refusal
 from core.inference.message_content import content_to_text
 from core.inference.native_tool_tokens import (
     NativeToolTokenDecoder,
@@ -1385,12 +1386,6 @@ MLX_KV_QUANT_NO_REUSE = (
 MLX_KV_QUANT_VLM_CACHE_NOTE = (
     "On vision models, quantization starts once the cache reaches {start} tokens."
 )
-# RotatingKVCache.to_quantized raises and mlx-lm converts from the first token, so the two are resolved here rather
-# than failing generation on its first step.
-MLX_KV_QUANT_PINNED_CONTEXT = (
-    "Context Length is set for this model, which limits the KV cache, and the installed "
-    "mlx-lm cannot quantize a limited cache. Reset it to quantize instead."
-)
 
 
 def _kv_entry_nbytes(entry):
@@ -1974,7 +1969,7 @@ def _kv_quant_status(
     requested_bits,
     model,
     is_vlm,
-    context_pinned = False,
+    starts_at_first_token = False,
 ):
     """Resolve a requested bit width against this model into a status dict."""
     status = {
@@ -1986,18 +1981,13 @@ def _kv_quant_status(
     }
     if requested_bits is None:
         return status
-    if context_pinned:
-        status["eligibility"] = "refused"
-        status["reason"] = MLX_KV_QUANT_PINNED_CONTEXT
-        logger.info("MLX KV quantization not applied: %s", MLX_KV_QUANT_PINNED_CONTEXT)
-        return status
     verdict, reason, retainable = _kv_quant_eligibility(model, is_vlm, requested_bits)
     status["eligibility"] = verdict
     status["reason"] = reason
     if verdict in ("full", "partial"):
         status["kv_bits"] = requested_bits
         notes = []
-        if is_vlm:
+        if is_vlm and not starts_at_first_token:
             notes.append(MLX_KV_QUANT_VLM_CACHE_NOTE.format(start = _vlm_quantized_kv_start()))
         if not retainable:
             notes.append(MLX_KV_QUANT_NO_REUSE)
@@ -2452,6 +2442,7 @@ class MLXInferenceBackend:
         # Bound now so a load that fails before installing leaves readers a dict rather than raising.
         self._kv_quant = _kv_quant_status(None, None, False)
         self._kv_cache_window = None
+        self._kv_context_budget = None
         self._served_context = None
         self._template_override = _template_override_status(None, None, None)[1]
 
@@ -2636,25 +2627,88 @@ class MLXInferenceBackend:
         self,
         prompt,
         prompt_tokens = None,
+        images = None,
+        audio = None,
+        videos = None,
     ):
         """Free context for an unset limit, or the default if the prompt cannot be counted."""
         try:
             prompt_n = (
                 len(prompt_tokens)
                 if prompt_tokens is not None
-                else self._count_prompt_tokens(prompt)
+                else self._count_prompt_tokens(prompt, images, audio, videos)
             )
         except Exception as exc:
             logger.debug("MLX prompt count for an unset budget failed: %s", exc)
             return UNSET_GENERATION_BUDGET
         return generation_budget_for_window(self._served_context, prompt_n, None)
 
+    def _generation_limit(
+        self,
+        prompt,
+        max_new_tokens,
+        prompt_tokens = None,
+        images = None,
+        audio = None,
+        videos = None,
+        cap = None,
+    ):
+        """The output limit for this request, refusing it first if the context cannot hold it.
+        Sizing and admission count the same prompt, so they take it once: fed separately, a caller
+        can hand the media to one and not the other. `cap` covers a count known to be short."""
+        budget = getattr(self, "_kv_context_budget", None)
+        # Max Tokens at the whole window is how the UI spells "no cap", so admitting that request
+        # against the budget would refuse every prompt. Size it to the free context like an unset one.
+        # Only at the window: above it the caller asked for more than fits and is told so.
+        if budget and max_new_tokens is not None and int(max_new_tokens) == int(budget):
+            max_new_tokens = None
+        if max_new_tokens is None:
+            max_new_tokens = self._unset_generation_budget(
+                prompt, prompt_tokens, images, audio, videos
+            )
+            if cap is not None:
+                max_new_tokens = min(max_new_tokens, cap)
+        self._check_context_budget(prompt, max_new_tokens, prompt_tokens, images, audio, videos)
+        return max_new_tokens
+
     def _kv_quant_generate_kwargs(self):
         """Load-time runtime knobs for a generate call, empty when unset. quantized_kv_start is
-        deliberately not passed: mlx-lm and mlx-vlm ship different defaults (0 and 5000) and each
-        runtime keeps its own."""
+        otherwise left to each runtime, whose defaults differ (0 and 5000); under a budget
+        mlx-vlm's could sit above every request the budget admits, and would never be reached."""
         kv_bits = (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
-        return {} if kv_bits is None else {"kv_bits": kv_bits}
+        if kv_bits is None:
+            return {}
+        if getattr(self, "_kv_context_budget", None):
+            return {"kv_bits": kv_bits, "quantized_kv_start": 0}
+        return {"kv_bits": kv_bits}
+
+    def _check_context_budget(
+        self,
+        prompt,
+        max_new_tokens = 0,
+        prompt_tokens = None,
+        images = None,
+        audio = None,
+        videos = None,
+    ):
+        """Refuse a request the pinned context cannot hold; unset where a bounded cache rotates
+        instead. Counted here because the caller holds the prompt as text, not as tokens. An
+        uncountable prompt is admitted rather than refused on a number nobody could produce."""
+        budget = getattr(self, "_kv_context_budget", None)
+        if not budget:
+            return
+        try:
+            prompt_n = (
+                len(prompt_tokens)
+                if prompt_tokens is not None
+                else self._count_prompt_tokens(prompt, images, audio, videos)
+            )
+        except Exception as exc:
+            logger.debug("MLX prompt count for the context budget failed: %s", exc)
+            return
+        needed = prompt_n + max(0, int(max_new_tokens or 0))
+        if needed > budget:
+            raise context_refusal.ContextBudgetExceeded(needed, int(budget))
 
     def _kv_window_generate_kwargs(self):
         """The cache bound for a generation that builds its own cache, empty when unset. Both
@@ -2674,10 +2728,64 @@ class MLXInferenceBackend:
             )
         )
 
-    def _count_prompt_tokens(self, prompt):
+    def _count_media_prompt_tokens(
+        self,
+        prompt,
+        images = None,
+        audio = None,
+        videos = None,
+    ):
+        """The prompt as the processor expands it, or None where it cannot be prepared. A
+        placeholder is one token where the processor makes hundreds -- 582 for a 672x672 image on
+        Qwen2.5-VL -- and every family counts differently, so this prepares the inputs generation
+        will use, as mlx-vlm's own server does against its context limit."""
+        if not (images or audio or videos):
+            return None
+        try:
+            from mlx_vlm.utils import prepare_inputs
+
+            config = getattr(self._model, "config", None)
+            read = (
+                config.get if isinstance(config, dict) else lambda attr: getattr(config, attr, None)
+            )
+            kwargs = {}
+            if images:
+                kwargs["images"] = images
+            if audio:
+                kwargs["audio"] = audio
+            if videos:
+                # Sampled the way generation samples it, so a clip throttled to fit the frame
+                # budget is not counted at the processor's own rate.
+                kwargs["videos"] = videos
+                fps = _video_frame_rate(videos[0], self._processor)
+                if fps is not None:
+                    kwargs["fps"] = fps
+            inputs = prepare_inputs(
+                self._processor,
+                prompts = prompt,
+                image_token_index = read("image_token_index"),
+                add_special_tokens = _vlm_add_special_tokens(read("model_type"), self._processor),
+                **kwargs,
+            )
+            ids = inputs["input_ids"]
+            return int(getattr(ids, "size", 0)) or len(ids)
+        except Exception as exc:
+            logger.debug("MLX media prompt count failed: %s", exc)
+            return None
+
+    def _count_prompt_tokens(
+        self,
+        prompt,
+        images = None,
+        audio = None,
+        videos = None,
+    ):
         """Prompt length as generation tokenizes it; vision models follow mlx_vlm's marker rule."""
         if not self._is_vlm:
             return len(self._encode_prompt(prompt))
+        expanded = self._count_media_prompt_tokens(prompt, images, audio, videos)
+        if expanded is not None:
+            return expanded
         model_type = getattr(getattr(self._model, "config", None), "model_type", None)
         add_special = _vlm_add_special_tokens(model_type, self._processor)
         return len(self._tokenizer.encode(prompt, add_special_tokens = add_special))
@@ -2752,34 +2860,31 @@ class MLXInferenceBackend:
         return enforced
 
     def _resolve_kv_policy(self, is_vlm, kv_bits, max_seq_length, served):
-        """The quantization status and cache window this load will run with.
+        """The quantization status, cache window and per-request budget this load will run with.
 
-        Rotation is what keeps a long conversation inside the window, so nothing here can refuse a
-        request; the model simply stops attending to the oldest tokens.
-
-        Quantization cannot coexist with a bound -- a rotating cache has no conversion, and mlx-lm
-        converts from the first token -- so an enforceable pin, an explicit instruction about
-        memory, outranks it. A window the backend chose for itself yields to an explicitly requested
-        quantization, and so does a pin that cannot be enforced, which would otherwise spend the
-        quantization and bound nothing.
-        """
+        A bounded cache rotates rather than refusing, and neither runtime converts a rotating entry,
+        so the two cannot coexist: a requested width takes the cache and an enforceable pin becomes
+        an admission budget instead. Without a width the pin bounds the cache as before."""
         pinned = _positive_int(max_seq_length) is not None
         # Tri-state: True bounded, False confirmed unbounded, None unjudgeable. Only True installs a bound; the other
         # two stay apart so a client can tell them apart.
         confirmed = self._kv_cache_window_enforceable(served)
         enforceable = confirmed is True
+        # A width granted here becomes a budget, which starts quantizing at the first token.
         quant = _kv_quant_status(
             _normalize_mlx_kv_bits(kv_bits),
             self._model,
             is_vlm,
-            pinned and enforceable,
+            starts_at_first_token = pinned and enforceable,
         )
-        if not enforceable or (quant["kv_bits"] is not None and not pinned):
-            # No bound installed, so False wherever the probe answered at all; None only where nothing could be built
-            # to judge.
-            return quant, None, None if confirmed is None else False
-        logger.info("MLX KV cache limited to %d tokens", int(served))
-        return quant, int(served), True
+        if quant["kv_bits"] is None and enforceable:
+            logger.info("MLX KV cache limited to %d tokens", int(served))
+            return quant, int(served), True, None
+        # No bound installed: False wherever the probe answered, None where it could not.
+        budget = int(served) if quant["kv_bits"] is not None and pinned and enforceable else None
+        if budget:
+            logger.info("MLX context limited to %d tokens per request, not by the cache", budget)
+        return quant, None, (None if confirmed is None else False), budget
 
     def load_model(
         self,
@@ -2904,9 +3009,12 @@ class MLXInferenceBackend:
         self._served_context = _served_ctx
         # Classify before the first generation: an ineligible cache would otherwise raise inside
         # maybe_quantize_kv_cache mid-stream, after converting the leading entries.
-        self._kv_quant, self._kv_cache_window, _ctx_enforced = self._resolve_kv_policy(
-            is_vision, kv_bits, max_seq_length, _served_ctx
-        )
+        (
+            self._kv_quant,
+            self._kv_cache_window,
+            _ctx_enforced,
+            self._kv_context_budget,
+        ) = self._resolve_kv_policy(is_vision, kv_bits, max_seq_length, _served_ctx)
         if self._kv_quant["kv_bits"] is not None:
             logger.info(
                 "MLX KV cache quantization: %s-bit (%s eligibility)",
@@ -2986,6 +3094,8 @@ class MLXInferenceBackend:
             # unbounded, None nothing could be built to judge. Without it the API reports a limit a client cannot tell
             # from an enforced one.
             "context_length_enforced": _ctx_enforced,
+            # Set only where the pin became an admission limit rather than a cache bound.
+            "mlx_context_budget": self._kv_context_budget,
             "mlx_kv_bits": self._kv_quant["kv_bits"],
             "mlx_kv_bits_requested": self._kv_quant["requested_kv_bits"],
             "mlx_kv_quant_eligibility": self._kv_quant["eligibility"],
@@ -3508,8 +3618,7 @@ class MLXInferenceBackend:
                 prompt_tokens,
                 cached_n,
             ) = self._prepare_prompt_cache(prompt, _adapter_state)
-            if max_new_tokens is None:
-                max_new_tokens = self._unset_generation_budget(prompt, prompt_tokens)
+            max_new_tokens = self._generation_limit(prompt, max_new_tokens, prompt_tokens)
             logger.info(
                 "Generating: prompt_len=%d, cached=%d, max_tokens=%d, model=%s, tokenizer=%s",
                 len(prompt),
@@ -3847,12 +3956,21 @@ class MLXInferenceBackend:
         # Matched on the sampled text, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
         stopped = False
-        if max_new_tokens is None:
-            max_new_tokens = self._unset_generation_budget(prompt)
-            if images or video is not None:
-                # Media expands past its placeholder (a clip by a frame each), so the counted
-                # prompt is short: cap at the default, under the cache window.
-                max_new_tokens = min(max_new_tokens, UNSET_GENERATION_BUDGET)
+        # Counted from a file: the base64 the route sends expands to nothing the processor can read.
+        # Discarded here rather than handed on, since setup below can raise before the stream's
+        # cleanup is entered; generation writes its own copy under that cleanup.
+        counted_clip = _write_video_clip(video) if video is not None else None
+        try:
+            max_new_tokens = self._generation_limit(
+                prompt,
+                max_new_tokens,
+                images = images,
+                videos = [counted_clip] if counted_clip is not None else None,
+                cap = UNSET_GENERATION_BUDGET if images or video is not None else None,
+            )
+        finally:
+            if counted_clip is not None:
+                _discard_video_clip(counted_clip)
         logger.info(
             "VLM generating: prompt_len=%d, images=%d, has_video=%s",
             len(prompt),
@@ -4124,11 +4242,12 @@ class MLXInferenceBackend:
                 "cannot build an audio prompt."
             )
 
-        if max_new_tokens is None:
-            # Audio expands past its placeholder token exactly as an image does, so the counted
-            # prompt is short of the real one: cap at the default, but stay under the window.
-            max_new_tokens = min(self._unset_generation_budget(prompt), UNSET_GENERATION_BUDGET)
-
+        max_new_tokens = self._generation_limit(
+            prompt,
+            max_new_tokens,
+            audio = [audio_array],
+            cap = UNSET_GENERATION_BUDGET,
+        )
         logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
         markers = detect_reasoning_channel_markers(self._processor)
         normalizer = make_reasoning_normalizer(markers) if markers is not None else None

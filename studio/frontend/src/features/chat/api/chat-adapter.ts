@@ -2391,6 +2391,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedMlxKvBitsRequested",
   "mlxKvQuantReason",
   "mlxKvQuantNote",
+  "loadedContextBudget",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
   "speculativeType",
