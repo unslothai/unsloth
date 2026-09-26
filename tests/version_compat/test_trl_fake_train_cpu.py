@@ -466,8 +466,14 @@ def test_sft_applies_trl_router_aux_loss_coef(tmp_path):
         pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
     tok.pad_token = tok.pad_token or tok.eos_token
     config = MixtralConfig(
-        vocab_size = len(tok), hidden_size = 32, intermediate_size = 64, num_hidden_layers = 2,
-        num_attention_heads = 4, num_key_value_heads = 2, num_local_experts = 4, num_experts_per_tok = 2,
+        vocab_size = len(tok),
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
         router_aux_loss_coef = 0.02,
     )
     torch.manual_seed(0)
@@ -494,4 +500,6 @@ def test_sft_applies_trl_router_aux_loss_coef(tmp_path):
         on = model(input_ids = ids, labels = ids, output_router_logits = True)
         off = model(input_ids = ids, labels = ids, output_router_logits = False)
     applied = (float(on.loss) - float(off.loss)) / float(on.aux_loss)
-    assert abs(applied - 0.05) < 1e-4, f"applied aux coefficient {applied}, expected SFTConfig's 0.05"
+    assert (
+        abs(applied - 0.05) < 1e-4
+    ), f"applied aux coefficient {applied}, expected SFTConfig's 0.05"
