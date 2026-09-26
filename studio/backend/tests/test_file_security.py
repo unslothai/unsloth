@@ -668,3 +668,48 @@ def test_security_load_subdirs_yaml_fallback(monkeypatch):
     # A non-bicodec default contributes no subdir.
     monkeypatch.setattr(mc, "load_model_defaults", lambda *_a, **_k: {"audio_type": None})
     assert security_load_subdirs("unsloth/Llama-3.2-1B") == ()
+
+
+@pytest.mark.parametrize(
+    "files, blocked",
+    [
+        (["config.json", "pytorch_model.bin"], ["pytorch_model.bin"]),
+        (["config.json", "pytorch_model.bin", "model.safetensors"], []),
+        (
+            [
+                "model-00001-of-00002.safetensors",
+                "model.safetensors.index.json",
+                "pytorch_model.bin",
+            ],
+            [],
+        ),
+        (["pytorch_model.bin.index.json", "shards/payload"], ["pytorch_model.bin.index.json"]),
+        (["model.safetensors", "adapter_model.bin"], ["adapter_model.bin"]),
+        (["LLM/pytorch_model.bin", "model.gguf"], ["LLM/pytorch_model.bin"]),
+        (["model.gguf", "README.md"], []),
+    ],
+)
+def test_modelscope_has_no_scan_so_pickle_weights_fail_closed(monkeypatch, files, blocked):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HUB_SOURCE", "modelscope")
+    with _patch_status(None), patch("huggingface_hub.HfApi.list_repo_files", return_value = files):
+        d = evaluate_file_security("org/repo")
+    assert d.blocked is bool(blocked)
+    assert [f["path"] for f in d.unsafe_files] == blocked
+    if blocked:
+        assert "Switch the model source to Hugging Face" in d.reason
+
+
+def test_modelscope_listing_failure_blocks(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HUB_SOURCE", "modelscope")
+    with (
+        _patch_status(None),
+        patch("huggingface_hub.HfApi.list_repo_files", side_effect = OSError("down")),
+    ):
+        assert evaluate_file_security("org/repo").blocked is True
+
+
+def test_hugging_face_scan_unavailable_stays_fail_open(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_HUB_SOURCE", raising = False)
+    with _patch_status(None), patch("huggingface_hub.HfApi.list_repo_files") as listing:
+        assert evaluate_file_security("org/repo").blocked is False
+    listing.assert_not_called()
