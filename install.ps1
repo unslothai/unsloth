@@ -2790,9 +2790,14 @@ exit 1
         }
         foreach ($candidate in $candidates) {
             if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
-            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+            # Under Stop an unreadable directory makes Test-Path throw; that rules out this
+            # candidate only, and the next one (or the lexical rung) still gets its turn.
+            $isFile = $false
+            try { $isFile = Test-Path -LiteralPath $candidate -PathType Leaf } catch {}
+            if (-not $isFile) { continue }
             # Probe the interpreter's own directory: $PSScriptRoot is empty under `irm | iex`.
-            $probeDir = [System.IO.Path]::GetDirectoryName($candidate)
+            $probeDir = $null
+            try { $probeDir = [System.IO.Path]::GetDirectoryName($candidate) } catch {}
             if ([string]::IsNullOrWhiteSpace($probeDir)) { continue }
             $probe = Invoke-StudioEarlyPython -Exe $candidate -Path $probeDir
             if (-not [string]::IsNullOrWhiteSpace($probe)) {
@@ -2816,12 +2821,18 @@ exit 1
         $script = "import pathlib,sys" + [char]10 +
                   "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
                   "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
-        # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
-        $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)"
-        if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
-        if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
-        if (-not (Test-Path -LiteralPath $answer)) { return $null }
-        return $answer
+        # $null on anything but a clean answer, validation included: an access error from the
+        # final Test-Path declines to the lexical rung like any other miss.
+        try {
+            # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
+            $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)"
+            if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
+            if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
+            if (-not (Test-Path -LiteralPath $answer)) { return $null }
+            return $answer
+        } catch {
+            return $null
+        }
     }
 
     # A script's stdout from a bounded child, or $null on anything but a clean exit.
@@ -2833,6 +2844,7 @@ exit 1
             [int]$TimeoutMs = 10000
         )
         $proc = $null
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $Exe
@@ -2861,6 +2873,10 @@ exit 1
                 return $null
             }
             if ($proc.ExitCode -ne 0) { return $null }
+            # A child the interpreter left running can hold stdout open after it exits, so the
+            # deadline bounds the read as well as the exit.
+            $left = [Math]::Max(0, $TimeoutMs - [int]$clock.ElapsedMilliseconds)
+            if (-not $stdout.Wait($left)) { return $null }
             return "$($stdout.Result)"
         } catch {
             return $null
@@ -2879,7 +2895,9 @@ exit 1
         if ($script:StudioPythonFinalPathCache.ContainsKey($Path)) {
             return $script:StudioPythonFinalPathCache[$Path]
         }
-        $exe = Get-StudioEarlyPython
+        # An optional rung: whatever goes wrong choosing an interpreter declines to the lexical one.
+        $exe = $null
+        try { $exe = Get-StudioEarlyPython } catch {}
         # Not cached: the re-probe once $VenvDir is known may still find an interpreter.
         if (-not $exe) { return $null }
         $answer = Invoke-StudioEarlyPython -Exe $exe -Path $Path
@@ -6194,7 +6212,10 @@ exit 0
         # and needs no WMI. One child per run: this is called once per process on the machine.
         if (-not $script:StudioPythonProcessImageProbed) {
             $script:StudioPythonProcessImageProbed = $true
-            $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable
+            # Optional: a failure here falls through to the WMI rung below, never past it.
+            try { $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable } catch {
+                $script:StudioPythonProcessImageTable = $null
+            }
         }
         if ($script:StudioPythonProcessImageTable -and
             $script:StudioPythonProcessImageTable.ContainsKey($ProcessId)) {
