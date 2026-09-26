@@ -297,8 +297,8 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
   const dragHandleProps = useCallback(
     (item: SidebarDragItem) => ({
       onPointerDown: (event: React.PointerEvent) => {
-        // Touch scrolls the list and keeps Move up and Move down. The right button opens the
-        // row menu, and a control with its own press keeps it.
+        // Touch scrolls the list. The right button opens the row menu, and a control with its
+        // own press keeps it.
         if (event.button !== 0 || event.pointerType === "touch") return;
         if (!event.isPrimary) return;
         if ((event.target as Element | null)?.closest?.(NO_DRAG_SELECTOR)) {

@@ -118,6 +118,16 @@ export const zhCN = {
     shutdown: "关闭服务",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "文档",
+      keyboardShortcuts: "键盘快捷键",
+      whatsNew: "新功能",
+      troubleshooting: "故障排除",
+      systemStatus: "系统状态",
+      sendFeedback: "发送反馈",
+      about: "关于 Unsloth",
+    },
     find: {
       label: "在页面中查找",
       previous: "上一个匹配项",
@@ -225,8 +235,6 @@ export const zhCN = {
       organizeChats: "整理对话",
       organizeProjects: "整理项目",
       sortPinnedChats: "对置顶对话排序",
-      moveUp: "上移",
-      moveDown: "下移",
     },
     dialog: {
       deleteChat: {
