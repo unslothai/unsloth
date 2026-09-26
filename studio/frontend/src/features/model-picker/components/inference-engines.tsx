@@ -35,7 +35,11 @@ function EngineInstall({
   const isOwner = useIsAccountOwner();
   const useAfterInstall = useRef(false);
   useEffect(() => {
-    if (engine.job.state === "error" || engine.job.state === "cancelled") {
+    if (
+      engine.job.state === "error" ||
+      engine.job.state === "cancelled" ||
+      engine.job.state === "waiting"
+    ) {
       useAfterInstall.current = false;
     }
     if (
@@ -194,6 +198,9 @@ function EngineInstall({
       )}
       {engine.job.state === "cancelled" && (
         <output>{t("managedEngines.cancelled")}</output>
+      )}
+      {engine.job.state === "waiting" && (
+        <output className="whitespace-pre-wrap">{engine.job.message}</output>
       )}
     </div>
   );
