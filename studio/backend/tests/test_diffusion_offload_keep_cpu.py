@@ -92,6 +92,42 @@ def test_subclass_weights_are_not_kept():
     assert not dm._keepable(lin.weight)
 
 
+def _gguf_utils():
+    pytest.importorskip("gguf")
+    return pytest.importorskip("diffusers.quantizers.gguf.utils")
+
+
+def _gguf_linear(
+    utils,
+    out_features = 8,
+    in_features = 64,
+):
+    """A diffusers GGUFLinear holding a real Q8_0 weight: per 32-value block, an fp16 scale then 32 int8 codes."""
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    blocks = out_features * in_features // 32
+    scale = np.full((blocks, 1), 0.01, dtype = np.float16).view(np.uint8)
+    codes = rng.integers(-127, 128, size = (blocks, 32), dtype = np.int8).view(np.uint8)
+    raw = torch.from_numpy(np.concatenate([scale, codes], axis = 1).reshape(out_features, -1).copy())
+    lin = utils.GGUFLinear(in_features, out_features, bias = True, compute_dtype = torch.float32)
+    lin.weight = utils.GGUFParameter(raw, quant_type = utils.gguf.GGMLQuantizationType.Q8_0)
+    return lin
+
+
+def test_gguf_weights_are_kept_but_other_subclasses_are_not():
+    utils = _gguf_utils()
+    lin = _gguf_linear(utils)
+    assert type(lin.weight) is utils.GGUFParameter
+    assert dm._keepable(lin.weight) and dm._keepable(lin.bias)
+
+    class Sub(torch.Tensor):
+        pass
+
+    other = torch.nn.Parameter(torch.zeros(2).as_subclass(Sub))
+    assert not dm._keepable(other)
+
+
 def test_an_all_subclass_module_is_not_rescanned_every_forward():
     class Sub(torch.Tensor):
         pass
@@ -400,3 +436,62 @@ def test_the_ram_gate_is_sized_from_the_container(
     monkeypatch.setattr(torch, "empty", empty)
     assert dm._pin_host_weights(module, {"weight": data}) == 0
     assert bool(allocated) is pinned
+
+
+def _gguf_pipe(device):
+    utils = _gguf_utils()
+    pipe = _pipe(device, "text_encoder", "transformer", "vae")
+    comps = pipe.components
+    comps["text_encoder"] = pipe.text_encoder = torch.nn.Linear(8, 64)
+    comps["transformer"] = pipe.transformer = _gguf_linear(utils)
+    return pipe, utils
+
+
+def _run(pipe, x):
+    """One call the way a diffusers pipeline makes it: the last module stays onloaded until the re-enable."""
+    out = x
+    for module in pipe.components.values():
+        out = module(out)
+    out = out.detach().cpu()
+    pipe.enable_model_cpu_offload()
+    return out
+
+
+@cuda
+@pytest.mark.parametrize("pin", ["0", "1"])
+def test_a_gguf_transformer_keeps_its_host_bytes_and_quant_type(monkeypatch, pin):
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, pin)
+    x = torch.randn(4, 8)
+    stock, _ = _gguf_pipe("cuda")
+    stock.enable_model_cpu_offload()
+    ref = _run(stock, x)
+    pipe, utils = _gguf_pipe("cuda")
+    raw = pipe.transformer.weight.detach().clone()
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    _run(pipe, x)  # the first onload pins
+    # Held, so a stock copy can never land back at a freed address and pass for the kept tensor.
+    held = [p.data for p in pipe.transformer.parameters()]
+    host = [t.data_ptr() for t in held]
+    for _ in range(3):
+        assert torch.equal(_run(pipe, x), ref)
+        weight = pipe.transformer.weight
+        assert weight.device.type == "cpu" and _ptrs(pipe.transformer) == host
+        assert type(weight) is utils.GGUFParameter
+        assert weight.quant_type == utils.gguf.GGMLQuantizationType.Q8_0
+        assert torch.equal(weight.detach().view(torch.uint8), raw.view(torch.uint8))
+        assert weight.is_pinned() is (pin == "1")
+
+
+@cuda
+def test_the_module_left_onloaded_by_a_call_is_offloaded_through_its_kept_hook(monkeypatch):
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "0")
+    pipe = _pipe("cuda", "text_encoder", "transformer", "vae")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    held = {n: [p.data for p in m.parameters()] for n, m in pipe.components.items()}
+    host = {n: [t.data_ptr() for t in ts] for n, ts in held.items()}
+    for _ in range(3):
+        _run(pipe, torch.randn(4, 8))
+        assert pipe.vae.weight.device.type == "cpu"
+        assert {n: _ptrs(m) for n, m in pipe.components.items()} == host

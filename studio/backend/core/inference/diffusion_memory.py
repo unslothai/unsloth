@@ -130,6 +130,9 @@ def keep_cpu_weights_on_offload(pipe: Any, logger: Any = None) -> int:
     if callable(enable) and not getattr(enable, _KEEP_ATTR, False):
 
         def _enable(*args: Any, **kwargs: Any) -> Any:
+            # diffusers re-enables after every call with pipe.to("cpu"), which would copy the last module run (the VAE)
+            # back to the host; offloading it through its kept hook first leaves that move nothing to copy.
+            _offload_through_kept_hooks(pipe, CpuOffload, logger)
             out = enable(*args, **kwargs)
             _wrap_cpu_offload_hooks(pipe, CpuOffload, logger)
             return out
@@ -142,9 +145,43 @@ def keep_cpu_weights_on_offload(pipe: Any, logger: Any = None) -> int:
     return _wrap_cpu_offload_hooks(pipe, CpuOffload, logger)
 
 
+def _offload_through_kept_hooks(
+    pipe: Any,
+    hook_cls: type,
+    logger: Any = None,
+) -> None:
+    components = getattr(pipe, "components", None) or {}
+    for module in components.values():
+        hook = getattr(module, "_hf_hook", None)
+        if not isinstance(hook, hook_cls) or not getattr(hook, _KEEP_ATTR, False):
+            continue
+        try:
+            if any(p.device.type != "cpu" for p in module.parameters()):
+                hook.init_hook(module)
+        except Exception as exc:  # noqa: BLE001 - the stock re-enable still moves it
+            if logger is not None:
+                logger.debug(
+                    "diffusion.memory: kept offload of %s before re-enable failed: %s",
+                    type(module).__name__,
+                    exc,
+                )
+
+
+def _gguf_parameter_class() -> Optional[type]:
+    # Only present once diffusers has loaded a GGUF checkpoint, so this never imports the gguf package itself.
+    module = sys.modules.get("diffusers.quantizers.gguf.utils")
+    return getattr(module, "GGUFParameter", None) if module is not None else None
+
+
 def _keepable(param: Any) -> bool:
     import torch
-    return type(param.data) is torch.Tensor
+
+    data = param.data
+    if type(data) is torch.Tensor:
+        return True
+    # A GGUF weight is plain packed bytes; its quant type lives on the Parameter object, which the swap never replaces.
+    gguf = _gguf_parameter_class()
+    return gguf is not None and type(param) is gguf and type(data) is gguf
 
 
 def _wrap_cpu_offload_hooks(
@@ -342,7 +379,7 @@ def _wrap_cpu_offload_hook(
         return out
 
     def _pre_forward(mod: Any, *args: Any, **kwargs: Any) -> Any:
-        # `host` gate: an all-subclass module (GGUF, torchao) never fills `version`, so would rescan every forward.
+        # `host` gate: an all-subclass module (torchao) never fills `version`, so would rescan every forward.
         onload = not version and bool(host)
         if onload:
             for name, p in mod.named_parameters():
