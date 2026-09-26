@@ -135,7 +135,7 @@ assert_eq "not-published arm precedes the unreachable arm" "yes" \
     "$([ -n "$_answered_line" ] && [ -n "$_unreachable_line" ] && \
        [ "$_answered_line" -lt "$_unreachable_line" ] && echo yes)"
 assert_eq "the not-published message names the release asked for" "yes" \
-    "$(grep -q 'repo.radeon.com publishes no \$_radeon_rel wheels' "$INSTALL_SH" && echo yes)"
+    "$(grep -q 'repo.radeon.com has no \$_radeon_rel wheels' "$INSTALL_SH" && echo yes)"
 
 rm -f "$_FUNC_FILE"
 rm -rf "$_STUB_DIR"

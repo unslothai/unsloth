@@ -5215,8 +5215,7 @@ get_torch_index_url() {
             # hint: newer leaves carry nothing inside _TORCH_CEILING, so pinning one fails to resolve.
             _rocm_leaf=${_rocm_index##*/}
             if [ "$_rocm_tag" != "$_rocm_leaf" ]; then
-                echo "[INFO] No PyTorch build is validated for ROCm $_rocm_tag; installing the closest validated build, $_rocm_leaf." >&2
-                echo "[INFO] Those wheels carry their own ROCm runtime and run on a newer host ROCm, so this is expected and needs no fix." >&2
+                echo "[INFO] No validated PyTorch for ROCm ${_rocm_tag#rocm}; using $_rocm_leaf wheels (they bundle their own runtime, so this is expected)." >&2
             fi
             echo "$_rocm_index"
             return
@@ -7231,7 +7230,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 # Not a WARN: AMD publishes only some releases here (#7264, #10657).
                 _radeon_rel=${_radeon_url%/}
                 _radeon_rel=${_radeon_rel##*/}
-                substep "repo.radeon.com publishes no $_radeon_rel wheels; installing from $(_strip_index_url_credentials "$TORCH_INDEX_URL") instead..."
+                substep "repo.radeon.com has no $_radeon_rel wheels; using $(_strip_index_url_credentials "$TORCH_INDEX_URL")"
                 _install_torch_default_index
             else
                 substep "[WARN] Radeon repo unreachable; falling back to ROCm index ($(_strip_index_url_credentials "$TORCH_INDEX_URL"))" "$C_WARN"

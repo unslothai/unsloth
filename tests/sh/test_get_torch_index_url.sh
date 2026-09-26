@@ -658,9 +658,9 @@ assert_eq "url override preserves fragment slash" "https://mirror.example.com/wh
 # 51) A host newer than the newest leaf is told it was capped (#7264, #10657).
 _dir=$(make_mock_amd_smi "8.0")
 _result=$(run_func_stderr "$_dir")
-assert_contains "ROCm 8.0 cap is explained on stderr" "$_result" "No PyTorch build is validated for ROCm rocm8.0"
-assert_contains "ROCm 8.0 cap names the leaf installed instead" "$_result" "installing the closest validated build, rocm7.2"
-assert_contains "ROCm 8.0 cap says the wheels carry their own runtime" "$_result" "carry their own ROCm runtime"
+assert_contains "ROCm 8.0 cap is explained on stderr" "$_result" "No validated PyTorch for ROCm 8.0;"
+assert_contains "ROCm 8.0 cap names the leaf installed instead" "$_result" "using rocm7.2 wheels"
+assert_contains "ROCm 8.0 cap says the wheels carry their own runtime" "$_result" "bundle their own runtime"
 rm -rf "$_dir"
 
 # 52) Two-digit minor: 7.14 is capped, not read as 7.1.
@@ -668,19 +668,19 @@ _dir=$(make_mock_amd_smi "7.14")
 _result=$(run_func "$_dir")
 assert_eq "ROCm 7.14 -> rocm7.2 (capped)" "https://download.pytorch.org/whl/rocm7.2" "$_result"
 _result=$(run_func_stderr "$_dir")
-assert_contains "ROCm 7.14 cap is explained on stderr" "$_result" "No PyTorch build is validated for ROCm rocm7.14"
+assert_contains "ROCm 7.14 cap is explained on stderr" "$_result" "No validated PyTorch for ROCm 7.14;"
 rm -rf "$_dir"
 
 # 53) A validated version stays silent.
 _dir=$(make_mock_amd_smi "7.2")
 _result=$(run_func_stderr "$_dir")
-assert_not_contains "ROCm 7.2 prints no cap note" "$_result" "No PyTorch build is validated"
+assert_not_contains "ROCm 7.2 prints no cap note" "$_result" "No validated PyTorch"
 rm -rf "$_dir"
 
 # 54) Below the newest leaf: rocm6.3 is served as itself.
 _dir=$(make_mock_amd_smi "6.3")
 _result=$(run_func_stderr "$_dir")
-assert_not_contains "ROCm 6.3 prints no cap note" "$_result" "No PyTorch build is validated"
+assert_not_contains "ROCm 6.3 prints no cap note" "$_result" "No validated PyTorch"
 rm -rf "$_dir"
 
 # 55) 6.5+ clips to rocm6.4.
@@ -688,7 +688,7 @@ _dir=$(make_mock_amd_smi "6.5")
 _result=$(run_func "$_dir")
 assert_eq "ROCm 6.5 -> rocm6.4 (clipped)" "https://download.pytorch.org/whl/rocm6.4" "$_result"
 _result=$(run_func_stderr "$_dir")
-assert_contains "ROCm 6.5 clip is explained on stderr" "$_result" "No PyTorch build is validated for ROCm rocm6.5"
+assert_contains "ROCm 6.5 clip is explained on stderr" "$_result" "No validated PyTorch for ROCm 6.5;"
 rm -rf "$_dir"
 
 # 56) bash 3.2 (macOS /bin/sh) ends $(...) at a bare `pattern)`, aborting the whole script: every
