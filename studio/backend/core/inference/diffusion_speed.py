@@ -372,6 +372,7 @@ def apply_speed_optims(
     CUDA-graph arm refuses only on ``cache_engaged``: the caller bypasses per chunk if it toggles."""
     applied = {
         "channels_last": False,
+        "vae_fp16_decode": False,
         "cudnn_benchmark": False,
         "tf32": False,
         "fp16_accum": False,
@@ -392,6 +393,7 @@ def apply_speed_optims(
 
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
     applied["channels_last"] = _vae_channels_last(pipe, logger)
+    applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
 
     if on_cuda:
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
@@ -500,6 +502,71 @@ def _vae_channels_last(pipe: Any, logger: Any) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "channels_last", exc)
+        return False
+
+
+def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> bool:
+    """Decode an fp32-pinned video VAE (Wan) in fp16 with channels_last_3d convs, on NVIDIA sm75+.
+
+    The pin guards bf16 WEIGHTS (banding); fp16 keeps 3 more mantissa bits and Wan's decoder peaks near 230 against fp16's
+    65504. The layout is not optional: fp16 in NCDHW is slower than fp32, and channels_last_3d alone slows HV1.5 / LTX-2,
+    so only this path converts rank-5 weights. The encoder stays fp32 and a non-finite decode reruns and stays in fp32.
+    """
+    if not getattr(family, "vae_force_fp32", False) or getattr(target, "device", None) != "cuda":
+        return False
+    vae = getattr(pipe, "vae", None)
+    decoder = getattr(vae, "decoder", None)
+    original = getattr(vae, "decode", None)
+    if decoder is None or not callable(original):
+        return False
+    # A dual-DiT family calls apply_speed_optims once per expert over the same VAE.
+    if getattr(vae, "_unsloth_half_decode", False):
+        return True
+    if getattr(target, "backend", None) != "cuda" or not _fp16_compile_capable(target):
+        return False
+    try:
+        import functools
+
+        import torch
+
+        parts = [m for m in (getattr(vae, "post_quant_conv", None), decoder) if m is not None]
+        for part in parts:
+            part.to(torch.float16)
+            for module in part.modules():
+                weight = getattr(module, "weight", None)
+                if isinstance(module, (torch.nn.Conv2d, torch.nn.Conv3d)) and weight is not None:
+                    fmt = torch.channels_last if weight.dim() == 4 else torch.channels_last_3d
+                    weight.data = weight.data.contiguous(memory_format = fmt)
+        fell_back: list = []
+
+        @functools.wraps(original)
+        def decode(z: Any, *args: Any, **kwargs: Any) -> Any:
+            if fell_back or not torch.is_tensor(z):
+                return original(z, *args, **kwargs)
+            out = original(z.to(torch.float16), *args, **kwargs)
+            sample = out[0] if isinstance(out, tuple) else getattr(out, "sample", out)
+            if not torch.is_tensor(sample) or bool(torch.isfinite(sample).all()):
+                return out
+            if logger is not None:
+                logger.warning("diffusion.speed: fp16 VAE decode was not finite; decoding in fp32 from now on")
+            for part in parts:
+                part.to(torch.float32)
+            fell_back.append(True)
+            return original(z, *args, **kwargs)
+
+        vae.decode = decode
+        vae._unsloth_half_decode = True
+        return True
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        try:
+            import torch
+
+            for part in (getattr(vae, "post_quant_conv", None), decoder):
+                if part is not None:
+                    part.to(torch.float32)
+        except Exception:  # noqa: BLE001, S110 - best-effort restore of the fp32 pin
+            pass
+        _warn(logger, "video vae fp16 decode", exc)
         return False
 
 
