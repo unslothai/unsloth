@@ -11,6 +11,8 @@ export const MAX_SHEET_COLUMNS = 200;
 // Across every sheet, so a workbook of many sheets reads no more than one full one. Each row also
 // costs one, so a full sheet fits.
 const MAX_WORKBOOK_CELLS = MAX_SHEET_ROWS * (MAX_SHEET_COLUMNS + 1);
+// Visible sheets read: empty ones cost no cells, but each is a tab and an unzip pass.
+const MAX_SHEETS = 100;
 
 export interface SheetCell {
   text: string;
@@ -42,10 +44,6 @@ function archive(bytes: Uint8Array): (wanted: (name: string) => boolean) => Unzi
       },
     });
 }
-
-// A deck's text parts. Pictures are inflated only for the viewer.
-const PPTX_TEXT_PARTS = (name: string) =>
-  (name.startsWith("ppt/") && /\.(xml|rels)$/.test(name)) || name.startsWith("_rels/");
 
 function xml(files: Unzipped, path: string): Document | null {
   const bytes = files[path];
@@ -116,6 +114,11 @@ function relId(node: Element, name: string): string | null {
 // Spreadsheets
 
 const BUILTIN_FORMATS: Record<number, string> = {
+  // 5 to 8 are locale currency formats, left out of files: the en-US ones.
+  5: '"$"#,##0_);("$"#,##0)',
+  6: '"$"#,##0_);[Red]("$"#,##0)',
+  7: '"$"#,##0.00_);("$"#,##0.00)',
+  8: '"$"#,##0.00_);[Red]("$"#,##0.00)',
   1: "0",
   2: "0.00",
   3: "#,##0",
@@ -123,6 +126,8 @@ const BUILTIN_FORMATS: Record<number, string> = {
   9: "0%",
   10: "0.00%",
   11: "0.00E+00",
+  12: "# ?/?",
+  13: "# ??/??",
   14: "m/d/yyyy",
   15: "d-mmm-yy",
   16: "d-mmm",
@@ -136,9 +141,14 @@ const BUILTIN_FORMATS: Record<number, string> = {
   38: "#,##0 ;[Red](#,##0)",
   39: "#,##0.00;(#,##0.00)",
   40: "#,##0.00;[Red](#,##0.00)",
+  41: '_(* #,##0_);_(* (#,##0);_(* "-"_);_(@_)',
+  42: '_("$"* #,##0_);_("$"* (#,##0);_("$"* "-"_);_(@_)',
+  43: '_(* #,##0.00_);_(* (#,##0.00);_(* "-"??_);_(@_)',
+  44: '_("$"* #,##0.00_);_("$"* (#,##0.00);_("$"* "-"??_);_(@_)',
   45: "mm:ss",
   46: "[h]:mm:ss",
   47: "mm:ss.0",
+  48: "##0.0E+0",
   49: "@",
 };
 
@@ -525,6 +535,14 @@ interface CellStyle {
   italic?: boolean;
 }
 
+/** East Asian built-in dates and times (27 to 36, 50 to 58), which files leave out: shown as the
+ *  nearest standard ones rather than as serial numbers. */
+function localeFormat(id: number): string | undefined {
+  if (id === 32) return "h:mm";
+  if (id === 33) return "h:mm:ss";
+  return (id >= 27 && id <= 36) || (id >= 50 && id <= 58) ? "m/d/yyyy" : undefined;
+}
+
 function readStyles(doc: Document | null): CellStyle[] {
   if (!doc) return [];
   const formats = new Map<number, string>();
@@ -542,7 +560,7 @@ function readStyles(doc: Document | null): CellStyle[] {
   return (xfs ? children(xfs, "xf") : []).map((xf) => {
     const id = Number(xf.getAttribute("numFmtId") ?? 0);
     const font = fonts[Number(xf.getAttribute("fontId") ?? 0)];
-    return { format: formats.get(id) ?? BUILTIN_FORMATS[id], ...font };
+    return { format: formats.get(id) ?? BUILTIN_FORMATS[id] ?? localeFormat(id), ...font };
   });
 }
 
@@ -755,7 +773,12 @@ function rowsEnd(bytes: Uint8Array, rows: number): { end: number; capped: boolea
 function sheetText(bytes: Uint8Array, rows: number): { text: string; cut: boolean } {
   if (bytes.length <= SHEET_CUT_BYTES) return { text: strFromU8(bytes), cut: false };
   const { end, capped } = rowsEnd(bytes, rows);
-  if (end === -1) return { text: strFromU8(bytes), cut: false };
+  if (end === -1) {
+    // No row closes within the cap: only the head is read, which yields no rows.
+    return bytes.length > MAX_SHEET_XML_BYTES || capped
+      ? { text: strFromU8(bytes.subarray(0, MAX_SHEET_XML_BYTES)), cut: true }
+      : { text: strFromU8(bytes), cut: false };
+  }
   const more = capped || rowsEnd(bytes.subarray(end), 1).end !== -1;
   return { text: strFromU8(bytes.subarray(0, end)), cut: more };
 }
@@ -826,7 +849,7 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
   const budget = { cells: MAX_WORKBOOK_CELLS };
   for (const sheet of all(workbook, "sheet")) {
     if (sheet.getAttribute("state") === "hidden" || sheet.getAttribute("state") === "veryHidden") continue;
-    if (budget.cells <= 0) {
+    if (budget.cells <= 0 || sheets.length >= MAX_SHEETS) {
       // The sheets after this one are left out.
       const last = sheets.at(-1);
       if (last) last.truncated = true;
@@ -932,8 +955,11 @@ const imageType = (path: string) => {
 const MAX_CHART_SERIES = 100;
 const MAX_CHART_CELLS = 5000;
 
-/** A table's cell text, capped like a chart's. */
-function readTable(tbl: Element): string[][] {
+// Paragraphs, table cells and pictures on one slide, all of which it mounts at once.
+const MAX_SLIDE_ITEMS = 10_000;
+
+/** A table's cell text, capped like a chart's and at `limit` cells. */
+function readTable(tbl: Element, limit: number): string[][] {
   const table: string[][] = [];
   let cells = 0;
   let cut = false;
@@ -941,7 +967,7 @@ function readTable(tbl: Element): string[][] {
     const tcs = children(tr, "tc");
     if (tcs.length > MAX_CHART_SERIES) cut = true;
     const row = tcs.slice(0, MAX_CHART_SERIES);
-    if (cells + row.length > MAX_CHART_CELLS) {
+    if (cells + row.length > Math.min(limit, MAX_CHART_CELLS)) {
       cut = true;
       break;
     }
@@ -1028,31 +1054,50 @@ function readFrame(shape: Element, cx: number, cy: number): SlideBox["frame"] {
   };
 }
 
-/** `images: false` reads text only, leaving slide media unpacked. */
+/** `images: false` reads text only, leaving slide media unpacked. Only the parts visible slides
+ *  use are inflated: not notes, comments, masters or unused media. */
 export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
-  // Pictures only, not video or audio.
-  const files = archive(bytes)(
-    (name) => (images && name.startsWith("ppt/") && imageType(name) !== undefined) || PPTX_TEXT_PARTS(name),
-  );
-  const presentation = xml(files, "ppt/presentation.xml");
+  const read = archive(bytes);
+  const main = "ppt/presentation.xml";
+  const head = read((name) => name === main || name === relsPath(main));
+  const presentation = xml(head, main);
   if (!presentation) throw new Error("Not a valid PPTX presentation.");
   const size = first(presentation, "sldSz");
   const cx = Number(size?.getAttribute("cx")) || 12192000;
   const cy = Number(size?.getAttribute("cy")) || 6858000;
-  const rels = relationships(files, "ppt/presentation.xml");
+  const rels = relationships(head, main);
+  const slidePaths = all(presentation, "sldId").map((id) => rels.get(relId(id, "id") ?? ""));
+  const wanted = new Set(slidePaths.flatMap((path) => (path ? [path, relsPath(path)] : [])));
+  const slideFiles = read((name) => wanted.has(name));
+  // A hidden slide is left out of the show, so out of the viewer and the model's text too.
+  const visible = slidePaths.flatMap((path) => {
+    const doc = path ? xml(slideFiles, path) : null;
+    if (!path || !doc || ["0", "false"].includes(doc.documentElement.getAttribute("show") ?? "")) return [];
+    return [{ doc, rels: relationshipList(slideFiles, path) }];
+  });
+  const used = new Set(
+    visible.flatMap((slide) =>
+      slide.rels
+        .filter((rel) => /\/(chart|diagramData)$/.test(rel.type) || (images && rel.type.endsWith("/image")))
+        .map((rel) => rel.path),
+    ),
+  );
+  const files = read((name) => used.has(name));
   const slides: Slide[] = [];
   // One Blob per picture, however many slides use it.
   const pictures = new Map<string, Blob>();
-  for (const id of all(presentation, "sldId")) {
-    const path = rels.get(relId(id, "id") ?? "");
-    const doc = path ? xml(files, path) : null;
-    // A hidden slide is left out of the show, so out of the viewer and the model's text too.
-    if (!path || !doc || ["0", "false"].includes(doc.documentElement.getAttribute("show") ?? "")) continue;
-    const slideRels = relationships(files, path);
+  for (const { doc, rels: slideRelList } of visible) {
+    const slideRels = new Map(slideRelList.map((rel) => [rel.id, rel.path]));
     const boxes: SlideBox[] = [];
+    let left = MAX_SLIDE_ITEMS;
+    let cut = false;
     for (const shape of all(doc, "sp")) {
       const body = first(shape, "txBody");
       if (!body) continue;
+      if (left <= 0) {
+        cut = true;
+        break;
+      }
       const paragraphs = all(body, "p")
         .map((p) => {
           const runs = all(p, "r");
@@ -1069,30 +1114,43 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
         })
         .filter((p) => p.text.trim());
       if (!paragraphs.length) continue;
+      if (paragraphs.length > left) cut = true;
+      left -= paragraphs.length;
       boxes.push({
         frame: readFrame(shape, cx, cy),
         placeholder: first(shape, "ph")?.getAttribute("type") ?? (first(shape, "ph") ? "body" : undefined),
-        paragraphs,
+        paragraphs: paragraphs.slice(0, paragraphs.length + Math.min(0, left)),
       });
     }
     // Tables, charts and SmartArt sit in a graphicFrame. A chart shows its cached data.
     for (const frame of all(doc, "graphicFrame")) {
+      if (left <= 0) {
+        cut = true;
+        break;
+      }
       const place = () => readFrame(frame, cx, cy) ?? { x: 0.05, y: 0.25, w: 0.9, h: 0.65 };
       const chartRef = first(frame, "chart");
       const chartPath = chartRef && slideRels.get(relId(chartRef, "id") ?? "");
       const chartDoc = chartPath ? xml(files, chartPath) : null;
       const chart = chartDoc && readChart(chartDoc);
-      if (chart) boxes.push({ frame: place(), ...chart });
+      if (chart) {
+        boxes.push({ frame: place(), ...chart });
+        left -= chart.table.reduce((n, row) => n + row.length, 0);
+      }
       const diagramRef = first(frame, "relIds");
       const diagramPath = diagramRef && slideRels.get(relId(diagramRef, "dm") ?? "");
       const diagramDoc = diagramPath ? xml(files, diagramPath) : null;
       const diagram = diagramDoc ? readDiagram(diagramDoc) : [];
-      if (diagram.length) boxes.push({ frame: place(), paragraphs: diagram });
+      if (diagram.length) {
+        boxes.push({ frame: place(), paragraphs: diagram });
+        left -= diagram.length;
+      }
       const tbl = first(frame, "tbl");
-      if (!tbl) continue;
-      const table = readTable(tbl);
+      if (!tbl || left <= 0) continue;
+      const table = readTable(tbl, left);
       if (!table.some((row) => row.some((cell) => cell.trim()))) continue;
       boxes.push({ frame: place(), table });
+      left -= table.reduce((n, row) => n + row.length, 0);
     }
     for (const pic of images ? all(doc, "pic") : []) {
       const blip = first(pic, "blip");
@@ -1100,10 +1158,17 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       const data = target && files[target];
       const type = target && imageType(target);
       if (!data || !type) continue;
+      if (left <= 0) {
+        cut = true;
+        break;
+      }
+      left--;
       const image = pictures.get(target) ?? new Blob([data as Uint8Array<ArrayBuffer>], { type });
       pictures.set(target, image);
       boxes.unshift({ frame: readFrame(pic, cx, cy), image });
     }
+    // What was left out, marked as a table's cut is.
+    if (cut) boxes.push({ paragraphs: [{ text: "…" }] });
     slides.push({ boxes });
   }
   return { aspect: cy / cx, widthPt: cx / 12700, slides };
