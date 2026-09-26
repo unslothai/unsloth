@@ -29,6 +29,7 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   HomeWifiIcon,
+  LibrariesIcon,
   PaintBrush02Icon,
   Search01Icon,
   Settings02Icon,
@@ -85,6 +86,8 @@ const TAB_LOADERS = {
     import("./tabs/connections-tab").then((m) => ({
       default: m.ConnectionsTab,
     })),
+  library: () =>
+    import("./tabs/library-tab").then((m) => ({ default: m.LibraryTab })),
   data: () => import("./tabs/data-tab").then((m) => ({ default: m.DataTab })),
   "keyboard-shortcuts": () =>
     import("./tabs/keyboard-shortcuts-tab").then((m) => ({
@@ -226,7 +229,6 @@ const TABS: TabDef[] = [
     id: "accounts",
     labelKey: "settings.tabs.accounts",
     icon: UserCircleIcon,
-    badgeKey: "common.new",
   },
   {
     id: "agents",
@@ -237,6 +239,12 @@ const TABS: TabDef[] = [
     id: "voice",
     labelKey: "settings.tabs.voice",
     iconComponent: MicIcon,
+  },
+  {
+    id: "library",
+    labelKey: "shell.navigation.library",
+    icon: LibrariesIcon,
+    badgeKey: "common.new",
   },
   {
     id: "data",
@@ -430,6 +438,7 @@ export function SettingsDialog() {
     voice: null,
     connections: null,
     "keyboard-shortcuts": null,
+    library: null,
     data: null,
     "api-keys": null,
     "remote-lan": null,

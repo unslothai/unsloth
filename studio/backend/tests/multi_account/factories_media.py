@@ -351,9 +351,16 @@ FACTORIES = {
     "routes.inference:HEAD:/sandbox/{session_id}/{filename:path}": Factory("media-sandbox"),
 }
 
+_NPU_INSTALLATION_MODEL = (
+    "an NPU model id names FastFlowLM's one per-installation model store, not an account's "
+    "object, and the route is owner-only (policy.require_owner), so no account owns it"
+)
+
 SKIPPED = {
     "routes.inference:POST:/sandbox/{session_id}/reveal": (
         "opens the backend host's file manager, so a success spawns xdg-open on a machine with "
         "no desktop session and the only in-process outcome is the 500 that failure maps to"
     ),
+    "routes.npu:DELETE:/models/{model_id}": _NPU_INSTALLATION_MODEL,
+    "routes.npu:POST:/models/{model_id}/download": _NPU_INSTALLATION_MODEL,
 }
