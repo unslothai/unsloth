@@ -59,11 +59,21 @@ _hw = _types.ModuleType("utils.hardware")
 _hw.get_device = lambda: _types.SimpleNamespace(value = "cpu")
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
 _stub("utils.hardware", _hw)
+
+
+def _stub_run_without_native_path_secret(*args, **kwargs):
+    # Named on purpose. The training spawn pickles this target, and a lambda cannot
+    # cross the Windows spawn boundary.
+    return None
+
+
 _npl = _types.ModuleType("utils.native_path_leases")
 _npl.native_path_secret_removed_for_child_start = lambda: contextlib.nullcontext()
-_npl.run_without_native_path_secret = lambda fn: fn
+_npl.run_without_native_path_secret = _stub_run_without_native_path_secret
 _stub("utils.native_path_leases", _npl)
 _pth = _types.ModuleType("utils.paths")
+_pth.__path__ = [str(Path(_BACKEND_DIR) / "utils" / "paths")]
+_pth.__package__ = "utils.paths"
 _pth.is_local_path = lambda *a, **k: False
 _pth.outputs_root = lambda *a, **k: "/tmp/outputs"
 _stub("utils.paths", _pth)
@@ -276,7 +286,9 @@ def test_pump_finalizes_when_drain_queue_raises_unexpected_error(monkeypatch):
     b._pump_loop()  # returns once it sees the dead worker
 
     assert b._progress.is_training is False
-    assert b._progress.error == "Training process exited unexpectedly"
+    assert b._progress.error.startswith("Training process exited unexpectedly")
+    assert "pid=4321" in b._progress.error
+    assert "exitcode=unknown" in b._progress.error
     assert finalized.get("status") == "error"
     assert b._pump_running is False
     assert b.is_training_active() is False
@@ -498,6 +510,9 @@ def _stub_spawn(monkeypatch):
 
     pl = _types.ModuleType("utils.process_lifetime")
     pl.adopt_pid = lambda pid: None
+    pl.forget_pid = lambda pid: None
+    pl.terminate_pid = lambda *args, **kwargs: None
+    pl.child_popen_kwargs = lambda *args, **kwargs: {}
     # The spawn also reads the shutdown latch. These tests are about the pump, not about
     # quitting, so the double answers "not shutting down" and the spawn proceeds; leaving
     # it off makes the import fail and every start_training here return False.

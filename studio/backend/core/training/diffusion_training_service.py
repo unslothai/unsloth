@@ -84,7 +84,13 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     run_diffusion_training_process(event_queue = event_queue, stop_queue = stop_queue, config = config)
 
 
-def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
+def _default_target(
+    *,
+    event_queue: Any,
+    stop_queue: Any,
+    config: dict,
+    unsloth_stderr_mirror_path: Optional[str] = None,
+) -> None:
     # First thing in the child (before torch): self-bind to parent death and scrub the native path
     # secret, like the other workers. Token policy first of all, ahead of the account branch
     # below, which returns: both children need it applied.
@@ -101,6 +107,10 @@ def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
             os.environ["HF_TOKEN_PATH"] = os.devnull
 
     account = config.pop("_job_account", None)
+    mirror = {}
+    if unsloth_stderr_mirror_path:
+        from utils.native_path_leases import STDERR_MIRROR_KWARG
+        mirror[STDERR_MIRROR_KWARG] = unsloth_stderr_mirror_path
     if account is not None:
         from core.training.account_jobs import run_account_child
         from utils.native_path_leases import run_without_native_path_secret
@@ -113,12 +123,17 @@ def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
             event_queue = event_queue,
             stop_queue = stop_queue,
             config = config,
+            **mirror,
         )
         return
     from utils.native_path_leases import run_without_native_path_secret
 
     run_without_native_path_secret(
-        _run_diffusion_child, event_queue = event_queue, stop_queue = stop_queue, config = config
+        _run_diffusion_child,
+        event_queue = event_queue,
+        stop_queue = stop_queue,
+        config = config,
+        **mirror,
     )
 
 
@@ -466,6 +481,7 @@ class DiffusionTrainingService:
         )
         self._ctx = ctx if ctx is not None else _CTX
         self._target = target if target is not None else _default_target
+        self._stderr_capture = None
         self._lock = threading.Lock()
         # Set by reserve() while a start is in flight (before the route frees GPU models) so the load guards
         # refuse a concurrent load. Cleared by unreserve().
@@ -642,13 +658,20 @@ class DiffusionTrainingService:
             self._stop_queue = self._ctx.Queue()
             if self.job_account is not None:
                 config = {**config, "_job_account": self.job_account}
+            child_kwargs = {
+                "event_queue": event_queue,
+                "stop_queue": self._stop_queue,
+                "config": config,
+            }
+            # Test targets take only the three job kwargs. The real child installs the mirror.
+            if self._target is _default_target:
+                self._open_worker_stderr_capture()
+                if self._stderr_capture is not None:
+                    from utils.native_path_leases import STDERR_MIRROR_KWARG
+                    child_kwargs[STDERR_MIRROR_KWARG] = self._stderr_capture.path
             self._proc = self._ctx.Process(
                 target = self._target,
-                kwargs = {
-                    "event_queue": event_queue,
-                    "stop_queue": self._stop_queue,
-                    "config": config,
-                },
+                kwargs = child_kwargs,
                 daemon = True,
             )
             # Keep the lease secret out of the child's env, as other orchestrators do.
@@ -759,6 +782,36 @@ class DiffusionTrainingService:
             snap["active"] = self._proc is not None and self._proc.is_alive()
             return snap
 
+    def _open_worker_stderr_capture(self) -> None:
+        previous = self._stderr_capture
+        self._stderr_capture = None
+        if previous is not None:
+            try:
+                previous.close()
+            except Exception:
+                pass
+        try:
+            from utils.worker_stderr import WorkerStderrCapture
+            self._stderr_capture = WorkerStderrCapture(prefix = "unsloth-diffusion-worker-")
+        except Exception:
+            self._stderr_capture = None
+
+    def _unexpected_exit_message(self, proc: Any) -> str:
+        from utils.worker_stderr import unexpected_exit_message
+
+        text = ""
+        capture = self._stderr_capture
+        if capture is not None:
+            try:
+                text = capture.text()
+            except Exception:
+                text = ""
+        return unexpected_exit_message(
+            getattr(proc, "pid", None),
+            getattr(proc, "exitcode", None),
+            text,
+        )
+
     # ── event pump ───────────────────────────────────────────────────────────
     @job_pump
     def _pump_loop(self, event_queue: Any, proc: Any) -> None:
@@ -781,7 +834,7 @@ class DiffusionTrainingService:
                             self._state.update(
                                 active = False,
                                 status = "error",
-                                message = "Training process exited unexpectedly.",
+                                message = self._unexpected_exit_message(proc),
                                 updated_at = time.time(),
                             )
                         discarding = self._discard_requested
