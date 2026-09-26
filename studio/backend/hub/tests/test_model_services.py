@@ -2274,6 +2274,7 @@ def test_cached_models_scan_marks_a_companion_only_pipeline_partial(monkeypatch,
     )
 
     assert row["partial"] is True
+    assert row["companion_prefetch"] is True
     # A companion-only snapshot arrived intact, so it has no Resume / Redownload story.
     assert row["partial_transport"] is None
 
@@ -2296,6 +2297,7 @@ def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_
     )
 
     assert row["partial"] is False
+    assert row["companion_prefetch"] is False
     assert row["single_file"] is False
 
 
@@ -3986,6 +3988,62 @@ def test_hf_cache_scan_fallback_row_uses_local_model_info_alias(monkeypatch, tmp
     assert rows[0].model_format == "unknown"
 
 
+@pytest.mark.parametrize(
+    "with_denoiser, download_partial, expected",
+    [(False, False, True), (True, False, False), (False, True, False)],
+    ids = ["companion-only", "complete-pipeline", "interrupted-download"],
+)
+def test_hf_cache_scan_flags_a_companion_only_pipeline(
+    monkeypatch, tmp_path, with_denoiser, download_partial, expected
+):
+    """The local listing must carry companion_prefetch like the cached one: the Hub merges both."""
+    cache_dir = tmp_path / "hub"
+    repo_dir = cache_dir / "models--Org--Pipeline"
+    snapshot = repo_dir / "snapshots" / _SNAPSHOT_SHA
+    for rel in ("vae/diffusion_pytorch_model.safetensors", "text_encoder/model.safetensors"):
+        (snapshot / rel).parent.mkdir(parents = True, exist_ok = True)
+        (snapshot / rel).write_bytes(b"weights")
+    (snapshot / "transformer").mkdir(parents = True, exist_ok = True)
+    (snapshot / "transformer" / "config.json").write_text("{}", encoding = "utf-8")
+    if with_denoiser:
+        (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
+    (snapshot / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "QwenImagePipeline",
+                "transformer": ["diffusers", "QwenImageTransformer2DModel"],
+                "vae": ["diffusers", "AutoencoderKLQwenImage"],
+                "text_encoder": ["transformers", "Qwen2_5_VLForConditionalGeneration"],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "refs" / "main").write_text(_SNAPSHOT_SHA)
+    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "blobs" / "blob").write_bytes(b"content")
+    monkeypatch.setattr(
+        local_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *_args, **_kwargs: download_partial,
+    )
+    monkeypatch.setattr(
+        local_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda *_args, **_kwargs: False,
+    )
+
+    rows = [
+        row for row in local_inventory._scan_hf_cache(cache_dir) if row.model_id == "Org/Pipeline"
+    ]
+
+    assert rows
+    assert all(row.companion_prefetch is expected for row in rows)
+    if expected:
+        # Still partial, so no picker loads a pipeline without its denoiser.
+        assert all(row.partial for row in rows)
+
+
 def test_hf_cache_scan_uses_gguf_partial_row_for_variant_state(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     cache_dir = tmp_path / "hub"
@@ -4068,6 +4126,32 @@ def test_qwen3_asr_gguf_name_hint_is_not_classified_as_chat(monkeypatch, tmp_pat
 
     assert catalog_classification._gguf_path_task(asr) == "automatic-speech-recognition"
     assert catalog_classification._gguf_path_task(chat) == "text-generation"
+
+
+def test_a_gguf_with_no_architecture_is_classified_from_its_name(monkeypatch, tmp_path):
+    """``unsloth/Qwen-Image-2.1-GGUF`` files have kv_count 0; a name that says nothing stays None."""
+    from hub.services.models import catalog_classification
+
+    image = tmp_path / "qwen-image-2.1-Q4_K_M.gguf"
+    chat = tmp_path / "Some-Chat-7B-Q4_K_M.gguf"
+    image.write_bytes(b"gguf")
+    chat.write_bytes(b"gguf")
+    monkeypatch.setattr(catalog_classification, "_gguf_architecture", lambda _path: None)
+    monkeypatch.setattr(catalog_classification, "_gguf_family_buildable", lambda _hints: True)
+
+    assert (
+        catalog_classification._gguf_path_task(image, ("unsloth/Qwen-Image-2.1-GGUF",))
+        == "text-to-image"
+    )
+    assert catalog_classification._gguf_path_task(chat) is None
+
+    # H3's conditioner is kv_count 0 too; only the fl2va / ref2va denoisers are video.
+    conditioner = tmp_path / "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+    denoiser = tmp_path / "minimax_h3_fl2va_pruned-Q4_K.gguf"
+    conditioner.write_bytes(b"gguf")
+    denoiser.write_bytes(b"gguf")
+    assert catalog_classification._gguf_path_task(conditioner) is None
+    assert catalog_classification._gguf_path_task(denoiser) == "text-to-video"
 
 
 def test_local_inventory_filters_embedder_configured_by_snapshot_path(monkeypatch, tmp_path):

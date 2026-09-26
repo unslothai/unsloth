@@ -2672,6 +2672,19 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         RLTrainer_post += vllm_chat_template_sync
 
+    # TRL >= 1.7 writes router_aux_loss_coef to the config after MoE CausalLMs cached it at init; nll loss reads the stale copy.
+    if trainer_file == "sft_trainer":
+        RLTrainer_post += (
+            "if hasattr(self, 'aux_loss_enabled') and hasattr(getattr(self, 'model', None), 'modules'):\n"
+            "    for _module in self.model.modules():\n"
+            "        _config = getattr(_module, 'config', None)\n"
+            "        if 'router_aux_loss_coef' in vars(_module) and hasattr(_config, 'get_text_config'):\n"
+            "            _coef = getattr(_config.get_text_config(), 'router_aux_loss_coef', None)\n"
+            "            if _coef is not None:\n"
+            "                _module.router_aux_loss_coef = _coef\n"
+            "pass\n"
+        )
+
     # TRL >= 0.28 builds SamplingParams inside VLLMGeneration, which never sees args; hand it the user's vllm_sampling_params so the generate wrapper in rl_replacements.py can apply them.
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (

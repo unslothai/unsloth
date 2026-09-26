@@ -40,12 +40,22 @@ backfill = FIXES._backfill_missing_peft_symbols
 @pytest.fixture(autouse = True)
 def _restore_modules():
     saved = {k: sys.modules.get(k) for k in (CONV, CORE)}
+    # An import also binds the submodule on its package, and `import a.b as m` reads it
+    # from there, so a stale binding outlives the sys.modules restore below.
+    package = sys.modules.get("transformers")
+    bound = dict(vars(package)) if package is not None else {}
     yield
     for k, v in saved.items():
         if v is None:
             sys.modules.pop(k, None)
         else:
             sys.modules[k] = v
+    if package is not None:
+        for child in (CONV.rpartition(".")[2], CORE.rpartition(".")[2]):
+            if child in bound:
+                setattr(package, child, bound[child])
+            else:
+                vars(package).pop(child, None)
 
 
 def _fake_real_module(name, **attrs):
@@ -114,10 +124,11 @@ def test_core_model_loading_classes_are_subclassable():
     assert issubclass(_Child, mod.ConversionOps)
 
 
-def test_missing_module_returns_empty():
-    sys.modules.pop(CONV, None)
-    # No real transformers submodule of this name under the test alias.
-    assert backfill(CONV) == () or isinstance(backfill(CONV), tuple)
+def test_missing_module_returns_empty(monkeypatch):
+    # A None entry makes the import raise, which is what an absent submodule does, without
+    # executing the real module a second time as a pop-and-reimport would.
+    monkeypatch.setitem(sys.modules, CONV, None)
+    assert backfill(CONV) == ()
 
 
 def test_required_symbols_match_peft_import_list():
