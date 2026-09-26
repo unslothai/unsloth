@@ -1,45 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-"""Load a compressed-tensors weight-only integer checkpoint (W4A16 / W8A16,
-``pack-quantized``) straight into bitsandbytes 4-bit.
-
-A checkpoint published in the compressed-tensors packed integer format cannot be
-trained as published: PEFT has no ``weight`` to attach a LoRA to, only
-``weight_packed``, and the decompression hook compressed-tensors registers
-expands the whole model to 16-bit on the first forward. The choice so far was
-to load it as published (and fail at ``get_peft_model``) or to decompress the
-whole checkpoint to a 16-bit copy on disk first, which for a 600 GB INT4
-checkpoint means 2 TB of scratch space.
-
-This module does the decompression per tensor while the checkpoint streams
-through ``from_pretrained``: the packed weight, its scale, shape, zero point and
-activation-order index are collected by a transformers ``WeightConverter``,
-unpacked to the model dtype with compressed-tensors' own decompressor, and
-handed to the bitsandbytes quantize op in the same loading step. The 16-bit
-tensor never exists for more than one layer at a time, and the result is the
-ordinary Unsloth QLoRA model: ``Linear4bit`` everywhere the checkpoint was
-packed, the LoRA-friendly ``weight`` name, and no extra disk.
-
-Native MoE models whose per-expert projections transformers merges into 3-D
-expert stacks keep transformers' own ``DecompressExperts`` op for the merge;
-the per-Linear converter below only catches packed weights nothing else claims
-(remote-code MoE models with an ``nn.ModuleList`` of expert ``Linear`` modules,
-dense models, attention).
-
-Needs the transformers 5 weight-conversion loader; on older transformers the
-loader keeps its previous behaviour (load as published).
-"""
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""Re-quantize a compressed-tensors ``pack-quantized`` W4A16/W8A16 checkpoint into bitsandbytes
+4-bit per tensor during ``from_pretrained`` (no 16-bit copy on disk). Native MoE stacks keep
+transformers' ``DecompressExperts``; needs the transformers 5 weight-conversion loader."""
 
 import inspect
 import os
@@ -55,8 +28,7 @@ __all__ = [
     "UNSLOTH_COMPRESSED_TENSORS_ATTR",
 ]
 
-# Private attribute the loader parks the plan on the model config under; the quantizer
-# consumes and deletes it before the first weight loads so it never reaches a saved config.
+# Popped by the quantizer after loading so it never reaches a saved config.
 UNSLOTH_COMPRESSED_TENSORS_ATTR = "_unsloth_compressed_tensors_bnb"
 
 _SUPPORTED_FORMATS = ("pack-quantized", "mxfp4-pack-quantized")
@@ -110,8 +82,6 @@ def _quant_dict(config) -> Optional[dict]:
 
 
 def _config_and_subconfigs(config) -> list:
-    """``config`` followed by every config-like attribute nested inside it (text, vision,
-    audio sub-configs), depth first, without duplicates."""
     seen, out, stack = set(), [], [config]
     while stack:
         cfg = stack.pop()
@@ -186,11 +156,7 @@ def compressed_tensors_bnb_plan(config) -> Optional[dict]:
 
 
 def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional[dict]:
-    """Prepare ``config`` for a bitsandbytes 4-bit load of a packed compressed-tensors
-    checkpoint: drop the checkpoint's own quantization config (so transformers accepts the
-    bitsandbytes one), park the plan on the config for the quantizer, and register the
-    quantizer subclass. Returns the plan, or ``None`` when the checkpoint does not qualify or
-    transformers is too old, in which case ``config`` is untouched."""
+    """Swap the checkpoint quant config for the plan + quantizer; ``None`` (config untouched) if unsupported."""
     plan = compressed_tensors_bnb_plan(config)
     if plan is None:
         return None
@@ -210,11 +176,7 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
                 "is not installed; loading it as published. `pip install compressed-tensors` to train it in 4-bit."
             )
         return None
-    # The plan is only useful if the installed compressed-tensors can still parse it. Fields do get
-    # retired between releases (`actorder = "group"` was removed in 0.19.0 and real published
-    # checkpoints carry it), and the parse happens deep inside `from_pretrained`, long after the
-    # checkpoint's own quantization config has been dropped from `config` below. Parse it here,
-    # while declining is still free.
+    # Parse now: compressed-tensors retires fields (`actorder = "group"`, 0.19.0) and a late failure is costly.
     try:
         _build_quantization_config(plan)
     except Exception as error:
@@ -226,9 +188,7 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
             )
         return None
     if not install_compressed_tensors_bnb_quantizer():
-        # No quantizer conversion hook (transformers before 5.8), or a foreign quantizer class
-        # owns the bitsandbytes slot: either way the packed tensors would load without the
-        # converters, so leave the checkpoint's own config in place.
+        # No converter hook (transformers < 5.8) or foreign bnb quantizer: keep the checkpoint config.
         if verbose:
             if not _transformers_supports_weight_converters():
                 reason = "this transformers has no quantizer weight-conversion hook (5.8 or later has it)"
@@ -239,9 +199,7 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
                 f"{reason}; loading it as published."
             )
         return None
-    # Composite configs (Kimi-K2.7: KimiK25Config over a DeepseekV3Config text config) copy the
-    # checkpoint's quantization config onto their sub-configs, and transformers also looks at
-    # the decoder text config when deciding whether the model is pre-quantized.
+    # Composite configs (Kimi-K2.7) copy the quant config onto sub-configs transformers also reads.
     for sub in _config_and_subconfigs(config):
         try:
             delattr(sub, "quantization_config")
@@ -264,14 +222,8 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
     return plan
 
 
-# ---------------------------------------------------------------------------------------------
-# Keeping the packed integer tensors out of the loader's dtype cast
-# ---------------------------------------------------------------------------------------------
-#
-# transformers materialises every checkpoint tensor in the model dtype before the conversion
-# ops see it, which would turn an int32 ``weight_packed`` into bf16 garbage. The loader's
-# ``dtype_plan`` (a name-pattern -> dtype map) is consulted first, and a ``None`` entry means
-# "keep the storage dtype", so the packed modules are registered there. The plan is keyed by
+# dtype_plan None = keep storage dtype (else int32 packed words are cast to bf16); keyed by the
+# renamed name (``<module>.weight`` or the merged stack), so both spellings are added.
 # the *renamed* parameter name (``<module>.weight`` for a plain Linear, the merged stack name
 # for native MoE experts), which is why both spellings are added.
 
@@ -284,8 +236,7 @@ def _checkpoint_keys(checkpoint_files) -> list:
         return keys
     others = [str(p) for p in (checkpoint_files or []) if not str(p).endswith(".safetensors")]
     if others:
-        # A pickled shard is read whole in the model dtype before any converter sees it, which
-        # turns the packed int32 words into bf16 garbage with nothing left to decompress.
+        # Pickled shards are cast to the model dtype before any converter sees them.
         raise RuntimeError(
             "Unsloth: re-quantizing a compressed-tensors packed checkpoint on the fly needs "
             f"safetensors shards; {os.path.basename(others[0])} is not one. Convert the "
@@ -303,15 +254,12 @@ def _checkpoint_keys(checkpoint_files) -> list:
 
 
 def _generalize(name: str) -> str:
-    """Regex for ``name`` with every numeric path component widened to a digit run."""
     escaped = re.escape(name)
     return re.sub(r"(?<=\\.)\d+(?=\\.|$)", r"\\d+", escaped)
 
 
 def packed_weight_dtype_plan(keys) -> dict:
-    """Map of regexes (one per family of packed modules) to ``None`` for the loader's
-    ``dtype_plan``. Exact names are used for any family whose widened pattern would also
-    catch a module the checkpoint stores unpacked."""
+    """Regex -> ``None`` for ``dtype_plan``; exact names where widening would catch unpacked modules."""
     packed = [k[: -len(".weight_packed")] for k in keys if k.endswith(".weight_packed")]
     if not packed:
         return {}
@@ -331,10 +279,6 @@ def packed_weight_dtype_plan(keys) -> dict:
             plan[pattern + r"\.weight$"] = None
     return plan
 
-
-# ---------------------------------------------------------------------------------------------
-# The quantizer subclass and its conversion ops
-# ---------------------------------------------------------------------------------------------
 
 _PACKED_SUFFIXES = (
     "weight_packed",
@@ -368,10 +312,6 @@ def _experts_scheme(ct_config):
 
 
 def _scheme_for_sources(ct_config, weight_sources):
-    """The config group that quantized the expert projections a converter collects. With one
-    group there is nothing to choose. With several, each source pattern (a glob such as
-    ``mlp.experts.*.gate_proj.weight``) is matched as a module name against the groups; the
-    projections of one converter must agree, since one op decompresses them all."""
     groups = list(ct_config.config_groups.values())
     if len(groups) == 1:
         return groups[0]
@@ -392,9 +332,6 @@ def _scheme_for_sources(ct_config, weight_sources):
 
 
 def _layer_expert_scheme(ct_config, full_layer_name, packed_key, n_experts, default):
-    """The config group of one concrete expert bucket. The converter is shared by every
-    layer, so with several groups the scheme is resolved from this layer's module names
-    (``model.layers.5.mlp.experts.{i}.gate_proj``); experts of one bucket must agree."""
     if len(ct_config.config_groups) < 2:
         return default
     parent = full_layer_name.rsplit(".", 1)[0]
@@ -405,9 +342,7 @@ def _layer_expert_scheme(ct_config, full_layer_name, packed_key, n_experts, defa
             break
     if pattern.endswith(".weight"):
         pattern = pattern[: -len(".weight")]
-    # Mixtral-style sources start with the separator (``.experts.*.w1.weight``).
     pattern = pattern.lstrip("^").lstrip(".")
-    # The pattern starts somewhere inside the layer path (``mlp.experts.*.gate_proj``).
     parts = parent.split(".")
     tail = None
     for start in range(len(parts)):
@@ -432,8 +367,6 @@ def _layer_expert_scheme(ct_config, full_layer_name, packed_key, n_experts, defa
 
 
 def drop_load_only_conversions(model) -> int:
-    """Remove this module's converters from ``model._weight_conversions`` so save_pretrained
-    does not reverse them. Returns how many were dropped."""
     conversions = getattr(model, "_weight_conversions", None)
     if not conversions:
         return 0
@@ -456,9 +389,6 @@ def drop_load_only_conversions(model) -> int:
 
 
 def _scheme_for_module(ct_config, name: str, module: Optional[torch.nn.Module]):
-    """Config group that quantized ``name``: a single group applies to everything; with
-    several, match the module name against each group's ``targets`` (regex ``re:`` or class
-    name) the way compressed-tensors does."""
     groups = list(ct_config.config_groups.values())
     if len(groups) == 1:
         return groups[0]
@@ -507,9 +437,6 @@ def _decompress_one(compressor, scheme, packed, scale, shape, zero_point, g_idx,
 
 
 class _DecompressPackedWeights:
-    """transformers ``ConversionOps`` that turns the (packed, scale, shape, zero point, g_idx)
-    group of one Linear, or of a bucket of expert Linears, into the 16-bit weight."""
-
     def __init__(
         self,
         ct_config,
@@ -567,8 +494,6 @@ class _DecompressPackedWeights:
                     self.ct_config, (full_layer_name or "").rsplit(".", 1)[0], module
                 )
             compressor = self._compressor(scheme)
-            # The loader hands every collected source over as a list of tensors: one entry for a
-            # plain Linear, one per expert for a bucket collected by a `*` pattern (in bucket order).
             packed_list = as_list(packed)
             n = len(packed_list)
             scales, shapes, zps, gidxs = (
@@ -598,11 +523,9 @@ class _DecompressPackedWeights:
                     self.dtype,
                 )
             if self.stacked:
-                # Downstream merge ops look the bucket up under the packed source pattern.
                 out[packed_key] = value
             else:
                 out[(target_patterns or ["weight"])[0]] = value
-        # Anything the converter collected that is not part of a packed group passes through.
         for key, value in input_dict.items():
             if not any(s in key for s in _PACKED_SUFFIXES) and key not in out:
                 out[key] = value
@@ -639,8 +562,7 @@ class _WithOriginalSources:
         self.op = op
         self.original_sources = list(original_sources)
         self.weight_sources = list(weight_sources)
-        # Only the first op of a chain sees the decompressed buckets; a later one (Concatenate
-        # after MergeModulelist) gets the previous op's output and only needs the source names.
+        # Later ops in a chain (Concatenate after MergeModulelist) get the previous op's output.
         self.receives_buckets = receives_buckets
 
     def convert(
@@ -660,8 +582,7 @@ class _WithOriginalSources:
         keeps_stack = _merge_takes_a_stacked_tensor(self.op)
         for pattern in self.weight_sources:
             if (pattern + "_packed$") in input_dict and (pattern + "$") in input_dict:
-                # Some experts of one bucket packed and others not: the loader hands both
-                # subsets over without their indices, so a merge would silently reorder them.
+                # The loader drops indices of mixed subsets, so a merge would reorder experts.
                 raise RuntimeError(
                     "Unsloth: the compressed-tensors checkpoint packs only some of the experts of "
                     f"`{pattern}`; a partially packed expert bucket cannot be re-quantized on the fly. "
@@ -673,8 +594,6 @@ class _WithOriginalSources:
             for pattern in self.weight_sources:
                 if key in (pattern + "_packed$", pattern + "$"):
                     new_key = pattern
-                    # A bucket arrives as one pre-stacked tensor. A MergeModulelist that passes a
-                    # tensor through takes it as is; every other op expects the per-expert list.
                     if isinstance(value, torch.Tensor) and not keeps_stack:
                         value = list(value.unbind(0))
                     break
@@ -1011,8 +930,6 @@ _with_sources_classes = {}
 
 
 def _merge_takes_a_stacked_tensor(op):
-    """Whether ``op`` is a MergeModulelist whose convert passes a pre-stacked tensor through;
-    before that change it calls torch.stack on whatever it is given."""
     try:
         from transformers.core_model_loading import MergeModulelist
     except Exception:  # pragma: no cover
@@ -1032,10 +949,7 @@ def _with_original_sources(
     weight_sources,
     receives_buckets = True,
 ):
-    """Wrap ``op`` in a subclass of its own class. transformers' ``WeightConverter`` allows a
-    many-to-many mapping only when ``operations`` holds an instance of its internal Ernie ops,
-    so the adapter must still be one. ``_WithOriginalSources`` comes first in the MRO, so
-    ``convert`` is the adapter's; the op's own state stays on ``self.op``."""
+    """Subclass of ``op``'s own class: WeightConverter only allows many-to-many for its Ernie ops."""
     cls = _with_sources_classes.get(type(op))
     if cls is None:
         cls = _with_sources_classes[type(op)] = type(
@@ -1048,9 +962,7 @@ _installed = False
 
 
 def install_compressed_tensors_bnb_quantizer() -> bool:
-    """Register a ``Bnb4BitHfQuantizer`` subclass under the bitsandbytes 4-bit quant method that
-    adds the packed-weight converters when the model config carries a plan. Idempotent; a
-    no-op on transformers without the weight-conversion loader."""
+    """Idempotent; ``False`` on transformers without the weight-conversion loader."""
     global _installed
     if _installed:
         return True
@@ -1060,7 +972,6 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
     from transformers.quantizers.quantizer_bnb_4bit import Bnb4BitHfQuantizer
     from transformers.core_model_loading import ConversionOps, WeightConverter
 
-    # Make the ops real ConversionOps so transformers' isinstance checks are happy.
     op_cls = type("DecompressPackedWeights", (_DecompressPackedWeights, ConversionOps), {})
     with_sources_cls = _with_original_sources
     stack_cls = type("StackPackedExperts", (_StackPackedExperts, ConversionOps), {})
@@ -1082,12 +993,8 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                 else None
             )
             if plan is not None:
-                # Read, not consumed: the device-map planner runs this same hook on a meta model
-                # built from the same config object before the real load, and a plan taken off
-                # the config there left the real load with no converters, so every packed
-                # expert was reported missing, re-initialised and bitsandbytes-quantized from
-                # random values (Kimi-K2.7-Code on four GPUs). The plan comes off the config
-                # once the weights are in, in `_process_model_after_weight_loading`.
+                # Read, not popped: the device-map planner runs this on a meta model first, and
+                # popping here left the real load without converters (random experts, Kimi on 4 GPUs).
                 self._unsloth_ct_config = _build_quantization_config(plan)
                 dtype = kwargs.get("dtype", None)
                 if not isinstance(dtype, torch.dtype):
@@ -1137,11 +1044,7 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     delattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
                 except AttributeError:
                     config.__dict__.pop(UNSLOTH_COMPRESSED_TENSORS_ATTR, None)
-            # The decompression converters are load-only. transformers keeps every converter
-            # it used on `model._weight_conversions` and reverses them in save_pretrained, which
-            # would file the bitsandbytes (or merged) tensors under the packed names without
-            # recreating any of the packed metadata: an unloadable checkpoint. The model is a
-            # bitsandbytes model now and saves under bitsandbytes names.
+            # Load-only: save_pretrained would reverse them into packed names without metadata.
             drop_load_only_conversions(model)
             stacks = finalize_packed_mxfp4_experts(model)
             if stacks or self._unsloth_packed_linears:
@@ -1174,8 +1077,6 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
             return converters
 
         def _unsloth_keep_storage_dtype(self, target_patterns):
-            """Merged expert stacks are named after the converter target, not the packed
-            source; add them to every dtype plan handed out so far and to future ones."""
             for target in target_patterns:
                 key = re.escape(target) + r"$"
                 self._unsloth_dtype_plan[key] = None
@@ -1204,9 +1105,7 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     if weight_sources:
                         scheme = _scheme_for_sources(ct_config, weight_sources)
                         other = [p for p in conv.source_patterns if not p.endswith(".weight")]
-                        # The plain `.weight` sources stay so that expert layers the checkpoint
-                        # left unpacked (its `ignore` list) still merge; anchored, so they do
-                        # not also match the `_scale` / `_packed` keys.
+                        # Plain `.weight` kept so `ignore`d unpacked experts still merge; anchored.
                         new_sources = (
                             [p + "_packed$" for p in weight_sources]
                             + [p + "_scale$" for p in weight_sources]
@@ -1222,8 +1121,6 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                         conv = WeightConverter(
                             source_patterns = new_sources,
                             target_patterns = conv._original_target_patterns,
-                            # Every op of the chain runs under the converter's original source
-                            # names; only the first one receives the decompressed buckets.
                             operations = [op_cls(ct_config, dtype, stacked = True, scheme = scheme)]
                             + [
                                 with_sources_cls(
@@ -1237,7 +1134,6 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                         )
                         self._unsloth_keep_storage_dtype(conv._original_target_patterns)
                 updated.append(conv)
-            # Packed Linears nothing above claimed: remote-code MoE experts, dense layers, attention.
             updated.append(
                 WeightConverter(
                     source_patterns = [s + "$" for s in _PACKED_SUFFIXES],
@@ -1245,8 +1141,7 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     operations = [op_cls(ct_config, dtype, stacked = False)],
                 )
             )
-            # Hand the result up the MRO so a composed subclass's own hook still runs; the base
-            # implementation appends the quantizer's conversions.
+            # Call up the MRO so a composed subclass's hook still runs.
             parent = getattr(super(), "update_weight_conversions", None)
             if parent is None:
                 return updated + list(self.get_weight_conversions())
@@ -1260,14 +1155,12 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
         if current is Bnb4BitHfQuantizer:
             mapping[key] = UnslothBnb4BitHfQuantizer
         elif current is not None and not issubclass(current, Bnb4BitHfQuantizer):
-            # Someone else replaced it with a foreign class; do not fight over it.
             return False
         elif (
             current is not None
             and current is not UnslothBnb4BitHfQuantizer
             and issubclass(current, Bnb4BitHfQuantizer)
         ):
-            # Another subclass is installed; layer ours on top of it so both behaviours survive.
             mapping[key] = type(
                 "UnslothBnb4BitHfQuantizer", (UnslothBnb4BitHfQuantizer, current), {}
             )
