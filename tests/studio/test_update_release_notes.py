@@ -40,6 +40,13 @@ WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
 TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
 
 
+# The desktop card also stops below the window chrome.
+CARD_CAP = {
+    WEB_BANNER: "max-h-[calc(100dvh_-_2rem)]",
+    TAURI_BANNER: "max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))]",
+}
+
+
 # An apostrophe in JSX text is prose, not the start of a string: "We're ready"
 # in a banner's copy would otherwise run a scanner to the next apostrophe or off
 # the end of the file, and a copy edit would fail these tests. The frontend is
@@ -1231,7 +1238,7 @@ def test_expanded_popup_fits_a_short_viewport(banner):
     # The notes region shrinks inside the capped card, so header and actions stay on screen.
     assert "min-h-0 flex-1" in panel, "notes height must follow the viewport"
     src = banner.read_text(encoding = "utf-8")
-    assert "max-h-[calc(100dvh_-_2rem)]" in src, "card is the backstop on tiny viewports"
+    assert CARD_CAP[banner] in src, "card is the backstop on tiny viewports"
 
 
 def test_relative_release_body_links_point_at_the_repository():
@@ -1359,7 +1366,7 @@ def test_only_the_notes_region_scrolls(banner):
     surface = _card_surface(src)
     # The painted surface: capped, and a column, so the region inside it is the
     # one that scrolls.
-    _assert_classes(surface, "flex", "max-h-[calc(100dvh_-_2rem)]", "flex-col")
+    _assert_classes(surface, "flex", CARD_CAP[banner], "flex-col")
     # Neither card scrolls. Asserted as the absence of a scrolling overflow
     # rather than as the presence of `overflow-hidden`, because those are two
     # different claims: the browser card now clips nothing at all, and reading
@@ -1842,7 +1849,9 @@ def _capped_rails(provider: str) -> int:
     """
     # _only_under and not a substring: `md:max-h-[100dvh]` contains the utility while leaving
     # every smaller viewport uncapped, which is the spill this test exists to prevent.
-    return sum(1 for rail in _corner_rails(provider) if _only_under(rail, "max-h-[100dvh]"))
+    # The desktop rail stops below the window chrome; there is none in the browser.
+    caps = ("max-h-[100dvh]", "max-h-[calc(100dvh-var(--studio-window-chrome-top,0px))]")
+    return sum(1 for rail in _corner_rails(provider) if any(_only_under(rail, c) for c in caps))
 
 
 def test_the_class_matchers_tell_a_gated_rule_from_an_ungated_one():

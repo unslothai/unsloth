@@ -496,7 +496,8 @@ function TauriUpdateLayer({
   ) : (
     <div
       // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
-      className="pointer-events-none fixed bottom-0 right-0 flex max-h-[100dvh] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
+      // The cap stops below the window chrome, where the window controls sit above the page.
+      className="pointer-events-none fixed bottom-0 right-0 flex max-h-[calc(100dvh-var(--studio-window-chrome-top,0px))] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
       // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
       data-testid="overlay-rail"
       // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
