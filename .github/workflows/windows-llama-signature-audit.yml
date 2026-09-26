@@ -611,11 +611,28 @@ jobs:
           }
           if ($id) {
             & CiTool.exe --remove-policy $id 2>&1 | Out-String | Write-Host
+            # Read at once: the refresh and the listing below overwrite it.
+            $removeExit = $LASTEXITCODE
             & CiTool.exe --refresh 2>&1 | Out-String | Write-Host
+            $bare = "$id".Trim('{', '}').ToLowerInvariant()
+            $still = @((& CiTool.exe -lp -json 2>$null | ConvertFrom-Json).Policies |
+              Where-Object { "$($_.PolicyID)".Trim('{', '}').ToLowerInvariant() -eq $bare -and $_.IsEnforced })
+            if ($removeExit -ne 0) {
+              Write-Host "::error::CiTool --remove-policy $id exited $removeExit, so the audit policy was not removed"
+              exit 1
+            }
+            if ($still.Count -gt 0) {
+              # Removal succeeded but the policy is still loaded: some policies stay active until a
+              # reboot. Said out loud rather than reported as a clean removal.
+              Write-Host "::warning::the audit policy $id was removed but is still listed as enforced after refresh; it stays active until this machine reboots"
+            } else {
+              Write-Host "audit policy $id removed and no longer active"
+            }
           } else {
             Write-Host 'no audit policy to remove'
           }
           & CiTool.exe -lp 2>&1 | Select-String -Pattern 'Friendly Name' | Write-Host
+          exit 0
 
       - name: Upload code integrity events
         if: always()

@@ -871,6 +871,53 @@ def test_the_app_control_audit_keeps_its_positive_control():
     assert "--remove-policy" in body
 
 
+def test_the_policy_removal_step_fails_when_citool_could_not_remove_it(tmp_path):
+    """The refresh and the listing after --remove-policy overwrote its exit code, so a failed
+    removal reported a clean one. Runs the step's own body against a stubbed CiTool."""
+    import shutil
+
+    import yaml
+
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh not installed")
+    job = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]["code-integrity"]
+    body = next(s for s in job["steps"] if s.get("name") == "Remove the policy")["run"]
+
+    def run(remove_exit, still_listed):
+        listing = (
+            '{"Policies":[{"PolicyID":"{AAAA}","FriendlyName":"X AuditNoISG","IsEnforced":true}]}'
+            if still_listed
+            else '{"Policies":[]}'
+        )
+        stub = (
+            "function CiTool.exe {\n"
+            f"  if ($args -contains '--remove-policy') {{ $global:LASTEXITCODE = {remove_exit}; return 'remove' }}\n"
+            f"  if ($args -contains '-json') {{ $global:LASTEXITCODE = 0; return '{listing}' }}\n"
+            "  $global:LASTEXITCODE = 0; return 'Friendly Name: none'\n"
+            "}\n"
+            "$env:SAC_POLICY_ID = '{AAAA}'\n"
+        )
+        script = tmp_path / f"remove_{remove_exit}_{int(still_listed)}.ps1"
+        script.write_text(stub + body, encoding = "utf-8")
+        return run_pwsh(
+            [pwsh, "-NoProfile", "-File", str(script)],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+
+    failed = run(5, True)
+    assert failed.returncode == 1, failed.stdout + failed.stderr
+    assert "::error::" in failed.stdout
+    lingering = run(0, True)
+    assert lingering.returncode == 0, lingering.stdout + lingering.stderr
+    assert "::warning::" in lingering.stdout
+    clean = run(0, False)
+    assert clean.returncode == 0, clean.stdout + clean.stderr
+    assert "removed and no longer active" in clean.stdout
+
+
 def test_the_inventory_root_is_the_selected_runtime_not_the_binary_directory():
     """<root>\\build\\bin\\Release is a supported layout
     (llama_cpp_path_settings.llama_server_candidates), so taking the parent of
