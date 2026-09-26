@@ -82,3 +82,27 @@ def test_mllama_image_forward_runs_on_the_resolved_implementation(monkeypatch):
             cross_attention_mask = torch.ones(1, 6, 1, 1, device = "cuda", dtype = torch.long),
         )
     assert torch.isfinite(out.logits.float()).all()
+
+
+def test_mapping_entries_keep_the_backend_exclusions(monkeypatch):
+    # A mapping must not re-enable what a scalar request cannot: flex on mllama, sdpa on gpt_oss.
+    monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
+    model_class, config = _tiny_mllama()
+    impl = _utils.resolve_attention_implementation(
+        model_class,
+        config,
+        requested_attn_implementation = {"": "flex_attention", "vision_config": "eager"},
+        supports_sdpa = True,
+    )
+    assert impl == {"": "sdpa", "vision_config": "eager"}
+    if not hasattr(transformers, "GptOssConfig"):
+        return
+    from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM
+
+    impl = _utils.resolve_attention_implementation(
+        GptOssForCausalLM,
+        transformers.GptOssConfig(),
+        requested_attn_implementation = {"": "sdpa"},
+    )
+    values = impl.values() if isinstance(impl, dict) else [impl]
+    assert "sdpa" not in values

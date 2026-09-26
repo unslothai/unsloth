@@ -1038,8 +1038,19 @@ def _disable_flash_attention_if_needed(
     # Only an implementation passed by the caller is an explicit request: config values are synthesized by the loaders or come from Transformers defaults.
     explicit_request = attn_implementation
 
-    # A per-sub-config mapping keeps its non-flash entries; only flash entries take the fallback.
+    # A per-sub-config mapping keeps the entries a scalar request would keep; flash and excluded backends take the fallback.
     if isinstance(explicit_request, dict):
+        excluded_model_type = _config_get(config, "model_type", "").lower()
+
+        def _needs_fallback(impl):
+            if _is_flash_attention_requested(impl):
+                return True
+            if impl == "sdpa":
+                return _is_sdpa_excluded(excluded_model_type)
+            if impl == "flex_attention":
+                return not supports_flex_attention
+            return False
+
         fallback = _disable_flash_attention_if_needed(
             config,
             supports_sdpa = supports_sdpa,
@@ -1054,10 +1065,7 @@ def _disable_flash_attention_if_needed(
             fallback = fallback.get("", "eager")
         return _set_attn_impl(
             config,
-            {
-                k: (fallback if _is_flash_attention_requested(v) else v)
-                for k, v in explicit_request.items()
-            },
+            {k: (fallback if _needs_fallback(v) else v) for k, v in explicit_request.items()},
         )
 
     # Off for a float32 load: with no flash-specific reason the config never steered the choice, so a config-seeded "eager" must not drag an fp32 load from sdpa down to eager.
