@@ -33,6 +33,7 @@ export function composerAttachmentsOverflow(
   gap: number,
 ): boolean {
   if (count === 0 || cardWidth <= 0) return false;
-  const perRow = Math.max(1, Math.floor((width + gap) / (cardWidth + gap)));
+  // Cards sized to a fifth of the row divide it exactly; the slack absorbs subpixel rounding.
+  const perRow = Math.max(1, Math.floor((width + gap) / (cardWidth + gap) + 0.01));
   return Math.ceil(count / perRow) > COMPOSER_ATTACHMENT_MAX_ROWS;
 }

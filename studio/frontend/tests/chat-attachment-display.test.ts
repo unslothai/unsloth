@@ -85,14 +85,33 @@ test("Auto lists up to six sent files, then collapses them to chips", () => {
 
 test("composer cards wrap for two rows, then become one scrolling strip", () => {
   assert.equal(COMPOSER_ATTACHMENT_MAX_ROWS, 2);
-  // 724px holds four 144px cards with 8px gaps.
-  assert.equal(composerAttachmentsOverflow(8, 724, 144, 8), false);
-  assert.equal(composerAttachmentsOverflow(9, 724, 144, 8), true);
-  // A narrow composer reaches two rows sooner.
-  assert.equal(composerAttachmentsOverflow(5, 300, 144, 8), true);
-  assert.equal(composerAttachmentsOverflow(0, 724, 144, 8), false);
+  // A 724px row of fifths with 8px gaps: two rows of five, then the strip.
+  const fifth = (724 - 4 * 8) / 5;
+  assert.equal(composerAttachmentsOverflow(10, 724, fifth, 8), false);
+  assert.equal(composerAttachmentsOverflow(11, 724, fifth, 8), true);
+  // A card a hair under or over a fifth, as the browser rounds it, still counts five.
+  assert.equal(composerAttachmentsOverflow(10, 724, fifth + 0.004, 8), false);
+  // At its minimum width a narrow composer fits fewer, so it reaches two rows sooner.
+  assert.equal(composerAttachmentsOverflow(7, 300, 105, 8), true);
+  assert.equal(composerAttachmentsOverflow(0, 724, fifth, 8), false);
   // Before a card has laid out there is nothing to measure, so nothing changes.
   assert.equal(composerAttachmentsOverflow(20, 724, 0, 8), false);
+  // Each card takes a fifth of the row less the four gap-2 gaps, down to a minimum.
+  assert.match(
+    ATTACHMENT,
+    /const CARD_SLOT =\n\s*"shrink-0 w-\[calc\(\(100%_-_var\(--spacing\)\*8\)\/5\)\] min-w-\[calc\(7rem\*var\(--ui-space-scale,1\)\)\]";/,
+  );
+  assert.match(ATTACHMENT, /const CARD_SIZE = "h-\[calc\(7rem\*var\(--ui-space-scale,1\)\)\] w-full";/);
+  assert.match(ATTACHMENT, /className=\{cn\("aui-attachment-card group\/attachment-card relative", CARD_SLOT\)\}/);
+  assert.match(ATTACHMENT, /variant === "card" && cn\("group\/attachment-card", CARD_SLOT\)/);
+  assert.match(ATTACHMENT, /aui-composer-attachment-cards [^"]*\bgap-2\b/);
+});
+
+test("cards keep their hairline edge in dark mode", () => {
+  const edge = /const CARD_EDGE =\n\s*"([^"]*)";/.exec(ATTACHMENT)?.[1] ?? "";
+  const surface = /const CARD_SURFACE =\n\s*"([^"]*)";/.exec(ATTACHMENT)?.[1] ?? "";
+  assert.match(edge, /^border border-\[/);
+  assert.doesNotMatch(edge + surface, /dark:/);
 });
 
 test("the strip is laid out through the DOM, never through React state", () => {
@@ -210,4 +229,14 @@ test("files handed to a new chat wait until it is on screen", async () => {
   const offer = fn.indexOf(".offer(");
   assert.ok(navigate !== -1 && offer > navigate, "the files are offered before the new chat opens");
   assert.match(fn, /\.then\(\(\) => \{\n\s*requestAnimationFrame\(/);
+});
+
+test("an image card in the composer has no border or fill; file cards keep both", () => {
+  const card = ATTACHMENT.slice(
+    ATTACHMENT.indexOf("const ComposerAttachmentCard: FC"),
+    ATTACHMENT.indexOf("const SentAttachmentLayoutContext"),
+  );
+  assert.match(card, /const src = useAttachmentImageSrc\(\);/);
+  assert.match(card, /!src && CARD_EDGE,\n\s*!src && CARD_SURFACE,/);
+  assert.match(card, /<CardImageOrBody name=\{name\} kind=\{kind\} src=\{src\} \/>/);
 });

@@ -102,19 +102,19 @@ const AttachmentThumb: FC = () => {
   );
 };
 
-// Cards are sized in rem and follow the interface scale, like the rest of the thread.
-const CARD_SIZE =
-  "h-[calc(7rem*var(--ui-space-scale,1))] w-[calc(9rem*var(--ui-space-scale,1))]";
+// Five cards to a row: each slot is a fifth of the row less its gap-2 gaps, and the card fills
+// it. A narrow composer fits fewer rather than shrinking cards past their names.
+const CARD_SLOT =
+  "shrink-0 w-[calc((100%_-_var(--spacing)*8)/5)] min-w-[calc(7rem*var(--ui-space-scale,1))]";
+const CARD_SIZE = "h-[calc(7rem*var(--ui-space-scale,1))] w-full";
 const SENT_IMAGE_SIZE = "size-[calc(9rem*var(--ui-space-scale,1))]";
 const SENT_IMAGE_SIZE_COMPACT = "size-[calc(5rem*var(--ui-space-scale,1))]";
 const SENT_ROW_WIDTH = "w-[calc(18rem*var(--ui-space-scale,1))]";
-// A hairline a shade off the surface, which the contrast setting can strengthen. Dark mode drops
-// it for a lighter fill instead, as ChatGPT does: a line on a dark card reads as clutter. Cards
-// are border-box with a fixed size, so dropping it does not resize them.
+// A hairline a shade off the surface, which the contrast setting can strengthen.
 const CARD_EDGE =
-  "border border-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-edge-gain,1)),transparent)] dark:border-0";
+  "border border-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-edge-gain,1)),transparent)]";
 const CARD_SURFACE =
-  "bg-[color-mix(in_oklab,var(--foreground)_3%,transparent)] hover:bg-[color-mix(in_oklab,var(--foreground)_6%,transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_8%,transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_12%,transparent)]";
+  "bg-[color-mix(in_oklab,var(--foreground)_3%,transparent)] hover:bg-[color-mix(in_oklab,var(--foreground)_6%,transparent)]";
 
 /** The attachment's name and kind, read off its header: the bytes are never touched. */
 const useAttachmentKind = (): {
@@ -171,11 +171,11 @@ const FileCardBody: FC<{
 );
 
 /** An image fills its card; one with no preview left shows as a file card instead. */
-const CardImageOrBody: FC<{ name: string; kind: AttachmentFileKind }> = ({
+const CardImageOrBody: FC<{ name: string; kind: AttachmentFileKind; src: string | undefined }> = ({
   name,
   kind,
+  src,
 }) => {
-  const src = useAttachmentImageSrc();
   if (src) {
     return (
       <img
@@ -449,7 +449,7 @@ const PastedTextAttachmentUI: FC<{
     <AttachmentPrimitive.Root
       className={cn(
         "aui-attachment-root relative",
-        variant === "card" && "group/attachment-card shrink-0",
+        variant === "card" && cn("group/attachment-card", CARD_SLOT),
       )}
     >
       {isComposer ? (
@@ -580,6 +580,7 @@ const AttachmentCardRemove: FC = () => {
  *  and name. */
 const ComposerAttachmentCard: FC = () => {
   const pastedText = usePastedTextAttachment();
+  const src = useAttachmentImageSrc();
   const attachmentId = useAuiState(({ attachment }) => attachment.id);
   const { name, kind } = useAttachmentKind();
 
@@ -599,21 +600,22 @@ const ComposerAttachmentCard: FC = () => {
   return (
     <AttachmentPrimitive.Root
       key={attachmentId}
-      className="aui-attachment-card group/attachment-card relative shrink-0"
+      className={cn("aui-attachment-card group/attachment-card relative", CARD_SLOT)}
     >
       <AttachmentPreviewDialog redactFromReload={true}>
         <button
           className={cn(
             "aui-attachment-card-tile flex cursor-pointer overflow-hidden rounded-[18px] text-left transition-colors",
             CARD_SIZE,
-            CARD_EDGE,
-            CARD_SURFACE,
+            // An image fills the card edge to edge, so it needs no border or fill.
+            !src && CARD_EDGE,
+            !src && CARD_SURFACE,
           )}
           type="button"
           title={name}
           aria-label={name ? `${label} attachment: ${name}` : `${label} attachment`}
         >
-          <CardImageOrBody name={name} kind={kind} />
+          <CardImageOrBody name={name} kind={kind} src={src} />
         </button>
       </AttachmentPreviewDialog>
       <AttachmentCardRemove />
@@ -807,7 +809,7 @@ const ComposerAttachmentCards: FC = () => {
       const strip = composerAttachmentsOverflow(
         count,
         width,
-        card?.offsetWidth ?? 0,
+        card?.getBoundingClientRect().width ?? 0,
         Number.parseFloat(style.columnGap) || 0,
       );
       const next = strip ? "strip" : "wrap";
