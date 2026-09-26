@@ -342,6 +342,9 @@ const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-px`;
 // with the same border as the line. Kept inside the box for the same clipping reason.
 const DROP_INTO_CUE =
   "before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']";
+// Folder rows match their hover pill.
+const DROP_INTO_ROW_CUE =
+  "before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']";
 // The menu keeps a 1px gap between rows. A pointer resting on that gap would hit the section
 // instead, which answers with its last slot, so each row's box reaches over the gap below it.
 const DROP_ROW_HIT = "pb-px -mb-px";
@@ -3864,7 +3867,7 @@ export function AppSidebar() {
             draggingRow?.id === project.id && "opacity-50",
             dropCueClass(order.scope, project.id),
             // Lit while a chat is over the folder row or any of the chats inside it.
-            dnd.ringLit(folderRingKey(project.id)) && DROP_INTO_CUE,
+            dnd.ringLit(folderRingKey(project.id)) && DROP_INTO_ROW_CUE,
           )}
           onContextMenu={() =>
             selectProjectForContextMenu(project.id)

@@ -977,9 +977,9 @@ const META_COLUMN = {
 const ROW_ACTIONS_CLASS =
   "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
 
-// Drop line for a pinned-row drag, same as the sidebar's.
+// Drop line for a pinned-row drag. A border snaps to whole pixels, so every row matches.
 const PINNED_DROP_CUE_BASE =
-  "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-[1.5px] before:rounded-full before:bg-primary before:content-['']";
+  "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']";
 const PINNED_DROP_CUE: Record<PinnedDropEdge, string> = {
   top: `${PINNED_DROP_CUE_BASE} before:top-0`,
   bottom: `${PINNED_DROP_CUE_BASE} before:bottom-0`,
