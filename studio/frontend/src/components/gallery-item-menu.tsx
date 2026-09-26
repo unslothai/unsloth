@@ -6,9 +6,6 @@ import {
   ArchiveRestoreIcon,
   Delete02Icon,
   Download01Icon,
-  Folder01Icon,
-  FolderAddIcon,
-  FolderExportIcon,
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
@@ -22,15 +19,13 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { NewProjectDialog, useChatProjects } from "@/features/chat";
-import { toast } from "@/lib/toast";
+import { useT } from "@/i18n";
+import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
+import { type MediaNoun, useProjectSubmenu } from "./project-submenu";
 
 /**
  * Actions for one gallery item, shared by the Images, Video and Audio pages. Matches a chat row's menu.
@@ -45,6 +40,8 @@ export type GalleryItemMenuVariant = "toolbar" | "overlay" | "row";
 export function GalleryItemMenu({
   pinned,
   archived,
+  favorite,
+  onToggleFavorite,
   onTogglePin,
   onToggleArchive,
   onDelete,
@@ -58,6 +55,8 @@ export function GalleryItemMenu({
 }: {
   pinned: boolean;
   archived: boolean;
+  favorite?: boolean;
+  onToggleFavorite?: () => void;
   onTogglePin: () => void;
   onToggleArchive: () => void;
   onDelete: () => void;
@@ -69,34 +68,23 @@ export function GalleryItemMenu({
   leadingItems?: ReactNode;
   variant?: GalleryItemMenuVariant;
   /** Used in the aria-label and messages, e.g. "image" or "video". */
-  noun: string;
+  noun: MediaNoun;
   /** False while the page is off-tab; forces the menu shut so a portalled popup cannot outlive it. */
   active?: boolean;
   className?: string;
 }) {
   // Controlled like RecipePopover: DropdownMenuContent portals to body, so the inert page wrapper
   // cannot contain it when the tab goes away.
+  const t = useT();
   const [open, setOpen] = useState(false);
-  const [creatingProject, setCreatingProject] = useState(false);
+  const project = useProjectSubmenu({ noun, onAddToProject });
+  const closeProject = project.close;
   useEffect(() => {
     if (!active) {
       setOpen(false);
-      setCreatingProject(false);
+      closeProject();
     }
-  }, [active]);
-  const { projects } = useChatProjects();
-
-  async function addToProject(projectId: string, projectName: string) {
-    if (!onAddToProject) return;
-    try {
-      const { already } = await onAddToProject(projectId);
-      toast.success(already ? `Already in ${projectName}` : `Added to ${projectName}`);
-    } catch (err) {
-      toast.error(`Failed to add ${noun} to project`, {
-        description: err instanceof Error ? err.message : undefined,
-      });
-    }
-  }
+  }, [active, closeProject]);
 
   const overlay = variant === "overlay";
   const row = variant === "row";
@@ -110,9 +98,8 @@ export function GalleryItemMenu({
           className={cn(
             // Circular hover, no border: focus returning on close would draw one. Keyboard focus tints instead.
             "rounded-full border-0 focus-visible:bg-muted dark:focus-visible:bg-muted/50",
-            // Reads over any thumbnail, whatever its colours.
             overlay &&
-              "bg-background/80 text-foreground shadow-sm backdrop-blur hover:bg-background focus-visible:bg-background dark:focus-visible:bg-background",
+              "bg-background/80 text-foreground shadow-sm backdrop-blur hover:bg-background focus-visible:bg-background aria-expanded:bg-background dark:focus-visible:bg-background",
             row && "text-muted-foreground hover:text-foreground",
             className,
           )}
@@ -138,45 +125,23 @@ export function GalleryItemMenu({
           <HugeiconsIcon icon={pinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
           {pinned ? "Unpin" : "Pin"}
         </DropdownMenuItem>
+        {onToggleFavorite && (
+          <DropdownMenuItem onClick={onToggleFavorite}>
+            <HugeiconsIcon
+              icon={StarPointedIcon}
+              strokeWidth={1.75}
+              className={cn("size-icon", favorite && "[&_path]:fill-current")}
+            />
+            {t(favorite ? "library.menu.removeFromFavorites" : "library.menu.addToFavorites")}
+          </DropdownMenuItem>
+        )}
         {onDownload ? (
           <DropdownMenuItem onClick={onDownload}>
             <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
             Download
           </DropdownMenuItem>
         ) : null}
-        {onAddToProject ? (
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger>
-              <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
-              <span>Project</span>
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent
-              sideOffset={0}
-              alignOffset={-4}
-              className="unsloth-plus-menu sidebar-row-menu w-48"
-            >
-              {/* Actions above the rule, destinations below, as in a chat's Project menu. */}
-              <DropdownMenuItem onClick={() => setCreatingProject(true)}>
-                <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
-                <span>New project</span>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              {projects.length === 0 ? (
-                <DropdownMenuItem disabled={true}>No projects yet</DropdownMenuItem>
-              ) : (
-                projects.map((project) => (
-                  <DropdownMenuItem
-                    key={project.id}
-                    onClick={() => void addToProject(project.id, project.name)}
-                  >
-                    <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                    <span className="truncate">{project.name}</span>
-                  </DropdownMenuItem>
-                ))
-              )}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-        ) : null}
+        {project.submenu}
         <DropdownMenuItem onClick={onToggleArchive}>
           <HugeiconsIcon icon={archived ? ArchiveRestoreIcon : Archive03Icon} strokeWidth={1.75} className="size-icon" />
           {archived ? "Restore from archive" : "Archive"}
@@ -190,16 +155,7 @@ export function GalleryItemMenu({
     </DropdownMenu>
   );
 
-  // Mounted only while open, since the overlay renders once per tile.
-  const newProjectDialog = creatingProject ? (
-    <NewProjectDialog
-      open={true}
-      onOpenChange={setCreatingProject}
-      title={`Add ${noun} to new project`}
-      submitLabel="Create and add"
-      onCreated={(project) => addToProject(project.id, project.name)}
-    />
-  ) : null;
+  const newProjectDialog = project.dialog;
 
   if (!overlay && !row) {
     return (

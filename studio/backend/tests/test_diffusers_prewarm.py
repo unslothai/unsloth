@@ -252,6 +252,7 @@ def test_the_windows_rocm_stubs_are_installed_before_the_import(warm, monkeypatc
     order = []
     for mod, name in (
         (_torchao_stub, "install_xformers_windows_rocm_stub"),
+        (_torchao_stub, "hide_xformers_built_for_another_torch"),
         (_torchao_stub, "install_torchao_windows_rocm_stub"),
         (diffusion_torchao_patches, "install_torchao_int_mm_patch"),
     ):
@@ -273,12 +274,13 @@ def test_the_windows_rocm_stubs_are_installed_before_the_import(warm, monkeypatc
     warm.prewarm_diffusers_if_image_models_exist()
     monkeypatch.undo()
 
-    assert order[:3] == [
+    assert order[:4] == [
         "install_xformers_windows_rocm_stub",
+        "hide_xformers_built_for_another_torch",
         "install_torchao_windows_rocm_stub",
         "install_torchao_int_mm_patch",
     ], f"stubs did not run first, in the loader's order: {order}"
-    assert "import" in order and order.index("import") > 2
+    assert "import" in order and order.index("import") > 3
 
 
 def test_a_failed_prewarm_leaves_no_half_imported_diffusers(
