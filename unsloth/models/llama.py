@@ -2455,6 +2455,14 @@ class FastLlamaModel:
         # HF gets it again through **kwargs alongside our config= and fails with a duplicate kwarg.
         user_config = kwargs.pop("config", None)
         block_swap_layers = kwargs.pop("block_swap_layers", 0)
+        if block_swap_layers and (
+            kwargs.get("gguf_file") or kwargs.get("use_safetensors") is False
+        ):
+            # The host tail is read from safetensors; refuse before any download or load.
+            raise ValueError(
+                "Unsloth: from_pretrained(block_swap_layers = ...) needs a safetensors checkpoint; "
+                "it does not support gguf_file or use_safetensors = False."
+            )
         if user_config is not None:
             model_config = user_config
             # model_name may have been remapped to a prequantized repo whose checkpoint needs its

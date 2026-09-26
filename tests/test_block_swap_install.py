@@ -287,3 +287,22 @@ def test_checkpoint_tensors_reads_the_requested_variant(tmp_path):
     assert torch.equal(tensors["w"](), torch.ones(2))
     tensors, _ = ns["_checkpoint_tensors"](str(tmp_path))
     assert torch.equal(tensors["w"](), torch.zeros(2))
+
+
+def test_non_safetensors_formats_are_refused_before_the_prefix_loads():
+    mod = ast.parse(
+        open(os.path.join(HERE, "unsloth", "models", "llama.py"), encoding = "utf-8").read()
+    )
+    cls = next(n for n in mod.body if isinstance(n, ast.ClassDef) and n.name == "FastLlamaModel")
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
+    refusal = [
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Raise) and "needs a safetensors checkpoint" in ast.unparse(n)
+    ]
+    trim = [
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "trim_config_for_block_swap"
+    ]
+    assert refusal and trim and refusal[0] < trim[0]
