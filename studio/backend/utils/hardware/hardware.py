@@ -454,16 +454,19 @@ def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
     )
 
 
-def _pci_function_is_behind_a_port(device_dir: str) -> Optional[bool]:
-    """True on a nonzero PCI bus (discrete Arc), False on bus 0 (iGPU; also VM passthrough, erring to not flag), None if unreadable."""
+# XPU-capable Intel PCI device IDs (include/drm/intel/pciids.h): DG2 Arc + ATS-M Flex, PVC Max, BMG Arc B.
+# An allowlist, not the PCI bus: DG1 Iris Xe MAX is discrete but unsupported, and setup.ps1 excludes Iris Xe.
+_INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0x0B69, 0x0BE5), (0xE200, 0xE2FF))
+
+
+def _intel_pci_device_is_xpu_class(device_dir: str) -> Optional[bool]:
+    """Whether the card's PCI device ID is an XPU-capable family; None if unreadable."""
     try:
-        address = os.path.basename(os.path.realpath(device_dir))
-    except OSError:
+        with open(os.path.join(device_dir, "device"), encoding = "utf-8") as fh:
+            device_id = int(fh.read().strip(), 16)
+    except (OSError, ValueError):
         return None
-    match = re.fullmatch(r"[0-9a-f]{4,}:([0-9a-f]{2}):[0-9a-f]{2}\.[0-7]", address.lower())
-    if match is None:
-        return None
-    return int(match.group(1), 16) != 0
+    return any(lo <= device_id <= hi for lo, hi in _INTEL_XPU_PCI_ID_RANGES)
 
 
 def _linux_drm_sysfs_records(*, distinguish_failure: bool = False) -> "list[Dict[str, Any]] | None":
@@ -508,7 +511,7 @@ def _linux_drm_sysfs_records(*, distinguish_failure: bool = False) -> "list[Dict
             "source": "sysfs-drm",
         }
         if vendors[vendor] == "intel":
-            record["discrete"] = _pci_function_is_behind_a_port(device)
+            record["xpu_class"] = _intel_pci_device_is_xpu_class(device)
         records.append(record)
     if unreadable and distinguish_failure:
         # One card that could not be read makes the whole walk a partial answer, and a partial answer published as a complete one drops a card for a TTL.
@@ -859,11 +862,11 @@ def _devices_that_can_establish_a_mismatch(devices: list[Dict[str, Any]]) -> lis
         if device.get("vendor") != "intel":
             keep.append(device)
             continue
-        # Nameless Linux record: PCI address stands in for setup.ps1's Arc / Data Center name rule.
+        # Nameless Linux record: PCI device ID stands in for setup.ps1's Arc / Data Center name rule.
         if (
             xpu_expected
             or _XPU_ADAPTER_NAME_RE.search(str(device.get("name") or ""))
-            or device.get("discrete") is True
+            or device.get("xpu_class") is True
         ):
             keep.append(device)
     return keep

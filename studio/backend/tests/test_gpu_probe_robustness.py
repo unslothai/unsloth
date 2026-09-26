@@ -94,29 +94,35 @@ def test_the_winner_is_unchanged_when_every_probe_succeeds(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("address", "discrete"),
+    ("device_id", "xpu_class"),
     [
-        ("0000:03:00.0", True),  # an Arc behind a PCIe root port
-        ("0000:00:02.0", False),  # Intel integrated graphics, a root-complex endpoint
-        ("not-a-pci-address", None),
+        ("0x56a0", True),  # Arc A770 (DG2)
+        ("0x56c0", True),  # Data Center GPU Flex 170 (ATS-M)
+        ("0x0bd5", True),  # Data Center GPU Max 1550 (PVC)
+        ("0xe20b", True),  # Arc B580 (BMG)
+        ("0x4905", False),  # Iris Xe MAX (DG1): discrete, but no XPU wheel supports it
+        ("0x46a6", False),  # Alder Lake iGPU
+        ("garbage", None),
     ],
 )
-def test_the_pci_address_tells_a_discrete_card_from_an_igpu(monkeypatch, address, discrete):
-    # realpath stubbed, since Windows cannot create a directory named with ":".
-    target = f"/sys/devices/pci0000:00/{address}"
-    monkeypatch.setattr(hw.os.path, "realpath", lambda p: target if p == "card0-device" else p)
-    assert hw._pci_function_is_behind_a_port("card0-device") is discrete
+def test_the_pci_device_id_tells_an_xpu_card_from_other_intel_graphics(tmp_path, device_id, xpu_class):
+    (tmp_path / "device").write_text(device_id + "\n", encoding = "utf-8")
+    assert hw._intel_pci_device_is_xpu_class(str(tmp_path)) is xpu_class
 
 
-def test_a_discrete_intel_record_establishes_a_mismatch(monkeypatch):
+def test_an_unreadable_pci_device_id_is_unknown(tmp_path):
+    assert hw._intel_pci_device_is_xpu_class(str(tmp_path / "missing")) is None
+
+
+def test_an_xpu_class_intel_record_establishes_a_mismatch(monkeypatch):
     monkeypatch.setattr(hw, "_expected_xpu_flavor_was_chosen", lambda: False)
     monkeypatch.setattr(hw, "_torch_reports_an_xpu_runtime", lambda: False)
     monkeypatch.setattr(hw, "_vendors_masked_off", lambda: set())
-    arc = [{"vendor": "intel", "name": None, "index": 0, "discrete": True}]
+    arc = [{"vendor": "intel", "name": None, "index": 0, "xpu_class": True}]
     assert hw._devices_that_can_establish_a_mismatch(arc) == arc
-    # Controls: an iGPU laptop's correct CPU install must not be flagged.
-    for discrete in (False, None):
-        igpu = [{"vendor": "intel", "name": None, "index": 0, "discrete": discrete}]
+    # Controls: an iGPU or DG1 host's correct CPU install must not be flagged.
+    for xpu_class in (False, None):
+        igpu = [{"vendor": "intel", "name": None, "index": 0, "xpu_class": xpu_class}]
         assert hw._devices_that_can_establish_a_mismatch(igpu) == []
 
 
