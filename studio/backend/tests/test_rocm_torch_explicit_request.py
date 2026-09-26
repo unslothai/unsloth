@@ -2327,14 +2327,15 @@ def _unreadable_version_host(stack, monkeypatch, gfx: str) -> None:
     _mixed_host(stack, monkeypatch, archs = [gfx], kfd = [gfx], rocm = None)
 
 
-@pytest.mark.parametrize("gfx", ["gfx1102", "gfx1200", "gfx1201"])
+@pytest.mark.parametrize("gfx", ["gfx1102"])
 def test_an_unreadable_version_is_judged_as_the_installer_judges_it(stack, monkeypatch, gfx):
     """The two halves must not read the same unreadable version differently."""
     _unreadable_version_host(stack, monkeypatch, gfx)
     assert stack._forced_rocm_route_is_viable() is False
 
 
-@pytest.mark.parametrize("gfx", ["gfx1151", "gfx1103"])
+# RDNA 4 takes the AMD per-arch route like Strix; those wheels bundle their own ROCm (#11935).
+@pytest.mark.parametrize("gfx", ["gfx1151", "gfx1103", "gfx1200", "gfx1201"])
 def test_an_unreadable_version_still_serves_the_arches_that_do_install(stack, monkeypatch, gfx):
     """The narrowing control."""
     _unreadable_version_host(stack, monkeypatch, gfx)
