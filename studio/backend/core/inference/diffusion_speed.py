@@ -148,7 +148,9 @@ def cudnn_benchmark_scope(value: bool) -> Iterator[None]:
     finally:
         with _CUDNN_BENCH_LOCK:
             _cudnn_bench_scopes[:] = [e for e in _cudnn_bench_scopes if e[0] is not token]
-            cudnn.benchmark = _cudnn_bench_scopes[-1][1] if _cudnn_bench_scopes else bool(_cudnn_bench_base)
+            cudnn.benchmark = (
+                _cudnn_bench_scopes[-1][1] if _cudnn_bench_scopes else bool(_cudnn_bench_base)
+            )
 
 
 def snapshot_backend_flags() -> Optional[dict]:

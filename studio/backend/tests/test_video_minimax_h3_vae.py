@@ -825,7 +825,9 @@ def test_the_h3_load_holds_cudnn_benchmark_off_for_the_audio_decode_only_when_it
     ]
     (install,) = installs
     load = next(
-        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_load_h3_modular_pipeline"
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_load_h3_modular_pipeline"
     )
     assert any(c is install for c in ast.walk(load))
     guard = next(
@@ -833,18 +835,20 @@ def test_the_h3_load_holds_cudnn_benchmark_off_for_the_audio_decode_only_when_it
         for n in ast.walk(load)
         if isinstance(n, ast.If) and any(c is install for c in ast.walk(n))
     )
-    assert "cudnn_benchmark" in ast.unparse(guard.test) and "speed_optims" in ast.unparse(guard.test)
+    assert "cudnn_benchmark" in ast.unparse(guard.test) and "speed_optims" in ast.unparse(
+        guard.test
+    )
 
 
 class _AudioVAE:
     def __init__(self):
         self.seen = []
 
-    def decode(self, z, return_dict = True):
+    def decode(self, z, **kwargs):
         self.seen.append(torch.backends.cudnn.benchmark)
         return (z,)
 
-    def encode(self, x, return_dict = True):
+    def encode(self, x, **kwargs):
         self.seen.append(("encode", torch.backends.cudnn.benchmark))
         return (x,)
 
@@ -852,7 +856,6 @@ class _AudioVAE:
 @pytest.mark.parametrize("before", [True, False])
 def test_audio_decode_runs_without_cudnn_benchmark_and_restores_it(before):
     from core.inference import diffusion_speed as S
-
     prev = torch.backends.cudnn.benchmark
     try:
         torch.backends.cudnn.benchmark = before
@@ -933,7 +936,9 @@ def test_cudnn_benchmark_written_mid_decode_survives_it(mid):
         vae.decode(0)
         assert seen["snapshot"] is True, "a snapshot taken mid-decode must see the process value"
         assert seen["after_write"] is False, "the decode keeps its own value until it ends"
-        assert torch.backends.cudnn.benchmark is mid, "the write made during the decode must survive it"
+        assert (
+            torch.backends.cudnn.benchmark is mid
+        ), "the write made during the decode must survive it"
         assert not S._cudnn_bench_scopes
     finally:
         torch.backends.cudnn.benchmark = prev
