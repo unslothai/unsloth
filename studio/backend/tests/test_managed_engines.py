@@ -126,7 +126,8 @@ def test_shared_environment_installs_only_what_studio_lacks(isolated, monkeypatc
     )
     assert any(line.startswith((engine + "==", "fastapi==")) for line in packages.splitlines())
     pth = Path(info["path"]) / "lib" / "python3.13" / "site-packages" / install._BASE_PTH
-    assert "site.addsitedir(" in pth.read_text()
+    assert pth.read_text() == f"import {install._BASE_MODULE}\n"
+    assert "site.addsitedir(" in pth.with_name(f"{install._BASE_MODULE}.py").read_text()
     assert install.status(engine)["current"] is True
 
     studio["numpy"] = "0.0.1"
@@ -157,6 +158,29 @@ def test_pytorch_index_build_of_the_locked_torch_is_shared(isolated, monkeypatch
 
     studio_with_engine_torch(monkeypatch, engine, torch = pins["torch"] + "+cu128")
     assert install.install_plan(engine)["shared"] is False
+
+
+def test_shared_engine_never_sees_studio_flashinfer(tmp_path):
+    import subprocess
+    import sys
+
+    studio, engine = tmp_path / "studio", tmp_path / "engine"
+    for name in ("flashinfer_jit_cache", "flashinfer_cubin", "studio_only"):
+        (studio / name).mkdir(parents = True)
+        (studio / name / "__init__.py").write_text("__version__ = '0.6.6+cu130'\n")
+    engine.mkdir()
+    (engine / f"{install._BASE_MODULE}.py").write_text(
+        install._STUDIO_BASE_SOURCE.format(paths = [str(studio)])
+    )
+    probe = (
+        f"import sys; sys.path.insert(0, {str(engine)!r}); import {install._BASE_MODULE}; "
+        "import importlib.util as u, pkgutil, studio_only; "
+        "print(u.find_spec('flashinfer_jit_cache'), u.find_spec('flashinfer_cubin'), "
+        f"sorted(m.name for m in pkgutil.iter_modules([{str(studio)!r}])))"
+    )
+    out = subprocess.run([sys.executable, "-I", "-S", "-c", probe], capture_output = True, text = True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "None None ['studio_only']"
 
 
 def test_changed_studio_torch_uses_an_isolated_environment(isolated, monkeypatch):

@@ -45,6 +45,42 @@ PROFILES = {
 }
 PYTHON = (3, 13)
 _BASE_PTH = "zz_unsloth_studio_base.pth"
+_BASE_MODULE = "_unsloth_studio_base"
+# Studio installs its own FlashInfer for NVFP4 diffusion; a jit-cache of another version fails the
+# engine's flashinfer import ("flashinfer-jit-cache version ... does not match"), so the engine never sees them.
+_STUDIO_BASE_SOURCE = """import pkgutil, site, sys
+
+_HIDDEN = ("flashinfer", "flashinfer_jit_cache", "flashinfer_cubin")
+
+
+class _Hidden:
+    def __init__(self, finder):
+        self._finder = finder
+
+    def find_spec(self, name, target = None):
+        if name.partition(".")[0] in _HIDDEN:
+            return None
+        return self._finder.find_spec(name, target)
+
+    def invalidate_caches(self):
+        self._finder.invalidate_caches()
+
+    def iter_modules(self, prefix = ""):
+        for info in pkgutil.iter_importer_modules(self._finder, prefix):
+            if info[0][len(prefix):] not in _HIDDEN:
+                yield info
+
+
+for path in {paths!r}:
+    site.addsitedir(path)
+    for hook in sys.path_hooks:
+        try:
+            finder = hook(path)
+        except ImportError:
+            continue
+        sys.path_importer_cache[path] = _Hidden(finder)
+        break
+"""
 _REQUIREMENTS = Path(__file__).resolve().parents[2] / "requirements" / "engines"
 _jobs: dict[str, dict] = {}
 _cancels: dict[str, threading.Event] = {}
@@ -629,10 +665,10 @@ def _install(
             if plan["shared"]:
                 # Appended after the engine's own site-packages, so its pins win.
                 site = destination / "lib" / "python{}.{}".format(*PYTHON) / "site-packages"
-                (site / _BASE_PTH).write_text(
-                    "".join(f"import site; site.addsitedir({path!r})\n" for path in _studio_site()),
-                    encoding = "utf-8",
+                (site / f"{_BASE_MODULE}.py").write_text(
+                    _STUDIO_BASE_SOURCE.format(paths = _studio_site()), encoding = "utf-8"
                 )
+                (site / _BASE_PTH).write_text(f"import {_BASE_MODULE}\n", encoding = "utf-8")
             _update(engine, phase = "checking", message = "Checking the installed engine")
             _run(
                 engine,
