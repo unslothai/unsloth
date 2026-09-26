@@ -16592,8 +16592,7 @@ def _check_signal_escape_patterns(code: str):
             return ""
         h = host.strip().lower().rstrip(".")
         if "\\" in h:
-            # Clients disagree on a backslash: urllib3 ends the host at it, httpx reads it as
-            # userinfo. Kept unmatched so neither reading can be allowlisted.
+            # urllib3 ends the host at a backslash, httpx reads it as userinfo: trust neither.
             return h
         if "@" in h:
             h = h.rsplit("@", 1)[1]
@@ -17641,7 +17640,6 @@ def _check_signal_escape_patterns(code: str):
             """
             registrations = self.star_lines if after_star else self.alias_lines.get(name, ())
             floor = max((where for where in registrations if where < at), default = (0, -1))
-            # Keyed by scope: one `self` entry per method made a scan over all of them quadratic.
             return any(
                 floor < where < at
                 for where in self.shadow_lines.get((name, self.scope_stack[-1]), ())
