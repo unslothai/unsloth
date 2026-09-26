@@ -2821,12 +2821,18 @@ exit 1
         $script = "import pathlib,sys" + [char]10 +
                   "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
                   "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
-        # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
-        $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)"
-        if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
-        if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
-        if (-not (Test-Path -LiteralPath $answer)) { return $null }
-        return $answer
+        # $null on anything but a clean answer, validation included: an access error from the
+        # final Test-Path declines to the lexical rung like any other miss.
+        try {
+            # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
+            $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)"
+            if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
+            if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
+            if (-not (Test-Path -LiteralPath $answer)) { return $null }
+            return $answer
+        } catch {
+            return $null
+        }
     }
 
     # A script's stdout from a bounded child, or $null on anything but a clean exit.
@@ -6142,7 +6148,10 @@ exit 0
         # and needs no WMI. One child per run: this is called once per process on the machine.
         if (-not $script:StudioPythonProcessImageProbed) {
             $script:StudioPythonProcessImageProbed = $true
-            $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable
+            # Optional: a failure here falls through to the WMI rung below, never past it.
+            try { $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable } catch {
+                $script:StudioPythonProcessImageTable = $null
+            }
         }
         if ($script:StudioPythonProcessImageTable -and
             $script:StudioPythonProcessImageTable.ContainsKey($ProcessId)) {
