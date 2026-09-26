@@ -490,13 +490,13 @@ def _listed_file(gallery: _Gallery, root: Path, record_id: str) -> Optional[Path
 
 def _gallery_items(kind: str) -> list[dict]:
     gallery = _gallery(kind)
-    root = None
     items = []
     for archived in (False, True):
-        for record in gallery.records(archived = archived):
-            if root is None:
-                # Only once there is a record: an unreadable folder lists nothing, as before.
-                root = gallery.module.gallery_dir()
+        records = gallery.records(archived = archived)
+        # Looked up after the records, as each resolve was, so a folder moved meanwhile is the one
+        # sized; and only when there are some, so an unreadable folder still lists nothing.
+        root = gallery.module.gallery_dir() if records else None
+        for record in records:
             path = _listed_file(gallery, root, record["id"])
             try:
                 size = path.stat().st_size if path is not None else None

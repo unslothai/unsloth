@@ -440,6 +440,27 @@ def test_listed_images_are_sized_without_resolving_each_but_links_are_still_chec
     assert sorted(resolved) == sorted([inside, outside])
 
 
+def test_listed_images_are_sized_in_the_folder_in_use_after_listing(client, monkeypatch, tmp_path):
+    from core.inference import image_gallery
+
+    monkeypatch.setattr(library, "_SOURCES", (library._image_items,))
+    image = _gallery_image("Moved")
+    before, after = image_gallery.gallery_dir(), tmp_path / "moved"
+    after.mkdir()
+    (after / f"{image}.png").write_bytes(b"x" * 3)
+    moved = []
+    real = image_gallery.list_images
+
+    def list_then_move(**kwargs):
+        records = real(**kwargs)
+        moved.append(True)
+        return records
+
+    monkeypatch.setattr(image_gallery, "list_images", list_then_move)
+    monkeypatch.setattr(image_gallery, "gallery_dir", lambda: after if moved else before)
+    assert _items(client)[0][f"image:{image}"]["sizeBytes"] == 3
+
+
 def test_generated_audio_and_video_are_listed_and_deleted(client, monkeypatch):
     import routes.video as video_routes
     from core.inference import audio_gallery, video_gallery
