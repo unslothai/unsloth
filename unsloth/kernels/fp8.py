@@ -117,6 +117,9 @@ def weight_dequant(
     s: torch.Tensor,
     dtype = torch.bfloat16,
 ):
+    # Transposed view (LoRA backward's W.t()): scales follow the stored layout, which only strides reveal for square W.
+    if x.ndim == 2 and x.stride(0) == 1 and x.stride(1) != 1 and s.numel() > 1:
+        return weight_dequant(x.t(), s, dtype).t()
     # Per-tensor scale: single value for entire weight matrix
     if s.numel() == 1:
         return x.to(dtype) * s.view(1, 1).to(dtype)
@@ -751,6 +754,10 @@ def fp8_linear(
     weight_scale,
     bias = None,
 ):
+    # Transposed view (LoRA_MLP backward's downW.t()): the FP8 GEMMs assume the stored layout.
+    if weight.stride(0) == 1 and weight.stride(1) != 1 and weight_scale.numel() > 1:
+        out = torch.matmul(X, weight_dequant(weight, weight_scale, X.dtype).t())
+        return out if bias is None else out + bias
     # Per-tensor (scalar scale) or block FP8 (2D scale, multiple columns).
     if weight_scale.numel() == 1 or (weight_scale.ndim == 2 and weight_scale.shape[1] > 1):
         out = fp8_block_quant_linear(X, weight, weight_scale)

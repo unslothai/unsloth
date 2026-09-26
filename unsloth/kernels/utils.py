@@ -1109,18 +1109,7 @@ def matmul_lora(
             W = W.contiguous()
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
-        if (
-            W.stride(0) == 1
-            and W.stride(1) != 1
-            and W_quant is not None
-            and W_quant.ndim == 2
-            and W_quant.numel() > 1
-            and (W_quant.shape[1] == 1 or W.shape[0] == W.shape[1])
-        ):
-            # Transposed view (LoRA_MLP backward's downW.t()): shape cannot tell its scale axes apart, strides can.
-            out = torch_matmul(X, fast_dequantize(W.t(), W_quant))
-        else:
-            out = fp8_linear(X, W, W_quant)
+        out = fp8_linear(X, W, W_quant)
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = True)
         out = torch_matmul(X, W.t(), out = out)
