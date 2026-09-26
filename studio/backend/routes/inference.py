@@ -18863,6 +18863,20 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
+        # A downloading GGUF has no llama-server yet: cancel its load so it releases the gate.
+        with _scoped_load_attempts_lock:
+            running = _running_load_attempt
+        cancelled_before_server = (
+            running is not None
+            and _names_the_loading_model(running.model_path, request.model_path)
+            # Same owner rule as the scoped cancel: one account cannot stop another's load.
+            and (account_access.account_scope() is None or running.subject == current_account_id())
+        )
+        if cancelled_before_server:
+            running.cancel_event.set()
+            running.cancel_complete.set()
+            logger.info(f"Cancelled in-flight load before its server started: {request.model_path}")
+
         # Same gate as /load: refusal only, so a non-forced unload fails fast before queueing on the
         # lifecycle gate. Skipped when no teardown branch can fire, or a request naming a model
         # another tab already replaced would 409 on chats it cannot interrupt.
@@ -18936,7 +18950,13 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             # a slow SSE stream paused between tokens still holds, so a sync call would block
             # the loop that drives the stream's next token and the lock release.
             backend = await asyncio.to_thread(get_inference_backend)
-            if _unload_evicts_standard_backend(backend, request.model_path):
+            evicts = _unload_evicts_standard_backend(backend, request.model_path)
+            if cancelled_before_server and not evicts:
+                # The cancelled load never became resident: release what it held, record no unload.
+                note_model_unloaded()
+                await asyncio.to_thread(release_chat_gpu_claim)
+                return UnloadResponse(status = "unloaded", model = request.model_path)
+            if evicts:
                 # Point of no return for the standard path, same rule as above.
                 _raise_or_cancel_active_generations(
                     force = request.force_cancel_active, action = "Unloading the model"
