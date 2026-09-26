@@ -86,7 +86,7 @@ def test_local_csv_seed_keeps_its_values_as_written(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     monkeypatch.setattr(seed_route, "account_path", lambda path: None)
     path = tmp_path / "seed.csv"
-    # The unnamed index column pandas' to_csv writes makes the route rewrite the file without it.
+    # The unnamed index column triggers the rewrite.
     path.write_text(",zip,country,qty,note\n0,01234,NA,3,None\n1,90210,DE,,N/A\n", encoding = "utf-8")
 
     rows = seed_route._read_preview_rows_from_local_file(path, 10)

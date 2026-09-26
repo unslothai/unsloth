@@ -925,8 +925,7 @@ def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[di
     ext = path.suffix.lower()
     try:
         if ext == ".csv":
-            # Values as written: type inference turned 007 into 7, a whole number beside an empty
-            # cell into 3.0, and NA, N/A or None into missing, and the rewrite below saved that.
+            # Keep text as written: inference made 007 -> 7, 3 -> 3.0, NA/None -> missing.
             csv_options = {
                 "encoding": "utf-8-sig",
                 "dtype": str,
