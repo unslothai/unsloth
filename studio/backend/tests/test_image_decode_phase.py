@@ -34,8 +34,7 @@ def test_the_hook_fires_on_the_first_decode_and_not_again():
 
 
 def test_the_wrapper_is_removed_even_when_the_decode_raises():
-    """A decode that dies must not leave a wrapper parked in the instance __dict__: the pipeline
-    outlives one generation, so the next one would fire a callback closed over a finished job."""
+    """A leftover wrapper would fire a finished job's callback on the next generation."""
     pipe = _Pipe()
     boom = RuntimeError("vae oom")
 
@@ -58,8 +57,6 @@ def test_a_pipe_with_no_decoder_is_a_no_op():
 
 
 def test_generate_progress_reports_the_phase():
-    """``phase`` has to reach the poller, else the label cannot change. Idle reports "denoise"
-    rather than omitting the key, so the shape is the same either way."""
     from core.inference.diffusion import _GenState
 
     gen = _GenState(total_steps = 40)

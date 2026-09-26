@@ -93,8 +93,7 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
-  // Optional: the sd.cpp engine reads its progress out of sd-cli's log lines and reports no phase,
-  // so absent means "denoise", not "unknown".
+  // Absent (sd.cpp engine) means "denoise".
   phase?: "denoise" | "decode";
 }
 

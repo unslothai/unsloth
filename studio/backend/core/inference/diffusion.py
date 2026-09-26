@@ -1112,9 +1112,7 @@ class _GenState:
     first_step_at: float = 0.0
     # Computed once per step (in the callback) so it's stable between polls.
     eta_seconds: Optional[float] = None
-    # "denoise" until the pipeline enters its decoder. The decode runs INSIDE pipe(), after the
-    # last step callback, so without this the bar sits at steps/steps through a decode that on a
-    # batch is seconds long and reads as a hang.
+    # "decode" once pipe() enters its decoder, which runs after the last step callback.
     phase: str = "denoise"
 
 
