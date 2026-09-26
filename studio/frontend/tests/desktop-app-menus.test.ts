@@ -20,10 +20,18 @@ const rowsOf = (table: string) =>
   )].map((m) => m[1]);
 const fileActions = rowsOf("FILE_ROWS");
 const viewActions = rowsOf("VIEW_ROWS");
-const rustActions = [...fileActions, ...viewActions];
-const hookActions = [...CHORDS.match(/export type AppMenuAction =([^;]+);/)![1].matchAll(/"([a-z-]+)"/g)].map(
-  (m) => m[1],
-);
+const goActions = rowsOf("GO_ROWS");
+const settingsActions = rowsOf("SETTINGS_ROWS");
+const helpActions = rowsOf("HELP_ROWS");
+const rustActions = [...fileActions, ...viewActions, ...goActions, ...helpActions];
+const HELP = readSrc("components/help-actions.ts");
+const actionsOf = (source: string, type: string) =>
+  [...source.match(new RegExp(`export type ${type} =([^;]+);`))![1].matchAll(/"([a-z-]+)"/g)].map(
+    (m) => m[1],
+  );
+// The Help actions are typed beside the Help menu the sidebar shares.
+assert.match(CHORDS, /export type AppMenuAction =\s*\| HelpAction/);
+const hookActions = [...actionsOf(CHORDS, "AppMenuAction"), ...actionsOf(HELP, "HelpAction")];
 
 test("the menus and the renderer name the same actions", () => {
   assert.deepEqual(fileActions, ["new-chat", "new-temporary-chat", "open-folder"]);
@@ -38,7 +46,44 @@ test("the menus and the renderer name the same actions", () => {
     "zoom-out",
     "actual-size",
   ]);
+  assert.deepEqual(helpActions, [
+    "help-documentation",
+    "help-keyboard-shortcuts",
+    "help-whats-new",
+    "help-troubleshooting",
+    "help-system-status",
+    "help-send-feedback",
+  ]);
+  const helpGroups = [...HELP.match(/HELP_GROUPS[^=]*=([\s\S]*?);/)![1].matchAll(/"([a-z-]+)"/g)].map(
+    (m) => m[1],
+  );
+  assert.deepEqual(helpGroups, helpActions, "the sidebar's Help lists the menu's items in order");
+  assert.deepEqual(goActions, [
+    "go-chat",
+    "go-projects",
+    "go-library",
+    "go-hub",
+    "go-train",
+    "go-recipes",
+    "go-images",
+    "go-video",
+    "go-audio",
+    "go-export",
+  ]);
+  assert.match(APP_MENU, /Row::Submenu\("Settings", SETTINGS_ROWS\)/);
   assert.deepEqual([...hookActions].sort(), [...rustActions].sort());
+});
+
+test("Go > Settings lists every Settings page, in the dialog's order", () => {
+  const dialog = readSrc("features/settings/settings-dialog.tsx");
+  const tabs = [...dialog.slice(dialog.indexOf("const TABS")).matchAll(/id: "([a-z-]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(settingsActions, tabs.slice(0, settingsActions.length).map((tab) => `settings-${tab}`));
+  const store = readSrc("features/settings/stores/settings-dialog-store.ts");
+  const known = [...store.match(/SETTINGS_TABS = \[([\s\S]*?)\]/)![1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+  assert.deepEqual([...settingsActions].sort(), known.map((tab) => `settings-${tab}`).sort());
+  assert.match(CHORDS, /export type SettingsMenuAction = `settings-\$\{SettingsTab\}`;/);
+  // Only the pages this account can open are live, as in the dialog's own tab rail.
+  assert.match(ROOT, /`settings-\$\{tab\}`,\s*!isAuthFlowRoute && settingsTabVisible\(tab, isOwner\)/);
 });
 
 test("every action is handled in the app shell", () => {
@@ -203,9 +248,12 @@ test("menu chords follow the user's bindings and never steal a web shortcut's ch
       .replace("+[", "+BracketLeft")
       .replace("+]", "+BracketRight")
       .replace("+=", "+Equal")
-      .replace(/\+-$/, "+Minus");
+      .replace(/\+-$/, "+Minus")
+      .replace("+/", "+Slash");
   for (const action of rustActions) {
-    assert.equal(defaults[action as keyof typeof defaults], native(rustAccel(action)!), action);
+    // An empty accelerator is an item with no chord.
+    const accel = rustAccel(action);
+    assert.equal(defaults[action as keyof typeof defaults], accel ? native(accel) : null, action);
   }
   // Rebound: the item shows the new chord.
   assert.equal(

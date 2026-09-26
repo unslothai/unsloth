@@ -120,6 +120,16 @@ export const ar = {
     shutdown: "إيقاف التشغيل",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "الوثائق",
+      keyboardShortcuts: "اختصارات لوحة المفاتيح",
+      whatsNew: "ما الجديد",
+      troubleshooting: "استكشاف الأخطاء وإصلاحها",
+      systemStatus: "حالة النظام",
+      sendFeedback: "إرسال ملاحظات",
+      about: "حول Unsloth",
+    },
     find: {
       label: "البحث في الصفحة",
       previous: "التطابق السابق",

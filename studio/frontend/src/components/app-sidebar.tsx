@@ -46,6 +46,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
+import { HELP_GROUPS, HELP_ITEMS, runHelpAction } from "@/components/help-actions";
 import {
   Dialog,
   DialogContent,
@@ -812,6 +813,7 @@ export function AppSidebar() {
   // leave the hint advertising a dead chord. Both already render in the platform's own notation.
   const searchShortcutLabel = useShortcutLabel("searchChats");
   const settingsShortcutLabel = useShortcutLabel("openSettings");
+  const keyboardShortcutsLabel = useShortcutLabel("openKeyboardShortcuts");
   const { pathname, search, href } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -5050,12 +5052,43 @@ export function AppSidebar() {
                 })}
               </DropdownMenuGroup>
               <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent! dark:border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))]" />
-              <DropdownMenuItem
-                onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
-              >
-                <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
-                <span>{t("common.help")}</span>
-              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>{t("common.help")}</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent
+                  sideOffset={8}
+                  alignOffset={-4}
+                  className="unsloth-plus-menu sidebar-row-menu w-56"
+                >
+                  {HELP_GROUPS.map((group, index) => (
+                    <DropdownMenuGroup key={group[0]}>
+                      {index > 0 && <DropdownMenuSeparator />}
+                      {group.map((action) => (
+                        <DropdownMenuItem key={action} onSelect={() => runHelpAction(action)}>
+                          <HugeiconsIcon
+                            icon={HELP_ITEMS[action].icon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          <span>{t(HELP_ITEMS[action].label)}</span>
+                          {action === "help-keyboard-shortcuts" && keyboardShortcutsLabel && (
+                            <DropdownMenuShortcut>{keyboardShortcutsLabel}</DropdownMenuShortcut>
+                          )}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuGroup>
+                  ))}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
+                  >
+                    <HugeiconsIcon icon={BadgeInfoIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>{t("shell.helpMenu.about")}</span>
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               {!isTauri && (
                 <DropdownMenuItem
                   onSelect={async () => {

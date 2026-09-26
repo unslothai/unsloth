@@ -87,6 +87,16 @@ export const it = {
     shutdown: "Arresta",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Documentazione",
+      keyboardShortcuts: "Scorciatoie da tastiera",
+      whatsNew: "Novità",
+      troubleshooting: "Risoluzione dei problemi",
+      systemStatus: "Stato del sistema",
+      sendFeedback: "Invia feedback",
+      about: "Informazioni su Unsloth",
+    },
     find: {
       label: "Trova nella pagina",
       previous: "Risultato precedente",
