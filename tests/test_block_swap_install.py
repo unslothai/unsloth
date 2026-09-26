@@ -186,3 +186,10 @@ def test_new_model_route_forwards_block_swap_layers():
         if isinstance(n, ast.Call) and ast.unparse(n.func) == "FastBaseModel.get_peft_model"
     ]
     assert calls and all(any(k.arg == "block_swap_layers" for k in c.keywords) for c in calls)
+
+
+@pytest.mark.parametrize("path", ["llama.py", "gemma.py", "gemma2.py"])
+def test_fast_decode_loops_fetch_swapped_layers(path):
+    # Decode loops read layer weights without calling the layer, so the swap hooks never fire.
+    src = open(os.path.join(HERE, "unsloth", "models", path), encoding = "utf-8").read()
+    assert "block_swap.enter(idx)" in src and "block_swap.leave(idx)" in src

@@ -4753,7 +4753,18 @@ def attach_block_swap_layers(model, saved, model_name, dtype, load_in_4bit, skip
         )
     finally:
         del handles
+    # Carry over plain attributes post_patch set on loaded layers (Gemma's norm variance_epsilon).
+    reference = dict(layers[0].named_modules())
     for layer in new:
+        for name, module in layer.named_modules():
+            ref = reference.get(name)
+            if ref is None:
+                continue
+            for key, value in vars(ref).items():
+                if key.startswith("_") or key in vars(module):
+                    continue
+                if not isinstance(value, (torch.Tensor, torch.nn.Module)):
+                    setattr(module, key, value)
         layers.append(layer)
     swapper = BlockSwap(layers, count)
     layers._unsloth_block_swap = swapper

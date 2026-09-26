@@ -2725,6 +2725,11 @@ class FastLlamaModel:
                 "Unsloth: from_pretrained(block_swap_layers = ...) does not support "
                 "fast_inference or classification heads."
             )
+        if block_swap_layers:
+            import copy as _copy
+
+            # Trim a copy: HF deep-copies config= anyway, so a trimmed caller config would stay short.
+            model_config = _copy.deepcopy(model_config)
         # Swapped tail is built in host RAM afterwards so models larger than the card load.
         _block_swap_saved = trim_config_for_block_swap(model_config, block_swap_layers)
 
