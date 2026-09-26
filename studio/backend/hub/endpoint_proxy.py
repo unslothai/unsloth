@@ -110,7 +110,6 @@ def _rebase_link(link: str, upstream: str, base: str) -> str:
 def _saved_only(endpoint: str) -> bool:
     """A redirect's Location would name an endpoint the owner-only settings route keeps private."""
     from utils.hub_settings import saved_only_endpoints
-
     return endpoint in saved_only_endpoints()
 
 

@@ -126,5 +126,7 @@ def test_an_anonymous_redirect_names_a_saved_endpoint_only_to_a_loopback_browser
     monkeypatch.setattr(endpoint_proxy, "client_ip", lambda _request: peer)
     monkeypatch.setattr(hub_settings, "_saved_only_endpoints", frozenset({MIRROR}), raising = False)
     page = client.get(f"{HUB}/org/m/resolve/main/a.png")
-    assert (page.status_code, "location" in page.headers) == ((302, True) if location else (401, False))
+    assert (page.status_code, "location" in page.headers) == (
+        (302, True) if location else (401, False)
+    )
     assert seen == []
