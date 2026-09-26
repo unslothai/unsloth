@@ -250,10 +250,17 @@ from .device_type import (
 
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
+    fix_transformers5_legacy_config_types,
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
+    fix_transformers_chunked_mask_block_sequence_ids,
+    fix_transformers_longcat_lsa_config,
     fix_transformers_rope_scaling_drops_theta,
+    fix_transformers_fp8_modulelist_experts,
+    fix_transformers_validate_rope_ignore_keys,
+    fix_transformers5_remote_code_legacy_defaults,
+    fix_transformers_config_only_remote_code,
     fix_transformers_remote_rope_scaling_none,
     fix_transformers_is_torch_fx_available,
     fix_transformers5_remote_code_model_api,
@@ -292,12 +299,14 @@ from .import_fixes import (
     patch_accelerate_recursively_apply,
 )
 
+fix_transformers5_legacy_config_types()
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()
 # Probe-gated: no-ops unless this transformers really hands SDPA a query row that attends to
 # nothing. Ordered here, before anything imports a model, so a plain transformers.generate in the
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
+fix_transformers_chunked_mask_block_sequence_ids()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
@@ -315,6 +324,11 @@ del check_transformers_prequantized_vlm_quant_state
 # RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
+fix_transformers_fp8_modulelist_experts()
+fix_transformers_validate_rope_ignore_keys()
+fix_transformers5_remote_code_legacy_defaults()
+fix_transformers_config_only_remote_code()
+fix_transformers_longcat_lsa_config()
 # Remote code written for 4.x reads plain RoPE as rope_scaling None and imports is_torch_fx_available.
 fix_transformers_remote_rope_scaling_none()
 fix_transformers_is_torch_fx_available()
@@ -374,7 +388,11 @@ fix_peft_torchao_missing_tensor_subclass()
 patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
+del fix_transformers5_legacy_config_types
 del fix_transformers_rope_scaling_drops_theta
+del fix_transformers_fp8_modulelist_experts
+del fix_transformers_validate_rope_ignore_keys
+del fix_transformers_longcat_lsa_config
 del fix_transformers_remote_rope_scaling_none
 del fix_transformers_is_torch_fx_available
 del fix_transformers5_remote_code_model_api

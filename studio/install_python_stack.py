@@ -57,6 +57,7 @@ from backend.utils.wheel_utils import (
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
+    xformers_torch_requirement_unmet,
 )
 from backend.utils.uv_path_safety import uv_safe_path as _uv_safe_path
 
@@ -249,9 +250,10 @@ def _torch_below_211(installed_ver: str) -> bool:
 
 
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
-# Mirrors *FloorMap in install.ps1 / setup.ps1; other arches ship <2.11 and stay bare.
+# Mirrors *FloorMap in install.ps1 / setup.ps1 (unslothai/unsloth#11814).
+# gfx908 / gfx90a stay bare on purpose: no Windows wheels; Linux floors them via the rocm7.2 index.
 _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
-    {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
+    {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152", "gfx103x-all", "gfx110x-all"}
 )
 
 # rocmX.Y indexes KNOWN to ship torch 2.11; never floor an unknown newer rocm.
@@ -285,6 +287,17 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "gfx1151": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1150": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1152": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1030": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1031": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1032": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1033": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1034": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1035": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1036": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1100": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1101": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1102": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1103": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
 }
 # Bound companion versions for ABI compatibility while retaining older per-arch mirror builds.
 _ROCM_ARCH_INDEX_TORCH_PKG_SPEC: tuple[str, str, str] = (
@@ -3995,7 +4008,7 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
         # Decisive the other way too, on leaves with no floor. The heuristic below reads any
         # 2.11 build as a mismatch, since that is what a build from some OTHER index looks
         # like -- but these leaves serve 2.11 as well, and the family says this one came from
-        # the pinned index. Without it a correctly pinned gfx110X host force-reinstalls under
+        # the pinned index. Without it a correctly pinned gfx90a host force-reinstalls under
         # the legacy torch<2.11 cap on every update.
         if _family is not None and _inst_is_perarch:
             return False
@@ -7192,6 +7205,25 @@ def _evict_xformers_built_for_another_torch() -> bool:
     _note(
         f"windows on arm: the wheelhouse xformers was built for torch "
         f"{built_for}, not {resident} -- removed; attention uses torch SDPA"
+    )
+    return True
+
+
+def _evict_xformers_requiring_another_torch() -> bool:
+    """Remove an xFormers whose torch requirement is unmet, even if torch is unchanged (--overrides, #11545)."""
+    mismatch = xformers_torch_requirement_unmet()
+    if mismatch is None:
+        return False
+    xformers_version, requirement, torch_version = mismatch
+    if not _uninstall_distribution("xformers"):
+        _safe_print(
+            f"   [WARN] xformers {xformers_version} requires torch{requirement}, not "
+            f"{torch_version}, and could not be removed; diffusers cannot import it."
+        )
+        return False
+    _note(
+        f"xformers {xformers_version} requires torch{requirement}, not {torch_version} "
+        "-- removed; attention uses torch SDPA"
     )
     return True
 
@@ -10658,10 +10690,34 @@ def _diffusers_main_supersedes_release() -> bool:
     return _diffusers_main_requested() and _diffusers_main_resident()
 
 
+_ARCHIVE_SHA256_RE = re.compile(r"#\s*archive-sha256:\s*([0-9a-fA-F]{64})")
+
+
+def _archive_sha256_in_requirements(req: Path) -> "str | None":
+    """The ``# archive-sha256:`` digest *req* pins for its zip, or None unless exactly one."""
+    try:
+        text = req.read_text(encoding = "utf-8-sig")
+    except (OSError, ValueError):
+        return None
+    found = [
+        m.group(1).lower()
+        for m in (_ARCHIVE_SHA256_RE.fullmatch(line.strip()) for line in text.splitlines())
+        if m
+    ]
+    return found[0] if len(found) == 1 else None
+
+
 def _diffusers_main_archive(req: Path) -> "str | None":
-    """The zip route 11c takes on a host with no working git, or None when it has none."""
+    """The hash-pinned zip route 11c takes with no working git, or None when it has none.
+
+    pip and uv record the URL without the ``#sha256=`` fragment, so residency still matches it.
+    """
     wanted = _direct_reference_in_requirements(req)
-    return _github_archive_url(*wanted) if wanted is not None else None
+    archive = _github_archive_url(*wanted) if wanted is not None else None
+    digest = _archive_sha256_in_requirements(req)
+    if archive is None or digest is None:
+        return None
+    return f"{archive}#sha256={digest}"
 
 
 def _diffusers_main_needs_dependency_pass() -> bool:
@@ -11766,6 +11822,7 @@ def install_python_stack() -> int:
                 f"{_torch_after_repair} during the repair -- re-selecting torchao"
             )
             _install_torchao_for_torch(_torch_after_repair)
+        _evict_xformers_requiring_another_torch()
 
     # 13w. Windows torch flavor invariant, separate from step 13's Linux-shaped repair set
     # but in the same position: last, after the with-deps steps re-resolved torch.

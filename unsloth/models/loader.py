@@ -224,17 +224,61 @@ def _config_uses_remote_code(config):
             auto_map = cfg.get("auto_map", auto_map)
         if not auto_map:
             return False
+        config_is_native = (getattr(type(cfg), "__module__", "") or "").startswith("transformers.")
         # A custom tokenizer, processor or feature extractor is not code the compiler traces.
-        return any(str(k).startswith(("AutoModel", "AutoConfig")) for k in auto_map)
+        return any(
+            str(k).startswith("AutoModel")
+            or (str(k).startswith("AutoConfig") and not config_is_native)
+            for k in auto_map
+        )
 
-    if _remote(config):
-        return True
-    for sub in ("text_config", "vision_config", "audio_config"):
-        cfg = getattr(config, sub, None)
-        if cfg is None and isinstance(config, dict):
-            cfg = config.get(sub)
-        if cfg is not None and _remote(cfg):
+    # Sub-configs go beyond text/vision/audio (Qwen-Omni thinker_config, nested llm_config) and nest;
+    # a remote child read as native puts the compiler on untraceable code, so walk every level.
+    try:
+        from transformers import PretrainedConfig as _config_class
+    except Exception:
+        _config_class = ()
+
+    def _is_config(value):
+        return isinstance(value, dict) or (bool(_config_class) and isinstance(value, _config_class))
+
+    def _children(node):
+        if isinstance(node, dict):
+            return [value for value in node.values() if _is_config(value)]
+        names = ["text_config", "vision_config", "audio_config"]
+        # Instance read: transformers 4.57 makes backbone configs' `sub_configs` a property.
+        sub_configs = getattr(node, "sub_configs", None)
+        for sub in sub_configs if isinstance(sub_configs, dict) else ():
+            if sub not in names:
+                names.append(sub)
+        # A callable (e.g. a Mock) is not a config.
+        children = [
+            child
+            for child in (getattr(node, name, None) for name in names)
+            if child is not None and (_is_config(child) or not callable(child))
+        ]
+        try:
+            children.extend(value for value in vars(node).values() if _is_config(value))
+        except TypeError:
+            pass
+        return children
+
+    pending = [(config, 0)]
+    seen = set()
+    while pending:
+        current, depth = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if _remote(current):
             return True
+        children = _children(current)
+        if not children:
+            continue
+        # Past the bound, answer conservatively.
+        if depth >= 8:
+            return True
+        pending.extend((child, depth + 1) for child in children)
     return False
 
 
@@ -267,7 +311,118 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
-def _resolve_omni_auto_model(model_config):
+def _adapter_file_keys(path):
+    if path.endswith(".safetensors"):
+        from safetensors import safe_open
+        with safe_open(path, framework = "pt") as handle:
+            return list(handle.keys())
+    return list(torch.load(path, map_location = "meta", weights_only = True).keys())
+
+
+def _adapter_weight_keys(
+    adapter_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    cache_dir = None,
+):
+    """Tensor names of a saved adapter without loading weights, or None."""
+    filenames = ("adapter_model.safetensors", "adapter_model.bin")
+    try:
+        local = os.path.expanduser(adapter_name)
+        if os.path.isdir(local):
+            for filename in filenames:
+                path = os.path.join(local, filename)
+                if os.path.exists(path):
+                    return _adapter_file_keys(path)
+            return None
+        from huggingface_hub import hf_hub_download
+
+        for filename in filenames:
+            try:
+                path = hf_hub_download(
+                    adapter_name,
+                    filename,
+                    revision = revision,
+                    token = token,
+                    cache_dir = cache_dir,
+                    local_files_only = local_files_only,
+                )
+            except Exception:
+                continue
+            return _adapter_file_keys(path)
+    except Exception:
+        pass
+    return None
+
+
+def _composition_children(model_config):
+    names = [
+        name[: -len("_config")]
+        for name in (getattr(model_config, "sub_configs", None) or {})
+        if name.endswith("_config")
+    ]
+    return tuple(names) or ("thinker",)
+
+
+def _adapter_targets_text_core(
+    peft_config,
+    weight_keys = None,
+    wrapper_children = ("thinker",),
+):
+    """True when an adapter was trained on an extracted thinker (`text_only = True`).
+
+    Saved keys decide (wrapper-trained keys are rooted at a wrapper child); else the saved
+    regex. A leaf-name list matches either layout, so it cannot decide alone.
+    """
+    children = set(wrapper_children)
+    if weight_keys:
+        roots = {
+            (key[len("base_model.model.") :] if key.startswith("base_model.model.") else key).split(
+                ".", 1
+            )[0]
+            for key in weight_keys
+        }
+        return not (roots & children)
+    targets = getattr(peft_config, "target_modules", None)
+    return isinstance(targets, str) and not any(child in targets for child in children)
+
+
+def _is_forwardless_composition(
+    model_config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
+    # Only a wrapper with no forward (Qwen3-Omni) can have a thinker-trained adapter; VLM adapters never.
+    auto_class = _resolve_omni_auto_model(
+        model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+    )
+    model_class = (
+        resolve_model_class(
+            auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+        )
+        if auto_class is not None
+        else None
+    )
+    if model_class is None:
+        return False
+    forward = getattr(model_class, "forward", None)
+    return forward is None or forward is torch.nn.Module.forward
+
+
+def _config_has_native_class(auto_class, config):
+    """True when transformers itself maps ``type(config)`` in ``auto_class`` (no repo code needed)."""
+    try:
+        return auto_class is not None and type(config) in auto_class._model_mapping
+    except Exception:
+        return False
+
+
+def _resolve_omni_auto_model(
+    model_config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
     """A multimodal auto class that really maps this config, or None.
 
     Qwen3-Omni names Qwen3OmniMoeForConditionalGeneration so it reads as a VLM,
@@ -282,7 +437,12 @@ def _resolve_omni_auto_model(model_config):
         if auto_class is None:
             continue
         try:
-            if resolve_model_class(auto_class, model_config) is not None:
+            if (
+                resolve_model_class(
+                    auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+                )
+                is not None
+            ):
                 return auto_class
         except Exception:
             continue
@@ -666,8 +826,11 @@ class FastLanguageModel(FastLlamaModel):
                     f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                     f"4bit/8bit/fp8 loading is disabled and the model will "
                     f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                    f"4bit by default; point at the 4bit repo instead if you "
-                    f"wanted that."
+                    f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                    f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                    f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                    f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                    f"checkpoint while it loads."
                 )
             load_in_4bit = False
             load_in_8bit = False
@@ -855,8 +1018,11 @@ class FastLanguageModel(FastLlamaModel):
                         f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                         f"4bit/8bit/fp8 loading is disabled and the model will "
                         f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                        f"4bit by default; point at the 4bit repo instead if you "
-                        f"wanted that."
+                        f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                        f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                        f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                        f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                        f"checkpoint while it loads."
                     )
                 load_in_4bit = False
                 load_in_8bit = False
@@ -1449,8 +1615,11 @@ class FastModel(FastBaseModel):
                     f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                     f"4bit/8bit/fp8 loading is disabled and the model will "
                     f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                    f"4bit by default; point at the 4bit repo instead if you "
-                    f"wanted that."
+                    f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                    f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                    f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                    f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                    f"checkpoint while it loads."
                 )
             load_in_4bit = False
             load_in_8bit = False
@@ -1788,8 +1957,11 @@ class FastModel(FastBaseModel):
                         f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                         f"4bit/8bit/fp8 loading is disabled and the model will "
                         f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                        f"4bit by default; point at the 4bit repo instead if you "
-                        f"wanted that."
+                        f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                        f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                        f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                        f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                        f"checkpoint while it loads."
                     )
                 load_in_4bit = False
                 load_in_8bit = False
@@ -1892,18 +2064,59 @@ class FastModel(FastBaseModel):
         for _cfg_key, _cfg_val in task_config_attrs.items():
             set_task_config_attr(model_config, _cfg_key, _cfg_val)
 
+        # Class probes below fetch remote modeling code exactly as the load will.
+        _probe_hub_kwargs = dict(
+            trust_remote_code = trust_remote_code,
+            revision = base_revision if not is_peft else None,
+            code_revision = kwargs.get("code_revision", None),
+            token = token,
+            cache_dir = kwargs.get("cache_dir", None),
+            local_files_only = local_files_only,
+            force_download = kwargs.get("force_download", None),
+            proxies = kwargs.get("proxies", None),
+        )
         architectures = getattr(model_config, "architectures", None)
         if architectures is None:
             architectures = []
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
+        if (
+            is_peft
+            and not text_only
+            and auto_model is None
+            and _is_forwardless_composition(model_config, **_probe_hub_kwargs)
+        ):
+            _adapter_keys = _adapter_weight_keys(
+                old_model_name,
+                token = token,
+                revision = adapter_revision,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
+            if _adapter_targets_text_core(
+                peft_config, _adapter_keys, _composition_children(model_config)
+            ):
+                print(
+                    "Unsloth: this adapter was trained on the thinker alone (`text_only = True`), "
+                    "so its base is loaded the same way."
+                )
+                text_only = True
+            elif not _adapter_keys and not isinstance(
+                getattr(peft_config, "target_modules", None), str
+            ):
+                print(
+                    "Unsloth: could not read this adapter's weight names, so the full model is "
+                    "loaded. If it was trained with `text_only = True`, pass `text_only = True` here too."
+                )
         load_text_only = text_only and auto_model is None
         text_only_decoder = False
         if load_text_only:
             if hasattr(model_config, "vision_config"):
                 text_config = _get_text_only_config(model_config, old_model_name)
                 # Skip the vision tower only for families with their own text decoder (Gemma 3); others would load random weights, so keep the full model.
-                text_class = resolve_model_class(AutoModelForCausalLM, text_config)
+                text_class = resolve_model_class(
+                    AutoModelForCausalLM, text_config, **_probe_hub_kwargs
+                )
                 if text_class is None or not _is_family_text_decoder(
                     getattr(model_config, "model_type", ""),
                     getattr(text_config, "model_type", ""),
@@ -1920,6 +2133,14 @@ class FastModel(FastBaseModel):
                     is_vlm = False
                     # model_config is no longer the repo's config, so anything rebuilding it from model_name (the device-map planner) sees a different model.
                     text_only_decoder = True
+            elif (
+                is_vlm
+                and resolve_model_class(AutoModelForCausalLM, model_config, **_probe_hub_kwargs)
+                is None
+                and _resolve_omni_auto_model(model_config, **_probe_hub_kwargs) is not None
+            ):
+                # Qwen3-Omni has no causal-LM class; load the composition, text_intent picks the thinker.
+                load_text_only = False
             else:
                 is_vlm = False
         for _cfg_key, _cfg_val in task_config_attrs.items():
@@ -1933,6 +2154,24 @@ class FastModel(FastBaseModel):
                 _auto_map = getattr(model_config, "auto_map", {}) or {}
                 _vlm_class_name = AutoModelForVision2Seq.__name__
                 _has_vlm_class = _vlm_class_name in _auto_map
+                # Untrusted: keep only auto_map entries transformers builds natively (Step-3.7: step3p7 is image-text).
+                if not trust_remote_code:
+                    import transformers as _transformers
+
+                    _native_map = {
+                        _name: _ref
+                        for _name, _ref in _auto_map.items()
+                        if _config_has_native_class(
+                            getattr(_transformers, _name, None), model_config
+                        )
+                    }
+                    # Remote causal LM class: native AutoModel would be a headless backbone (Kimi-K2.5).
+                    if (
+                        "AutoModelForCausalLM" in _auto_map
+                        and "AutoModelForCausalLM" not in _native_map
+                    ):
+                        _native_map.pop("AutoModel", None)
+                    _auto_map = _native_map
                 if not _has_vlm_class and "AutoModelForCausalLM" in _auto_map:
                     auto_model = AutoModelForCausalLM
                 elif not _has_vlm_class and "AutoModel" in _auto_map:
@@ -1942,8 +2181,11 @@ class FastModel(FastBaseModel):
                     auto_model = AutoModelForVision2Seq
                     # Only when the image-text class has no mapping, so anything that
                     # resolves today keeps the class it resolves to now.
-                    if resolve_model_class(auto_model, model_config) is None:
-                        auto_model = _resolve_omni_auto_model(model_config) or auto_model
+                    if resolve_model_class(auto_model, model_config, **_probe_hub_kwargs) is None:
+                        auto_model = (
+                            _resolve_omni_auto_model(model_config, **_probe_hub_kwargs)
+                            or auto_model
+                        )
             else:
                 auto_model = AutoModelForCausalLM
 
@@ -2002,6 +2244,7 @@ class FastModel(FastBaseModel):
             disable_log_stats = disable_log_stats,
             load_in_fp8 = load_in_fp8,
             text_only = load_text_only,
+            text_intent = bool(text_only),
             text_only_decoder = text_only_decoder,
             *args,
             **kwargs,

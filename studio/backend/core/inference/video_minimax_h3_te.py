@@ -163,11 +163,7 @@ def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
 # which is symmetric and orthogonal, so H @ H == I exactly and x_rot @ W_rot^T == x @ W^T. The rotation is what lets
 # INT8 survive Qwen3-VL's per-channel activation outliers; dequantizing WITHOUT it is not an approximation, it is
 # noise (measured against the hosted bfloat16 file for one projection: 0.9% relative error with the rotation, 137%
-# without). This mirrors comfy-kitchen's ``_build_hadamard`` / ``_rotate_activation`` / ``_rotate_weight`` exactly
-# rather than taking a dependency on a wheel Unsloth does not ship. ``build_convrot_hadamard`` and
-# ``rotate_convrot_activation`` live in ``diffusion_convrot`` and are imported at the top of this module: the DENOISER
-# runs the same ConvRot on its own hosted INT8 checkpoint, and two copies of a matrix nobody re-derives at review time
-# is exactly how they would stop agreeing. Both stay importable from here.
+# without). The Hadamard lives in ``diffusion_convrot`` so the denoiser and conditioner share one copy.
 @lru_cache(maxsize = None)
 def _int8_convrot_linear_class() -> Any:
     """The ConvRot INT8 ``nn.Linear`` stand-in, built lazily so importing this module never imports
@@ -195,9 +191,7 @@ def _int8_convrot_linear_class() -> Any:
         tiny tensor instead of approximate in bfloat16 over a huge one. INT8 values are integers
         below 256, so the ``.to(compute dtype)`` is exact in bfloat16.
 
-        Weight-only, unlike comfy-kitchen's W8A8 kernel, which also quantizes the activation
-        per row. Same weights and the same rotation, strictly less error, and the conditioner runs
-        once per generation so the dequantize is not on any hot path.
+        Weight-only (not W8A8): less error, and the conditioner runs once per generation.
         """
 
         def __init__(
