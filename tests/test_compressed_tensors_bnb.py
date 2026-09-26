@@ -279,32 +279,37 @@ def test_planner_gets_the_prepared_config_instead_of_rebuilding_it(monkeypatch):
     checkpoint that config still carries compressed-tensors, and `merge_quantization_configs`
     then refuses the bitsandbytes flags, so Kimi-K2.7-Code lost its plan and fell back to
     `sequential`, which spilled to CPU and bitsandbytes refused the load. The armed config
-    object is what the planner has to size."""
-    import unsloth_zoo.device_map_planner as planner
+    object is what the planner has to size; the loaders hand it over as `planner_config`."""
+    import sys
+    import types
     from unsloth.models import loader_utils
 
-    if not loader_utils.planner_accepts_prepared_config():
-        pytest.skip("this unsloth_zoo planner does not take a prepared config")
+    # A module of our own under the import name: other tests leave their fakes in sys.modules.
+    planner = types.ModuleType("unsloth_zoo.device_map_planner")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.device_map_planner", planner)
+
     seen = {}
 
     def fake_plan(
         model_name,
         *,
         max_memory = None,
+        config = None,
         **kwargs,
     ):
         seen.update(kwargs)
+        seen["config"] = config
         seen["max_memory"] = max_memory
         return None
 
-    monkeypatch.setattr(planner, "plan_device_map_for_pretrained", fake_plan)
+    monkeypatch.setattr(planner, "plan_device_map_for_pretrained", fake_plan, raising = False)
     monkeypatch.setattr(loader_utils, "DEVICE_TYPE_TORCH", "cuda")
     monkeypatch.setattr(loader_utils, "is_distributed", lambda: False)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda index: (10 * 1024**3, 16 * 1024**3))
     prepared = object()
     device_map = loader_utils.resolve_unsloth_device_map(
-        loader_utils.UNSLOTH_DEVICE_MAP, "some/repo", prepared_config = prepared, load_in_4bit = True
+        loader_utils.UNSLOTH_DEVICE_MAP, "some/repo", planner_config = prepared, load_in_4bit = True
     )
     assert seen["config"] is prepared
     assert seen["load_in_4bit"] is True
@@ -312,9 +317,14 @@ def test_planner_gets_the_prepared_config_instead_of_rebuilding_it(monkeypatch):
 
     # An unsloth_zoo whose planner cannot take the object declines the plan instead of handing it a config it would size wrong.
     seen.clear()
-    monkeypatch.setattr(loader_utils, "planner_accepts_prepared_config", lambda: False)
+
+    def old_plan(model_name, *, max_memory = None, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(planner, "plan_device_map_for_pretrained", old_plan)
     device_map = loader_utils.resolve_unsloth_device_map(
-        loader_utils.UNSLOTH_DEVICE_MAP, "some/repo", prepared_config = prepared, load_in_4bit = True
+        loader_utils.UNSLOTH_DEVICE_MAP, "some/repo", planner_config = prepared, load_in_4bit = True
     )
     assert seen == {}
     assert device_map == loader_utils._PLANNED_DEVICE_MAPS[loader_utils.UNSLOTH_DEVICE_MAP]
