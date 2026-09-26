@@ -310,6 +310,30 @@ def test_sampler_that_cannot_read_the_page_at_all_fails(tmp_path, monkeypatch):
     assert any("could not read the sidebar" in m for m in mod._failed), mod._failed
 
 
+def test_a_navigation_in_flight_on_the_first_read_is_not_a_failure(tmp_path, monkeypatch):
+    """The forced password change navigates the app itself, which can abort the post-login
+    goto and leave a navigation in flight: the first evaluate then loses its context. macOS
+    job 108389456188 failed on exactly that; the next read would have worked."""
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [UNMEASURED, SETTLED])
+    page = FakePage({TRAIN: SPINNING})
+    real_evaluate = page.evaluate
+    lost = ["Page.evaluate: Execution context was destroyed, most likely because of a navigation"]
+
+    def evaluate(script, arg = None):
+        if lost:
+            raise RuntimeError(lost.pop())
+        return real_evaluate(script, arg)
+
+    page.evaluate = evaluate
+    page.wait_for_load_state = lambda *a, **k: None
+
+    mod.sample_natural_warm_window(page)
+
+    assert not lost, "the context loss was never hit, so this proves nothing"
+    assert not any("could not read the sidebar" in m for m in mod._failed), mod._failed
+
+
 def test_missed_warm_window_alone_is_not_a_failure(tmp_path, monkeypatch):
     """Missing the real window is normal and must stay quiet, or the macOS job goes red
     on every run. The forced check above is what carries the guarantee instead."""
