@@ -434,6 +434,72 @@ RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
 
+# Unsloth's training forward drops the 2D mask (right pads are invisible under causal attention), so
+# Online DPO's [left-padded prompt | completion] rows let real tokens attend pads. Right-align rows as
+# GRPO's left_pack_padding does, then read each row's completion logits from its shifted start.
+_ONLINE_DPO_MODEL_CALL = re.compile(
+    r"^(?P<indent>[ \t]*)output = model\(prompt_completion_ids, "
+    r"(?P<kwargs>attention_mask=prompt_completion_mask|\*\*model_kwargs)\)[ \t]*$",
+    flags = re.MULTILINE,
+)
+_ONLINE_DPO_LOGITS_SLICE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<line>logits = output\.logits\[:, start_idx:(?:end_idx|-1)\])[ \t]*$",
+    flags = re.MULTILINE,
+)
+
+
+def online_dpo_trainer__forward(function_name, function):
+    if function_name != "_forward" or "_unsloth_left_pad" in function:
+        return function
+    call = _ONLINE_DPO_MODEL_CALL.search(function)
+    logits_slice = _ONLINE_DPO_LOGITS_SLICE.search(function)
+    if call is None or logits_slice is None:
+        _warn_once(
+            "online_dpo_trainer._forward",
+            "Unsloth: Online DPO's _forward changed upstream, so left-padded prompts are scored "
+            "without right-aligning them. Please file a bug report.",
+        )
+        return function
+    i = call.group("indent")
+    # Vision rows keep TRL's layout: image tokens are placed by position.
+    has_vision = call.group("kwargs") == "**model_kwargs"
+    pack = (
+        f"{i}_unsloth_left_pad = None\n"
+        f"{i}if {'not vision_inputs' if has_vision else 'True'}:\n"
+        f"{i}    _unsloth_left_pad = (prompt_mask == 0).sum(dim = 1)\n"
+        f"{i}    _unsloth_order = torch.argsort(prompt_completion_mask != 0, dim = 1, descending = True, stable = True)\n"
+        f"{i}    prompt_completion_ids = prompt_completion_ids.gather(1, _unsloth_order)\n"
+        f"{i}    prompt_completion_mask = prompt_completion_mask.gather(1, _unsloth_order)\n"
+        + (
+            f'{i}    model_kwargs["attention_mask"] = prompt_completion_mask\n'
+            if has_vision
+            else ""
+        )
+        + call.group(0)
+    )
+    j = logits_slice.group("indent")
+    gather = (
+        f"{j}if _unsloth_left_pad is not None:\n"
+        f"{j}    _unsloth_index = (start_idx - _unsloth_left_pad).unsqueeze(1) + torch.arange(\n"
+        f"{j}        completion_ids.size(1), device = completion_ids.device\n"
+        f"{j}    ).unsqueeze(0)\n"
+        f"{j}    _unsloth_index = _unsloth_index.clamp(0, output.logits.size(1) - 1)\n"
+        # Row/column indexing, not take_along_dim: that broadcasts a [B, C, V] int64 index kept for backward.
+        f"{j}    logits = output.logits[\n"
+        f"{j}        torch.arange(_unsloth_index.size(0), device = _unsloth_index.device).unsqueeze(1), _unsloth_index\n"
+        f"{j}    ]\n"
+        # The indexing copies; drop [B, L, V] before log_softmax so peak memory stays at TRL's level.
+        f"{j}    output = None\n"
+        f"{j}else:\n"
+        f"{j}    {logits_slice.group('line')}"
+    )
+    function = function[: logits_slice.start()] + gather + function[logits_slice.end() :]
+    return function[: call.start()] + pack + function[call.end() :]
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__forward)
+
+
 _WRAPPED_PACKING_SETUP = (
     "    import inspect as _inspect\n"
     "    try:\n"

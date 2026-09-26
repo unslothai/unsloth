@@ -1008,15 +1008,7 @@ def LlamaModel_fast_forward(
 
     if attention_mask is None:
         padding_mask = None
-    elif (
-        self.training
-        and attention_mask.ndim == 2
-        and not (
-            getattr(self, "_has_no_labels", False) is True
-            and torch.any(attention_mask[:, 1:] > attention_mask[:, :-1])
-        )
-    ):
-        # Left pads (Online DPO scoring) need the mask; checked only without labels since it syncs the host.
+    elif self.training:
         attention_mask = None
         padding_mask = None
     else:
