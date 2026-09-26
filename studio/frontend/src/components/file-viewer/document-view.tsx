@@ -14,11 +14,14 @@ export function DocumentView({
   file,
   kind,
   name,
+  contentType = "",
   scale = 1,
 }: {
   file: Blob;
   kind: DocumentKind;
   name: string;
+  /** Tells a CSV or TSV from a workbook when the name has no extension. */
+  contentType?: string;
   scale?: number;
 }) {
   return (
@@ -26,7 +29,7 @@ export function DocumentView({
       {kind === "pdf" ? (
         <PdfView file={file} scale={scale} />
       ) : (
-        <OfficeView file={file} kind={kind} name={name} scale={scale} />
+        <OfficeView file={file} kind={kind} name={name} contentType={contentType} scale={scale} />
       )}
     </Suspense>
   );

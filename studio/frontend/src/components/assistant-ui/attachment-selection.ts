@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { documentKind } from "@/components/file-viewer/kind";
+import { documentKind, sheetDelimiter } from "@/components/file-viewer/kind";
 import { isAudioAttachment } from "@/features/chat/attachment-content";
 
 /** "document": shown as it looks (pages, a grid, slides or rendered markdown), not as text. */
@@ -29,7 +29,6 @@ export type AttachmentSelection = {
 };
 
 const MARKDOWN_NAME = /\.(md|markdown|mdx)$/i;
-const DELIMITED_NAME = /\.(csv|tsv)$/i;
 
 /** Whether the viewer has content: the file, a kept original, or full text (markdown, CSV). */
 function isViewableDocument(
@@ -41,7 +40,7 @@ function isViewableDocument(
 ): boolean {
   if (MARKDOWN_NAME.test(name)) return Boolean(file) || hasText;
   if (!documentKind(name, contentType)) return false;
-  return Boolean(file) || hasOriginal || (DELIMITED_NAME.test(name) && hasText);
+  return Boolean(file) || hasOriginal || (sheetDelimiter(name, contentType) !== null && hasText);
 }
 
 /**

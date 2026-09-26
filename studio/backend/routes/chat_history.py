@@ -1434,9 +1434,7 @@ def save_thread_message(
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     try:
-        return ChatMessage(
-            **upsert_chat_message(payload.model_dump(), allow_generation_edit = allow_generation_edit)
-        )
+        saved = upsert_chat_message(payload.model_dump(), allow_generation_edit = allow_generation_edit)
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
             raise _missing_thread_error(thread_id) from exc
@@ -1450,6 +1448,9 @@ def save_thread_message(
             log = logger,
             headers = _conflict_headers(exc),
         ) from exc
+    # A save can replace the message's attachments, taking the last reference to an original.
+    chat_originals.sweep()
+    return ChatMessage(**saved)
 
 
 @router.put("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
@@ -1489,9 +1490,8 @@ def replace_thread_messages(
             log = logger,
             headers = _conflict_headers(exc),
         ) from exc
-    # A removed message can take the last reference to a kept original with it.
-    if payload.pruneMissing or payload.deletedMessageIds:
-        chat_originals.sweep()
+    # A removed or rewritten message can take the last reference to a kept original with it.
+    chat_originals.sweep()
     return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced])
 
 

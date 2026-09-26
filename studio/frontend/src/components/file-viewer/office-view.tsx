@@ -9,7 +9,7 @@ import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { cn } from "@/lib/utils";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { type CSSProperties, type MouseEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DocumentKind } from "./kind";
+import { type DocumentKind, sheetDelimiter } from "./kind";
 import { useWidth } from "./use-width";
 import {
   type Deck,
@@ -28,9 +28,8 @@ type Parsed =
   | { kind: "sheet"; sheets: Sheet[] }
   | { kind: "slides"; deck: Deck };
 
-async function parse(file: Blob, kind: DocumentKind, name: string): Promise<Parsed> {
+async function parse(file: Blob, kind: DocumentKind, name: string, contentType: string): Promise<Parsed> {
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const extension = name.split(".").pop()?.toLowerCase();
   if (kind === "docx") {
     const { default: mammoth } = await import("mammoth");
     // Large parts kept: an image past the XML ceiling still shows.
@@ -39,7 +38,8 @@ async function parse(file: Blob, kind: DocumentKind, name: string): Promise<Pars
     return { kind, ...sanitizeDocxHtml(value) };
   }
   if (kind === "slides") return { kind, deck: readPptx(bytes) };
-  if (extension === "csv" || extension === "tsv") {
+  const delimiter = sheetDelimiter(name, contentType);
+  if (delimiter) {
     // Excel's "Unicode Text" export is UTF-16 with a byte order mark.
     const encoding =
       bytes[0] === 0xff && bytes[1] === 0xfe
@@ -48,7 +48,7 @@ async function parse(file: Blob, kind: DocumentKind, name: string): Promise<Pars
           ? "utf-16be"
           : "utf-8";
     const text = new TextDecoder(encoding).decode(bytes);
-    return { kind: "sheet", sheets: [readDelimited(text, extension === "tsv" ? "\t" : ",", name)] };
+    return { kind: "sheet", sheets: [readDelimited(text, delimiter, name)] };
   }
   return { kind: "sheet", sheets: readXlsx(bytes) };
 }
@@ -510,25 +510,27 @@ export default function OfficeView({
   file,
   kind,
   name,
+  contentType,
   scale,
 }: {
   file: Blob;
   kind: DocumentKind;
   name: string;
+  contentType: string;
   scale: number;
 }) {
   const t = useT();
   const [state, setState] = useState<{ file: Blob; parsed?: Parsed; error?: boolean } | null>(null);
   useEffect(() => {
     let cancelled = false;
-    parse(file, kind, name).then(
+    parse(file, kind, name, contentType).then(
       (parsed) => !cancelled && setState({ file, parsed }),
       () => !cancelled && setState({ file, error: true }),
     );
     return () => {
       cancelled = true;
     };
-  }, [file, kind, name]);
+  }, [file, kind, name, contentType]);
   const current = state?.file === file ? state : null;
   if (current?.error) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
@@ -537,5 +539,5 @@ export default function OfficeView({
   if (!parsed) return <Spinner className="m-auto size-6" />;
   if (parsed.kind === "docx") return <DocxView html={parsed.html} truncated={parsed.truncated} scale={scale} />;
   if (parsed.kind === "slides") return <SlidesView deck={parsed.deck} scale={scale} />;
-  return <SheetView sheets={parsed.sheets} tabs={!/\.(csv|tsv)$/i.test(name)} scale={scale} />;
+  return <SheetView sheets={parsed.sheets} tabs={!sheetDelimiter(name, contentType)} scale={scale} />;
 }

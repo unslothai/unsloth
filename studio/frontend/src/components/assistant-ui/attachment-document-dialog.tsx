@@ -56,7 +56,7 @@ const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; sca
   }
   const kind = documentKind(name, contentType);
   if (!loaded.blob || !kind) return <Spinner className="m-auto size-6" />;
-  return <DocumentView file={loaded.blob} kind={kind} name={name} scale={scale} />;
+  return <DocumentView file={loaded.blob} kind={kind} name={name} contentType={contentType} scale={scale} />;
 };
 
 /** Opens a document attachment in the Library's viewer. `load` returns its bytes. */

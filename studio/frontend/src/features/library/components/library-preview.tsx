@@ -343,6 +343,7 @@ function PreviewBody({
           file={draftFile ?? doc.file!}
           kind={documentKind(ownName(item), item.contentType)!}
           name={ownName(item)}
+          contentType={item.contentType}
           scale={pageScale}
         />
       );

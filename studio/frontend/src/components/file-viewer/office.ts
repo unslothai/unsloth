@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type Unzipped, strFromU8, unzipSync } from "fflate";
+import { type Unzipped, inflateSync, strFromU8, unzipSync } from "fflate";
 
 /** Readers for the parts of an XLSX or PPTX a viewer shows: values, not a faithful rendering. */
 
@@ -11,7 +11,7 @@ export const MAX_SHEET_COLUMNS = 200;
 // Across every sheet, so a workbook of many sheets reads no more than one full one. Each row also
 // costs one, so a full sheet fits.
 const MAX_WORKBOOK_CELLS = MAX_SHEET_ROWS * (MAX_SHEET_COLUMNS + 1);
-// Visible sheets read: empty ones cost no cells, but each is a tab and an unzip pass.
+// Visible sheets read: empty ones cost no cells, but each is a tab and an inflate.
 const MAX_SHEETS = 100;
 
 export interface SheetCell {
@@ -31,18 +31,79 @@ export interface Sheet {
   hidden?: { rows: Set<number>; columns: Set<number> };
 }
 
-/** Inflates the parts `wanted` picks, on demand. The unpacked total counts across calls. */
-function archive(bytes: Uint8Array): (wanted: (name: string) => boolean) => Unzipped {
+interface ZipEntry {
+  offset: number;
+  size: number;
+  originalSize: number;
+  method: number;
+}
+
+/** The central directory, read once: each part's name to where its data sits. Null for ZIP64 or
+ *  a directory that does not parse, which unzipSync then reads instead. */
+function zipIndex(bytes: Uint8Array, view: DataView): Map<string, ZipEntry> | null {
+  let end = bytes.length - 22;
+  const stop = Math.max(0, end - 0xffff);
+  while (end >= stop && view.getUint32(end, true) !== 0x06054b50) end--;
+  if (end < stop) return null;
+  const count = view.getUint16(end + 10, true);
+  let at = view.getUint32(end + 16, true);
+  if (count === 0xffff || at === 0xffffffff) return null;
+  const utf8 = new TextDecoder();
+  const index = new Map<string, ZipEntry>();
+  for (let i = 0; i < count; i++) {
+    if (at + 46 > bytes.length || view.getUint32(at, true) !== 0x02014b50) return null;
+    const size = view.getUint32(at + 20, true);
+    const originalSize = view.getUint32(at + 24, true);
+    const offset = view.getUint32(at + 42, true);
+    if (size === 0xffffffff || originalSize === 0xffffffff || offset === 0xffffffff) return null;
+    const nameEnd = at + 46 + view.getUint16(at + 28, true);
+    const raw = bytes.subarray(at + 46, nameEnd);
+    // Bit 11 marks a UTF-8 name; otherwise one byte a character, as unzipSync reads it.
+    const name = view.getUint16(at + 8, true) & 0x800 ? utf8.decode(raw) : String.fromCharCode(...raw);
+    index.set(name, { offset, size, originalSize, method: view.getUint16(at + 10, true) });
+    at = nameEnd + view.getUint16(at + 30, true) + view.getUint16(at + 32, true);
+  }
+  return index;
+}
+
+function inflateEntry(bytes: Uint8Array, view: DataView, entry: ZipEntry): Uint8Array<ArrayBuffer> {
+  const at = entry.offset;
+  if (view.getUint32(at, true) !== 0x04034b50) throw new Error("Not a valid ZIP archive.");
+  const start = at + 30 + view.getUint16(at + 26, true) + view.getUint16(at + 28, true);
+  const data = bytes.subarray(start, start + entry.size);
+  if (entry.method === 0) return data.slice();
+  if (entry.method === 8) return inflateSync(data, { out: new Uint8Array(entry.originalSize) });
+  throw new Error(`Unsupported ZIP compression method ${entry.method}.`);
+}
+
+/** Inflates the named parts, on demand. The archive is indexed once, so each read is by lookup,
+ *  not another pass over every entry. The unpacked total counts across calls. */
+function archive(bytes: Uint8Array): (names: Iterable<string>) => Unzipped {
   let total = 0;
-  return (wanted) =>
-    unzipSync(bytes, {
-      filter: (entry) => {
-        if (!wanted(entry.name)) return false;
-        total += entry.originalSize;
-        if (total > MAX_UNPACKED_BYTES) throw new Error("File is too large to preview.");
-        return true;
-      },
-    });
+  const charge = (size: number) => {
+    total += size;
+    if (total > MAX_UNPACKED_BYTES) throw new Error("File is too large to preview.");
+  };
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const index = zipIndex(bytes, view);
+  if (!index) {
+    return (names) => {
+      const wanted = new Set(names);
+      return unzipSync(bytes, {
+        filter: (entry) => wanted.has(entry.name) && (charge(entry.originalSize), true),
+      });
+    };
+  }
+  return (names) => {
+    const files: Unzipped = {};
+    for (const name of new Set(names)) {
+      const entry = index.get(name);
+      if (!entry) continue;
+      charge(entry.originalSize);
+      files[name] = inflateEntry(bytes, view, entry);
+    }
+    return files;
+  };
 }
 
 function xml(files: Unzipped, path: string): Document | null {
@@ -504,7 +565,7 @@ export function formatNumber(value: number, rawCode: string | undefined, date190
   if (kind === "date") return formatDate(date1904 ? value + 1462 : value, tagged);
   // No digit placeholders: literal text, with the value wherever "General" stands.
   if (kind === "literal") return `${sign}${code.replace(/general/i, generalText(Math.abs(value)))}`.trim();
-  if (kind === "scientific") return `${sign}${formatScientific(Math.abs(value), tagged).trim()}`;
+  if (kind === "scientific") return `${sign}${formatScientific(Math.abs(percent ? value * 100 : value), tagged).trim()}`;
   // The magnitude: the section's own sign, as in the other branches. (# ?/?;(# ?/?) shows (1 1/2).)
   const fraction = formatFraction(Math.abs(value), code);
   if (fraction !== null) return `${sign}${fraction}`;
@@ -865,7 +926,7 @@ function styleSections(bytes: Uint8Array | undefined): Document | null {
 export function readXlsx(bytes: Uint8Array): Sheet[] {
   const read = archive(bytes);
   const main = "xl/workbook.xml";
-  const head = read((name) => name === main || name === relsPath(main));
+  const head = read([main, relsPath(main)]);
   const workbook = xml(head, main);
   if (!workbook) throw new Error("Not a valid XLSX workbook.");
   // Only parts the workbook uses: not custom XML, pivot caches or drawings.
@@ -873,7 +934,7 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
   const partOf = (type: string, fallback: string) => rels.find((rel) => rel.type.endsWith(`/${type}`))?.path ?? fallback;
   const stringsPath = partOf("sharedStrings", "xl/sharedStrings.xml");
   const stylesPath = partOf("styles", "xl/styles.xml");
-  const support = read((name) => name === stringsPath || name === stylesPath);
+  const support = read([stringsPath, stylesPath]);
   const string = sharedStrings(support[stringsPath]);
   const styles = readStyles(styleSections(support[stylesPath]));
   const date1904 = ["1", "true"].includes(first(workbook, "workbookPr")?.getAttribute("date1904") ?? "");
@@ -889,7 +950,7 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
       break;
     }
     const path = paths.get(relId(sheet, "id") ?? "");
-    const part = path ? read((name) => name === path)[path] : undefined;
+    const part = path ? read([path])[path] : undefined;
     if (!part) continue;
     const { text, cut } = sheetText(part, Math.min(MAX_SHEET_ROWS, budget.cells));
     const parsed = readSheet(text, sheet.getAttribute("name") ?? "Sheet", string, styles, date1904, budget);
@@ -1098,7 +1159,7 @@ function readFrame(shape: Element, cx: number, cy: number): SlideBox["frame"] {
 export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   const read = archive(bytes);
   const main = "ppt/presentation.xml";
-  const head = read((name) => name === main || name === relsPath(main));
+  const head = read([main, relsPath(main)]);
   const presentation = xml(head, main);
   if (!presentation) throw new Error("Not a valid PPTX presentation.");
   const size = first(presentation, "sldSz");
@@ -1107,7 +1168,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   const rels = relationships(head, main);
   const slidePaths = all(presentation, "sldId").map((id) => rels.get(relId(id, "id") ?? ""));
   const wanted = new Set(slidePaths.flatMap((path) => (path ? [path, relsPath(path)] : [])));
-  const slideFiles = read((name) => wanted.has(name));
+  const slideFiles = read(wanted);
   // A hidden slide is left out of the show, so out of the viewer and the model's text too. Read
   // from the root tag, so each slide is parsed only when its turn comes.
   const shown = slidePaths.filter(
@@ -1122,7 +1183,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
         .map((rel) => rel.path),
     ),
   );
-  const files = read((name) => used.has(name));
+  const files = read(used);
   const slides: Slide[] = [];
   // One Blob per picture, however many slides use it.
   const pictures = new Map<string, Blob>();

@@ -50,7 +50,8 @@ def test_async_delete_handlers_dispatch_sqlite_to_the_threadpool():
 
 
 def test_message_removal_paths_sweep_chat_originals(monkeypatch):
-    """A removed message can drop the last reference to a kept original, so every path sweeps."""
+    """A removed or rewritten message can drop the last reference to a kept original, so every
+    path sweeps."""
     for handler in (
         chat_history.clear_history,
         chat_history.delete_project,
@@ -74,7 +75,13 @@ def test_message_removal_paths_sweep_chat_originals(monkeypatch):
             ),
             current_subject = "test-user",
         )
-    assert sweeps == [False, False]
+    monkeypatch.setattr(
+        chat_history, "upsert_chat_message", lambda message, **kwargs: message
+    )
+    chat_history.save_thread_message(
+        "thread-1", "msg-1", _message("msg-1", "thread-1"), current_subject = "test-user"
+    )
+    assert sweeps == [False] * 4
 
 
 def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
