@@ -124,6 +124,7 @@ def _matches_mtp(
 _GGUF_MAGIC = 0x46554747
 _VTYPE_STRING = 8
 _VTYPE_UINT32 = 4
+_VTYPE_BOOL = 7
 
 
 def _enc_string(s: str) -> bytes:
@@ -139,16 +140,22 @@ def _enc_kv_uint32(key: str, value: int) -> bytes:
     return _enc_string(key) + struct.pack("<I", _VTYPE_UINT32) + struct.pack("<I", value)
 
 
+def _enc_kv_bool(key: str, value: bool) -> bytes:
+    return _enc_string(key) + struct.pack("<I", _VTYPE_BOOL) + struct.pack("<?", value)
+
+
 def _write_minimal_gguf(
     path: Path,
     *,
     arch: str,
     nextn: int | None,
     extra_uint32: dict[str, int] | None = None,
+    extra_bool: dict[str, bool] | None = None,
     nextn_first: bool = False,
 ) -> Path:
     """Header-only GGUF with arch + optional nextn_predict_layers."""
     extra_uint32 = dict(extra_uint32 or {})
+    extra_bool = dict(extra_bool or {})
     arch_entry = _enc_kv_string("general.architecture", arch)
     nextn_entry = (
         _enc_kv_uint32(f"{arch}.nextn_predict_layers", nextn) if nextn is not None else b""
@@ -157,6 +164,9 @@ def _write_minimal_gguf(
     kv_count = 1 + int(nextn is not None)
     for k, v in extra_uint32.items():
         body += _enc_kv_uint32(k, v)
+        kv_count += 1
+    for k, v in extra_bool.items():
+        body += _enc_kv_bool(k, v)
         kv_count += 1
     header = struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, kv_count)
     path.write_bytes(header + body)
@@ -637,6 +647,58 @@ def test_read_gguf_metadata_captures_nextn_predict_layers(tmp_path, arch, nextn)
     backend = LlamaCppBackend()
     backend._read_gguf_metadata(str(gguf))
     assert backend._nextn_predict_layers == nextn
+
+
+def test_read_gguf_metadata_captures_shared_target_tensors(tmp_path):
+    arch = "qwen4exp"
+    gguf = _write_minimal_gguf(
+        tmp_path / "shared-mtp.gguf",
+        arch = arch,
+        nextn = None,
+        extra_bool = {f"{arch}.nextn_shared_target_tensors": True},
+    )
+    backend = LlamaCppBackend()
+    backend._read_gguf_metadata(str(gguf))
+    assert backend._nextn_shared_target_tensors is True
+
+
+def test_read_gguf_metadata_resets_shared_target_tensors(tmp_path):
+    arch = "qwen4exp"
+    shared = _write_minimal_gguf(
+        tmp_path / "shared-mtp.gguf",
+        arch = arch,
+        nextn = None,
+        extra_bool = {f"{arch}.nextn_shared_target_tensors": True},
+    )
+    standalone = _write_minimal_gguf(
+        tmp_path / "standalone-mtp.gguf",
+        arch = arch,
+        nextn = 1,
+    )
+    backend = LlamaCppBackend()
+    backend._read_gguf_metadata(str(shared))
+    backend._read_gguf_metadata(str(standalone))
+    assert backend._nextn_shared_target_tensors is False
+
+
+@pytest.mark.parametrize(
+    "shared, drafter_path, reserve_bytes, expected_mib",
+    [
+        (True, "shared.gguf", 2 * 1024 * 1024 + 1, 3),
+        (False, "standalone.gguf", 2 * 1024 * 1024 + 1, 0),
+        # CPU-offloaded drafters are removed from the GPU-budget path.
+        (True, None, 2 * 1024 * 1024 + 1, 0),
+        (True, "shared.gguf", 0, 0),
+    ],
+)
+def test_shared_drafter_fit_reserve_is_metadata_driven(
+    shared, drafter_path, reserve_bytes, expected_mib
+):
+    backend = LlamaCppBackend()
+    backend._draft_backend_for = lambda _path: _types.SimpleNamespace(
+        _nextn_shared_target_tensors = shared
+    )
+    assert backend._shared_drafter_fit_reserve_mib(drafter_path, reserve_bytes) == expected_mib
 
 
 def test_read_gguf_metadata_captures_nextn_before_architecture(tmp_path):
@@ -4072,3 +4134,29 @@ def test_positive_budget_probe_uses_resolved_launch_path(monkeypatch):
         reasoning_budget_message = "",
     )
     assert caps["supports_reasoning_budget_value:32"] is True
+
+
+@pytest.mark.parametrize("auto_fit, base_mib", [(True, 512), (False, 1024)])
+@pytest.mark.parametrize("shared", [True, False])
+def test_shared_drafter_reserve_reaches_fit_target_flags(tmp_path, auto_fit, base_mib, shared):
+    gguf = _write_minimal_gguf(
+        tmp_path / "draft.gguf",
+        arch = "qwen4exp",
+        nextn = 1,
+        extra_bool = {"qwen4exp.nextn_shared_target_tensors": shared},
+    )
+    backend = LlamaCppBackend()
+    reserve_mib = backend._shared_drafter_fit_reserve_mib(str(gguf), 2 * 1024 * 1024 + 1)
+    flags = backend._ctx_integrity_flags(
+        n_parallel = 1,
+        use_fit = True,
+        auto_fit = auto_fit,
+        requested_ctx = 0,
+        effective_ctx = 8192,
+        caps = {"supports_fit_target": True},
+        fit_target_delta_mib = reserve_mib,
+    )
+    if auto_fit or shared:
+        assert flags == ["--fit-target", str(base_mib + (3 if shared else 0))]
+    else:
+        assert flags == []
