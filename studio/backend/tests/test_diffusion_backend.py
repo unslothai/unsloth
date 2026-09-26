@@ -12496,6 +12496,21 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
     assert "prequant artifact missing" in str(failures[0])
 
 
+def test_generate_runs_the_pipeline_through_the_render_thread(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion as diff_mod
+
+    names = []
+
+    def run(name, fn):
+        names.append(name)
+        return fn()
+
+    monkeypatch.setattr(diff_mod.render_thread, "run", run)
+    backend = _loaded_backend(tmp_path)
+    assert len(backend.generate(prompt = "a sloth", steps = 2)["images"]) == 1
+    assert names == ["diffusion"]
+
+
 class _StopAfterInstallGate(Exception):
     """Raised just past the FlashInfer pre-install hop."""
 
