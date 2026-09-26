@@ -1,0 +1,527 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: "Windows: llama.cpp signature audit"
+
+# Reports how much of the llama.cpp runtime we ask users to download is Authenticode signed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'llama.cpp release tag to audit, or "latest"'
+        required: false
+        default: 'latest'
+      enforce:
+        description: 'Fail the job when an unsigned PE is found'
+        required: false
+        default: 'true'
+  schedule:
+    - cron: '17 6 * * 1'
+  pull_request:
+    paths:
+      - '.github/workflows/windows-llama-signature-audit.yml'
+      - 'scripts/windows_sac_probe/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Audit signatures
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Report Smart App Control state on this runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $state = $null
+          try {
+            $state = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' `
+              -Name 'VerifiedAndReputablePolicyState' -ErrorAction Stop).VerifiedAndReputablePolicyState
+          } catch { }
+          $mode = switch ($state) { 0 {'off'} 1 {'enforcement'} 2 {'evaluation'} default {'absent'} }
+          Write-Host "Smart App Control on this runner: $mode"
+          & CiTool.exe -lp 2>&1 | Select-String -Pattern 'Friendly Name|Is Enforced' | Write-Host
+
+      - name: Enumerate the Windows bundles
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.release_tag || 'latest' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path bundles | Out-Null
+          if ($env:RELEASE_TAG -eq 'latest') {
+            $tag = (gh release view --repo unslothai/llama.cpp --json tagName -q .tagName)
+          } else {
+            $tag = $env:RELEASE_TAG
+          }
+          Write-Host "auditing release $tag"
+          Add-Content -Path $env:GITHUB_ENV -Value "AUDIT_TAG=$tag"
+          $assets = @(gh release view $tag --repo unslothai/llama.cpp --json assets -q '.assets[].name' |
+            Where-Object { $_ -like '*windows*' -and $_ -like '*.zip' })
+          if ($LASTEXITCODE -ne 0) { throw "gh release view exited $LASTEXITCODE" }
+          if ($assets.Count -eq 0) { throw "no Windows assets on $tag" }
+          Write-Host "auditing $($assets.Count) Windows asset(s):"
+          $assets | ForEach-Object { Write-Host "  $_" }
+          $assets -join "`n" | Set-Content -LiteralPath windows-assets.txt -Encoding UTF8
+
+      - name: Inventory Authenticode signatures
+        id: inventory
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $ext = @('.exe', '.dll', '.pyd', '.sys', '.ocx', '.cpl', '.scr')
+          $rows = @()
+          New-Item -ItemType Directory -Force -Path bundles | Out-Null
+          $assets = @(Get-Content -LiteralPath windows-assets.txt | Where-Object { $_ })
+          foreach ($asset in $assets) {
+            Write-Host "--- $asset"
+            gh release download $env:AUDIT_TAG --repo unslothai/llama.cpp --pattern $asset --dir bundles --clobber
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::gh release download exited $LASTEXITCODE for $asset"
+              exit 1
+            }
+            $zip = Get-Item (Join-Path 'bundles' $asset) -ErrorAction SilentlyContinue
+            if (-not $zip) {
+              Write-Host "::error::$asset did not download"
+              exit 1
+            }
+            $dest = Join-Path $env:RUNNER_TEMP ("x-" + $zip.BaseName)
+            Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
+            Expand-Archive -LiteralPath $zip.FullName -DestinationPath $dest -Force
+            $files = @(Get-ChildItem $dest -Recurse -File | Where-Object { $ext -contains $_.Extension.ToLowerInvariant() })
+            if ($files.Count -eq 0) {
+              Write-Host "::error::no PE payload inside $($zip.Name)"
+              exit 1
+            }
+            foreach ($f in $files) {
+              $s = Get-AuthenticodeSignature -LiteralPath $f.FullName
+              $rows += [pscustomobject]@{
+                Bundle  = $zip.Name
+                Name    = $f.Name
+                Status  = [string]$s.Status
+                Subject = if ($s.SignerCertificate) { $s.SignerCertificate.Subject } else { '' }
+              }
+            }
+            Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item $zip.FullName -Force -ErrorAction SilentlyContinue
+          }
+          # Every enumerated asset has to appear, or a download that produced a zip with no rows would shrink the audit silently.
+          $audited = @($rows | Group-Object Bundle).Count
+          if ($audited -ne $assets.Count) {
+            Write-Host "::error::enumerated $($assets.Count) Windows asset(s) but inventoried $audited"
+            exit 1
+          }
+
+          $rows | Export-Csv -LiteralPath signature-inventory.csv -NoTypeInformation -Encoding UTF8
+
+          $summary = @()
+          $summary += "# llama.cpp Windows signature audit"
+          $summary += ""
+          $summary += "Release: ``$env:AUDIT_TAG``"
+          $summary += ""
+          $summary += "| bundle | PE files | signed | unsigned |"
+          $summary += "| --- | ---: | ---: | ---: |"
+          $totalUnsigned = 0
+          foreach ($bundle in ($rows | Group-Object Bundle)) {
+            $signed = @($bundle.Group | Where-Object { $_.Status -eq 'Valid' }).Count
+            $unsigned = $bundle.Count - $signed
+            $totalUnsigned += $unsigned
+            $summary += "| $($bundle.Name) | $($bundle.Count) | $signed | $unsigned |"
+          }
+          $summary += ""
+          if ($totalUnsigned -gt 0) {
+            $summary += "$totalUnsigned unsigned PE file(s). Smart App Control evaluates each of these as it loads."
+            $summary += ""
+            $summary += "Signed files, for contrast:"
+            $summary += ""
+            $signedRows = @($rows | Where-Object { $_.Status -eq 'Valid' } | Select-Object -Unique Name, Subject)
+            if ($signedRows.Count -eq 0) {
+              $summary += "- none"
+            } else {
+              foreach ($r in $signedRows) { $summary += "- ``$($r.Name)`` $($r.Subject)" }
+            }
+          } else {
+            $summary += "Every PE in every audited bundle is validly signed."
+          }
+          $summary -join "`n" | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "unsigned=$totalUnsigned"
+          Write-Host "$totalUnsigned unsigned PE file(s)"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: signature-inventory
+          path: signature-inventory.csv
+          if-no-files-found: warn
+
+      - name: Verdict
+        shell: pwsh
+        env:
+          ENFORCE: ${{ github.event.inputs.enforce || 'true' }}
+          UNSIGNED: ${{ steps.inventory.outputs.unsigned }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $unsigned = [int]$env:UNSIGNED
+          if ($unsigned -eq 0) {
+            Write-Host 'Every audited binary is signed.'
+            exit 0
+          }
+          # Hard failure by default.
+          if ($env:ENFORCE -eq 'true') {
+            Write-Host "::error::$unsigned unsigned PE file(s) in the published Windows bundles"
+            exit 1
+          }
+          Write-Host "::warning::$unsigned unsigned PE file(s) in the published Windows bundles. See the job summary."
+
+  # The job above reads certificate tables.
+  code-integrity:
+    name: App Control audit (signature-only)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require a runner that can host a policy
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # CiTool is inbox from Windows 11 22H2 / Server 2025.
+          $citool = Get-Command CiTool.exe -ErrorAction SilentlyContinue
+          if (-not $citool) { throw 'CiTool.exe is absent; this runner cannot host an App Control policy' }
+          Write-Host "CiTool: $($citool.Source)"
+          Write-Host "OS: $((Get-CimInstance Win32_OperatingSystem).Caption) $([Environment]::OSVersion.Version)"
+
+          $log = 'Microsoft-Windows-CodeIntegrity/Operational'
+          & wevtutil.exe sl $log /e:true /ms:67108864
+          if ($LASTEXITCODE -ne 0) { throw "wevtutil sl $log exited $LASTEXITCODE; the channel could not be configured" }
+          $cfg = (& wevtutil.exe gl $log) -join "`n"
+          if ($cfg -notmatch 'enabled:\s*true') { throw "$log is still disabled; the audit cannot collect evidence" }
+          if ($cfg -match 'maxSize:\s*(\d+)') { $maxSize = [int64]$Matches[1] } else { throw "$log reported no maxSize" }
+          if ($maxSize -lt 67108864) { throw "$log maxSize is $maxSize, below the 64 MB this job asks for" }
+          Write-Host "$log enabled, maxSize $maxSize"
+
+      - name: Fetch the Smart App Control audit policies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path policy | Out-Null
+          Invoke-WebRequest -Uri 'https://aka.ms/sacauditpolicies' -OutFile policy/sac.zip -UseBasicParsing
+          Expand-Archive -LiteralPath policy/sac.zip -DestinationPath policy/extracted -Force
+          $noisg = Get-ChildItem -LiteralPath policy/extracted -Recurse -File |
+            Where-Object { $_.Name -like 'SmartAppControlAuditNoISG*' } | Select-Object -First 1
+          if (-not $noisg) {
+            Write-Host 'archive contents:'
+            Get-ChildItem -LiteralPath policy/extracted -Recurse -File | ForEach-Object { Write-Host "  $($_.FullName)" }
+            throw 'SmartAppControlAuditNoISG was not in the downloaded archive'
+          }
+          Write-Host "policy: $($noisg.FullName)"
+          Add-Content -Path $env:GITHUB_ENV -Value "SAC_POLICY=$($noisg.FullName)"
+
+      - name: Apply the policy and verify it is active
+        id: apply
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = & CiTool.exe --update-policy "$env:SAC_POLICY" 2>&1 | Out-String
+          Write-Host $out
+          & CiTool.exe --refresh 2>&1 | Out-String | Write-Host
+
+          # Listing a policy is not the same as it being active.
+          $policies = (& CiTool.exe -lp -json 2>$null | ConvertFrom-Json).Policies
+          $sac = @($policies | Where-Object { $_.FriendlyName -like '*AuditNoISG*' })
+          foreach ($p in $policies) { Write-Host ("  policy {0} enforced={1}" -f $p.FriendlyName, $p.IsEnforced) }
+          if ($sac.Count -eq 0) { throw 'the Smart App Control audit policy is not in the active policy set after refresh' }
+          # Audit, never enforcement.
+          if ($sac[0].FriendlyName -notlike '*Audit*') { throw "refusing to continue: $($sac[0].FriendlyName) is not an audit policy" }
+          Add-Content -Path $env:GITHUB_ENV -Value "SAC_POLICY_ID=$($sac[0].PolicyID)"
+          Add-Content -Path $env:GITHUB_ENV -Value "AUDIT_START=$((Get-Date).ToUniversalTime().ToString('o'))"
+
+      - name: Positive control -- an unsigned binary must raise 3076
+        id: control
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Without this the whole job is unfalsifiable
+          $src = 'public class UnsignedControl { public static void Main() { System.Console.WriteLine("control"); } }'
+          $exe = Join-Path $PWD 'unsigned-control.exe'
+          Add-Type -TypeDefinition $src -OutputAssembly $exe -OutputType ConsoleApplication
+          if (-not (Test-Path $exe)) { throw 'could not build the unsigned control binary' }
+          & $exe 2>&1 | Write-Host
+
+          # Polled rather than slept once.
+          $policyBare = "$env:SAC_POLICY_ID".Trim('{', '}').ToLowerInvariant()
+          $fromPolicy = {
+            param($e)
+            try {
+              foreach ($node in ([xml] $e.ToXml()).Event.EventData.Data) {
+                $v = [string] $node.'#text'
+                if (-not $v) { continue }
+                if ($policyBare -and $v.ToLowerInvariant().Contains($policyBare)) { return $true }
+                if ($node.Name -like 'PolicyName*' -and $v -like '*AuditNoISG*') { return $true }
+              }
+            } catch { }
+            return $false
+          }
+          $since = [datetime]::Parse($env:AUDIT_START).ToUniversalTime()
+          $events = @()
+          $fired = @()
+          foreach ($attempt in 1..10) {
+            Start-Sleep -Seconds 3
+            $events = @(Get-WinEvent -FilterHashtable @{
+              LogName = 'Microsoft-Windows-CodeIntegrity/Operational'; Id = 3076; StartTime = $since
+            } -ErrorAction SilentlyContinue)
+            $named = @($events | Where-Object { $_.Message -like '*unsigned-control*' })
+            $fired = @($named | Where-Object { & $fromPolicy $_ })
+            if ($fired.Count -gt 0) { break }
+          }
+          Write-Host "3076 events since policy apply: $($events.Count); naming the control: $($named.Count); from the installed policy: $($fired.Count)"
+          if ($fired.Count -eq 0) {
+            Write-Host '::error::the unsigned positive control raised no 3076 event, so this policy is not evaluating loads here; the bundle result below would be meaningless'
+            "control_fired=false" | Add-Content -Path $env:GITHUB_OUTPUT
+            exit 1
+          }
+          "control_fired=true" | Add-Content -Path $env:GITHUB_OUTPUT
+          Write-Host 'positive control fired; the policy is evaluating loads on this runner'
+
+      - name: Load the shipped runtime under the policy
+        id: exercise
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.release_tag || 'latest' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = if ($env:RELEASE_TAG -eq 'latest') {
+            gh release view --repo unslothai/llama.cpp --json tagName -q .tagName
+          } else { $env:RELEASE_TAG }
+          Write-Host "exercising release $tag"
+
+          $asset = @(gh release view $tag --repo unslothai/llama.cpp --json assets -q '.assets[].name' |
+            Where-Object { $_ -like '*windows-x64-cpu*' -and $_ -like '*.zip' })[0]
+          if (-not $asset) { throw "no windows-x64-cpu asset on $tag" }
+          gh release download $tag --repo unslothai/llama.cpp --pattern $asset --dir . --clobber
+          Expand-Archive -LiteralPath $asset -DestinationPath runtime -Force
+
+          $server = Get-ChildItem -LiteralPath runtime -Recurse -Filter 'llama-server.exe' | Select-Object -First 1
+          if (-not $server) { throw 'llama-server.exe not found in the bundle' }
+          Add-Content -Path $env:GITHUB_ENV -Value "RUNTIME_DIR=$($server.Directory.FullName)"
+
+          & $server.FullName --version 2>&1 | Write-Host
+          $code = $LASTEXITCODE
+          Add-Content -Path $env:GITHUB_ENV -Value "EXERCISE_EXIT=$code"
+          Write-Host "llama-server --version exited $code"
+          # Studio also runs llama-quantize, which loads its own llama-quantize-impl.dll.
+          $quantize = Get-ChildItem -LiteralPath $server.Directory.FullName -Filter 'llama-quantize.exe' | Select-Object -First 1
+          if ($quantize) {
+            & $quantize.FullName --help 2>&1 | Out-Null
+            Add-Content -Path $env:GITHUB_ENV -Value "QUANTIZE_EXIT=$LASTEXITCODE"
+            Write-Host "llama-quantize --help exited $LASTEXITCODE"
+          } else {
+            Write-Host '::warning::llama-quantize.exe is not in the bundle, so only llama-server was loaded'
+          }
+
+      - name: Verdict
+        if: always() && steps.control.outputs.control_fired == 'true'
+        shell: pwsh
+        env:
+          ENFORCE: ${{ github.event.inputs.enforce || 'true' }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $since = [datetime]::Parse($env:AUDIT_START).ToUniversalTime()
+
+          # Scope to the extracted runtime.
+          $dir = $env:RUNTIME_DIR
+          if (-not $dir) {
+            # The exercise step sets RUNTIME_DIR once the bundle is extracted and llama-server.exe is found.
+            Write-Host '::error::the shipped runtime was never extracted, so there is no verdict to give; see the exercise step'
+            "## App Control audit (signature-only)`n`nNo verdict: the shipped runtime was never loaded under the policy.`n" |
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            exit 1
+          }
+          $tail = if ($dir) {
+            [Management.Automation.WildcardPattern]::Escape(
+              ($dir -replace '^[A-Za-z]:', '').TrimEnd('\')) + '\'
+          } else { $null }
+
+          # Polled on the same bounded interval as the positive control, and for the same reason
+          $policyBare = "$env:SAC_POLICY_ID".Trim('{', '}').ToLowerInvariant()
+          $fromPolicy = {
+            param($e)
+            try {
+              foreach ($node in ([xml] $e.ToXml()).Event.EventData.Data) {
+                $v = [string] $node.'#text'
+                if (-not $v) { continue }
+                if ($policyBare -and $v.ToLowerInvariant().Contains($policyBare)) { return $true }
+                if ($node.Name -like 'PolicyName*' -and $v -like '*AuditNoISG*') { return $true }
+              }
+            } catch { }
+            return $false
+          }
+          $events = @()
+          $ours = @()
+          $seen = -1
+          foreach ($attempt in 1..10) {
+            $events = @()
+            try {
+              $events = @(Get-WinEvent -FilterHashtable @{
+                LogName = 'Microsoft-Windows-CodeIntegrity/Operational'; Id = 3076; StartTime = $since
+              } -ErrorAction Stop)
+            } catch {
+              # Only "nothing matched" is an empty window.
+              if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') {
+                Write-Host "::error::could not read the CodeIntegrity channel, so this verdict has no evidence behind it: $_"
+                exit 1
+              }
+            }
+            # The evaluated file, not the whole message
+            $ours = @($events | Where-Object {
+              $subject = $_.Message
+              try {
+                foreach ($node in ([xml] $_.ToXml()).Event.EventData.Data) {
+                  if ($node.Name -eq 'File Name' -and $node.'#text') { $subject = [string] $node.'#text'; break }
+                  if ($node.Name -eq 'FileNameBuffer' -and $node.'#text') { $subject = [string] $node.'#text' }
+                }
+              } catch { }
+              $tail -and $subject -like "*$tail*" -and (& $fromPolicy $_)
+            })
+            # Settled: events for later loads can land after the first one.
+            if ($ours.Count -gt 0 -and $ours.Count -eq $seen) { break }
+            $seen = $ours.Count
+            if ($attempt -lt 10) { Start-Sleep -Seconds 3 }
+          }
+
+          Write-Host "3076 events in window: $($events.Count); naming the shipped runtime: $($ours.Count)"
+          $rows = foreach ($e in $ours) {
+            $file = if ($e.Message -match '(?m)^\s*File Name:\s*(.+)$') { $Matches[1].Trim() } else { '(unparsed)' }
+            [pscustomobject]@{ Time = $e.TimeCreated; File = $file }
+          }
+          if ($rows) { $rows | Format-Table -AutoSize | Out-String | Write-Host }
+
+          # An allow needs a load that completed. --help may exit 1; a negative code is the loader's NTSTATUS.
+          if ($ours.Count -eq 0 -and $env:QUANTIZE_EXIT -and [int]$env:QUANTIZE_EXIT -lt 0) {
+            Write-Host "::error::llama-quantize failed to load (exit $env:QUANTIZE_EXIT) and no 3076 names the shipped runtime; no verdict"
+            "## App Control audit (signature-only)`n`nNo verdict: llama-quantize failed to load (exit $env:QUANTIZE_EXIT).`n" |
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            exit 1
+          }
+          if ($ours.Count -eq 0 -and $env:EXERCISE_EXIT -ne '0') {
+            Write-Host "::error::llama-server --version exited '$env:EXERCISE_EXIT' and no 3076 names the shipped runtime, so the load may never have happened; no verdict"
+            "## App Control audit (signature-only)`n`nNo verdict: llama-server --version exited '$env:EXERCISE_EXIT', so the runtime was not shown to load under the policy.`n" |
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            exit 1
+          }
+
+          $summary = "## App Control audit (signature-only)`n`n" +
+            "Policy: SmartAppControlAuditNoISG (signatures only, no cloud reputation)`n`n" +
+            "3076 events naming the shipped runtime: **$($ours.Count)**`n"
+          $summary | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+          if ($ours.Count -eq 0) {
+            Write-Host 'No binary in the shipped runtime would be refused on signature grounds.'
+            exit 0
+          }
+          if ($env:ENFORCE -eq 'true') {
+            Write-Host "::error::$($ours.Count) file(s) in the shipped runtime would be blocked by the signature-only policy"
+            exit 1
+          }
+          Write-Host "::warning::$($ours.Count) file(s) in the shipped runtime would be blocked by the signature-only policy"
+
+      - name: Export the CodeIntegrity events
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # The records the artifact is named for.
+          $since = if ($env:AUDIT_START) {
+            [datetime]::Parse($env:AUDIT_START).ToUniversalTime()
+          } else { (Get-Date).AddHours(-2).ToUniversalTime() }
+          $events = @()
+          try {
+            $events = @(Get-WinEvent -FilterHashtable @{
+              LogName = 'Microsoft-Windows-CodeIntegrity/Operational'; StartTime = $since
+            } -ErrorAction Stop)
+          } catch {
+            if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') {
+              $_.ToString() | Set-Content -LiteralPath code-integrity-events-error.txt -Encoding UTF8
+            }
+          }
+          $shaped = @($events | ForEach-Object {
+            [pscustomobject]@{
+              TimeCreated = $_.TimeCreated.ToString('o')
+              Id          = $_.Id
+              ActivityID  = $_.ActivityId
+              Message     = $_.Message
+            }
+          })
+          ConvertTo-Json -InputObject $shaped -Depth 4 |
+            Set-Content -LiteralPath code-integrity-events.json -Encoding UTF8
+          & wevtutil.exe epl 'Microsoft-Windows-CodeIntegrity/Operational' CodeIntegrity-Operational.evtx /ow:true
+          Write-Host "exported $($shaped.Count) CodeIntegrity record(s)"
+
+      - name: Remove the policy
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Hosted runners are disposable, but a self-hosted runner picking this workflow up would otherwise keep the policy for every later job.
+          $id = $env:SAC_POLICY_ID
+          if (-not $id) {
+            $id = (@((& CiTool.exe -lp -json 2>$null | ConvertFrom-Json).Policies |
+              Where-Object { $_.FriendlyName -like '*AuditNoISG*' }) | Select-Object -First 1).PolicyID
+          }
+          if ($id) {
+            & CiTool.exe --remove-policy $id 2>&1 | Out-String | Write-Host
+            $removeExit = $LASTEXITCODE
+            & CiTool.exe --refresh 2>&1 | Out-String | Write-Host
+            $refreshExit = $LASTEXITCODE
+            $raw = & CiTool.exe -lp -json 2>$null
+            $listExit = $LASTEXITCODE
+            $listing = $null
+            try { $listing = $raw | Out-String | ConvertFrom-Json -ErrorAction Stop } catch { }
+            if ($removeExit -ne 0) {
+              Write-Host "::error::CiTool --remove-policy $id exited $removeExit, so the audit policy was not removed"
+              exit 1
+            }
+            $bare = "$id".Trim('{', '}').ToLowerInvariant()
+            $still = @($listing.Policies |
+              Where-Object { "$($_.PolicyID)".Trim('{', '}').ToLowerInvariant() -eq $bare -and $_.IsEnforced })
+            if ($refreshExit -ne 0 -or $listExit -ne 0 -or $null -eq $listing -or $null -eq $listing.PSObject.Properties['Policies']) {
+              Write-Host "::warning::the audit policy $id was removed but its removal could not be verified (refresh exited $refreshExit, policy listing exited $listExit or was unreadable); it may stay active until this machine reboots"
+            } elseif ($still.Count -gt 0) {
+              Write-Host "::warning::the audit policy $id was removed but is still listed as enforced after refresh; it stays active until this machine reboots"
+            } else {
+              Write-Host "audit policy $id removed and no longer active"
+            }
+          } else {
+            Write-Host 'no audit policy to remove'
+          }
+          & CiTool.exe -lp 2>&1 | Select-String -Pattern 'Friendly Name' | Write-Host
+          exit 0
+
+      - name: Upload code integrity events
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: code-integrity-events
+          path: |
+            code-integrity-events.json
+            code-integrity-events-error.txt
+            CodeIntegrity-Operational.evtx
+            unsigned-control.exe
+          if-no-files-found: ignore
