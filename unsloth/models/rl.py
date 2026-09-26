@@ -2680,6 +2680,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "pass\n"
         )
 
+    if trainer_file == "gkd_trainer":
+        # Match native GKD's pure JSD at T=1 without changing the generation temperature.
+        RLTrainer_post += (
+            "if getattr(self, 'liger_jsd_loss', None) is not None:\n"
+            "    self.liger_jsd_loss.weight_hard_loss = 0.0\n"
+            "    self.liger_jsd_loss.weight_soft_loss = 1.0\n"
+            "    self.liger_jsd_loss.temperature = 1.0\n"
+        )
+
     other_metrics_processor = ""
     if trainer_file in RL_METRICS_CHANGES:
         process_extra_args = RL_METRICS_CHANGES[trainer_file]
