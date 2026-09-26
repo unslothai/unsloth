@@ -8657,6 +8657,32 @@ exit 0
     # fixing. Observed exactly that way while writing the test.
     function Get-XpuCapableNameRegex { return "(?i)Intel.*(Arc|Data Center GPU)" }
 
+    function Test-IntelXpuRuntimeProven {
+        param($Scan = $null, [string]$PythonExe = "")
+        # The presence promotion switches the Intel route off, and that route also serves an Intel GPU
+        # whose name is outside the Arc pattern (Meteor Lake's "Intel(R) Graphics") once the existing
+        # environment's PyTorch has proven XPU works. That host took XPU wheels before the promotion
+        # existed, so a CUDA index for a card no driver library answered for would be a trade down.
+        # Probed only when a healthy Intel adapter is on the bus; any failure reads as not proven.
+        if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        $intel = $false
+        foreach ($adapter in @($Scan.Adapters)) {
+            if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_8086') { continue }
+            if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+            if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+            $intel = $true
+            break
+        }
+        if (-not $intel) { return $false }
+        if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $false }
+        try {
+            $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code 'import torch; print(torch.xpu.is_available())'
+            return [bool]($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
+        } catch {
+            return $false
+        }
+    }
+
     function Test-OtherVendorAdapterPresent {
         param($Scan = $null)
         if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
@@ -8861,6 +8887,12 @@ exit 0
     # flag below records how we got here and the version ladder decides that separately.
     if (-not $HasNvidiaSmi) {
         $presenceScan = Invoke-BoundedVideoControllerScan
+        # The interpreter the Intel route asks below: a rerun has moved the old venv aside.
+        $_presenceXpuPy = $VenvPython
+        if ($script:StudioVenvRollbackDir) {
+            $_presenceRollbackPy = Join-Path $script:StudioVenvRollbackDir "Scripts\python.exe"
+            if (Test-Path -LiteralPath $_presenceRollbackPy) { $_presenceXpuPy = $_presenceRollbackPy }
+        }
         if ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
             (Test-NvidiaAdapterWithoutNvidiaDriver -Scan $presenceScan)) {
             # The card is on the bus but Windows runs it on a generic driver, so there is no CUDA driver
@@ -8868,7 +8900,9 @@ exit 0
             # before this check existed. Said once, because the fix is on the user's side.
             Write-StudioLine "   NVIDIA GPU found without the NVIDIA driver; install the NVIDIA driver and re-run for GPU support" -ForegroundColor Yellow
         } elseif ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
-            -not (Test-OtherVendorAdapterPresent -Scan $presenceScan)) {
+            -not (Test-OtherVendorAdapterPresent -Scan $presenceScan) -and
+            -not $script:StudioPreservedXpuVerdict -and
+            -not (Test-IntelXpuRuntimeProven -Scan $presenceScan -PythonExe $_presenceXpuPy)) {
             $HasNvidiaSmi = $true
             $script:NvidiaPresenceOnly = $true
             $script:NvidiaPresenceCudaFloor = Get-NvidiaAdapterCudaFloor -Scan $presenceScan

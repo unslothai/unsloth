@@ -3413,6 +3413,32 @@ function Test-NvidiaAdapterPresent {
 # fixing. Observed exactly that way while writing the test.
 function Get-XpuCapableNameRegex { return "(?i)Intel.*(Arc|Data Center GPU)" }
 
+function Test-IntelXpuRuntimeProven {
+    param($Scan = $null, [string]$PythonExe = "")
+    # The presence promotion switches the Intel route off, and that route also serves an Intel GPU
+    # whose name is outside the Arc pattern (Meteor Lake's "Intel(R) Graphics") once the existing
+    # environment's PyTorch has proven XPU works. That host took XPU wheels before the promotion
+    # existed, so a CUDA index for a card no driver library answered for would be a trade down.
+    # Probed only when a healthy Intel adapter is on the bus; any failure reads as not proven.
+    if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+    $intel = $false
+    foreach ($adapter in @($Scan.Adapters)) {
+        if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_8086') { continue }
+        if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+        if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+        $intel = $true
+        break
+    }
+    if (-not $intel) { return $false }
+    if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $false }
+    try {
+        $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code 'import torch; print(torch.xpu.is_available())'
+        return [bool]($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
+    } catch {
+        return $false
+    }
+}
+
 function Test-OtherVendorAdapterPresent {
     param($Scan = $null)
     if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
@@ -3626,7 +3652,8 @@ if (-not $HasNvidiaSmi) {
         # before this check existed. Said once, because the fix is on the user's side.
         Write-StudioLine "   NVIDIA GPU found without the NVIDIA driver; install the NVIDIA driver and re-run for GPU support" -ForegroundColor Yellow
     } elseif ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
-        -not (Test-OtherVendorAdapterPresent -Scan $presenceScan)) {
+        -not (Test-OtherVendorAdapterPresent -Scan $presenceScan) -and
+        -not (Test-IntelXpuRuntimeProven -Scan $presenceScan -PythonExe (Join-Path $VenvDir "Scripts\python.exe"))) {
         $HasNvidiaSmi = $true
         $script:NvidiaPresenceOnly = $true
         # Same as the driver-library promotion just above. Reaching here means discovery

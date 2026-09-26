@@ -51,7 +51,7 @@ $shared = @(
     "Test-OtherVendorAdapterPresent", "Get-XpuCapableNameRegex",
     "Get-NvidiaDriverRelease", "Get-NvidiaCudaFloorForRelease", "Get-NvidiaDriverCudaFloor",
     "Get-NvidiaAdapterDriverRelease", "Get-NvidiaAdapterCudaFloor",
-    "Get-NvidiaRegistryAdapter", "Test-NvidiaAdapterWithoutNvidiaDriver"
+    "Get-NvidiaRegistryAdapter", "Test-NvidiaAdapterWithoutNvidiaDriver", "Test-IntelXpuRuntimeProven"
 )
 foreach ($name in $shared) {
     Check "install.ps1 and setup.ps1 carry the same $name" (
@@ -1118,6 +1118,14 @@ function Get-PromotionBlock($file) {
     return $blocks[0].Extent.Text
 }
 function Get-NvidiaAdapterCudaFloor { param($Scan) return $null }
+Invoke-Expression (Get-FunctionText $setupPs1 "Test-IntelXpuRuntimeProven")
+$script:PromoXpu = "False"
+function Invoke-BoundedPythonProbe { param($PythonExe, $Code) return [pscustomobject]@{ Ok = $true; Output = $script:PromoXpu } }
+$promoVenv = Join-Path ([System.IO.Path]::GetTempPath()) ("promo-venv-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $promoVenv | Out-Null
+$promoPy = Join-Path $promoVenv "Scripts\python.exe"
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $promoPy) | Out-Null
+Set-Content -LiteralPath $promoPy -Value "" -NoNewline
 foreach ($file in @($installPs1, $setupPs1)) {
     $leaf = Split-Path -Leaf $file
     $promo = Get-PromotionBlock $file
@@ -1126,9 +1134,16 @@ foreach ($file in @($installPs1, $setupPs1)) {
         @{ N = "Basic Display (10.0.19041.3636)"; A = @(Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_2684" 0 "10.0.19041.3636"); Want = $false; Hint = $true },
         @{ N = "an NVIDIA driver (560.94)";        A = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0 "32.0.15.6094");   Want = $true;  Hint = $false },
         @{ N = "no DriverVersion";                 A = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0 $null);            Want = $true;  Hint = $false },
-        @{ N = "Basic Display plus Intel UHD";     A = @((Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_2684" 0 "10.0.19041.3636"), (Adapter "Intel(R) UHD Graphics" "PCI\VEN_8086&DEV_9A49" 0 "31.0.101.1")); Want = $false; Hint = $true }
+        @{ N = "Basic Display plus Intel UHD";     A = @((Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_2684" 0 "10.0.19041.3636"), (Adapter "Intel(R) UHD Graphics" "PCI\VEN_8086&DEV_9A49" 0 "31.0.101.1")); Want = $false; Hint = $true },
+        # A Meteor Lake "Intel(R) Graphics" is outside the Arc pattern, so only the environment's
+        # PyTorch can say it serves XPU. Proven: the Intel route keeps it, as it did before.
+        @{ N = "an NVIDIA driver plus a Meteor Lake GPU whose PyTorch has proven XPU"; A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" 0 "32.0.101.6078")); Want = $false; Hint = $false; Xpu = "True" },
+        @{ N = "an NVIDIA driver plus a Meteor Lake GPU with no XPU runtime";            A = @((Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0 "32.0.15.6094"), (Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" 0 "32.0.101.6078")); Want = $true;  Hint = $false; Xpu = "False" }
     )) {
+        $script:PromoXpu = if ($case.Xpu) { $case.Xpu } else { "False" }
         $got = & { param($promo, $adapters)
+            $VenvDir = $promoVenv; $VenvPython = $promoPy
+            $script:StudioPreservedXpuVerdict = $false; $script:StudioVenvRollbackDir = $null
             $script:FakeAdapters = $adapters; $script:FakeScanOk = $null
             $script:Lines = @()
             function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") $script:Lines += $Line }
@@ -1143,6 +1158,7 @@ foreach ($file in @($installPs1, $setupPs1)) {
     }
 }
 $script:NvidiaPresenceOnly = $false
+Remove-Item -LiteralPath $promoVenv -Recurse -Force -ErrorAction SilentlyContinue
 
 # (3) A localized or OEM-branded Arc. WMI's name carries no ASCII "Intel", so the name alone reads
 # as a non-XPU Intel part and the promotion used to fire and suppress the Intel route, which on
@@ -1190,6 +1206,64 @@ foreach ($file in @($installPs1, $setupPs1)) {
         $def -gt 0 -and $def -lt $promoAt)
     Check "$leaf defines it exactly once" (([regex]::Matches($text, 'function Get-IntelRegistryAdapterNames')).Count -eq 1)
 }
+
+# ------------------------------------------------------------------- a proven XPU runtime
+#
+# The promotion switches the Intel route off, and that route also serves an Intel GPU outside the
+# Arc pattern once the existing environment's PyTorch has proven XPU. Such a host took XPU wheels
+# before the promotion existed, so it must keep them: the promotion declines there.
+Invoke-Expression (Get-FunctionText $setupPs1 "Test-IntelXpuRuntimeProven")
+$script:ProbeCalls = 0
+$script:ProbeAnswer = @{ Ok = $true; Output = "True" }
+$script:ProbeThrows = $false
+function Invoke-BoundedPythonProbe {
+    param($PythonExe, $Code)
+    $script:ProbeCalls++
+    if ($script:ProbeThrows) { throw "probe failed" }
+    return [pscustomobject]$script:ProbeAnswer
+}
+$fakePy = Join-Path ([System.IO.Path]::GetTempPath()) ("xpu-py-" + [guid]::NewGuid().ToString("N"))
+Set-Content -LiteralPath $fakePy -Value "" -NoNewline
+$mtl = Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" 0
+$rtx = Adapter "NVIDIA GeForce RTX 4060 Laptop GPU" "PCI\VEN_10DE&DEV_28E0" 0
+$scanOf = { param($list) [pscustomobject]@{ Ok = $true; Adapters = @($list); Names = @($list | ForEach-Object { $_.Name }) } }
+$script:ProbeCalls = 0
+Check "a Meteor Lake GPU whose PyTorch reports XPU is proven" (
+    (Test-IntelXpuRuntimeProven -Scan (& $scanOf @($mtl, $rtx)) -PythonExe $fakePy) -eq $true)
+$script:ProbeAnswer = @{ Ok = $true; Output = "False" }
+Check "an XPU runtime that answers False is not proven" (
+    (Test-IntelXpuRuntimeProven -Scan (& $scanOf @($mtl, $rtx)) -PythonExe $fakePy) -eq $false)
+$script:ProbeAnswer = @{ Ok = $false; Output = "" }
+Check "a probe that times out is not proven" (
+    (Test-IntelXpuRuntimeProven -Scan (& $scanOf @($mtl, $rtx)) -PythonExe $fakePy) -eq $false)
+$script:ProbeThrows = $true
+Check "a probe that throws is not proven and does not throw out" (
+    (Test-IntelXpuRuntimeProven -Scan (& $scanOf @($mtl, $rtx)) -PythonExe $fakePy) -eq $false)
+$script:ProbeThrows = $false
+$script:ProbeAnswer = @{ Ok = $true; Output = "True" }
+Check "no environment to ask is not proven" (
+    (Test-IntelXpuRuntimeProven -Scan (& $scanOf @($mtl, $rtx)) -PythonExe (Join-Path $fakePy "missing")) -eq $false)
+$script:ProbeCalls = 0
+Check "an NVIDIA-only host is never probed" (
+    (Test-IntelXpuRuntimeProven -Scan (& $scanOf @($rtx)) -PythonExe $fakePy) -eq $false -and $script:ProbeCalls -eq 0)
+Check "a faulted Intel adapter is not probed either" (
+    (Test-IntelXpuRuntimeProven -Scan (& $scanOf @((Adapter "Intel(R) Graphics" "PCI\VEN_8086&DEV_7D55" 43), $rtx)) -PythonExe $fakePy) -eq $false -and
+    $script:ProbeCalls -eq 0)
+Remove-Item -LiteralPath $fakePy -Force -ErrorAction SilentlyContinue
+# Both promotion sites ask it, and install.ps1 also honours the verdict it preserved from the
+# environment a rerun moved aside.
+foreach ($file in @($installPs1, $setupPs1)) {
+    $leaf = Split-Path -Leaf $file
+    $text = [System.IO.File]::ReadAllText($file)
+    $promo = $text.Substring($text.IndexOf('$presenceScan = Invoke-BoundedVideoControllerScan'))
+    $promo = $promo.Substring(0, $promo.IndexOf('NvidiaPresenceOnly = $true'))
+    Check "$leaf declines the promotion where PyTorch has proven XPU" (
+        $promo -match '-not \(Test-IntelXpuRuntimeProven -Scan \$presenceScan')
+}
+$installText = [System.IO.File]::ReadAllText($installPs1)
+$installPromo = $installText.Substring($installText.IndexOf('$presenceScan = Invoke-BoundedVideoControllerScan'))
+$installPromo = $installPromo.Substring(0, $installPromo.IndexOf('NvidiaPresenceOnly = $true'))
+Check "install.ps1 declines it on a preserved XPU verdict too" ($installPromo -match '-not \$script:StudioPreservedXpuVerdict')
 
 if ($failures -gt 0) {
     Write-Host "$failures check(s) failed" -ForegroundColor Red
