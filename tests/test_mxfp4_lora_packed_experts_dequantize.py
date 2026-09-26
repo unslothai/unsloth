@@ -9,6 +9,7 @@ Native matmul_ogs has no backward. Source-level (the real branch needs a checkpo
 import ast
 import inspect
 import json
+import os
 import re
 import sys
 import types
@@ -143,14 +144,16 @@ def sizes(monkeypatch, tmp_path):
         path.write_text(json.dumps({"weight_map": {f"w{i}": s for i, s in enumerate(shards)}}))
         return str(path)
 
-    def _snapshot_download(repo_id, **kwargs):
+    def _try_to_load_from_cache(repo_id, filename, **kwargs):
         state["snapshot_calls"].append((repo_id, kwargs))
-        if state["snapshot"] is None:
-            raise OSError("not cached")
-        return state["snapshot"]
+        if state["snapshot"] is None or not os.path.isfile(
+            os.path.join(state["snapshot"], filename)
+        ):
+            return None
+        return os.path.join(state["snapshot"], filename)
 
     monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", _snapshot_download)
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", _try_to_load_from_cache)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", _hf_hub_download)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: len(state["free"]))
@@ -361,7 +364,7 @@ def test_offline_load_sizes_the_cached_snapshot(zoo, sizes, tmp_path):
         is False
     )
     repo, kwargs = sizes["snapshot_calls"][-1]
-    assert repo == "openai/gpt-oss-20b" and kwargs["local_files_only"] is True
+    assert repo == "openai/gpt-oss-20b"
     assert kwargs["revision"] == "main" and kwargs["cache_dir"] == "/cache"
     sizes["snapshot"] = None
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is True
@@ -483,8 +486,7 @@ def test_local_files_only_skips_the_hub_lookup(zoo, sizes, tmp_path):
         helper("mxfp4", False, "auto", "openai/gpt-oss-20b", None, None, None, None, None, True)
         is False
     )
-    assert sizes["calls"] == []
-    assert sizes["snapshot_calls"][-1][1]["local_files_only"] is True
+    assert sizes["calls"] == [] and sizes["snapshot_calls"]
 
 
 def test_the_caller_token_reaches_the_size_lookup(zoo, sizes):
@@ -494,9 +496,6 @@ def test_the_caller_token_reaches_the_size_lookup(zoo, sizes):
         is True
     )
     assert sizes["tokens"][-1] == "hf_x"
-    sizes["hub_raises"] = True
-    helper("mxfp4", False, "auto", "org/gated", None, None, None, None, None, False, "hf_x")
-    assert sizes["snapshot_calls"][-1][1]["token"] == "hf_x"
 
 
 def test_use_safetensors_false_sizes_the_bin_files(zoo, sizes):
@@ -568,3 +567,47 @@ def test_balanced_low_0_still_counts_the_first_card(zoo, sizes):
     assert _helper()("mxfp4", False, "balanced_low_0", "openai/gpt-oss-120b") is True
     sizes["free"] = [30, 30]
     assert _helper()("mxfp4", False, "balanced_low_0", "openai/gpt-oss-120b") is False
+
+
+def test_offline_sizing_ignores_repo_files_a_load_never_fetches(zoo, tmp_path, monkeypatch):
+    # A real cache after an online load: its tree listing names metal/ and original/ files that were
+    # never downloaded, which made snapshot_download(local_files_only=True) raise.
+    import huggingface_hub
+    import torch
+
+    sha = "a" * 40
+    repo = tmp_path / "models--org--gpt-oss-x"
+    snapshot = repo / "snapshots" / sha
+    snapshot.mkdir(parents = True)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text(sha)
+    shards = ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a": shards[0], "b": shards[1]}})
+    )
+    for shard in shards:
+        (snapshot / shard).write_bytes(b"0" * 4096)
+    names = ["config.json", "model.safetensors.index.json", *shards, "metal/model.bin"]
+    names.append("original/model.safetensors")
+    (repo / "trees").mkdir()
+    (repo / "trees" / f"{sha}.json").write_text(
+        json.dumps(
+            {"format_version": 1, "files": {n: {"size": 1, "blob_id": "b" * 40} for n in names}}
+        )
+    )
+
+    class _Offline:
+        def model_info(self, *args, **kwargs):
+            raise OSError("offline")
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Offline)
+    from huggingface_hub.file_download import try_to_load_from_cache
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", try_to_load_from_cache)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (4096, 8192))
+    args = ("mxfp4", False, "auto", "org/gpt-oss-x", None, None, None, str(tmp_path))
+    assert _helper()(*args) is False
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (10**9, 10**9))
+    assert _helper()(*args) is True

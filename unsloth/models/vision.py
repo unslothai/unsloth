@@ -1390,15 +1390,25 @@ def _mxfp4_lora_keeps_experts_packed(
                     )
                 except Exception:
                     # Offline or unreachable: size the cached snapshot.
-                    from huggingface_hub import snapshot_download
-                    folder = snapshot_download(
-                        str(model_name),
-                        revision = revision,
-                        cache_dir = cache_dir,
-                        local_files_only = True,
-                        token = token,
-                        allow_patterns = ["*.safetensors", "*.bin", "*.index*.json"],
-                    )
+                    # Not snapshot_download: its tree check fails on files a load never fetches (metal/, original/).
+                    from huggingface_hub import try_to_load_from_cache
+
+                    folder = None
+                    for name in (
+                        "model.safetensors",
+                        "model.safetensors.index.json",
+                        "pytorch_model.bin",
+                        "pytorch_model.bin.index.json",
+                    ):
+                        name = prefix + with_variant(name)
+                        path = try_to_load_from_cache(
+                            str(model_name), name, cache_dir = cache_dir, revision = revision
+                        )
+                        if isinstance(path, str):
+                            folder = path[: -len(name)]
+                            break
+                    if folder is None:
+                        raise OSError("checkpoint not in the local cache")
                     checkpoint_bytes = weight_bytes(
                         folder_files(folder), folder_index(folder), folder_size(folder)
                     )
