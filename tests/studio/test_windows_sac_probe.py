@@ -2044,7 +2044,13 @@ exit 0
 
 def test_collect_refuses_a_reverted_label_and_a_window_older_than_its_baseline(tmp_path):
     """After revert the audit-policy flag reads false and the log runs past the run; a window older than the baseline was an earlier run's."""
-    names = ["Get-RunDir", "Save-ProbeBaseline", "Read-SettledCiEvents", "Assert-BaselineIsThisMachine", "Invoke-Collect"]
+    names = [
+        "Get-RunDir",
+        "Save-ProbeBaseline",
+        "Read-SettledCiEvents",
+        "Assert-BaselineIsThisMachine",
+        "Invoke-Collect",
+    ]
     body = r"""
 $WorkDir = $Work; $Label = 'cell'; $CI_EVENT_IDS = @(3076, 3077)
 function Assert-Elevated { }
@@ -2098,7 +2104,9 @@ def test_studios_cpu_fallback_runtime_is_scoped_as_llama_cpp():
         'if ($subject -like "*$tail*" -or $subject -like "*$cpuTail*")',
     )
     tail = "\\Users\\u\\.unsloth\\studio\\runtime\\" + "llama-cpu-*\\"
-    assert fnmatch.fnmatchcase("C:\\Users\\u\\.unsloth\\studio\\runtime\\llama-cpu-ab12\\ggml-cpu.dll", "*" + tail + "*")
+    assert fnmatch.fnmatchcase(
+        "C:\\Users\\u\\.unsloth\\studio\\runtime\\llama-cpu-ab12\\ggml-cpu.dll", "*" + tail + "*"
+    )
 
 
 def test_revert_keeps_the_baseline_pending_while_the_policy_is_still_active(tmp_path):
