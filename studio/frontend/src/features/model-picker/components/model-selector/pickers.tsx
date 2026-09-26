@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isChatGgufTask, reconcileGgufPinsAfterDelete } from "./reconcile-gguf-pins";
+
 import { ModelMemoryBar } from "@/components/model-memory-bar";
 import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -70,6 +72,13 @@ import {
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
+import {
+  type NpuModel,
+  type NpuPickerSource,
+  NpuSetupNotice,
+  npuRowsFor,
+  useNpuCatalog,
+} from "@/features/npu";
 import {
   useDebouncedValue,
   useDenseQuantSchemes,
@@ -245,6 +254,7 @@ import {
   ggufQuantChipLabel,
   ggufQuantDetailLabel,
   ggufVariantPickerLabel,
+  ggufVariantContextLength,
   groupGgufVariantsForPicker,
   h3PickerHasOnlyPrunedBuilds,
   preferredGgufVariantByGroup,
@@ -595,12 +605,13 @@ function ParamChip({ label }: { label: string }) {
   );
 }
 
-// Format colours: gguf blue, mlx amber, safetensors/checkpoint pink, adapter.
+// Format colours: gguf blue, mlx amber, safetensors/checkpoint pink, adapter, npu cyan.
 const FORMAT_TONE_DOT: Record<FormatTone, string> = {
   gguf: "bg-format-gguf",
   mlx: "bg-format-mlx",
   checkpoint: "bg-format-checkpoint",
   adapter: "bg-format-adapter",
+  npu: "bg-format-npu",
 };
 
 /** Format as a coloured dot ahead of the name, named on hover: a word like "Safetensors" is
@@ -1529,6 +1540,7 @@ async function readSoleQuant(
   try {
     const res = await listGgufVariantsCached(target.repoId, hfToken, {
       localPath: target.localSource,
+      includeCacheLocations: target.includeCacheLocations,
     });
     const normalized = normalizeGgufVariantsResponse(res);
     const variant = verifiedSoleHubVariant(
@@ -1571,6 +1583,7 @@ function useSoleDownloadedQuants(
       return {
         repoId: repo.repo_id,
         localSource,
+        includeCacheLocations: !mediaPageForTask(repo.task),
         fingerprint,
         key: soleQuantKey(versions[index], localSource, fingerprint),
       };
@@ -1690,7 +1703,7 @@ function GgufVariantExpander({
     renderUpdateDescription?: (quant: string) => ReactNode;
     getUpdateSuccessMessage?: (quant: string) => string;
     updateDisabled?: boolean;
-    onDelete?: (quant: string) => Promise<void> | void;
+    onDelete?: (quant: string, cachePath?: string | null) => Promise<void> | void;
     deleteTitle?: string;
     renderDeleteDescription?: (quant: string) => ReactNode;
     getDeleteSuccessMessage?: (quant: string) => string;
@@ -1747,10 +1760,10 @@ function GgufVariantExpander({
       setResolvedLocally(false);
     });
 
-    // The row's own directory, so disk contents count against that cache, not the active one. No
-    // preferLocalCache: it answers from disk alone.
+    // Chat rows name the repository; media and explicit local rows retain their folder scope.
     listGgufVariants(repoId, hfToken, {
       ...(localSource ? { localPath: localSource } : {}),
+      includeCacheLocations: !mediaPageForTask(pipelineTag),
       signal: controller.signal,
     })
       .then((res) => {
@@ -1777,7 +1790,7 @@ function GgufVariantExpander({
       canceled = true;
       controller.abort();
     };
-  }, [repoId, localSource, refreshKey, hfToken]);
+  }, [repoId, localSource, refreshKey, hfToken, pipelineTag]);
 
   // Covers Unix absolute, Windows drive, UNC, relative and tilde paths.
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
@@ -1800,6 +1813,7 @@ function GgufVariantExpander({
       downloaded?: boolean,
       sizeBytes?: number,
       downloadPresentation?: ModelSelectorChangeMeta["downloadPresentation"],
+      contextLength: number | null = nativeContext,
     ) => {
       const isAvailable = isLocalPath || downloaded === true;
       onSelect(repoId, {
@@ -1812,7 +1826,7 @@ function GgufVariantExpander({
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
         downloadPresentation,
-        contextLength: isAvailable ? nativeContext : undefined,
+        contextLength: isAvailable ? contextLength : undefined,
         isGguf: true,
         isVision: variantVisionHint,
         pipelineTag,
@@ -2161,6 +2175,7 @@ function GgufVariantExpander({
         const fit = getVariantFit(v);
         const oom = fit === "oom";
         const expectedBytes = ggufVariantExpectedBytes(v);
+        const variantContext = ggufVariantContextLength(v, nativeContext);
         // This row's own dependency group, never the listing's: see the footprintVariants comment above.
         const companionBytes =
           companionBytesByKey.get(v.dependency_key ?? "") ?? null;
@@ -2180,6 +2195,7 @@ function GgufVariantExpander({
                 v.downloaded,
                 expectedBytes,
                 pendingDrafterPresentation(v),
+                variantContext,
               )
             }
             className={cn(
@@ -2281,7 +2297,7 @@ function GgufVariantExpander({
                     ggufVariant: v.quant,
                     isDownloaded: true,
                     expectedBytes,
-                    contextLength: nativeContext,
+                    contextLength: variantContext,
                     isGguf: true,
                     isVision: variantVisionHint,
                   })
@@ -2337,7 +2353,11 @@ function GgufVariantExpander({
                     onDeleteVariant
                       ? {
                           title: deleteVariantTitle,
-                          impact: { repoId, variant: v.quant },
+                          impact: {
+                            repoId,
+                            variant: v.quant,
+                            cachePath: v.cache_ref ?? v.cache_path,
+                          },
                           description: renderDeleteVariantDescription?.(
                             v.quant,
                           ) ?? (
@@ -2354,13 +2374,14 @@ function GgufVariantExpander({
                             `Deleted ${repoId} ${v.quant}`,
                           disabled: deleteDisabled,
                           onConfirm: async () => {
-                            await onDeleteVariant(v.quant);
-                            // Drop the pin too: a pinned row for a deleted file loads something gone.
-                            if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
+                            await onDeleteVariant(v.quant, v.cache_ref ?? v.cache_path);
+                            if (isChatGgufTask(pipelineTag)) {
+                              await reconcileGgufPinsAfterDelete(repoId, hfToken);
+                            } else if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
                               togglePinnedQuant(repoId, v.quant);
                             }
-                            // Re-fetch this expander's variants so the deleted quant stops showing as downloaded while the
-                            // repo's other cached quants remain.
+                            // Re-fetch this expander's variants so the deleted quant stops showing as
+                            // downloaded while other cached quants remain.
                             setRefreshKey((key) => key + 1);
                           },
                         }
@@ -2564,13 +2585,15 @@ const FORMAT_FILTER_LABELS: Record<FormatFilter, string> = {
   gguf: "GGUF",
   mlx: "MLX",
   safetensors: "Safetensors",
+  npu: "NPU",
 };
 
-// Dot colors match the row format tags: gguf blue, mlx amber, safetensors pink.
+// Dot colors match the row format tags: gguf blue, mlx amber, safetensors pink, npu cyan.
 const FORMAT_FILTER_DOTS: Partial<Record<FormatFilter, string>> = {
   gguf: "bg-format-gguf",
   mlx: "bg-format-mlx",
   safetensors: "bg-format-checkpoint",
+  npu: "bg-format-npu",
 };
 
 const FORMAT_FILTER_OPTIONS: HubOption<FormatFilter>[] = (
@@ -2591,6 +2614,9 @@ const FORMAT_FILTER_OPTIONS: HubOption<FormatFilter>[] = (
     ),
   };
 });
+const FORMAT_FILTER_OPTIONS_WITHOUT_NPU = FORMAT_FILTER_OPTIONS.filter(
+  (option) => option.value !== "npu",
+);
 
 // Connected has no size, download date or load history, so it sorts by what a hosted catalogue
 // does offer: the connection, or the name.
@@ -2753,6 +2779,7 @@ export function HubModelPicker({
   task,
   catalog,
   communityModelPolicy = "none",
+  npu,
 }: {
   models: ModelOption[];
   /** Task-runtime downloads using a cache layout the shared Hub inventory cannot represent (for
@@ -2785,6 +2812,7 @@ export function HubModelPicker({
   /** Also surface community models carrying `task`'s pipeline tags, below the unsloth rows.
    *  Opt-in, since the runtime has to load an arbitrary publisher's checkpoint: true of audio. */
   communityModelPolicy?: CommunityModelPolicy;
+  npu?: NpuPickerSource;
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
@@ -3436,7 +3464,12 @@ export function HubModelPicker({
   const [downloadedSort, setDownloadedSort] = useState<LocalSortKey>("recent");
   const [customSort, setCustomSort] = useState<LocalSortKey>("recent");
   // Format filter toggle for the Unsloth listing.
-  const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
+  const [chosenFormatFilter, setFormatFilter] = useState<FormatFilter>("all");
+  const npuCatalog = useNpuCatalog(npu);
+  const formatFilter: FormatFilter =
+    chosenFormatFilter === "npu" && !npuCatalog ? "all" : chosenFormatFilter;
+  const [npuOnDeviceCollapsed, setNpuOnDeviceCollapsed] = useState(false);
+  const [npuBrowseCollapsed, setNpuBrowseCollapsed] = useState(true);
   // What this picker's task filter has already established about every row it can show; chat
   // passes none and keeps the full set.
   const capabilityScope = useMemo<readonly (keyof ModelCapabilities)[] | null>(() => {
@@ -4391,6 +4424,23 @@ export function HubModelPicker({
     formatFilter,
     loadTimes,
   ]);
+  const npuModels = npuCatalog?.models ?? null;
+  const npuListed =
+    npuCatalog !== null && (formatFilter === "all" || formatFilter === "npu");
+  const npuOnDeviceRows = useMemo(
+    () =>
+      npuListed
+        ? npuRowsFor(npuModels, { onDevice: true, query: debouncedQuery })
+        : [],
+    [npuListed, npuModels, debouncedQuery],
+  );
+  const npuBrowseRows = useMemo(
+    () =>
+      npuListed
+        ? npuRowsFor(npuModels, { onDevice: false, query: debouncedQuery })
+        : [],
+    [npuListed, npuModels, debouncedQuery],
+  );
   const unslothAdditionalOnDeviceModels = useMemo(
     () =>
       visibleAdditionalOnDeviceModels.filter((model) =>
@@ -4535,12 +4585,13 @@ export function HubModelPicker({
   }, [pinnedIds, sortedCachedGguf, formatFilter]);
   const [pinnedQuantValidation, setPinnedQuantValidation] = useState<{
     validated: boolean;
-    downloaded: ReadonlySet<string>;
+    /** Verified downloads by pin key; the value is the copy the listing resolved them in. */
+    downloaded: ReadonlyMap<string, string | null>;
     visionByRepo: ReadonlyMap<string, boolean>;
     sizes: ReadonlyMap<string, number>;
   }>({
     validated: false,
-    downloaded: new Set(),
+    downloaded: new Map(),
     visionByRepo: new Map(),
     sizes: new Map(),
   });
@@ -4549,7 +4600,7 @@ export function HubModelPicker({
       const key = pinKey(repoId, quant);
       setPinnedQuantValidation((prev) => {
         if (!prev.downloaded.has(key)) return prev;
-        const downloaded = new Set(prev.downloaded);
+        const downloaded = new Map(prev.downloaded);
         downloaded.delete(key);
         return { ...prev, downloaded };
       });
@@ -4570,7 +4621,9 @@ export function HubModelPicker({
           const response = await listGgufVariantsCached(
             repoId,
             hfToken || undefined,
-            { preferLocalCache: true },
+            { preferLocalCache: true, includeCacheLocations: !mediaPageForTask(
+              sortedCachedGguf.find((row) => row.repo_id === repoId)?.task,
+            ) },
           );
           const normalized = normalizeGgufVariantsResponse(response);
           const downloaded = normalized.variants.filter(
@@ -4579,8 +4632,11 @@ export function HubModelPicker({
           return {
             repoId,
             hasVision: normalized.hasVision,
-            downloaded: downloaded.map((variant) =>
-              pinKey(repoId, variant.quant),
+            downloaded: downloaded.map(
+              (variant): [string, string | null] => [
+                pinKey(repoId, variant.quant),
+                variant.cache_ref ?? variant.cache_path ?? null,
+              ],
             ),
             sizes: downloaded.map(
               (variant) =>
@@ -4597,7 +4653,7 @@ export function HubModelPicker({
       if (!cancelled) {
         setPinnedQuantValidation({
           validated: true,
-          downloaded: new Set(groups.flatMap((group) => group.downloaded)),
+          downloaded: new Map(groups.flatMap((group) => group.downloaded)),
           visionByRepo: new Map(
             groups.flatMap((group) =>
               group.hasVision === undefined
@@ -4613,12 +4669,12 @@ export function HubModelPicker({
     return () => {
       cancelled = true;
     };
-  }, [hfToken, pinnedQuantCandidates]);
-  const downloadedPinnedQuantKeys = useMemo<ReadonlySet<string>>(
+  }, [hfToken, pinnedQuantCandidates, sortedCachedGguf]);
+  const downloadedPinnedQuantPaths = useMemo<ReadonlyMap<string, string | null>>(
     () =>
       pinnedQuantValidation.validated
         ? pinnedQuantValidation.downloaded
-        : new Set(),
+        : new Map(),
     [pinnedQuantValidation],
   );
 
@@ -4627,11 +4683,11 @@ export function HubModelPicker({
     const q = normalizeForSearch(debouncedQuery.trim());
     return pinnedQuantCandidates.filter(
       (entry) =>
-        downloadedPinnedQuantKeys.has(pinKey(entry.repoId, entry.quant)) &&
+        downloadedPinnedQuantPaths.has(pinKey(entry.repoId, entry.quant)) &&
         (!q ||
           normalizeForSearch(`${entry.repoId} ${entry.quant}`).includes(q)),
     );
-  }, [debouncedQuery, downloadedPinnedQuantKeys, pinnedQuantCandidates]);
+  }, [debouncedQuery, downloadedPinnedQuantPaths, pinnedQuantCandidates]);
 
   const pinnedCachedModelRows = useMemo(
     () =>
@@ -5417,6 +5473,7 @@ export function HubModelPicker({
     visibleCachedGguf.length === 0 &&
     visibleCachedModelRows.length === 0 &&
     visibleAdditionalOnDeviceModels.length === 0 &&
+    npuOnDeviceRows.length === 0 &&
     sortedLmStudio.length === 0 &&
     sortedLocalDir.length === 0 &&
     // Fine-tuned models are on-device too: do not show the empty state above a non-empty Fine-tuned section.
@@ -5713,6 +5770,10 @@ export function HubModelPicker({
     // Its repo's own sole-quant row, with that row's load target and selection state.
     const soleRow = pinnedSoleQuantRows.get(pinKey(entry.repoId, entry.quant));
     if (soleRow) return renderSoleQuantGgufRow(soleRow.repo, soleRow.sole);
+    // The copy the validation listing resolved this quant in, so the delete removes that one.
+    const pinnedCopyPath = downloadedPinnedQuantPaths.get(
+      pinKey(entry.repoId, entry.quant),
+    );
     const optionKey = makeModelOptionKey(
       "pinned-quant",
       pinKey(entry.repoId, entry.quant),
@@ -5817,7 +5878,11 @@ export function HubModelPicker({
               title: "Delete cached model?",
               // Same preview the Hub On Device row asks for, so a companion base an installed image model
               // still needs shows the reason and a disabled Delete.
-              impact: { repoId: entry.repoId, variant: entry.quant },
+              impact: {
+                repoId: entry.repoId,
+                variant: entry.quant,
+                cachePath: pinnedCopyPath,
+              },
               description: (
                 <>
                   This will remove{" "}
@@ -5834,10 +5899,14 @@ export function HubModelPicker({
                   entry.repoId,
                   entry.quant,
                   hfToken || undefined,
+                  pinnedCopyPath ?? undefined,
                 );
                 refreshCachedLists();
-                // The file is gone, so drop its pin too.
-                togglePinned(entry.repoId, entry.quant);
+                if (isChatGgufTask(diffusionTaskById.get(entry.repoId.toLowerCase()))) {
+                  await reconcileGgufPinsAfterDelete(entry.repoId, hfToken || undefined);
+                } else {
+                  togglePinned(entry.repoId, entry.quant);
+                }
               },
             }}
           />
@@ -5948,7 +6017,14 @@ export function HubModelPicker({
             }}
             del={{
               title: "Delete cached model?",
-              impact: { repoId: c.repo_id, variant: variant.quant },
+              impact: {
+                repoId: c.repo_id,
+                variant: variant.quant,
+                cachePath:
+                  variant.cache_ref ??
+                  variant.cache_path ??
+                  (mediaPageForTask(c.task) ? c.cache_path : null),
+              },
               description: (
                 <>
                   This will remove{" "}
@@ -5965,10 +6041,16 @@ export function HubModelPicker({
                   c.repo_id,
                   variant.quant,
                   hfToken || undefined,
-                  c.cache_path || undefined,
+                  variant.cache_ref ??
+                    variant.cache_path ??
+                    (mediaPageForTask(c.task) ? c.cache_path : undefined) ??
+                    undefined,
                 );
-                // The file is gone, so drop its pin too.
-                if (isPinned) togglePinned(c.repo_id, variant.quant);
+                if (isChatGgufTask(c.task)) {
+                  await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
+                } else if (isPinned) {
+                  togglePinned(c.repo_id, variant.quant);
+                }
                 prunePinnedQuantValidation(c.repo_id, variant.quant);
                 refreshCachedLists();
               },
@@ -6059,8 +6141,12 @@ export function HubModelPicker({
                       hfToken || undefined,
                       c.cache_path || undefined,
                     );
-                    // Every quant goes with the repo, so every quant pin goes too.
-                    unpinRepo(c.repo_id);
+                    if (isChatGgufTask(c.task)) {
+                      // Another remembered folder may still hold a pinned quant.
+                      await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
+                    } else {
+                      unpinRepo(c.repo_id);
+                    }
                   },
                   onDeleted: refreshCachedLists,
                 }}
@@ -6096,12 +6182,13 @@ export function HubModelPicker({
               onUpdate: (quant, expectedBytes) =>
                 updateGgufVariant(c.repo_id, quant, expectedBytes),
               updateDisabled: loadedModelId === c.repo_id,
-              onDelete: async (quant) => {
+              onDelete: async (quant, cachePath) => {
                 await deleteCachedModel(
                   c.repo_id,
                   quant,
                   hfToken || undefined,
-                  c.cache_path || undefined,
+                  cachePath ??
+                    (mediaPageForTask(c.task) ? c.cache_path || undefined : undefined),
                 );
                 prunePinnedQuantValidation(c.repo_id, quant);
                 refreshCachedLists();
@@ -6267,6 +6354,94 @@ export function HubModelPicker({
     );
   };
 
+  const renderNpuRow = (model: NpuModel, onDevice: boolean) => {
+    if (!npuCatalog) return null;
+    const optionKey = makeModelOptionKey(
+      onDevice ? "npu-on-device" : "npu",
+      model.id,
+    );
+    const isSelected = value === model.model_path;
+    const isLoaded = loadedModelId === model.model_path;
+    const downloading = model.id in npuCatalog.downloads;
+    const progress = npuCatalog.downloads[model.id];
+    const size =
+      model.size_gb == null
+        ? null
+        : model.size_gb < 1
+          ? `${Math.round(model.size_gb * 1000)} MB`
+          : `${model.size_gb.toFixed(1)} GB`;
+    const pick = () =>
+      onSelect(model.model_path, {
+        source: "local",
+        isLora: false,
+        isDownloaded: true,
+      });
+    const row = (
+      <ModelRow
+        label={model.id}
+        meta={
+          downloading
+            ? `NPU · Downloading${progress == null ? "" : ` ${Math.round(progress)}%`}`
+            : `NPU${size ? ` · ${size}` : ""}`
+        }
+        selected={isSelected}
+        loaded={isLoaded}
+        downloaded={!onDevice && model.downloaded}
+        capabilities={{
+          vision: model.supports_vision,
+          reasoning: model.supports_reasoning,
+          audio: false,
+          imageGen: false,
+          videoGen: false,
+        }}
+        alignMeta={onDevice ? "device" : "hub"}
+        optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
+        onClick={() => {
+          if (downloading) return;
+          if (model.downloaded) {
+            pick();
+            return;
+          }
+          const before = useChatRuntimeStore.getState();
+          const chosen = before.params.checkpoint;
+          void npuCatalog.download(model).then((done) => {
+            const now = useChatRuntimeStore.getState();
+            // A model picked while this downloaded is the user's newer choice; keep it.
+            if (done && now.params.checkpoint === chosen && !now.loadingModelPick) {
+              pick();
+            }
+          });
+        }}
+        vramStatus={null}
+        className={onDevice ? downloadedRowButtonClassName : undefined}
+      />
+    );
+    if (!onDevice) return <div key={model.id}>{row}</div>;
+    return (
+      <div key={model.id} className={downloadedRowShellClassName(isSelected)}>
+        <div className="min-w-0 flex-1">{row}</div>
+        <span className={cn(ROW_ACTIONS_CLASS, "h-6")}>
+          <ModelDeleteAction
+            ariaLabel={`Delete ${model.id}`}
+            title={`Delete ${model.id}?`}
+            description="This removes the model's NPU files from this device."
+            successMessage={`Deleted ${model.id}`}
+            disabled={isLoaded}
+            onConfirm={() => npuCatalog.remove(model)}
+          />
+        </span>
+      </div>
+    );
+  };
+
+  const npuBrowseForcedOpen = formatFilter === "npu" || showHfSection;
+  const npuBrowseFolded = !npuBrowseForcedOpen && npuBrowseCollapsed;
+  const showNpuBrowse =
+    npuCatalog !== null &&
+    npuListed &&
+    section === "recommended" &&
+    (!showHfSection || npuBrowseRows.length > 0);
+
   return (
     <CapabilityScope.Provider value={capabilityScope}>
       <div className="relative space-y-2">
@@ -6357,7 +6532,11 @@ export function HubModelPicker({
             <div className="flex max-w-full min-w-0 flex-wrap items-center gap-2">
               <HubOptionMenu
                 value={formatFilter}
-                options={FORMAT_FILTER_OPTIONS}
+                options={
+                  npuCatalog
+                    ? FORMAT_FILTER_OPTIONS
+                    : FORMAT_FILTER_OPTIONS_WITHOUT_NPU
+                }
                 onValueChange={setFormatFilter}
                 ariaLabel="Filter by format"
                 align="end"
@@ -6638,6 +6817,26 @@ export function HubModelPicker({
                         renderAdditionalOnDeviceModelRow,
                       )}
                   </div>
+                ) : null}
+
+                {showDownloaded && npuOnDeviceRows.length > 0 ? (
+                  <>
+                    <ListLabel
+                      divider={
+                        pinnedRows.length > 0 ||
+                        unslothCachedGguf.length > 0 ||
+                        unslothCachedModelRows.length > 0 ||
+                        unslothAdditionalOnDeviceModels.length > 0 ||
+                        hasOtherModels
+                      }
+                      collapsed={npuOnDeviceCollapsed}
+                      onToggle={() => setNpuOnDeviceCollapsed((v) => !v)}
+                    >
+                      NPU
+                    </ListLabel>
+                    {!npuOnDeviceCollapsed &&
+                      npuOnDeviceRows.map((model) => renderNpuRow(model, true))}
+                  </>
                 ) : null}
 
                 {/* Fine-tuned models: always shown on On Device so the train shortcut has a target. Hidden
@@ -7319,8 +7518,37 @@ export function HubModelPicker({
                   </>
                 ) : null}
 
-                {showRecommendedSection ? (
+                {showNpuBrowse && npuCatalog ? (
                   <>
+                    <ListLabel
+                      collapsed={npuBrowseFolded}
+                      onToggle={
+                        npuBrowseForcedOpen
+                          ? undefined
+                          : () => setNpuBrowseCollapsed((v) => !v)
+                      }
+                    >
+                      NPU
+                    </ListLabel>
+                    {npuBrowseFolded ? null : (
+                      <>
+                        {showHfSection ? null : (
+                          <NpuSetupNotice catalog={npuCatalog} />
+                        )}
+                        {npuBrowseRows.map((model) =>
+                          renderNpuRow(model, false),
+                        )}
+                      </>
+                    )}
+                  </>
+                ) : null}
+
+                {showRecommendedSection && formatFilter !== "npu" ? (
+                  <>
+                    {/* Below the NPU group, the curated list needs its own heading. */}
+                    {showNpuBrowse ? (
+                      <ListLabel divider={!npuBrowseFolded}>Unsloth</ListLabel>
+                    ) : null}
                     {recommendedSearch.isLoading &&
                     recommendedRows.length === 0 ? (
                       <div className="flex items-center gap-2 px-5 py-3">
@@ -7415,11 +7643,12 @@ export function HubModelPicker({
                                 systemRamGb={expanderRamGb || undefined}
                                 budgetKnown={expanderBudgetGpu.budgetKnown}
                                 variantActions={{
-                                  onDelete: async (quant) => {
+                                  onDelete: async (quant, cachePath) => {
                                     await deleteCachedModel(
                                       id,
                                       quant,
                                       hfToken || undefined,
+                                      cachePath ?? undefined,
                                     );
                                     prunePinnedQuantValidation(id, quant);
                                     refreshCachedLists();
@@ -7546,11 +7775,12 @@ export function HubModelPicker({
                               systemRamGb={expanderRamGb || undefined}
                               budgetKnown={expanderBudgetGpu.budgetKnown}
                               variantActions={{
-                                onDelete: async (quant) => {
+                                onDelete: async (quant, cachePath) => {
                                   await deleteCachedModel(
                                     id,
                                     quant,
                                     hfToken || undefined,
+                                    cachePath ?? undefined,
                                   );
                                   prunePinnedQuantValidation(id, quant);
                                   refreshCachedLists();
@@ -7564,7 +7794,9 @@ export function HubModelPicker({
                   </>
                 ) : null}
 
-                {showHfSection && section === "recommended" ? (
+                {showHfSection &&
+                section === "recommended" &&
+                formatFilter !== "npu" ? (
                   <>
                     {searchRowIds.length === 0 && !isLoading ? (
                       filteredRecommendedIds.length === 0 ? (
@@ -7668,11 +7900,12 @@ export function HubModelPicker({
                                 systemRamGb={expanderRamGb || undefined}
                                 budgetKnown={expanderBudgetGpu.budgetKnown}
                                 variantActions={{
-                                  onDelete: async (quant) => {
+                                  onDelete: async (quant, cachePath) => {
                                     await deleteCachedModel(
                                       id,
                                       quant,
                                       hfToken || undefined,
+                                      cachePath ?? undefined,
                                     );
                                     prunePinnedQuantValidation(id, quant);
                                     refreshCachedLists();

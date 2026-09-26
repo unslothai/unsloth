@@ -6,6 +6,7 @@ hanging the UI. ``unload_model`` now cancels first (the mp.Event the worker chec
 each token) and takes ``_gen_lock`` before the unload round-trip.
 """
 
+import queue
 import threading
 import time
 
@@ -43,6 +44,10 @@ def _bare_orchestrator():
     o._dispatcher_thread = None
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._direct_mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     o._exclusive_tts_pending = False
     o.active_model_name = "m"
@@ -244,6 +249,310 @@ def test_consume_token_stream_bails_when_subprocess_swapped(monkeypatch):
     assert "restarted" in msg
     with pytest.raises(StopIteration):
         next(gen)
+
+
+_GPU_TIMEOUT = (
+    "[METAL] Command buffer execution failed: Caused GPU Timeout Error "
+    "(00000002:kIOGPUCommandBufferCallbackErrorTimeout)"
+)
+
+
+def _watch_teardown(
+    o,
+    monkeypatch,
+    *,
+    dead = True,
+):
+    torn_down = []
+
+    def shutdown(timeout):
+        torn_down.append(timeout)
+        if dead:
+            o._proc = None
+        return dead
+
+    monkeypatch.setattr(o, "_shutdown_subprocess_locked", shutdown)
+    return torn_down
+
+
+def _queue_of(*responses):
+    filled = queue.Queue()
+    for resp in responses:
+        filled.put(resp)
+    return filled
+
+
+def _mailbox_for(worker, *responses):
+    filled = orch_mod._WorkerMailbox(worker)
+    for resp in responses:
+        filled.put(resp)
+    return filled
+
+
+class _LiveDispatcher:
+    def is_alive(self):
+        return True
+
+
+def test_a_foreign_fault_reaches_its_mailbox_before_the_worker_is_retired(monkeypatch):
+    o = _bare_orchestrator()
+    torn_down = []
+
+    def shutdown(timeout):
+        torn_down.append(timeout)
+        o._proc = None
+        o._reset_worker_scoped_state()  # as the real teardown does
+        return True
+
+    monkeypatch.setattr(o, "_shutdown_subprocess_locked", shutdown)
+    theirs = threading.Event()
+    o._request_cancel_events = {"theirs": theirs}
+    o._claim_worker(theirs)
+    compare_mailbox = queue.Queue()
+    o._mailboxes = {"theirs": compare_mailbox}
+    fault = {"type": "gen_error", "request_id": "theirs", "error": _GPU_TIMEOUT}
+    o._resp_queue = _queue_of(fault)
+
+    read_one, _drain, release = o._direct_reader("mine")
+    try:
+        assert read_one(timeout = 0.5) is None, "a foreign response is routed, not returned"
+    finally:
+        release()
+
+    assert compare_mailbox.get_nowait() == fault, "the request it belongs to must see the fault"
+    assert torn_down, "and the dead worker must still be retired"
+    assert o.active_model_name is None
+
+
+@pytest.mark.parametrize(
+    "already_waiting, fault",
+    [
+        (True, {"type": "gen_error", "request_id": "r1", "error": _GPU_TIMEOUT}),
+        (False, {"type": "audio_error", "request_id": "r1", "error": "SubmissionsIgnored"}),
+    ],
+    ids = ["already waiting", "routed a moment later"],
+)
+def test_a_direct_request_reading_past_a_live_dispatcher_still_retires(
+    already_waiting, fault, monkeypatch
+):
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch)
+    o._dispatcher_thread = _LiveDispatcher()
+    read_one, _drain, release = o._direct_reader("r1")
+    mailbox = o._direct_mailboxes["r1"]
+    if already_waiting:
+        mailbox.put(fault)
+    else:
+        threading.Timer(0.05, mailbox.put, [fault]).start()
+
+    try:
+        assert read_one(timeout = 2.0) == fault
+    finally:
+        release()
+
+    assert torn_down
+    assert o.active_model_name is None
+
+
+def test_a_dispatched_stream_retires_on_the_fault_the_dispatcher_routed(monkeypatch):
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    torn_down = _watch_teardown(o, monkeypatch)
+    o._resp_queue = queue.Queue()
+    monkeypatch.setattr(
+        o,
+        "_send_cmd",
+        lambda cmd: o._resp_queue.put(
+            {"type": "gen_error", "request_id": cmd["request_id"], "error": _GPU_TIMEOUT}
+        ),
+    )
+
+    try:
+        streamed = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+    finally:
+        o._stop_dispatcher()
+
+    assert torn_down, "a dispatched request must retire the worker its fault killed"
+    assert o.active_model_name is None
+    assert any("GPU Timeout" in str(item) for item in streamed)
+
+
+@pytest.mark.parametrize(
+    "leaves_a_mailbox", [False, True], ids = ["no mailbox left", "a mailbox nobody reads"]
+)
+def test_a_routed_fault_retires_the_worker_without_waiting_on_a_consumer(
+    leaves_a_mailbox, monkeypatch
+):
+    o = _bare_orchestrator()
+    if leaves_a_mailbox:
+        o._mailboxes = {"gone": orch_mod._WorkerMailbox(o._proc)}
+    torn_down = _watch_teardown(o, monkeypatch)
+    observers = []
+    observe = o._observe_response
+    monkeypatch.setattr(
+        o,
+        "_observe_response",
+        lambda resp, worker: (observers.append(threading.current_thread()), observe(resp, worker))[
+            1
+        ],
+    )
+    o._resp_queue = queue.Queue()
+    o._resp_queue.put({"type": "gen_error", "request_id": "gone", "error": _GPU_TIMEOUT})
+    o._dispatcher_stop = threading.Event()
+    dispatcher = threading.Thread(target = o._dispatcher_loop, daemon = True)
+    dispatcher.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while not torn_down and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        o._dispatcher_stop.set()
+        dispatcher.join(timeout = 5.0)
+
+    assert torn_down, "no consumer will read it, so routing is the last chance"
+    assert o.active_model_name is None
+    assert observers and dispatcher not in observers
+
+
+def test_a_cancelled_generation_still_retires_the_worker_it_poisoned(monkeypatch):
+    direct = _bare_orchestrator()
+    monkeypatch.setattr(direct, "_ensure_subprocess_alive", lambda: True)
+    direct_torn_down = _watch_teardown(direct, monkeypatch)
+    direct._resp_queue = _queue_of(
+        {"type": "token", "token": "a"}, {"type": "gen_error", "error": _GPU_TIMEOUT}
+    )
+    direct._drain_until_gen_done(timeout = 1.0)
+
+    dispatched = _bare_orchestrator()
+    dispatched_torn_down = _watch_teardown(dispatched, monkeypatch)
+    dispatched._drain_mailbox(
+        _mailbox_for(
+            dispatched._proc,
+            {"type": "token", "token": "a"},
+            {"type": "gen_error", "error": _GPU_TIMEOUT},
+        ),
+        timeout = 1.0,
+    )
+
+    assert direct_torn_down and dispatched_torn_down
+    assert direct.active_model_name is None and dispatched.active_model_name is None
+
+
+def test_an_ordinary_generation_error_leaves_the_worker_alone(monkeypatch):
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch)
+    o._resp_queue = _queue_of(
+        {"type": "gen_error", "request_id": "r1", "error": "context too long"}
+    )
+
+    assert o._read_resp(timeout = 0.01)["error"] == "context too long"
+    assert not torn_down
+    assert o.active_model_name == "m"
+
+
+def test_a_worker_that_outlives_the_kill_keeps_the_model_it_is_still_holding(monkeypatch):
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch, dead = False)
+    o._resp_queue = _queue_of({"type": "gen_error", "error": _GPU_TIMEOUT})
+
+    o._read_resp(timeout = 0.01)
+
+    assert torn_down
+    assert o.active_model_name == "m"
+    assert o.models == {"m": {}}
+
+
+class _SwappedDuringRead(queue.Queue):
+    def __init__(self, orchestrator, replacement, resp):
+        super().__init__()
+        self._orchestrator = orchestrator
+        self._replacement = replacement
+        self._resp = resp
+
+    def get(self, timeout = None):
+        self._orchestrator._proc = self._replacement
+        return self._resp
+
+
+def test_a_fault_read_across_a_replacement_leaves_the_replacement_alone(monkeypatch):
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch)
+    replacement = object()
+    o._resp_queue = _SwappedDuringRead(o, replacement, {"type": "gen_error", "error": _GPU_TIMEOUT})
+
+    assert o._read_resp(timeout = 0.01)["error"] == _GPU_TIMEOUT
+
+    assert not torn_down, "the fault predates the replacement"
+    assert o._proc is replacement
+    assert o.active_model_name == "m"
+
+
+def test_the_direct_read_takes_the_handle_before_the_queue(monkeypatch):
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch)
+    replacement = object()
+    abandoned = _queue_of({"type": "gen_error", "error": _GPU_TIMEOUT})
+
+    def reload_as_the_queue_is_taken(_self):
+        o._proc = replacement
+        return abandoned
+
+    monkeypatch.setattr(
+        type(o), "_resp_queue", property(reload_as_the_queue_is_taken), raising = False
+    )
+
+    o._read_resp(timeout = 0.01)
+
+    assert not torn_down, "the fault came off the queue the predecessor left behind"
+    assert o.active_model_name == "m"
+
+
+def test_a_fault_in_a_mailbox_that_outlived_its_worker_leaves_the_replacement_alone(monkeypatch):
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch)
+    mailbox = _mailbox_for(o._proc, {"type": "gen_error", "error": _GPU_TIMEOUT})
+    replacement = object()
+    o._proc = replacement  # a reload between reads
+
+    assert o._read_mailbox(mailbox, 0.01)["error"] == _GPU_TIMEOUT
+
+    assert not torn_down, "the fault was the old worker's; the replacement never produced it"
+    assert o._proc is replacement
+    assert o.active_model_name == "m"
+    assert o.models == {"m": {}}
+
+
+def test_a_fault_from_a_replaced_worker_leaves_the_replacement_alone(monkeypatch):
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch)
+    replacement = object()
+
+    def reload():
+        o._proc = replacement
+        o._subprocess_shutdown_lock.release()
+
+    o._subprocess_shutdown_lock.acquire()
+    threading.Timer(0.05, reload).start()
+
+    o._observe_response({"type": "gen_error", "error": _GPU_TIMEOUT}, o._proc)
+
+    assert not torn_down, "the fault belonged to a worker that is already gone"
+    assert o._proc is replacement
+    assert o.active_model_name == "m"
+    assert o.models == {"m": {}}
+
+
+def test_a_fault_with_no_worker_behind_it_clears_nothing(monkeypatch):
+    """``None is not None`` is False, so the check alone would let an absent worker through."""
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch)
+    o._proc = None
+
+    o._read_mailbox(_mailbox_for(None, {"type": "gen_error", "error": _GPU_TIMEOUT}), 0.01)
+
+    assert not torn_down
+    assert o.active_model_name == "m"
+    assert o.models == {"m": {}}
 
 
 def test_unload_pending_clears_after_unload(monkeypatch):
@@ -2440,10 +2749,6 @@ def test_a_dispatcher_started_mid_stream_still_reaches_the_direct_reader():
     # that chat's tokens and its gen_done as unaddressed, hanging it.
 
     o = _bare_orchestrator()
-    o._mailbox_lock = threading.Lock()
-    o._mailboxes = {}
-    o._direct_mailboxes = {}
-    o._request_cancel_events = {}
 
     read_one, _drain, release = o._direct_reader("direct-1")
     try:
@@ -3428,8 +3733,10 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
     guarded = {
         "core/export/orchestrator.py",
         "core/inference/engine_install.py",
+        "core/inference/lemonade_server.py",
         "core/inference/llama_cpp.py",
         "core/inference/managed_engine.py",
+        "core/inference/npu_backend.py",
         "core/inference/orchestrator.py",
         "core/inference/sd_cpp_engine.py",
         "core/inference/sd_cpp_server.py",

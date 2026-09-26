@@ -600,6 +600,7 @@ def _scan_cached_gguf(
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
+    repo_cache_roots: dict[str, set[Path]] = {}
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             try:
@@ -701,7 +702,11 @@ def _scan_cached_gguf(
                         tts_only = row_task == "text-to-speech",
                     )
                 )
-                # Only the winning cache root loads, so the loser's vision flag must not carry over.
+                # Preserve a snapshot-pinned load id for a single cache: refs/main can
+                # be stale or dangling even when a different snapshot holds the quant.
+                # Only a repository spanning distinct cache roots needs repo-wide
+                # resolution so chat can choose the requested quant's owning copy.
+                repo_cache_roots.setdefault(key, set()).add(repo_path.parent)
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row
                 elif last_modified > existing.get("last_modified", 0.0):
@@ -710,6 +715,15 @@ def _scan_cached_gguf(
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
                 logger.warning("Skipping cached GGUF repo %s: %s", repo_label, scrub_paths(e))
                 continue
+    from hub.utils.gguf_sources import CHAT_GGUF_TASKS
+
+    for key, row in seen_lower.items():
+        if (
+            len(repo_cache_roots.get(key, ())) > 1
+            and not row["partial"]
+            and row["task"] in CHAT_GGUF_TASKS
+        ):
+            row["load_id"] = row["repo_id"]
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
 

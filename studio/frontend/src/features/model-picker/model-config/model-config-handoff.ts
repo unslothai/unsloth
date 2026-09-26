@@ -7,8 +7,9 @@ import type {
   ModelSelectorChangeMeta,
 } from "../components/model-selector/types";
 import {
+  apiAutoSwitchMayLoad,
+  cachedRepoConfigId,
   ggufVariantsMatch,
-  isOllamaLinkPath,
   isOllamaModelId,
   isStandaloneGgufPath,
   modelDisplayName,
@@ -68,9 +69,60 @@ export function modelConfigTarget(
     displayName: meta.ggufVariant ? `${name} · ${meta.ggufVariant}` : name,
     ggufVariant: meta.ggufVariant ?? null,
     isGguf,
-    apiLoadable: !meta.isLora && !isOllamaLinkPath(id) && !isOllamaLinkPath(loadId),
+    apiLoadable: apiAutoSwitchMayLoad([id, loadId], meta.isLora),
     ...(separateLoadId ? { configId: id } : {}),
     meta,
+  };
+}
+
+const TRAILING_SEPARATORS = /[\\/]+$/;
+
+function leafName(id: string): string {
+  const trimmed = id.replace(TRAILING_SEPARATORS, "");
+  const separator = Math.max(
+    trimmed.lastIndexOf("/"),
+    trimmed.lastIndexOf("\\"),
+  );
+  return separator >= 0 ? trimmed.slice(separator + 1) : trimmed;
+}
+
+/** The settings target for the model /api/inference/status reports as loaded. */
+export function residentModelConfigTarget({
+  modelId,
+  ggufVariant,
+  isGguf,
+  isLora,
+  contextLength,
+}: {
+  modelId: string;
+  ggufVariant: string | null;
+  isGguf: boolean;
+  isLora: boolean;
+  contextLength: number | null;
+}): ModelPickTarget {
+  // A standalone .gguf has no quant to choose between, but the loader labels it from its filename and
+  // /status echoes that back. Keying settings by it would write "<path>:Q4_K_M" while all other
+  // settings entry points use the bare path.
+  const settingsGgufVariant = isStandaloneGgufPath(modelId)
+    ? null
+    : ggufVariant;
+  const leaf = leafName(modelId);
+  const repoId = cachedRepoConfigId(modelId, settingsGgufVariant);
+  return {
+    id: modelId,
+    displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
+    ggufVariant: settingsGgufVariant,
+    isGguf,
+    apiLoadable: apiAutoSwitchMayLoad([modelId], isLora),
+    ...(repoId ? { configId: repoId } : {}),
+    meta: {
+      source: "local",
+      isLora,
+      ggufVariant: settingsGgufVariant ?? undefined,
+      isGguf,
+      isDownloaded: true,
+      contextLength,
+    },
   };
 }
 

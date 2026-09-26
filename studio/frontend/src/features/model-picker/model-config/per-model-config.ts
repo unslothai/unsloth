@@ -3,6 +3,7 @@
 
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
+  cachedRepoConfigId,
   ggufVariantFromStorageKey,
   isStandaloneGgufPath,
   modelIdFromStorageKey,
@@ -1491,6 +1492,19 @@ export function resolveInitialConfig(
   return { config: { ...DEFAULT_PER_MODEL_CONFIG }, remembered: false };
 }
 
+/** Moves a record an older build saved under a cached repo's snapshot path to the repo id the
+ *  settings panel keys it by. Returns that repo id, or null when the model is not one. */
+export function adoptCachedRepoConfig(
+  modelId: string,
+  ggufVariant?: string | null,
+): string | null {
+  const repoId = cachedRepoConfigId(modelId, ggufVariant);
+  if (repoId) {
+    adoptLegacyConfigKey(repoId, modelId, null);
+  }
+  return repoId;
+}
+
 /** Remembered settings for the identifier /api/inference/status reports as loaded. An API auto-switch hands the
  *  loader a concrete snapshot path while settings are keyed by repo id, so reading the raw identifier reports the
  *  resident model as unremembered and blanks a control it is running with. Only a namespaced collapse is adopted,
@@ -1499,6 +1513,10 @@ export function resolveResidentInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
 ): ResolvedPerModelConfig {
+  const repoId = adoptCachedRepoConfig(modelId, ggufVariant);
+  if (repoId) {
+    return resolveInitialConfig(repoId, null);
+  }
   // a standalone file's reported quant is a label; its settings are saved without a variant.
   const standalone = isStandaloneGgufPath(modelId);
   const direct = resolveInitialConfig(modelId, standalone ? null : ggufVariant);

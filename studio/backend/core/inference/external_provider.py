@@ -35,7 +35,7 @@ from core.inference.sse_control_frames import sanitize_provider_sse_line
 # templated just like an in-process one (#7066). "custom" is a user-supplied OpenAI-compatible base_url, i.e. how a
 # self-hosted vLLM or llama.cpp registers without its preset. Unknown endpoint means assume a template applies:
 # sweeping a hosted API costs a space in delimiter-like text, not sweeping a local one costs a forged turn.
-_TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
+_TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom", "lemonade"})
 
 # The subset documenting "continue_final_message" + "add_generation_prompt" on /v1/chat/completions.
 _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
@@ -44,7 +44,7 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 # providers report no llama.cpp timings either, so the monitor has no token count to derive a speed from. Same caution
 # as the flag above: "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field. "openai"
 # is absent because it routes to /v1/responses, which reports usage on its own.
-_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
+_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi", "lemonade"})
 
 # llama-server reads repeat_penalty, not repetition_penalty (as routes/inference does).
 _REPETITION_PENALTY_BODY_KEY = {"llama_cpp": "repeat_penalty"}
@@ -884,6 +884,8 @@ def _create_shared_http_client() -> httpx.AsyncClient:
 
 
 _http_client = _create_shared_http_client()
+# Studio's own loopback runtime: an env proxy would receive its key and prompts, or fail to reach it.
+_loopback_http_client = httpx.AsyncClient(trust_env = False)
 
 
 class _PinnedPublicTransport(httpx.AsyncBaseTransport):
@@ -1359,15 +1361,16 @@ class ExternalProviderClient:
         timeout: float = 120.0,
         *,
         api_type: str = "chat_completions",
+        managed_loopback: bool = False,
     ):
         self.provider_type = provider_type
         self.api_type = api_type if provider_type == "custom" else "chat_completions"
-        # Single choke point for every outbound provider request (chat, models, responses, messages, containers): the
-        # URL is caller-controlled, so it is validated here even when a route already checked it. Routes turn the
-        # ValueError into a 400; reaching it here means a caller bypassed them.
         from core.inference.providers import validate_provider_base_url
 
-        self.base_url = validate_provider_base_url(base_url)
+        self.base_url = (
+            base_url.rstrip("/") if managed_loopback else validate_provider_base_url(base_url)
+        )
+        self._managed_loopback = managed_loopback
         # Strip a legacy `/openai` suffix from Google-hosted bases so configs saved before the native switch still
         # route correctly. Custom proxy paths ending in `/openai` are left untouched.
         if self.provider_type == "gemini":
@@ -1674,6 +1677,8 @@ class ExternalProviderClient:
                 body["reasoning_effort"] = effort
         elif self.provider_type == "ollama":
             _apply_ollama_reasoning_controls(body, enable_thinking, reasoning_effort)
+        elif self.provider_type == "lemonade":
+            _apply_fastflowlm_reasoning_controls(body, enable_thinking, reasoning_effort)
 
         # OpenRouter's unified `reasoning` field gates per-model thinking. Some routes
         # (`*_MANDATORY_REASONING_MODELS`) 400 on explicit off.
@@ -1733,7 +1738,9 @@ class ExternalProviderClient:
         )
 
         try:
-            async with _client().stream(
+            async with (
+                _loopback_http_client if getattr(self, "_managed_loopback", False) else _client()
+            ).stream(
                 "POST",
                 url,
                 json = body,
@@ -1914,6 +1921,8 @@ class ExternalProviderClient:
                                                         continue
                                                     for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
+                        if self.provider_type == "lemonade" and line.startswith("{"):
+                            line = _bare_json_error_as_sse(line) or line
                         # Verbatim relay, minus Unsloth's own UI control protocol: the frames this server writes to
                         # paint tool cards ride the same stream, so an endpoint that echoes them forges a card for a
                         # tool that never ran.
@@ -7129,6 +7138,36 @@ _ANTHROPIC_ERROR_STATUS = {
     "timeout_error": 504,
     "overloaded_error": 529,
 }
+
+
+def _apply_fastflowlm_reasoning_controls(
+    body: dict[str, Any], enable_thinking: Optional[bool], reasoning_effort: Optional[str]
+) -> None:
+    """Translate reasoning controls to FastFlowLM's ``think`` field.
+
+    Explicit thinking preserves reasoning on length cutoffs; effort ``none`` disables it.
+    """
+    effort = (reasoning_effort or "").strip().lower()
+    if effort == "none":
+        body["think"] = False
+        return
+    if enable_thinking is not None:
+        body["think"] = bool(enable_thinking)
+    if effort in ("low", "medium", "high") and body.get("think", True):
+        body["reasoning_effort"] = effort
+
+
+def _bare_json_error_as_sse(line: str) -> Optional[str]:
+    try:
+        parsed = _json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict) or "error" not in parsed:
+        return None
+    error = parsed["error"]
+    if not isinstance(error, dict):
+        error = {"message": str(error), "type": "provider_error"}
+    return "data: " + _json.dumps({"error": error})
 
 
 def _error_sse_line(

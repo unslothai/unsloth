@@ -1301,14 +1301,13 @@ function Get-NvidiaLibraryProbeType {
 }
 
 # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
-# answers. Versions are major*1000 + minor*10. Read in a runspace of its own under a deadline:
-# a wedged driver can block inside the library, and the deadline leaves that runspace behind.
+# answers. Versions are major*1000 + minor*10. One runspace + deadline per reader: a shared one let slow NVML starve CUDA.
 function Read-NvidiaLibraryRaw {
-    param([int]$TimeoutMs = 10000)
+    param([int]$TimeoutMs = 30000)
     $type = Get-NvidiaLibraryProbeType
     if (-not $type) { return "" }
     $reader = {
-        param($T)
+        param($T, $Which)
         function Read-Nvml {
             if ($T::nvmlInit_v2() -ne 0) { return "" }
             try {
@@ -1350,26 +1349,30 @@ function Read-NvidiaLibraryRaw {
             return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
         }
         $r = ""
-        try { $r = Read-Nvml } catch { $r = "" }
-        if (-not $r) { try { $r = Read-Cuda } catch { $r = "" } }
+        try { if ($Which -eq "nvml") { $r = Read-Nvml } else { $r = Read-Cuda } } catch { $r = "" }
         return "$r"
     }
-    $ps = $null; $handle = $null
-    try {
-        $ps = [powershell]::Create()
-        $null = $ps.AddScript($reader.ToString()).AddArgument($type)
-        $handle = $ps.BeginInvoke()
-        if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutMs)) { return "" }
-        return "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
-    } catch { return "" }
-    finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+    foreach ($which in @("nvml", "cuda")) {
+        $ps = $null; $handle = $null; $r = ""
+        try {
+            $ps = [powershell]::Create()
+            $null = $ps.AddScript($reader.ToString()).AddArgument($type).AddArgument($which)
+            $handle = $ps.BeginInvoke()
+            if ($handle.AsyncWaitHandle.WaitOne($TimeoutMs)) {
+                $r = "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
+            }
+        } catch { $r = "" }
+        finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+        if ($r) { return $r }
+    }
+    return ""
 }
 
 # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
 # host whose nvidia-smi is absent, stale or hangs (#9255). Twin of studio/nvidia_probe.py.
 # Cached. $null, or @{ Source; CudaMajor; CudaMinor; ComputeCaps ("8.9" strings); Count }.
 function Get-NvidiaLibraryInventory {
-    param([int]$TimeoutSec = 10)
+    param([int]$TimeoutSec = 30)
     if ($script:NvidiaLibraryInventoryProbed) { return $script:NvidiaLibraryInventory }
     $script:NvidiaLibraryInventoryProbed = $true
     $script:NvidiaLibraryInventory = $null
@@ -8349,6 +8352,48 @@ if ($stackExit -ne 0) {
     $ErrorActionPreference = $prevEAP
 }
 
+# Windows MXC Preview is an optional, pinned prebuilt like the other native
+# runtimes. Keep this outside the Python dependency fast path: a missing or
+# corrupt runtime must be installed or repaired even when the venv is current.
+if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+    $_mxcInstaller = Join-Path $PSScriptRoot "install_mxc_prebuilt.py"
+    $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\windows-x86_64"
+    if (Test-Path -LiteralPath $_mxcInstaller -PathType Leaf) {
+        substep "installing Windows MXC Preview runtime..."
+        # Optional, so a nonzero exit or stderr line must reach the fallback below, not stop setup.
+        $_mxcPrevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $_mxcRestoreNative = $PSVersionTable.PSVersion.Major -ge 7
+        if ($_mxcRestoreNative) {
+            $_mxcPrevNative = $PSNativeCommandUseErrorActionPreference
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        try {
+            $_mxcOutput = & python $_mxcInstaller --install-dir $_mxcInstallDir 2>&1 | Out-String
+            $_mxcExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $_mxcPrevEAP
+            if ($_mxcRestoreNative) {
+                $PSNativeCommandUseErrorActionPreference = $_mxcPrevNative
+            }
+        }
+        if ($_mxcExit -eq 0) {
+            if ($_mxcOutput -match "already matches") {
+                step "MXC Preview" "prebuilt up to date and validated"
+            } else {
+                step "MXC Preview" "prebuilt installed and validated"
+            }
+        } elseif ($_mxcExit -eq 3) {
+            step "MXC Preview" "install blocked by an active MXC process; existing runtime kept" "Yellow"
+        } else {
+            step "MXC Preview" "prebuilt unavailable; Studio will use software safeguards" "Yellow"
+        }
+        if ($script:UnslothVerbose -and $_mxcOutput) {
+            Write-StudioLine $_mxcOutput.Trim() -ForegroundColor $(if ($_mxcExit -eq 0) { "DarkGray" } else { "Yellow" })
+        }
+    }
+}
+
 # ── Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
 # Runs outside the deps fast-path gate so that upgrades from the legacy
 # single .venv_t5 are always migrated to the tiered layout.
@@ -9104,7 +9149,7 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
     # caught here; an unowned tree still stops.
     step "whisper.cpp" "install directory cannot be read: access is denied; curated whisper.cpp dictation is unavailable; restore access to $WhisperCppDir or move it aside, then re-run setup; browser and Transformers dictation remain available" "Yellow"
 } elseif (Test-Path -LiteralPath $WhisperInstaller) {
-    # The installer's atomic activation replaces the whole directory, so the
+    # The installer replaces the whole directory during activation, so the
     # custom-home ownership guard must run first (mirrors the llama block).
     if ($RuntimeRootIsCustom) {
         Assert-StudioOwnedOrAbsent -Path $WhisperCppDir -Label "whisper.cpp install" -IsCustom $RuntimeRootIsCustom

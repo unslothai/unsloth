@@ -272,6 +272,22 @@ export async function fetchLoadExtraArgs(
   return resolvedFrom(resolved ?? {});
 }
 
+/** The row as a settings panel applies it. llama-server arguments reach a GGUF load alone, and
+ *  hydrating them into another model's config would count a list it cannot show as a change. */
+export function panelOverrideRow(
+  override: ApiModelOverride | null,
+  isGguf: boolean,
+): ApiModelOverride | null {
+  if (!override || isGguf) {
+    return override;
+  }
+  return presentOverride(
+    Object.fromEntries(
+      Object.entries(override).filter(([key]) => key !== "llama_extra_args"),
+    ),
+  );
+}
+
 /** Translate one server-resolved override into the picker's config shape. The row is
  *  authoritative for the fields it CARRIES and only those: an absent field is not evidence
  *  the user chose the default, since a failed PUT, a refused value and an old row all leave

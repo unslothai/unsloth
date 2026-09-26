@@ -631,6 +631,50 @@ def test_detect_safetensors_features_qwen35_keeps_tools_on():
     assert flags["reasoning_style"] == "enable_thinking"
 
 
+# No tools and no reasoning, so features read from the shipped template cannot pass for it.
+_PLAIN_OVERRIDE = (
+    "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
+)
+_TOOLS_OVERRIDE = QWEN35_TOOL_INSTRUCTION + "{# override #}"
+_REFUSED = "it could not render a conversation"
+_TOOL = [{"type": "function"}]
+
+
+@pytest.mark.parametrize(
+    "shipped, override, reason, is_vision, tools, rendered, supports_tools",
+    [
+        (QWEN35_TOOL_INSTRUCTION, None, None, False, None, "shipped", True),
+        (QWEN35_TOOL_INSTRUCTION, "  ", None, False, None, "shipped", True),
+        (QWEN35_TOOL_INSTRUCTION, _PLAIN_OVERRIDE, _REFUSED, False, None, "shipped", True),
+        (QWEN35_TOOL_INSTRUCTION, _TOOLS_OVERRIDE, None, False, _TOOL, "override", True),
+        # A text model renders a tool turn the override drops through the shipped template.
+        (QWEN35_TOOL_INSTRUCTION, _PLAIN_OVERRIDE, None, False, _TOOL, "shipped", True),
+        (QWEN35_TOOL_INSTRUCTION, _PLAIN_OVERRIDE, None, False, None, "override", True),
+        (_PLAIN_OVERRIDE + "{# shipped #}", _PLAIN_OVERRIDE, None, False, _TOOL, "override", False),
+        # A vision model renders through the processor, which has no such fallback.
+        (QWEN35_TOOL_INSTRUCTION, _PLAIN_OVERRIDE, None, True, _TOOL, "override", False),
+        (QWEN35_TOOL_INSTRUCTION, _PLAIN_OVERRIDE, None, True, None, "override", False),
+    ],
+)
+def test_rendered_features_classify_the_template_generation_renders(
+    shipped, override, reason, is_vision, tools, rendered, supports_tools
+):
+    from routes.inference import _detect_safetensors_features, _sf_rendered_features
+
+    backend = SimpleNamespace(active_model_name = "mlx/model", models = {})
+    model_info = {
+        "is_vision": is_vision,
+        "chat_template_info": {"template": shipped},
+        "chat_template_override_requested": override,
+        "chat_template_override_reason": reason,
+    }
+    features, template = _sf_rendered_features(backend, model_info, tools = tools)
+    assert template == {"shipped": shipped, "override": override}[rendered]
+    expected = _detect_safetensors_features(backend, template, tools = tools)
+    assert features == dict(expected, supports_tools = supports_tools)
+
+
 # ── Tests: IPC bridge contract ───────────────────────────────────────
 
 
