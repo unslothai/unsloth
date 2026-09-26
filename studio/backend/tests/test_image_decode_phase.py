@@ -71,7 +71,13 @@ def test_generate_progress_reports_the_phase():
     assert progress["phase"] == "denoise"
 
     gen.step, gen.phase = 40, "decode"
-    assert DiffusionBackend.generate_progress(_Backend())["phase"] == "decode"
+    progress = DiffusionBackend.generate_progress(_Backend())
+    assert progress["phase"] == "decode"
+    # The route returns this model; a field it lacks is dropped silently and the UI never sees it.
+    from models.inference import DiffusionGenerateProgressResponse
+
+    assert DiffusionGenerateProgressResponse(**progress).phase == "decode"
+    assert DiffusionGenerateProgressResponse(active = False).phase is None
 
     _Backend._gen = None
     assert DiffusionBackend.generate_progress(_Backend())["phase"] == "denoise"
