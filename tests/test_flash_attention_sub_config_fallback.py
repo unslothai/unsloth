@@ -89,3 +89,16 @@ def test_text_only_config_is_unchanged(monkeypatch):
     config = transformers.Lfm2Config()
     impl = _utils.resolve_attention_implementation(Lfm2ForCausalLM, config, supports_sdpa = True)
     assert impl == "flash_attention_2"
+
+
+@pytest.mark.parametrize(
+    "unsupported, expected",
+    [({"vision_config": "sdpa"}, "sdpa"), ({"vision_config": "eager"}, "eager")],
+)
+def test_without_the_mapping_form_the_global_fallback_suits_every_tower(
+    monkeypatch, unsupported, expected
+):
+    monkeypatch.setattr(_utils, "_transformers_supports_attn_impl_mapping", lambda: False)
+    monkeypatch.setattr(_utils, "_flash_unsupported_sub_configs", lambda config: unsupported)
+    assert _utils._scoped_flash_attention(object(), True) == expected
+    assert _utils._scoped_flash_attention(object(), False) == "eager"

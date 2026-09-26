@@ -761,8 +761,10 @@ def _scoped_flash_attention(config, supports_sdpa):
     if not unsupported:
         return "flash_attention_2"
     if not _transformers_supports_attn_impl_mapping():
-        # Without the mapping form a plain string would still reach the unsupported tower.
-        return "sdpa" if supports_sdpa else "eager"
+        # One plain value reaches every tower, so it must suit the weakest (Pixtral on 4.51).
+        if not supports_sdpa or "eager" in unsupported.values():
+            return "eager"
+        return "sdpa"
     return {"": "flash_attention_2", **unsupported}
 
 
