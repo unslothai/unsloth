@@ -59,14 +59,16 @@ jobs:
             echo "could not list the PR's files: analysing all languages"
             exit 0
           fi
-          count=$(printf '%s\n' "$files" | grep -c . || true)
-          if [ "$count" -ge 3000 ] || printf '%s\n' "$files" | grep -qxE '\.github/workflows/codeql\.ya?ml|\.github/codeql/.*'; then
+          # grep reads a here-string, not a pipe: with pipefail, grep -q closing a pipe early
+          # makes the writer's SIGPIPE turn a match into a miss on long file lists.
+          count=$(grep -c . <<< "$files" || true)
+          if [ "$count" -ge 3000 ] || grep -qxE '\.github/workflows/codeql\.ya?ml|\.github/codeql/.*' <<< "$files"; then
             echo "languages=$all" >> "$GITHUB_OUTPUT"
             echo "$count files or a CodeQL config change: analysing all languages"
             exit 0
           fi
           langs=()
-          has() { printf '%s\n' "$files" | grep -qiE "$1"; }
+          has() { grep -qiE "$1" <<< "$files"; }
           has '^\.github/(workflows|actions)/|(^|/)action\.ya?ml$' && langs+=(actions)
           has '\.(js|jsx|mjs|cjs|ts|tsx|mts|cts|vue|html?|svelte)$|(^|/)(package(-lock)?\.json|tsconfig[^/]*\.json|jsconfig\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$' && langs+=(javascript-typescript)
           has '\.pyi?$' && langs+=(python)
