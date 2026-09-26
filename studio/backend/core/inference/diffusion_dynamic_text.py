@@ -88,10 +88,6 @@ def install(transformer: Any, logger: Any = None) -> bool:
     cfg = _compiler_config()
     if not sources or cfg is None:
         return False
-    try:
-        import torch  # noqa: F401, PLC0415
-    except Exception:  # noqa: BLE001
-        return False
     saved: list[Optional[str]] = []
 
     def _enter(module: Any, args: Any) -> None:
@@ -105,10 +101,7 @@ def install(transformer: Any, logger: Any = None) -> bool:
 
     try:
         pre = transformer.register_forward_pre_hook(_enter)
-        try:
-            post = transformer.register_forward_hook(_exit, always_call = True)
-        except TypeError:  # torch < 2.1 has no always_call
-            post = transformer.register_forward_hook(_exit)
+        post = transformer.register_forward_hook(_exit, always_call = True)
     except Exception as exc:  # noqa: BLE001 - optimisation only
         if logger is not None:
             logger.warning("diffusion.dynamic_text: install failed: %s", exc)
