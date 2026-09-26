@@ -22,7 +22,12 @@ from playwright.sync_api import TimeoutError as PWTimeout
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _playwright_robust import wait_for_health  # noqa: E402
+from _playwright_robust import (  # noqa: E402
+    install_wall_clock_watchdog,
+    report_failing_step,
+    step_budget_s,
+    wait_for_health,
+)
 
 BASE = os.environ["BASE_URL"]
 PW = os.environ["STUDIO_PW"]
@@ -50,6 +55,14 @@ if _BASE is None:
         "[font-scale] FAIL: no UI_FONT_SIZE_CSS_BASE in appearance-custom-store.ts"
     )
 CSS_BASE = int(_BASE.group(1))
+
+# Per-step ceiling: every step here takes a few seconds on a hosted runner, so a step that has not
+# finished in this long is stuck, and the run stops there naming it instead of every later step
+# waiting out its own timeouts. STUDIO_PW_STEP_BUDGET_SCALE stretches it on a slow lane. The
+# whole run keeps an absolute wall as the sibling suites do.
+STEP_BUDGET_S = step_budget_s(180)
+WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
+_watchdog = None  # armed in main()
 
 
 def settled_scroll_top(
@@ -81,6 +94,8 @@ def settled_scroll_top(
 
 def step(s):
     print(f"[font-scale] STEP {s}", flush = True)
+    if _watchdog is not None:
+        _watchdog.begin_step(s, STEP_BUDGET_S)
 
 
 def fail(m):
@@ -135,12 +150,48 @@ def measure(page):
     return page.evaluate(MEASURE_JS)
 
 
+# The effect each field has on <html> once its value is applied (appearance-custom-store.ts):
+# data-ui-font-size for the UI size, dropped at the default; --custom-code-font-size for the Code
+# size, dropped when the field is cleared.
+_APPLIED_JS = {
+    "UI font size": """(want) => document.documentElement.getAttribute("data-ui-font-size") === want""",
+    "Code font size": """(want) => (document.documentElement.style
+        .getPropertyValue("--custom-code-font-size").trim() || null) === want""",
+}
+
+
 def set_input(page, label, value):
     field = page.locator(f"input[aria-label='{label}']")
     field.scroll_into_view_if_needed()
     field.fill(str(value))
     page.keyboard.press("Enter")
-    page.wait_for_timeout(600)
+    # Wait for the value to take effect rather than 600 ms. A value that never applies runs the
+    # wait out and the caller's own assertion reports it, as before.
+    if label == "UI font size":
+        want = None if int(value) == DEFAULT else str(value)
+    else:
+        want = f"{value}px" if str(value) else None
+    try:
+        page.wait_for_function(_APPLIED_JS[label], arg = want, timeout = 5_000)
+    except PWTimeout:
+        pass
+
+
+def wait_for_app(page):
+    """The signed-in shell is up once the sidebar's "New chat" (what measure() samples) is."""
+    page.wait_for_function(
+        """() => [...document.querySelectorAll("span, h2, label, p")].some(
+            (e) => e.textContent.trim() === "New chat")""",
+        timeout = 30_000,
+    )
+
+
+def wait_for_no_dialog(page):
+    """Escape has closed the settings dialog (best-effort, as the fixed pause it replaces was)."""
+    try:
+        page.get_by_role("dialog").first.wait_for(state = "hidden", timeout = 10_000)
+    except PWTimeout:
+        pass
 
 
 def open_appearance(page):
@@ -162,7 +213,14 @@ def open_appearance(page):
 
 
 def main():
+    global _watchdog
     wait_for_health(BASE)
+    _watchdog = install_wall_clock_watchdog(
+        WALL_TIMEOUT_S,
+        label = "font-scale",
+        total_deadline_s = WALL_TIMEOUT_S,
+    )
+    report_failing_step(_watchdog, label = "font-scale")
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(viewport = {"width": 1440, "height": 900})
@@ -172,7 +230,7 @@ def main():
             pw_field.first.fill(PW)
             page.keyboard.press("Enter")
             page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(1500)
+            wait_for_app(page)
 
         step("baseline at the default size")
         open_appearance(page)
@@ -216,10 +274,7 @@ def main():
         )
         if res != "13px":
             fail(f"explicit code font size scaled: {res}")
-        code_field = page.locator("input[aria-label='Code font size']")
-        code_field.fill("")
-        page.keyboard.press("Enter")
-        page.wait_for_timeout(400)
+        set_input(page, "Code font size", "")
 
         step("overflowing select scrolls its Radix viewport")
         voice = page.get_by_role("dialog").get_by_role("button").filter(has_text = "Voice").first
@@ -283,18 +338,23 @@ def main():
             fail(f"wheel did not scroll the select viewport: {kb_top} -> {wheel_top}")
         page.keyboard.press("Escape")
         page.set_viewport_size({"width": 1440, "height": 900})
-        page.wait_for_timeout(400)
+        try:
+            viewport.wait_for(state = "detached", timeout = 10_000)
+        except PWTimeout:
+            pass  # best-effort, as the fixed pause was
 
         step("cn keeps text-ui-* next to color classes (hub tabs)")
         page.keyboard.press("Escape")
-        page.wait_for_timeout(400)
+        wait_for_no_dialog(page)
         page.goto(f"{BASE}/hub", wait_until = "domcontentloaded")
-        page.wait_for_timeout(2000)
+        tab = page.get_by_role("radio").filter(has_text = "Discover").first
+        # The hub has rendered once its tabs have, instead of 2 s after the navigation.
+        tab.wait_for(state = "visible", timeout = 15000)
         open_appearance(page)
         small = SIZES[0]
         set_input(page, "UI font size", small)
         page.keyboard.press("Escape")
-        page.wait_for_timeout(400)
+        wait_for_no_dialog(page)
         tab = page.get_by_role("radio").filter(has_text = "Discover").first
         tab.wait_for(state = "visible", timeout = 15000)
         tab_font = tab.evaluate("el => parseFloat(getComputedStyle(el).fontSize)")
@@ -310,12 +370,12 @@ def main():
         if not near(icon_w, small):
             fail(f"size-icon did not match the UI font size below {CSS_BASE}: {icon_w}")
         page.goto(BASE, wait_until = "domcontentloaded")
-        page.wait_for_timeout(1500)
+        wait_for_app(page)
         open_appearance(page)
 
         step("default restores exactly")
         page.get_by_role("dialog").get_by_role("button").filter(has_text = "Appearance").first.click()
-        page.wait_for_timeout(500)
+        page.locator("input[aria-label='UI font size']").wait_for(state = "visible", timeout = 15_000)
         set_input(page, "UI font size", DEFAULT)
         final = measure(page)
         for key in ("root", "navFont", "navLine", "sidebarW"):
@@ -326,6 +386,7 @@ def main():
 
         page.screenshot(path = str(ART / "restored-default.png"))
         browser.close()
+    _watchdog.cancel()
     print("[font-scale] PASS", flush = True)
 
 
