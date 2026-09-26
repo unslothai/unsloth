@@ -219,7 +219,6 @@ def _write_dpkg_query_stub(
     os.chmod(path, 0o755)
 
 
-# Python runs these stubs directly, and Windows cannot exec a #!/bin/sh file.
 _needs_exec_stub = pytest.mark.skipif(os.name == "nt", reason = "shell stubs need a POSIX exec")
 
 
