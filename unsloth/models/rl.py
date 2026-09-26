@@ -250,44 +250,50 @@ def PatchRL(FastLanguageModel):
         # Force logits during eval, but restore the user's prior setting after so an explicit UNSLOTH_RETURN_LOGITS="1" is not silently turned off.
         _old_return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
-        with torch.no_grad():
-            if has_labels or loss_without_labels:
-                with self.compute_loss_context_manager():
-                    try:
-                        num_items_in_batch = self._get_num_items_in_batch(
-                            [inputs], self.args.device
+        try:
+            with torch.no_grad():
+                if has_labels or loss_without_labels:
+                    with self.compute_loss_context_manager():
+                        try:
+                            num_items_in_batch = self._get_num_items_in_batch(
+                                [inputs], self.args.device
+                            )
+                        except (AttributeError, TypeError):
+                            num_items_in_batch = None
+                        loss, outputs = self.compute_loss(
+                            model,
+                            inputs,
+                            return_outputs = True,
+                            num_items_in_batch = num_items_in_batch,
                         )
-                    except (AttributeError, TypeError):
-                        num_items_in_batch = None
-                    loss, outputs = self.compute_loss(
-                        model,
-                        inputs,
-                        return_outputs = True,
-                        num_items_in_batch = num_items_in_batch,
-                    )
-                loss = loss.mean().detach()
+                    loss = loss.mean().detach()
 
-                if isinstance(outputs, dict):
-                    logits = tuple(v for k, v in outputs.items() if k not in ignore_keys + ["loss"])
+                    if isinstance(outputs, dict):
+                        logits = tuple(
+                            v for k, v in outputs.items() if k not in ignore_keys + ["loss"]
+                        )
+                    else:
+                        logits = outputs[1:]
                 else:
-                    logits = outputs[1:]
-            else:
-                loss = None
-                with self.compute_loss_context_manager():
-                    tokenized_output = self.processing_class(
-                        inputs["prompt"],
-                        padding = True,
-                        truncation = True,
-                        return_tensors = "pt",
-                    ).to(model.device)
-                    outputs = model(**tokenized_output)
-                if isinstance(outputs, dict):
-                    logits = tuple(v for k, v in outputs.items() if k not in ignore_keys)
-                else:
-                    logits = outputs
-                if self.args.past_index >= 0:
-                    self._past = outputs[self.args.past_index - 1]
-        os.environ["UNSLOTH_RETURN_LOGITS"] = _old_return_logits
+                    loss = None
+                    with self.compute_loss_context_manager():
+                        tokenized_output = self.processing_class(
+                            inputs["prompt"],
+                            padding = True,
+                            truncation = True,
+                            return_tensors = "pt",
+                        ).to(model.device)
+                        outputs = model(**tokenized_output)
+                    if isinstance(outputs, dict):
+                        logits = tuple(v for k, v in outputs.items() if k not in ignore_keys)
+                    else:
+                        logits = outputs
+                    if self.args.past_index >= 0:
+                        self._past = outputs[self.args.past_index - 1]
+        finally:
+            # An eval that raises must not leave logits forced on: UNSLOTH_RETURN_LOGITS=1 also
+            # blocks packing and padding-free for the next train() in this process.
+            os.environ["UNSLOTH_RETURN_LOGITS"] = _old_return_logits
         if prediction_loss_only:
             return (loss, None, None)
 
@@ -353,7 +359,7 @@ from torch.nn import functional as F
 import inspect
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
 from transformers.training_args import ParallelMode
-from unsloth_zoo.device_type import DEVICE_TYPE, device_synchronize
+from unsloth_zoo.device_type import DEVICE_TYPE, DEVICE_TYPE_TORCH, device_synchronize
 
 # Wrap trainer with padding to right and enable training mode
 import functools
@@ -622,6 +628,102 @@ def _register_config_pickle_fallback(displaced_config, patched_config):
             f"Unsloth: Could not make {getattr(displaced_config, '__name__', '?')} "
             f"instances picklable: {e}"
         )
+
+
+def _accelerator_indices(device_map):
+    """Accelerator devices in an ``hf_device_map``; cpu/disk/meta are offload targets."""
+    indices = set()
+    for value in device_map.values():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            indices.add(value)
+            continue
+        text = str(value)
+        if text.isdigit():
+            indices.add(int(text))
+            continue
+        if text in ("cpu", "disk", "meta"):
+            continue
+        try:
+            device = torch.device(text)
+        except Exception:
+            continue
+        if device.type in ("cpu", "meta"):
+            continue
+        indices.add(0 if device.index is None else device.index)
+    return indices
+
+
+def _model_spans_devices(model):
+    """Judged from real placement, not ``is_model_parallel`` (also True for a model on one non-default card)."""
+    for module in model.modules():
+        device_map = getattr(module, "hf_device_map", None)
+        if not isinstance(device_map, dict):
+            continue
+        accelerators = _accelerator_indices(device_map)
+        offloaded = any(str(v) in ("cpu", "disk", "meta") for v in device_map.values())
+        if len(accelerators) > 1 or (accelerators and offloaded):
+            return True
+    devices = {t.device for t in model.parameters()}
+    devices.update(t.device for t in model.buffers())
+    return len(devices) > 1
+
+
+def _place_for_full_eval(model, device):
+    """Move to ``args.device`` (``Trainer.__init__`` skips placement under full eval); never cast: an in-place cast of
+    frozen weights rounds fp32 bases for later training and corrupts packed ``Params4bit`` float quant storage."""
+    if device is None or _model_spans_devices(model):
+        return
+    device = torch.device(device)
+    if device.type == "cuda" and device.index is None and torch.cuda.is_available():
+        device = torch.device("cuda", torch.cuda.current_device())
+    if any(t.device != device for t in model.parameters()):
+        model.to(device = device)
+
+
+def _wrap_full_eval_keeps_trainable_dtype(trainer_cls):
+    """Transformers casts the whole model on standalone full eval and never casts back; flags restored in ``finally``."""
+    for loop_name in ("evaluation_loop", "prediction_loop"):
+        original = getattr(trainer_cls, loop_name, None)
+        if original is None or getattr(original, "_unsloth_full_eval_wrapped", False):
+            continue
+
+        def _make(original, loop_name):
+            def wrapped(self, *args, **kwargs):
+                train_args = getattr(self, "args", None)
+                fp16_full_eval = getattr(train_args, "fp16_full_eval", False)
+                bf16_full_eval = getattr(train_args, "bf16_full_eval", False)
+                model = getattr(self, "model", None)
+                if (
+                    getattr(self, "is_in_train", False)
+                    or not (fp16_full_eval or bf16_full_eval)
+                    or not isinstance(model, torch.nn.Module)
+                    # Sharded parameters are Transformers' and the engine's to cast.
+                    or getattr(self, "is_deepspeed_enabled", False)
+                    or getattr(self, "is_fsdp_enabled", False)
+                ):
+                    return original(self, *args, **kwargs)
+                try:
+                    _place_for_full_eval(model, getattr(train_args, "device", None))
+                except Exception as e:
+                    logger.info(f"Unsloth: Full eval could not move the model to args.device: {e}")
+                try:
+                    train_args.fp16_full_eval = False
+                    train_args.bf16_full_eval = False
+                    return original(self, *args, **kwargs)
+                finally:
+                    train_args.fp16_full_eval = fp16_full_eval
+                    train_args.bf16_full_eval = bf16_full_eval
+
+            wrapped.__name__ = getattr(original, "__name__", loop_name)
+            wrapped.__qualname__ = getattr(original, "__qualname__", loop_name)
+            wrapped.__doc__ = getattr(original, "__doc__", None)
+            wrapped.__wrapped__ = original
+            wrapped._unsloth_full_eval_wrapped = True
+            return wrapped
+
+        setattr(trainer_cls, loop_name, _make(original, loop_name))
 
 
 def _wrap_grpo_generate_and_score(trainer_cls):
@@ -1007,6 +1109,16 @@ def _pin_pristine_sft_loss_type(config_cls):
 
 
 _UNSLOTH_KBIT_PREP_GUARD_FLAG = "_unsloth_skips_kbit_prep_for_peft_models"
+
+# The one assignment of `self.aux_loss_enabled` in TRL's GRPOTrainer.__init__, whatever its right-hand
+# side. TRL 1.7.0 wrote `is_moe and args.router_aux_loss_coef != 0.0`; TRL main (#7248) reads the
+# coefficient from the model config when it is None. Anchoring on the exact expression lost the
+# fail-fast below on the first rewrite. Read without importing by tests/version_compat.
+_GRPO_AUX_LOSS_ENABLED_LINE = r"^([ \t]*)self\.aux_loss_enabled = [^\n]+$"
+_GRPO_AUX_LOSS_REJECT = (
+    'if self.aux_loss_enabled: raise NotImplementedError("Unsloth GRPO does not compute the MoE router '
+    'auxiliary loss; set router_aux_loss_coef = 0 (the Unsloth default).")'
+)
 
 
 def _guard_kbit_prep_against_peft_models():
@@ -2560,6 +2672,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         RLTrainer_post += vllm_chat_template_sync
 
+    # TRL >= 0.28 builds SamplingParams inside VLLMGeneration, which never sees args; hand it the user's vllm_sampling_params so the generate wrapper in rl_replacements.py can apply them.
+    if trainer_file == "grpo_trainer":
+        RLTrainer_post += (
+            "if getattr(self, 'vllm_generation', None) is not None:\n"
+            "    self.vllm_generation._unsloth_vllm_sampling_params = getattr(getattr(self, 'args', None), 'vllm_sampling_params', None)\n"
+            "pass\n"
+        )
+
     other_metrics_processor = ""
     if trainer_file in RL_METRICS_CHANGES:
         process_extra_args = RL_METRICS_CHANGES[trainer_file]
@@ -2949,10 +3069,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
             if trl_version >= Version("1.7.0"):
                 # router_aux_loss_coef / aux_loss_enabled arrived in TRL 1.7.0, and the optimized GRPO forward cannot compute the MoE router aux loss, so reject an explicit opt-in at init.
-                RLTrainer_source = RLTrainer_source.replace(
-                    "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0",
-                    "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0\n"
-                    '        if self.aux_loss_enabled: raise NotImplementedError("Unsloth GRPO does not compute the MoE router auxiliary loss; set router_aux_loss_coef = 0 (the Unsloth default).")',
+                RLTrainer_source = re.sub(
+                    _GRPO_AUX_LOSS_ENABLED_LINE,
+                    lambda m: m.group(0) + "\n" + m.group(1) + _GRPO_AUX_LOSS_REJECT,
+                    RLTrainer_source,
+                    count = 1,
+                    flags = re.MULTILINE,
                 )
 
         elif trl_version >= Version("0.27.0"):
@@ -3159,6 +3281,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap evaluate for {RLTrainer_name}: {e}")
 
+    try:
+        _wrap_full_eval_keeps_trainable_dtype(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+    except Exception as e:
+        logger.info(f"Unsloth: Could not wrap the full-eval cast for {RLTrainer_name}: {e}")
+
     if trainer_file == "grpo_trainer":
         try:
             _wrap_grpo_generate_and_score(getattr(created_module, f"Unsloth{RLTrainer_name}"))
@@ -3244,6 +3371,12 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 + "if (getattr(args, 'use_vllm', False) == False):\n"
                 + " " * 16
                 + "args.use_vllm = True\n"
+                # TRL >= 0.27 hands args.top_k to vLLM's SamplingParams unchanged, and it rejects None;
+                # the config-time guard misses this when vLLM comes only from fast_inference.
+                + " " * 12
+                + "if getattr(args, 'top_k', -1) is None or getattr(args, 'top_k', -1) == 0:\n"
+                + " " * 16
+                + "args.top_k = -1\n"
             )
 
             if "grpo" in trainer_file and trl_version >= Version("0.18.0"):

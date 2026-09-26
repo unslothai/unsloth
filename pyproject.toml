@@ -55,6 +55,7 @@ studio = [
     "*.ps1",
     "*.bat",
     "node_prebuilt_pins.json",
+    "lemonade_prebuilt_pins.json",
     "src-tauri/icons/icon.icns",
     "src-tauri/icons/icon.png",
     "frontend/dist/**/*",
@@ -74,6 +75,8 @@ studio = [
     # Swagger UI / ReDoc, served from this origin instead of a CDN. Without these the
     # /docs and /redoc pages render blank in an installed Unsloth.
     "backend/assets/docs_ui/*",
+    # Gate verdicts the auto ladder reads: missing from the wheel, nvfp4 silently leaves the ladder.
+    "backend/core/inference/nvfp4_gate_record.json",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",
@@ -155,7 +158,7 @@ studio = [
     "nest_asyncio==1.6.0",
     "datasets==4.3.0",
     "pyjwt==2.13.0",
-    "huggingface-hub>=1.23.0,<2.0 ; python_version >= '3.10'",
+    "huggingface-hub>=1.31.0,<2.0 ; python_version >= '3.10'",
     "huggingface-hub==0.36.2 ; python_version < '3.10'",
     "hf-xet>=1.5.2,<2.0 ; python_version >= '3.10' and (platform_machine == 'x86_64' or platform_machine == 'amd64' or platform_machine == 'AMD64' or platform_machine == 'arm64' or platform_machine == 'aarch64' or platform_machine == 'ARM64')",
     "urllib3>=2.3.0",
@@ -219,7 +222,7 @@ huggingfacenotorch = [
     # `transformers<=5.5.0` in its own metadata, so the resolver intersects our transformers
     # range down to 5.5.0 whatever this file says. That one waits on
     # unslothai/unsloth-zoo#1227 and a later zoo release.
-    "unsloth_zoo>=2026.9.6",
+    "unsloth_zoo>=2026.9.7",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -285,7 +288,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.9.6",
+    "unsloth_zoo>=2026.9.7",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -904,7 +907,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.6",
+    "unsloth_zoo>=2026.9.7",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
@@ -1724,6 +1727,7 @@ markers = [
     "gpu: needs a real accelerator, and usually downloads a checkpoint to use it",
     "slow: minutes rather than seconds, and covered again more cheaply elsewhere",
     "reads_real_pip_config: opts out of the hermetic pip config stub, for the few tests that drive that read themselves",
+    "native_mxc: needs native Windows, the pinned Microsoft WXC executable, and a working MXC ProcessContainer backend",
 ]
 
 # Deselected by default, not deleted: CI runs them in their own leg with
@@ -1731,4 +1735,4 @@ markers = [
 # A run that names one of these files directly will report "no tests ran"
 # until you pass `-m gpu` -- that is the cost of the default being fast.
 # Live Studio tests are opt-in: `pytest -m server`.
-addopts = "-m 'not gpu and not slow and not server'"
+addopts = "-m 'not gpu and not slow and not server and not native_mxc'"

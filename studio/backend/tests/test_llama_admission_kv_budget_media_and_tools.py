@@ -575,12 +575,18 @@ class TestAnAudioTurnIsChargedByItsDuration:
             def generate_chat_completion(self, **_kwargs):
                 yield "ok"
 
-        charged, estimate = [], inference_route._openai_llama_admission_estimate
+            def count_chat_tokens(self, *_args, **_kwargs):
+                return 12
+
+            def _request_reasoning_kwargs(self, *_args):
+                return None
+
+        charged, tokens = [], inference_route._openai_llama_admission_tokens
         monkeypatch.setattr(inference_route, "get_llama_cpp_backend", _AudioGguf)
         monkeypatch.setattr(
             inference_route,
-            "_openai_llama_admission_estimate",
-            lambda **kw: charged.append(estimate(**kw)) or charged[-1],
+            "_openai_llama_admission_tokens",
+            lambda *a, **kw: charged.append(tokens(*a, **kw)) or charged[-1],
         )
         monkeypatch.setattr(
             inference_route, "_decode_audio_mono", lambda _raw: (np.zeros(20 * 16000), 16000)

@@ -269,6 +269,17 @@ test("Pinned sorts independently of the chat lists", () => {
   assert.equal(state.pinnedSort, "priority");
 });
 
+test("Projects sort on their own, keeping the drag order by default", () => {
+  assert.equal(useSidebarOrganizationStore.getInitialState().projectSort, "manual");
+  const store = useSidebarOrganizationStore.getState();
+  store.setChatSort("priority");
+  store.setProjectSort("name");
+  const state = useSidebarOrganizationStore.getState();
+  assert.equal(state.projectSort, "name");
+  assert.equal(state.chatSort, "priority");
+  store.setProjectSort("manual");
+});
+
 // Reset-all is the only in-app way back to the shipped sidebar layout, and it
 // only removes the keys it lists, so an unlisted one survives the reload.
 test("Reset all local preferences clears this key", async () => {

@@ -63,6 +63,22 @@ def test_save_embeds_recipe_and_round_trips():
     assert listed[0]["prompt"] == "a sloth" and listed[0]["seed"] == 7
 
 
+def test_listing_reads_the_recipe_without_decoding_pixels(monkeypatch):
+    from PIL import PngImagePlugin
+
+    for i in range(3):
+        gallery.save(_img(), _meta(seed = i))
+    loads = []
+    real_load = PngImagePlugin.PngImageFile.load
+    monkeypatch.setattr(
+        PngImagePlugin.PngImageFile,
+        "load",
+        lambda self, *a, **k: loads.append(1) or real_load(self, *a, **k),
+    )
+    assert sorted(r["seed"] for r in gallery.list_images()) == [0, 1, 2]
+    assert loads == []
+
+
 def _save_with_mtime(prompt: str, t: float) -> dict:
     record = gallery.save(_img(), _meta(prompt = prompt, created_at = t))
     # Listing orders by mtime; set it explicitly so a tight test loop can't tie it.
@@ -247,6 +263,18 @@ def test_records_carry_default_flags():
     _save_with_mtime("a", 100.0)
     record = gallery.list_images()[0]
     assert record["pinned"] is False and record["archived"] is False
+
+
+def test_records_carry_the_listing_sort_key():
+    # A batch shares one created_at; the listing sorts by mtime, so records must say so.
+    a = gallery.save(_img(), _meta(created_at = 100.0))
+    b = gallery.save(_img(), _meta(created_at = 100.0))
+    os.utime(gallery.gallery_dir() / f"{a['id']}.png", (150.0, 150.0))
+    os.utime(gallery.gallery_dir() / f"{b['id']}.png", (120.0, 120.0))
+    assert [(r["id"], r["order_at"]) for r in gallery.list_images()] == [
+        (a["id"], 150.0),
+        (b["id"], 120.0),
+    ]
 
 
 def test_pinned_images_sort_ahead_of_newer_ones():
@@ -495,3 +523,12 @@ def test_archiving_during_a_clear_never_leaves_a_deleted_image_reported_as_archi
     # Either the archive won (reported success, file kept) or the clear won (reported gone, file
     # deleted). "Reported success but deleted" is the outcome this must never produce.
     assert said_ok == survived
+
+
+def test_save_looks_up_the_folder_after_encoding(tmp_path, monkeypatch):
+    order = []
+    encode = gallery._png_bytes
+    monkeypatch.setattr(gallery, "_png_bytes", lambda *a: order.append("encode") or encode(*a))
+    monkeypatch.setattr(gallery, "gallery_dir", lambda: order.append("dir") or tmp_path)
+    gallery.save(Image.new("RGB", (4, 4)), {"prompt": "p"})
+    assert order[:2] == ["encode", "dir"]

@@ -474,9 +474,22 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
   dismissCarveoutAdviceForModel(payload.model_path);
 }
 
+/** The approval this decision was for is no longer waiting: it expired unanswered, the run was
+ *  cancelled, or the backend restarted and took its in-memory slot with it.
+ *
+ *  Distinct from a transport failure because the advice is the opposite: a failed post is worth
+ *  retrying, this can never succeed. */
+export class ToolApprovalGoneError extends Error {
+  constructor(message = "No pending tool call confirmation") {
+    super(message);
+    this.name = "ToolApprovalGoneError";
+  }
+}
+
 /** Allow or deny a tool call paused awaiting user confirmation, identified by the backend
  *  `approvalId` echoed in the tool_start event, with `sessionId` as a scope check. Resolves to
- *  true only when the backend matched a pending call. */
+ *  true only when the backend matched a pending call, and throws `ToolApprovalGoneError` when the
+ *  slot has already gone. */
 export async function resolveToolConfirmation(
   sessionId: string,
   approvalId: string,
@@ -491,6 +504,8 @@ export async function resolveToolConfirmation(
       decision,
     }),
   });
+  // Ahead of parseJsonOrThrow, which folds every non-ok status into one bare Error.
+  if (response.status === 404) throw new ToolApprovalGoneError();
   const parsed = await parseJsonOrThrow<{ resolved?: boolean }>(response);
   return parsed.resolved === true;
 }
@@ -711,6 +726,19 @@ export async function revealCachedModel(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
+/** Reveal a training or exported fine-tune in the OS file manager. */
+export async function revealFineTunedModel(
+  modelPath: string,
+  source: "training" | "exported",
+): Promise<void> {
+  const response = await authFetch("/api/library/items/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: `model:${source}:${modelPath}` }),
   });
   await parseJsonOrThrow<unknown>(response);
 }
@@ -982,7 +1010,9 @@ export interface ForkChatThreadResult {
 
 export async function forkChatThread(
   threadId: string,
-  args: { messageId: string; newThreadId: string; createdAt: number },
+  /** Omit `messageId` to fork at the tip, which the route resolves after its own check that
+   *  the chat is not generating. */
+  args: { messageId?: string; newThreadId: string; createdAt: number },
 ): Promise<ForkChatThreadResult> {
   const response = await authFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}/fork`,

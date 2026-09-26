@@ -31,7 +31,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -135,6 +135,7 @@ jobs:
             tests/studio/test_backend_ci_parallel_isolation.py \
             tests/studio/test_cache_budget_discipline.py \
             tests/studio/test_cached_paths_hold_no_credentials.py \
+            tests/studio/test_actions_are_pinned_to_commits.py \
             tests/studio/test_local_actions_are_in_path_filters.py \
             tests/studio/test_chat_ui_shards_cover_everything.py \
             tests/studio/test_ui_shard_engines.py \
@@ -144,7 +145,10 @@ jobs:
             tests/studio/test_pip_cache_naming.py \
             tests/studio/test_compile_caches_are_per_worker.py \
             tests/studio/test_browser_simulations_retry_once.py \
+            tests/studio/test_step_scripts_get_the_secrets_they_read.py \
+            tests/studio/test_composer_browser_tmpdir_is_short.py \
             tests/studio/test_composer_rtl_bidi_attribute.py \
+            tests/studio/test_en_catalog.py \
             tests/studio/test_frontend_dep_removal.py \
             tests/studio/test_frontend_dist_cache.py \
             tests/studio/test_gguf_smoke_phases_stay_independent.py \

@@ -13,6 +13,7 @@ import {
   projectOrderScope,
   RECENTS_ORDER_SCOPE,
   type SidebarChatSort,
+  type SidebarProjectSort,
   type SidebarOrganizeBy,
 } from "../stores/sidebar-organization-store.ts";
 
@@ -41,7 +42,8 @@ export interface SidebarDropZone {
   folderId?: string;
   /** For a chat under a folder: its place in the folder's block. */
   block?: { index: number; count: number };
-  /** The last row drawn in that folder's block, where a line landing below the block goes. */
+  /** The row a line landing below this spot is drawn on: the last row of a folder's block, or
+   *  SIDEBAR_TAIL_SCOPE for the strip a section draws past its last row. */
   blockEnd?: { scope: string; id: string };
   /** The section header. It stands for the top of its first row (given as `row`), so the gap
    *  above the first row is not dead space, and takes a drop while the section is collapsed. */
@@ -53,6 +55,7 @@ export interface SidebarDropContext {
   organizeBy: SidebarOrganizeBy;
   chatSort: SidebarChatSort;
   pinnedSort: SidebarChatSort;
+  projectSort: SidebarProjectSort;
   pinnedChatIds: ReadonlySet<string>;
   pinnedProjectIds: ReadonlySet<string>;
   /** Row ids per list, in drawn order. Pinned is one list of folders and chats. */
@@ -95,7 +98,7 @@ export interface SidebarDropEffects {
   unpinProject?: string;
   moveChat?: { chatId: string; projectId: string | null };
   /** The list to switch to Manual, or its own rule undoes the drop. */
-  switchSort?: "chats" | "pinned";
+  switchSort?: "chats" | "pinned" | "projects";
 }
 
 export interface SidebarDropPlan {
@@ -109,6 +112,13 @@ export interface SidebarDropPlan {
  *  section around it does not answer with its last slot instead. */
 export const STAY = "stay";
 export type SidebarDropOutcome = SidebarDropPlan | typeof STAY | null;
+
+/** The scope of the strip a section draws past its last row, so "after everything" has a row to
+ *  aim at. A scope of its own rather than an id of its own: a row's id is whatever a restored
+ *  backup or the API put in the database, and the backend takes any string, so no id is safe to
+ *  reserve. Every scope is one of the four above or `project:<id>`, none of which is this, so a
+ *  key built on it cannot be a real row's however a row was named. */
+export const SIDEBAR_TAIL_SCOPE = "sidebar-tail";
 
 export const rowKey = (scope: string, id: string): string => `${scope}:${id}`;
 export const sectionRingKey = (section: SidebarSection): string =>
@@ -208,10 +218,9 @@ function planPinnedDrop(
     ? insertIdAt(ids, drag.id, target.id, target.edge)
     : placeIdAt(ids, drag.id, target.id, target.edge);
   if (next === ids) return STAY;
-  const cue =
-    zone.folderId && target.id === zone.folderId
-      ? folderLine(PINNED_ORDER_SCOPE, target.id, target.edge, zone)
-      : line(PINNED_ORDER_SCOPE, target.id, target.edge);
+  // folderLine is the plain line unless the zone names a block end to land below, so the section's
+  // own tail draws under the last row of the folder that ends it, not under that folder's title.
+  const cue = folderLine(PINNED_ORDER_SCOPE, target.id, target.edge, zone);
   const effects: SidebarDropEffects = {
     orders: [{ scope: PINNED_ORDER_SCOPE, ids: next }],
     switchSort: resorts ? "pinned" : undefined,
@@ -233,6 +242,7 @@ function planFolderDrop(
   if (zone.section === "recents") return null;
   if (zone.folderId === drag.id) return STAY;
   const ids = ctx.orders.projects;
+  const switchSort = ctx.projectSort === "manual" ? undefined : "projects";
   let target: { id: string; edge: DropEdge } | null = null;
   if (zone.folderId) {
     target =
@@ -248,7 +258,7 @@ function planFolderDrop(
     return {
       action: { kind: "reorder" },
       cue: folderLine(PROJECT_ORDER_SCOPE, target.id, target.edge, zone),
-      effects: { orders: [{ scope: PROJECT_ORDER_SCOPE, ids: next }] },
+      effects: { orders: [{ scope: PROJECT_ORDER_SCOPE, ids: next }], switchSort },
     };
   }
   // Out of Pinned: unpinned, landing against a folder or last.
@@ -261,6 +271,7 @@ function planFolderDrop(
     effects: {
       orders: [{ scope: PROJECT_ORDER_SCOPE, ids: next }],
       unpinProject: drag.id,
+      switchSort,
     },
   };
 }
@@ -286,11 +297,11 @@ function planChatDrop(
     const folderId = zone.folderId;
     const sameFolder = drag.projectId === folderId;
     if (fromPinnedList) {
-      // A pinned folder keeps the pin; a folder under Projects takes it away.
-      if (zone.section === "pinned") {
-        return sameFolder ? STAY : moveChat(drag, zone, edge, ctx, folderId, false);
+      // Another pinned folder keeps the pin; a folder under Projects takes it away.
+      if (!sameFolder) {
+        return moveChat(drag, zone, edge, ctx, folderId, zone.section !== "pinned");
       }
-      if (!sameFolder) return moveChat(drag, zone, edge, ctx, folderId, true);
+      // Dropping it on its own folder unpins it.
       const landing = landingIn(
         projectOrderScope(folderId),
         ctx.orders.projectChats(folderId),
@@ -305,15 +316,31 @@ function planChatDrop(
         effects: {
           orders: landing ? [landing.order] : [],
           unpinChat: drag.id,
+          switchSort: landing?.resorts ? "chats" : undefined,
         },
       };
     }
     if (!sameFolder) return moveChat(drag, zone, edge, ctx, folderId, false);
-    // Its own folder's row: already filed here.
-    if (zone.row?.kind !== "chat") return STAY;
+    const folderScope = projectOrderScope(folderId);
+    if (zone.row?.kind !== "chat") {
+      // The folder's own row is its head, where the chat already is. Its block tail, the empty
+      // line or Show more, is the end of the rows on screen and takes a drop: a folder with
+      // more than a screenful draws Show more directly under its last visible chat, so without
+      // this there is nothing below that chat a chat already in the folder can land on.
+      if (zone.row || zone.blockEnd?.scope !== folderScope) return STAY;
+      return reorder(
+        drag,
+        folderScope,
+        ctx.orders.projectChats(folderId),
+        zone.blockEnd.id,
+        "bottom",
+        "chats",
+        ctx,
+      );
+    }
     return reorder(
       drag,
-      projectOrderScope(folderId),
+      folderScope,
       ctx.orders.projectChats(folderId),
       zone.row.id,
       edge,
@@ -327,14 +354,16 @@ function planChatDrop(
     // With folders off every chat is a Recents row, and only the pin goes.
     const filed = drag.projectId !== null && ctx.organizeBy === "project";
     if (pinned || filed) {
-      const landing = landingIn(
-        RECENTS_ORDER_SCOPE,
-        ctx.orders.recents,
-        drag.id,
-        zone,
-        edge,
-        ctx.chatSort,
-      );
+      const landing =
+        landingIn(
+          RECENTS_ORDER_SCOPE,
+          ctx.orders.recents,
+          drag.id,
+          zone,
+          edge,
+          ctx.chatSort,
+        ) ??
+        lastIn(RECENTS_ORDER_SCOPE, ctx.orders.recents, drag.id, ctx.chatSort);
       return {
         action: filed ? { kind: "move", projectId: null } : { kind: "unpin" },
         cue: landing?.cue ?? ring(sectionRingKey("recents")),
@@ -342,6 +371,7 @@ function planChatDrop(
           orders: landing ? [landing.order] : [],
           unpinChat: pinned ? drag.id : undefined,
           moveChat: filed ? { chatId: drag.id, projectId: null } : undefined,
+          switchSort: landing?.resorts ? "chats" : undefined,
         },
       };
     }
@@ -385,12 +415,16 @@ function moveChat(
       orders: landing ? [landing.order] : [],
       moveChat: { chatId: drag.id, projectId },
       unpinChat: unpin ? drag.id : undefined,
+      switchSort: landing?.resorts ? "chats" : undefined,
     },
   };
 }
 
-/** Where a chat from another list lands here. Only a list on Manual order has slots; the
- *  caller lights the whole target otherwise. */
+/** Where a chat from another list lands here: its slot against a row of that list. A sorted
+ *  list switches to Manual, the same as a reorder within one, or the sort would run again and
+ *  put the chat back where it wants it. Without that a drop aimed at the end of a folder landed
+ *  wherever Priority or Last updated felt like, which reads as the slot being ignored. Null only
+ *  when there is no row to land against, and the caller lights the whole target instead. */
 function landingIn(
   scope: string,
   ids: string[],
@@ -398,19 +432,50 @@ function landingIn(
   zone: SidebarDropZone,
   edge: DropEdge,
   sort: SidebarChatSort,
-): { cue: SidebarDropCue; order: SidebarDropEffects["orders"][number] } | null {
-  if (sort !== "manual" || zone.row?.kind !== "chat" || zone.row.scope !== scope) {
-    return null;
-  }
-  if (zone.row.id === chatId) return null;
+): Landing | null {
+  if (zone.row?.kind !== "chat" || zone.row.scope !== scope) return null;
+  return slotAt(scope, ids, chatId, zone.row.id, edge, sort);
+}
+
+interface Landing {
+  cue: SidebarDropCue;
+  order: SidebarDropEffects["orders"][number];
+  resorts: boolean;
+}
+
+/** The slot against one row of the list. Null when that row is the chat itself. */
+function slotAt(
+  scope: string,
+  ids: string[],
+  chatId: string,
+  targetId: string,
+  edge: DropEdge,
+  sort: SidebarChatSort,
+): Landing | null {
+  if (targetId === chatId) return null;
   return {
-    cue: line(scope, zone.row.id, edge),
+    cue: line(scope, targetId, edge),
     order: {
       scope,
-      ids: placeIdAt(ids, chatId, zone.row.id, edge),
-      place: { id: chatId, targetId: zone.row.id, edge },
+      ids: placeIdAt(ids, chatId, targetId, edge),
+      place: { id: chatId, targetId, edge },
     },
+    resorts: sort !== "manual",
   };
+}
+
+/** The list's own space, past its last row: last, the slot Pinned already gives it. A flat list
+ *  has no container row of its own, so ringing the whole section says only that the chat is going
+ *  somewhere in there, when it does in fact land somewhere. Null when there is no row to land
+ *  against, and the caller lights the section instead. */
+function lastIn(
+  scope: string,
+  ids: string[],
+  chatId: string,
+  sort: SidebarChatSort,
+): Landing | null {
+  const last = ids[ids.length - 1];
+  return last === undefined ? null : slotAt(scope, ids, chatId, last, "bottom", sort);
 }
 
 /** Reorders a chat within its list. A sorted list switches to Manual, or the sort would undo
@@ -435,6 +500,34 @@ function reorder(
       switchSort: sort === "manual" ? undefined : sortKey,
     },
   };
+}
+
+/** The folder or section to outline. A drop that files the chat into a folder lights that folder
+ *  even while a line shows its slot, so "into the folder" never reads as "under it". */
+export function litRingKey(plan: SidebarDropPlan | null): string | null {
+  if (!plan) return null;
+  if ("ring" in plan.cue) return plan.cue.ring;
+  if (plan.action.kind === "move" && plan.action.projectId) {
+    return folderRingKey(plan.action.projectId);
+  }
+  return null;
+}
+
+/** Whether two plans land the row identically. `place` is ignored: it names the same slot
+ *  from different neighbours. */
+export function equivalentDrop(a: SidebarDropPlan, b: SidebarDropPlan): boolean {
+  const landing = (plan: SidebarDropPlan) =>
+    JSON.stringify({
+      action: plan.action,
+      orders: plan.effects.orders.map(({ scope, ids }) => ({ scope, ids })),
+      pinChat: plan.effects.pinChat,
+      unpinChat: plan.effects.unpinChat,
+      pinProject: plan.effects.pinProject,
+      unpinProject: plan.effects.unpinProject,
+      moveChat: plan.effects.moveChat,
+      switchSort: plan.effects.switchSort,
+    });
+  return landing(a) === landing(b);
 }
 
 /** Changes exactly when the painted state does, so equal plans skip a re-render. */

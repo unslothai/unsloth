@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useHfEndpoint } from "@/lib/hf-endpoint";
+import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   Tooltip,
   TooltipContent,
@@ -76,6 +76,7 @@ function ViewRepositoryButton({
 }) {
   const online = useOnlineStatus();
   const hfEndpoint = useHfEndpoint();
+  const hubName = useHubName();
   const url = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${repoId}`;
   const baseClass =
     "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
@@ -83,7 +84,7 @@ function ViewRepositoryButton({
     <HugeiconsIcon
       icon={Share05Icon}
       strokeWidth={1.75}
-      className="size-[13px]"
+      className="size-[calc(13px*var(--ui-space-scale,1))]"
     />
   );
   return (
@@ -116,7 +117,7 @@ function ViewRepositoryButton({
         )}
       </TooltipTrigger>
       <TooltipContent side="bottom" className="tooltip-compact">
-        {online ? "Open on Hugging Face" : "Unavailable offline"}
+        {online ? `Open on ${hubName}` : "Unavailable offline"}
       </TooltipContent>
     </Tooltip>
   );
@@ -143,7 +144,7 @@ function CopyRepoButton({ repoId }: { repoId: string }) {
           <HugeiconsIcon
             icon={copied ? Tick02Icon : Copy01Icon}
             strokeWidth={1.75}
-            className="size-[13px]"
+            className="size-[calc(13px*var(--ui-space-scale,1))]"
           />
         </button>
       </TooltipTrigger>
@@ -189,7 +190,7 @@ function StatGrid({ children }: { children: React.ReactNode }) {
 }
 
 function InspectorDownloadSlot({ children }: { children: React.ReactNode }) {
-  return <div className="max-w-[680px] pt-3">{children}</div>;
+  return <div className="max-w-[calc(680px*var(--ui-space-scale,1))] pt-3">{children}</div>;
 }
 
 function StatusChip({
@@ -602,7 +603,7 @@ export const ModelInspector = memo(function ModelInspector({
               {model.owner.toLowerCase() === "unsloth" && (
                 <span
                   aria-label="Verified Unsloth"
-                  className="hub-verified-badge size-[18px] shrink-0 text-verified"
+                  className="hub-verified-badge size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-verified"
                 />
               )}
             </div>

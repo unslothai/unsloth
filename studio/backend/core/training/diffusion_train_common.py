@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core._torchao_stub import (
+    hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
     is_stubbed,
@@ -39,6 +40,7 @@ from utils.paths.path_utils import drop_appledouble_metadata
 # The trainers run in a spawned child that imports diffusers itself, so the inference-side install does not carry
 # over. Both import this module first.
 install_xformers_windows_rocm_stub()
+hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
 # Same child: the DiT trainer's int8 base-weight quantisation goes through torchao.
 install_torchao_int_mm_patch()
@@ -766,6 +768,27 @@ def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
         "Training the DiT families needs a GPU: even the 4-bit (nf4) base load requires "
         "CUDA, XPU or MPS, and this host has none. Train SDXL here, or use a GPU machine."
     )
+
+
+def bitsandbytes_optimizer_supported() -> bool:
+    """Whether a bitsandbytes optimizer can complete an update on the SELECTED backend.
+
+    False only when training actually runs on Intel XPU: bitsandbytes registers
+    optimizer_update_8bit_blockwise (and optimizer_update_32bit) to Triton in every branch of
+    backends/xpu/ops.py, and Intel's Triton backend asserts on a SYCL toolchain we do not ship.
+    Construction still succeeds, so the trainers' try/except around the constructor never sees
+    it -- the run dies at the first optimizer.step(). Mirrors core/training/training.py.
+
+    Keyed on get_device(), NOT torch.xpu.is_available(): a hybrid host with an Intel iGPU beside
+    an NVIDIA card reports both and detection prefers CUDA. Answering the presence question there
+    would drop 8-bit on a CUDA run, and worse, change optimizer_key() so restore_resume_state
+    refuses every existing AdamW8bit checkpoint with a ResumeError.
+    """
+    try:
+        from utils.hardware import DeviceType, get_device
+        return get_device() != DeviceType.XPU
+    except Exception:  # noqa: BLE001 -- a probe failure must not block a start
+        return True
 
 
 def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:

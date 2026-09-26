@@ -279,9 +279,15 @@ def test_confined_child_keeps_interpreter_and_system_tools(tmp_path):
 
 
 @pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
-def test_owner_child_remains_unconfined(tmp_path):
+def test_owner_bypass_remains_unconfined(tmp_path):
     files = _seed(tmp_path)
-    out = run_as(OWNER, tools._bash_exec, f"cat {files['alice']}", session_id = "chat")
+    out = run_as(
+        OWNER,
+        tools._bash_exec,
+        f"cat {files['alice']}",
+        session_id = "chat",
+        disable_sandbox = True,
+    )
     assert "ALICE_PRIVATE" in out
 
 

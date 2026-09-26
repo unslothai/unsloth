@@ -322,6 +322,48 @@ def _isolate_generation_state():
 
 
 @pytest.fixture(autouse = True)
+def _forget_the_cached_owner_identity():
+    """Drop ``process_lifetime``'s cached owner identity after each test.
+
+    ``_own_identity`` reads this process's identity once and keeps it, which is right in a server,
+    where it cannot change. A test that patches ``_pid_identity`` and then adopts a pid caches the
+    fake instead: test_concurrent_adopts_all_survive left ``id-<pid>`` behind, and the next test in
+    the same xdist worker to write a record wrote that, so the reaper read its own live owner as
+    gone and killed the child test_a_live_owner_is_never_reaped had just adopted. The cache is
+    recomputed on demand, so clearing it costs one ``ps`` at most.
+    """
+    yield
+    lifetime = sys.modules.get("utils.process_lifetime")
+    if lifetime is not None:
+        lifetime._owner_identity = None
+
+
+@pytest.fixture(autouse = True)
+def _isolate_wal_keepers():
+    """Close the WAL keepers a test opened, so the next test starts without them.
+
+    ``storage.studio_db`` holds one keeper connection per database in a module global, and
+    ``get_connection`` opens one on its own for any managed account, which is the correct
+    behaviour in a server and the reason nothing else closes them in a test. So every test that
+    touched a managed account's studio.db, tests/multi_account/test_alice_bob_matrix.py among
+    them, handed its keepers to whatever ran next in the same xdist worker, and
+    test_wal_keeper_declines_when_the_filesystem_refused_wal's ``assert not _wal_keepers``
+    failed with somebody else's account databases. Reproduced by running the matrix ahead of it.
+
+    Only what the test itself added is closed, and through ``close_wal_keeper_for`` so the
+    close listeners run exactly as they would in the product.
+    """
+    from storage import studio_db
+
+    before = set(studio_db._wal_keepers)
+    unsupported = set(studio_db._wal_unsupported)
+    yield
+    for path in set(studio_db._wal_keepers) - before:
+        studio_db.close_wal_keeper_for(path)
+    studio_db._wal_unsupported.intersection_update(unsupported)
+
+
+@pytest.fixture(autouse = True)
 def _isolate_audio_gallery(monkeypatch, tmp_path):
     """Keep generated-clip persistence out of the developer's real gallery.
 
@@ -353,6 +395,7 @@ def _no_background_model_scan(monkeypatch):
     # assertion became a 503 "still indexing". Cold-path tests reset _scan themselves;
     # _build_index is untouched so tests calling it directly still walk for real.
     monkeypatch.setattr(local_model_resolver, "_scan", (time.monotonic(), {}))
+    monkeypatch.setattr(local_model_resolver, "_misses", {})
 
 
 @pytest.fixture(scope = "session")
@@ -1196,3 +1239,44 @@ def _drop_the_idle_reload_stash_between_tests():
         yield
     finally:
         _keepwarm._set_last_unloaded(None)
+
+
+# Run with the NVFP4 switch on; test_nvfp4_diffusion_flag and test_build_prequant_checkpoint must stay off.
+_NVFP4_ENABLED_TEST_MODULES = frozenset(
+    {
+        "test_dense_quant_rocm_gate_9396",
+        "test_diffusion_auto_policy",
+        "test_diffusion_backend",
+        "test_diffusion_inference_info",
+        "test_diffusion_lora",
+        "test_diffusion_more_families",
+        "test_diffusion_native_quant",
+        "test_diffusion_pipeline_prequant",
+        "test_diffusion_precision",
+        "test_diffusion_prequant",
+        "test_diffusion_quant_pad",
+        "test_diffusion_routes",
+        "test_diffusion_te_prequant",
+        "test_diffusion_transformer_quant",
+        "test_train_precision_scheme_contract",
+        "test_video_backend",
+        "test_video_families",
+        "test_video_h3_te_quant",
+        "test_video_prequant",
+        "test_video_routes",
+        "test_xformers_stub_diffusion_parity",
+    }
+)
+_NVFP4_ENABLED_TEST_PREFIX = "test_diffusion_nvfp4_"
+
+
+@pytest.fixture(autouse = True)
+def _nvfp4_diffusion_enabled_for_nvfp4_tests(request, monkeypatch):
+    """Switch NVFP4 on for the modules above; every other module sees the default (off)."""
+    module = getattr(request, "module", None)
+    name = getattr(module, "__name__", "").rsplit(".", 1)[-1]
+    if name in _NVFP4_ENABLED_TEST_MODULES or name.startswith(_NVFP4_ENABLED_TEST_PREFIX):
+        monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
+    yield
