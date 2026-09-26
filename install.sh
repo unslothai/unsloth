@@ -6635,6 +6635,8 @@ _amd_gpu_radeon=false
 _gfx_rocm64_target=false
 _gfx_rocm64_floor_maj=""
 _gfx_rocm64_floor_min=""
+_amd_arch_index_routed=false
+_amd_arch_index_family=""
 if [ "$_torch_index_pinned" = false ]; then
 # On the LEAF, like every other index classifier here: the AMD per-arch mirror is https://repo.amd.com/ROCM/whl/gfx120X-all/, so a whole-URL */rocm* glob brands every per-arch reroute as Radeon and the summary then reports repo.radeon.com wheels that were never fetched. The two older per-arch reroutes each clear the flag by hand afterwards; matching the leaf is what stops the next one from having to.
 case "$_torch_index_leaf" in
@@ -6655,6 +6657,21 @@ _rocm_leaf_below() {
     return 1
 }
 # 0 when the venv's torch has no identifiable rocm family at $2.$3 or newer, mirroring _installed_rocm_wheel_is_below in studio/install_python_stack.py
+# Venv torch's AMD per-arch family from the `rocm` meta-package (as install_python_stack.py); empty if unknown.
+_venv_torch_amd_family() {
+    "$1" -c 'import re
+from importlib import metadata
+try:
+    reqs = metadata.requires("rocm") or []
+except Exception:
+    reqs = []
+for r in reqs:
+    m = re.search(r"rocm[-_]sdk[-_]libraries[-_]([A-Za-z0-9][A-Za-z0-9._-]*)", r, re.I)
+    if m:
+        print(re.split(r"[=<>!~;,\[\]()\s]", m.group(1))[0].lower().replace("_", "-"))
+        break' 2>/dev/null || true
+}
+
 _venv_torch_rocm_below() {
     _vtr_leaf=$("$1" -c 'import re, torch; m = re.search(r"rocm([0-9]+)\.([0-9]+)", getattr(torch, "__version__", "") or ""); print("rocm%s.%s" % m.groups() if m else "")' 2>/dev/null || true)
     [ -n "$_vtr_leaf" ] || return 0
@@ -6669,6 +6686,8 @@ case "$_torch_index_leaf" in
         _gfx_rocm64_target=false
         _gfx_rocm64_floor_maj=""
         _gfx_rocm64_floor_min=""
+        _amd_arch_index_routed=false
+        _amd_arch_index_family=""
         # One record per adapter in probe enumeration order, indexed by HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES so the mask selects a CARD. A deduplicated arch list could not: gfx1100 + gfx1100 + gfx1200 ran off the end of a two-entry list, and a Strix iGPU + dGPU box rerouted the selected dGPU to the Strix per-gfx index. `|| true` on each probe so one that finds nothing does not abort the installer under set -euo pipefail before the next fallback. UNSLOTH_ROCM_GFX_ARCH overrides probing, mirroring setup.sh and the display block.
         _gfx_all=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
         # strip a copied hip gcnArchName suffix, matching _gfx906_env below and the python helper
@@ -6727,10 +6746,10 @@ case "$_torch_index_leaf" in
             # indexing by ROCR again shadows CUDA, its HIP alias: ROCR=2,1 + CUDA=1 is survivor 2.
             _vis_masks="HIP_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES"
             if [ "$_gfx_probe" != rocminfo ] && [ -n "${ROCR_VISIBLE_DEVICES:-}" ] && [ "$ROCR_VISIBLE_DEVICES" != "-1" ]; then
-                # amd-smi is not ROCr-filtered: ROCr decides which devices exist, then HIP indexes the survivors (_rocr_visible_subset). Ordinals in mask order; none in range keeps the whole list, as _pick_visible_index does.
+                # amd-smi is not ROCr-filtered: keep ROCr's survivors (prefix up to the first out-of-range or repeated ordinal, as _rocr_visible_subset; none keeps all), then HIP indexes them.
                 _rocr_kept=$(printf '%s\n' "$_gfx_all" | awk -v m="$ROCR_VISIBLE_DEVICES" '
                     NF { v[n++] = $0 }
-                    END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] ~ /^[0-9]+$/ && t[i] + 0 < n) print v[t[i] + 0] } }')
+                    END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] !~ /^[0-9]+$/) continue; x = t[i] + 0; if (x >= n || (x in s)) break; s[x] = 1; print v[x] } }')
                 [ -n "$_rocr_kept" ] && _gfx_all="$_rocr_kept"
                 # A UUID token names a device but no position here, so with unlike adapters no survivor is known to be the one selected: decline, as _rocr_visible_subset does.
                 _rocr_unresolved=$(printf '%s' "$ROCR_VISIBLE_DEVICES" | tr -d '0-9, \t')
@@ -6803,6 +6822,8 @@ case "$_torch_index_leaf" in
                 _amd_strix_base="${_amd_strix_base%/}"
             done
             TORCH_INDEX_URL="${_amd_strix_base}/${_strix_gfx}/"
+            _amd_arch_index_routed=true
+            _amd_arch_index_family="$_strix_gfx"
             TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
             # Pin companions to 2.11 (per-gfx index publishes them independently).
             TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
@@ -6816,6 +6837,37 @@ case "$_torch_index_leaf" in
                 echo "  [WARN] to report the real arch. Remove the export from your shell profile" >&2
                 echo "  [WARN] (~/.bashrc, ~/.profile) as well, or the next terminal restores it." >&2
             fi
+        fi
+        # RDNA 4 generic wheels below 7.13 have a null HIP _grouped_mm (TheRock #5284); leaf rewritten so the rocm6.4 floor cannot undo it.
+        _rdna4_gfx=""
+        if [ "$_gfx906_env" != "gfx906" ]; then
+            case "$_runtime_gfx" in
+                gfx1200|gfx1201) _rdna4_gfx="$_runtime_gfx" ;;
+            esac
+        fi
+        # gfx120X-all publishes cp310+ only, so a 3.9 venv keeps the generic wheels.
+        if [ -n "$_rdna4_gfx" ] && [ "$("${VENV_DIR:-}/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)" = "3.9" ]; then
+            _rdna4_gfx=""
+        fi
+        if [ -n "$_rdna4_gfx" ] && _rocm_leaf_below "$_torch_index_leaf" 7 13; then
+            echo "" >&2
+            echo "  [WARN] $_rdna4_gfx (RDNA 4) detected -- routing to the AMD arch-specific index" >&2
+            echo "  [WARN] torch 2.11+rocm7.13 fixes the RDNA 4 _grouped_mm kernel that the" >&2
+            echo "  [WARN] $_torch_index_leaf wheels lack, so training does not fall back to a slow path." >&2
+            echo "" >&2
+            _amd_rdna4_base="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}"
+            while [ "${_amd_rdna4_base%/}" != "$_amd_rdna4_base" ]; do
+                _amd_rdna4_base="${_amd_rdna4_base%/}"
+            done
+            # Literal, not _amd_arch_index_family_for_gfx: tests lift this arm out whole.
+            TORCH_INDEX_URL="${_amd_rdna4_base}/gfx120X-all/"
+            _amd_arch_index_routed=true
+            _amd_arch_index_family="gfx120x-all"
+            TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+            TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
+            TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
+            _amd_gpu_radeon=false
+            _torch_index_leaf="gfx120x-all"
         fi
         # Navi 33 (gfx1102) and RDNA 4 (gfx1200/gfx1201) have no kernels in the
         # older generic wheel families. The floor is per arch, read from the
@@ -7667,6 +7719,13 @@ if [ "$_MIGRATED" = true ]; then
             # A migrated venv keeps its hip torch, but a wheel below this arch's floor has no
             # kernels for it. The SAME floor the reroute used, so an adequate wheel is left alone.
             substep "reinstalling torch from $_torch_index_leaf (the migrated wheels have no kernels for this GPU)..."
+            _install_torch_default_index --force-reinstall
+        elif [ "${_amd_arch_index_routed:-false}" = true ] && {
+                 _venv_torch_rocm_below "$_VENV_PY" 7 13 ||
+                 { _vfam=$(_venv_torch_amd_family "$_VENV_PY")
+                   [ -n "$_vfam" ] && [ "$_vfam" != "${_amd_arch_index_family:-}" ]; }; }; then
+            # Below 7.13 or another family's wheel lacks kernels; an unreadable family is left alone.
+            substep "reinstalling torch from the AMD per-arch index (the migrated wheels do not match it)..."
             _install_torch_default_index --force-reinstall
         fi
         _gfx906_bnb_prune

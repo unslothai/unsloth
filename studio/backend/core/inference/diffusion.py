@@ -161,6 +161,7 @@ from . import diffusion_cond_cache as cond_cache
 from . import diffusion_prompt_cache as prompt_cache
 from . import diffusion_gguf_compile as gguf_compile
 from . import diffusion_cuda_graph as cuda_graph
+from . import diffusion_render_thread as render_thread
 from .diffusion_batched import (
     chunk_jobs,
     is_oom_error,
@@ -8614,7 +8615,9 @@ class DiffusionBackend:
                         try:
                             # inference_mode is faster than no_grad and numerically identical here.
                             with torch.inference_mode(), protect_ctx:
-                                out = pipe(**chunk_kwargs).images
+                                out = render_thread.run(
+                                    "diffusion", lambda: pipe(**chunk_kwargs).images
+                                )
                         except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
                             oom = is_oom_error(exc)
                             if oom:

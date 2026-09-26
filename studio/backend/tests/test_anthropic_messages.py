@@ -2671,6 +2671,24 @@ class TestAnthropicRequestedStudioTools:
         tools = [{"type": "web_search_20250305", "name": "web_search"}]
         assert _anthropic_requested_studio_tools(tools) == {"web_search"}
 
+    @pytest.mark.parametrize(
+        "tool_type",
+        [
+            "web_search",
+            "web_search_20250305",
+            "web_search_20260209",
+            "web_search_20260318",
+            "web_fetch",
+            "web_fetch_20250910",
+            "web_fetch_20260209",
+            "web_fetch_20260309",
+            "web_fetch_20260318",
+        ],
+    )
+    def test_recognizes_every_web_server_tool_version(self, tool_type):
+        tools = [{"type": tool_type, "name": tool_type.split("_2")[0]}]
+        assert _anthropic_requested_studio_tools(tools) == {"web_search"}
+
     def test_recognizes_read_skill_server_tool_by_type(self):
         tools = [{"type": "read_skill", "name": "read_skill"}]
         assert _anthropic_requested_studio_tools(tools) == {"read_skill"}
@@ -3435,11 +3453,14 @@ class TestAnthropicMessagesToolRouting:
         assert '"type": "error"' in blob
         assert "event: message_stop" not in blob
 
-    def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "tool_type", ["web_search_20250305", "web_search_20260209", "web_search_20260318"]
+    )
+    def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch, tool_type):
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [
-                {"type": "web_search_20250305", "name": "web_search"},
+                {"type": tool_type, "name": "web_search"},
                 {"name": "custom", "input_schema": {"type": "object"}},
             ],
         )
@@ -3661,17 +3682,22 @@ class TestAnthropicMessagesToolRouting:
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "plain"
 
-    def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "tool_type", ["web_search_20250305", "web_search_20260209", "web_search_20260318"]
+    )
+    def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch, tool_type):
         # Mirror of the previous test for the default (None) policy. An omitted
         # permission_mode still runs here because web_search is a safe server tool
         # (only a selected terminal/python would require the missing gate).
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
-            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+            tools = [{"type": tool_type, "name": "web_search"}],
         )
 
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
-        assert backend.calls[0][0] == "tools"
+        call_kind, kwargs = backend.calls[0]
+        assert call_kind == "tools"
+        assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["web_search"]
 
     def test_api_server_tool_request_keeps_the_current_date(self, monkeypatch):
         import routes.inference as inf_mod
