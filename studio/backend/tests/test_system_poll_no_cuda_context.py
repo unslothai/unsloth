@@ -233,7 +233,6 @@ def test_the_probe_would_catch_a_regression():
     assert mib > 0, "mem_get_info created no context here, so the assertions above prove nothing"
 
 
-
 # Single-GPU hosts skip the per-card loop, so the poll tests above never covered it.
 
 
