@@ -1541,7 +1541,7 @@ def _build_browse_allowlist(
     _add(Path.home())
     if media_roots is None:
         media_roots = [
-            *external_media.linux_run_media_mount_roots(),
+            *external_media.linux_external_mount_roots(),
             *external_media.macos_volume_roots(),
         ]
     if drive_roots is None:
@@ -1827,7 +1827,7 @@ def browse_folders(
         []
         if managed
         else [
-            *external_media.linux_run_media_mount_roots(),
+            *external_media.linux_external_mount_roots(),
             *external_media.macos_volume_roots(),
         ]
     )

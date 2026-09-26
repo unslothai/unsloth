@@ -995,6 +995,9 @@ pub(crate) fn reject_sensitive_document_folder(path: &Path) -> Result<(), String
 
 #[cfg(target_os = "linux")]
 fn is_linux_removable_media_path(path: &Path) -> bool {
+    // udisks removable volumes live under /run/media/<user>/<volume>. The policy
+    // exception below only applies when the matched sensitive root is /run.
+    // /media and /mnt discovery for the model folder browser is Python-only.
     let media_root = Path::new("/run/media");
     path != media_root && path.starts_with(media_root)
 }
