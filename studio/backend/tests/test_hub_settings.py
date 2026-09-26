@@ -46,6 +46,8 @@ def store(monkeypatch):
         studio_db, "upsert_app_settings", lambda updates, **_: values.update(updates) or values
     )
     monkeypatch.setattr(hub_settings, "_operator_env", None)
+    monkeypatch.setattr(hub_settings, "_operator_endpoints", None, raising = False)
+    monkeypatch.setattr(hub_settings, "_saved_only_endpoints", frozenset(), raising = False)
     monkeypatch.setenv("HF_ENDPOINT", "hf-mirror.com")
     monkeypatch.setenv("HF_DATASETS_SERVER", OPERATOR_DS)
     monkeypatch.delenv(hub_settings.SOURCE_ENV, raising = False)
@@ -513,3 +515,17 @@ def test_modelscope_switch_survives_huggingface_hub_0x(store, monkeypatch):
         assert "127.0.0.1" in os.environ["NO_PROXY"].split(",")
     finally:
         hub_settings.set_hub_source("huggingface")
+
+
+def test_a_saved_endpoint_stays_out_of_the_csp_the_operators_does_not(store):
+    from utils.hf_endpoint import csp_asset_sources, csp_connect_sources
+
+    hub_settings.apply_hub_settings()
+    assert csp_connect_sources() == (MIRROR, OPERATOR_DS)
+    hub_settings.set_hub_settings("https://10.0.0.5:9000", True)
+    assert os.environ["HF_ENDPOINT"] == "https://10.0.0.5:9000"
+    assert csp_connect_sources() == ()
+    hub_settings.set_hub_settings("http://127.0.0.1:9700", False)
+    assert csp_connect_sources() == (OPERATOR_DS,) and csp_asset_sources() == ()
+    hub_settings.set_hub_settings("", False)
+    assert csp_connect_sources() == ("https://huggingface.co", OPERATOR_DS)

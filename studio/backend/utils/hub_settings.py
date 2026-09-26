@@ -24,6 +24,8 @@ from urllib.parse import urlsplit
 from loggers import get_logger
 from utils.hf_endpoint import (
     DEFAULTS_BY_HEALTH_KEY,
+    get_hf_datasets_server,
+    get_hf_endpoint,
     normalize_hf_endpoint_env,
     validate_hub_endpoint,
 )
@@ -40,6 +42,8 @@ SOURCES = (HUGGINGFACE, MODELSCOPE)
 _ENV_VARS = ("HF_ENDPOINT", "HF_DATASETS_SERVER")
 SOURCE_ENV = "UNSLOTH_STUDIO_HUB_SOURCE"
 _operator_env: dict[str, str | None] | None = None
+_operator_endpoints: tuple[str, ...] | None = None
+_saved_only_endpoints: frozenset[str] = frozenset()
 _apply_lock = threading.Lock()
 
 
@@ -174,7 +178,10 @@ def apply_hub_settings() -> None:
     library reads the endpoint once at import, so its copies are refreshed too.
     Workers already running keep the endpoint they started with.
     """
+    global _operator_endpoints, _saved_only_endpoints
     with _apply_lock:
+        if _operator_endpoints is None:
+            _operator_endpoints = (get_hf_endpoint(), get_hf_datasets_server())
         env, source = _effective_env(get_hub_settings())
         for name, value in env.items():
             if value:
@@ -185,10 +192,21 @@ def apply_hub_settings() -> None:
         if source == MODELSCOPE:
             _bypass_proxy_for(env["HF_ENDPOINT"])
         normalize_hf_endpoint_env()
+        _saved_only_endpoints = frozenset(
+            endpoint
+            for endpoint in (get_hf_endpoint(), get_hf_datasets_server())
+            if endpoint not in _operator_endpoints
+            and endpoint not in DEFAULTS_BY_HEALTH_KEY.values()
+        )
         _refresh_imported_hub_libraries()
         utils_module = sys.modules.get("utils.utils")
         if utils_module is not None:
             utils_module.reset_hf_reachability_cache()
+
+
+def saved_only_endpoints() -> frozenset[str]:
+    """Endpoints only saved settings name, which the browser reaches through the backend relay."""
+    return _saved_only_endpoints
 
 
 def _bypass_proxy_for(url: str) -> None:

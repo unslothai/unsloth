@@ -278,7 +278,7 @@ def normalize_hf_endpoint_env() -> None:
         os.environ["HF_ENDPOINT"] = endpoint
 
 
-def csp_connect_sources() -> tuple[str, str]:
+def csp_connect_sources() -> tuple[str, ...]:
     """The two endpoints as CSP ``connect-src`` sources, i.e. origins only.
 
     A CSP host-source carrying a path is matched *exactly* unless the path ends
@@ -287,8 +287,18 @@ def csp_connect_sources() -> tuple[str, str]:
     ``/hf/api/models`` request under it, in Chrome, Edge, Firefox and Safari
     alike. The path belongs in the request URL, not in the policy, so the source
     is reduced to scheme://host[:port].
+
+    A settings-saved endpoint stays out: the browser reaches it through the backend
+    relay, and this policy goes to every client, where a private address must not show.
     """
-    return (_origin_of(browser_hf_endpoint()), _origin_of(get_hf_datasets_server()))
+    from utils.hub_settings import saved_only_endpoints
+
+    hidden = saved_only_endpoints()
+    return tuple(
+        _origin_of(endpoint)
+        for endpoint in (browser_hf_endpoint(), get_hf_datasets_server())
+        if endpoint not in hidden
+    )
 
 
 def csp_asset_sources() -> tuple[str, ...]:
