@@ -110,6 +110,11 @@ from ._utils import (
     resolve_model_class,
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
+    _get_remote_composite_text_only,
+    _merge_key_mapping,
+    _rebase_user_quantization_config,
+    _drop_text_only_key_mapping,
+    _adapter_fits_text_model,
     set_task_config_attr,
     maybe_prefetch_hf_snapshot,
 )
@@ -2110,6 +2115,7 @@ class FastModel(FastBaseModel):
                 )
         load_text_only = text_only and auto_model is None
         text_only_decoder = False
+        _text_key_mapping = None
         if load_text_only:
             if hasattr(model_config, "vision_config"):
                 text_config = _get_text_only_config(model_config, old_model_name)
@@ -2117,10 +2123,58 @@ class FastModel(FastBaseModel):
                 text_class = resolve_model_class(
                     AutoModelForCausalLM, text_config, **_probe_hub_kwargs
                 )
-                if text_class is None or not _is_family_text_decoder(
+                # Repo-code composites (Nemotron-Omni) keep a whole causal LM under one checkpoint prefix; load only it when every text weight is found there.
+                family_decoder = text_class is not None and _is_family_text_decoder(
                     getattr(model_config, "model_type", ""),
                     getattr(text_config, "model_type", ""),
+                )
+                remote_text_only = None
+                # InternVL: get_text_config() is the wrapper itself, so the family check always passes.
+                if not family_decoder or type(text_config) is type(model_config):
+                    remote_text_only = _get_remote_composite_text_only(
+                        model_config,
+                        model_name,
+                        trust_remote_code = trust_remote_code,
+                        token = token,
+                        revision = base_revision if not is_peft else None,
+                        local_files_only = local_files_only,
+                        fast_inference = fast_inference,
+                        subfolder = kwargs.get("subfolder"),
+                        device_map = device_map,
+                        variant = kwargs.get("variant"),
+                        cache_dir = kwargs.get("cache_dir"),
+                        code_revision = kwargs.get("code_revision"),
+                    )
+                if (
+                    remote_text_only is not None
+                    and is_peft
+                    and not _adapter_fits_text_model(
+                        old_model_name,
+                        remote_text_only[1],
+                        token = token,
+                        revision = revision,
+                        local_files_only = local_files_only,
+                        cache_dir = kwargs.get("cache_dir"),
+                        text_names = remote_text_only[2],
+                    )
                 ):
+                    # An adapter trained on the full composite names its weights (and often its target regex) under the wrapper prefix; keep the full model it was trained on.
+                    remote_text_only = None
+                if remote_text_only is not None:
+                    text_config, _text_key_mapping = remote_text_only[:2]
+                    logger.warning_once(
+                        f"Loading {old_model_name} as text-only: only its language model "
+                        f"({type(text_config).__name__}) is built, vision/audio weights are skipped. "
+                        "Use FastVisionModel with text_only = False for multimodal inputs."
+                    )
+                    _merge_key_mapping(kwargs, _text_key_mapping)
+                    _rebase_user_quantization_config(kwargs, _text_key_mapping)
+                    # The post-load stamp writes this into model.config; use the rebased copy the load used.
+                    quantization_config = kwargs.get("quantization_config", quantization_config)
+                    model_config = text_config
+                    is_vlm = False
+                    text_only_decoder = True
+                elif not family_decoder:
                     load_text_only = False
                 else:
                     logger.warning_once(
@@ -2249,6 +2303,7 @@ class FastModel(FastBaseModel):
             *args,
             **kwargs,
         )
+        _drop_text_only_key_mapping(model, _text_key_mapping)
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)

@@ -82,6 +82,11 @@ from ._utils import (
     _config_get,
     _is_flash_attention_requested,
     _apply_text_only_key_mapping,
+    _get_remote_composite_text_only,
+    _merge_key_mapping,
+    _rebase_user_quantization_config,
+    _drop_text_only_key_mapping,
+    _trusted_remote_code_commit,
     _cast_text_only_prequantized_params,
     _select_moe_detection_targets,
     set_task_config_attr,
@@ -1786,6 +1791,7 @@ class FastBaseModel:
             _tokenizer_revision_arg = None
             kwargs.pop("revision", None)
         _revision_repo = model_name  # The repo the pin names, captured before any remap.
+        _trusted_code_commit = None  # The commit whose repo code a trusted text_only load ran.
 
         # Resolve text-only before the is_vlm / vLLM checks so is_vlm stays consistent; skip the vision tower only for families with their own text decoder (Gemma 3) (#5816).
         if text_only and auto_config is None:
@@ -1796,8 +1802,10 @@ class FastBaseModel:
                 local_files_only = local_files_only,
                 revision = _revision,
             )
+        _text_key_mapping = None
         if text_only and hasattr(auto_config, "vision_config"):
             parent_config = auto_config
+            _trusted_code_commit = getattr(parent_config, "_commit_hash", None)
             text_config = _get_text_only_config(parent_config, model_name)
             text_class = resolve_model_class(
                 AutoModelForCausalLM,
@@ -1811,10 +1819,34 @@ class FastBaseModel:
                 force_download = kwargs.get("force_download", None),
                 trust_remote_code = trust_remote_code,
             )
-            if text_class is not None and _is_family_text_decoder(
+            family_decoder = text_class is not None and _is_family_text_decoder(
                 getattr(parent_config, "model_type", ""),
                 getattr(text_config, "model_type", ""),
-            ):
+            )
+            remote_text_only = None
+            # InternVL: get_text_config() is the wrapper itself, so the family check always passes.
+            if not family_decoder or type(text_config) is type(parent_config):
+                remote_text_only = _get_remote_composite_text_only(
+                    parent_config,
+                    model_name,
+                    trust_remote_code = trust_remote_code,
+                    token = token,
+                    revision = _revision,
+                    local_files_only = local_files_only,
+                    fast_inference = fast_inference,
+                    subfolder = kwargs.get("subfolder"),
+                    device_map = device_map,
+                    variant = kwargs.get("variant"),
+                    cache_dir = kwargs.get("cache_dir"),
+                    code_revision = kwargs.get("code_revision"),
+                )
+            if remote_text_only is not None:
+                auto_config, _text_key_mapping = remote_text_only[:2]
+                auto_model = AutoModelForCausalLM
+                _merge_key_mapping(kwargs, _text_key_mapping)
+                _rebase_user_quantization_config(kwargs, _text_key_mapping)
+                text_only_decoder = True
+            elif family_decoder:
                 auto_config = text_config
                 auto_model = AutoModelForCausalLM
                 _apply_text_only_key_mapping(kwargs, parent_config, text_config)
@@ -2334,6 +2366,8 @@ class FastBaseModel:
                 model = _text_trainable_core(
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )
+                # Save the standalone decoder under its own names, not the composite prefix it was read from.
+                _drop_text_only_key_mapping(model, _text_key_mapping)
                 _inherit_gradient_checkpointing_support(model)
                 warn_if_bitsandbytes_quantized_nothing(
                     model, kwargs.get("quantization_config", None), model_name
@@ -2800,6 +2834,19 @@ class FastBaseModel:
                 unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
                 model.generate = types.MethodType(unsloth_base_fast_generate, model)
         model._unsloth_trust_remote_code = trust_remote_code
+        # Export's trusted config re-read pins to this commit, not a moved branch head.
+        model._unsloth_trust_remote_code_commit = (
+            _trusted_remote_code_commit(
+                model_name,
+                _trusted_code_commit or getattr(model.config, "_commit_hash", None),
+                code_revision = kwargs.get("code_revision"),
+                token = token,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+            )
+            if trust_remote_code
+            else None
+        )
         model = FastBaseModel.post_patch_model(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
