@@ -53,10 +53,32 @@ on:
     paths:
       - 'unsloth/**'
       - 'unsloth_cli/**'
+      # studio/** minus the frontend and the Tauri shell. Nothing these jobs run reads a
+      # non-Python file under either: the named tests, the inline scripts,
+      # core-cpu-setup and the editable install were checked against the import and
+      # literal-reference graph of every file there, and the only readers found are
+      # install.sh and install.ps1 (icons), which no Core step runs. Python files come
+      # back in on the last line because test_python39_compatibility.py scans every
+      # studio/**/*.py and test_callback_signature_drift.py every .py outside frontend/.
+      # Order matters: the last matching pattern wins.
       - 'studio/**'
+      - '!studio/frontend/**'
+      - '!studio/src-tauri/**'
+      - 'studio/**/*.py'
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
+      # tests/test_callback_signature_drift.py (a hard gate in the consolidated job)
+      # parses every .py file in the repo outside dot-directories and frontend/, so a
+      # Python file anywhere can change its verdict, not only the ones under the source
+      # trees above.
+      - '*.py'
+      - 'scripts/**/*.py'
+      - 'docker/**/*.py'
+      # Every job here `uses:` the pip cache pair, so an edit to either action changes
+      # what it runs.
+      - '.github/actions/pip-cache-restore/**'
+      - '.github/actions/pip-cache-save/**'
       - '.github/scripts/retry-with-apt-lock.sh'
       # Both Core jobs `uses:` this action, so a change to it must run them.
       - '.github/actions/core-cpu-setup/**'
@@ -66,10 +88,32 @@ on:
     paths:
       - 'unsloth/**'
       - 'unsloth_cli/**'
+      # studio/** minus the frontend and the Tauri shell. Nothing these jobs run reads a
+      # non-Python file under either: the named tests, the inline scripts,
+      # core-cpu-setup and the editable install were checked against the import and
+      # literal-reference graph of every file there, and the only readers found are
+      # install.sh and install.ps1 (icons), which no Core step runs. Python files come
+      # back in on the last line because test_python39_compatibility.py scans every
+      # studio/**/*.py and test_callback_signature_drift.py every .py outside frontend/.
+      # Order matters: the last matching pattern wins.
       - 'studio/**'
+      - '!studio/frontend/**'
+      - '!studio/src-tauri/**'
+      - 'studio/**/*.py'
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
+      # tests/test_callback_signature_drift.py (a hard gate in the consolidated job)
+      # parses every .py file in the repo outside dot-directories and frontend/, so a
+      # Python file anywhere can change its verdict, not only the ones under the source
+      # trees above.
+      - '*.py'
+      - 'scripts/**/*.py'
+      - 'docker/**/*.py'
+      # Every job here `uses:` the pip cache pair, so an edit to either action changes
+      # what it runs.
+      - '.github/actions/pip-cache-restore/**'
+      - '.github/actions/pip-cache-save/**'
       - '.github/scripts/retry-with-apt-lock.sh'
       # Both Core jobs `uses:` this action, so a change to it must run them.
       - '.github/actions/core-cpu-setup/**'
@@ -87,7 +131,7 @@ concurrency:
   # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
   # the moment a newer one is queued, so a merge burst still leaves only the tip.
   # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

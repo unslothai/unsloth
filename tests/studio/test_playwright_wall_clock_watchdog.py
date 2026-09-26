@@ -313,7 +313,9 @@ def test_no_step_begun_adds_nothing():
 
 def test_wait_until_returns_the_first_truthy_value():
     values = iter([None, 0, [], "ready"])
-    assert robust.wait_until(lambda: next(values), timeout_s = 5, what = "x", interval_s = 0.01) == "ready"
+    assert (
+        robust.wait_until(lambda: next(values), timeout_s = 5, what = "x", interval_s = 0.01) == "ready"
+    )
 
 
 def test_wait_until_names_what_it_waited_for():

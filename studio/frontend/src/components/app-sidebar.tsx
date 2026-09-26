@@ -176,6 +176,7 @@ import {
   RECENTS_ORDER_SCOPE,
   type SidebarChatSort,
   type SidebarOrganizeBy,
+  type SidebarProjectSort,
   type ProjectRecord,
   type SidebarItem,
   type ChatNavigationState,
@@ -342,6 +343,9 @@ const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-px`;
 // with the same border as the line. Kept inside the box for the same clipping reason.
 const DROP_INTO_CUE =
   "before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']";
+// Folder rows match their hover pill.
+const DROP_INTO_ROW_CUE =
+  "before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']";
 // The menu keeps a 1px gap between rows. A pointer resting on that gap would hit the section
 // instead, which answers with its last slot, so each row's box reaches over the gap below it.
 const DROP_ROW_HIT = "pb-px -mb-px";
@@ -364,8 +368,8 @@ const DROP_INTO_HEADER_CUE =
 // The sort a list is on and its setter: a reorder switches a sorted list to Manual, or the
 // sort would undo the drop.
 type RowSort = {
-  value: SidebarChatSort;
-  set: (next: SidebarChatSort) => void;
+  value: SidebarChatSort | SidebarProjectSort;
+  set: (next: "manual") => void;
 };
 // The list a chat row is rendered in: its ids, for shift-click ranges and for the order a drag
 // rewrites; the sort a drop switches to Manual; and, where the list is a folder's or Recents',
@@ -452,6 +456,15 @@ const CHAT_SORT_OPTIONS: Array<{
 }> = [
   { value: "priority", key: "shell.organize.priority" },
   { value: "updated", key: "shell.organize.lastUpdated" },
+  { value: "manual", key: "shell.organize.manualOrder" },
+];
+const PROJECT_SORT_OPTIONS: Array<{
+  value: SidebarProjectSort;
+  key: TranslationKey;
+}> = [
+  { value: "updated", key: "shell.organize.lastUpdated" },
+  { value: "name", key: "shell.organize.name" },
+  { value: "created", key: "shell.organize.dateCreated" },
   { value: "manual", key: "shell.organize.manualOrder" },
 ];
 const ORGANIZE_OPTIONS: Array<{
@@ -1102,6 +1115,8 @@ export function AppSidebar() {
   const setOrganizeBy = useSidebarOrganizationStore((s) => s.setOrganizeBy);
   const setChatSort = useSidebarOrganizationStore((s) => s.setChatSort);
   const setPinnedSort = useSidebarOrganizationStore((s) => s.setPinnedSort);
+  const projectSort = useSidebarOrganizationStore((s) => s.projectSort);
+  const setProjectSort = useSidebarOrganizationStore((s) => s.setProjectSort);
   const setManualOrder = useSidebarOrganizationStore((s) => s.setManualOrder);
   // With the Projects section on, a project chat lives in its folder and repeating it here would be
   // noise. With it off there are no folders, so Recents is where those chats go. Pinned chats are
@@ -1124,15 +1139,14 @@ export function AppSidebar() {
     () => new Set(pinnedProjectIds),
     [pinnedProjectIds],
   );
-  // Pinned chats, in pin order. A pinned project chat also stays in its folder.
+  // Pinned chats, in pin order. A pinned project chat shows here only.
   const pinnedChatItems = useMemo(() => {
     const byId = new Map(allChatItems.map((item) => [item.id, item]));
     return pinnedIds
       .map((id) => byId.get(id))
       .filter((item): item is SidebarItem => Boolean(item));
   }, [allChatItems, pinnedIds]);
-  // Chats per project, newest first. Pinned ones stay: a chat belongs to its
-  // project either way, and these rows are mirrored in Recents regardless.
+  // Chats per project, newest first. Pinned ones included, as they still count as activity.
   const chatsByProjectId = useMemo(() => {
     const map = new Map<string, SidebarItem[]>();
     for (const item of allChatItems) {
@@ -1174,13 +1188,17 @@ export function AppSidebar() {
     };
     const rest = projects
       .filter((p) => !pinnedProjectIdSet.has(p.id))
-      .sort((a, b) => lastActivityAt(b) - lastActivityAt(a));
-    return applyManualOrder(
-      rest,
-      manualOrder[PROJECT_ORDER_SCOPE],
-      (project) => project.id,
-    );
-  }, [projects, pinnedProjectIdSet, manualOrder, chatsByProjectId]);
+      .sort((a, b) =>
+        projectSort === "name"
+          ? a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })
+          : projectSort === "created"
+            ? b.createdAt - a.createdAt
+            : lastActivityAt(b) - lastActivityAt(a),
+      );
+    return projectSort === "manual"
+      ? applyManualOrder(rest, manualOrder[PROJECT_ORDER_SCOPE], (project) => project.id)
+      : rest;
+  }, [projects, pinnedProjectIdSet, manualOrder, chatsByProjectId, projectSort]);
   // Memoised for its identity, not for the slice. It feeds the rendered-row set the selection guard
   // depends on, and that effect sets state: React re-renders once to find the bail-out, which would
   // rebuild this array and schedule the effect again, without end.
@@ -1350,11 +1368,15 @@ export function AppSidebar() {
     for (const [projectId, items] of chatsByProjectId) {
       map.set(
         projectId,
-        sortChatItems(items, projectOrderScope(projectId), chatSort),
+        sortChatItems(
+          items.filter((item) => !pinnedIdSet.has(item.id)),
+          projectOrderScope(projectId),
+          chatSort,
+        ),
       );
     }
     return map;
-  }, [chatsByProjectId, sortChatItems, chatSort]);
+  }, [chatsByProjectId, sortChatItems, chatSort, pinnedIdSet]);
   // One id array per list, shared by every row in it. Built per row, these
   // would be N arrays of length N on each render.
   const recentRowIds = useMemo(
@@ -1869,6 +1891,7 @@ export function AppSidebar() {
       organizeBy,
       chatSort,
       pinnedSort,
+      projectSort,
       pinnedChatIds: pinnedIdSet,
       pinnedProjectIds: pinnedProjectIdSet,
       orders: {
@@ -1882,6 +1905,7 @@ export function AppSidebar() {
       organizeBy,
       chatSort,
       pinnedSort,
+      projectSort,
       pinnedIdSet,
       pinnedProjectIdSet,
       pinnedRowIds,
@@ -1951,6 +1975,10 @@ export function AppSidebar() {
       }
       if (effects.switchSort === "pinned") {
         setPinnedSort("manual");
+        toast.info(t("shell.organize.switchedToManual"));
+      }
+      if (effects.switchSort === "projects") {
+        setProjectSort("manual");
         toast.info(t("shell.organize.switchedToManual"));
       }
     };
@@ -3109,6 +3137,7 @@ export function AppSidebar() {
     sortValue: SidebarChatSort;
     onSortChange: (next: SidebarChatSort) => void;
     includeOrganize?: boolean;
+    includeProjectSort?: boolean;
   }) {
     return (
       <NonModalDropdownMenu
@@ -3139,6 +3168,25 @@ export function AppSidebar() {
               }
             >
               {ORGANIZE_OPTIONS.map((option) => (
+                <DropdownMenuRadioItem
+                  key={option.value}
+                  value={option.value}
+                  className={menuRadioItemClass}
+                >
+                  {t(option.key)}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </>
+        )}
+        {options.includeProjectSort && (
+          <>
+            <DropdownMenuLabel>{t("shell.organize.sortProjectsBy")}</DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={projectSort}
+              onValueChange={(value) => setProjectSort(value as SidebarProjectSort)}
+            >
+              {PROJECT_SORT_OPTIONS.map((option) => (
                 <DropdownMenuRadioItem
                   key={option.value}
                   value={option.value}
@@ -3864,7 +3912,7 @@ export function AppSidebar() {
             draggingRow?.id === project.id && "opacity-50",
             dropCueClass(order.scope, project.id),
             // Lit while a chat is over the folder row or any of the chats inside it.
-            dnd.ringLit(folderRingKey(project.id)) && DROP_INTO_CUE,
+            dnd.ringLit(folderRingKey(project.id)) && DROP_INTO_ROW_CUE,
           )}
           onContextMenu={() =>
             selectProjectForContextMenu(project.id)
@@ -4569,6 +4617,7 @@ export function AppSidebar() {
                   {renderSidebarHeaderMenu({
                     ariaLabel: t("shell.organize.organizeProjects"),
                     includeOrganize: true,
+                    includeProjectSort: true,
                     sortLabel: t("shell.organize.sortChatsBy"),
                     sortValue: chatSort,
                     onSortChange: setChatSort,
@@ -4590,6 +4639,7 @@ export function AppSidebar() {
                           scope: PROJECT_ORDER_SCOPE,
                           orderedIds: projectRowIds,
                           section: "projects",
+                          sort: { value: projectSort, set: setProjectSort },
                         }),
                       )}
                       {/* Every project is pinned, so the section is drawn with nothing in it. The
