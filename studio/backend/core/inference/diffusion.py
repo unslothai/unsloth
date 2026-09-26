@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from core._torchao_stub import (
+    hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
 )
@@ -230,6 +231,7 @@ logger = get_logger(__name__)
 # Every `import diffusers` below is lazy, so this runs first. On Windows ROCm both reach an absent distributed
 # backend: diffusers imports xformers on sight, its quantizers torchao.
 install_xformers_windows_rocm_stub()
+hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
 install_torchao_int_mm_patch()
 
@@ -3661,6 +3663,14 @@ class DiffusionBackend:
             if not missing:
                 return
 
+            # Staged but not counted: the worker links unchanged files from an older snapshot (hub.utils.snapshot_reuse).
+            reusable = self._reusable_from_older_snapshot(
+                repo,
+                [n for n in missing if where.get(n) is None],
+                revision,
+                declared_sizes,
+                hf_token,
+            )
             if checkpoint:
                 missing_checkpoints.add(repo)
             for entry in entries:
@@ -3669,7 +3679,9 @@ class DiffusionBackend:
                 newly_missing = [n for n in missing if n not in entry["files"]]
                 added = [n for n in scope if n not in entry["files"]]
                 entry["files"].extend(added)
-                entry["bytes"] += int(sum(declared_sizes.get(n, 0) for n in newly_missing))
+                entry["bytes"] += int(
+                    sum(declared_sizes.get(n, 0) for n in newly_missing if n not in reusable)
+                )
                 entry["gguf_filename"] = scoped_gguf[repo]
                 entry["checkpoint"] = repo in missing_checkpoints
                 return
@@ -3680,7 +3692,9 @@ class DiffusionBackend:
                     # are cheap no-op hf_hub_download calls; only the genuinely missing subset contributes to
                     # bytes/preflight below.
                     "files": list(scope),
-                    "bytes": int(sum(declared_sizes.get(name, 0) for name in missing)),
+                    "bytes": int(
+                        sum(declared_sizes.get(name, 0) for name in missing if name not in reusable)
+                    ),
                     "gguf_filename": scoped_gguf[repo],
                     "checkpoint": repo in missing_checkpoints,
                 }
@@ -3800,6 +3814,44 @@ class DiffusionBackend:
         if live:
             return set()
         return wanted if _hits(roots[1]) == wanted else set()
+
+    @staticmethod
+    def _reusable_from_older_snapshot(
+        repo_id: str,
+        names: list[str],
+        revision: Optional[str],
+        declared_sizes: dict[str, int],
+        hf_token: Optional[str],
+    ) -> set[str]:
+        """Missing files an older snapshot holds with the same content; never hashes on the request path."""
+        if not names:
+            return set()
+        try:
+            from hub.utils.snapshot_reuse import (
+                cached_ref_commit,
+                hub_remote_digests,
+                reusable_paths,
+            )
+
+            # Unpinned entries were probed against refs/main; the worker fetches the Hub head.
+            digest_revision = None if revision else "main"
+            revision = revision or cached_ref_commit("model", repo_id, hub_cache_dir())
+            if not revision:
+                return set()
+            return reusable_paths(
+                "model",
+                repo_id,
+                revision,
+                {name: int(declared_sizes.get(name) or 0) for name in names},
+                hub_cache = hub_cache_dir(),
+                # False is the managed-account anonymous sentinel; None would send the installation token.
+                remote_digests = hub_remote_digests(
+                    "model", repo_id, hf_token if hf_token is False else (hf_token or None)
+                ),
+                digest_revision = digest_revision,
+            )
+        except Exception:  # noqa: BLE001 -- counting the bytes is the conservative answer
+            return set()
 
     @staticmethod
     def _current_sha(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
