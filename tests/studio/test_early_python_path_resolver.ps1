@@ -42,21 +42,11 @@ try {
     $script:StudioEarlyPython = $null
     $exe = Get-StudioEarlyPython
     if (-not $exe) {
-        # "No interpreter" is a real and supported state, so it is a skip and not a failure. But
-        # it is also what a BROKEN EXTRACTION looks like from here: a helper this file forgot to
-        # pull out of install.ps1 makes Get-StudioEarlyPython fail, the probe finds nothing, and
-        # the suite exits 0 having tested nothing. That happened, and CI recorded it as a pass.
-        # So the two are told apart before deciding: if this host has a python on PATH, the
-        # extraction is at fault, not the host.
-        # Only an interpreter that actually runs counts. A Store execution alias, a broken
-        # executable or a Python too old for the probe is on PATH yet is correctly rejected, and
-        # that host is the supported skip. This check uses none of the extracted helpers, so a
-        # broken extraction still shows up as a runnable interpreter the ladder did not find.
+        # A runnable python on PATH means a broken extraction, not a host without Python.
         $onPath = $null
         foreach ($n in @("python3", "python")) {
             foreach ($cmd in @(Get-Command $n -All -CommandType Application -ErrorAction SilentlyContinue)) {
                 if ($onPath -or -not $cmd.Source) { continue }
-                # In a job with a deadline: a shim that starts and never exits must be a skip, not a hang.
                 $job = Start-Job -ArgumentList $cmd.Source -ScriptBlock {
                     param($exe)
                     $o = & $exe -I -S -c "import os,sys;sys.stdout.write(os.path.realpath('.') if sys.version_info >= (3, 8) else '')" 2>$null
