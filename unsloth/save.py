@@ -3807,6 +3807,26 @@ def _model_basename(name_or_path, default = "model") -> str:
     return base
 
 
+def _assert_export_target_is_not_base_with_lora_layers(self):
+    """`peft.PeftModel.from_pretrained` forwards to the base's bound export method, which would silently write the un-merged base (unsloth#11698)."""
+    if isinstance(self, PeftModel):
+        return
+
+    try:
+        from peft.tuners.tuners_utils import BaseTunerLayer
+    except ImportError:
+        return
+
+    modules = getattr(self, "modules", None)
+    if callable(modules) and any(isinstance(m, BaseTunerLayer) for m in modules()):
+        raise RuntimeError(
+            "Unsloth: This model has LoRA layers, but the save method was called on the "
+            "base model. This happens when the adapter is attached with "
+            "`peft.PeftModel.from_pretrained`. Load the adapter folder with "
+            "`FastModel.from_pretrained(<adapter folder>)` instead."
+        )
+
+
 @_normalize_tied_weights_keys_for_save
 def unsloth_save_pretrained_gguf(
     self,
@@ -3872,6 +3892,8 @@ def unsloth_save_pretrained_gguf(
     "iq3_xxs" : "3.06 bpw quantization",
     "q3_k_xs" : "3-bit extra small quantization",
     """
+    _assert_export_target_is_not_base_with_lora_layers(self)
+
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
@@ -4481,6 +4503,7 @@ def unsloth_push_to_hub_gguf(
 
     `quantization_method` may be an alias -- "not_quantized" (fast conversion, big files), "fast_quantized" (fast conversion, OK size), "quantized" (slow conversion, small files) -- or a llama.cpp ftype: f32, f16, q8_0, q4_0, q4_1, q5_0, q5_1, or a k-quant q2_k / q3_k_s / q3_k_m / q3_k_l / q4_k_s / q4_k_m / q5_k_s / q5_k_m / q6_k. The _m and _l k-quants keep the attention and feed_forward.w2 tensors a level or two above the nominal width; q2_k_l is the Unsloth preset adding --output-tensor-type q8_0 --token-embedding-type q8_0.
     """
+    _assert_export_target_is_not_base_with_lora_layers(self)
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
     if not is_main_process:
@@ -5708,6 +5731,7 @@ def unsloth_generic_save_pretrained_merged(
     roughly 10x slower there, while `None` pins safetensors through that fallback. `False`
     asks for a pickle.
     """
+    _assert_export_target_is_not_base_with_lora_layers(self)
     if tokenizer is None:
         logger.warning_once(
             "Unsloth: You're not saving a tokenizer as well?\n"
@@ -5839,6 +5863,7 @@ def unsloth_generic_push_to_hub_merged(
     roughly 10x slower there, while `None` pins safetensors through that fallback. `False`
     asks for a pickle.
     """
+    _assert_export_target_is_not_base_with_lora_layers(self)
     if tokenizer is None:
         logger.warning_once(
             "Unsloth: You're not saving a tokenizer as well?\n"
@@ -6841,6 +6866,7 @@ def unsloth_save_pretrained_torchao(
     `save_directory`: local folder, or a hub id when `push_to_hub` is True.
     `torchao_config` (TorchAOBaseConfig): required for PTQ, None for QAT. https://docs.pytorch.org/ao/main/api_ref_quantization.html#inference-apis-for-quantize
     """
+    _assert_export_target_is_not_base_with_lora_layers(self)
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
 

@@ -470,6 +470,154 @@ def test_enabled_the_routes_let_nvfp4_through_the_switch(monkeypatch):
     )
 
 
+def _record_nvfp4_probes(monkeypatch):
+    """Record every gate-record read and flashinfer backend probe instead of running them."""
+    from core.inference import diffusion_nvfp4_gate as gate
+    from core.inference import diffusion_nvfp4_ops as ops
+
+    calls: list[str] = []
+    monkeypatch.setattr(gate, "nvfp4_gate_passed", lambda *a, **k: calls.append("gate") or True)
+    monkeypatch.setattr(
+        gate, "nvfp4_gate_backends", lambda *a, **k: calls.append("gate") or ("flashinfer",)
+    )
+    monkeypatch.setattr(
+        ops, "select_nvfp4_backend", lambda *a, **k: calls.append("backend") or "flashinfer"
+    )
+    return calls
+
+
+@pytest.mark.parametrize("family", ["wan2.2-t2v-a14b", "z-image", "flux.1", "qwen-image"])
+def test_the_nvfp4_auto_rows_are_dropped_before_any_gate_or_flashinfer_probe(monkeypatch, family):
+    calls = _record_nvfp4_probes(monkeypatch)
+    order = tq._auto_scheme_order(family, "cuda", (10, 0), "some/base")
+    assert tq.TQ_NVFP4 not in order
+    assert order == (tq.TQ_INT8, tq.TQ_FP8, tq.TQ_MXFP8)
+    assert calls == []
+
+
+def test_enabled_the_flashinfer_auto_row_leads_again(monkeypatch):
+    _enable(monkeypatch)
+    calls = _record_nvfp4_probes(monkeypatch)
+    monkeypatch.setattr(
+        tq, "_is_consumer_gpu", lambda device = None: False
+    )  # not the runner's own card
+    order = tq._auto_scheme_order("wan2.2-t2v-a14b", "cuda", (10, 0), "Wan-AI/Wan2.2-T2V-A14B")
+    assert order[0] == tq.TQ_NVFP4
+    assert "backend" in calls
+
+
+def test_no_flashinfer_import_or_preflight_is_triggered(monkeypatch):
+    from core.inference import diffusion_nvfp4_linear as linear
+    from core.inference import diffusion_nvfp4_ops as ops
+
+    touched = []
+    monkeypatch.setattr(
+        ops, "_flashinfer_available", lambda: touched.append("import") or (True, "x")
+    )
+    monkeypatch.setattr(ops, "_preflight_probe", lambda dev: touched.append("preflight") or True)
+    backend, reason = ops._resolve_backend(0)
+    assert backend == ops.BACKEND_TORCHAO and DISABLED in reason
+    assert ops.select_nvfp4_backend(0) == ops.BACKEND_TORCHAO
+    assert ops.nvfp4_preflight(0)["ok"] is False
+    assert linear.nvfp4_prewarm(object(), (16,)) == 0
+    assert touched == []
+    assert tq._nvfp4_gate_passed("z-image", "Tongyi-MAI/Z-Image-Turbo") is False
+    assert tq._nvfp4_backend_is("cuda", "flashinfer") is False
+
+
+def test_the_hosted_image_nvfp4_rows_resolve_to_nothing(monkeypatch):
+    from core.inference.diffusion_families import detect_family, family_prequant_repo
+    from core.inference.diffusion_prequant import usable_prequant_source
+
+    schnell = "black-forest-labs/FLUX.1-schnell"
+    zimage = "Tongyi-MAI/Z-Image-Turbo"
+    for base in (schnell, zimage):
+        fam = detect_family(base)
+        assert family_prequant_repo(fam, "nvfp4", base_repo = base) is None
+        assert usable_prequant_source(fam, "nvfp4", base_repo = base) is None
+    _enable(monkeypatch)
+    assert family_prequant_repo(detect_family(schnell), "nvfp4", base_repo = schnell) == (
+        "unsloth/FLUX.1-schnell-NVFP4"
+    )
+    assert family_prequant_repo(detect_family(zimage), "nvfp4", base_repo = zimage) == (
+        "unsloth/Z-Image-Turbo-NVFP4"
+    )
+
+
+def test_the_per_layer_policy_factor_is_not_applied(monkeypatch):
+    from core.inference.diffusion_auto_policy import policy_steady_factor
+
+    assert policy_steady_factor("z-image", "Tongyi-MAI/Z-Image-Turbo") is None
+    _enable(monkeypatch)
+    assert policy_steady_factor("z-image", "Tongyi-MAI/Z-Image-Turbo") is not None
+
+
+def test_the_fast_dispatch_is_never_probed_or_verified(monkeypatch):
+    from core.inference import diffusion_nvfp4_dispatch as dispatch
+    from core.inference import diffusion_nvfp4_ops as ops
+
+    touched = []
+    monkeypatch.setattr(dispatch, "verify", lambda device: touched.append("verify") or (True, ""))
+    monkeypatch.setattr(dispatch, "_probe", lambda: touched.append("probe") or (True, ""))
+    assert ops.nvfp4_preflight(0, refresh = True)["ok"] is False
+    assert ops.select_nvfp4_backend(0) == ops.BACKEND_TORCHAO
+    assert touched == []
+
+
+def test_no_flashinfer_install_is_attempted(monkeypatch):
+    from core.inference import diffusion_nvfp4_install as inst
+
+    inst.reset_install_state()
+    touched = []
+    monkeypatch.setattr(inst, "_ensure", lambda *a, **k: touched.append("ensure") or (True, None))
+    monkeypatch.setattr(inst, "_import_flashinfer", lambda *a, **k: touched.append("import"))
+    commands = []
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(
+        0, run = lambda *a, **k: commands.append(a), owner = object()
+    )
+    assert ok is False and DISABLED in reason
+    assert touched == [] and commands == []
+    assert inst.last_install_reason() is None
+    assert inst.nvfp4_backend_fields("torchao") == {
+        "transformer_quant_backend": "torchao",
+        "transformer_quant_backend_reason": None,
+    }
+
+
+def test_the_loaders_never_ask_whether_an_nvfp4_checkpoint_will_load(monkeypatch):
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.video import VideoBackend
+
+    asked = []
+    monkeypatch.setattr(
+        "huggingface_hub.HfApi", lambda *a, **k: types.SimpleNamespace(model_info = asked.append)
+    )
+    assert (
+        DiffusionBackend._nvfp4_checkpoint_will_load(
+            object(), None, "Tongyi-MAI/Z-Image-Turbo", None, None
+        )
+        is False
+    )
+    assert (
+        VideoBackend._nvfp4_denoiser_checkpoint_will_load(
+            object(), _wan_a14b(), _WAN_T2V, None, None
+        )
+        is False
+    )
+    assert asked == []
+
+
+def test_enabled_the_install_gate_is_reached(monkeypatch):
+    _enable(monkeypatch)
+    from core.inference import diffusion_nvfp4_install as inst
+
+    inst.reset_install_state()
+    seen = []
+    monkeypatch.setattr(inst, "_ensure", lambda *a, **k: seen.append("ensure") or (True, None))
+    assert inst.ensure_flashinfer_for_nvfp4(0) == (True, None)
+    assert seen == ["ensure"]
+
+
 def _prequant_dir(root, name, scheme):
     """A directory holding one tiny safetensors pre-quant artifact that records ``scheme``."""
     import json
@@ -539,6 +687,15 @@ def test_every_family_registered_nvfp4_repo_is_recognised_by_the_table():
         if scheme == "nvfp4"
     }
     assert registered and registered <= hosted_nvfp4_repo_ids()
+
+
+def test_the_image_family_nvfp4_repos_are_recognised_by_the_table():
+    from core.inference.diffusion_prequant import hosted_nvfp4_repo_ids
+
+    ids = hosted_nvfp4_repo_ids()
+    assert "unsloth/z-image-turbo-nvfp4" in ids
+    assert "unsloth/flux.1-schnell-nvfp4" in ids
+    assert not any("fp8" in repo and "nvfp4" not in repo for repo in ids)
 
 
 def test_a_cached_repo_is_judged_by_its_metadata_not_its_name(tmp_path, monkeypatch):
