@@ -175,6 +175,13 @@ def main():
                         "error": None,
                     },
                 )
+            elif path == "/api/system":
+                # NVFP4 options only render on a host that reports NVFP4 diffusion (the options go
+                # through withNvfp4Option since 8ecfd3092), and the loop below picks NVFP4, so this
+                # host is a Blackwell one.
+                system = _api_payload(path, query, full_footprint = True)
+                system["nvfp4_diffusion"] = True
+                _json(route, system)
             else:
                 _json(route, _api_payload(path, query, full_footprint = True))
 
