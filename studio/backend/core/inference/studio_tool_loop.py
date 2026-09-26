@@ -86,6 +86,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     canonical_arguments_text,
     mcp_display_parts,
+    provisional_tool_provenance,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
@@ -1086,6 +1087,56 @@ def _unrun_call_card(
     ]
 
 
+def _is_strict_prefix_of_declared(name: str, declared_names: set[str]) -> bool:
+    """Could this complete-looking name still be the start of a longer declared one?
+
+    Only a prefix of ANOTHER declared name counts, so the ordinary case -- a name no other
+    tool extends -- is unaffected and still stamped on the chunk that completes it.
+    """
+    return any(other != name and other.startswith(name) for other in declared_names)
+
+
+def _mcp_provenance_by_id(
+    turn: "_Turn", declared_names: set[str], stamped: set[str]
+) -> dict[str, Any]:
+    """Provenance for MCP calls whose id and whole name have both arrived.
+
+    The relayed tool_calls delta carries none, so the card it paints shows the internal
+    server id until tool_start lands after the turn finishes streaming. Riding the same
+    chunk relabels it at once without disturbing the arguments still accumulating there.
+
+    The declared catalog is what says a streamed name is complete: ``mcp__srv__cre`` is well
+    formed too, and would name the wrong server. Once per id.
+
+    A declared name that is a strict PREFIX of another declared one is not evidence of
+    completeness, though: a server exposing both ``foo`` and ``foo_bar`` makes the fragment
+    ending at ``foo`` look finished, and a stamp there would name the wrong tool for the rest
+    of the turn, since the id is marked and ``_bar`` can no longer correct it. Those wait for
+    the authoritative provenance on ``tool_start``, which is what every call relied on before
+    this, rather than being relabelled early and wrongly.
+    """
+    stamps: dict[str, Any] = {}
+    for call in turn.by_index.values():
+        call_id = call.get("id")
+        if not isinstance(call_id, str) or not call_id or call_id in stamped:
+            continue
+        function = call.get("function")
+        name = function.get("name") if isinstance(function, dict) else None
+        if not isinstance(name, str) or name not in declared_names:
+            continue
+        if _is_strict_prefix_of_declared(name, declared_names):
+            continue
+        # Declared means the name is whole, so the call is judged either way. Marked
+        # BEFORE asking whether it resolves: mcp_display_parts is a SQLite lookup that
+        # answers falsy for a server with no display_name, so stamping only on success
+        # re-ran it per chunk. tool_start still carries the authoritative provenance.
+        stamped.add(call_id)
+        if not mcp_display_parts(name):
+            continue
+        stamps[call_id] = provisional_tool_provenance(name)
+    return stamps
+
+
 def _status_sse(text: str) -> str:
     """Tool badge text, in the shape the chat client already parses."""
     return _sse({"type": "tool_status", "content": text})
@@ -1293,6 +1344,9 @@ async def stream_with_studio_tools(
             break
         provider_turns += 1
         turn = _Turn(round = provider_turns)
+        # Per turn, not per run: ids restart each turn and the client drops its mapping
+        # at tool_end, so the second call_0 is a new card needing its own name.
+        mcp_stamped_ids: set[str] = set()
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
         # A healed text-form call never reaches the wire as a tool_calls key, so a headerless caller's stripper cannot
         # tell this turn ends in a call the loop is about to run rather than in an answer. Hold the turn-ending chunk
@@ -1392,6 +1446,10 @@ async def stream_with_studio_tools(
                                 turn.text.append(value)
                                 yield _sse({"choices": [{"index": 0, "delta": {"content": value}}]})
                     turn.merge_structured(raw_calls)
+                    stamps = _mcp_provenance_by_id(turn, allowed_tool_names, mcp_stamped_ids)
+                    if stamps:
+                        payload["_mcp_provenance"] = stamps
+                        line = "data: " + json.dumps(payload, separators = (",", ":"))
 
                 if healer is None or healer.dormant or not isinstance(content, str) or not content:
                     plain = _delta_text(content)

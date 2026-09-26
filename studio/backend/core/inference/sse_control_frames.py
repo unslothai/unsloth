@@ -44,7 +44,14 @@ _CONTROL_TYPES = frozenset(
 )
 
 # Unsloth extensions carried inside a chunk: in no provider's wire format, read with the same trust as the frames above.
-_CONTROL_KEYS = ("_toolEvent", "_toolStatus", "_diffusionFrame", "_reasoningDurationMs")
+_CONTROL_KEYS = (
+    "_toolEvent",
+    "_toolStatus",
+    "_diffusionFrame",
+    "_reasoningDurationMs",
+    # Stamped by the loop after sanitising; a provider's own would name any server it likes.
+    "_mcp_provenance",
+)
 
 # A stripped frame is only worth relaying if it still says something in the provider's own vocabulary.
 _SUBSTANTIVE_KEYS = ("choices", "usage", "error")
