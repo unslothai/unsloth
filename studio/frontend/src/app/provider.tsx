@@ -21,6 +21,7 @@ import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { DeepLinkHandler } from "@/features/deep-links";
+import { receiveSharedRunConfigUrls } from "@/features/model-picker";
 import {
   DownloadManagerPanel,
   dismissStartToasts,
@@ -1055,7 +1056,7 @@ export function AppProvider({ children }: AppProviderProps) {
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>
         <AppearanceCustomizationEffect />
-        <DeepLinkHandler />
+        <DeepLinkHandler onOpenUrls={receiveSharedRunConfigUrls} />
         <TauriWrapper>{children}</TauriWrapper>
         <SttDownloadPrompt />
         <Toaster

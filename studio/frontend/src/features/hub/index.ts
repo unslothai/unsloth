@@ -140,3 +140,9 @@ export { TransportConflictDialog } from "./catalog/transport-conflict-dialog";
 export { TrainIcon } from "./components/train-icon";
 export { isHiddenModelId } from "./lib/hidden-models";
 export { classifyUnslothSupport, studioPageForTask } from "./lib/unsloth-support";
+
+export {
+  INVENTORY_FRESHNESS_WINDOW_MS,
+  isInventoryStampFresh,
+} from "./inventory/inventory-freshness";
+export { withAbort } from "./lib/abort-signals";

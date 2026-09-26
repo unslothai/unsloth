@@ -29,6 +29,7 @@ import { useExportRuntimeLifecycle } from "@/features/export";
 import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
 import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
+import { SharedRunConfigLinkHandler } from "@/features/model-picker";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
@@ -801,6 +802,9 @@ function RootLayout() {
   return (
     <AppProvider>
       <CredentialBootstrapGate active={!isAuthFlowRoute}>
+        <SharedRunConfigLinkHandler
+          chatSearch={shouldMountChat ? chatSearch : null}
+        />
         {content}
       </CredentialBootstrapGate>
     </AppProvider>

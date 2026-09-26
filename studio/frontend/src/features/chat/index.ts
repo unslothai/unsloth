@@ -487,3 +487,9 @@ export {
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
 } from "./utils/composer-preferences";
+
+export {
+  ggufVariantsQuery,
+  runBoundedVariantsRequest,
+} from "./api/gguf-variants-request";
+export type { ChatModelSummary, ChatLoraSummary } from "./types/runtime";
