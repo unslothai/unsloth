@@ -664,3 +664,27 @@ test("a custom section's menu edits it, acts on its chats, and removes it", () =
   assert.match(menu, /icon=\{Settings02Icon\}[\s\S]*icon=\{Tick02Icon\}[\s\S]*icon=\{Archive03Icon\}[\s\S]*icon=\{Cancel01Icon\}/);
   assert.doesNotMatch(menu, /variant="destructive"|renderSortSubmenu/);
 });
+
+test("a section header drag re-renders the sidebar only when its landing changes", () => {
+  const start = APP_SIDEBAR.indexOf("function startSectionDrag(");
+  const body = APP_SIDEBAR.slice(start, APP_SIDEBAR.indexOf("function renderOrderedSection(", start));
+  // Every pointer move redrawing the whole sidebar is what made the drag lag.
+  assert.match(
+    body,
+    /if \(drawn && next\?\.target === landing\?\.target && next\?\.edge === landing\?\.edge\) return;\n\s*drawn = true;\n\s*landing = next;\n\s*setSectionDrag\(\{ key, landing \}\);/,
+  );
+});
+
+test("undoing a removed section puts it back where it was drawn", () => {
+  const start = APP_SIDEBAR.indexOf("function removeCustomSection(");
+  const body = APP_SIDEBAR.slice(start, APP_SIDEBAR.indexOf("function renderSortSubmenu", start));
+  assert.match(body, /const followers = drawnOrder\.slice\(drawnOrder\.indexOf\(section\.id\) \+ 1\);/);
+  assert.match(body, /const follower = followers\.find\(\(key\) => sectionOrder\.includes\(key\)\);/);
+  assert.match(body, /customSections,\n\s*sectionOrder,/);
+});
+
+test("the section name dialog keeps its mode while it closes", async () => {
+  const dialog = await readSrcAsync("features/chat/components/section-name-dialog.tsx");
+  assert.match(dialog, /if \(open && \(shown\.mode !== mode \|\| shown\.initialName !== initialName\)\)/);
+  assert.match(dialog, /mode=\{shown\.mode\}\n\s*initialName=\{shown\.initialName\}/);
+});

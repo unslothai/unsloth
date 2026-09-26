@@ -3431,6 +3431,9 @@ export function AppSidebar() {
     );
     const order = state.manualOrder[customSectionScope(section.id)];
     const hidden = state.hiddenSections.includes(section.id);
+    // The sections drawn after it, so undo can put it back above the first one still there.
+    const drawnOrder = resolveSectionOrder(state.sectionOrder, state.customSections);
+    const followers = drawnOrder.slice(drawnOrder.indexOf(section.id) + 1);
     deleteCustomSection(section.id);
     toast.success(t("shell.sections.deleted", { name: section.name }), {
       action: {
@@ -3444,8 +3447,16 @@ export function AppSidebar() {
             for (const id of chatIds) sectionByChatId[id] ??= section.id;
             const sectionByProjectId = { ...now.sectionByProjectId };
             for (const id of projectIds) sectionByProjectId[id] ??= section.id;
+            const sectionOrder = resolveSectionOrder(now.sectionOrder, now.customSections);
+            const follower = followers.find((key) => sectionOrder.includes(key));
+            sectionOrder.splice(
+              follower === undefined ? sectionOrder.length : sectionOrder.indexOf(follower),
+              0,
+              section.id,
+            );
             return {
               customSections,
+              sectionOrder,
               sectionByChatId,
               sectionByProjectId,
               hiddenSections: hidden
@@ -3672,6 +3683,8 @@ export function AppSidebar() {
     const order = orderedSectionKeys;
     const startY = event.clientY;
     let dragging = false;
+    // Whether the lifted header has been drawn yet, and the landing it was drawn with.
+    let drawn = false;
     let landing: { target: string; edge: "top" | "bottom" } | null = null;
     const locate = (y: number) => {
       const blocks = [...list.querySelectorAll<HTMLElement>(":scope > [data-sidebar-section]")].filter(
@@ -3695,10 +3708,14 @@ export function AppSidebar() {
       }
       const hit = locate(moveEvent.clientY);
       // A landing that leaves the order as it is draws no line.
-      landing =
+      const next =
         hit && placeIdAt(order, key, hit.target, hit.edge).some((id, index) => id !== order[index])
           ? hit
           : null;
+      // Only a new landing re-renders the sidebar; every pointer move would redraw it all.
+      if (drawn && next?.target === landing?.target && next?.edge === landing?.edge) return;
+      drawn = true;
+      landing = next;
       setSectionDrag({ key, landing });
     };
     const finish = (commit: boolean) => {

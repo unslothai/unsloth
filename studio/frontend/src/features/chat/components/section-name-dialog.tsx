@@ -34,13 +34,19 @@ export function SectionNameDialog({
   onOpenChange: (open: boolean) => void;
   onSubmit: (name: string) => void;
 }) {
+  // What the open dialog was opened for, kept through the close animation: the caller clears its
+  // state on close, which would otherwise flip a rename to "New section" as it fades out.
+  const [shown, setShown] = useState({ mode, initialName });
+  if (open && (shown.mode !== mode || shown.initialName !== initialName)) {
+    setShown({ mode, initialName });
+  }
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="corner-squircle dialog-soft-surface gap-5 sm:max-w-md">
         {/* Content unmounts on close, so each open starts from its own name, not the last draft. */}
         <SectionNameForm
-          mode={mode}
-          initialName={initialName}
+          mode={shown.mode}
+          initialName={shown.initialName}
           onCancel={() => onOpenChange(false)}
           onSubmit={(name) => {
             onSubmit(name);
