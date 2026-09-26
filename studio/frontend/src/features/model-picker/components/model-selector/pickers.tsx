@@ -1203,15 +1203,20 @@ function ModelRow({
   useEffect(() => () => window.clearTimeout(nameHoverTimer.current), []);
   useEffect(() => {
     if (!tappedOpen) return;
-    const release = (event: PointerEvent) => {
+    const release = (event: Event) => {
       const target = event.target as Element | null;
       if (nameRef.current?.contains(target)) return;
       if (target?.closest?.('[data-slot="tooltip-content"]')) return;
       setTappedOpen(false);
       setTooltipOpen(false);
     };
+    // touchstart covers WebViews without pointer events.
     document.addEventListener("pointerdown", release, true);
-    return () => document.removeEventListener("pointerdown", release, true);
+    document.addEventListener("touchstart", release, { capture: true, passive: true });
+    return () => {
+      document.removeEventListener("pointerdown", release, true);
+      document.removeEventListener("touchstart", release, true);
+    };
   }, [tappedOpen]);
   const onNameEnter = (event: React.PointerEvent) => {
     if (event.pointerType === "touch") return;
