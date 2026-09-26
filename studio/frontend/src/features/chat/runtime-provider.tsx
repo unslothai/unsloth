@@ -60,10 +60,12 @@ import {
   TEXT_ATTACHMENT_ACCEPT,
   extractDocxAttachmentText,
   extractHtmlAttachmentText,
+  extractOfficeAttachmentText,
   extractPdfAttachmentText,
   getDocumentAttachmentSizeError,
   getDocxAttachmentError,
 } from "./attachment-content";
+import { withAttachmentOriginal } from "./attachment-originals";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
   isBinaryPropertyList,
@@ -266,7 +268,7 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
     const threadIds = this.getThreadIds();
     const reservationToken = findPreStreamRunReservation(threadIds);
     try {
-      return await this.delegate.send(attachment);
+      return await withAttachmentOriginal(attachment, await this.delegate.send(attachment));
     } catch (error) {
       if (
         reservationToken &&
@@ -561,6 +563,60 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
       name: attachment.name,
       contentType: attachment.contentType,
       content: [{ type: "text", text: `[DOCX: ${attachment.name}]\n${text}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+const OFFICE_LABELS: Record<string, "XLSX" | "PPTX"> = {
+  xlsx: "XLSX",
+  xlsm: "XLSX",
+  pptx: "PPTX",
+};
+
+/** Excel workbooks and PowerPoint decks: the model reads their text, the viewer shows the file. */
+class OfficeAttachmentAdapter implements AttachmentAdapter {
+  accept = [
+    ".xlsx,.xlsm,.pptx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel.sheet.macroEnabled.12",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ].join(",");
+
+  private label(name: string): "XLSX" | "PPTX" {
+    return OFFICE_LABELS[name.split(".").pop()?.toLowerCase() ?? ""] ?? "XLSX";
+  }
+
+  // Refused at add, as the PDF adapter does, so a file past the ceiling never empties the composer.
+  add({ file }: { file: File }): Promise<PendingAttachment> {
+    const sizeError = getDocumentAttachmentSizeError(file, this.label(file.name));
+    if (sizeError) {
+      toast.error(sizeError);
+      throw new Error(sizeError);
+    }
+    return Promise.resolve({
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    });
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const label = this.label(attachment.name);
+    const text = await extractOfficeAttachmentText(attachment.file, label);
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text: `[${label}: ${attachment.name}]\n${text}` }],
       status: { type: "complete" },
     };
   }
@@ -2415,6 +2471,7 @@ function useStudioRuntimeAdapters(
           new HtmlAttachmentAdapter(),
           new PDFAttachmentAdapter(),
           new DocxAttachmentAdapter(),
+          new OfficeAttachmentAdapter(),
           new OpenDocumentAttachmentAdapter(),
         ]),
         () => {

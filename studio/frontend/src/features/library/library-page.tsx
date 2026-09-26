@@ -1013,7 +1013,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         onOpenChange={(open) => !open && closePreview()}
         onChat={chatAbout}
         onDownload={(item) => void downloadLibraryItem(item)}
-        onOpenThread={(threadId) => void navigate({ to: "/chat", search: { thread: threadId } })}
         onToggleFavorite={actions.toggleFavorite}
         onDelete={(item) => actions.remove({ kind: "item", item })}
         onSaved={() => void refresh()}

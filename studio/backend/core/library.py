@@ -98,6 +98,9 @@ def _item(
     model: Optional[dict] = None,
     archived: bool = False,
     fingerprint: Optional[str] = None,
+    pair_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> dict:
     return {
         "id": item_id,
@@ -112,6 +115,10 @@ def _item(
         "fileUrl": file_url,
         "threadId": thread_id,
         "threadTitle": thread_title,
+        # Origin links: compare pair, project, or training run.
+        "pairId": pair_id,
+        "projectId": project_id,
+        "runId": run_id,
         "textOnly": text_only,
         "model": model,
         "archived": archived,
@@ -418,8 +425,11 @@ def _attachment_items() -> list[dict]:
     items = []
     for attachment in list_chat_attachments():
         content_type = str(attachment.get("contentType") or "").split(";", 1)[0].strip().lower()
-        has_bytes = attachment.get("type") in ("image", "audio") or content_type.startswith(
-            ("image/", "audio/", "video/")
+        # A document sent with its original file (core.chat_originals) serves that file, not text.
+        has_bytes = (
+            attachment.get("type") in ("image", "audio")
+            or content_type.startswith(("image/", "audio/", "video/"))
+            or bool(attachment.get("hasOriginal"))
         )
         message_id, attachment_id = attachment["messageId"], attachment["id"]
         items.append(
@@ -434,6 +444,7 @@ def _attachment_items() -> list[dict]:
                 thread_id = attachment.get("threadId"),
                 thread_title = attachment.get("threadTitle"),
                 text_only = not has_bytes,
+                pair_id = attachment.get("pairId"),
             )
         )
     return items
@@ -540,6 +551,45 @@ def _tree_stats(path: Path) -> tuple[int, float, os.stat_result]:
     return total, newest, info
 
 
+_EXPORT_SUFFIX_RE = re.compile(r"[-_](gguf|adapter|merged|finetune)$", re.IGNORECASE)
+
+
+def _training_runs_by_dir() -> dict[str, str]:
+    """Output folder name to the id of the newest training run that wrote it."""
+    from storage.studio_db import get_connection
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, output_dir FROM training_runs WHERE output_dir IS NOT NULL"
+            " ORDER BY started_at"
+        ).fetchall()
+    except Exception:
+        logger.debug("library.training_runs_unavailable", exc_info = True)
+        return {}
+    finally:
+        conn.close()
+    return {Path(row["output_dir"]).name: row["id"] for row in rows if row["output_dir"]}
+
+
+def _model_run_id(path: str, origin: str, runs: dict[str, str]) -> Optional[str]:
+    """The training run a model came out of: its own folder under outputs/, or for an export the
+    run folder it was saved under (``{run}/{checkpoint}``, or ``{run}-GGUF`` and the like)."""
+    from utils.paths.storage_roots import exports_root, outputs_root
+
+    root = outputs_root() if origin == "training" else exports_root()
+    try:
+        top = Path(path).resolve().relative_to(Path(root).resolve()).parts[0]
+    except (ValueError, IndexError, OSError):
+        return None
+    while top and top not in runs:
+        stripped = _EXPORT_SUFFIX_RE.sub("", top)
+        if stripped == top:
+            break
+        top = stripped
+    return runs.get(top)
+
+
 def _model_items() -> list[dict]:
     from utils.models.model_config import (
         get_base_model_from_checkpoint,
@@ -556,6 +606,7 @@ def _model_items() -> list[dict]:
         (name, path, "exported", export_type, base_model)
         for name, path, export_type, base_model in scan_exported_models(str(exports_root()))
     )
+    runs = _training_runs_by_dir() if found else {}
     items = []
     for name, path, origin, model_type, base_model in found:
         stats_path = Path(path)
@@ -588,25 +639,39 @@ def _model_items() -> list[dict]:
                     "baseModel": base_model,
                 },
                 fingerprint = _fingerprint(info),
+                run_id = _model_run_id(path, origin, runs),
             )
         )
     return items
 
 
-def _sandbox_sessions() -> list[tuple[str, Optional[str], Optional[str]]]:
-    """(session id, thread id, title) for every chat or project that can own a sandbox."""
+class _SandboxSession(NamedTuple):
+    session_id: str
+    thread_id: Optional[str]
+    title: Optional[str]
+    pair_id: Optional[str] = None
+    project_id: Optional[str] = None
+
+
+def _sandbox_sessions() -> list[_SandboxSession]:
+    """Every chat or project that can own a sandbox."""
     from storage.studio_db import get_connection
 
     conn = get_connection()
     try:
         threads = conn.execute(
-            "SELECT id, title FROM chat_threads WHERE project_id IS NULL"
+            "SELECT id, title, pair_id FROM chat_threads WHERE project_id IS NULL"
         ).fetchall()
         projects = conn.execute("SELECT id, name, root_path FROM chat_projects").fetchall()
     finally:
         conn.close()
-    return [(row["id"], row["id"], row["title"]) for row in threads] + [
-        (f"{_PROJECT_SESSION_PREFIX}{row['id']}", None, row["name"])
+    return [
+        _SandboxSession(row["id"], row["id"], row["title"], pair_id = row["pair_id"])
+        for row in threads
+    ] + [
+        _SandboxSession(
+            f"{_PROJECT_SESSION_PREFIX}{row['id']}", None, row["name"], project_id = row["id"]
+        )
         for row in projects
         if _studio_project_root(row["root_path"])
     ]
@@ -766,7 +831,7 @@ def _sandbox_items() -> list[dict]:
 
     items = []
     generation = _LISTING.generation
-    for session_id, thread_id, title in _sandbox_sessions():
+    for session_id, thread_id, title, pair_id, project_id in _sandbox_sessions():
         try:
             directory = os.path.realpath(resolve_sandbox_workdir(session_id))
             names = _sandbox_listing_names(directory) if os.path.isdir(directory) else []
@@ -793,6 +858,8 @@ def _sandbox_items() -> list[dict]:
                     thread_id = thread_id,
                     thread_title = title,
                     fingerprint = _fingerprint(info),
+                    pair_id = pair_id,
+                    project_id = project_id,
                 )
             )
     return items

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { MAX_DOCUMENT_PREVIEW_BYTES } from "@/components/file-viewer";
 import { translate } from "@/i18n";
 import { type RefObject, useEffect, useState } from "react";
 import {
@@ -71,6 +72,40 @@ export function useLibraryPreviewUrl(
     return true;
   };
   return { url: current?.url ?? null, error: current?.error ?? null, retry };
+}
+
+/** The item's bytes for a document viewer once `enabled`, or why they cannot be shown. */
+export function useLibraryDocument(
+  item: LibraryItem,
+  enabled: boolean,
+): { file: Blob | null; error: string | null } {
+  const key = itemVersion(item);
+  const [state, setState] = useState<{ key: string; file?: Blob; error?: string } | null>(null);
+  const tooLarge = item.sizeBytes !== null && item.sizeBytes > MAX_DOCUMENT_PREVIEW_BYTES;
+  useEffect(() => {
+    if (!enabled || tooLarge) return;
+    let cancelled = false;
+    fetchLibraryBlob(item, item.contentType, MAX_DOCUMENT_PREVIEW_BYTES).then(
+      (file) => !cancelled && setState({ key, file }),
+      (err: unknown) =>
+        !cancelled &&
+        setState({
+          key,
+          error:
+            err instanceof LibraryFileTooLarge
+              ? translate("library.preview.tooLargeToPreview")
+              : errorMessage(err),
+        }),
+    );
+    return () => {
+      cancelled = true;
+    };
+    // `key` carries the item's identity and version; the object itself changes on every refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, enabled]);
+  if (enabled && tooLarge) return { file: null, error: translate("library.preview.tooLargeToPreview") };
+  const current = enabled && state?.key === key ? state : null;
+  return { file: current?.file ?? null, error: current?.error ?? null };
 }
 
 /** A card's picture once `enabled`: a bounded thumbnail of the image, or a video's first frame,

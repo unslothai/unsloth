@@ -269,6 +269,7 @@ export {
   isAudioAttachment,
   parseAttachmentText,
   readAttachmentText,
+  repackDocxAttachmentArchive,
   truncateAttachmentPreviewText,
 } from "./attachment-content";
 export { ApiProviderLogo } from "./api-provider-logo";

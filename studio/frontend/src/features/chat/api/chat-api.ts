@@ -855,7 +855,20 @@ export async function listChatAttachments(
   };
 }
 
-/** Stored attachment content (image bytes or extracted text) as a Blob. */
+/** Keeps a document's original file on the server, by content hash, for the attachment to name. */
+export async function uploadChatAttachmentOriginal(
+  file: File,
+): Promise<{ sha256: string; sizeBytes: number }> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const response = await authFetch("/api/chat/attachment-originals", {
+    method: "POST",
+    body: form,
+  });
+  return parseJsonOrThrow<{ sha256: string; sizeBytes: number }>(response);
+}
+
+/** Stored attachment content (a document's original file, image bytes or extracted text) as a Blob. */
 export async function fetchChatAttachmentBlob(
   messageId: string,
   attachmentId: string,

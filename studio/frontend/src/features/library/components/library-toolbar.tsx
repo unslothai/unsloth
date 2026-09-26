@@ -327,7 +327,7 @@ export function LibraryToolbar({
           </button>
         ))}
         {/* Outlined on light; a lighter fill than the page on dark, where an outline reads as a hole. */}
-        <label className="relative ml-2 flex h-9 w-[min(18rem,28vw)] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
+        <label className="relative ml-2 flex h-9 w-[min(15rem,24vw)] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
           <HugeiconsIcon
             icon={Search01Icon}
             strokeWidth={1.75}

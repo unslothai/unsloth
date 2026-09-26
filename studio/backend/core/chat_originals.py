@@ -1,0 +1,130 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The original files of documents sent in chat.
+
+A chat keeps a document's extracted text for the model; the file itself (a PDF, a Word document, a
+workbook or a deck) is kept here so it can be opened as it looked. Each is stored once under its
+SHA-256, which the attachment records as ``{"original": {"sha256", "sizeBytes"}}``: a fork or an
+import copies the reference, never the bytes, and a retried send stores nothing new.
+
+A file no attachment references any more is removed by ``sweep``, once it is older than an hour, so
+one uploaded moments before its message is saved is never taken.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import threading
+import time
+import uuid
+from pathlib import Path
+from typing import Iterable, Optional
+
+from loggers import get_logger
+from utils.paths.storage_roots import account_path
+
+logger = get_logger(__name__)
+
+# The documents a chat can show as pages or a grid. Anything else keeps its text alone.
+EXTENSIONS = frozenset({".pdf", ".docx", ".xlsx", ".xlsm", ".pptx"})
+# As the chat's own document ceiling (MAX_OPEN_DOCUMENT_ARCHIVE_BYTES in the frontend).
+MAX_BYTES = 50 * 1024 * 1024
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SWEEP_GRACE_SECONDS = 3600
+_SWEEP_INTERVAL_SECONDS = 600
+_sweep_lock = threading.Lock()
+_last_sweep = 0.0
+
+
+class TooLarge(Exception):
+    pass
+
+
+def originals_dir() -> Path:
+    path = account_path("chat-originals")
+    path.mkdir(parents = True, exist_ok = True)
+    return path
+
+
+def attachment_sha256(attachment: object) -> Optional[str]:
+    """The hash an attachment's ``original`` names, when it is a well-formed one."""
+    if not isinstance(attachment, dict):
+        return None
+    original = attachment.get("original")
+    sha256 = original.get("sha256") if isinstance(original, dict) else None
+    return sha256 if isinstance(sha256, str) and _SHA256_RE.match(sha256) else None
+
+
+def attachment_size(attachment: object) -> Optional[int]:
+    original = attachment.get("original") if isinstance(attachment, dict) else None
+    size = original.get("sizeBytes") if isinstance(original, dict) else None
+    return size if isinstance(size, int) and size >= 0 and attachment_sha256(attachment) else None
+
+
+def path_for(attachment: object) -> Optional[Path]:
+    """The stored original of an attachment, if it has one and it is still on disk."""
+    sha256 = attachment_sha256(attachment)
+    if sha256 is None:
+        return None
+    path = originals_dir() / sha256
+    return path if path.is_file() else None
+
+
+def save(chunks: Iterable[bytes]) -> tuple[str, int]:
+    """Store streamed bytes under their hash: (sha256, size). Raises TooLarge past MAX_BYTES."""
+    directory = originals_dir()
+    tmp_path = directory / f".{uuid.uuid4().hex}.tmp"
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with open(tmp_path, "wb") as handle:
+            for chunk in chunks:
+                size += len(chunk)
+                if size > MAX_BYTES:
+                    raise TooLarge()
+                digest.update(chunk)
+                handle.write(chunk)
+        sha256 = digest.hexdigest()
+        final_path = directory / sha256
+        if final_path.exists():
+            # Already kept: refresh its age, so a sweep racing this send leaves it be.
+            os.utime(final_path)
+        else:
+            os.replace(tmp_path, final_path)
+        return sha256, size
+    finally:
+        tmp_path.unlink(missing_ok = True)
+
+
+def sweep(force: bool = False) -> int:
+    """Remove originals no attachment references, older than the grace period. At most once every
+    few minutes unless ``force``. Returns how many were removed."""
+    global _last_sweep
+    from storage.studio_db import referenced_chat_original_hashes
+
+    now = time.time()
+    with _sweep_lock:
+        if not force and now - _last_sweep < _SWEEP_INTERVAL_SECONDS:
+            return 0
+        _last_sweep = now
+    try:
+        referenced = referenced_chat_original_hashes()
+        removed = 0
+        with os.scandir(originals_dir()) as entries:
+            for entry in entries:
+                is_original = _SHA256_RE.match(entry.name) is not None
+                if (is_original and entry.name in referenced) or not entry.is_file():
+                    continue
+                if now - entry.stat().st_mtime < _SWEEP_GRACE_SECONDS:
+                    continue
+                # Unreferenced originals, and temp files a crashed upload left behind.
+                if is_original or entry.name.endswith(".tmp"):
+                    os.unlink(entry.path)
+                    removed += 1
+        return removed
+    except Exception:
+        logger.debug("chat_originals.sweep_failed", exc_info = True)
+        return 0

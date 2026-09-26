@@ -18,7 +18,14 @@ import {
   OPEN_DOCUMENT_TEXT_MIME,
 } from "./open-document-accept";
 
-export type AttachmentTextLabel = "PDF" | "DOCX" | "HTML" | "ODS" | "ODT";
+export type AttachmentTextLabel =
+  | "PDF"
+  | "DOCX"
+  | "HTML"
+  | "ODS"
+  | "ODT"
+  | "XLSX"
+  | "PPTX";
 
 export { TEXT_ATTACHMENT_ACCEPT };
 
@@ -37,7 +44,7 @@ const PDF_ATTACHMENT_RE = /\.pdf$/i;
 const DOCX_ATTACHMENT_RE = /\.docx$/i;
 const HTML_ATTACHMENT_RE = /\.x?html?$/i;
 const OPEN_DOCUMENT_ATTACHMENT_RE = /\.(ods|odt)$/i;
-const LABELLED_ATTACHMENT_TEXT_RE = /^\[(PDF|DOCX|HTML|ODS|ODT): [^\n]*\]\n/;
+const LABELLED_ATTACHMENT_TEXT_RE = /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX): [^\n]*\]\n/;
 const ATTACHMENT_TAG_OPEN_RE = /^<attachment name=[^\n]*>\n/;
 const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 // Both wrappers start on the first line, so only a prefix is matched against.
@@ -498,7 +505,7 @@ function isTextAttachment(
 // loses the typed message along with the file.
 export function getDocumentAttachmentSizeError(
   file: File,
-  label: "PDF" | "DOCX",
+  label: "PDF" | "DOCX" | "XLSX" | "PPTX",
 ): string | null {
   return file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES
     ? `${label} file is too large: ${file.name}`
@@ -727,6 +734,35 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
   } finally {
     await pdf.destroy();
   }
+}
+
+/** Sheet rows as TSV, or slide text, for the model. Uses the viewer's readers. */
+export async function extractOfficeAttachmentText(
+  file: File,
+  label: "XLSX" | "PPTX",
+): Promise<string> {
+  const [{ readPptx, readXlsx }, buffer] = await Promise.all([
+    import("@/components/file-viewer/office"),
+    file.arrayBuffer(),
+  ]);
+  const bytes = new Uint8Array(buffer);
+  if (label === "PPTX") {
+    return readPptx(bytes)
+      .slides.map((slide, index) => {
+        const lines = slide.boxes.flatMap((box) => box.paragraphs?.map((p) => p.text) ?? []);
+        return [`Slide ${index + 1}`, ...lines].join("\n");
+      })
+      .join("\n\n");
+  }
+  return readXlsx(bytes)
+    .map((sheet) => {
+      const rows = sheet.rows
+        .filter(Boolean)
+        .map((row) => Array.from(row, (cell) => cell?.text ?? "").join("\t").trimEnd())
+        .filter((line) => line.length > 0);
+      return [`Sheet: ${sheet.name}`, ...rows].join("\n");
+    })
+    .join("\n\n");
 }
 
 export async function extractDocxAttachmentText(file: File): Promise<string> {

@@ -118,10 +118,9 @@ const SCRIPTABLE_TYPES = new Set([
   "application/xml",
 ]);
 
-export type EmbeddedBody = "image" | "pdf" | "audio" | "video";
+export type EmbeddedBody = "image" | "audio" | "video";
 
 export function embeddedBlobType(body: EmbeddedBody, serverType: string): string {
-  if (body === "pdf") return "application/pdf";
   const type = baseType(serverType);
   return type.startsWith(`${body}/`) && !SCRIPTABLE_TYPES.has(type) ? type : OPAQUE_TYPE;
 }
