@@ -25,17 +25,11 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
-# The one action pair still missing from the filters of the six workflows that use it
-# (consolidated-tests-ci, mlx-ci, notebooks-ci, studio-backend-ci, studio-export-capability-ci,
-# version-compat-ci). Every other local action in the repo is already listed, by its
-# action.yml, which is the convention this guard enforces.
-#
-# Waived rather than fixed here because adding them means touching six workflows unrelated to
-# this change. The test below deletes the waiver's right to exist as soon as that is done.
-_PRE_EXISTING = {
-    ".github/actions/pip-cache-restore",
-    ".github/actions/pip-cache-save",
-}
+# Local actions a path-filtered workflow may use without listing. Empty: the pip cache pair,
+# the last entry here, is now listed by every workflow that uses it. Growing this again needs
+# a reason written next to the entry, and the test below removes an entry that is no longer
+# needed.
+_PRE_EXISTING: set = set()
 
 
 def _triggers(doc: dict) -> dict:

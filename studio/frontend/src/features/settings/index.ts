@@ -94,7 +94,8 @@ export {
   useKeyboardShortcutsStore,
 } from "./stores/keyboard-shortcuts-store";
 export type { ShortcutId } from "./lib/keyboard-shortcuts";
-export { useSettingsDialogStore } from "./stores/settings-dialog-store";
+export { SETTINGS_TABS, useSettingsDialogStore } from "./stores/settings-dialog-store";
+export { settingsTabVisible } from "./settings-tab-visibility";
 export type { SettingsTab } from "./stores/settings-dialog-store";
 export { requestSttDownload } from "./stores/stt-download-prompt-store";
 export {

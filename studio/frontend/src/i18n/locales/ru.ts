@@ -126,6 +126,16 @@ export const ru = {
     shutdown: "Выключить",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Документация",
+      keyboardShortcuts: "Сочетания клавиш",
+      whatsNew: "Что нового",
+      troubleshooting: "Устранение неполадок",
+      systemStatus: "Состояние системы",
+      sendFeedback: "Отправить отзыв",
+      about: "Об Unsloth",
+    },
     find: {
       label: "Поиск на странице",
       previous: "Предыдущее совпадение",
@@ -233,8 +243,6 @@ export const ru = {
       organizeChats: "Настроить чаты",
       organizeProjects: "Настроить проекты",
       sortPinnedChats: "Сортировать закреплённые чаты",
-      moveUp: "Переместить вверх",
-      moveDown: "Переместить вниз",
     },
     dialog: {
       deleteChat: {

@@ -124,6 +124,16 @@ export const ko = {
     shutdown: "종료",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "문서",
+      keyboardShortcuts: "키보드 단축키",
+      whatsNew: "새로운 기능",
+      troubleshooting: "문제 해결",
+      systemStatus: "시스템 상태",
+      sendFeedback: "피드백 보내기",
+      about: "Unsloth 정보",
+    },
     find: {
       label: "페이지에서 찾기",
       previous: "이전 결과",
@@ -231,8 +241,6 @@ export const ko = {
       organizeChats: "채팅 정리",
       organizeProjects: "프로젝트 정리",
       sortPinnedChats: "고정된 채팅 정렬",
-      moveUp: "위로 이동",
-      moveDown: "아래로 이동",
     },
     dialog: {
       deleteChat: {

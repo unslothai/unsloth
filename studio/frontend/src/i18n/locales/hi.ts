@@ -127,6 +127,16 @@ export const hi = {
     shutdown: "शटडाउन",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "दस्तावेज़",
+      keyboardShortcuts: "कीबोर्ड शॉर्टकट",
+      whatsNew: "नया क्या है",
+      troubleshooting: "समस्या निवारण",
+      systemStatus: "सिस्टम स्थिति",
+      sendFeedback: "फ़ीडबैक भेजें",
+      about: "Unsloth के बारे में",
+    },
     find: {
       label: "पेज में खोजें",
       previous: "पिछला मिलान",
@@ -234,8 +244,6 @@ export const hi = {
       organizeChats: "चैट व्यवस्थित करें",
       organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
-      moveUp: "ऊपर ले जाएँ",
-      moveDown: "नीचे ले जाएँ",
     },
     dialog: {
       deleteChat: {

@@ -127,6 +127,16 @@ export const fr = {
     shutdown: "Arrêter",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Documentation",
+      keyboardShortcuts: "Raccourcis clavier",
+      whatsNew: "Nouveautés",
+      troubleshooting: "Dépannage",
+      systemStatus: "État du système",
+      sendFeedback: "Envoyer des commentaires",
+      about: "À propos d'Unsloth",
+    },
     find: {
       label: "Rechercher dans la page",
       previous: "Résultat précédent",
@@ -234,8 +244,6 @@ export const fr = {
       organizeChats: "Organiser les discussions",
       organizeProjects: "Organiser les projets",
       sortPinnedChats: "Trier les discussions épinglées",
-      moveUp: "Monter",
-      moveDown: "Descendre",
     },
     dialog: {
       deleteChat: {

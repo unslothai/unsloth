@@ -3654,7 +3654,13 @@ def scan_exported_models(
                     not is_appledouble_metadata(f)
                     for f in (*checkpoint_dir.glob("*.safetensors"), *checkpoint_dir.glob("*.bin"))
                 )
-                has_gguf = any(_iter_gguf_files(checkpoint_dir))
+                # Same filter as the flat layout: mmproj and imatrix files are not main models.
+                gguf_list = [
+                    f
+                    for f in _iter_gguf_files(checkpoint_dir)
+                    if not _is_mmproj(f.name) and not _is_imatrix_path(f.name)
+                ]
+                has_gguf = bool(gguf_list)
 
                 base_model = None
                 export_type = None
@@ -3677,7 +3683,6 @@ def scan_exported_models(
                         pass
                 elif has_gguf:
                     export_type = "gguf"
-                    gguf_list = list(_iter_gguf_files(checkpoint_dir))
                     # checkpoint_dir first, then run_dir (export.py writes metadata to the top-level dir)
                     for meta_dir in (checkpoint_dir, run_dir):
                         export_meta = meta_dir / "export_metadata.json"
@@ -3691,7 +3696,7 @@ def scan_exported_models(
                             pass
 
                     display_name = f"{run_dir.name} / {checkpoint_dir.name}"
-                    model_path = str(gguf_list[0]) if gguf_list else str(checkpoint_dir)
+                    model_path = str(gguf_list[0])
                     results.append((display_name, model_path, export_type, base_model))
                     logger.debug(f"Found GGUF export: {display_name}")
                     continue

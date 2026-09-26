@@ -123,6 +123,7 @@ class LoRAInfo(BaseModel):
     export_type: Optional[str] = Field(
         None, description = "'lora', 'merged', or 'gguf' (for exports)"
     )
+    size_bytes: Optional[int] = Field(None, description = "Bytes the model takes on disk")
     audio_type: Optional[str] = Field(
         None,
         description = (
