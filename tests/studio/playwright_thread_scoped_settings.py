@@ -23,6 +23,15 @@ from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _playwright_robust import (  # noqa: E402
+    install_wall_clock_watchdog,
+    report_failing_step,
+    step_budget_s,
+    wait_for_settled,
+    wait_until,
+)
+
 BASE = os.environ["BASE_URL"]
 NEW = os.environ["STUDIO_NEW_PW"]
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright"))
@@ -39,12 +48,49 @@ GLOBAL_KEYS = (
     "unsloth_chat_confirm_tool_calls",
 )
 
+# Each step drives a few clicks and reads; a hosted runner does one in a few seconds. A step
+# that runs past its budget stops the run, named, instead of the next steps waiting out their
+# own timeouts. The inactivity budget is the old worst case of one step's waits.
+STEP_BUDGET_S = step_budget_s(max(180.0, 6 * TIMEOUT_MS / 1000))
+# Sign-in chains its own 60 s navigations and form waits, then the model unload.
+SIGN_IN_BUDGET_S = step_budget_s(max(360.0, 12 * TIMEOUT_MS / 1000))
+WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "600"))
+# The snapshot write and the settings mirror are both debounced 400 ms
+# (THREAD_SETTINGS_DEBOUNCE_MS / SETTINGS_DEBOUNCE_MS in chat-runtime-store.ts), so /api/chat
+# traffic has to stay quiet for longer than that before a thread counts as settled.
+CHAT_QUIET_S = 0.6
+
 _step = [0]
+_watchdog = None
+# /api/chat requests in flight and when the last one started or ended; see settle().
+_chat_traffic = {"inflight": 0, "last": 0.0}
 
 
-def step(message):
+def step(message, budget_s = None):
     _step[0] += 1
-    print(f"[thread-settings] STEP {_step[0]}: {message}", flush = True)
+    name = f"{_step[0]}: {message}"
+    print(f"[thread-settings] STEP {name}", flush = True)
+    if _watchdog is not None:
+        _watchdog.begin_step(name, STEP_BUDGET_S if budget_s is None else budget_s)
+
+
+def track_chat_traffic(page):
+    def is_chat(request):
+        return "/api/chat/" in request.url
+
+    def started(request):
+        if is_chat(request):
+            _chat_traffic["inflight"] += 1
+            _chat_traffic["last"] = time.monotonic()
+
+    def ended(request):
+        if is_chat(request):
+            _chat_traffic["inflight"] = max(0, _chat_traffic["inflight"] - 1)
+            _chat_traffic["last"] = time.monotonic()
+
+    page.on("request", started)
+    page.on("requestfinished", ended)
+    page.on("requestfailed", ended)
 
 
 def fail(message):
@@ -89,7 +135,7 @@ def api(
 
 
 def sign_in(page):
-    step("sign in, then land on /chat")
+    step("sign in, then land on /chat", SIGN_IN_BUDGET_S)
     page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
     try:
         page.locator("#new-password").wait_for(state = "visible", timeout = 15_000)
@@ -253,7 +299,32 @@ def unload_any_model(page, token):
         }""",
         {"base": BASE, "token": token, "modelPath": loaded},
     )
-    page.wait_for_timeout(1500)
+    # Until the unload has finished, instead of a fixed 1.5 s. Not fatal here, as the pause was
+    # not: a pill that stays disabled fails the step that clicks it.
+    try:
+        wait_until(
+            lambda: not _loaded_model(page, token),
+            timeout_s = 60,
+            what = f"{loaded!r} to unload",
+            interval_s = 0.25,
+            page = page,
+        )
+    except TimeoutError as exc:
+        print(f"[thread-settings] WARN {exc}", flush = True)
+
+
+def _loaded_model(page, token):
+    status = page.evaluate(
+        """async ({ base, token }) => {
+            const res = await fetch(base + "/api/inference/status", {
+                headers: { Authorization: "Bearer " + token },
+            });
+            if (!res.ok) return null;
+            return await res.json();
+        }""",
+        {"base": BASE, "token": token},
+    ) or {}
+    return status.get("model_identifier") or (status.get("loaded") or [None])[0]
 
 
 def settle(page):
@@ -261,8 +332,16 @@ def settle(page):
     page.locator('button[data-pill-label="Search"]:visible').first.wait_for(
         state = "visible", timeout = TIMEOUT_MS
     )
-    # the snapshot arrives on a GET, and the pin write is debounced behind it.
-    page.wait_for_timeout(1200)
+    # the snapshot arrives on a GET, and the pin write is debounced behind it. Instead of a fixed
+    # 1.2 s, wait until /api/chat has been quiet for longer than that debounce.
+    wait_until(
+        lambda: _chat_traffic["inflight"] == 0
+        and time.monotonic() - _chat_traffic["last"] >= CHAT_QUIET_S,
+        timeout_s = TIMEOUT_MS / 1000,
+        what = "/api/chat traffic to settle",
+        interval_s = 0.05,
+        page = page,
+    )
 
 
 def pill(page, label):
@@ -300,6 +379,23 @@ def read_globals(page):
         """(keys) => Object.fromEntries(keys.map((k) => [k, localStorage.getItem(k)]))""",
         list(GLOBAL_KEYS),
     )
+
+
+def _wait_globals(page, expected):
+    """Until the Search default in localStorage reads `expected`, instead of a fixed 600 ms.
+
+    Gives up quietly after 10 s: the caller's own check then reports the value it found.
+    """
+    try:
+        wait_until(
+            lambda: read_globals(page)["unsloth_chat_tools_enabled"] == expected,
+            timeout_s = 10,
+            what = f"the Search default to read {expected}",
+            interval_s = 0.1,
+            page = page,
+        )
+    except TimeoutError:
+        pass
 
 
 def check_reasoning_transcript(page, token):
@@ -363,6 +459,7 @@ def check_reasoning_transcript(page, token):
     # nothing was going to move. A reader keeps scrolling; so does this, bounded.
     for _ in range(12):
         page.mouse.wheel(0, 100000)
+        # Kept: the pause between wheel turns of a bounded scroll loop, which checks its condition each turn.
         page.wait_for_timeout(250)
         if "Step 0399." in body.inner_text():
             break
@@ -373,20 +470,24 @@ def check_reasoning_transcript(page, token):
 
     trigger.click()
     expect(transcript).to_have_count(0)
-    page.wait_for_timeout(300)
+    wait_for_settled(trigger)
     header_top = trigger.bounding_box()["y"]
     trigger.click()
     expect(body).to_contain_text("Step 0000.")
-    page.wait_for_timeout(300)
+    wait_for_settled(trigger)
     assert abs(trigger.bounding_box()["y"] - header_top) < 3, "reopening moved the header"
 
 
 def main():
+    global _watchdog
+    _watchdog = install_wall_clock_watchdog(WALL_TIMEOUT_S, label = "thread-settings")
+    report_failing_step(_watchdog, label = "thread-settings")
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(args = ["--no-sandbox", "--disable-dev-shm-usage"])
         context = browser.new_context(viewport = {"width": 1280, "height": 900})
         page = context.new_page()
         page.set_default_timeout(TIMEOUT_MS)
+        track_chat_traffic(page)
         page_errors = []
         page.on("pageerror", lambda e: page_errors.append(str(e)))
 
@@ -401,12 +502,12 @@ def main():
         # chat would stop every toggle made before the first message from persisting at all.
         settle(page)
         pill(page, "Search").click()
-        page.wait_for_timeout(600)
+        _wait_globals(page, "true")
         enabled_globals = read_globals(page)
         if enabled_globals["unsloth_chat_tools_enabled"] != "true":
             fail(f"an unsaved chat's edit never reached the defaults: {enabled_globals!r}")
         pill(page, "Search").click()
-        page.wait_for_timeout(600)
+        _wait_globals(page, "false")
         disabled_globals = read_globals(page)
         if disabled_globals["unsloth_chat_tools_enabled"] != "false":
             fail(f"toggling back never reached the defaults: {disabled_globals!r}")
@@ -503,7 +604,7 @@ def main():
         step("a chat edited before it had modes of its own keeps the new defaults")
         # no chat is open, so this moves the defaults every snapshot-less chat follows.
         pill(page, "Search").click()
-        page.wait_for_timeout(600)
+        _wait_globals(page, "true")
         moved = read_globals(page)
         if moved["unsloth_chat_tools_enabled"] != "true":
             fail(f"a new-chat edit did not reach the defaults: {moved!r}")
@@ -545,6 +646,7 @@ def main():
         context.close()
         browser.close()
 
+    _watchdog.cancel()
     print("[thread-settings] PASS", flush = True)
 
 
