@@ -2167,3 +2167,337 @@ def test_adversarial_display_names_do_not_break_provenance(tmp_path, monkeypatch
 
     # Stored verbatim; escaping is the renderer's job.
     assert provisional_tool_provenance("mcp__srv1__run")["mcp_server"] == display
+
+
+# ── core/inference/tools: compact MCP schemas ───────────────────────
+
+
+def _big_mcp_tool():
+    return {
+        "name": "query",
+        "description": "Query rows. Use SQL mode by default.\nLong details follow.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {"q": {"type": "string", "description": "x" * 900}},
+                        },
+                        {"type": "object"},
+                    ]
+                },
+                "mode": {"type": "string", "enum": ["sql", "rows"], "description": "y" * 800},
+                "tags": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["data"],
+        },
+    }
+
+
+def _cache_server_tools(tmp_path, monkeypatch, tools):
+    from core.inference import mcp_client, tools as tools_mod
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(tools_mod, "_MCP_COMPACTED_WINDOWS", {})
+    mcp_servers_db.create_server(id = "srv1", display_name = "A", url = "https://a.example/mcp")
+    mcp_client.cache_tools("srv1", tools)
+
+
+@pytest.fixture
+def listing_window():
+    from core.inference import tools as tools_mod
+
+    tokens = []
+
+    def _set(context_tokens):
+        tokens.append(tools_mod._MCP_LISTING_CONTEXT_TOKENS.set(context_tokens))
+        return context_tokens
+
+    yield _set
+    for token in reversed(tokens):
+        tools_mod._MCP_LISTING_CONTEXT_TOKENS.reset(token)
+
+
+@pytest.fixture
+def compacting(monkeypatch, listing_window):
+    """A window every MCP listing overflows, so large tools are always compacted."""
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_MCP_FULL_LISTING_SHARE", 0.0)
+    return listing_window(100_000)
+
+
+_PING = {
+    "name": "ping",
+    "description": "Ping. Returns pong.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {"n": {"type": "integer", "description": "count"}},
+    },
+}
+
+
+def test_mcp_listing_stays_full_when_it_fits_the_window(tmp_path, monkeypatch, listing_window):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, [_PING, _big_mcp_tool()])
+    unsized = tools_mod.cached_mcp_tools()[0]
+    assert [s["function"]["name"] for s in unsized] == ["mcp__srv1__ping", "mcp__srv1__query"]
+    assert unsized[1]["function"]["parameters"] == _big_mcp_tool()["inputSchema"]
+
+    listing_window(1_000_000)
+    assert tools_mod.cached_mcp_tools()[0] == unsized
+    assert tools_mod._MCP_COMPACTED_WINDOWS == {1_000_000: False}
+
+    listing_window(1_000)
+    specs = tools_mod.cached_mcp_tools()[0]
+    assert tools_mod._MCP_COMPACTED_WINDOWS[1_000] is True
+    assert specs[0] == unsized[0]
+    assert specs[1]["function"]["parameters"] != unsized[1]["function"]["parameters"]
+    assert specs[2] == tools_mod.MCP_TOOL_SCHEMA_TOOL
+
+
+def test_mcp_listing_compacts_large_schemas(tmp_path, monkeypatch, compacting):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, [_PING, _big_mcp_tool()])
+    specs = tools_mod.cached_mcp_tools()[0]
+    assert specs[0]["function"]["description"] == "[A] Ping. Returns pong."
+    assert specs[0]["function"]["parameters"] == _PING["inputSchema"]
+    compact = specs[1]["function"]
+    assert compact["name"] == "mcp__srv1__query"
+    assert compact["description"] == "[A] Query rows. Full parameters via mcp_tool_schema."
+    assert compact["parameters"] == {
+        "type": "object",
+        "properties": {
+            "data": {"type": "object"},
+            "mode": {"type": "string", "enum": ["sql", "rows"]},
+            "tags": {"type": "array"},
+        },
+        "required": ["data"],
+    }
+
+
+def test_mcp_summary_caps_a_description_without_a_sentence_end():
+    from core.inference.tools import _mcp_summary
+
+    assert _mcp_summary("  Fetch a page\n by id.  Then more. ") == "Fetch a page by id."
+    assert _mcp_summary("## Overview\n\nCreates pages. Details.") == "Overview Creates pages."
+    long = _mcp_summary("word " * 100)
+    assert len(long) == 240 and long.endswith("...")
+
+
+def test_mcp_tool_lists_offer_the_schema_tool_only_when_something_was_compacted(
+    tmp_path, monkeypatch, compacting
+):
+    import asyncio
+
+    from core.inference import mcp_client, tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, [{"name": "ping"}])
+    specs, complete = tools_mod.cached_mcp_tools()
+    assert complete is True
+    assert [s["function"]["name"] for s in specs] == ["mcp__srv1__ping"]
+    assert asyncio.run(tools_mod.get_enabled_mcp_tools()) == specs
+
+    mcp_client.cache_tools("srv1", [{"name": "ping"}, _big_mcp_tool()])
+    names = [s["function"]["name"] for s in tools_mod.cached_mcp_tools()[0]]
+    assert names == ["mcp__srv1__ping", "mcp__srv1__query", "mcp_tool_schema"]
+    assert [s["function"]["name"] for s in asyncio.run(tools_mod.get_enabled_mcp_tools())] == names
+
+
+def test_execute_tool_answers_a_compacted_call_missing_required_args_with_its_schema(
+    tmp_path, monkeypatch, compacting
+):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, [_big_mcp_tool()])
+    tools_mod.cached_mcp_tools()
+    calls = []
+    monkeypatch.setattr(tools_mod, "call_tool_sync", lambda **kwargs: calls.append(kwargs) or "ran")
+
+    out = tools_mod.execute_tool("mcp__srv1__query", {"mode": "sql"}, context_tokens = compacting)
+    assert out.startswith("Error: MCP tool 'query' requires data.\n\n[A] query: Query rows.")
+    assert json.dumps(_big_mcp_tool()["inputSchema"], separators = (",", ":")) in out
+    assert calls == []
+
+    assert (
+        tools_mod.execute_tool("mcp__srv1__query", {"data": {}}, context_tokens = compacting) == "ran"
+    )
+    assert calls[0]["name"] == "query" and calls[0]["args"] == {"data": {}}
+
+
+def test_execute_tool_returns_the_schema_with_a_rejected_compacted_call(
+    tmp_path, monkeypatch, listing_window
+):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, [_big_mcp_tool()])
+    rejected = "Error: data: 'q' is a required property"
+    monkeypatch.setattr(tools_mod, "call_tool_sync", lambda **kwargs: rejected)
+    schema = json.dumps(_big_mcp_tool()["inputSchema"], separators = (",", ":"))
+
+    fits = listing_window(1_000_000)
+    tools_mod.cached_mcp_tools()
+    assert (
+        tools_mod.execute_tool("mcp__srv1__query", {"mode": "sql"}, context_tokens = fits) == rejected
+    )
+    assert tools_mod.execute_tool("mcp__srv1__query", {"data": {}}, context_tokens = fits) == rejected
+
+    monkeypatch.setattr(tools_mod, "_MCP_FULL_LISTING_SHARE", 0.0)
+    overflows = listing_window(100_000)
+    tools_mod.cached_mcp_tools()
+    out = tools_mod.execute_tool("mcp__srv1__query", {"data": {}}, context_tokens = overflows)
+    assert out == rejected + "\n\n" + tools_mod._mcp_tool_schema_text("A", _big_mcp_tool())
+    assert schema in out
+
+
+def test_execute_tool_mcp_tool_schema(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, [_big_mcp_tool()])
+    out = tools_mod.execute_tool("mcp_tool_schema", {"name": "mcp__srv1__query"})
+    assert out.startswith("[A] query: Query rows. Use SQL mode by default. Long details follow.")
+    assert out.endswith(json.dumps(_big_mcp_tool()["inputSchema"], separators = (",", ":")))
+    assert (
+        tools_mod.execute_tool("mcp_tool_schema", {"name": "mcp__srv1__nope"})
+        == "Error: MCP server 'A' does not list a tool named 'nope'"
+    )
+    assert (
+        tools_mod.execute_tool("mcp_tool_schema", {"name": "mcp__missing__query"})
+        == "Error: MCP server for tool 'query' not found"
+    )
+    assert tools_mod.execute_tool("mcp_tool_schema", {"name": "query"}).startswith(
+        "Error: mcp_tool_schema needs an MCP tool name"
+    )
+    assert not tools_mod.is_potentially_unsafe_tool_call("mcp_tool_schema", {"name": "x"})
+    assert not tools_mod.is_high_risk_tool_call("mcp_tool_schema", {"name": "x"})
+
+
+def test_mcp_compact_parameters_never_emit_an_empty_schema():
+    from core.inference.tools import _mcp_compact_parameters
+
+    compact = _mcp_compact_parameters(
+        {
+            "type": "object",
+            "properties": {
+                "labels": {"type": "array", "items": {"type": "string"}},
+                "assignees": {
+                    "anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]
+                },
+                "state": {"$ref": "#/$defs/State"},
+            },
+        }
+    )
+    assert compact["properties"] == {
+        "labels": {"type": "array"},
+        "assignees": {"type": ["array", "null"]},
+        "state": {"description": "See mcp_tool_schema."},
+    }
+    assert _mcp_compact_parameters({"$ref": "#/$defs/Args"}) == {"type": "object"}
+
+
+def test_compacted_mcp_call_arguments_are_typed_by_the_full_schema(
+    tmp_path, monkeypatch, compacting
+):
+    from core.inference import tools as tools_mod
+    from core.inference.tool_loop_controller import coerce_tool_arguments
+
+    tool = _big_mcp_tool()
+    tool["inputSchema"]["properties"]["filter"] = {
+        "type": "object",
+        "properties": {"archived": {"type": "boolean"}, "limit": {"type": "integer"}},
+    }
+    _cache_server_tools(tmp_path, monkeypatch, [tool])
+    specs = tools_mod.cached_mcp_tools()[0]
+    assert "archived" not in json.dumps(specs[0]["function"]["parameters"])
+    coerced = coerce_tool_arguments(
+        {"filter": '{"archived": "false", "limit": "25"}'},
+        heal = False,
+        tool_name = "mcp__srv1__query",
+        tool_schemas = specs,
+    )
+    assert coerced.arguments == {"filter": {"archived": False, "limit": 25}}
+
+
+def test_mcp_tool_schema_pages_a_schema_larger_than_the_result_room(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    tool = _big_mcp_tool()
+    tool["inputSchema"]["properties"]["notes"] = {"type": "string", "description": "z " * 12000}
+    _cache_server_tools(tmp_path, monkeypatch, [tool])
+    full = tools_mod._mcp_tool_schema_text("A", tool)
+    monkeypatch.setattr(tools_mod, "_loaded_context_tokens", lambda: 16384)
+    token = tools_mod._REQUEST_RESULT_BUDGET.set(2000)
+    try:
+        pages, offset = [], 0
+        for _ in range(50):
+            out = tools_mod.execute_tool(
+                "mcp_tool_schema", {"name": "mcp__srv1__query", "offset": offset}
+            )
+            body, marker, rest = out.partition("\n\n[Characters ")
+            pages.append(body)
+            if not marker:
+                break
+            offset = int(rest.split("offset=")[1].split(" ")[0])
+    finally:
+        tools_mod._REQUEST_RESULT_BUDGET.reset(token)
+    assert len(pages) > 1
+    assert "".join(pages) == full
+
+
+def test_hidden_large_mcp_tool_does_not_offer_the_schema_tool(tmp_path, monkeypatch, compacting):
+    from core.inference import tools as tools_mod
+
+    hidden = _big_mcp_tool()
+    hidden["_meta"] = {"ui": {"visibility": ["app"]}}
+    _cache_server_tools(tmp_path, monkeypatch, [{"name": "ping"}, hidden])
+    assert [s["function"]["name"] for s in tools_mod.cached_mcp_tools()[0]] == ["mcp__srv1__ping"]
+
+
+def test_mcp_tool_schema_does_not_reveal_an_app_only_tool(tmp_path, monkeypatch, compacting):
+    from core.inference import tools as tools_mod
+
+    hidden = {
+        "name": "widget_refresh",
+        "description": "Refresh the widget.",
+        "_meta": {"ui": {"visibility": ["app"]}},
+    }
+    _cache_server_tools(tmp_path, monkeypatch, [_big_mcp_tool(), hidden])
+    assert "mcp_tool_schema" in [s["function"]["name"] for s in tools_mod.cached_mcp_tools()[0]]
+    assert (
+        tools_mod.execute_tool("mcp_tool_schema", {"name": "mcp__srv1__widget_refresh"})
+        == "Error: MCP server 'A' does not list a tool named 'widget_refresh'"
+    )
+
+
+def test_compacted_alias_keeps_its_raw_name_and_resolves_its_schema(
+    tmp_path, monkeypatch, compacting
+):
+    from core.inference import tools as tools_mod
+    from core.inference.tool_loop_controller import coerce_tool_arguments
+
+    tool = _big_mcp_tool()
+    tool["name"] = "catalog.query"
+    tool["inputSchema"]["properties"]["filter"] = {
+        "type": "object",
+        "properties": {"limit": {"type": "integer"}},
+    }
+    _cache_server_tools(tmp_path, monkeypatch, [tool])
+    specs = tools_mod.cached_mcp_tools()[0]
+    spec = specs[0]["function"]
+    alias = spec["name"]
+    assert alias != "mcp__srv1__catalog.query"
+    assert (
+        spec["description"]
+        == "[A] (catalog.query) Query rows. Full parameters via mcp_tool_schema."
+    )
+    out = tools_mod.execute_tool("mcp_tool_schema", {"name": alias})
+    assert out.startswith("[A] catalog.query: Query rows.")
+    coerced = coerce_tool_arguments(
+        {"filter": '{"limit": "25"}'}, heal = False, tool_name = alias, tool_schemas = specs
+    )
+    assert coerced.arguments == {"filter": {"limit": 25}}

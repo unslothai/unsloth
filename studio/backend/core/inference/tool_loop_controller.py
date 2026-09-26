@@ -668,9 +668,20 @@ def _declared_properties(tool_name: str, tool_schemas) -> Any:
         function = tool.get("function") if isinstance(tool, Mapping) else None
         if not isinstance(function, Mapping) or function.get("name") != tool_name:
             continue
-        parameters = function.get("parameters")
+        parameters = _mcp_full_parameters(tool_name) or function.get("parameters")
         return parameters.get("properties") if isinstance(parameters, Mapping) else None
     return None
+
+
+def _mcp_full_parameters(tool_name: str) -> Any:
+    # A large MCP tool is listed with only its top-level parameters; type its arguments by the full schema.
+    if not tool_name.startswith("mcp__"):
+        return None
+    try:
+        from core.inference.tools import mcp_tool_input_schema  # noqa: PLC0415 -- cycle at import time
+        return mcp_tool_input_schema(tool_name)
+    except Exception:  # noqa: BLE001 -- typing must never break a chat
+        return None
 
 
 def coerce_tool_arguments(
