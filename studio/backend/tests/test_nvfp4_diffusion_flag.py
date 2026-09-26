@@ -564,6 +564,60 @@ def test_the_fast_dispatch_is_never_probed_or_verified(monkeypatch):
     assert touched == []
 
 
+def test_no_flashinfer_install_is_attempted(monkeypatch):
+    from core.inference import diffusion_nvfp4_install as inst
+
+    inst.reset_install_state()
+    touched = []
+    monkeypatch.setattr(inst, "_ensure", lambda *a, **k: touched.append("ensure") or (True, None))
+    monkeypatch.setattr(inst, "_import_flashinfer", lambda *a, **k: touched.append("import"))
+    commands = []
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(
+        0, run = lambda *a, **k: commands.append(a), owner = object()
+    )
+    assert ok is False and DISABLED in reason
+    assert touched == [] and commands == []
+    assert inst.last_install_reason() is None
+    assert inst.nvfp4_backend_fields("torchao") == {
+        "transformer_quant_backend": "torchao",
+        "transformer_quant_backend_reason": None,
+    }
+
+
+def test_the_loaders_never_ask_whether_an_nvfp4_checkpoint_will_load(monkeypatch):
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.video import VideoBackend
+
+    asked = []
+    monkeypatch.setattr(
+        "huggingface_hub.HfApi", lambda *a, **k: types.SimpleNamespace(model_info = asked.append)
+    )
+    assert (
+        DiffusionBackend._nvfp4_checkpoint_will_load(
+            object(), None, "Tongyi-MAI/Z-Image-Turbo", None, None
+        )
+        is False
+    )
+    assert (
+        VideoBackend._nvfp4_denoiser_checkpoint_will_load(
+            object(), _wan_a14b(), _WAN_T2V, None, None
+        )
+        is False
+    )
+    assert asked == []
+
+
+def test_enabled_the_install_gate_is_reached(monkeypatch):
+    _enable(monkeypatch)
+    from core.inference import diffusion_nvfp4_install as inst
+
+    inst.reset_install_state()
+    seen = []
+    monkeypatch.setattr(inst, "_ensure", lambda *a, **k: seen.append("ensure") or (True, None))
+    assert inst.ensure_flashinfer_for_nvfp4(0) == (True, None)
+    assert seen == ["ensure"]
+
+
 def _prequant_dir(root, name, scheme):
     """A directory holding one tiny safetensors pre-quant artifact that records ``scheme``."""
     import json
