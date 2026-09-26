@@ -141,6 +141,12 @@ def test_a_label_with_nul_is_refused_by_the_selector():
         aria_label_selector("a\0b")
 
 
+def test_a_surrogate_pair_joins_and_a_lone_half_is_refused_by_the_selector():
+    assert _decode('"\\uD83D\\uDE00"') == "\U0001f600"
+    with pytest.raises(ValueError, match = "surrogate"):
+        aria_label_selector(_decode('"\\uD800"'))
+
+
 def test_a_comment_is_not_read_as_a_key(sample):
     with pytest.raises(KeyError):
         en_string("key", sample)
@@ -203,57 +209,30 @@ def test_both_import_forms_mark_a_catalog_driver(tmp_path, source, imports):
 COMPOSER_WORKFLOW = HERE.parents[1] / ".github" / "workflows" / "studio-composer-compatibility.yml"
 
 
-def _can_run(condition, job: dict) -> bool:
-    """Whether an `if:` leaves the step or job reachable on some leg of the job's matrix.
-
-    Reads the two shapes that can switch a driver off statically: a literal false, and a
-    `matrix.<key> == '<value>'` test that no `include` leg satisfies. Anything else is taken
-    as reachable, since it depends on the run.
-    """
-    if condition is None:
-        return True
-    text = str(condition).strip()
-    if text.startswith("${{") and text.endswith("}}"):
-        text = text[3:-2].strip()
-    if condition is False or text == "false":
-        return False
-    legs = ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []
-    for key, value in re.findall(r"\bmatrix\.([\w-]+)\s*==\s*'([^']*)'", text):
-        if not any(str(leg.get(key)) == value for leg in legs):
-            return False
-    return True
-
-
-@pytest.mark.parametrize(
-    "condition, runs",
-    [
-        (None, True),
-        (False, False),
-        ("false", False),
-        ("${{ false }}", False),
-        ("${{ !cancelled() && matrix.suite == 'safari' }}", True),
-        ("${{ !cancelled() && matrix.suite == 'webkit-only' }}", False),
-        ("runner.os == 'Linux'", True),
-    ],
-)
-def test_a_statically_unreachable_step_is_not_coverage(condition, runs):
-    job = {"strategy": {"matrix": {"include": [{"suite": "browsers"}, {"suite": "safari"}]}}}
-    assert _can_run(condition, job) is runs
+# Where each catalog driver runs, pinned literally: the step's `if:` and the matrix leg it
+# needs. A new driver, or a restructured workflow, updates this table with it.
+DRIVER_STEPS = {
+    "playwright_composer_settings.py": ("matrix.suite == 'browsers'", {"suite": "browsers"}),
+    "selenium_composer_safari.py": (
+        "${{ !cancelled() && matrix.suite == 'safari' }}",
+        {"os": "macos-latest", "suite": "safari"},
+    ),
+}
 
 
 def test_the_composer_workflow_runs_on_a_catalog_only_change():
     """Both browser drivers find their controls through `_en_catalog.py`, and this workflow is
     the one that runs them. A PR that changes only the reader has to run it too.
 
-    Deliberately literal: the reader is listed by name in `pull_request.paths`, and every
-    driver that reads the catalog is run by a `python tests/studio/<driver>` line in some
-    step's `run`, not in a comment. A workflow restructured some
-    other way updates this test with it.
+    Deliberately literal rather than an evaluator of Actions expressions and shell: the reader
+    is listed by name in `pull_request.paths` with no other filter; every catalog driver is
+    in `DRIVER_STEPS`; and each runs from a step whose `if:` is exactly the pinned one, on a
+    matrix leg that exists, as a line that starts with `python tests/studio/<driver>`. A
+    workflow restructured some other way updates this test with it.
     """
     import yaml
 
-    text = COMPOSER_WORKFLOW.read_text(encoding = "utf-8")
-    workflow = yaml.safe_load(text)
+    workflow = yaml.safe_load(COMPOSER_WORKFLOW.read_text(encoding = "utf-8"))
     triggers = workflow.get(True, workflow.get("on"))  # PyYAML reads a bare `on:` as True.
     pull_request = triggers["pull_request"]
     assert "tests/studio/_en_catalog.py" in pull_request["paths"]
@@ -264,20 +243,25 @@ def test_the_composer_workflow_runs_on_a_catalog_only_change():
         if not path.name.startswith(("test_", "_")) and _imports_catalog(path)
     )
     assert drivers, "no browser driver reads the catalog any more"
-    # What a step that can run executes, with shell comments dropped: a commented-out
-    # command, or one in a step or job no matrix leg reaches, runs nothing.
-    commands = "\n".join(
-        line
-        for job in (workflow.get("jobs") or {}).values()
-        if _can_run(job.get("if"), job)
-        for step in job.get("steps") or []
-        if _can_run(step.get("if"), job)
-        for line in str(step.get("run") or "").splitlines()
-        if not line.lstrip().startswith("#")
-    )
-    missing = [
-        name
-        for name in drivers
-        if not re.search(rf"\bpython3?\s+tests/studio/{re.escape(name)}\b", commands)
-    ]
-    assert not missing, f"catalog drivers not run by {COMPOSER_WORKFLOW.name}: {missing}"
+    assert set(drivers) <= set(DRIVER_STEPS), f"pin where these drivers run: {drivers}"
+    for name in drivers:
+        condition, leg = DRIVER_STEPS[name]
+        found = [
+            (job, step)
+            for job in (workflow.get("jobs") or {}).values()
+            for step in job.get("steps") or []
+            if any(
+                line.strip().startswith(f"python tests/studio/{name}")
+                for line in str(step.get("run") or "").splitlines()
+            )
+        ]
+        assert found, f"no step runs python tests/studio/{name}"
+        assert any(
+            "if" not in job
+            and str(step.get("if")) == condition
+            and any(
+                all(include.get(key) == value for key, value in leg.items())
+                for include in ((job.get("strategy") or {}).get("matrix") or {}).get("include", [])
+            )
+            for job, step in found
+        ), f"{name} no longer runs from a step gated on {condition!r} with the leg {leg}"

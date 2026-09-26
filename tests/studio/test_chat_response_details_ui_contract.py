@@ -365,6 +365,11 @@ def test_assistant_more_menu_exposes_response_details_action():
     """
     src = _without_block_comments(THREAD_TSX.read_text(encoding = "utf-8"))
     assert "MessageResponseDetailsSheet" in src
+    # The component inspected below is the one thread.tsx imports.
+    assert re.search(
+        r"""import\s*\{\s*MessageMenuTime\s*\}\s*from\s*["']@/components/assistant-ui/message-menu-time["']""",
+        src,
+    ), "thread.tsx no longer imports MessageMenuTime from message-menu-time.tsx"
     caller = _opening_tag(src, "<MessageMenuTime ")
     assert (
         caller

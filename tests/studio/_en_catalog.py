@@ -113,7 +113,8 @@ def _decode(literal: str) -> str:
             continue
         out.append(char)
         index += 1
-    value = "".join(out)
+    # `\uD83D\uDE00` decodes as two UTF-16 halves; join valid pairs into their code point.
+    value = "".join(out).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
     if interpolated:
         return _Interpolated(value)
     return value
@@ -204,6 +205,9 @@ def aria_label_selector(label: str) -> str:
     would otherwise end the string early or read as an escape, and the selector would be invalid or
     match something else.
     """
+    if any("\ud800" <= char <= "\udfff" for char in label):
+        # CSS replaces a lone surrogate with U+FFFD too, so the selector could never match.
+        raise ValueError(f"a CSS selector cannot match a label with a lone surrogate: {label!r}")
     if "\0" in label:
         # CSS reads an escaped U+0000 as U+FFFD, so no selector can match a NUL in the label.
         raise ValueError(f"a CSS selector cannot match a label containing NUL: {label!r}")
