@@ -1179,9 +1179,8 @@ def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
 
 
 def install_audio_vae_without_cudnn_benchmark(audio_vae: Any) -> bool:
-    """Run the audio VAE's decode and encode with ``cudnn.benchmark`` held off. Its 1D convs gain nothing from the
-    search at steady state, but the search costs seconds of host time (minutes on a loaded host) and ~25 GB of
-    workspace on the first call of every shape on every thread. Idempotent; False when there is nothing to wrap."""
+    """Hold ``cudnn.benchmark`` off for the audio VAE's decode and encode: the search gains its 1D convs nothing at
+    steady state but costs host time and huge workspaces on every new shape per thread. Idempotent."""
     if audio_vae is None or getattr(audio_vae, "_unsloth_no_cudnn_benchmark", False):
         return False
 
