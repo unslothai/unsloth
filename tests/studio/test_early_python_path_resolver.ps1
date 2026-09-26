@@ -214,6 +214,20 @@ try {
     Check "a hung interpreter returns null" ($null -eq $hung)
     Check "a hung interpreter is killed at the deadline, not waited out" ($elapsed -lt 15)
 
+    # The interpreter exits at once but leaves a child holding stdout: the read is bounded too.
+    $holder = Join-Path $tmp $(if ($IsWindows -or $env:OS -eq "Windows_NT") { "holder.cmd" } else { "holder.sh" })
+    if ($IsWindows -or $env:OS -eq "Windows_NT") {
+        "@echo off`r`nstart /b `"`" ping -n 20 127.0.0.1`r`nexit /b 0`r`n" | Set-Content -LiteralPath $holder -Encoding ASCII
+    } else {
+        "#!/bin/sh`nsleep 20 &`nprintf '%s' `"`$5`"`nexit 0`n" | Set-Content -LiteralPath $holder
+        & chmod +x $holder
+    }
+    $started = [DateTime]::UtcNow
+    $held = Invoke-StudioEarlyPython -Exe $holder -Path $real -TimeoutMs 2000
+    $elapsed = ([DateTime]::UtcNow - $started).TotalSeconds
+    Check "an answer still held open past the deadline is declined" ($null -eq $held)
+    Check "and the wait for it ends at the deadline" ($elapsed -lt 10)
+
     # This runs before the install lock, so finding an interpreter must write nothing.
     $before = @(Get-ChildItem -LiteralPath $tmp -Recurse -Force).Count
     $script:StudioEarlyPythonProbed = $false
@@ -268,6 +282,22 @@ try {
     function Test-Path { param($LiteralPath, $PathType, $ErrorAction) $script:ReprobeCount++; return $false }
     $null = Get-StudioEarlyPython
     Check "a hit is not probed again" ($script:ReprobeCount -eq 0)
+    # A candidate that cannot be inspected (an unreadable directory throws under Stop) is skipped,
+    # and nothing escapes into the lock-name hash that calls this before the install lock.
+    function Test-Path { param($LiteralPath, $PathType, $ErrorAction)
+        throw [System.UnauthorizedAccessException]::new("Access to the path '$LiteralPath' is denied.") }
+    $script:StudioEarlyPythonProbed = $false
+    $script:StudioEarlyPython = $null
+    $threw = $null
+    try { $none = Get-StudioEarlyPython } catch { $threw = $_ }
+    Check "a candidate that cannot be inspected is skipped, not fatal" ($null -eq $threw -and $null -eq $none)
+    $savedFinder2 = ${function:Get-StudioEarlyPython}
+    function Get-StudioEarlyPython { throw "discovery failed" }
+    $script:StudioPythonFinalPathCache = $null
+    $threw = $null
+    try { $none = Get-StudioPythonFinalPath -Path $real } catch { $threw = $_ }
+    Check "a discovery failure declines to the lexical rung instead of throwing" ($null -eq $threw -and $null -eq $none)
+    ${function:Get-StudioEarlyPython} = $savedFinder2
     Remove-Item Function:Test-Path -ErrorAction SilentlyContinue
     Remove-Item Function:Get-Command -ErrorAction SilentlyContinue
     Remove-Variable -Name VenvDir -Scope Global -ErrorAction SilentlyContinue
