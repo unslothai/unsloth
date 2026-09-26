@@ -7,7 +7,11 @@
 
 import { DOWNLOAD_KIND } from "./constants";
 import { MAX_PROGRESS_FRACTION } from "./download-manager-config";
-import type { ManagedDownload, ProgressLike } from "./download-manager-types";
+import type {
+  FloorHold,
+  ManagedDownload,
+  ProgressLike,
+} from "./download-manager-types";
 
 export function hasObservedExpectedBytes(job: ManagedDownload): boolean {
   // Finalized bytes only: an `.incomplete` blob hitting expected size isn't
@@ -43,7 +47,7 @@ export function isIndeterminateProgress(
 export function resolveProgressUpdate(
   job: ManagedDownload,
   progressResp: ProgressLike,
-  opts: { resetMonotonic?: boolean } = {},
+  opts: { resetMonotonic?: boolean; skipFloor?: boolean } = {},
 ): {
   expected: number;
   downloadedBytes: number;
@@ -133,7 +137,7 @@ export function resolveProgressUpdate(
   // previous run's 99% for its entire life, which is the stale card this whole path exists to
   // remove.
   const fraction =
-    isGgufVariantJob && !resetMonotonic
+    isGgufVariantJob && !resetMonotonic && opts.skipFloor !== true
       ? Math.max(cappedFraction, job.fraction)
       : cappedFraction;
   return {
@@ -145,4 +149,16 @@ export function resolveProgressUpdate(
     fraction,
     madeProgress,
   };
+}
+
+// The killed partial only grows until the retry worker purges it, and a re-measured completed baseline lowers both counters alike, so more bytes left than at the attempt change means the new attempt is on screen.
+export function floorHoldEnded(
+  hold: FloorHold,
+  expectedBytes: number,
+  downloadedBytes: number,
+  now: number,
+): boolean {
+  return (
+    expectedBytes - downloadedBytes > hold.remainingBytes || now >= hold.until
+  );
 }

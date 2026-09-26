@@ -35,6 +35,7 @@ import {
   POLL_JITTER_MS,
   PROGRESS_POLL_BACKOFF_INTERVAL_MS,
   PROGRESS_POLL_INTERVAL_MS,
+  ATTEMPT_FLOOR_HOLD_MS,
   ACTIVE_STATES,
   TERMINAL_DISPLAY_STATES,
 } from "./download-manager-config";
@@ -99,6 +100,7 @@ import {
   setExpectedBytesForJob,
 } from "./download-manager-state";
 import {
+  floorHoldEnded,
   hasObservedExpectedBytes,
   resolveProgressUpdate,
 } from "./progress-reconcile";
@@ -325,22 +327,35 @@ function syncServerGeneration(
   key: string,
   job: ManagedDownload,
   status: PollStatus,
-): boolean {
+): "generation" | "attempt" | null {
   const statusGeneration = status.generation;
-  const previousGeneration = job.serverGeneration;
-  const generationChanged =
-    typeof statusGeneration === "number" &&
-    Number.isSafeInteger(statusGeneration) &&
-    typeof previousGeneration === "number" &&
-    Number.isSafeInteger(previousGeneration) &&
-    statusGeneration !== previousGeneration;
-  if (
-    typeof statusGeneration === "number" &&
-    Number.isSafeInteger(statusGeneration)
-  ) {
-    patchJob(key, { serverGeneration: statusGeneration });
+  const statusAttempt = status.attempt;
+  const generationChanged = runCounterChanged(
+    job.serverGeneration,
+    statusGeneration,
+  );
+  const attemptChanged = runCounterChanged(job.serverAttempt, statusAttempt);
+  const patch: Partial<ManagedDownload> = {};
+  if (Number.isSafeInteger(statusGeneration)) {
+    patch.serverGeneration = statusGeneration;
   }
-  return generationChanged;
+  if (Number.isSafeInteger(statusAttempt)) {
+    patch.serverAttempt = statusAttempt;
+  }
+  if (Object.keys(patch).length > 0) patchJob(key, patch);
+  if (generationChanged) return "generation";
+  return attemptChanged ? "attempt" : null;
+}
+
+function runCounterChanged(
+  previous: number | undefined,
+  current: number | undefined,
+): boolean {
+  return (
+    Number.isSafeInteger(current) &&
+    Number.isSafeInteger(previous) &&
+    current !== previous
+  );
 }
 
 async function finalizeTerminalStatus(
@@ -406,7 +421,14 @@ function reconcileProgressAndSpeed(
     madeProgress,
   } = resolveProgressUpdate(current, progressResp, {
     resetMonotonic: generationChanged,
+    skipFloor: rt.floorHold != null,
   });
+  if (
+    rt.floorHold &&
+    floorHoldEnded(rt.floorHold, expected, downloadedBytes, Date.now())
+  ) {
+    rt.floorHold = null;
+  }
   if (generationChanged) {
     // Another server owns this transfer, so the old samples describe a different run; the counter cannot say so, since a restart resumes from the same cache.
     rt.speedSamples.length = 0;
@@ -496,8 +518,15 @@ async function tick(key: string): Promise<void> {
     if (!isCurrent(key, epoch)) return;
 
     // syncServerGeneration persists immediately, so a change seen before the progress path would look unchanged next tick; hold it until a progress poll consumes it.
-    if (syncServerGeneration(key, job, status)) {
+    const runChange = syncServerGeneration(key, job, status);
+    if (runChange !== null) {
       rt.pendingGenerationChange = true;
+    }
+    if (runChange === "attempt") {
+      rt.floorHold = {
+        remainingBytes: job.expectedBytes - job.downloadedBytes,
+        until: Date.now() + ATTEMPT_FLOOR_HOLD_MS,
+      };
     }
 
     const terminalKind = terminalKindFromState(status.state);
@@ -709,6 +738,7 @@ export async function startJob(
       ? opts.generation
       : existing?.serverGeneration
     : undefined;
+  const seedAttempt = carryOverSeed ? existing?.serverAttempt : undefined;
   const adopted = opts.adopt
     ? adoptedTransports(
         { transport: opts.transport, cancelTransport: opts.cancelTransport },
@@ -753,6 +783,9 @@ export async function startJob(
       : {}),
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }
+      : {}),
+    ...(Number.isSafeInteger(seedAttempt)
+      ? { serverAttempt: seedAttempt }
       : {}),
     ...(req.files && req.files.length > 0
       ? { scopedFiles: [...req.files] }

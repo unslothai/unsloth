@@ -4197,6 +4197,7 @@ def test_model_download_job_helpers_preserve_idle_shape():
     assert key == "org/model::"
     assert status.state == "idle"
     assert status.error is None
+    assert status.attempt == 1
 
 
 def test_gguf_repo_partial_treats_completed_disk_variant_as_clean(monkeypatch, tmp_path):
@@ -6414,6 +6415,9 @@ def test_dataset_status_includes_generation(monkeypatch):
         def current_generation(self, _key):
             return 4
 
+        def current_attempt(self, _key):
+            return 2
+
     monkeypatch.setattr(dataset_downloads, "_registry", _Registry())
     monkeypatch.setattr(
         dataset_downloads,
@@ -6425,6 +6429,7 @@ def test_dataset_status_includes_generation(monkeypatch):
 
     assert result.state == "running"
     assert result.generation == 4
+    assert result.attempt == 2
 
 
 def _write_local_model(
