@@ -2209,14 +2209,10 @@ export function AppSidebar() {
   // padding deliberately: its width is independent of whether the recent-chat list has a scrollbar.
   const unrailedRowPadding = usesDesktopTitlebar ? "px-[calc(5px*var(--ui-space-scale,1))]" : "px-1.5";
 
-  // Header actions end where a hovered row's "…" does: unrailedRowPadding + the
-  // action's own pr-1.5. 12px normally (the pr-3 class default), 11px here.
-  const headerRightPadding = usesDesktopTitlebar
+  // Headers follow unrailedRowPadding: the label starts where row content does, and the
+  // actions end where a hovered row's "…" does. 18px / 12px normally (the class defaults), 17px / 11px here.
+  const headerInset = usesDesktopTitlebar
     ? "sidebar-sticky-label-desktop"
-    : null;
-  // Recents alone is nudged 2px right there, and carries its padding with it.
-  const recentsHeaderRightPadding = usesDesktopTitlebar
-    ? "sidebar-sticky-label-desktop-recents"
     : null;
 
   // One definition per row, so pinned rows and the flyout can't drift apart.
@@ -4218,7 +4214,7 @@ export function AppSidebar() {
         className={cn(
           "group-data-[collapsible=icon]:px-0 shrink-0 transition-[padding]",
           rowPadding,
-          usesDesktopTitlebar ? "pt-[calc(11px*var(--ui-space-scale,1))]" : "pt-[calc(9px*var(--ui-space-scale,1))]",
+          usesDesktopTitlebar ? "pt-[calc(11px*var(--ui-space-scale,1))]" : "pt-[calc(7px*var(--ui-space-scale,1))]",
           // Scrolled: New Chat is pinned, give a little gap below it.
           scrolled ? "pb-[calc(5px*var(--ui-space-scale,1))]" : "pb-px",
         )}
@@ -4485,7 +4481,7 @@ export function AppSidebar() {
               <SidebarGroupLabel
                 className={cn(
                   "sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1",
-                  headerRightPadding,
+                  headerInset,
                   scrolled && "is-scrolled",
                 )}
                 {...dnd.dropZoneProps(
@@ -4578,7 +4574,7 @@ export function AppSidebar() {
                 <SidebarGroupLabel
                   className={cn(
                     "sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1",
-                    headerRightPadding,
+                    headerInset,
                     scrolled && "is-scrolled",
                     !projectsOpen &&
                       dnd.ringLit(sectionRingKey("projects")) &&
@@ -4683,9 +4679,8 @@ export function AppSidebar() {
               <SidebarGroupLabel
                 className={cn(
                   "sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1",
-                  recentsHeaderRightPadding,
+                  headerInset,
                   scrolled && "is-scrolled",
-                  usesDesktopTitlebar && "translate-x-[2px]",
                   !chatOpen &&
                     dnd.ringLit(sectionRingKey("recents")) &&
                     DROP_INTO_HEADER_CUE,
@@ -4766,7 +4761,7 @@ export function AppSidebar() {
         {showTrainingRecents && (
           <Collapsible open={runsOpen} onOpenChange={setRunsOpen} asChild>
           <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden px-0 py-0">
-            <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
+            <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", headerInset, scrolled && "is-scrolled")} asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
                 {t("shell.navigation.recents")}
                 <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
