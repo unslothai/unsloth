@@ -1,8 +1,7 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# The ctypes process-image rung between Get-Process and WMI. The runner is exercised for real;
-# the table is Windows-only, so its parsing and caching go through a stubbed runner.
+# ctypes process-image rung between Get-Process and WMI; the table uses a stubbed runner.
 # Run: pwsh -NoProfile -File tests/studio/test_early_python_process_image.ps1
 
 $ErrorActionPreference = "Stop"

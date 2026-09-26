@@ -2343,9 +2343,8 @@ function Install-UnslothStudio {
         return $current
     }
 
-    # A Python to resolve paths with, found without installing one: this runs before the install
-    # lock, so Get-Command and Test-Path only. Path.resolve is GetFinalPathNameByHandleW on Windows
-    # and is what unsloth_cli/_studio_runtime_gate.py hashes, so both sides name the same lock.
+    # Runs before the install lock: find an existing Python only. Path.resolve matches what
+    # unsloth_cli/_studio_runtime_gate.py hashes, so both sides name the same lock.
     $script:StudioEarlyPythonProbed = $false
     $script:StudioEarlyPython = $null
     $script:StudioEarlyPythonProbedWithoutVenv = $false
@@ -2493,8 +2492,7 @@ function Install-UnslothStudio {
     }
 
     function Get-StudioEarlyPython {
-        # $VenvDir is assigned far below the first caller (--tauri), so a miss taken before it existed
-        # is probed again once it does. A hit, or a miss taken with it known, is final.
+        # A miss taken before $VenvDir existed (--tauri) is re-probed once it does.
         $venvDirValue = $null
         try { $venvDirValue = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue } catch {}
         $venvKnown = -not [string]::IsNullOrWhiteSpace($venvDirValue)
@@ -2506,7 +2504,6 @@ function Install-UnslothStudio {
         }
         $script:StudioEarlyPythonProbed = $true
         $script:StudioEarlyPythonProbedWithoutVenv = (-not $venvKnown)
-        # 0 restores the previous ladder, like UNSLOTH_NVIDIA_LIBRARY_PROBE.
         if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $null }
         $candidates = @()
         $venvCandidates = @()
@@ -2528,8 +2525,7 @@ function Install-UnslothStudio {
         $rejectedForWritability = $false
         foreach ($candidate in $candidates) {
             if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
-            # Under Stop an unreadable directory makes Test-Path throw; that rules out this
-            # candidate only, and the next one (or the lexical rung) still gets its turn.
+            # Test-Path throws on an unreadable dir under Stop: skip this candidate only.
             $isFile = $false
             try { $isFile = Test-Path -LiteralPath $candidate -PathType Leaf } catch {}
             if (-not $isFile) { continue }
@@ -2562,21 +2558,17 @@ function Install-UnslothStudio {
         return $null
     }
 
-    # Path.resolve in a bounded child. $null on anything but a clean answer.
     function Invoke-StudioEarlyPython {
         param(
             [Parameter(Mandatory = $true)][string]$Exe,
             [Parameter(Mandatory = $true)][string]$Path,
             [int]$TimeoutMs = 10000
         )
-        # The gate's expression (_resolved_windows_path) but strict=True: identical for any path that
-        # resolves, while a loop or dangling link raises instead of coming back unresolved.
-        # Before 3.8 Windows resolve does not follow links, so an alias would be reported as exact.
+        # The gate's _resolved_windows_path, strict so loops/dangling links raise. <3.8 does not follow links.
         $script = "import pathlib,sys" + [char]10 +
                   "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
                   "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
-        # $null on anything but a clean answer, validation included: an access error from the
-        # final Test-Path declines to the lexical rung like any other miss.
+        # Any error, incl. from Test-Path, returns $null (lexical rung).
         try {
             # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
             $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)"
@@ -2589,7 +2581,6 @@ function Install-UnslothStudio {
         }
     }
 
-    # A script's stdout from a bounded child, or $null on anything but a clean exit.
     function Invoke-StudioEarlyPythonScript {
         param(
             [Parameter(Mandatory = $true)][string]$Exe,
@@ -2628,8 +2619,7 @@ function Install-UnslothStudio {
                 return $null
             }
             if ($proc.ExitCode -ne 0) { return $null }
-            # A child the interpreter left running can hold stdout open after it exits, so the
-            # deadline bounds the read as well as the exit.
+            # A leftover child can hold stdout open, so the deadline bounds the read too.
             $left = [Math]::Max(0, $TimeoutMs - [int]$clock.ElapsedMilliseconds)
             if (-not $stdout.Wait($left)) { return $null }
             return "$($stdout.Result)"
@@ -2723,7 +2713,6 @@ function Install-UnslothStudio {
         if ($script:StudioPythonFinalPathCache.ContainsKey($Path)) {
             return $script:StudioPythonFinalPathCache[$Path]
         }
-        # An optional rung: whatever goes wrong choosing an interpreter declines to the lexical one.
         $exe = $null
         try { $exe = Get-StudioEarlyPython } catch {}
         # Not cached: the re-probe once $VenvDir is known may still find an interpreter.
@@ -2848,10 +2837,7 @@ function Install-UnslothStudio {
             if ([string]::IsNullOrEmpty($leaf) -or [string]::IsNullOrEmpty($parent)) {
                 return [pscustomobject]@{ Path = $fullPath; Exact = $false }
             }
-            # A dangling link or a link loop can read as missing here, and stripping it would hand
-            # the resolver an ordinary ancestor and call the result exact while the runtime gate
-            # follows the link. GetAttributes reads the entry itself, so any reparse point in the
-            # stripped tail keeps the answer inexact and the lock fails closed.
+            # A dangling link/loop reads as missing; a reparse point in the stripped tail must stay inexact.
             $strippedAttributes = $null
             try { $strippedAttributes = [System.IO.File]::GetAttributes($existingPath) } catch { }
             if ($null -ne $strippedAttributes -and
@@ -6000,11 +5986,10 @@ exit 0
                 if (-not [string]::IsNullOrWhiteSpace($process.Path)) { return $process.Path }
             } catch {}
         }
-        # PROCESS_QUERY_LIMITED_INFORMATION is granted where MainModule's PROCESS_VM_READ is not,
-        # and needs no WMI. One child per run: this is called once per process on the machine.
+        # PROCESS_QUERY_LIMITED_INFORMATION works where PROCESS_VM_READ does not; one child per run.
         if (-not $script:StudioPythonProcessImageProbed) {
             $script:StudioPythonProcessImageProbed = $true
-            # Optional: a failure here falls through to the WMI rung below, never past it.
+            # A failure falls through to the WMI rung, never past it.
             try { $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable } catch {
                 $script:StudioPythonProcessImageTable = $null
             }
@@ -6018,8 +6003,7 @@ exit 0
             $script:StudioPythonProcessImageTable.ContainsKey($ProcessId)) {
             return $script:StudioPythonProcessImageTable[$ProcessId]
         }
-        # Both table rungs are per-run PID snapshots, so a reused PID reads stale; accepted, since
-        # the caller asks about PIDs it enumerated moments earlier.
+        # Per-run PID snapshots: a reused PID reads stale; accepted.
         # Queried once per run, not once per process: this is the slow rung.
         if ($null -eq $script:StudioProcessImageTable) {
             $script:StudioProcessImageTable = @{}
