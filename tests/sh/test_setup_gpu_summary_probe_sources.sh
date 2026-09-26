@@ -131,7 +131,7 @@ chmod +x "$WORK/roc/rocminfo" "$WORK/smi/amd-smi"
 # $1 rocminfo fixture ("-" = not installed), $2 amd-smi fixture, $3 visible-device mask.
 # Prints "gfx|name". The probe log is left in $WORK/probes for the call-count asserts.
 summary() {
-    _path="$WORK/base"
+    _path="${PREPATH:+$PREPATH:}$WORK/base"
     [ "$1" != "-" ] && _path="$WORK/roc:$_path"
     [ "$2" != "-" ] && _path="$WORK/smi:$_path"
     : > "$WORK/probes"
@@ -461,6 +461,22 @@ assert_eq "every variable the selection block reads is initialised up front" \
           | while read -r _v; do grep -q "^$_v=" "$WORK/init.sh" || echo "$_v"; done | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "amd-smi answers list but not static --asic" \
     "|" "$(STUB_AMDSMI_MUTE_STATIC=1 summary "$WORK/empty" "$WORK/smi_three")"
+
+echo "=== the index-space line is read without SIGPIPE ==="
+# One-line head plus output larger than a pipe: a `| head -n 1` reader SIGPIPEs printf.
+mkdir -p "$WORK/head1"
+cat > "$WORK/head1/head" <<'STUB'
+#!/bin/sh
+IFS= read -r _l && printf '%s\n' "$_l"
+STUB
+chmod +x "$WORK/head1/head"
+awk '/MARKET_NAME: AMD Radeon RX 7900 XTX/ { s = sprintf("%200000s", ""); gsub(/ /, "X", s); sub(/AMD Radeon RX 7900 XTX/, s) } { print }' \
+    "$WORK/smi_three" > "$WORK/smi_three_long"
+assert_eq "an amd-smi answer larger than a pipe does not abort the block" \
+    "gfx1100|200000" \
+    "$(PREPATH="$WORK/head1" STUB_AMDSMI_E="$WORK/smi_e_reversed" \
+        summary "$WORK/empty" "$WORK/smi_three_long" 1 2>/dev/null \
+        | awk -F'|' '{ print $1 "|" length($2) }')"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
