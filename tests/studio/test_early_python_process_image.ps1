@@ -196,6 +196,29 @@ try {
     Check "control: an unknown pid falls through to the rung below" (
         $null -eq (Get-StudioProcessImagePath -ProcessId 999))
 
+    # Interpreter discovery can throw; the WMI rung below this one must still get its turn.
+    Reset-RungState
+    $savedTable = ${function:Get-StudioPythonProcessImageTable}
+    function Get-StudioPythonProcessImageTable { throw "interpreter discovery failed" }
+    function Get-CimInstance { param($ClassName, $ErrorAction)
+        return @([pscustomobject]@{ ProcessId = 55; ExecutablePath = "C:\w\python.exe" }) }
+    $threw = $null; $viaWmi = $null
+    try { $viaWmi = Get-StudioProcessImagePath -ProcessId 55 } catch { $threw = $_ }
+    Check "a table probe that throws still reaches the WMI rung" (
+        $null -eq $threw -and $viaWmi -eq "C:\w\python.exe")
+    function Get-CimInstance { param($ClassName, $ErrorAction) throw "WMI is unavailable" }
+    ${function:Get-StudioPythonProcessImageTable} = $savedTable
+
+    # Validating the answer is part of the null-on-error contract: an access error declines.
+    $script:RunnerOutput = [System.IO.Path]::GetTempPath()
+    function Test-Path { param($LiteralPath, $PathType, $ErrorAction)
+        throw [System.UnauthorizedAccessException]::new("Access to the path is denied.") }
+    $threw = $null; $answer = "unset"
+    try { $answer = Invoke-StudioEarlyPython -Exe "python3" -Path $root } catch { $threw = $_ }
+    Remove-Item Function:Test-Path -ErrorAction SilentlyContinue
+    Check "an access error validating the answer declines instead of throwing" (
+        $null -eq $threw -and $null -eq $answer)
+
     $env:OS = "Linux"
     Reset-RungState
     $script:RunnerCalls = 0

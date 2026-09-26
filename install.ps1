@@ -2630,12 +2630,17 @@ function Install-UnslothStudio {
         # run with, and the elevation split is a Windows one.
         $requireAdminRoot = $false
         if ($env:OS -eq "Windows_NT") {
-            $requireAdminRoot = Test-StudioChildScriptDirectoryElevated
+            # Unknown reads as elevated, the cautious answer.
+            try { $requireAdminRoot = Test-StudioChildScriptDirectoryElevated } catch { $requireAdminRoot = $true }
         }
         $rejectedForWritability = $false
         foreach ($candidate in $candidates) {
             if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
-            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+            # Under Stop an unreadable directory makes Test-Path throw; that rules out this
+            # candidate only, and the next one (or the lexical rung) still gets its turn.
+            $isFile = $false
+            try { $isFile = Test-Path -LiteralPath $candidate -PathType Leaf } catch {}
+            if (-not $isFile) { continue }
             # Elevated: only an interpreter a medium-integrity process cannot replace, since it
             # runs with the administrator token. Declining costs only the exact path identity.
             # The existing install's own venv interpreter is the exception: this elevated run
@@ -2643,17 +2648,24 @@ function Install-UnslothStudio {
             # refusing it here protected nothing and left every elevated upgrade inexact.
             # The file is checked as well as the directories above it: a user-writable DACL on the
             # file, or a reparse point in its place, is the same replacement by another route.
-            if ($requireAdminRoot -and ($venvCandidates -notcontains $candidate) -and
-                ((-not (Test-StudioPathUnderAdminRoot -Path $candidate)) -or
-                 (-not (Test-StudioInterpreterFileIsAdminOnly -Path $candidate)))) {
-                $rejectedForWritability = $true
-                continue
+            if ($requireAdminRoot -and ($venvCandidates -notcontains $candidate)) {
+                # A check that cannot answer rejects the candidate, as a failed one does.
+                $adminOnly = $false
+                try {
+                    $adminOnly = (Test-StudioPathUnderAdminRoot -Path $candidate) -and
+                                 (Test-StudioInterpreterFileIsAdminOnly -Path $candidate)
+                } catch { $adminOnly = $false }
+                if (-not $adminOnly) {
+                    $rejectedForWritability = $true
+                    continue
+                }
             }
             # WindowsApps python.exe / python3.exe are App Execution Alias stubs that open the
             # Microsoft Store instead of running, and would burn the probe timeout doing it.
             if ("$candidate" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]') { continue }
             # Probe the interpreter's own directory: $PSScriptRoot is empty under `irm | iex`.
-            $probeDir = [System.IO.Path]::GetDirectoryName($candidate)
+            $probeDir = $null
+            try { $probeDir = [System.IO.Path]::GetDirectoryName($candidate) } catch {}
             if ([string]::IsNullOrWhiteSpace($probeDir)) { continue }
             $probe = Invoke-StudioEarlyPython -Exe $candidate -Path $probeDir
             if (-not [string]::IsNullOrWhiteSpace($probe)) {
@@ -2681,12 +2693,18 @@ function Install-UnslothStudio {
         $script = "import pathlib,sys" + [char]10 +
                   "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
                   "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
-        # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
-        $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)"
-        if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
-        if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
-        if (-not (Test-Path -LiteralPath $answer)) { return $null }
-        return $answer
+        # $null on anything but a clean answer, validation included: an access error from the
+        # final Test-Path declines to the lexical rung like any other miss.
+        try {
+            # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
+            $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)"
+            if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
+            if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
+            if (-not (Test-Path -LiteralPath $answer)) { return $null }
+            return $answer
+        } catch {
+            return $null
+        }
     }
 
     # A script's stdout from a bounded child, or $null on anything but a clean exit.
@@ -2698,6 +2716,7 @@ function Install-UnslothStudio {
             [int]$TimeoutMs = 10000
         )
         $proc = $null
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $Exe
@@ -2727,6 +2746,10 @@ function Install-UnslothStudio {
                 return $null
             }
             if ($proc.ExitCode -ne 0) { return $null }
+            # A child the interpreter left running can hold stdout open after it exits, so the
+            # deadline bounds the read as well as the exit.
+            $left = [Math]::Max(0, $TimeoutMs - [int]$clock.ElapsedMilliseconds)
+            if (-not $stdout.Wait($left)) { return $null }
             return "$($stdout.Result)"
         } catch {
             return $null
@@ -2907,7 +2930,9 @@ function Install-UnslothStudio {
         if ($script:StudioPythonFinalPathCache.ContainsKey($Path)) {
             return $script:StudioPythonFinalPathCache[$Path]
         }
-        $exe = Get-StudioEarlyPython
+        # An optional rung: whatever goes wrong choosing an interpreter declines to the lexical one.
+        $exe = $null
+        try { $exe = Get-StudioEarlyPython } catch {}
         # Not cached: the re-probe once $VenvDir is known may still find an interpreter.
         if (-not $exe) { return $null }
         $answer = Invoke-StudioEarlyPython -Exe $exe -Path $Path
@@ -2938,7 +2963,9 @@ function Install-UnslothStudio {
             if ($wanted -notcontains $candidate) { $wanted += $candidate }
         }
         if ($wanted.Count -eq 0) { return }
-        $exe = Get-StudioEarlyPython
+        # Optional like the per-path rung: a discovery failure leaves the paths to the lexical rung.
+        $exe = $null
+        try { $exe = Get-StudioEarlyPython } catch {}
         if (-not $exe) { return }
         # The list is data rather than a program, but it decides which running processes the
         # installer believes are using a protected root. A same-user process that rewrites it
@@ -6289,7 +6316,10 @@ exit 0
         # and needs no WMI. One child per run: this is called once per process on the machine.
         if (-not $script:StudioPythonProcessImageProbed) {
             $script:StudioPythonProcessImageProbed = $true
-            $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable
+            # Optional: a failure here falls through to the WMI rung below, never past it.
+            try { $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable } catch {
+                $script:StudioPythonProcessImageTable = $null
+            }
         }
         if ($script:StudioPythonProcessImageTable -and
             $script:StudioPythonProcessImageTable.ContainsKey($ProcessId)) {
