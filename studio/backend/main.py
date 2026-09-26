@@ -2282,10 +2282,7 @@ def _probe_dense_quant_supported() -> bool:
     sharpens, since an unprobed scheme counts as usable and a later load can record a kernel
     failure in ``_SMOKE_CACHE``."""
     try:
-        from core.inference.diffusion_device import (
-            diffusion_device_scope,
-            resolve_diffusion_device_target,
-        )
+        from core.inference.diffusion_device import resolve_diffusion_device_target
         from core.inference.diffusion_transformer_quant import dense_quant_host_capable
 
         import torch
@@ -2293,10 +2290,10 @@ def _probe_dense_quant_supported() -> bool:
         count = torch.cuda.device_count() if torch.cuda.is_available() else 0
         if count <= 1:
             return bool(dense_quant_host_capable(resolve_diffusion_device_target()))
+        # No device scope: cudaSetDevice pins a primary context on every card (CUDA 12).
         for ordinal in range(count):
-            with diffusion_device_scope(ordinal):
-                if not dense_quant_host_capable(resolve_diffusion_device_target(ordinal = ordinal)):
-                    return False
+            if not dense_quant_host_capable(resolve_diffusion_device_target(ordinal = ordinal)):
+                return False
         return True
     except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
         return False
@@ -2311,10 +2308,7 @@ def _probe_dense_quant_schemes() -> list[str]:
     the load-time helper runs ``_scheme_supported``, which spawns the smoke probe or allocates in
     this process. Like the capability bit, it sharpens as loads record verdicts in ``_SMOKE_CACHE``."""
     try:
-        from core.inference.diffusion_device import (
-            diffusion_device_scope,
-            resolve_diffusion_device_target,
-        )
+        from core.inference.diffusion_device import resolve_diffusion_device_target
         from core.inference.diffusion_transformer_quant import auto_scheme_candidates_cached
 
         import torch
@@ -2324,10 +2318,9 @@ def _probe_dense_quant_schemes() -> list[str]:
             return list(auto_scheme_candidates_cached(resolve_diffusion_device_target()))
         common: Optional[list[str]] = None
         for ordinal in range(count):
-            with diffusion_device_scope(ordinal):
-                schemes = list(
-                    auto_scheme_candidates_cached(resolve_diffusion_device_target(ordinal = ordinal))
-                )
+            schemes = list(
+                auto_scheme_candidates_cached(resolve_diffusion_device_target(ordinal = ordinal))
+            )
             common = schemes if common is None else [s for s in common if s in schemes]
         return common or []
     except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
