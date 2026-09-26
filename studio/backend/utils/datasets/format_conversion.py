@@ -491,6 +491,10 @@ def convert_to_vlm_format(
                 for f in repo_files
                 if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS)
             }
+            # Also key by the full relative path, e.g. "images/0001.jpg", as the ShareGPT converter does.
+            for f in repo_files:
+                if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS):
+                    _image_lookup[f] = f
             if first_image in _image_lookup:
                 logger.info(
                     f"✅ Matched {len(_image_lookup)} image files in repo (e.g. '{first_image}' → '{_image_lookup[first_image]}')"
