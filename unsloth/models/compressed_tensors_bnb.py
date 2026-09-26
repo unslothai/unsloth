@@ -259,42 +259,46 @@ def _packed_tensor_meta(checkpoint_files) -> dict:
     return {m: v for m, v in meta.items() if "weight_packed" in v}
 
 
-def adopt_int4_packed_linears(model, ct_config, checkpoint_files, dtype) -> list:
-    """Swap every packed plain ``nn.Linear`` for an ``Int4PackedLinear`` shell; all or nothing.
+def adopt_int4_packed_linears(model, ct_config, checkpoint_files, dtype) -> tuple:
+    """Swap every packed plain ``nn.Linear`` for an ``Int4PackedLinear`` shell.
 
-    Stacked MoE experts (no per-expert Linear) stay with their decompress converter."""
+    Returns ``(swapped, leftover)``: ``leftover`` packed modules (routers, renamed prefixes) keep the
+    per-module decompress converter; stacked MoE experts keep their own converter."""
     from torch import nn
     from .compressed_tensors_int4 import Int4PackedLinear, make_int4_packed_linear
 
     meta = _packed_tensor_meta(checkpoint_files)
-    if not meta:
-        return []
-    swaps = []
+    swaps, leftover = [], []
     for name, shapes in meta.items():
         try:
             module = model.get_submodule(name)
         except AttributeError:
             module = None
         if isinstance(module, Int4PackedLinear):
+            swaps.append((name, None, None, None))
+            continue
+        if module is None and ".experts." in name:
             continue
         if type(module) is not nn.Linear:
-            if module is None and ".experts." in name:
-                continue
-            # A renamed prefix (composite checkpoints) or an unexpected module: keep the NF4 route.
-            return []
+            leftover.append(name)
+            continue
         scheme = _scheme_for_module(ct_config, name, module)
-        weights = scheme.weights
-        if int(weights.num_bits) not in (2, 4, 8):
-            return []
-        if shapes["weight_packed"][0][0] != module.out_features:
-            return []
+        if (
+            int(scheme.weights.num_bits) not in (2, 4, 8)
+            or shapes["weight_packed"][0][0] != module.out_features
+            or "weight_scale" not in shapes
+        ):
+            leftover.append(name)
+            continue
         swaps.append((name, module, scheme, shapes))
     for name, module, scheme, shapes in swaps:
+        if module is None:
+            continue
         parent_name, _, child = name.rpartition(".")
         parent = model.get_submodule(parent_name) if parent_name else model
         device = module.weight.device if module.weight is not None else "meta"
         setattr(parent, child, make_int4_packed_linear(module, scheme, shapes, dtype, device))
-    return [name for name, *_ in swaps]
+    return [name for name, *_ in swaps], leftover
 
 
 def _generalize(name: str) -> str:
@@ -749,6 +753,7 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
         _unsloth_dtype_plan = None
         _unsloth_plan_dicts = ()
         _unsloth_int4_packed = ()
+        _unsloth_int4_leftover = ()
 
         def _process_model_before_weight_loading(self, model, **kwargs):
             config = getattr(model, "config", None)
@@ -785,10 +790,13 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     int4_packed_supported_plan,
                 )
 
+                self._unsloth_int4_leftover = []
                 if int4_packed_route_enabled() and int4_packed_supported_plan(plan):
-                    self._unsloth_int4_packed = adopt_int4_packed_linears(
+                    swapped, leftover = adopt_int4_packed_linears(
                         model, self._unsloth_ct_config, kwargs.get("checkpoint_files"), dtype
                     )
+                    self._unsloth_int4_packed = swapped
+                    self._unsloth_int4_leftover = leftover if swapped else []
                     if self._unsloth_int4_packed:
                         # Load the checkpoint tensors as stored: a cast would change the int32 words and
                         # round a fp32 scale.
@@ -866,9 +874,18 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                         self._unsloth_keep_storage_dtype(conv._original_target_patterns)
                 updated.append(conv)
             if not getattr(self, "_unsloth_int4_packed", None):
+                sources = [s + "$" for s in _PACKED_SUFFIXES]
+            else:
+                # Only modules left out of the packed route; the lookbehind keeps the rename to `weight`.
+                sources = [
+                    f"(?<={re.escape(name)}\\.){s}$"
+                    for name in getattr(self, "_unsloth_int4_leftover", None) or ()
+                    for s in _PACKED_SUFFIXES
+                ]
+            if sources:
                 updated.append(
                     WeightConverter(
-                        source_patterns = [s + "$" for s in _PACKED_SUFFIXES],
+                        source_patterns = sources,
                         target_patterns = "weight",
                         operations = [op_cls(ct_config, dtype, stacked = False)],
                     )

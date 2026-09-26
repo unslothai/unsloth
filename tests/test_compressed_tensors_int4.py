@@ -211,3 +211,49 @@ def test_packed_route_lora_trains_merges_and_unmerges(tmp_path, monkeypatch):
     layer.unmerge()
     assert isinstance(layer.get_base_layer(), Int4PackedLinear)
     assert layer.get_base_layer().weight_packed is packed
+
+
+@needs_ct
+def test_adopt_swaps_plain_linears_and_leaves_routers_to_the_decompress_converter(tmp_path):
+    import re
+
+    from safetensors.torch import save_file
+    from torch import nn
+    from unsloth.models.compressed_tensors_bnb import (
+        _PACKED_SUFFIXES,
+        _build_quantization_config,
+        adopt_int4_packed_linears,
+    )
+    from unsloth.models.compressed_tensors_int4 import Int4PackedLinear
+    from test_compressed_tensors_bnb import _w4a16
+
+    class Router(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.empty(4, 64))
+
+    with torch.device("meta"):
+        model = nn.Module()
+        model.proj = nn.Linear(64, 16, bias = False)
+        model.gate = Router()
+    tensors = {}
+    for name, rows in (("proj", 16), ("gate", 4), ("mlp.experts.0.up", 8)):
+        tensors[f"{name}.weight_packed"] = torch.zeros(rows, 8, dtype = torch.int32)
+        tensors[f"{name}.weight_scale"] = torch.ones(rows, 2, dtype = torch.float32)
+        tensors[f"{name}.weight_shape"] = torch.tensor([rows, 64])
+    path = str(tmp_path / "model.safetensors")
+    save_file(tensors, path)
+    ct_config = _build_quantization_config(_w4a16())
+    swapped, leftover = adopt_int4_packed_linears(model, ct_config, [path], torch.bfloat16)
+    assert swapped == ["proj"] and leftover == ["gate"]
+    assert isinstance(model.proj, Int4PackedLinear)
+    assert model.proj.weight_packed.dtype == torch.int32 and model.proj.weight_packed.shape == (16, 8)
+    # The fp32 scale is kept as stored (a bf16 cast would round it).
+    assert model.proj.weight_scale.dtype == torch.float32
+    assert type(model.gate) is Router
+    # The leftover converter pattern renames only the router's keys, and only the suffix.
+    patterns = [f"(?<={re.escape(n)}\\.){s}$" for n in leftover for s in _PACKED_SUFFIXES]
+    rx = re.compile("|".join(patterns))
+    m = rx.search("gate.weight_packed")
+    assert m and "gate.weight_packed".replace(m.group(0), "weight", 1) == "gate.weight"
+    assert rx.search("proj.weight_packed") is None
