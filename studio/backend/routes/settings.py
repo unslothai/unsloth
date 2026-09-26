@@ -3982,7 +3982,32 @@ class PersonalizationAppearance(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
     theme: Literal["light", "dark", "system"] = "system"
-    palette: Literal["standard", "classic", "minimal"] = "standard"
+    palette: Literal[
+        "standard",
+        "classic",
+        "minimal",
+        "blue-raspberry",
+        "blueberry",
+        "cherry",
+        "cinnamon",
+        "cotton-candy",
+        "dragon-fruit",
+        "earl-grey",
+        "espresso",
+        "honey",
+        "licorice",
+        "macaron",
+        "matcha",
+        "mint",
+        "neon-cyberpunk",
+        "oat-milk",
+        "peach",
+        "plum",
+        "tangerine",
+        "taro",
+        "wasabi",
+        "yuzu",
+    ] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
     customization: PersonalizationCustomization = Field(
         default_factory = PersonalizationCustomization
