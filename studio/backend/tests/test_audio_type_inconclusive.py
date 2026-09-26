@@ -90,6 +90,11 @@ _load_and_format_dataset = UnslothTrainer.load_and_format_dataset
 class _Dataset:
     column_names = ["audio", "text"]
 
+    def __getitem__(self, index):
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        return {"text": "A valid training example."}
+
     def __len__(self):
         return 4
 
