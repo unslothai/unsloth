@@ -3,6 +3,7 @@
 
 import { type Unzipped, strFromU8, unzipSync, zipSync } from "fflate";
 import {
+  MAX_TEXT_ATTACHMENT_BYTES,
   TEXT_ATTACHMENT_ACCEPT,
   decodeTextAttachmentBytes,
   isTextAttachmentName,
@@ -736,6 +737,28 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
   }
 }
 
+// As much as a text attachment may carry. Rows and columns are capped but a cell is not, so one
+// large shared string repeated in every cell would otherwise be built in full.
+const MAX_OFFICE_TEXT_LENGTH = MAX_TEXT_ATTACHMENT_BYTES;
+
+function textBudget(limit: number) {
+  let left = limit;
+  let cut = false;
+  return {
+    take(text: string): string {
+      if (text.length > left) {
+        cut = true;
+        text = text.slice(0, left);
+      }
+      left -= text.length;
+      return text;
+    },
+    get cut() {
+      return cut;
+    },
+  };
+}
+
 /** Sheet rows as TSV, or slide text, for the model. Uses the viewer's readers. */
 export async function extractOfficeAttachmentText(
   file: File,
@@ -746,29 +769,41 @@ export async function extractOfficeAttachmentText(
     file.arrayBuffer(),
   ]);
   const bytes = new Uint8Array(buffer);
+  const budget = textBudget(MAX_OFFICE_TEXT_LENGTH);
+  const parts: string[] = [];
   if (label === "PPTX") {
-    return readPptx(bytes)
-      .slides.map((slide, index) => {
-        const lines = slide.boxes.flatMap(
-          (box) => box.paragraphs?.map((p) => p.text) ?? box.table?.map((row) => row.join("\t")) ?? [],
-        );
-        return [`Slide ${index + 1}`, ...lines].join("\n");
-      })
-      .join("\n\n");
-  }
-  return readXlsx(bytes)
-    .map((sheet) => {
-      const rows = sheet.rows
-        .filter(Boolean)
-        .map((row) => Array.from(row, (cell) => cell?.text ?? "").join("\t").trimEnd())
-        .filter((line) => line.length > 0);
+    for (const [index, slide] of readPptx(bytes, { images: false }).slides.entries()) {
+      if (budget.cut) break;
+      const lines = slide.boxes.flatMap(
+        (box) =>
+          box.paragraphs?.map((p) => budget.take(p.text)) ??
+          box.table?.map((row) => row.map((cell) => budget.take(cell)).join("\t")) ??
+          [],
+      );
+      parts.push([`Slide ${index + 1}`, ...lines].join("\n"));
+    }
+  } else {
+    for (const sheet of readXlsx(bytes)) {
+      if (budget.cut) break;
+      const lines = [`Sheet: ${sheet.name}`];
+      for (const row of sheet.rows) {
+        if (!row || budget.cut) continue;
+        const line = Array.from(row, (cell) => budget.take(cell?.text ?? "")).join("\t").trimEnd();
+        if (line) lines.push(line);
+      }
       // Said outright, so the model does not answer as if it read the whole sheet.
-      const note = sheet.truncated
-        ? [`[Truncated: only the first ${MAX_SHEET_ROWS} rows and ${MAX_SHEET_COLUMNS} columns are included.]`]
-        : [];
-      return [`Sheet: ${sheet.name}`, ...rows, ...note].join("\n");
-    })
-    .join("\n\n");
+      if (sheet.truncated) {
+        lines.push(
+          `[Truncated: only the first ${MAX_SHEET_ROWS} rows and ${MAX_SHEET_COLUMNS} columns are included.]`,
+        );
+      }
+      parts.push(lines.join("\n"));
+    }
+  }
+  if (budget.cut) {
+    parts.push(`[Truncated: the text stops after ${MAX_OFFICE_TEXT_LENGTH.toLocaleString("en-US")} characters.]`);
+  }
+  return parts.join("\n\n");
 }
 
 export async function extractDocxAttachmentText(file: File): Promise<string> {

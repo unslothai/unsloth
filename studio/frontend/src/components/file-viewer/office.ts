@@ -140,20 +140,36 @@ function formatDate(serial: number, code: string): string {
   return time ? `${out} ${time}` : out;
 }
 
+/** An elapsed-time format ([h]:mm:ss, [mm]:ss, [ss]): the bracketed unit counts past its usual range. */
+function formatElapsed(value: number, code: string): string {
+  const total = Math.round(Math.abs(value) * 86400);
+  const unit = /\[h+\]/i.test(code) ? 3600 : /\[m+\]/i.test(code) ? 60 : 1;
+  const lead = Math.floor(total / unit);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const out = code
+    .replace(/\[[hms]+\]/i, String(lead))
+    .replace(/m+/i, pad(Math.floor((total % 3600) / 60)))
+    .replace(/s+/i, pad(total % 60));
+  return value < 0 ? `-${out}` : out;
+}
+
 /** The common shapes of an Excel number format: decimals, grouping, percent, currency, dates.
  *  `date1904`: the workbook counts dates from 1904, 1,462 days after the 1900 system. */
 export function formatNumber(value: number, rawCode: string | undefined, date1904 = false): string {
   if (!rawCode || rawCode === "General" || rawCode === "@") {
-    return String(Number.isInteger(value) ? value : Number(value.toPrecision(11)));
+    // 15 significant digits, as Excel stores: drops binary noise such as 0.30000000000000004.
+    return String(Number.isInteger(value) ? value : Number(value.toPrecision(15)));
   }
   const section = rawCode.split(";")[value < 0 && rawCode.includes(";") ? 1 : 0] ?? rawCode;
-  // Quoted text, escapes and [$€-407]-style currency tags keep their symbol; [Red] and the like go.
+  // Quoted text, escapes and [$€-407]-style currency tags keep their symbol; [Red] and the like go,
+  // but not the elapsed-time units [h], [m] and [s].
   const code = section
     .replace(/\[\$([^\]-]*)[^\]]*\]/g, "$1")
-    .replace(/\[[^\]]*\]/g, "")
+    .replace(/\[(?![hms]+\])[^\]]*\]/gi, "")
     .replace(/"([^"]*)"/g, "$1")
     .replace(/\\(.)/g, "$1")
     .replace(/_.|\*./g, "");
+  if (!/[0#?]/.test(code) && /\[[hms]+\]/i.test(code)) return formatElapsed(value, code.toLowerCase());
   if (!/[0#?]/.test(code) && /[dmyhs]/i.test(code)) {
     return formatDate(date1904 ? value + 1462 : value, code.toLowerCase());
   }
@@ -163,12 +179,14 @@ export function formatNumber(value: number, rawCode: string | undefined, date190
     return value.toExponential(digits).toUpperCase().replace(/E([+-])(\d)$/, "E$10$2");
   }
   const percent = code.includes("%");
-  const number = Math.abs(percent ? value * 100 : value);
+  // Commas after the last digit placeholder scale by a thousand each: #,##0,, shows millions.
+  const scale = 1000 ** (code.match(/[0#?](,+)(?:\.|[^0#?]*$)/)?.[1]?.length ?? 0);
+  const number = Math.abs(percent ? value * 100 : value) / scale;
   const decimals = (code.split(".")[1]?.match(/[0#]/g) ?? []).length;
   const digits = number.toLocaleString("en-US", {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
-    useGrouping: code.includes(","),
+    useGrouping: /[0#?],[0#?]/.test(code),
   });
   const firstDigit = code.search(/[0#?]/);
   const lastDigit = Math.max(code.lastIndexOf("0"), code.lastIndexOf("#"), code.lastIndexOf("?"));
@@ -262,10 +280,13 @@ function readSheet(
       }
       const type = c.getAttribute("t");
       const raw = first(c, "v")?.textContent ?? "";
+      const formula = first(c, "f")?.textContent ?? "";
       const style = styles[Number(c.getAttribute("s") ?? 0)] ?? {};
       let text = raw;
       let numeric = false;
-      if (type === "s") text = strings[Number(raw)] ?? "";
+      // A formula with no cached result, as openpyxl and similar writers save them.
+      if (raw === "" && formula) text = `=${formula}`;
+      else if (type === "s") text = strings[Number(raw)] ?? "";
       else if (type === "inlineStr") text = inlineText(c);
       else if (type === "b") text = raw === "1" ? "TRUE" : "FALSE";
       else if (type !== "str" && type !== "e" && raw !== "" && Number.isFinite(Number(raw))) {
@@ -406,8 +427,13 @@ function readFrame(shape: Element, cx: number, cy: number): SlideBox["frame"] {
   };
 }
 
-export function readPptx(bytes: Uint8Array): Deck {
-  const files = unpack(bytes, (name) => name.startsWith("ppt/") || name.startsWith("_rels/"));
+/** `images: false` reads text only, leaving slide media unpacked. */
+export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
+  const files = unpack(
+    bytes,
+    (name) =>
+      (name.startsWith("ppt/") && (images || /\.(xml|rels)$/.test(name))) || name.startsWith("_rels/"),
+  );
   const presentation = xml(files, "ppt/presentation.xml");
   if (!presentation) throw new Error("Not a valid PPTX presentation.");
   const size = first(presentation, "sldSz");
@@ -460,7 +486,7 @@ export function readPptx(bytes: Uint8Array): Deck {
       if (!table.some((row) => row.some((cell) => cell.trim()))) continue;
       boxes.push({ frame: readFrame(frame, cx, cy) ?? { x: 0.05, y: 0.25, w: 0.9, h: 0.65 }, table });
     }
-    for (const pic of all(doc, "pic")) {
+    for (const pic of images ? all(doc, "pic") : []) {
       const blip = first(pic, "blip");
       const target = blip && slideRels.get(relId(blip, "embed") ?? "");
       const data = target && files[target];

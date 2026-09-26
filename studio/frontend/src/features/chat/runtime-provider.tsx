@@ -267,8 +267,10 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const threadIds = this.getThreadIds();
     const reservationToken = findPreStreamRunReservation(threadIds);
+    // Read now: extraction can take a while, and the send belongs to the chat as it was.
+    const { incognito } = useChatRuntimeStore.getState();
     try {
-      return await withAttachmentOriginal(attachment, await this.delegate.send(attachment));
+      return await withAttachmentOriginal(attachment, await this.delegate.send(attachment), incognito);
     } catch (error) {
       if (
         reservationToken &&
