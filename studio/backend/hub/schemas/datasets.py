@@ -124,6 +124,14 @@ class LocalDatasetOptionsResponse(BaseModel):
     splits: List[DatasetSplitOption] = Field(default_factory = list)
 
 
+class HubDatasetOptionsRequest(BaseModel):
+    dataset_name: str
+
+
+class HubDatasetOptionsResponse(BaseModel):
+    splits: List[DatasetSplitOption] = Field(default_factory = list)
+
+
 class DeleteCachedDatasetResponse(BaseModel):
     status: str
     repo_id: str

@@ -288,7 +288,11 @@ def quiet_if_nonzero_mlx_rank():
             os.close(saved_stderr_fd)
 
 
-def visible_text(text: str, show_thinking: bool) -> str:
+def visible_text(
+    text: str,
+    show_thinking: bool,
+    final: bool = False,
+) -> str:
     if show_thinking:
         return text
     text = _THINK_BLOCK.sub("", text)
@@ -296,6 +300,9 @@ def visible_text(text: str, show_thinking: bool) -> str:
     open_idx = text.find(_THINK_OPEN)
     if open_idx != -1:
         text = text[:open_idx]
+    if final:
+        # Ended stream: a trailing "<" or "<th" can no longer become <think>.
+        return text
     max_prefix = min(len(text), len(_THINK_OPEN) - 1)
     for size in range(max_prefix, 0, -1):
         if _THINK_OPEN.startswith(text[-size:]):
@@ -317,7 +324,10 @@ def stream_to_stdout(stream, show_thinking: bool) -> str:
         if delta:
             sys.stdout.write(delta)
             sys.stdout.flush()
-        shown = rendered
+            shown = rendered
+    tail = visible_text(raw, show_thinking, final = True)[len(shown) :]
+    if tail:
+        sys.stdout.write(tail)
     sys.stdout.write("\n")
     sys.stdout.flush()
     return raw
@@ -336,6 +346,8 @@ def stream_markdown(stream, show_thinking: bool, *, console) -> str:
             raw = chunk
             visible = visible_text(chunk, show_thinking)
             live.update(Markdown(visible) if visible.strip() else Text(""))
+        visible = visible_text(raw, show_thinking, final = True)
+        live.update(Markdown(visible) if visible.strip() else Text(""))
     return raw
 
 
@@ -344,7 +356,7 @@ def collect_stream(stream, show_thinking: bool) -> str:
     for chunk in stream:
         if isinstance(chunk, str):
             raw = chunk
-    return visible_text(raw, show_thinking)
+    return visible_text(raw, show_thinking, final = True)
 
 
 def raise_on_streamed_error(stream):

@@ -72,7 +72,7 @@ GGUF_QUANT_PREFERENCE = [
     "F32",
 ]
 
-_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
+_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-(\d{3,})", re.IGNORECASE)
 _GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
@@ -355,6 +355,12 @@ def _unknown_gguf_variant_key(filename: str) -> str:
 def gguf_variant_family(filename: str) -> str:
     """The shard family *filename* belongs to: its directory plus its shard-stripped name. The unit a row and a download plan describe. Every shard of one split GGUF shares a family, which is why summing sizes within a family is right; two files that do NOT share one are two different checkpoints, so summing across them is not."""
     return _unknown_gguf_variant_key(filename)
+
+
+def gguf_shard_set(filename: str) -> tuple[str, int]:
+    # A quant shipped both whole and split is two copies of one checkpoint, not one set of shards.
+    split = _GGUF_SPLIT_SUFFIX_RE.search(filename.rsplit("/", 1)[-1])
+    return gguf_variant_family(filename), int(split.group(1)) if split else 0
 
 
 def gguf_checkpoint_family(filename: str) -> Optional[str]:
@@ -792,12 +798,12 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
 
 
 def group_gguf_variant_files(entries) -> dict[str, tuple[str, int]]:
-    """``variant key -> (first filename, size of that variant's shard family)``. *entries* is an iterable of ``(path, size)`` for main GGUFs only, already filtered of mmproj, drafters and big-endian builds. Sizes are summed across the shards of ONE family, never across families: a repo that ships the same quant twice (``BF16/QwQ-32B-BF16-*`` beside ``BF16/QwQ-32B.BF16-*``) therefore advertises what a load would actually read rather than the total of both copies. The family kept is the one holding the lexicographically first file, which is the shard the lister and the loader open."""
-    families: dict[str, dict[str, list[tuple[str, int]]]] = {}
+    """``variant key -> (first filename, summed size of ONE shard set)``: a quant shipped twice (``QwQ-32B-BF16-*`` beside ``QwQ-32B.BF16-*``, or whole beside split) keeps only the set holding the first file, the one the loader opens."""
+    families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
     for path, size in entries:
-        families.setdefault(gguf_variant_key(path), {}).setdefault(
-            gguf_variant_family(path), []
-        ).append((path, int(size or 0)))
+        families.setdefault(gguf_variant_key(path), {}).setdefault(gguf_shard_set(path), []).append(
+            (path, int(size or 0))
+        )
     grouped: dict[str, tuple[str, int]] = {}
     for key, by_family in families.items():
         chosen = min(by_family.values(), key = lambda members: min(path for path, _ in members))
