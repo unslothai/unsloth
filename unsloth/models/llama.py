@@ -38,6 +38,7 @@ from .loader_utils import (
     planner_class_mismatch_reason,
     planner_model_class,
     planner_config_overrides,
+    compressed_tensors_prepared_config,
     planner_hub_kwargs,
     planner_kwargs_with_max_memory,
     planner_quantization_kwargs,
@@ -2593,6 +2594,7 @@ class FastLlamaModel:
 
         from .loader_utils import (
             check_and_disable_bitsandbytes_loading,
+            quantization_config_selects_bnb_4bit,
             sync_unsloth_model_name_bnb_flags,
         )
         from unsloth_zoo.utils import get_quant_type
@@ -2600,10 +2602,21 @@ class FastLlamaModel:
         load_in_8bit = kwargs.get("load_in_8bit", False)
 
         # Disable bitsandbytes loading if the model has non-bitsandbytes quantization.
-        load_in_4bit, load_in_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
+        # The loader forwards load_in_4bit = False when an explicit quantization_config owns the
+        # precision, so a bitsandbytes 4-bit config is the 4-bit request here.
+        _user_quantization_config = kwargs.get("quantization_config", None)
+        _explicit_bnb_4bit = _user_quantization_config is not None and (
+            quantization_config_selects_bnb_4bit(_user_quantization_config)
+        )
+        _checked_4bit, _checked_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
             model_config,
-            load_in_4bit = load_in_4bit,
+            load_in_4bit = load_in_4bit or _explicit_bnb_4bit,
             load_in_8bit = load_in_8bit,
+            # vLLM reads a packed compressed-tensors checkpoint itself; only the transformers 4-bit load
+            # re-quantizes it. A num_labels load stays in-process even with fast_inference.
+            requantize_packed = not _vllm_will_load_weights(fast_inference, num_labels)
+            # A caller's own quantizer must stay authoritative: only a bitsandbytes 4-bit one consumes the plan.
+            and quantization_config_selects_bnb_4bit(_user_quantization_config),
             rewrite_modelopt = not _vllm_will_load_weights(fast_inference, num_labels),
             token = token,
             model_name = model_name,
@@ -2614,6 +2627,10 @@ class FastLlamaModel:
                 "local_files_only": kwargs.get("local_files_only", False),
             },
         )
+        # Only an explicit bitsandbytes 4-bit config keeps the caller's flags (the loader passed
+        # False for it); any other quantizer clears them as on the plain path.
+        if not _explicit_bnb_4bit:
+            load_in_4bit, load_in_8bit = _checked_4bit, _checked_8bit
         from .modelopt_fp8 import (
             keep_fp8_scale_names_on_save,
             move_config_overrides_onto_config,
@@ -2681,6 +2698,9 @@ class FastLlamaModel:
             fast_inference = fast_inference,
             planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
             skip_reason = _planner_skip_reason,
+            # The config this load uses once a compressed-tensors packed checkpoint is re-quantized to bitsandbytes on the fly; the repo's config.json would size it as compressed-tensors and refuse the bitsandbytes flags.
+            planner_config = compressed_tensors_prepared_config(model_config),
+            planner_config_reason = "this unsloth_zoo cannot plan from the prepared config of a re-quantized checkpoint",
             **planner_config_overrides(kwargs),
             token = token,
             trust_remote_code = trust_remote_code,
@@ -2743,7 +2763,9 @@ class FastLlamaModel:
         kwargs.pop("attn_implementation", None)  # No need since we auto call it
 
         # Cannot be None, since HF now checks for the config.
-        if load_in_4bit:
+        # A caller's own BitsAndBytesConfig (fast_inference forwards load_in_4bit = True with it)
+        # stays authoritative: its quant type, double quant and skip list are theirs.
+        if load_in_4bit and not _explicit_bnb_4bit:
             kwargs["quantization_config"] = bnb_config
 
         kwargs = add_dtype_kwargs(dtype, kwargs)
@@ -2818,7 +2840,15 @@ class FastLlamaModel:
                     dtype = dtype,
                 )
             elif not fast_inference:
-                if user_config is not None or _modelopt_rewritten:
+                # A packed compressed-tensors checkpoint being re-quantized to bitsandbytes on the fly
+                # had its own quantization config dropped from `model_config`; the load must use that
+                # object rather than re-read config.json.
+                from .compressed_tensors_bnb import UNSLOTH_COMPRESSED_TENSORS_ATTR
+
+                _ct_requant = (
+                    getattr(model_config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
+                )
+                if user_config is not None or _modelopt_rewritten or _ct_requant:
                     # Transformers 5.x @strict model init rejects extra kwargs next to config=, so set the override
                     # on the config and pass the single config object through.
                     if max_position_embeddings is not None:

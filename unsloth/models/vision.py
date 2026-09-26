@@ -93,6 +93,7 @@ from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
     planner_config_overrides,
+    compressed_tensors_prepared_config,
     planner_hub_kwargs,
     planner_kwargs_with_max_memory,
     _exclude_rope_inv_freq_from_ddp,
@@ -2024,13 +2025,25 @@ class FastBaseModel:
 
         from .loader_utils import (
             check_and_disable_bitsandbytes_loading,
+            quantization_config_selects_bnb_4bit,
             sync_unsloth_model_name_bnb_flags,
         )
 
-        load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
+        # The loader forwards load_in_4bit = False when an explicit quantization_config owns the
+        # precision, so a bitsandbytes 4-bit config is the 4-bit request here.
+        _explicit_bnb_4bit = user_quantization_config is not None and (
+            quantization_config_selects_bnb_4bit(user_quantization_config)
+        )
+        _checked_4bit, _checked_8bit, _ = check_and_disable_bitsandbytes_loading(
             auto_config,
-            load_in_4bit = load_in_4bit,
+            load_in_4bit = load_in_4bit or _explicit_bnb_4bit,
             load_in_8bit = load_in_8bit,
+            # Re-quantizing a packed compressed-tensors checkpoint needs the transformers 4-bit load: not under
+            # vLLM, which reads the packed weights itself, and not under full finetuning, which turns 4-bit off below.
+            # An explicit quantization_config is kept for the load below, so it must select bitsandbytes 4-bit too.
+            requantize_packed = not fast_inference
+            and not full_finetuning
+            and quantization_config_selects_bnb_4bit(user_quantization_config),
             rewrite_modelopt = not (fast_inference and is_vLLM_available()),
             token = token,
             model_name = model_name,
@@ -2041,6 +2054,10 @@ class FastBaseModel:
                 "local_files_only": local_files_only,
             },
         )
+        # Only an explicit bitsandbytes 4-bit config keeps the caller's flags (the loader passed
+        # False for it); any other quantizer clears them as on the plain path.
+        if not _explicit_bnb_4bit:
+            load_in_4bit, load_in_8bit = _checked_4bit, _checked_8bit
         from .modelopt_fp8 import (
             keep_fp8_scale_names_on_save,
             keep_task_heads_unquantized,
@@ -2067,6 +2084,13 @@ class FastBaseModel:
         # text_only builds the bare decoder; from model_name the planner would plan the whole VLM.
         _planner_skip_reason = None
         _planner_config = auto_config if text_only_decoder else None
+        _planner_config_reason = "text_only loads a decoder the repo config does not describe"
+        # A compressed-tensors packed checkpoint re-quantized to bitsandbytes on the fly has had its own quantization config dropped from auto_config; the repo's config.json would size it as compressed-tensors and refuse the bitsandbytes flags.
+        if _planner_config is None and compressed_tensors_prepared_config(auto_config) is not None:
+            _planner_config = auto_config
+            _planner_config_reason = (
+                "this unsloth_zoo cannot plan from the prepared config of a re-quantized checkpoint"
+            )
         # Same failure from the other direction: num_labels (or an explicit auto_model) loads a task head whose `score` replaces the planned lm_head, and dispatch refuses a map with no score.weight.
         if _planner_skip_reason is None:
             _planner_skip_reason = planner_class_mismatch_reason(
@@ -2098,7 +2122,7 @@ class FastBaseModel:
             planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
             skip_reason = _planner_skip_reason,
             planner_config = _planner_config,
-            planner_config_reason = "text_only loads a decoder the repo config does not describe",
+            planner_config_reason = _planner_config_reason,
             **planner_config_overrides(kwargs),
             token = token,
             trust_remote_code = trust_remote_code,
@@ -3095,6 +3119,11 @@ class FastBaseModel:
         lora_config = LoraConfig(
             **{k: v for k, v in local_variables.items() if k in allowed_parameters},
         )
+        from .loader_utils import enable_composite_gradient_checkpointing
+        from .remote_moe_shims import prepare_remote_moe_for_training
+
+        enable_composite_gradient_checkpointing(model)
+        prepare_remote_moe_for_training(model)
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
@@ -3225,6 +3254,11 @@ class FastBaseModel:
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
 
+        from .loader_utils import enable_composite_gradient_checkpointing
+        from .remote_moe_shims import prepare_remote_moe_for_training
+
+        enable_composite_gradient_checkpointing(model)
+        prepare_remote_moe_for_training(model)
         model = prepare_model_for_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,

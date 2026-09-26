@@ -531,7 +531,7 @@ def test_config_branch_moves_rope_extension_onto_the_config():
     from unsloth.models import llama
 
     source = inspect.getsource(llama.FastLlamaModel.from_pretrained)
-    branch = source.split("if user_config is not None or _modelopt_rewritten:", 1)[1]
+    branch = source.split("if user_config is not None or _modelopt_rewritten", 1)[1]
     branch = branch.split("AutoModelForCausalLM.from_pretrained(", 1)[0]
     assert 'kwargs.pop("rope_scaling", None)' in branch
 
