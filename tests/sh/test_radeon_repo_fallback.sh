@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# _radeon_fetch_listing separates "no such release" (HTTP error) from "host unreachable" (#7264, #10657).
+# _radeon_fetch_listing separates "no such release" (HTTP 404/410) from "host unreachable" (#7264, #10657).
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,11 +20,12 @@ echo cp312
 STUB
 chmod +x "$_STUB_DIR/fakepy"
 
-# $1 = stub curl exit code.
+# $1 = stub curl exit code, $2 = the %{http_code} it writes out, as curl -w does even on failure.
 run_fetch() {
     _curl_dir=$(mktemp -d)
     cat > "$_curl_dir/curl" <<STUB
 #!/bin/sh
+printf '\\n%s' '$2'
 exit $1
 STUB
     chmod +x "$_curl_dir/curl"
@@ -45,23 +46,30 @@ STUB
 
 echo "=== test_radeon_repo_fallback ==="
 
-# 1) curl -f exits 22 on HTTP >= 400.
+# 1) curl -f exits 22 on HTTP >= 400; only 404/410 mean the release is absent.
 assert_eq "HTTP 404 -> fetch fails, host recorded as answering" \
-    "fail answered=true" "$(run_fetch 22)"
+    "fail answered=true" "$(run_fetch 22 404)"
+assert_eq "HTTP 410 -> fetch fails, host recorded as answering" \
+    "fail answered=true" "$(run_fetch 22 410)"
+assert_eq "HTTP 503 -> outage, host not recorded as answering" \
+    "fail answered=false" "$(run_fetch 22 503)"
+assert_eq "HTTP 429 -> rate limit, host not recorded as answering" \
+    "fail answered=false" "$(run_fetch 22 429)"
 
 # 2) Connection refused (7).
 assert_eq "connection refused -> fetch fails, host not recorded as answering" \
-    "fail answered=false" "$(run_fetch 7)"
+    "fail answered=false" "$(run_fetch 7 000)"
 
 # 3) Timeout (28).
 assert_eq "timeout -> fetch fails, host not recorded as answering" \
-    "fail answered=false" "$(run_fetch 28)"
+    "fail answered=false" "$(run_fetch 28 000)"
 
 # 4) Served listing.
 _curl_dir=$(mktemp -d)
 cat > "$_curl_dir/curl" <<'STUB'
 #!/bin/sh
 echo '<a href="torch-2.11.0%2Brocm7.2.4-cp312-cp312-linux_x86_64.whl">torch</a>'
+printf '\n200'
 STUB
 chmod +x "$_curl_dir/curl"
 _result=$(PATH="$_curl_dir:$PATH" bash -c "
@@ -84,7 +92,8 @@ cat > "$_curl_dir/curl" <<STUB
 #!/bin/sh
 _n=\$(cat "$_curl_dir/calls" 2>/dev/null || echo 0)
 echo \$((_n + 1)) > "$_curl_dir/calls"
-[ "\$_n" = 0 ] && exit 22
+[ "\$_n" = 0 ] && { printf '\\n404'; exit 22; }
+printf '\\n000'
 exit 7
 STUB
 chmod +x "$_curl_dir/curl"
@@ -101,7 +110,7 @@ _result=$(PATH="$_curl_dir:$PATH" bash -c "
 assert_eq "one answer across two attempts is enough" "true calls=2" "$_result"
 rm -rf "$_curl_dir"
 
-# 6) wget (only reached without curl): 8 = server error response.
+# 6) wget (only reached without curl): its 8 covers every HTTP error, so it stays "unreachable".
 run_fetch_wget() {
     _wget_dir=$(mktemp -d)
     cat > "$_wget_dir/wget" <<STUB
@@ -123,8 +132,8 @@ STUB
     "
     rm -rf "$_wget_dir"
 }
-assert_eq "no curl, wget HTTP error -> host recorded as answering" \
-    "fail answered=true" "$(run_fetch_wget 8)"
+assert_eq "no curl, wget HTTP error -> host not recorded as answering" \
+    "fail answered=false" "$(run_fetch_wget 8)"
 assert_eq "no curl, wget network failure -> host not recorded as answering" \
     "fail answered=false" "$(run_fetch_wget 4)"
 
