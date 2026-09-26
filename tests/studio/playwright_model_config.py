@@ -78,6 +78,8 @@ ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_modelcfg")
 # The panel exposes no readiness signal to poll (the input value, the Reset state and the primary button label are
 # all identical before and after), so this is a bounded wait rather than a condition.
 CONFIG_SETTLE_MS = int(os.environ.get("STUDIO_CONFIG_SETTLE_MS", "1000"))
+# The model picker debounces its search query by 300 ms (useDebouncedValue); a little margin on top.
+PICKER_DEBOUNCE_MS = 450
 ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
@@ -779,9 +781,11 @@ with sync_playwright() as p:
                 search.click()
                 search.fill(needle)
                 # An absence check, so it must read the list the query produced, not the one
-                # before it: wait until every row on screen matches the needle (none left is
-                # fine), which is the debounced filter having applied. Replaces a fixed 600 ms,
-                # and like it never fails by itself; the count below decides.
+                # before it. An empty list cannot tell "filtered" from "not applied yet" (the
+                # previous needle leaves one), so first outlast the picker's 300 ms query
+                # debounce (useDebouncedValue), then wait until every row on screen matches the
+                # needle. Never fails by itself; the count below decides.
+                page.wait_for_timeout(PICKER_DEBOUNCE_MS)
                 try:
                     page.wait_for_function(
                         """([sel, needle]) => {
