@@ -1211,6 +1211,14 @@ def _mxfp4_lora_keeps_experts_packed(
     # transformers also takes a torch.device or a bare index and wraps it as {"": device}.
     if device_map is not None and not isinstance(device_map, (dict, str)):
         device_map = str(device_map)
+    # No map loads on the default device, which is the CPU unless the caller set one.
+    if device_map is None:
+        try:
+            import torch
+
+            device_map = str(getattr(torch, "get_default_device", lambda: "cpu")())
+        except Exception:
+            device_map = "cpu"
     # unsloth_zoo only learns about offload once transformers resolves the map, after this
     # config is built, so an explicit map that offloads is checked here.
     if isinstance(device_map, dict) and any(

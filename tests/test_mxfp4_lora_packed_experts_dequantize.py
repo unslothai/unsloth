@@ -175,8 +175,8 @@ def _run_branch(
 
 
 def test_helper_on_for_mxfp4_lora_when_zoo_keeps_packed(zoo):
-    assert _helper()("mxfp4") is True
-    assert _helper()("MXFP4", False) is True
+    assert _helper()("mxfp4", False, "cuda:0") is True
+    assert _helper()("MXFP4", False, {"": 0}) is True
 
 
 def test_helper_off_for_full_finetuning_and_other_methods(zoo):
@@ -227,7 +227,7 @@ def test_offloading_device_map_keeps_native_load(zoo):
     # Maps that stay on accelerators, and string maps, still take the packed path.
     assert _helper()("mxfp4", False, {"": 0}) is True
     assert _helper()("mxfp4", False, {"model.layers.0": 0, "model.layers.1": 1}) is True
-    for device_map in ("sequential", "auto", None):
+    for device_map in ("sequential", "auto"):
         assert _run_branch(False, "mxfp4", False, device_map = device_map) is True
     # load_in_16bit asked for the dequantize itself, offload or not.
     assert _run_branch(True, "mxfp4", False, device_map = offload) is True
@@ -338,7 +338,7 @@ def test_offline_load_sizes_the_cached_snapshot(zoo, sizes, tmp_path):
 def test_quantization_method_enum_is_recognized(zoo):
     from transformers.utils.quantization_config import QuantizationMethod
 
-    assert _helper()(QuantizationMethod.MXFP4) is True
+    assert _helper()(QuantizationMethod.MXFP4, False, "cuda:0") is True
 
 
 def test_torch_device_cpu_map_keeps_native_load(zoo, sizes):
@@ -403,3 +403,14 @@ def test_a_card_that_fails_the_probe_adds_no_capacity(zoo, sizes, monkeypatch):
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is False
     sizes["checkpoint"] = 13
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is True
+
+
+def test_unset_device_map_follows_the_default_device(zoo, sizes, monkeypatch):
+    # device_map = None loads on the default device: the CPU unless the caller set one.
+    import torch
+
+    monkeypatch.setattr(torch, "get_default_device", lambda: torch.device("cpu"))
+    assert _helper()("mxfp4", False, None) is False
+    assert _run_branch(False, "mxfp4", False, device_map = None) is False
+    monkeypatch.setattr(torch, "get_default_device", lambda: torch.device("cuda", 0))
+    assert _helper()("mxfp4", False, None) is True
