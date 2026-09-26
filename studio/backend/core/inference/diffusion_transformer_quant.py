@@ -325,6 +325,18 @@ _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {
 }
 
 
+# AUTO keeps bf16 while it fits for these (measured with both sides compiled: INT8 was at most ~5% faster and failed the
+# default-on LPIPS bar); when bf16 would offload, INT8 is still picked.
+_FAMILY_AUTO_BF16_WHEN_RESIDENT: dict[str, str] = {
+    "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail",
+    "hidream-i1": "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail",
+}
+
+
+def auto_bf16_when_resident_reason(family: Optional[str]) -> Optional[str]:
+    return _FAMILY_AUTO_BF16_WHEN_RESIDENT.get(str(family or "").strip().lower())
+
+
 # Schemes denied for TRAINING on top of the inference table. Training holds a stricter bar because the evidence above
 # is rendering evidence: it says a frozen fp8 forward reconstructs the bf16 image, not that a LoRA converges when its
 # frozen linears are fp8. Nobody has run that, so qwen fp8 stays out of the Train UI until someone does. Delete the

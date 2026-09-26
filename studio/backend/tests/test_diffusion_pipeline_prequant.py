@@ -1222,6 +1222,70 @@ def test_an_uncompilable_family_quantises_auto_when_the_budget_is_unmeasured(
     assert spy.quantised == ["auto"]
 
 
+def _measured_bf16_family(monkeypatch, *, measured = True):
+    # Compiles regionally (Studio supplies its blocks), but the measured table keeps bf16 while it fits.
+    _uncompilable(monkeypatch, measured = measured)
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: True)
+    monkeypatch.setattr(dmod, "auto_bf16_when_resident_reason", lambda _name: "measured: no faster")
+
+
+def test_a_measured_bf16_family_keeps_the_released_weights_that_fit(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _measured_bf16_family(monkeypatch)
+    assert _settle(backend) is None
+
+
+def test_a_measured_bf16_family_seeds_when_the_released_weights_would_offload(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "sequential")
+    _measured_bf16_family(monkeypatch)
+    assert _settle(backend) == "fp8"
+
+
+def test_a_measured_bf16_family_loads_auto_unquantised_with_the_measured_reason(
+    fake_runtime, monkeypatch
+):
+    backend, spy = _load_backend(monkeypatch)
+    _measured_bf16_family(monkeypatch)
+    status = _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == [] and spy.seeds == []
+    resolved = status["resolved"]["transformer_quant"]
+    assert (resolved["value"], resolved["source"]) == ("off", "auto")
+    assert "measured: no faster" in resolved["reason"]
+    assert "cannot be regionally compiled" not in resolved["reason"]
+
+
+def test_a_measured_bf16_family_quantises_auto_when_the_budget_is_unmeasured(
+    fake_runtime, monkeypatch
+):
+    backend, spy = _load_backend(monkeypatch)
+    _measured_bf16_family(monkeypatch, measured = False)
+    _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == ["auto"]
+
+
+@pytest.mark.parametrize(
+    "repo, kept",
+    [
+        ("Alpha-VLLM/Lumina-Image-2.0", True),
+        ("HiDream-ai/HiDream-I1-Full", True),
+        ("black-forest-labs/FLUX.1-dev", False),
+        ("Tongyi-MAI/Z-Image-Turbo", False),
+        ("Qwen/Qwen-Image", False),
+    ],
+)
+def test_the_bf16_rule_names_only_the_measured_families(repo, kept):
+    fam = detect_family_for_pick(repo, None, None)
+    assert fam is not None
+    reason = dmod._auto_keeps_bf16_reason(fam)
+    assert (reason is not None) is kept
+    # Both deciders read this one answer; neither may call the family uncompilable any more.
+    assert reason is None or "cannot be regionally compiled" not in reason
+
+
 def test_a_resident_plan_whose_requirement_exceeds_the_budget_proves_no_fit():
     fits = types.SimpleNamespace(
         offload_policy = "none",

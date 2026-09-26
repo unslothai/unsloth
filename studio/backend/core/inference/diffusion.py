@@ -241,6 +241,7 @@ from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
 from .diffusion_nvfp4_install import nvfp4_backend_fields as _nvfp4_backend_fields
 from .diffusion_transformer_quant import (
     TQ_AUTO,
+    auto_bf16_when_resident_reason,
     TQ_NVFP4,
     TQ_INT8,
     DEFAULT_MIN_LINEAR_FEATURES,
@@ -1695,21 +1696,36 @@ def _plan_proves_resident(plan: Any) -> bool:
     )
 
 
+def _auto_keeps_bf16_reason(fam: Any) -> Optional[str]:
+    """Why AUTO keeps bf16 for ``fam`` when bf16 fits, or None; the seed and load deciders must both read this."""
+    if not family_compiles_regionally(fam):
+        return (
+            f"'{getattr(fam, 'name', None)}' cannot be regionally compiled (its transformer declares no "
+            "repeated blocks), and an uncompiled quantised transformer runs far slower than the weights "
+            "it replaces; they fit on this GPU as they are"
+        )
+    measured = auto_bf16_when_resident_reason(getattr(fam, "name", None))
+    if measured is None:
+        return None
+    return (
+        f"'{getattr(fam, 'name', None)}': {measured}; the bf16 weights fit on this GPU as they are"
+    )
+
+
 def _auto_quant_eager_reason(
     fam: Any,
     plan: Any,
     prequant_path: Optional[str] = None,
 ) -> Optional[str]:
-    """Why AUTO keeps bf16 for an uncompilable family, or None; an operator's own checkpoint wins."""
-    if not _plan_proves_resident(plan) or family_compiles_regionally(fam):
+    """Why AUTO keeps bf16 for this load, or None; an operator's own checkpoint wins."""
+    if not _plan_proves_resident(plan):
+        return None
+    reason = _auto_keeps_bf16_reason(fam)
+    if reason is None:
         return None
     if prequant_path and local_prequant_path_ready(prequant_path):
         return None
-    return (
-        f"'{getattr(fam, 'name', None)}' cannot be regionally compiled (its transformer declares no "
-        "repeated blocks), and an uncompiled quantised transformer runs far slower than the weights "
-        "it replaces; they fit on this GPU as they are"
-    )
+    return reason
 
 
 def _clear_exception_frames(exc: BaseException) -> None:
@@ -3325,7 +3341,7 @@ class DiffusionBackend:
                     is not None
                 ):
                     return None
-                if auto and not family_compiles_regionally(fam):
+                if auto and _auto_keeps_bf16_reason(fam) is not None:
                     bf16_memory = snapshot_device_memory(target)
                     bf16_plan = self._bf16_table_plan(
                         target,
@@ -5199,7 +5215,7 @@ class DiffusionBackend:
                     and dense_quant_supported_kind(kind)
                     and dense_transformer_supported(target)
                     and not (kind == "gguf" and _has_active_lora(loras))
-                    and not family_compiles_regionally(fam)
+                    and _auto_keeps_bf16_reason(fam) is not None
                     and (
                         eager_reason := _auto_quant_eager_reason(
                             fam,
