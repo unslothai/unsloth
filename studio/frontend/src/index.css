@@ -138,12 +138,18 @@
 
 
 
+/* Regular and Medium put their line gap into usWinAscent without USE_TYPO_METRICS, so
+   DirectWrite set every line 0.1em lower on Windows than hhea does on macOS and Linux.
+   The overrides are the hhea values (ascender, descender, lineGap / 2048 units). */
 @font-face {
 	font-family: "Hellix";
 	src: url("/fonts/Hellix-Regular.woff") format("woff");
 	font-weight: 400;
 	font-style: normal;
 	font-display: swap;
+	ascent-override: 81.5918%;
+	descent-override: 18.4082%;
+	line-gap-override: 20.0195%;
 }
 
 @font-face {
@@ -152,6 +158,9 @@
 	font-weight: 500;
 	font-style: normal;
 	font-display: swap;
+	ascent-override: 82.1777%;
+	descent-override: 17.8223%;
+	line-gap-override: 20.0195%;
 }
 
 @font-face {
