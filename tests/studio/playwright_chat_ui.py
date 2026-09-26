@@ -2102,6 +2102,7 @@ with sync_playwright() as p:
         if btn is None:
             soft_fail(f"nav '{label}' not found")
             return False
+        url_before = page.url
         # force=True bypasses the actionability check: the post-toggle view-transition can briefly report <html> as
         # topmost even though the button is visible + enabled (belt-and-suspenders atop the startViewTransition
         # neutraliser).
@@ -2111,10 +2112,12 @@ with sync_playwright() as p:
             soft_fail(f"nav '{label}' click failed: {exc!r}")
             return False
         if expected_url_pat:
-            # Wait for the route change itself, not 800 ms; the check below still decides.
+            # Wait for the route change itself, not 800 ms: a URL that differs from the one before
+            # the click, since the pattern alone may already match. The check below still decides.
             try:
                 page.wait_for_url(
-                    lambda u: re.search(expected_url_pat, u) is not None, timeout = 10_000
+                    lambda u: u != url_before and re.search(expected_url_pat, u) is not None,
+                    timeout = 5_000,
                 )
             except Exception:
                 pass
@@ -2147,9 +2150,14 @@ with sync_playwright() as p:
                     compare_item = wait_for_first(compare_items, timeout_ms = 5_000)
                 compare_item = compare_items.first
         if compare_item.count() > 0:
+            url_before = page.url
             click_forced(compare_item)
             try:
-                page.wait_for_url(lambda u: re.search(r"/chat\?", u) is not None, timeout = 10_000)
+                # The URL before the click may already carry a query (?new=...), so wait for a new one.
+                page.wait_for_url(
+                    lambda u: u != url_before and re.search(r"/chat\?", u) is not None,
+                    timeout = 10_000,
+                )
             except Exception:
                 pass
             if not re.search(r"/chat\?", page.url):
@@ -2211,8 +2219,15 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     step("Recipes tab: cards render + click first card")
     page.goto(f"{BASE}/data-recipes")
-    # The route is rendered once its always-present "new recipe" control is, not after 1.5 s.
+    # The route is rendered once its always-present "new recipe" control is, not after 1.5 s; the
+    # list is read from IndexedDB after that, behind a "Loading recipes" placeholder.
     wait_for_first(page.locator('[data-tour="recipes-new"]'), timeout_ms = 15_000)
+    try:
+        expect(page.locator("main").get_by_text("Loading recipes", exact = True)).to_have_count(
+            0, timeout = 15_000
+        )
+    except AssertionError:
+        pass  # the count below reports what rendered
     headings = page.locator("main h2, main h3, [data-recipe], a[href*='/data-recipes/']")
     n_cards = headings.count()
     info(f"Recipes route headings/cards: {n_cards}")
