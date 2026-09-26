@@ -334,7 +334,6 @@ _FAMILY_AUTO_BF16_WHEN_RESIDENT: dict[str, str] = {
 
 
 def auto_bf16_when_resident_reason(family: Optional[str]) -> Optional[str]:
-    """Why AUTO keeps bf16 for ``family`` when bf16 fits, or None."""
     return _FAMILY_AUTO_BF16_WHEN_RESIDENT.get(str(family or "").strip().lower())
 
 
