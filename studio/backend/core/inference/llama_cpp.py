@@ -3820,7 +3820,6 @@ _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
 # Windows + discrete NVIDIA: since driver 536.40 WDDM serves VRAM overflow from host RAM
 # instead of failing (unslothai/unsloth#11349), so match llama.cpp's own fit margin.
 _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB = _LLAMA_FIT_TARGET_DEFAULT_MIB
-# Cap at 1/8 of the card so the floor stays proportionate on small GPUs.
 _WINDOWS_SYSMEM_FALLBACK_MAX_FRACTION = 0.125
 
 
@@ -3866,8 +3865,7 @@ def _vram_usable_mib(
     still has to keep a margin: there the free reading is the only scale available,
     and it agrees with the known-total form at the default.
 
-    ``sysmem_fallback``: see ``LlamaCppBackend._sysmem_fallback_risk()``; ``pooled``
-    ignores it since those MiB already paid a per-card reserve.
+    ``sysmem_fallback``: see ``LlamaCppBackend._sysmem_fallback_risk()``; ``pooled`` ignores it.
     """
     if total_mib and total_mib > 0:
         reserve = max(
@@ -9914,7 +9912,6 @@ class LlamaCppBackend:
         backends = LlamaCppBackend._installed_ggml_backends(binary)
         return "vulkan" in backends and not backends.intersection({"cuda", "hip"})
 
-    # Keyed per binary: the planner asks once per candidate GPU subset.
     _SYSMEM_FALLBACK_RISK: dict[Optional[str], bool] = {}
 
     @staticmethod

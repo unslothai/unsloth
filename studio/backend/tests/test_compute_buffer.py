@@ -1389,8 +1389,7 @@ class TestSplitRateRecheckAfterSelection:
             if keyword.arg in ("split_extra_bytes", "split_extra_for_slots")
         ]
         # Projector floor pin, explicit-context pin, reduced-slot retry, per-candidate
-        # re-fit, and the overcommit notice's q8_0 what-if, which prices the requested
-        # context at q8_0 KV. A sixth has to come here and say which context it prices at.
+        # re-fit, overcommit notice's q8_0 what-if. A sixth has to say which context it prices at.
         #
         # Four, not the three the counting version asserted. It counted two spellings,
         # `_cc_split_extra(effective_ctx)` and `_cc_split_extra(ctx),`, and the
