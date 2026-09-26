@@ -347,6 +347,7 @@ def test_an_original_sent_many_times_counts_once_toward_disk_usage(client, monke
             "contentType": "application/pdf",
             "sizeBytes": 1000,
             "originalSha256": sha256,
+            "textBytes": 50,
             "hasOriginal": has_original,
         }
 
@@ -359,12 +360,14 @@ def test_an_original_sent_many_times_counts_once_toward_disk_usage(client, monke
             sent("b", "1" * 64),
             sent("c", "2" * 64),
             sent("d", "1" * 64),
+            sent("e", "3" * 64, has_original = False),
         ],
     )
     items = _items(client)[0]
-    usage = [items[f"attachment:m:{name}"].get("storageBytes", 1000) for name in "abcd"]
-    assert usage == [1000, 0, 1000, 0]
-    assert all(items[f"attachment:m:{name}"]["sizeBytes"] == 1000 for name in "abcd")
+    # Each message's extracted text counts; the original only once, and only while on disk.
+    usage = [items[f"attachment:m:{name}"]["storageBytes"] for name in "abcde"]
+    assert usage == [1050, 50, 1050, 50, 50]
+    assert all(items[f"attachment:m:{name}"]["sizeBytes"] == 1000 for name in "abcde")
 
 
 def test_a_chat_audio_part_is_typed_by_its_format_or_its_bytes():

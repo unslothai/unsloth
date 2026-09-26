@@ -275,19 +275,27 @@ function formatFraction(value: number, code: string): string | null {
 }
 
 /** An elapsed-time format ([h]:mm:ss, [mm]:ss, [ss]): the bracketed unit counts past its usual range. */
-function formatElapsed(value: number, code: string): string {
+function formatElapsed(value: number, format: string): string {
+  // Placeholders only: quoted and escaped text stays as written ([h]:mm "hours").
+  const tokens: string[] = format.match(/"[^"]*"|\\.|\[[hms]+\]|h+|m+|s+|\.0+|[\s\S]/gi) ?? [];
   // Fractional seconds (ss.00) at their own precision.
-  const digits = /\.(0+)/.exec(code)?.[1]?.length ?? 0;
-  const ticks = Math.round(Math.abs(value) * 86400 * 10 ** digits);
-  const total = Math.floor(ticks / 10 ** digits);
-  const unit = /\[h+\]/i.test(code) ? 3600 : /\[m+\]/i.test(code) ? 60 : 1;
-  const lead = Math.floor(total / unit);
+  const digits = tokens.find((token) => /^\.0+$/.test(token))?.length ?? 1;
+  const scale = 10 ** (digits - 1);
+  const ticks = Math.round(Math.abs(value) * 86400 * scale);
+  const total = Math.floor(ticks / scale);
   const pad = (n: number) => String(n).padStart(2, "0");
-  const out = code
-    .replace(/\.0+/, `.${String(ticks % 10 ** digits).padStart(digits, "0")}`)
-    .replace(/\[[hms]+\]/i, String(lead))
-    .replace(/m+/i, pad(Math.floor((total % 3600) / 60)))
-    .replace(/s+/i, pad(total % 60));
+  const out = tokens
+    .map((token) => {
+      const unit = token.toLowerCase();
+      if (unit.startsWith("[")) return String(Math.floor(total / (unit[1] === "h" ? 3600 : unit[1] === "m" ? 60 : 1)));
+      if (unit[0] === "h") return pad(Math.floor(total / 3600) % 24);
+      if (unit[0] === "m") return pad(Math.floor((total % 3600) / 60));
+      if (unit[0] === "s") return pad(total % 60);
+      if (/^\.0+$/.test(token)) return `.${String(ticks % scale).padStart(digits - 1, "0")}`;
+      if (token.startsWith('"')) return token.slice(1, -1);
+      return token.startsWith("\\") ? token.slice(1) : token;
+    })
+    .join("");
   return value < 0 ? `-${out}` : out;
 }
 
@@ -487,7 +495,7 @@ export function formatNumber(value: number, rawCode: string | undefined, date190
   const sections = splitSections(rawCode);
   const { index, sign } = pickSection(value, sections);
   const { tagged, code, kind, percent, scale } = readSection(sections[index] ?? rawCode);
-  if (kind === "elapsed") return formatElapsed(value, code.toLowerCase());
+  if (kind === "elapsed") return formatElapsed(value, tagged);
   if (kind === "date") return formatDate(date1904 ? value + 1462 : value, tagged);
   // No digit placeholders: literal text, with the value wherever "General" stands.
   if (kind === "literal") return `${sign}${code.replace(/general/i, generalText(Math.abs(value)))}`.trim();

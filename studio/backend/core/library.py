@@ -449,10 +449,12 @@ def _attachment_items() -> list[dict]:
                 pair_id = attachment.get("pairId"),
             )
         )
+        # Disk usage: the extracted text in the database, plus the original the first time it appears.
         sha256 = attachment.get("originalSha256")
-        if attachment.get("hasOriginal") and sha256:
-            if sha256 in counted:
-                items[-1]["storageBytes"] = 0
+        if sha256:
+            text_bytes = attachment.get("textBytes") or 0
+            first = attachment.get("hasOriginal") and sha256 not in counted
+            items[-1]["storageBytes"] = text_bytes + ((attachment.get("sizeBytes") or 0) if first else 0)
             counted.add(sha256)
     return items
 
