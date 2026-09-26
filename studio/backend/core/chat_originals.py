@@ -43,7 +43,11 @@ _sweep_lock = threading.Lock()
 _file_lock = threading.Lock()
 # Per originals folder: each account has its own, and one account's sweep must not delay another's.
 _last_sweep: dict[Path, float] = {}
-_scheduled: set[Path] = set()
+# Later sweeps, per originals folder: when, and in which account's context. One thread serves them
+# all, so many accounts never hold a thread each.
+_due: dict[Path, tuple[float, contextvars.Context]] = {}
+_due_changed = threading.Condition()
+_worker: Optional[threading.Thread] = None
 
 
 class TooLarge(Exception):
@@ -161,17 +165,34 @@ def sweep(force: bool = False) -> int:
 
 def _schedule(directory: Path) -> None:
     """Sweep ``directory`` again once the grace period has passed, in this account's context."""
-    with _sweep_lock:
-        if directory in _scheduled:
+    global _worker
+    with _due_changed:
+        if directory in _due:
             return
-        _scheduled.add(directory)
-    context = contextvars.copy_context()
+        _due[directory] = (time.monotonic() + _SWEEP_GRACE_SECONDS + 60, contextvars.copy_context())
+        if _worker is None:
+            _worker = threading.Thread(target = _run_due, name = "chat-originals-sweep", daemon = True)
+            _worker.start()
+        _due_changed.notify()
 
-    def run() -> None:
-        with _sweep_lock:
-            _scheduled.discard(directory)
-        context.run(sweep, True)
 
-    timer = threading.Timer(_SWEEP_GRACE_SECONDS + 60, run)
-    timer.daemon = True
-    timer.start()
+def _run_due() -> None:
+    """Runs each due sweep, sleeping until the next; ends once none is left."""
+    global _worker
+    while True:
+        with _due_changed:
+            while True:
+                if not _due:
+                    _worker = None
+                    return
+                now = time.monotonic()
+                ready = [directory for directory, (at, _) in _due.items() if at <= now]
+                if ready:
+                    break
+                _due_changed.wait(min(at for at, _ in _due.values()) - now)
+            jobs = [(directory, _due.pop(directory)[1]) for directory in ready]
+        for _directory, context in jobs:
+            try:
+                context.run(sweep, True)
+            except Exception:
+                logger.debug("chat_originals.scheduled_sweep_failed", exc_info = True)

@@ -83,7 +83,7 @@ function inflateEntry(bytes: Uint8Array, view: DataView, entry: ZipEntry): Uint8
  *  once, so each read is by lookup, not another pass over every entry. The unpacked total counts
  *  across calls. */
 type Reader = ((names: Iterable<string>, limit?: number) => Unzipped) & {
-  /** A part's unpacked size, when the index knows it. */
+  /** A part's unpacked size, as the archive declares it. */
   size: (name: string) => number | undefined;
 };
 
@@ -102,7 +102,17 @@ function archive(bytes: Uint8Array): Reader {
         filter: (entry) => wanted.has(entry.name) && entry.originalSize <= limit && (charge(entry.originalSize), true),
       });
     };
-    return Object.assign(read, { size: () => undefined });
+    // Sizes from one pass over the directory, the first time one is asked for.
+    let sizes: Map<string, number> | undefined;
+    const size = (name: string) => {
+      if (!sizes) {
+        const found = new Map<string, number>();
+        unzipSync(bytes, { filter: (entry) => (found.set(entry.name, entry.originalSize), false) });
+        sizes = found;
+      }
+      return sizes.get(name);
+    };
+    return Object.assign(read, { size });
   }
   const read = (names: Iterable<string>, limit = Infinity) => {
     const files: Unzipped = {};
@@ -681,19 +691,27 @@ function readStyles(doc: Document | null): CellStyle[] {
   });
 }
 
+// A cell (B2, $b$2), a whole column (A:A) or a whole row (1:1), after anything but a name's letters.
+const REFERENCE =
+  /(^|[^A-Za-z0-9_.$])(?:(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![\d(A-Za-z_!])|(\$?)([A-Za-z]{1,3}):(\$?)([A-Za-z]{1,3})(?![\w(!.])|(\$?)(\d+):(\$?)(\d+)(?![\d.]))/g;
+
 /** A shared formula moved from its master cell to one `rows` and `columns` away: relative
  *  references shift, $-anchored parts and quoted text stay. */
 function shiftFormula(formula: string, rows: number, columns: number): string {
+  const column = (abs: string, name: string) =>
+    abs + (abs ? name.toUpperCase() : columnName(columnIndex(name.toUpperCase()) + columns));
+  const row = (abs: string, n: string) => abs + (abs ? n : String(Number(n) + rows));
   return formula
     .split(/("[^"]*")/)
     .map((part, index) =>
       index % 2
         ? part
-        : part.replace(
-            /(^|[^A-Za-z0-9_.$])(\$?)([A-Z]{1,3})(\$?)(\d+)(?![\d(A-Za-z_!])/g,
-            (_, lead: string, colAbs: string, col: string, rowAbs: string, row: string) =>
-              `${lead}${colAbs}${colAbs ? col : columnName(columnIndex(col) + columns)}${rowAbs}${rowAbs ? row : Number(row) + rows}`,
-          ),
+        : part.replace(REFERENCE, (...m: string[]) => {
+            const [, lead, ca, c, ra, r, c1a, c1, c2a, c2, r1a, r1, r2a, r2] = m;
+            if (c !== undefined) return `${lead}${column(ca!, c)}${row(ra!, r!)}`;
+            if (c1 !== undefined) return `${lead}${column(c1a!, c1)}:${column(c2a!, c2!)}`;
+            return `${lead}${row(r1a!, r1!)}:${row(r2a!, r2!)}`;
+          }),
     )
     .join("");
 }
@@ -863,7 +881,7 @@ function readSheet(
       if (raw === "" && formula) value = `=${formula}`;
       else if (type === "s" || type === "inlineStr" || type === "str") {
         value = formatText(type === "s" ? string(Number(raw)) : type === "inlineStr" ? stringText(body) : raw, style.format);
-      } else if (type === "b") value = raw === "1" ? "TRUE" : "FALSE";
+      } else if (type === "b") value = isTrue(raw) ? "TRUE" : "FALSE";
       else if (type !== "str" && type !== "e" && raw !== "" && Number.isFinite(Number(raw))) {
         value = formatNumber(Number(raw), style.format, date1904);
         numeric = true;
@@ -1095,6 +1113,7 @@ export function readDelimited(text: string, delimiter: string, name: string): Sh
   // A field stops growing at a cell's worth, as an XLSX cell does.
   const append = (char: string) => {
     if (field.length < MAX_CELL_TEXT) field += char;
+    else truncated = true;
   };
   for (let i = 0; i < text.length; i++) {
     const char = text[i]!;
@@ -1175,6 +1194,15 @@ const MAX_CHART_CELLS = 5000;
 
 // Slides read: each is kept as boxes once parsed.
 const MAX_SLIDES = 500;
+// Characters of text kept across a deck; the slides after are left out.
+const MAX_DECK_TEXT = 8 * 1024 * 1024;
+
+function boxText(box: SlideBox): number {
+  let n = box.caption?.length ?? 0;
+  for (const p of box.paragraphs ?? []) n += p.text.length;
+  for (const row of box.table ?? []) for (const cell of row) n += cell.length;
+  return n;
+}
 const HIDDEN_SLIDE = /<(?:[\w.-]+:)?sld\b[^>]*\sshow\s*=\s*["'](?:0|false)["']/;
 
 // Paragraphs, table cells and pictures on one slide, all of which it mounts at once.
@@ -1202,39 +1230,47 @@ function readTable(tbl: Element, limit: number): string[][] {
 
 const MAX_DIAGRAM_NODES = 500;
 
-/** A SmartArt diagram's node labels, from its data part. */
-function readDiagram(doc: Document): NonNullable<SlideBox["paragraphs"]> {
+/** A SmartArt diagram's node labels, from its data part, up to `limit`; a last "…" marks more. */
+function readDiagram(doc: Document, limit: number): NonNullable<SlideBox["paragraphs"]> {
   const paragraphs: NonNullable<SlideBox["paragraphs"]> = [];
   for (const pt of all(doc, "pt")) {
     // Nodes only: transitions and connections carry no text.
     const type = pt.getAttribute("type");
     if (type && type !== "node") continue;
-    const text = all(pt, "p").map(paragraphText).join("\n");
-    if (text.trim()) paragraphs.push({ text, bullet: true });
-    if (paragraphs.length >= MAX_DIAGRAM_NODES) break;
+    const text = clip(all(pt, "p").map(paragraphText).join("\n"));
+    if (!text.trim()) continue;
+    if (paragraphs.length >= Math.min(limit, MAX_DIAGRAM_NODES)) {
+      paragraphs.push({ text: "…" });
+      break;
+    }
+    paragraphs.push({ text, bullet: true });
   }
   return paragraphs;
 }
 
-/** A chart's cached data as a table: a header of series names, then one row a category. A last
- *  row of "…" marks data left out. */
-function readChart(doc: Document): { caption?: string; table: string[][] } | null {
+/** A chart's cached data as a table of at most `budget` cells: a header of series names, then one
+ *  row a category. A last row of "…" marks data left out. */
+function readChart(doc: Document, budget: number): { caption?: string; table: string[][] } | null {
   const serNodes = all(doc, "ser");
-  const limit = Math.floor(MAX_CHART_CELLS / (Math.min(serNodes.length, MAX_CHART_SERIES) + 1));
+  const width = Math.min(serNodes.length, MAX_CHART_SERIES) + 1;
+  // Not even the header row fits: the chart is marked left out.
+  if (serNodes.length && width > Math.min(budget, MAX_CHART_CELLS)) return { table: [["…"]] };
+  // Category rows that fit beside the header row.
+  const limit = Math.floor(Math.min(budget, MAX_CHART_CELLS) / width) - 1;
   let cut = serNodes.length > MAX_CHART_SERIES;
   const cache = (node: Element | undefined) => {
     const out: string[] = [];
     for (const pt of node ? all(node, "pt") : []) {
       const idx = Number(pt.getAttribute("idx") ?? out.length);
       if (idx >= limit) cut = true;
-      else if (idx >= 0) out[idx] = first(pt, "v")?.textContent ?? "";
+      else if (idx >= 0) out[idx] = clip(first(pt, "v")?.textContent ?? "");
     }
     return out;
   };
   const series = serNodes.slice(0, MAX_CHART_SERIES).map((ser) => {
     const tx = children(ser, "tx")[0];
     return {
-      name: (tx && (cache(tx)[0] ?? first(tx, "v")?.textContent)) ?? "",
+      name: clip((tx && (cache(tx)[0] ?? first(tx, "v")?.textContent)) ?? ""),
       categories: cache(children(ser, "cat")[0] ?? children(ser, "xVal")[0]),
       values: cache(children(ser, "val")[0] ?? children(ser, "yVal")[0]),
     };
@@ -1246,13 +1282,16 @@ function readChart(doc: Document): { caption?: string; table: string[][] } | nul
   for (let i = 0; i < count; i++) table.push([categories[i] ?? String(i + 1), ...series.map((s) => s.values[i] ?? "")]);
   if (cut) table.push(["…"]);
   const title = first(doc, "title");
-  const caption = title ? all(title, "t").map((t) => t.textContent ?? "").join("") : "";
+  const caption = title ? clip(all(title, "t").map((t) => t.textContent ?? "").join("")) : "";
   return { caption: caption || undefined, table };
 }
 
+/** Text kept to a cell's worth, as a spreadsheet cell is. */
+const clip = (text: string) => (text.length > MAX_CELL_TEXT ? text.slice(0, MAX_CELL_TEXT) : text);
+
 /** A paragraph's text in order, a manual line break (<a:br/>) kept as a newline. */
 function paragraphText(p: Element): string {
-  return Array.from(p.children)
+  return clip(Array.from(p.children)
     .map((child) =>
       child.localName === "br"
         ? "\n"
@@ -1260,7 +1299,7 @@ function paragraphText(p: Element): string {
           ? all(child, "t").map((t) => t.textContent ?? "").join("")
           : "",
     )
-    .join("");
+    .join(""));
 }
 
 /** An xfrm child's two numbers (off x/y, ext cx/cy); undefined when it has none. */
@@ -1338,7 +1377,8 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   // One Blob per picture, however many slides use it.
   const pictures = new Map<string, Blob>();
   let truncated = false;
-  for (const path of slidePaths) {
+  let textLeft = MAX_DECK_TEXT;
+  for (const [index, path] of slidePaths.entries()) {
     if (!path) continue;
     // Past this a slide is not parsed, its DOM too large to build: it shows as cut.
     if ((read.size(path) ?? 0) > MAX_XML_PART_BYTES) {
@@ -1363,8 +1403,15 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
     const doc = xml(part, path);
     if (!doc) continue;
     const slideRelList = relationshipList(part, path);
-    // A chart, diagram or picture is read as its frame comes, and let go after.
-    const partDoc = (partPath: string) => xml(read([partPath], MAX_XML_PART_BYTES), partPath);
+    // A chart, diagram or picture is read as its frame comes, and let go after. One past the part
+    // ceiling is left out, and the slide marked cut.
+    const partDoc = (partPath: string) => {
+      if ((read.size(partPath) ?? 0) > MAX_XML_PART_BYTES) {
+        cut = true;
+        return null;
+      }
+      return xml(read([partPath], MAX_XML_PART_BYTES), partPath);
+    };
     const slideRels = new Map(slideRelList.map((rel) => [rel.id, rel.path]));
     const boxes: SlideBox[] = [];
     let left = MAX_SLIDE_ITEMS;
@@ -1393,7 +1440,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
         paragraphs.push({
           text,
           size: sz ? sz / 100 : undefined,
-          bold: rPr?.getAttribute("b") === "1",
+          bold: isTrue(rPr?.getAttribute("b") ?? null),
           align: pPr?.getAttribute("algn") ?? undefined,
           bullet: Boolean(pPr && (first(pPr, "buChar") || first(pPr, "buAutoNum"))),
         });
@@ -1416,7 +1463,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       const chartRef = first(frame, "chart");
       const chartPath = chartRef && slideRels.get(relId(chartRef, "id") ?? "");
       const chartDoc = chartPath ? partDoc(chartPath) : null;
-      const chart = chartDoc && readChart(chartDoc);
+      const chart = chartDoc && readChart(chartDoc, left);
       if (chart) {
         boxes.push({ frame: place(), ...chart });
         left -= chart.table.reduce((n, row) => n + row.length, 0);
@@ -1424,7 +1471,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       const diagramRef = first(frame, "relIds");
       const diagramPath = diagramRef && slideRels.get(relId(diagramRef, "dm") ?? "");
       const diagramDoc = diagramPath ? partDoc(diagramPath) : null;
-      const diagram = diagramDoc ? readDiagram(diagramDoc) : [];
+      const diagram = diagramDoc && left > 0 ? readDiagram(diagramDoc, left) : [];
       if (diagram.length) {
         boxes.push({ frame: place(), paragraphs: diagram });
         left -= diagram.length;
@@ -1458,6 +1505,12 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
     // What was left out, marked as a table's cut is.
     if (cut) boxes.push({ paragraphs: [{ text: "…" }] });
     slides.push({ boxes });
+    // Paragraphs are counted, but one can be long: the deck's text is bounded by size too.
+    textLeft -= boxes.reduce((n, box) => n + boxText(box), 0);
+    if (textLeft <= 0) {
+      truncated = index < slidePaths.length - 1;
+      break;
+    }
   }
   return { aspect: cy / cx, widthPt: cx / 12700, slides, truncated };
 }
