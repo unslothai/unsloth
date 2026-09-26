@@ -91,6 +91,7 @@ export function ModelRowMenu({
   buttonClassName,
   iconClassName,
   cachePath,
+  onReveal,
   pin,
   items,
   update,
@@ -101,6 +102,8 @@ export function ModelRowMenu({
   iconClassName?: string;
   /** Enables "Reveal in Finder" for cached repos. */
   cachePath?: ModelRowMenuCachePath;
+  /** Enables "Reveal in Finder" for paths outside the cache. */
+  onReveal?: () => Promise<void>;
   pin?: ModelRowMenuPin;
   /** Extra entries for actions this menu has no shape of its own for. */
   items?: readonly ModelRowMenuItem[];
@@ -176,15 +179,20 @@ export function ModelRowMenu({
   const cachePathRepoId = cachePath?.repoId;
   const cachePathVariant = cachePath?.variant;
   const handleReveal = useCallback(() => {
-    if (!cachePathRepoId) return;
-    revealCachedModel(cachePathRepoId, cachePathVariant).catch((err) => {
+    const reveal = onReveal
+      ? onReveal()
+      : cachePathRepoId
+        ? revealCachedModel(cachePathRepoId, cachePathVariant)
+        : null;
+    reveal?.catch((err) => {
       toast.error(
         err instanceof Error ? err.message : "Failed to open file manager",
       );
     });
-  }, [cachePathRepoId, cachePathVariant]);
+  }, [onReveal, cachePathRepoId, cachePathVariant]);
 
-  if (!pin && !update && !del && !cachePath && !items?.length) return null;
+  const canReveal = Boolean(cachePath || onReveal);
+  if (!pin && !update && !del && !canReveal && !items?.length) return null;
 
   return (
     <>
@@ -241,7 +249,7 @@ export function ModelRowMenu({
               <span>{item.label}</span>
             </DropdownMenuItem>
           ))}
-          {cachePath && (
+          {canReveal && (
             <DropdownMenuItem
               onSelect={(e) => {
                 e.stopPropagation();
@@ -270,7 +278,7 @@ export function ModelRowMenu({
           )}
           {del && (
             <>
-              {(cachePath || pin || update || items?.length) && (
+              {(canReveal || pin || update || items?.length) && (
                 <DropdownMenuSeparator />
               )}
               <DropdownMenuItem

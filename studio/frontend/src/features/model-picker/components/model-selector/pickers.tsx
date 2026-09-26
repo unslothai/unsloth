@@ -25,6 +25,7 @@ import {
   listRecommendedFolders,
   listScanFolders,
   removeScanFolder,
+  revealFineTunedModel,
 } from "@/features/chat";
 import {
   chatModelLoaded,
@@ -976,6 +977,21 @@ const META_COLUMN = {
 // buttons show on hover or while their menu is open.
 const ROW_ACTIONS_CLASS =
   "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
+
+const downloadedRowButtonClassName =
+  "bg-transparent pr-1 hover:bg-transparent focus-visible:bg-transparent dark:bg-transparent dark:hover:bg-transparent dark:focus-visible:bg-transparent";
+// Not focus-within: the dots menu returns focus to its trigger on close, so the row stayed lit
+// after the pointer left. A row carrying a memory bar is two lines tall and the shell paints
+// the background, so the radius relaxes with it or the row renders as a stadium.
+const downloadedRowShellClassName = (
+  selected: boolean,
+  hasMemoryBar = false,
+) =>
+  cn(
+    "group flex items-center transition-colors hover:bg-sidebar-accent has-[:focus-visible]:bg-sidebar-accent has-[[data-state=open]]:bg-sidebar-accent",
+    hasMemoryBar ? "rounded-2xl" : "rounded-full",
+    selected && "bg-sidebar-accent",
+  );
 
 // Drop line for a pinned-row drag, same as the sidebar's.
 const PINNED_DROP_CUE_BASE =
@@ -4695,6 +4711,16 @@ export function HubModelPicker({
     [visibleCachedModelRows, pinnedSet],
   );
 
+  // Pinned fine-tunes leave the Fine-tuned section; both hide under a task filter.
+  const pinnedFineTunedRows = useMemo(
+    () => (task ? [] : fineTunedRows.filter((m) => pinnedSet.has(pinKey(m.id)))),
+    [task, fineTunedRows, pinnedSet],
+  );
+  const unpinnedFineTunedRows = useMemo(
+    () => fineTunedRows.filter((m) => !pinnedSet.has(pinKey(m.id))),
+    [fineTunedRows, pinnedSet],
+  );
+
   const pinnedRows = useMemo(() => {
     const rank = makePinRank(pinnedIds);
     const rows = [
@@ -4702,16 +4728,24 @@ export function HubModelPicker({
         key: pinKey(entry.repoId, entry.quant),
         entry,
         model: null,
+        fineTuned: null,
       })),
       ...pinnedCachedModelRows.map((model) => ({
         key: pinKey(model.repo_id),
         entry: null,
         model,
+        fineTuned: null,
+      })),
+      ...pinnedFineTunedRows.map((fineTuned) => ({
+        key: pinKey(fineTuned.id),
+        entry: null,
+        model: null,
+        fineTuned,
       })),
     ];
     rows.sort((a, b) => rank(a.key) - rank(b.key));
     return rows;
-  }, [pinnedIds, pinnedQuants, pinnedCachedModelRows]);
+  }, [pinnedIds, pinnedQuants, pinnedCachedModelRows, pinnedFineTunedRows]);
 
   // A repo whose only quant is pinned moves its sole-quant row into Pinned instead of showing
   // twice. Multi-quant repos stay, since their row picks the other quants.
@@ -5109,7 +5143,9 @@ export function HubModelPicker({
             ? pinnedSoleQuantRows.has(row.key)
               ? makeModelOptionKey("downloaded-gguf", row.entry.repoId)
               : makeModelOptionKey("pinned-quant", row.key)
-            : makeModelOptionKey("downloaded-model", row.model.repo_id),
+            : row.model
+              ? makeModelOptionKey("downloaded-model", row.model.repo_id)
+              : makeModelOptionKey("lora", row.fineTuned.id),
         ),
       );
     }
@@ -5181,7 +5217,9 @@ export function HubModelPicker({
 
     // Fine-tuned models sit below downloaded, above custom folders.
     if (section === "downloaded" && !fineTunedCollapsed) {
-      keys.push(...fineTunedRows.map((m) => makeModelOptionKey("lora", m.id)));
+      keys.push(
+        ...unpinnedFineTunedRows.map((m) => makeModelOptionKey("lora", m.id)),
+      );
     }
 
     // Custom folders sit right below the downloaded models on On Device.
@@ -5229,7 +5267,7 @@ export function HubModelPicker({
     pinnedCollapsed,
     pinnedSoleQuantRows,
     downloadedCollapsed,
-    fineTunedRows,
+    unpinnedFineTunedRows,
     fineTunedCollapsed,
     filteredRecommendedIds,
     searchRowIds,
@@ -5477,7 +5515,7 @@ export function HubModelPicker({
     sortedLmStudio.length === 0 &&
     sortedLocalDir.length === 0 &&
     // Fine-tuned models are on-device too: do not show the empty state above a non-empty Fine-tuned section.
-    fineTunedRows.length === 0;
+    unpinnedFineTunedRows.length === 0;
 
   // Sort dropdown inline right of the section toggle; options depend on the tab and stay visible
   // while searching. Fixed width matches the Search Hub button.
@@ -5580,21 +5618,6 @@ export function HubModelPicker({
     otherCachedGguf.length > 0 ||
     otherCachedModelRows.length > 0 ||
     otherAdditionalOnDeviceModels.length > 0;
-
-  const downloadedRowButtonClassName =
-    "bg-transparent pr-1 hover:bg-transparent focus-visible:bg-transparent dark:bg-transparent dark:hover:bg-transparent dark:focus-visible:bg-transparent";
-  // Not focus-within: the dots menu returns focus to its trigger on close, so the row stayed lit
-  // after the pointer left. A row carrying a memory bar is two lines tall and the shell paints
-  // the background, so the radius relaxes with it or the row renders as a stadium.
-  const downloadedRowShellClassName = (
-    selected: boolean,
-    hasMemoryBar = false,
-  ) =>
-    cn(
-      "group flex items-center transition-colors hover:bg-sidebar-accent has-[:focus-visible]:bg-sidebar-accent has-[[data-state=open]]:bg-sidebar-accent",
-      hasMemoryBar ? "rounded-2xl" : "rounded-full",
-      selected && "bg-sidebar-accent",
-    );
 
   // A draggable Pinned row: faded while carried, lined where it would land.
   const renderPinnedDragRow = (
@@ -6668,9 +6691,26 @@ export function HubModelPicker({
                         renderPinnedDragRow(
                           pinnedDrag,
                           row.key,
-                          row.entry
-                            ? renderPinnedQuantRow(row.entry)
-                            : renderDownloadedModelRow(row.model),
+                          row.entry ? (
+                            renderPinnedQuantRow(row.entry)
+                          ) : row.model ? (
+                            renderDownloadedModelRow(row.model)
+                          ) : (
+                            <FineTunedRows
+                              adapters={[row.fineTuned]}
+                              value={value}
+                              loadedModelId={loadedModelId}
+                              activeGgufVariant={activeGgufVariant}
+                              onSelect={onSelect}
+                              onConfigure={onConfigure}
+                              onModelsChange={onModelsChange}
+                              deleteDisabled={deleteDisabled}
+                              loraModelList={hubModelList}
+                              expandedGguf={expandedGguf}
+                              setExpandedGguf={setExpandedGguf}
+                              gpu={inferenceGpu}
+                            />
+                          ),
                         ),
                       )}
                   </>
@@ -6848,9 +6888,9 @@ export function HubModelPicker({
                         </button>
                       </div>
                     </div>
-                    {!fineTunedCollapsed && fineTunedRows.length > 0 && (
+                    {!fineTunedCollapsed && unpinnedFineTunedRows.length > 0 && (
                       <FineTunedRows
-                        adapters={fineTunedRows}
+                        adapters={unpinnedFineTunedRows}
                         value={value}
                         loadedModelId={loadedModelId}
                         activeGgufVariant={activeGgufVariant}
@@ -7994,6 +8034,9 @@ function FineTunedRows({
     systemRamAvailableGb: number;
   };
 }) {
+  const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
+  const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
+  const unpinRepo = usePinnedModelsStore((s) => s.unpinRepo);
   return (
     <>
       {adapters.map((adapter) => {
@@ -8049,11 +8092,15 @@ function FineTunedRows({
               : tag;
         return (
           <div key={adapter.id}>
-            <div className="group flex items-center">
+            <div className={downloadedRowShellClassName(value === adapter.id)}>
               <div className="min-w-0 flex-1">
                 <ModelRow
                   label={adapter.name}
-                  meta={meta}
+                  meta={
+                    adapter.sizeBytes
+                      ? `${meta} · ${formatBytes(adapter.sizeBytes)}`
+                      : meta
+                  }
                   selected={value === adapter.id}
                   loaded={isRuntimeLoadedModel(
                     loadedModelId,
@@ -8095,6 +8142,7 @@ function FineTunedRows({
                       : undefined
                   }
                   alignMeta="device"
+                  className={downloadedRowButtonClassName}
                 />
               </div>
               <span className={ROW_ACTIONS_CLASS}>
@@ -8104,31 +8152,51 @@ function FineTunedRows({
                     onConfigure={() => onConfigure(adapter.id, selectionMeta)}
                   />
                 )}
-                {canDelete && (
-                  <ModelDeleteAction
-                    ariaLabel={`Delete ${adapter.name}`}
-                    title="Delete fine-tuned model?"
-                    description={
-                      <>
-                        This will remove{" "}
-                        <span className="font-medium text-foreground">
-                          {adapter.name}
-                        </span>{" "}
-                        from disk. This cannot be undone.
-                      </>
-                    }
-                    successMessage={`Deleted ${adapter.name}`}
-                    disabled={deleteDisabled}
-                    onConfirm={() =>
-                      deleteFineTunedModel({
-                        modelPath: adapter.id,
-                        source: isExported ? "exported" : "training",
-                        exportType: adapter.exportType,
-                      })
-                    }
-                    onDeleted={() => onModelsChange?.({ id: adapter.id })}
-                  />
-                )}
+                <ModelRowMenu
+                  ariaLabel={`More options for ${adapter.name}`}
+                  pin={{
+                    pinned: pinnedKeys.includes(pinKey(adapter.id)),
+                    pinLabel: "Pin to top",
+                    unpinLabel: "Unpin",
+                    onToggle: () => togglePinned(adapter.id),
+                  }}
+                  onReveal={
+                    isLocal
+                      ? undefined
+                      : () =>
+                          revealFineTunedModel(
+                            adapter.id,
+                            isExported ? "exported" : "training",
+                          )
+                  }
+                  del={
+                    canDelete
+                      ? {
+                          title: "Delete fine-tuned model?",
+                          description: (
+                            <>
+                              This will remove{" "}
+                              <span className="font-medium text-foreground">
+                                {adapter.name}
+                              </span>{" "}
+                              from disk. This cannot be undone.
+                            </>
+                          ),
+                          successMessage: `Deleted ${adapter.name}`,
+                          disabled: deleteDisabled,
+                          onConfirm: async () => {
+                            await deleteFineTunedModel({
+                              modelPath: adapter.id,
+                              source: isExported ? "exported" : "training",
+                              exportType: adapter.exportType,
+                            });
+                            unpinRepo(adapter.id);
+                          },
+                          onDeleted: () => onModelsChange?.({ id: adapter.id }),
+                        }
+                      : undefined
+                  }
+                />
               </span>
             </div>
             {expandedGguf === adapter.id && (

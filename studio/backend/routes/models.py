@@ -2882,6 +2882,26 @@ async def scan_loras(
         )
 
 
+def _disk_bytes(model_path: str, export_type: Optional[str]) -> Optional[int]:
+    """Bytes a fine-tune takes on disk. A GGUF export counts its whole folder."""
+    path = Path(model_path)
+    if export_type == "gguf" and path.is_file():
+        path = path.parent
+    try:
+        if path.is_file():
+            return path.stat().st_size
+        total = 0
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                try:
+                    total += os.lstat(os.path.join(root, name)).st_size
+                except OSError:
+                    continue
+        return total
+    except OSError:
+        return None
+
+
 def _scan_loras_sync(
     resolved_outputs_dir: str, resolved_exports_dir: str, hf_token: Optional[str]
 ) -> List[LoRAInfo]:
@@ -2897,6 +2917,7 @@ def _scan_loras_sync(
                 base_model = base_model,
                 source = "training",
                 export_type = model_type,
+                size_bytes = _disk_bytes(model_path, model_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
             )
         )
@@ -2910,6 +2931,7 @@ def _scan_loras_sync(
                 base_model = base_model,
                 source = "exported",
                 export_type = export_type,
+                size_bytes = _disk_bytes(model_path, export_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
             )
         )
