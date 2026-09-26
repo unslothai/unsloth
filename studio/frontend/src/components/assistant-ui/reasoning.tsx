@@ -72,6 +72,7 @@ import {
   type ComponentProps,
   type ReactNode,
   type RefObject,
+  type UIEvent,
   memo,
   useCallback,
   useEffect,
@@ -190,15 +191,21 @@ function ReasoningTrigger({
   active,
   duration,
   foldedToolCount = 0,
+  isOpen = false,
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
   active?: boolean;
   duration?: number;
+  isOpen?: boolean;
   /** Tool calls hidden under this block, named so a closed block is not silent about them. */
   foldedToolCount?: number;
 }) {
   const foldedSummary = foldedToolSummary(foldedToolCount);
+  const actionLabel = isOpen ? "Hide full thinking" : "Show full thinking";
+  const accessibleLabel = foldedSummary
+    ? `${actionLabel}, ${foldedSummary}`
+    : actionLabel;
   const Trigger = GRID_COLLAPSE_REASONING_ENABLED
     ? UnmeasuredCollapsibleTrigger
     : CollapsibleTrigger;
@@ -207,6 +214,8 @@ function ReasoningTrigger({
     <Trigger
       data-slot="reasoning-trigger"
       data-active={active ? "" : undefined}
+      aria-label={accessibleLabel}
+      title={actionLabel}
       className={cn(
         "aui-reasoning-trigger group/trigger flex min-h-5 min-w-0 cursor-pointer items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground",
         className,
@@ -289,7 +298,9 @@ function ReasoningContent({
         )}
         {...props}
       >
-        {children}
+        <ReasoningScrollRegion streaming={streaming}>
+          {children}
+        </ReasoningScrollRegion>
       </UnmeasuredCollapsibleContent>
     );
   }
@@ -309,7 +320,9 @@ function ReasoningContent({
       )}
       {...props}
     >
-      {children}
+      <ReasoningScrollRegion streaming={streaming}>
+        {children}
+      </ReasoningScrollRegion>
     </CollapsibleContent>
   );
 }
@@ -327,8 +340,8 @@ function ReasoningText({
       data-streaming={streaming ? "" : undefined}
       className={cn(
         // Same muted colour and size as the header above it, so only the answer is at full
-        // foreground. Flush with the header, no cap and no fade; the thread's own
-        // follow-scroll tracks it while it streams.
+        // foreground. Flush with the header, no cap and no fade; the bounded reasoning
+        // viewport follows it while it streams.
         "aui-reasoning-text relative z-0 pt-4 pb-0 text-sm text-muted-foreground leading-relaxed",
         "[&_p]:my-0 [&_p+p]:mt-4 [&_ul]:my-4 [&_ol]:my-4 [&_pre]:my-4",
         !virtualized &&
@@ -433,7 +446,10 @@ function useReasoningTranscriptMode({
     if (session.active) return;
     const activate = () => {
       const content = reasoningContentRef.current;
-      const viewport = content?.closest(".aui-thread-viewport");
+      const viewport =
+        content?.querySelector<HTMLDivElement>(
+          '[data-slot="reasoning-scroll-region"]',
+        ) ?? content?.closest(".aui-thread-viewport");
       setSession({
         messageId,
         active: true,
@@ -509,6 +525,55 @@ function ReasoningBody({
         children
       )}
     </ReasoningText>
+  );
+}
+
+function ReasoningScrollRegion({
+  streaming,
+  children,
+}: {
+  streaming?: boolean;
+  children: ReactNode;
+}) {
+  // Bound reasoning locally so streamed tokens stop changing the chat's page height.
+  const scrollRegionRef = useRef<HTMLDivElement>(null);
+  const followLatestRef = useRef(true);
+
+  const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
+    followLatestRef.current =
+      element.scrollHeight - element.scrollTop - element.clientHeight <= 16;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (streaming) followLatestRef.current = true;
+  }, [streaming]);
+
+  useLayoutEffect(() => {
+    const element = scrollRegionRef.current;
+    if (element && streaming && followLatestRef.current) {
+      element.scrollTop = element.scrollHeight;
+    }
+  });
+
+  return (
+    <div
+      ref={scrollRegionRef}
+      data-slot="reasoning-scroll-region"
+      data-streaming={streaming ? "" : undefined}
+      role="region"
+      aria-label="Thinking output"
+      tabIndex={0}
+      className="aui-reasoning-scroll-region relative min-w-0 overflow-y-auto overscroll-contain"
+      style={{
+        maxHeight: "min(24rem, 40vh)",
+        overflowAnchor: "none",
+        scrollbarWidth: "thin",
+      }}
+      onScroll={handleScroll}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -780,6 +845,7 @@ const ReasoningGroupBlock = ({
         <ReasoningTrigger
           className="min-w-0"
           active={isReasoningStreaming}
+          isOpen={isOpen}
           // Prefer server timing when available.
           duration={persistedDuration ?? duration}
           foldedToolCount={isOpen ? 0 : foldedToolCount}
