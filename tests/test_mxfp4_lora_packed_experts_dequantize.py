@@ -76,7 +76,16 @@ def sizes(monkeypatch):
     import huggingface_hub
     import torch
 
-    state = {"checkpoint": 13, "free": [80], "hub_raises": False, "calls": [], "probes": 0}
+    state = {
+        "checkpoint": 13,
+        "free": [80],
+        "hub_raises": False,
+        "calls": [],
+        "probes": [],
+        "extra": [],
+        "snapshot": None,
+        "snapshot_calls": [],
+    }
     GiB = 2**30
 
     class _Sibling:
@@ -100,14 +109,22 @@ def sizes(monkeypatch):
                     _Sibling("model-00002-of-00002.safetensors", half),
                     _Sibling("config.json", 1000),
                 ]
+                + [_Sibling(name, int(gib * GiB)) for name, gib in state["extra"]]
             )
 
+    def _snapshot_download(repo_id, **kwargs):
+        state["snapshot_calls"].append((repo_id, kwargs))
+        if state["snapshot"] is None:
+            raise OSError("not cached")
+        return state["snapshot"]
+
     monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _snapshot_download)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: len(state["free"]))
 
     def _mem_get_info(i):
-        state["probes"] += 1
+        state["probes"].append(i)
         return (int(state["free"][i] * GiB), 0)
 
     monkeypatch.setattr(torch.cuda, "mem_get_info", _mem_get_info)
@@ -276,4 +293,43 @@ def test_no_sizing_without_the_packed_path(zoo, sizes, monkeypatch):
     assert _helper()("mxfp4", False, "sequential", "openai/gpt-oss-20b") is False
     monkeypatch.setitem(sys.modules, ZOO_MXFP4, types.ModuleType(ZOO_MXFP4))
     assert _helper()("mxfp4", False, "sequential", "openai/gpt-oss-20b") is False
-    assert sizes["calls"] == [] and sizes["probes"] == 0
+    assert sizes["calls"] == [] and sizes["probes"] == []
+
+
+def test_named_cpu_device_map_keeps_native_load(zoo, sizes):
+    for device_map in ("cpu", "disk", "cpu:0"):
+        assert _helper()("mxfp4", False, device_map, "openai/gpt-oss-20b") is False
+    assert sizes["calls"] == [] and sizes["probes"] == []
+
+
+def test_only_the_loaded_weight_files_are_counted(zoo, sizes):
+    # gpt-oss-120b ships original/*.safetensors next to the HF shards (61 GiB each); only
+    # the top-level shards are loaded, so it fits one 80 GiB card.
+    sizes["checkpoint"], sizes["free"] = 61, [80]
+    sizes["extra"] = [("original/model--00001-of-00007.safetensors", 61)]
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b") is True
+    # Another variant in the same repo is not counted unless selected.
+    sizes["extra"] = [("model.fp16-00001-of-00002.safetensors", 30), ("model.fp16-00002-of-00002.safetensors", 30)]
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b") is True
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b", None, None, "fp16") is True
+    sizes["extra"] = [("model.fp16-00001-of-00002.safetensors", 45), ("model.fp16-00002-of-00002.safetensors", 45)]
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b", None, None, "fp16") is False
+
+
+def test_max_memory_probes_only_the_allowed_cards(zoo, sizes):
+    sizes["checkpoint"], sizes["free"] = 13, [80, 80, 80]
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b", {1: "40GiB", "cpu": "100GiB"}) is True
+    assert sizes["probes"] == [1]
+
+
+def test_offline_load_sizes_the_cached_snapshot(zoo, sizes, tmp_path):
+    sizes["hub_raises"], sizes["free"] = True, [4096 / 2**30]
+    (tmp_path / "model.safetensors").write_bytes(b"0" * 8192)
+    sizes["snapshot"] = str(tmp_path)
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b", None, "main", None, "/cache") is False
+    repo, kwargs = sizes["snapshot_calls"][-1]
+    assert repo == "openai/gpt-oss-20b" and kwargs["local_files_only"] is True
+    assert kwargs["revision"] == "main" and kwargs["cache_dir"] == "/cache"
+    # Not cached either: size unknown, packed path kept.
+    sizes["snapshot"] = None
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is True

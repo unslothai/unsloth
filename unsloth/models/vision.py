@@ -1186,6 +1186,8 @@ def _mxfp4_lora_keeps_experts_packed(
     model_name = None,
     max_memory = None,
     revision = None,
+    variant = None,
+    cache_dir = None,
 ):
     """Whether a LoRA load of an MXFP4 checkpoint should take unsloth_zoo's packed-experts path.
 
@@ -1207,6 +1209,8 @@ def _mxfp4_lora_keeps_experts_packed(
     if isinstance(device_map, dict) and any(
         str(value) in ("cpu", "disk") for value in device_map.values()
     ):
+        return False
+    if isinstance(device_map, str) and device_map.split(":")[0] in ("cpu", "disk"):
         return False
     # The capability check comes first, so an unsloth_zoo without the packed path never
     # triggers the Hub lookup or the accelerator probe below.
@@ -1231,35 +1235,75 @@ def _mxfp4_lora_keeps_experts_packed(
             import os
             import torch
 
-            if os.path.isdir(str(model_name)):
-                checkpoint_bytes = sum(
-                    os.path.getsize(os.path.join(root, name))
-                    for root, _, names in os.walk(str(model_name))
-                    for name in names
-                    if name.endswith(".safetensors")
-                )
-            else:
-                from huggingface_hub import HfApi
+            def weight_bytes(files):
+                # What from_pretrained reads: top-level safetensors of the selected variant
+                # (model.safetensors, model-0000N-of-0000M.safetensors, model.<variant>...),
+                # never a subfolder such as gpt-oss's original/.
+                total = 0
+                for name, size in files:
+                    if "/" in name or os.sep in name or not name.endswith(".safetensors"):
+                        continue
+                    parts = name[: -len(".safetensors")].split(".")
+                    file_variant = parts[1].split("-")[0] if len(parts) > 1 else None
+                    if file_variant == variant:
+                        total += size or 0
+                return total
 
-                # The revision the config and weights are loaded from, not the default branch.
-                info = HfApi().model_info(str(model_name), revision = revision, files_metadata = True)
-                checkpoint_bytes = sum(
-                    (sibling.size or 0)
-                    for sibling in (info.siblings or ())
-                    if sibling.rfilename.endswith(".safetensors")
-                )
+            def folder_files(folder):
+                return [
+                    (name, os.path.getsize(os.path.join(folder, name)))
+                    for name in os.listdir(folder)
+                    if os.path.isfile(os.path.join(folder, name))
+                ]
+
+            if os.path.isdir(str(model_name)):
+                checkpoint_bytes = weight_bytes(folder_files(str(model_name)))
+            else:
+                try:
+                    from huggingface_hub import HfApi
+
+                    # The revision the config and weights are loaded from, not the default branch.
+                    info = HfApi().model_info(
+                        str(model_name), revision = revision, files_metadata = True
+                    )
+                    checkpoint_bytes = weight_bytes(
+                        (sibling.rfilename, sibling.size) for sibling in (info.siblings or ())
+                    )
+                except Exception:
+                    # Offline (local_files_only / HF_HUB_OFFLINE) or unreachable: size the
+                    # cached snapshot instead.
+                    from huggingface_hub import snapshot_download
+
+                    folder = snapshot_download(
+                        str(model_name),
+                        revision = revision,
+                        cache_dir = cache_dir,
+                        local_files_only = True,
+                        allow_patterns = ["*.safetensors"],
+                    )
+                    checkpoint_bytes = weight_bytes(folder_files(folder))
             probed = torch.cuda.is_available() and torch.cuda.device_count() > 0
+            if max_memory:
+                # Only the cards the caller allowed; an excluded card is never touched.
+                devices = sorted(
+                    {
+                        int(key)
+                        for key in max_memory
+                        if str(key).isdigit() and int(key) < torch.cuda.device_count()
+                    }
+                ) if probed else []
+            else:
+                devices = list(range(torch.cuda.device_count())) if probed else []
             free_bytes = 0
-            for index in range(torch.cuda.device_count() if probed else 0):
+            for index in devices:
                 free = torch.cuda.mem_get_info(index)[0]
-                budget = (max_memory or {}).get(index, (max_memory or {}).get(str(index)))
+                budget = max_memory.get(index, max_memory.get(str(index))) if max_memory else None
                 if isinstance(budget, str):
                     from accelerate.utils import convert_file_size_to_int
+
                     budget = convert_file_size_to_int(budget)
                 if isinstance(budget, int):
                     free = min(free, budget)
-                elif max_memory and budget is None:
-                    free = 0  # a max_memory that leaves this card out
                 free_bytes += free
             # Zero measured capacity (every card excluded or capped at 0) spills everything.
             if checkpoint_bytes and probed and checkpoint_bytes > 0.9 * free_bytes:
@@ -1796,6 +1840,8 @@ class FastBaseModel:
                             model_name,
                             kwargs.get("max_memory", None),
                             _revision,
+                            kwargs.get("variant", None),
+                            kwargs.get("cache_dir", None),
                         )
                     ) and "dequantize" in inspect.signature(quantizer).parameters:
                         quantizer_kwargs["dequantize"] = True
