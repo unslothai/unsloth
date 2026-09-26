@@ -16201,8 +16201,6 @@ def _check_signal_escape_patterns(code: str):
         "aiohttp.ClientSession",
     )
     # The modules an alias is resolved back to, so `import urllib.request as u` and `from urllib.request import
-    # urlopen` reach the prefixes above exactly as the spelled-out call does. The submodules that define a
-    # listed name count too: `from urllib3.poolmanager import PoolManager` is the same class.
     _NETWORK_MODULES = frozenset(
         {
             "socket",
@@ -16247,14 +16245,7 @@ def _check_signal_escape_patterns(code: str):
             ),
         }
     )
-    # A host argument is a bare host (`"example.com"`, `"user@example.com:22"` or a `(host, port)`
-    # tuple), where a URL argument must carry a scheme before its host.
     _HOST_ARG_ROOTS = ("socket.", "http.client.")
-    # Where the destination sits in a recognised egress call: the positional index (None when it is
-    # keyword-only), the keyword spellings that carry it instead, and whether it is a URL or a host.
-    # Reading only the first positional left the rule below sidesteppable by one word,
-    # `requests.get(url = "http://evil.example/")`, which is the spelling a caller reaches for the
-    # moment there is a `timeout =` next to it.
     _NETWORK_DESTINATION_ARG = {
         fq: (
             0,
@@ -16263,7 +16254,6 @@ def _check_signal_escape_patterns(code: str):
         )
         for fq in _NETWORK_URL_ARG0_FQ
     }
-    # `requests.request(method, url)` and its httpx and aiohttp twins carry the destination second.
     # `urllib3.request(method, url, ...)` is the same shape, and it matches the broad `urllib3.`
     # prefix, so without an entry here the fallback read argument 0 (the method) and never looked
     # at the destination. Signature checked against the installed urllib3 2.8.0.
@@ -16281,7 +16271,6 @@ def _check_signal_escape_patterns(code: str):
         }
     )
     _NETWORK_DESTINATION_ARG["httpx.stream"] = (1, ("url",), "url")
-    # Constructors whose instances own the methods below; `requests.session()` returns a Session.
     _VERB_CLIENTS = (
         "requests.Session",
         "requests.sessions.Session",
@@ -16297,19 +16286,15 @@ def _check_signal_escape_patterns(code: str):
         "urllib3.ProxyManager",
         "urllib3.poolmanager.PoolManager",
         "urllib3.poolmanager.ProxyManager",
-        # Proxy managers built by a factory or for SOCKS relay every request the same way.
         "urllib3.proxy_from_url",
         "urllib3.poolmanager.proxy_from_url",
         "urllib3.contrib.socks.SOCKSProxyManager",
     )
     _SOCKET_CLIENTS = ("socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient")
-    # `build_opener()` returns an `OpenerDirector`, whose `open(fullurl)` sends.
     _OPENER_CLIENTS = ("urllib.request.build_opener", "urllib.request.OpenerDirector")
     _CLIENT_CLASSES = frozenset(
         (*_VERB_CLIENTS, *_POOL_CLIENTS, *_SOCKET_CLIENTS, *_OPENER_CLIENTS)
     )
-    # Each entry below comes from the library's own signature: `Client.stream(method, url)` is not
-    # `Client.get(url)`, pools have no verbs, and paramiko names its host `hostname`.
     _NETWORK_DESTINATION_ARG.update(
         {
             **{
@@ -16329,7 +16314,6 @@ def _check_signal_escape_patterns(code: str):
                 f"{client}.ws_connect": (0, ("url",), "url")
                 for client in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
             },
-            # A client built on a base URL sends there even when each call passes a bare path.
             **{
                 client: (None, ("base_url",), "url")
                 for client in ("httpx.Client", "httpx.AsyncClient")
@@ -16338,7 +16322,6 @@ def _check_signal_escape_patterns(code: str):
                 client: (0, ("base_url",), "url")
                 for client in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
             },
-            # A prebuilt request's URL is not a literal at the send, so the send fails closed.
             **{
                 f"{client}.send": (0, ("request",), "url")
                 for client in (
@@ -16370,7 +16353,6 @@ def _check_signal_escape_patterns(code: str):
                 for module in ("urllib3", "urllib3.poolmanager")
             },
             "urllib3.contrib.socks.SOCKSProxyManager": (0, ("proxy_url",), "url"),
-            # A transport routes its client through `proxy =`, including one given in `mounts`.
             **{
                 f"httpx.{transport}": (None, ("proxy",), "proxy")
                 for transport in ("HTTPTransport", "AsyncHTTPTransport")
@@ -16387,7 +16369,6 @@ def _check_signal_escape_patterns(code: str):
             "urllib3.util.connection.create_connection": (0, ("address",), "host"),
             **{f"socket.socket.{m}": (0, ("address",), "host") for m in ("connect", "connect_ex")},
             **{f"{opener}.open": (0, ("fullurl",), "url") for opener in _OPENER_CLIENTS},
-            # Recognised so its mapping is read as proxies; see the proxy scan.
             "urllib.request.ProxyHandler": (None, (), "proxy"),
             # A datagram names its address per send. `sendto(data, flags, address)` puts the int
             # flags at index 1, which reads as unreadable and fails closed.
@@ -16414,7 +16395,6 @@ def _check_signal_escape_patterns(code: str):
                     ("create_connection", 1),
                 )
             },
-            # Recognised so the routing keywords set on it are checked where they are set.
             **{
                 f"{module}.SSHClientConnectionOptions": (None, (), "host")
                 for module in ("asyncssh", "asyncssh.connection")
@@ -16426,13 +16406,8 @@ def _check_signal_escape_patterns(code: str):
         for fq in sorted(_NETWORK_DESTINATION_ARG)
         if not any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES)
     )
-    # The first component of every prefix above: one lookup rejects a callee that cannot be one.
     _NETWORK_ROOTS = frozenset(p.partition(".")[0] for p in _NETWORK_FQ_PREFIXES)
-    # An explicit proxy is where the socket connects, whatever the request URL says.
     _PROXY_KEYWORDS = ("proxy", "proxies")
-    # Client attributes that decide where later calls connect, and the clients that honour each:
-    # requests reads `Session.proxies` on every request, httpx `Client.base_url` is a settable
-    # property, and neither reads the other's attribute.
     _DESTINATION_ATTRS = {
         "proxies": frozenset(
             (
@@ -17132,9 +17107,7 @@ def _check_signal_escape_patterns(code: str):
         return [("", False)]
 
     def _alternatives(value) -> "list[ast.AST]":
-        """Every expression a value can evaluate to: both arms of `a if c else b`, each operand of
-        `a or b`, and the value a walrus passes on or an `await` resolves to. A client or a network function on either path
-        can be the one that runs."""
+        """Every expression a value can evaluate to (conditional, `or`, walrus, `await`)."""
         out: "list[ast.AST]" = []
         stack = [value]
         while stack:
@@ -17150,7 +17123,6 @@ def _check_signal_escape_patterns(code: str):
         return out
 
     def _constant_getattr(node) -> "ast.Attribute | None":
-        """`getattr(obj, "name")` read as the `obj.name` it is."""
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
@@ -17163,9 +17135,7 @@ def _check_signal_escape_patterns(code: str):
         return None
 
     def _reexported(fq: str) -> "str | None":
-        """The top-level name a network package re-exports for a name in one of its submodules:
-        `httpx._api.get` is `httpx.get`, `httpx._client.Client` is `httpx.Client`. Only names the
-        table lists count, so `urllib3.util.parse_url` stays an unlisted helper."""
+        """The listed top-level re-export of a submodule name: `httpx._api.get` is `httpx.get`."""
         parts = fq.split(".")
         if len(parts) < 3 or parts[0] not in _NETWORK_ROOTS:
             return None
@@ -17175,8 +17145,6 @@ def _check_signal_escape_patterns(code: str):
         return top if top in _NETWORK_DESTINATION_ARG or top in _CLIENT_CLASSES else None
 
     def _returns_of(function_name: str) -> str:
-        """The key under which a local function's return values are tracked. No receiver path
-        contains parentheses, so it cannot collide with one."""
         return f"{function_name}()"
 
     # The clients that read the proxy environment variables; sockets and urllib3 do not, and
@@ -17198,25 +17166,18 @@ def _check_signal_escape_patterns(code: str):
         {"http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy", "ftp_proxy"}
     )
 
-    # `sock=` is where `SSHClient.connect` really goes; on `Transport` it is the readable
-    # destination itself, so only the client's connect is listed.
     _ROUTE_KEYWORDS = {
         "paramiko.SSHClient.": ("sock",),
         "paramiko.client.SSHClient.": ("sock",),
         "fabric.": ("gateway",),
         "asyncssh.": ("tunnel", "proxy_command"),
     }
-    # Stands for a value this screen cannot read, so a check against it fails closed.
     _UNREADABLE = ast.Name(id = "<unreadable>", ctx = ast.Load())
 
     def _is_no_proxy(key) -> bool:
-        """A proxy mapping's `no_proxy` entry lists hosts to bypass, not a server to connect to."""
         return isinstance(key, ast.Constant) and key.value == "no_proxy"
 
     def _paired(target, value):
-        """The `(target, value)` pairs an assignment binds, matching a tuple target to a tuple value
-        element by element, around a starred target. A shape that cannot be matched binds nothing
-        this screen can follow."""
         if not isinstance(target, (ast.Tuple, ast.List)):
             yield target, value
             return
@@ -17319,24 +17280,14 @@ def _check_signal_escape_patterns(code: str):
             self.collecting = True
             # Whether any alias map can ever be non-empty. See `_NETWORK_SOURCE_HINTS`.
             self.aliases_possible = network_possible
-            # Receiver path -> every client class ever stored there. A method's first parameter is
-            # written as its class family, `<A>`, so `self.s` matches only within that family.
             self.instance_aliases: "dict[str, set[str]]" = {}
-            # Receiver path -> every value stored in its `_DESTINATION_ATTRS`.
             self.receiver_destinations: "dict[str, list[tuple[str, ast.AST]]]" = {}
-            # Receiver path -> the paths copied to or from it: one client under several names.
             self.path_links: "dict[str, set[str]]" = {}
-            # Path -> the (client, attribute) whose mapping it names, after `p = s.proxies`.
             self.proxy_owners: "dict[str, set[tuple[str, str]]]" = {}
-            # Class id -> its family: the classes in this file joined through their base names.
             self.class_family: "dict[int, str]" = {}
-            # Class name -> its family, so `API()` makes an `<API>` instance.
             self.class_names: "dict[str, str]" = {}
-            # (class family, name) of every `@property`, read as the attribute it returns.
             self.properties: "list[tuple[str, str]]" = []
-            # Class name -> its `__init__`, so `Wrapper(session)` binds `session` inside it.
             self.class_inits: "dict[str, list[ast.AST]]" = {}
-            # Method id -> (first parameter, class family); `self_names` is the stack in effect.
             self.method_self: "dict[int, tuple[str, str]]" = {}
             if network_possible:
                 classes = [n for n in nodes if isinstance(n, ast.ClassDef)]
@@ -17368,7 +17319,6 @@ def _check_signal_escape_patterns(code: str):
                                 self.method_self[id(fn)] = (params[0].arg, family)
                             if any(getattr(d, "id", None) == "property" for d in fn.decorator_list):
                                 self.properties.append((family, fn.name))
-                # A class without its own `__init__` uses the first local base's.
                 bases = {
                     c.name: [b.id for b in c.bases if isinstance(b, ast.Name)] for c in classes
                 }
@@ -17383,12 +17333,9 @@ def _check_signal_escape_patterns(code: str):
                                 seen.add(base)
                                 stack.append(base)
             self.self_names: "list[tuple[str, str]]" = []
-            # Function name -> its local definitions.
             self.local_functions: "dict[str, list[ast.AST]]" = {}
-            # Name -> the names assigned to it, so `factory = make` calls `make`.
             self.callable_aliases: "dict[str, set[str]]" = {}
             self.def_names: "dict[int, str]" = {}
-            # Method name -> (definition, parameters the receiver fills: 1, or 0 for a static).
             self.local_methods: "dict[str, list[tuple[ast.AST, int]]]" = {}
             if network_possible:
                 for fn in nodes:
@@ -17398,7 +17345,6 @@ def _check_signal_escape_patterns(code: str):
                     elif isinstance(fn, (ast.Assign, ast.AnnAssign)) and isinstance(
                         fn.value, ast.Lambda
                     ):
-                        # `make = lambda: requests.Session()` is a local function named `make`.
                         for target in getattr(fn, "targets", None) or [fn.target]:
                             if isinstance(target, ast.Name):
                                 self.local_functions.setdefault(target.id, []).append(fn.value)
@@ -17412,14 +17358,9 @@ def _check_signal_escape_patterns(code: str):
             self.flows: "list[tuple]" = []
             self.flows_from: "dict[str, list[int]]" = {}
             self.pending_calls: "list[tuple]" = []
-            # Proxy and base-URL stores, applied once call arguments are bound.
             self.pending_proxies: "list[tuple]" = []
-            # Values stored in the standard proxy environment variables, and the names `os` and
-            # `os.environ` are bound to (`import os as o`, `from os import environ`).
             self.env_proxies: "list[ast.AST]" = []
-            # Name -> the dict literals assigned to it, for `os.environ.update(config)`.
             self.dict_literals: "dict[str, list[ast.Dict]]" = {}
-            # Name -> (key, value) stored into it later, and names mutated in a way not read.
             self.dict_entries: "dict[str, list[tuple]]" = {}
             self.dict_mutated: "set[str]" = set()
             self.os_names: "set[str]" = {"os"}
@@ -17435,7 +17376,6 @@ def _check_signal_escape_patterns(code: str):
                             self.environ_names.add(alias.asname or "environ")
 
         def _instance_key(self, target) -> "str | None":
-            """Where `_register` stores a client bound to `target`."""
             family = self.class_family.get(self.scope_stack[-1])
             if family is not None and isinstance(target, ast.Name):
                 return f"{family}.{target.id}"
@@ -17449,8 +17389,7 @@ def _check_signal_escape_patterns(code: str):
             )
 
         def _index_flows(self) -> None:
-            """Index every flow by the paths and local return values it reads. Done once the
-            gathering pass is over, so an alias assigned below its use is already known."""
+            """Runs after the gathering pass, so an alias assigned below its use is already known."""
             for index, (_t, value, _at, _n, scopes, selves) in enumerate(self.flows):
                 self.scope_stack, self.self_names = list(scopes), list(selves)
                 for alt in _alternatives(value):
@@ -17463,10 +17402,7 @@ def _check_signal_escape_patterns(code: str):
                             self.flows_from.setdefault(path, []).append(index)
 
         def _local_callees(self, func) -> "set[str]":
-            """The local functions `make()`, `factory()` after `factory = make`, or the local
-            method `obj.make()`, a call can reach."""
             if isinstance(func, ast.Name):
-                # Followed through every assignment, so `g = f` above `f = make` still counts.
                 names, seen, stack = set(), {func.id}, [func.id]
                 while stack:
                     name = stack.pop()
@@ -17482,17 +17418,14 @@ def _check_signal_escape_patterns(code: str):
             return set()
 
         def _bind_call_arguments(self, node) -> None:
-            """Record the arguments of a call to a function or method defined in this file."""
             if isinstance(node.func, ast.Name):
                 targets = [
                     (fn, skip)
                     for name in sorted(self._local_callees(node.func))
                     for fn in self.local_functions.get(name, ())
-                    # A method reached by a bare name is a bound method: `self` is filled.
                     for skip in ((0, 1) if id(fn) in self.method_self else (0,))
                 ] + [(fn, 1) for fn in self.class_inits.get(node.func.id, ())]
             elif isinstance(node.func, ast.Attribute):
-                # `obj.m(s)` and `A.m(obj, s)` look alike, so a method is bound both ways.
                 methods = self.local_methods.get(node.func.attr, [])
                 targets = methods + [(fn, 0) for fn, skip in methods if skip]
             else:
@@ -17509,7 +17442,6 @@ def _check_signal_escape_patterns(code: str):
                 pairs += [(kw.arg, kw.value) for kw in node.keywords if kw.arg in named]
                 for param, arg in pairs:
                     target = ast.Name(id = param, ctx = ast.Store())
-                    # Linked so a proxy the helper sets on its parameter is the caller's proxy.
                     self._link(target, arg)
                     if self._is_environ(arg):
                         self.environ_names.add(param)  # `configure(os.environ)`
@@ -17522,23 +17454,19 @@ def _check_signal_escape_patterns(code: str):
                     self._record_flow(target, arg, at, fn)
 
         def resolve_flows(self) -> None:
-            """Carry clients along every recorded flow until nothing changes. Each pass through
-            the queue past the subset check adds a client to a path, so this terminates."""
+            """Fixpoint: each pass past the subset check adds a client to a path, so this terminates."""
             for call, scopes, selves in self.pending_calls:
                 self.scope_stack, self.self_names = list(scopes), list(selves)
                 self._bind_call_arguments(call)
             for target, value, mutated, scopes, selves in self.pending_proxies:
                 self.scope_stack, self.self_names = list(scopes), list(selves)
                 self._apply_proxy(target, value, mutated)
-            # A name found to be the environment only through a call was written before that
-            # was known; its logged stores are environment writes too.
             for name in self.environ_names:
                 for key, value in self.dict_entries.get(name, ()):
                     self._record_env_proxy(key, value)
                 if name in self.dict_mutated:
                     self.env_proxies.append(_UNREADABLE)
             for family, name in self.properties:
-                # `API().session` returns what `def session(self)` returns.
                 attribute = ast.Name(id = f"{family}.{name}", ctx = ast.Store())
                 returned = ast.Name(id = _returns_of(name), ctx = ast.Load())
                 self.flows.append((attribute, returned, (0, 0), attribute, (0,), ()))
@@ -17556,7 +17484,6 @@ def _check_signal_escape_patterns(code: str):
             self.scope_stack, self.self_names = [0], []
 
         def _receiver_path(self, expr) -> "str | None":
-            """`s`, `obj.session` or `<self>.session` for a name or attribute chain, else None."""
             parts: list[str] = []
             cur = expr
             while isinstance(cur, ast.Attribute):
@@ -17568,19 +17495,15 @@ def _check_signal_escape_patterns(code: str):
             return ".".join([root] + parts)
 
         def _roots(self, name: str) -> "list[str]":
-            """The keys a bare name can read: a method's receiver reads its class family, and a
-            name read in a class body reads that class's attribute as well as the global."""
             roots = [next((f for n, f in reversed(self.self_names) if n == name), name)]
             family = self.class_family.get(self.scope_stack[-1])
             if family is not None:
                 roots.append(f"{family}.{name}")
-            # An instance of a local class, `api = API()`, reads that class's attributes.
             for root in list(roots):
                 roots += [f for f in self.instance_aliases.get(root, ()) if f.startswith("<")]
             return list(dict.fromkeys(roots))
 
         def _path_variants(self, expr) -> "list[str]":
-            """Every key a name or attribute chain can read, per `_roots`."""
             parts: list[str] = []
             cur = expr
             while isinstance(cur, ast.Attribute):
@@ -17591,8 +17514,6 @@ def _check_signal_escape_patterns(code: str):
             return [".".join([root] + parts) for root in self._roots(cur.id)]
 
         def _instances_named_by(self, value, at) -> "set[str]":
-            """Every client class a value can hold: a constructor call, or a copy of a path that
-            already holds one."""
             found: set[str] = set()
             for alt in _alternatives(value):
                 if isinstance(alt, ast.Call):
@@ -17600,7 +17521,6 @@ def _check_signal_escape_patterns(code: str):
                         c for c in self._fq_candidates(alt.func, at) if c in _CLIENT_CLASSES
                     )
                     for callee in self._local_callees(alt.func):
-                        # A local factory: `make()` or `f.make()` holds whatever `make` returns.
                         found.update(self.instance_aliases.get(_returns_of(callee), ()))
                     if isinstance(alt.func, ast.Name) and alt.func.id in self.class_names:
                         found.add(self.class_names[alt.func.id])  # `API()` is an `<API>`
@@ -17749,8 +17669,6 @@ def _check_signal_escape_patterns(code: str):
                 elif isinstance(value, ast.AST):
                     self.visit(value)
             if self.collecting and isinstance(node, ast.ClassDef):
-                # A local subclass of a client or connecting class is that class:
-                # `class S(requests.Session)` then `S().get(url)` runs the inherited method.
                 where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
                 inherited = {
                     c
@@ -17760,15 +17678,12 @@ def _check_signal_escape_patterns(code: str):
                 }
                 if inherited:
                     self.func_aliases.setdefault(node.name, set()).update(inherited)
-                    # Its own methods reach the inherited client through `self`.
                     family = self.class_family.get(id(node))
                     if family is not None:
                         self.instance_aliases.setdefault(family, set()).update(inherited)
-                    # Registered where the class name is bound, after its bases have run.
                     self._register_alias(node.name, node.body[0])
             args = getattr(node, "args", None)
             if self.collecting and args is not None:
-                # `def fetch(f = requests.get): f(url)` calls `requests.get`.
                 positional = args.posonlyargs + args.args
                 defaults = list(
                     zip(positional[len(positional) - len(args.defaults) :], args.defaults)
@@ -17851,7 +17766,6 @@ def _check_signal_escape_patterns(code: str):
                     self._register_alias(bound, node)
                     registered.add(bound)
                 elif module in _NETWORK_MODULES or _reexported(fq):
-                    # from urllib.request import urlopen, from httpx._api import get
                     self.func_aliases.setdefault(bound, set()).add(fq)
                     self._register_alias(bound, node)
                     registered.add(bound)
@@ -17922,7 +17836,6 @@ def _check_signal_escape_patterns(code: str):
             return set()
 
         def _named_by(self, value, at) -> "tuple[set[str], set[str], set[str]]":
-            """The network modules, functions and client classes a value can name at `at`."""
             return (
                 self._modules_named_by(value, at),
                 self._functions_named_by(value, at),
@@ -17930,14 +17843,11 @@ def _check_signal_escape_patterns(code: str):
             )
 
         def _register(self, target, named, node) -> bool:
-            """Record what `_named_by` found on a target. True when a name took an alias, which
-            exempts that name from the shadow the same statement records."""
+            """True when a name took an alias, exempting it from the shadow this statement records."""
             modules, functions, instances = named
             path = self._receiver_path(target)
             family = self.class_family.get(self.scope_stack[-1])
             if family is not None and isinstance(target, ast.Name):
-                # A name bound in a class body is a class attribute, read as `self.<name>`
-                # and, in the body itself, as the bare name (see `_roots`).
                 path = f"{family}.{target.id}"
             if path is not None and instances:
                 self.instance_aliases.setdefault(path, set()).update(instances)
@@ -17947,8 +17857,6 @@ def _check_signal_escape_patterns(code: str):
                 self.module_aliases.setdefault(target.id, set()).update(modules)
             if functions:
                 self.func_aliases.setdefault(target.id, set()).update(functions)
-            # A local class family is not a network alias, so `client = L()` still shadows
-            # `import requests as client`.
             if modules or functions or any(not c.startswith("<") for c in instances):
                 self._register_alias(target.id, node)
                 return True
@@ -17985,8 +17893,7 @@ def _check_signal_escape_patterns(code: str):
             value,
             mutated = False,
         ) -> None:
-            """Queue a possible proxy or base-URL store. It is applied after call arguments are
-            bound, so `configure(s.proxies)` mutating its parameter still reaches `s`."""
+            """Applied after call arguments are bound, so `configure(s.proxies)` still reaches `s`."""
             if isinstance(target, ast.Subscript) and self._is_environ(target.value):
                 self._record_env_proxy(target.slice, value)
                 return
@@ -17998,8 +17905,6 @@ def _check_signal_escape_patterns(code: str):
             )
 
         def _record_dict_mutation(self, name: str, method: str, args, keywords) -> None:
-            """`cfg[k] = v`, `cfg.update(...)`, `cfg.setdefault(k, v)` and `cfg |= {...}` on a
-            name, so a mapping later merged into the environment is read as it really is."""
             if method in ("setdefault", "__setitem__") and len(args) >= 2:
                 self.dict_entries.setdefault(name, []).append((args[0], args[1]))
             elif method in ("update", "__ior__"):
@@ -18017,9 +17922,7 @@ def _check_signal_escape_patterns(code: str):
                         )
 
         def _record_env_mapping(self, mapping) -> None:
-            """The entries of a mapping merged into the environment: a dict literal, a name bound
-            to one, `dict(...)` keywords or a list of pairs. Anything else may set a proxy
-            variable this screen cannot see, so it is recorded as unreadable."""
+            """Mapping merged into the environment; anything unreadable is recorded as unreadable."""
             if isinstance(mapping, ast.Dict):
                 for k, v in zip(mapping.keys, mapping.values):
                     if k is None:
@@ -18063,8 +17966,7 @@ def _check_signal_escape_patterns(code: str):
             )
 
         def _record_env_proxy(self, key, value) -> None:
-            """`os.environ["HTTPS_PROXY"] = ...` routes every client that trusts the environment,
-            which requests, httpx and urllib do by default."""
+            """requests, httpx and urllib honour the proxy environment by default."""
             if isinstance(key, ast.Constant):
                 names = [key.value] if isinstance(key.value, str) else []
             elif isinstance(key, ast.Name) and self.literal_names.get(key.id):
@@ -18077,10 +17979,7 @@ def _check_signal_escape_patterns(code: str):
                 self.env_proxies.append(value)
 
         def _apply_proxy(self, target, value, mutated) -> None:
-            """`s.proxies = {...}`, `s.proxies["https"] = ...`, `c.base_url = ...`, and the same
-            mutation through `p = s.proxies`, configure where the client connects."""
             if isinstance(target, ast.Subscript) and self._is_environ(target.value):
-                # An environment only known as one once call arguments were bound.
                 self._record_env_proxy(target.slice, value)
                 return
             if isinstance(target, ast.Subscript):
@@ -18106,7 +18005,6 @@ def _check_signal_escape_patterns(code: str):
             self._visit_binding(node, node.targets, node.value)
 
         def visit_AnnAssign(self, node):
-            # `s: requests.Session = requests.Session()` binds exactly as the plain assignment.
             if node.value is None:
                 if self.collecting:
                     self._rebind(node)
@@ -18152,7 +18050,6 @@ def _check_signal_escape_patterns(code: str):
                         if isinstance(alt, ast.Name) and alt.id != target.id:
                             self.callable_aliases.setdefault(target.id, set()).add(alt.id)
                         elif isinstance(alt, ast.Attribute) and alt.attr in self.local_methods:
-                            # `build = Factory().make` calls `make`.
                             self.callable_aliases.setdefault(target.id, set()).add(alt.attr)
                 if isinstance(value, ast.Attribute) and value.attr in _DESTINATION_ATTRS:
                     owner = self._receiver_path(value.value)
@@ -18165,8 +18062,6 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def visit_AugAssign(self, node):
-            # `s.proxies |= {...}` mutates the mapping the session sends through, and
-            # `os.environ |= {...}` the environment.
             if self.collecting:
                 if self._is_environ(node.target):
                     self._record_env_mapping(node.value)
@@ -18192,7 +18087,6 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def _carry_loop(self, node) -> None:
-            # `for s in [requests.Session()]` binds each element of a literal container in turn.
             if self.collecting and isinstance(node.iter, (ast.List, ast.Tuple, ast.Set)):
                 for elt in node.iter.elts:
                     if isinstance(elt, ast.Starred):
@@ -18212,7 +18106,6 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def visit_withitem(self, node):
-            # `with requests.Session() as s` binds the session: these clients return themselves.
             if self.collecting and node.optional_vars is not None:
                 ctx = node.context_expr
                 at = (getattr(ctx, "lineno", 0), getattr(ctx, "col_offset", 0))
@@ -18227,7 +18120,6 @@ def _check_signal_escape_patterns(code: str):
             """Every fully qualified name a callee could be, written spelling first."""
             alts = _alternatives(func)
             if alts != [func]:
-                # `(requests.get if flag else print)(url)` may call either.
                 out: list[str] = []
                 for alt in alts:
                     out.extend(c for c in self._fq_candidates(alt, at) if c not in out)
@@ -18255,9 +18147,6 @@ def _check_signal_escape_patterns(code: str):
                 if not self._is_shadowed(parts[0], at):
                     for module in sorted(self.module_aliases[parts[0]]):
                         fq = ".".join(module.split(".") + parts[1:])
-                        # A submodule outside `_NETWORK_MODULES` contributes only what its
-                        # package re-exports, so `import urllib3.util as u` keeps `u.parse_url`
-                        # an unlisted helper.
                         if module not in _NETWORK_MODULES and not any(
                             m.startswith(f"{module}.") for m in _NETWORK_MODULES
                         ):
@@ -18271,14 +18160,11 @@ def _check_signal_escape_patterns(code: str):
                 starred = self._star_imported_fq(parts[0], at)
                 if starred:
                     candidates.append(starred)
-            # `requests.Session().get` and `s.get` both read as `requests.Session.get`.
             held: "list[tuple[set[str], list[str]]]" = []
             if not isinstance(cur, ast.Name):
                 if parts:
                     classes = self._instances_named_by(cur, at)
                     held.append((classes, parts))
-                    # `Wrapper(s).session.get` and `super().get` read the family's own client
-                    # and its attributes, as `w.session.get` and `self.get` do.
                     for family in (c for c in classes if c.startswith("<")):
                         for k in range(len(parts)):
                             path = ".".join([family] + parts[:k])
@@ -18288,8 +18174,6 @@ def _check_signal_escape_patterns(code: str):
                 for root in self._roots(parts[0]):
                     for k in range(1, len(parts)):
                         path = ".".join([root] + parts[1:k])
-                        # A method's receiver is a parameter, which is exactly what names the
-                        # instance, so its family key is not subject to the shadow check.
                         if path in self.instance_aliases and not (
                             k == 1 and root == parts[0] and self._is_shadowed(parts[0], at)
                         ):
@@ -18333,7 +18217,6 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_Call(self, node):
             if self.collecting:
-                # Bound after the gathering pass, once every callable alias is known.
                 self.pending_calls.append((node, tuple(self.scope_stack), tuple(self.self_names)))
                 func = node.func
                 if isinstance(func, ast.Attribute) and (
@@ -18344,7 +18227,6 @@ def _check_signal_escape_patterns(code: str):
                         and func.value.id in self.os_names
                     )
                 ):
-                    # `os.environ.update(HTTPS_PROXY = ...)`, `setdefault` and `os.putenv`.
                     if func.attr in ("setdefault", "putenv", "__setitem__") and len(node.args) >= 2:
                         self._record_env_proxy(node.args[0], node.args[1])
                     elif func.attr == "update":
@@ -18365,10 +18247,8 @@ def _check_signal_escape_patterns(code: str):
                         self._record_dict_mutation(
                             func.value.id, func.attr, node.args, node.keywords
                         )
-                    # `update`, `setdefault` and the dunder spellings of a subscript store and `|=`.
                     args = node.args
                     if func.attr in ("setdefault", "__setitem__"):
-                        # The key is a scheme name, not a destination.
                         args = [] if args and _is_no_proxy(args[0]) else args[1:2]
                     for value in [
                         *args,
@@ -18403,7 +18283,6 @@ def _check_signal_escape_patterns(code: str):
             )
             fq = recognised[0] if recognised else (fq_candidates[0] if fq_candidates else "")
 
-            # `getattr(requests, name)(url)` picks the function at runtime, unreadably.
             chooser = node.func
             if (
                 network_possible
@@ -18439,7 +18318,6 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # An unplaced receiver's `.connect((host, port))` gets main's literal-only check.
             if (
                 not recognised
                 and isinstance(node.func, ast.Attribute)
@@ -18515,15 +18393,10 @@ def _check_signal_escape_patterns(code: str):
                         found = next(
                             (kw.value for kw in node.keywords or [] if kw.arg in keywords), None
                         )
-                    # `ClientSession(base_url = None)` is the disabled default, not a destination.
                     if found is not None and not (
                         isinstance(found, ast.Constant) and found.value is None
                     ):
                         destinations.append((found, True, kind))
-                # A routing keyword decides where an SSH session really goes: a `ProxyCommand` or
-                # socket (`sock=`), a Fabric `gateway=` or an asyncssh `proxy_command=` runs or
-                # reuses something this screen cannot read, so it fails closed; an asyncssh
-                # `tunnel=` string is a host.
                 for kw in node.keywords or []:
                     if isinstance(kw.value, ast.Constant) and kw.value.value is None:
                         continue
@@ -18533,8 +18406,6 @@ def _check_signal_escape_patterns(code: str):
                                 destinations.append((kw.value, True, "host"))
                             else:
                                 destinations.append((_UNREADABLE, True, "host"))
-                # Proxies passed to this call or set in the environment, and proxies or a base URL
-                # configured on its client.
                 proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
                 if _reads_proxy_environment(node, recognised):
                     proxies += self.env_proxies
@@ -18553,8 +18424,6 @@ def _check_signal_escape_patterns(code: str):
                         )
                 for proxy in proxies:
                     if isinstance(proxy, ast.Name) and proxy.id in self.dict_literals:
-                        # `proxies = {...}; get(url, proxies=proxies)`, as it stands after any
-                        # stores into it; a mutation this screen cannot read fails closed.
                         if proxy.id in self.dict_mutated:
                             unreadable = True
                         entries = [
@@ -18574,7 +18443,6 @@ def _check_signal_escape_patterns(code: str):
                     else:
                         values = [proxy]
                     for value in values:
-                        # `proxies = None` and `{"https": None}` switch the proxy off.
                         if not (isinstance(value, ast.Constant) and value.value is None):
                             destinations.append((value, True, "proxy"))
                 if specs:
@@ -18623,8 +18491,6 @@ def _check_signal_escape_patterns(code: str):
                             elif not m and kind == "proxy" and whole and reading.strip():
                                 # requests prepends `http://` to a scheme-less proxy.
                                 host = reading.strip()
-                        # `/simple/` + anything stays a path on the client's base URL: after a
-                        # `/` and a non-`/` character nothing appended can name a host.
                         relative = (
                             kind == "url"
                             and not is_tuple
