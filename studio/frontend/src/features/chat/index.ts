@@ -27,6 +27,7 @@ export {
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
+  revealFineTunedModel,
   validateModel,
   type BrowseFoldersResponse,
   type CachedGgufRepo,
@@ -56,6 +57,7 @@ export {
   type Preset,
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
 export {
   hydrateModelDisclaimerPreference,
   refreshModelDisclaimerPreference,
@@ -135,7 +137,12 @@ export {
   type SidebarDropZone,
   type SidebarSection,
 } from "./lib/sidebar-drag";
-export { useSidebarDrag, SPRING_OPEN_DELAY_MS } from "./hooks/use-sidebar-drag";
+export {
+  useSidebarDrag,
+  SPRING_OPEN_DELAY_MS,
+  DRAG_THRESHOLD_PX,
+  DRAGGING_BODY_CLASS,
+} from "./hooks/use-sidebar-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
@@ -156,6 +163,7 @@ export {
 } from "./stores/sidebar-organization-store";
 export type {
   SidebarChatSort,
+  SidebarProjectSort,
   SidebarOrganizeBy,
 } from "./stores/sidebar-organization-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
@@ -337,10 +345,7 @@ export {
   removeChatThreadTombstones,
 } from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
-export {
-  forkCountFor,
-  subscribeForkCounts,
-} from "./utils/fork-count-store";
+export { forkCountFor, subscribeForkCounts } from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningFollowsPreference,
@@ -359,6 +364,7 @@ export {
   resolveOpen,
 } from "./utils/display-visibility";
 export { ArtifactCard } from "./artifacts/artifact-card";
+export { ArtifactHtmlFrame } from "./artifacts/html-frame";
 export { ResearchMessage } from "./components/research-message";
 export {
   ResearchActivityPanel,
@@ -458,6 +464,9 @@ export {
   releaseTtsAudioUrl,
 } from "./adapters/studio-speech-synthesis-adapter";
 export { ChatSkillsDialog } from "./components/chat-skills-dialog";
+export { ChatAudioUploadMount } from "./components/chat-audio-upload-mount";
+export { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
+export { currentDictationEntryMode } from "./utils/dictation-entry";
 export {
   SKILL_MENTION_PATTERN,
   listSkills,
@@ -471,6 +480,7 @@ export {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  effectiveSendShortcut,
   followUpSubmitIntent,
   steeringInsertionIndex,
   type ComposerSendShortcut,

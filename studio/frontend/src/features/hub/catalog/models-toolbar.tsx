@@ -10,6 +10,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
+import { useHubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
 import {
   AiChipIcon,
@@ -187,13 +188,16 @@ export const ModelsToolbar = memo(function ModelsToolbar({
       })),
     [],
   );
+  const hubSource = useHubSource();
   const sortOptions = useMemo<HubOption<HfSortKey>[]>(
     () =>
-      SORT_OPTIONS.map((option) => ({
+      SORT_OPTIONS.filter(
+        (option) => hubSource !== "modelscope" || option.value !== "createdAt",
+      ).map((option) => ({
         value: option.value,
         label: option.label,
       })),
-    [],
+    [hubSource],
   );
   const triggerBase = cn(
     "field-trigger hub-menu-trigger field-soft transition-colors",

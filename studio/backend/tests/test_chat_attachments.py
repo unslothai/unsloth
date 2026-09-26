@@ -462,6 +462,35 @@ def test_audio_attachment_file_serves_bytes(tmp_path, monkeypatch):
     assert response.media_type == "audio/wav"
 
 
+@pytest.mark.parametrize(
+    "mime_type, served", [("video/mp4", "video/mp4"), ("video/webm;codecs=vp9", "video/webm")]
+)
+def test_video_attachment_file_serves_bytes_and_lists_with_size(
+    tmp_path, monkeypatch, mime_type, served
+):
+    clip = b"\0\0\0\x18ftypmp42" * 100
+    attachment = {
+        "id": "att-video",
+        "type": "file",
+        "name": "clip",
+        "contentType": mime_type,
+        "content": [
+            {
+                "type": "file",
+                "filename": "clip",
+                "data": base64.b64encode(clip).decode("ascii"),
+                "mimeType": mime_type,
+            }
+        ],
+        "status": {"type": "complete"},
+    }
+    _seed(tmp_path, monkeypatch, [attachment])
+    response = chat_history.get_attachment_file("msg-1", "att-video", current_subject = "unsloth")
+    assert response.body == clip
+    assert response.media_type == served
+    assert abs(studio_db.list_chat_attachments()[0]["sizeBytes"] - len(clip)) <= 2
+
+
 def test_audio_attachment_media_type_from_format(tmp_path, monkeypatch):
     attachment = _audio_attachment()
     attachment["contentType"] = None
