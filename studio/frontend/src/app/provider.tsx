@@ -1021,7 +1021,16 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         showSidebarSurface={showSidebarSurface}
         pageHeaderInBand={isChatLikeRoute(pathname)}
       />
-      <div className="h-full min-h-0 overflow-hidden">{content}</div>
+      {/* Sign-in forms can outgrow a small window, so they scroll here, under the titlebar. */}
+      <div
+        className={
+          hidesTitlebarSidebar
+            ? "h-full min-h-0 overflow-x-hidden overflow-y-auto"
+            : "h-full min-h-0 overflow-hidden"
+        }
+      >
+        {content}
+      </div>
     </div>
   );
 }
