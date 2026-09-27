@@ -21,7 +21,7 @@ ERNIE_LIKE = (
     "{%- if message.role == 'user' %}{{- '<|im_start|>user\\n' + message.content + '<|im_end|>\\n\\n' }}"
     "{%- elif message.role == 'assistant' %}{{- '<|im_start|>assistant\\n<response>\\n' + message.content + '\\n</response>\\n<|im_end|>\\n\\n' }}"
     "{%- endif %}"
-    "{%- endfor %}\n {{- \"<|im_start|>assistant\\n<think>\\n\"}}"
+    '{%- endfor %}\n {{- "<|im_start|>assistant\\n<think>\\n"}}'
 )
 HEADER = "<|im_start|>assistant\n<think>\n"
 CONVO = [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello"}]
@@ -29,6 +29,7 @@ CONVO = [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "He
 
 def _tokenizer(template):
     from tokenizers import Tokenizer, models, pre_tokenizers
+
     tk = Tokenizer(models.WordLevel({"[UNK]": 0, "a": 1}, unk_token = "[UNK]"))
     tk.pre_tokenizer = pre_tokenizers.Whitespace()
     tok = PreTrainedTokenizerFast(tokenizer_object = tk, unk_token = "[UNK]", eos_token = "[UNK]")
@@ -48,16 +49,24 @@ def test_trailing_expression_after_whitespace_is_wrapped():
 
 
 def test_original_render_with_prompt_is_unchanged():
-    orig = _tokenizer(ERNIE_LIKE).apply_chat_template(CONVO, tokenize = False, add_generation_prompt = True)
-    fixed = _tokenizer(_fix_chat_template(ERNIE_LIKE)).apply_chat_template(CONVO, tokenize = False, add_generation_prompt = True)
+    orig = _tokenizer(ERNIE_LIKE).apply_chat_template(
+        CONVO, tokenize = False, add_generation_prompt = True
+    )
+    fixed = _tokenizer(_fix_chat_template(ERNIE_LIKE)).apply_chat_template(
+        CONVO, tokenize = False, add_generation_prompt = True
+    )
     assert orig == fixed
 
 
 def test_fastmodel_post_load_fixes_repair_the_template():
     tok = _tokenizer(ERNIE_LIKE)
-    assert tok.apply_chat_template(CONVO, tokenize = False, add_generation_prompt = False).endswith(HEADER)
+    assert tok.apply_chat_template(CONVO, tokenize = False, add_generation_prompt = False).endswith(
+        HEADER
+    )
     tok = _apply_post_load_tokenizer_fixes(tok, fix_tokenizer = True, config = None)
-    assert not tok.apply_chat_template(CONVO, tokenize = False, add_generation_prompt = False).endswith(HEADER)
+    assert not tok.apply_chat_template(CONVO, tokenize = False, add_generation_prompt = False).endswith(
+        HEADER
+    )
 
 
 def test_fix_tokenizer_false_leaves_template_alone():
@@ -66,7 +75,9 @@ def test_fix_tokenizer_false_leaves_template_alone():
 
 
 def test_template_that_honours_the_flag_is_untouched():
-    good = ERNIE_LIKE.replace("{%- endfor %}\n {{- \"<|im_start|>assistant\\n<think>\\n\"}}",
-                              "{%- endfor %}{%- if add_generation_prompt %}{{- '<|im_start|>assistant\\n' }}{%- endif %}")
+    good = ERNIE_LIKE.replace(
+        '{%- endfor %}\n {{- "<|im_start|>assistant\\n<think>\\n"}}',
+        "{%- endfor %}{%- if add_generation_prompt %}{{- '<|im_start|>assistant\\n' }}{%- endif %}",
+    )
     tok = _apply_post_load_tokenizer_fixes(_tokenizer(good), fix_tokenizer = True, config = None)
     assert tok.chat_template == good
