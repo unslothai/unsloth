@@ -349,6 +349,10 @@ def _has_sequence_classification_architecture(config):
 _OMNI_AUTO_CLASS_NAMES = (
     "AutoModelForImageTextToText",
     "AutoModelForTextToWaveform",
+    # Speech-in, text-out models (Voxtral, Voxtral Realtime, Qwen2-Audio, Qwen3-ASR) are
+    # ForConditionalGeneration, so they read as VLMs, but transformers 5 registers them
+    # only under AutoModelForMultimodalLM (not image-text), so the load used to fail.
+    "AutoModelForMultimodalLM",
 )
 
 
