@@ -1849,15 +1849,15 @@ class InferenceOrchestrator:
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
         audio_device: Optional[str] = None,
         on_prior_worker_released: Optional[Callable[[], None]] = None,
+        cache_environment: Optional[Mapping[str, str]] = None,
+        anonymous_hf_access: bool = False,
+        audio_codec_path: Optional[str] = None,
         mlx_speculative_mode: str = "off",
         mlx_draft_model: Optional[str] = None,
         mlx_draft_block_size: Optional[int] = None,
         mlx_speculative_resolved_mode: Optional[str] = None,
         mlx_speculative_resolved_draft_model: Optional[str] = None,
         mlx_speculative_resolution_reason: Optional[str] = None,
-        cache_environment: Optional[Mapping[str, str]] = None,
-        anonymous_hf_access: bool = False,
-        audio_codec_path: Optional[str] = None,
     ) -> bool:
         """Load a model for inference. Always spawns a fresh subprocess per load for a clean
         interpreter (no stale unsloth patches, torch.compile caches, or getsource failures)."""
