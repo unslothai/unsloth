@@ -26,6 +26,7 @@ ct_quant = pytest.importorskip("compressed_tensors.quantization")
 
 @pytest.fixture(autouse = True)
 def _zoo_with_float_only_cast(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "1")
     from unsloth.models import loader_utils
     monkeypatch.setattr(loader_utils, "_zoo_peft_forward_keeps_fp8_inputs", lambda: True)
 
@@ -122,6 +123,14 @@ def test_fp8_modules_route_to_unsloth_kernels(strategy, shape, block, bias, monk
     dX_ref = torch.ones(2, 5, shape[0], device = "cuda") @ ref
     assert float((y.float() - y_ref).norm() / y_ref.norm()) < 0.05
     assert float((dX.float() - dX_ref).norm() / dX_ref.norm()) < 0.01
+
+
+def test_fp8_routing_is_opt_in(monkeypatch):
+    from unsloth.models.loader_utils import _route_compressed_tensors_fp8_to_unsloth
+
+    monkeypatch.delenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", raising = False)
+    model, _ = _ct_model(256, 256, "channel")
+    assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
 
 
 def test_block_fp8_is_opt_in(monkeypatch):

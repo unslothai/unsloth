@@ -1384,7 +1384,8 @@ def _zoo_peft_forward_keeps_fp8_inputs():
 
 def _route_compressed_tensors_fp8_to_unsloth(model):
     """Run compressed-tensors FP8 Linears on Unsloth FP8 kernels instead of decompressing them."""
-    if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "1") == "0":
+    # Opt-in: saves ~20% peak memory but on-the-fly dequant trains ~35-65% slower than bf16 (Qwen3-8B, B200).
+    if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0") != "1":
         return 0
     if getattr(getattr(model, "config", None), "quantization_config", None) is None:
         return 0
