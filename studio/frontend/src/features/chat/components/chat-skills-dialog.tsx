@@ -179,7 +179,8 @@ export function ChatSkillsDialog({
       });
   };
 
-  const manifest = selected ? (manifests.get(selected.name) ?? null) : null;
+  // Keyed by name, so only the readable (winning) row may use it; a shadowed copy shares the name.
+  const manifest = readable ? (manifests.get(selected.name) ?? null) : null;
 
   // A catalog refresh may mean a changed file: re-read the open one, keep any draft.
   const [seenSkills, setSeenSkills] = useState(skills);
