@@ -1159,7 +1159,9 @@ def _undeclared_nested_configs(config):
         return []
     if not isinstance(config, PretrainedConfig):
         return []
-    declared = set(getattr(type(config), "sub_configs", None) or ())
+    # Read from the instance: DPT / DETR / VitMatte on 4.57 define `sub_configs` as a property.
+    declared = getattr(config, "sub_configs", None)
+    declared = set(declared) if isinstance(declared, dict) else set()
     return [
         value
         for name, value in vars(config).items()

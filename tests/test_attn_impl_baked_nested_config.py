@@ -63,3 +63,21 @@ def test_nested_config_with_its_own_choice_is_left_alone():
     config.llm_config._attn_implementation = "eager"
     _utils._set_attn_impl(config, "flex_attention")
     assert config.llm_config._attn_implementation == "eager"
+
+
+class _PropertySubConfigs(PretrainedConfig):
+    # transformers 4.57 DPT / DETR / VitMatte expose sub_configs as a property.
+    model_type = "baked_property_sub_configs"
+
+    @property
+    def sub_configs(self):
+        return {"backbone_config": _Vision}
+
+
+def test_sub_configs_property_is_read_from_the_instance():
+    config = _PropertySubConfigs()
+    config.backbone_config = _Vision()
+    config.llm_config = _Llm()
+    config.llm_config._attn_implementation = "flash_attention_2"
+    _utils._set_attn_impl(config, "eager")
+    assert config.llm_config._attn_implementation == "eager"
