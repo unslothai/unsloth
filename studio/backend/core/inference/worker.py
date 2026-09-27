@@ -782,7 +782,9 @@ class _Stops:
     def answer(self) -> None:
         self._refresh()
         self._batch.drop_stopped(self)
-        _drop_stopped_held(self._held, self._resp_queue, self)
+        for cmd in [held for held in self._held if held.get("request_id", "") in self]:
+            self._held.remove(cmd)
+            _abandon_one(cmd, self._resp_queue)
 
     def _refresh(self) -> None:
         if self._ledger is None:
@@ -818,22 +820,12 @@ def _teardown_skip(cmd: dict, resp_queue: Any, pending_teardowns) -> bool:
     return True
 
 
-def _drop_stopped_held(held: list, resp_queue: Any, stopped) -> None:
-    for cmd in [held_cmd for held_cmd in held if _cmd_is_stopped(held_cmd, stopped)]:
-        held.remove(cmd)
-        _abandon_one(cmd, resp_queue)
-
-
 def _stopped_before_it_ran(cmd: dict, resp_queue: Any, stopped) -> bool:
     stopped.answer()
-    if not _cmd_is_stopped(cmd, stopped):
+    if cmd.get("request_id", "") not in stopped:
         return False
     _abandon_one(cmd, resp_queue)
     return True
-
-
-def _cmd_is_stopped(cmd: dict, stopped) -> bool:
-    return cmd.get("request_id", "") in stopped
 
 
 def _abandon_one(cmd: dict, resp_queue: Any) -> None:
@@ -1079,10 +1071,9 @@ def _load_can_batch(backend) -> bool:
     )
 
 
-def _generate_rows_apart(backend, requests, request_id, resp_queue, cancel_event) -> None:
-    """Serve a declined batch reply by reply, reporting what the batch would have."""
+def _rows_apart(backend, requests, cancel_event, stats: list):
+    """A declined batch served reply by reply, as the batch's own (row, snapshot) events."""
     for row, request in enumerate(requests):
-        stats = None
         if not cancel_event.is_set():
             generator = backend.generate_chat_response(
                 **{
@@ -1096,30 +1087,13 @@ def _generate_rows_apart(backend, requests, request_id, resp_queue, cancel_event
                 for cumulative_text in generator:
                     if cancel_event.is_set():
                         break
-
-                    _send_response(
-                        resp_queue,
-                        {
-                            "type": "token",
-                            "request_id": request_id,
-                            "row": row,
-                            "text": cumulative_text,
-                        },
-                    )
+                    yield row, cumulative_text
             finally:
                 close = getattr(generator, "close", None)
                 if callable(close):
                     close()
-            stats = getattr(backend, "last_generation_stats", None)
-        _send_response(
-            resp_queue,
-            {
-                "type": "row_done",
-                "request_id": request_id,
-                "row": row,
-                "stats": stats,
-            },
-        )
+            stats[row] = getattr(backend, "last_generation_stats", None)
+        yield row, None
 
 
 def _handle_generate_rows(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
@@ -1142,47 +1116,28 @@ def _handle_generate_rows(backend, cmd: dict, resp_queue: Any, cancel_event) -> 
                 request_id,
                 reason,
             )
-            _generate_rows_apart(
-                backend,
-                requests,
-                request_id,
-                resp_queue,
-                cancel_event,
-            )
+            stats = [None] * len(requests)
+            events = _rows_apart(backend, requests, cancel_event, stats)
         else:
             logger.info(
                 "Starting batched generation for request_id=%s rows=%d",
                 request_id,
                 len(requests),
             )
-            generator = backend.generate_chat_batch(requests, cancel_event = cancel_event)
-            try:
-                for row, snapshot in generator:
-                    if snapshot is None:
-                        _send_response(
-                            resp_queue,
-                            {
-                                "type": "row_done",
-                                "request_id": request_id,
-                                "row": row,
-                                "stats": backend.last_batch_generation_stats[row],
-                            },
-                        )
-                    else:
-                        _send_response(
-                            resp_queue,
-                            {
-                                "type": "token",
-                                "request_id": request_id,
-                                "row": row,
-                                "text": snapshot,
-                            },
-                        )
-            finally:
-                close = getattr(generator, "close", None)
-                if callable(close):
-                    close()
-            logger.info("Finished %d-reply generation for request_id=%s", len(requests), request_id)
+            stats = None
+            events = backend.generate_chat_batch(requests, cancel_event = cancel_event)
+        try:
+            for row, snapshot in events:
+                if snapshot is None:
+                    reported = backend.last_batch_generation_stats if stats is None else stats
+                    message = {"type": "row_done", "stats": reported[row]}
+                else:
+                    message = {"type": "token", "text": snapshot}
+                _send_response(resp_queue, {**message, "request_id": request_id, "row": row})
+        finally:
+            close = getattr(events, "close", None)
+            if callable(close):
+                close()
 
         _send_response(
             resp_queue,
@@ -1359,7 +1314,7 @@ class _ResidentBatch:
             {handle[0] for handle in self.session.ending} if self.session is not None else set()
         )
         for request_id in [r for r in self._owed if r in ending]:
-            self._abandon(request_id)
+            self._end(request_id, cancelled = True)
         session, self.session = self.session, None
         self.width = None
         self._owed.clear()
@@ -1390,7 +1345,7 @@ class _ResidentBatch:
                 },
             )
         if not self._live(request_id):
-            self._finish(request_id)
+            self._end(request_id)
 
     def _send_token(self, handle, text) -> None:
         request_id, row = handle
@@ -1399,33 +1354,20 @@ class _ResidentBatch:
             event["row"] = row
         _send_response(self.resp_queue, event)
 
-    def _finish(self, request_id: str) -> None:
+    def _end(
+        self,
+        request_id: str,
+        *,
+        cancelled: bool = False,
+    ) -> None:
+        """Answer a request's gen_done; cancelled when it ends with its batch, not a reply."""
         stats = self._take_stats((request_id, None))
         self._forget(request_id, withdraw = False)
-        _send_response(
-            self.resp_queue,
-            {
-                "type": "gen_done",
-                "request_id": request_id,
-                "stats": stats,
-            },
-        )
-        logger.info("Finished generation for request_id=%s", request_id)
-
-    def _abandon(self, request_id: str) -> None:
-        """End a turn with the batch it was in, rather than with a reply."""
-        stats = self._take_stats((request_id, None))
-        self._forget(request_id, withdraw = False)
-        _send_response(
-            self.resp_queue,
-            {
-                "type": "gen_done",
-                "request_id": request_id,
-                "cancelled": True,
-                "stats": stats,
-            },
-        )
-        logger.info("Ending request_id=%s with the batch it was in", request_id)
+        event = {"type": "gen_done", "request_id": request_id, "stats": stats}
+        if cancelled:
+            event["cancelled"] = True
+        _send_response(self.resp_queue, event)
+        logger.info("Ended request_id=%s (cancelled=%s)", request_id, cancelled)
 
     def _fail(self, request_id: str, exc: BaseException, stack: str) -> None:
         self._forget(request_id, withdraw = False)

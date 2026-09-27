@@ -2883,7 +2883,7 @@ class InferenceOrchestrator:
             return
         expected_model = self.active_model_name
 
-        if self._worker_reads_stops():
+        if self._stop_ledger is not None and self._stop_ledger.read_by_worker():
             yield from self._generate_dispatched(
                 messages = messages,
                 system_prompt = system_prompt,
@@ -3026,37 +3026,25 @@ class InferenceOrchestrator:
         *,
         may_signal: bool = True,
     ) -> tuple[bool, bool]:
-        """End one request. Reports (recorded, sent)."""
-        recorded, sent = self._stop_named(request_id, recorded)
-        if not sent and may_signal and self._worker_answered(cancel_event):
-            self._cancel_generation()
-            sent = True
+        """End one request: by name where the worker reads stops, else via the shared event.
+        Reports (recorded, sent)."""
+        ledger = self._stop_ledger
+        sent = False
+        if ledger is not None:
+            if not recorded:
+                recorded = bool(
+                    request_id and self._ensure_subprocess_alive() and ledger.stop(request_id)
+                )
+            sent = bool(recorded and ledger.read_by_worker())
+        if not sent and may_signal:
+            with self._active_cancel_lock:
+                answered = any(ev is cancel_event for ev in self._executing_cancel_events)
+            if answered:
+                self._cancel_generation()
+                sent = True
         if sent:
             self._release_worker(cancel_event)
         return recorded, sent
-
-    def _worker_reads_stops(self) -> bool:
-        ledger = self._stop_ledger
-        return ledger is not None and ledger.read_by_worker()
-
-    def _stop_named(
-        self,
-        request_id: str,
-        recorded: bool = False,
-    ) -> tuple[bool, bool]:
-        """Stop one request by name. Reports (recorded, sent)."""
-        ledger = self._stop_ledger
-        if ledger is None:
-            return recorded, False
-        if not recorded:
-            recorded = bool(
-                request_id and self._ensure_subprocess_alive() and ledger.stop(request_id)
-            )
-        return recorded, bool(recorded and ledger.read_by_worker())
-
-    def _worker_answered(self, cancel_event) -> bool:
-        with self._active_cancel_lock:
-            return any(ev is cancel_event for ev in self._executing_cancel_events)
 
     def _forget_request(self, request_id: str, cancel_event) -> None:
         """Retire a reply as it ends: a cancel event outliving its request stops a later one."""
