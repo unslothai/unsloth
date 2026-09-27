@@ -317,35 +317,43 @@ def exclude_no_placement_params(device_map, model_class, config):
     except Exception as error:
         print(f"Unsloth: could not build {model_class.__name__} on meta to place {names} ({error}).")
         return device_map
-    excluded = {
+    matched = {
         name
         for name, _ in list(meta.named_parameters()) + list(meta.named_buffers())
         if any(name == n or name.endswith("." + n) for n in names)
     }
-    if not excluded:
+    if not matched:
         return device_map
+    # The whole owning module stays together: FP8 checkpoints pair the table with a
+    # per-tensor weight_scale the lookup multiplies on the same device (FP8Embedding).
+    excluded_modules = sorted({name.rsplit(".", 1)[0] for name in matched})
+    excluded = {
+        name
+        for name, _ in list(meta.named_parameters()) + list(meta.named_buffers())
+        if any(name.startswith(module + ".") for module in excluded_modules)
+    }
 
-    def owner(name):
-        # The device map entry that currently places `name` (longest matching prefix).
+    def owner(path):
+        # The device map entry that currently places `path` (longest matching prefix).
         best = None
-        for key in base:
-            if key == "" or name == key or name.startswith(key + "."):
+        for key in out:
+            if key == "" or path == key or path.startswith(key + "."):
                 if best is None or len(key) > len(best):
                     best = key
         return best
 
     out = dict(base)
-    for name in sorted(excluded):
-        key = owner(name)
+    for path in excluded_modules:
+        key = owner(path)
         if key is None:
             continue
         device = out.pop(key)
-        # Re-place every sibling subtree along the path from `key` down to `name`.
+        if key == path:
+            continue
         module = meta.get_submodule(key) if key else meta
         prefix = key
-        parts = name[len(key) + 1:].split(".") if key else name.split(".")
-        for depth, part in enumerate(parts):
-            here = f"{prefix}.{part}" if prefix else part
+        parts = path[len(key) + 1:].split(".") if key else path.split(".")
+        for part in parts:
             for child_name, _ in module.named_children():
                 if child_name != part:
                     out[f"{prefix}.{child_name}" if prefix else child_name] = device
@@ -354,17 +362,15 @@ def exclude_no_placement_params(device_map, model_class, config):
             ):
                 if tensor_name != part:
                     out[f"{prefix}.{tensor_name}" if prefix else tensor_name] = device
-            if depth == len(parts) - 1:
-                break
             module = getattr(module, part)
-            prefix = here
+            prefix = f"{prefix}.{part}" if prefix else part
     gib = sum(
         t.numel() * t.element_size()
         for n, t in list(meta.named_parameters()) + list(meta.named_buffers())
         if n in excluded
     ) / 2**30
     print(
-        f"Unsloth: keeping {', '.join(sorted(excluded))} ({gib:.1f} GiB, frozen) on CPU; "
+        f"Unsloth: keeping {', '.join(excluded_modules)} ({gib:.1f} GiB, frozen) on CPU; "
         f"set UNSLOTH_PLACE_NO_PLACEMENT_PARAMS=1 to place it on the GPU instead."
     )
     del meta
