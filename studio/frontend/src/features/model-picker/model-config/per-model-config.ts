@@ -57,7 +57,7 @@ export interface PerModelConfig {
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
   selectedGpuIndexKind?: GpuIndexKind | null;
-  /** --tensor-split per GPU in picker order; never stored. `undefined` keeps the runtime's split, `null` = default. */
+  /** --tensor-split in picker order, never stored. `undefined` defers to the store, `null` = default. */
   tensorSplit?: number[] | null;
 }
 

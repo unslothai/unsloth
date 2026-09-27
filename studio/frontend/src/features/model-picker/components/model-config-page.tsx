@@ -787,7 +787,7 @@ function GpuMemorySettings({
   // The list order IS the device order the backend pins, so a re-checked GPU goes
   // to the end rather than back to its numeric slot.
   const orderedGpuIds = selectedGpuIds ?? gpuContext.ids ?? [];
-  // Mirrors the backend's --tensor-split gate. Layer counts, or percent under Tensor Parallelism.
+  // Mirrors the backend's --tensor-split gate.
   const splitTotal = Math.max(0, Math.min(gpuLayers, gpuLayersMax));
   const showSplit =
     !isDiffusion &&
@@ -801,7 +801,7 @@ function GpuMemorySettings({
   const tensorSplit = config.tensorSplit ?? null;
   const splitIsCustom =
     tensorSplit != null && tensorSplit.length === orderedGpuIds.length;
-  // Untouched: show a VRAM-proportional split (near llama.cpp's default) and send nothing.
+  // Untouched: show a VRAM-proportional split and send nothing.
   const splitShares = showSplit
     ? distributeByWeight(
         splitScale,

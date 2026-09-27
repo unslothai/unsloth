@@ -1541,7 +1541,7 @@ export function useChatModelRuntime() {
               });
             },
             parallelSlots: managedFlags?.defaultParallelSlots || null,
-            // Never stored: only the config page's editor puts one on the pick, else the store (cleared on reset)
+            // Only a config page pick carries one; else the store (cleared on reset)
             splitRatio:
               pendingConfig?.tensorSplit !== undefined
                 ? pendingConfig.tensorSplit
