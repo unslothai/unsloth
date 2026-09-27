@@ -4548,24 +4548,6 @@ export function ImagesPage({
         />
       </div>
       <LoadedBuildSummary status={status} />
-      {/* A resident full pipeline is reloadable by repo id alone, so it keeps Reapply even before a
-          user-initiated load; GGUF/single_file residents hide the button. */}
-      {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busy !== null}
-              onClick={handleReapply}
-            >
-              <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="mr-2 size-3.5" />
-              Reapply to loaded model
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Reload the current model with these advanced options</TooltipContent>
-        </Tooltip>
-      )}
     </>
   );
 
@@ -5344,7 +5326,7 @@ export function ImagesPage({
 
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
-          <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-4">
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight. Every workflow funnels through the same
                  handler, so one control stops all of them. */
@@ -5357,13 +5339,31 @@ export function ImagesPage({
                 {stopButtonLabel({ stopping, done: genDone, count })}
               </Button>
             ) : (
-              <Button
-                className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                onClick={handleGenerateWithRecall}
-                disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel)}
-              >
-                Generate
-              </Button>
+              <>
+                <Button
+                  className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  onClick={handleGenerateWithRecall}
+                  disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel)}
+                >
+                  Generate
+                </Button>
+                {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <Button
+                        className="relative z-10 h-11 px-5"
+                        variant="secondary"
+                        disabled={busy !== null}
+                        onClick={handleReapply}
+                      >
+                        <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="mr-2 size-4" />
+                        Reapply
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Reload the current model with the advanced options</TooltipContent>
+                  </Tooltip>
+                )}
+              </>
             )}
           </div>
         </div>
