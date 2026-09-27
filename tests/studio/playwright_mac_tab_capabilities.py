@@ -151,6 +151,11 @@ _SIGNED_OUT_PATHS = ("/login", "/change-password")
 # the store's pinned set, in both directions, so neither a pin nor an unpin can leave an
 # assertion here silently observing nothing.
 INLINE_ROW_IDS = ("hub", "projects", "library", "images", "train")
+# Pinned rows that stand down while something else on screen does their job, keyed to that something. Since #12016 the
+# Projects section shows as soon as projects have loaded, empty or not, and the Projects row yields to it
+# (projectsSectionShowing in app-sidebar.tsx). So on a fresh install the row is absent by design and the section is
+# what proves the sidebar came up. Neither of them rendering is still a failure.
+ROW_STAND_INS = {"projects": '[data-sidebar-section="projects"]'}
 # The row every pending-state assertion below is pinned to.
 GATED_ROW_ID = "train"
 # Intercept pattern for the browser's health reads.
@@ -875,6 +880,12 @@ def assert_row_never_greyed_while_unmeasured(page) -> None:
     assert_pending_state_on_forced_verdict(page)
 
 
+def stand_in_shown(page, row_id: str) -> bool:
+    """Whether the element a pinned row yields to is in the document, for a row that has one."""
+    selector = ROW_STAND_INS.get(row_id)
+    return selector is not None and page.locator(selector).count() > 0
+
+
 def drive_tabs(page) -> None:
     for route, row_id, name in TABS:
         step(f"open {name} ({route})")
@@ -908,6 +919,7 @@ def drive_tabs(page) -> None:
         # up at all and keeps the per-route detail in the log.
         try:
             _rows_seen.update(rid for rid, got in row_states(page).items() if got)
+            _rows_seen.update(rid for rid in ROW_STAND_INS if stand_in_shown(page, rid))
         except Exception as exc:
             info(f"{name}: could not read the sidebar rows ({exc!r})")
 
@@ -920,6 +932,10 @@ def drive_tabs(page) -> None:
                 page.wait_for_timeout(1000)
             elif row.count() > 0:
                 info(f"{name}: nav row present but disabled (measured verdict)")
+            elif stand_in_shown(page, row_id):
+                info(
+                    f"{name}: nav row {row_id} stands down while its section shows; reached by route instead"
+                )
             elif row_id in INLINE_ROW_IDS:
                 # Not an info line: this row is pinned inline by default, so its absence means the sidebar did not
                 # render and this tab checked nothing.
