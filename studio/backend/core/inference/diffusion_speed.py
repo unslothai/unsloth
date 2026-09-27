@@ -42,6 +42,7 @@ from contextlib import contextmanager
 from functools import lru_cache
 from typing import Any, Iterator, Optional
 
+from . import diffusion_compile_config as compile_config
 from . import diffusion_gguf_compile as gguf_compile
 
 SPEED_OFF = "off"
@@ -60,6 +61,9 @@ _INDUCTOR_FLAGS = (
     ("fx_graph_cache", "inductor_fx_graph_cache"),
 )
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
+_DYNAMO_MODULE = "torch._dynamo.config"
+_INDUCTOR_MODULE = "torch._inductor.config"
+_INDUCTOR_TRITON_MODULE = "torch._inductor.config.triton"
 
 
 # allow_fp16_accumulation has one owner: writes during an open scope go to the recorded process value, so closing
@@ -129,14 +133,15 @@ def snapshot_backend_flags() -> Optional[dict]:
             state["cudnn_benchmark"] = bool(cudnn.benchmark)
     inductor_cfg = _inductor_config()
     if inductor_cfg is not None:
+        # The process-wide value, not this thread's view: on torch 2.12+ a knob another load set is invisible here.
         for attr, key in _INDUCTOR_FLAGS:
             if hasattr(inductor_cfg, attr):
-                state[key] = bool(getattr(inductor_cfg, attr))
+                state[key] = bool(compile_config.get_knob(_INDUCTOR_MODULE, attr))
         triton_cfg = getattr(inductor_cfg, "triton", None)
         if triton_cfg is not None:
             for attr, key in _INDUCTOR_TRITON_FLAGS:
                 if hasattr(triton_cfg, attr):
-                    state[key] = bool(getattr(triton_cfg, attr))
+                    state[key] = bool(compile_config.get_knob(_INDUCTOR_TRITON_MODULE, attr))
     getter = getattr(torch, "get_float32_matmul_precision", None)
     if callable(getter):
         try:
@@ -184,12 +189,20 @@ def restore_backend_flags(state: Optional[dict]) -> None:
     cudnn = getattr(torch.backends, "cudnn", None)
     _set(cudnn, "allow_tf32", "cudnn_tf32")
     _set(cudnn, "benchmark", "cudnn_benchmark")
+
+    def _set_knob(obj: Any, module_name: str, attr: str, key: str) -> None:
+        # A knob recorded process-wide is restored process-wide, so the render thread picks the restore up too.
+        if key in state and compile_config.is_recorded(module_name, attr):
+            compile_config.set_knob(module_name, attr, state[key])
+        else:
+            _set(obj, attr, key)
+
     inductor_cfg = _inductor_config()
     for attr, key in _INDUCTOR_FLAGS:
-        _set(inductor_cfg, attr, key)
+        _set_knob(inductor_cfg, _INDUCTOR_MODULE, attr, key)
     triton_cfg = getattr(inductor_cfg, "triton", None) if inductor_cfg is not None else None
     for attr, key in _INDUCTOR_TRITON_FLAGS:
-        _set(triton_cfg, attr, key)
+        _set_knob(triton_cfg, _INDUCTOR_TRITON_MODULE, attr, key)
 
 
 def _inductor_config() -> Any:
@@ -694,6 +707,8 @@ def _compile_repeated_blocks(
     try:
         import torch
 
+        # Both knobs go through compile_config: torch 2.12+ scopes config writes to the writing thread's context, and
+        # the lazy compile runs on the render thread, not this load thread.
         # Heterogeneous-block DiTs (Z-Image needs ~11 graphs) exceed dynamo's default recompile_limit of 8, where a
         # resident load hard-errors under fullgraph, so raise it to 64. NOT force_parameter_static_shapes=False: no win
         # and ~6x slower.
@@ -701,14 +716,15 @@ def _compile_repeated_blocks(
         if dynamo_cfg is not None:
             for _limit_attr in ("recompile_limit", "cache_size_limit"):  # name varies by torch ver
                 if hasattr(dynamo_cfg, _limit_attr):
-                    setattr(dynamo_cfg, _limit_attr, max(getattr(dynamo_cfg, _limit_attr) or 0, 64))
+                    current = compile_config.get_knob(_DYNAMO_MODULE, _limit_attr) or 0
+                    compile_config.set_knob(_DYNAMO_MODULE, _limit_attr, max(current, 64))
         # Match eager intermediate rounding in inductor's fused pointwise kernels: they keep chains in fp32 where eager
         # materialises bf16 between ops, a per-forward delta a multi-step denoise amplifies. Measured LPIPS vs eager:
         # Qwen-Image 0.019 to 0.006, HunyuanVideo-1.5-720p 0.221 to 0.052, at ~zero cost. Process-global, so
         # snapshot_backend_flags restores it on unload.
         inductor_cfg = _inductor_config()
         if inductor_cfg is not None and hasattr(inductor_cfg, "emulate_precision_casts"):
-            inductor_cfg.emulate_precision_casts = True
+            compile_config.set_knob(_INDUCTOR_MODULE, "emulate_precision_casts", True)
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "compile_repeated_blocks", exc)
         return False
@@ -872,6 +888,8 @@ class _CompileGuard:
 
         def guarded(*args: Any, **kwargs: Any) -> Any:
             if guard.error is None:
+                # A compile or recompile can fire on any thread that calls in; give it the load-time knobs.
+                compile_config.apply()
                 try:
                     return compiled(*args, **kwargs)
                 except Exception as exc:  # noqa: BLE001 - reraised unless a compile-time failure
