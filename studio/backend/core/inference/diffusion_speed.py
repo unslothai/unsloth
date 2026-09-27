@@ -1028,7 +1028,6 @@ def _install_fused_vae(pipe: Any, logger: Any) -> bool:
         return False
     try:
         from . import diffusion_vae_fused  # noqa: PLC0415 - Triton import only on CUDA loads
-
         return diffusion_vae_fused.install(getattr(pipe, "vae", None), logger) > 0
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "fused vae", exc)
@@ -1040,7 +1039,6 @@ def _fused_vae_planned(pipe: Any) -> bool:
         return False
     try:
         from . import diffusion_vae_fused  # noqa: PLC0415
-
         return diffusion_vae_fused.will_install(getattr(pipe, "vae", None))
     except Exception:  # noqa: BLE001
         return False

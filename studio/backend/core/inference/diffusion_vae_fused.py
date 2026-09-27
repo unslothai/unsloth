@@ -42,6 +42,7 @@ def _triton_version_ok() -> bool:
         import re
 
         import triton
+
         m = re.match(r"(\d+)\.(\d+)", str(triton.__version__))
         return bool(m) and (int(m.group(1)), int(m.group(2))) >= _MIN_TRITON
     except Exception:  # noqa: BLE001
@@ -72,7 +73,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     def _gn_partials(
         x_ptr, bias_ptr, pn_ptr, pmean_ptr, pm2_ptr,
         T, HW, W, n_chunks, sb, sc, st, sh, sw,
-        C: tl.constexpr, G: tl.constexpr, CPG: tl.constexpr, BLOCK_P: tl.constexpr, HAS_BIAS: tl.constexpr,
+        C: tl.constexpr, G: tl.constexpr, CPG: tl.constexpr, BLOCK_P: tl.constexpr, HAS_BIAS: tl.constexpr
     ):  # fmt: skip
         chunk = tl.program_id(0)
         bt = tl.program_id(1)
@@ -106,7 +107,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(pn_ptr + slot, n_pix * CPG)
 
     @triton.jit
-    def _gn_combine(pn_ptr, pmean_ptr, pm2_ptr, mean_ptr, rstd_ptr, n_chunks, G, eps, BLOCK: tl.constexpr):
+    def _gn_combine(
+        pn_ptr, pmean_ptr, pm2_ptr, mean_ptr, rstd_ptr, n_chunks, G, eps, BLOCK: tl.constexpr
+    ):
         row = tl.program_id(0)
         g = row % G
         bt = (row // G).to(tl.int64)
@@ -137,7 +140,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     def _gn_apply(
         x_ptr, out_ptr, mean_ptr, rstd_ptr, w_ptr, b_ptr, ib_ptr,
         C, T, HW, W, G, sb, sc, st, sh, sw,
-        CPG: tl.constexpr, ACT: tl.constexpr, HAS_IN_BIAS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
+        CPG: tl.constexpr, ACT: tl.constexpr, HAS_IN_BIAS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
     ):  # fmt: skip
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
@@ -179,7 +182,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         C, T, H, W, Ho, Wo, ph, pw, To, front, n_cache, scale, eps,
         sb, sc, st, sh, sw, cb, cc, ct, ch, cw,
         NORM: tl.constexpr, ACT: tl.constexpr, HAS_BIAS: tl.constexpr, HAS_IN_BIAS: tl.constexpr,
-        REPLICATE: tl.constexpr, MEAN_SQ: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
+        REPLICATE: tl.constexpr, MEAN_SQ: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
     ):  # fmt: skip
         # out (B, To, Ho, Wo, C) = [front frames] + act(norm(x + ib)); REPLICATE: replicate-padded in T (front), H, W
         pid_p = tl.program_id(0)
@@ -199,7 +202,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         c = tl.arange(0, BLOCK_C)
         cmask = c < C
         m = pmask[:, None] & cmask[None, :]
-        out_off = ((b.to(tl.int64) * To + t_o) * (Ho * Wo) + p.to(tl.int64))[:, None] * C + c[None, :]
+        out_off = ((b.to(tl.int64) * To + t_o) * (Ho * Wo) + p.to(tl.int64))[:, None] * C + c[
+            None, :
+        ]
         if (not REPLICATE) and t_o < front:
             # causal frames: the cache's last ``n_cache`` activations, zeros before them
             tc = t_o - (front - n_cache)
@@ -214,7 +219,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 v = tl.load(cache_ptr + coff, mask = m, other = 0.0)
                 tl.store(out_ptr + out_off, v.to(out_ptr.dtype.element_ty), mask = m)
             else:
-                tl.store(out_ptr + out_off, tl.zeros([BLOCK_P, BLOCK_C], out_ptr.dtype.element_ty), mask = m)
+                tl.store(
+                    out_ptr + out_off,
+                    tl.zeros([BLOCK_P, BLOCK_C], out_ptr.dtype.element_ty),
+                    mask = m,
+                )
         else:
             t = tl.minimum(tl.maximum(t_o - front, 0), T - 1)
             off = (
@@ -247,7 +256,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     @triton.jit
     def _bias_residual(
         o_ptr, ob_ptr, r_ptr, rb_ptr, P, C, T, HW, W, sb, sc, st, sh, sw, inv_scale,
-        HAS_OB: tl.constexpr, HAS_RB: tl.constexpr, SCALE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
+        HAS_OB: tl.constexpr, HAS_RB: tl.constexpr, SCALE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
     ):  # fmt: skip
         # o (channels-last, contiguous: pixel-major, C fastest) += ob + r + rb, then * inv_scale
         p = tl.program_id(0) * BLOCK_P + tl.arange(0, BLOCK_P)
@@ -281,7 +290,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         h_ptr, hb_ptr, x_ptr, out_ptr,
         c, Cin, F, H, W, Fo, rep,
         hsb, hsc, hst, hsh, hsw, xsb, xsc, xst, xsh, xsw,
-        TEMPORAL: tl.constexpr, HAS_HB: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
+        TEMPORAL: tl.constexpr, HAS_HB: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
     ):  # fmt: skip
         # HunyuanVideo-1.5 upsample: depth-to-space of the conv output + the repeat_interleave'd shortcut, one pass
         pid_p = tl.program_id(0)
@@ -314,12 +323,22 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             f = fo
             pk = ph[:, None] * c + ci[None, :]
             xk = pk // rep
-        pix_h = b.to(tl.int64) * hsb + f.to(tl.int64) * hst + (hh.to(tl.int64) * hsh + ww.to(tl.int64) * hsw)[:, None]
+        pix_h = (
+            b.to(tl.int64) * hsb
+            + f.to(tl.int64) * hst
+            + (hh.to(tl.int64) * hsh + ww.to(tl.int64) * hsw)[:, None]
+        )
         v = tl.load(h_ptr + pix_h + pk.to(tl.int64) * hsc, mask = m, other = 0.0).to(tl.float32)
         if HAS_HB:
             v = v + tl.load(hb_ptr + pk, mask = m, other = 0.0).to(tl.float32)
-        v = v.to(out_ptr.dtype.element_ty).to(tl.float32)  # the stock conv output is rounded before the add
-        pix_x = b.to(tl.int64) * xsb + f.to(tl.int64) * xst + (hh.to(tl.int64) * xsh + ww.to(tl.int64) * xsw)[:, None]
+        v = v.to(out_ptr.dtype.element_ty).to(
+            tl.float32
+        )  # the stock conv output is rounded before the add
+        pix_x = (
+            b.to(tl.int64) * xsb
+            + f.to(tl.int64) * xst
+            + (hh.to(tl.int64) * xsh + ww.to(tl.int64) * xsw)[:, None]
+        )
         xv = tl.load(x_ptr + pix_x + xk.to(tl.int64) * xsc, mask = m, other = 0.0).to(tl.float32)
         o_off = (bf.to(tl.int64) * (4 * H * W) + p.to(tl.int64))[:, None] * c + ci[None, :]
         tl.store(out_ptr + o_off, (v + xv).to(out_ptr.dtype.element_ty), mask = m)
@@ -345,13 +364,15 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             cols = k0 + tl.arange(0, BLOCK)
             x = tl.load(base + cols, mask = cols < S, other = float("-inf")) * scale
             p = tl.where(cols < S, tl.exp(x - m_row) * inv, 0.0)
-            tl.store(p_ptr + row * P_STRIDE + cols, p.to(p_ptr.dtype.element_ty), mask = cols < P_STRIDE)
+            tl.store(
+                p_ptr + row * P_STRIDE + cols, p.to(p_ptr.dtype.element_ty), mask = cols < P_STRIDE
+            )
 
     @triton.jit
     def _dup_up_add(
         o_ptr, x_ptr, C, T_o, H_o, W_o, t_off, repeats,
         osb, osc, ost, osh, osw, xsb, xsc, xst, xsh, xsw,
-        FT: tl.constexpr, FS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
+        FT: tl.constexpr, FS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
     ):  # fmt: skip
         # o[b, c, t, h, w] += DupUp3D(x)[b, c, t + t_off, h, w]: repeat_interleave + depth-to-space, gathered in place
         pid_p = tl.program_id(0)
@@ -386,7 +407,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     @triton.jit
     def _up_nearest2x(
         x_ptr, out_ptr, C, T_o, H, W, xsb, xsc, xst, xsh, xsw,
-        INTERLEAVE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
+        INTERLEAVE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
     ):  # fmt: skip
         # out (B*T_o, 2H, 2W, C) channels-last = nearest 2x of x, where with INTERLEAVE x is Wan's time_conv output
         # (B, 2C, T_o/2, H, W) and frame 2t+j takes channels [jC, (j+1)C): the reshape/stack/permute done by gather
@@ -415,9 +436,15 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(out_ptr + o_off, v, mask = m)
 
     return types.SimpleNamespace(
-        gn_partials = _gn_partials, gn_combine = _gn_combine, gn_apply = _gn_apply, rms_act = _rms_act,
-        bias_residual = _bias_residual, dcae_up_add = _dcae_up_add,
-        softmax_rows = _softmax_rows, dup_up_add = _dup_up_add, up_nearest2x = _up_nearest2x,
+        gn_partials = _gn_partials,
+        gn_combine = _gn_combine,
+        gn_apply = _gn_apply,
+        rms_act = _rms_act,
+        bias_residual = _bias_residual,
+        dcae_up_add = _dcae_up_add,
+        softmax_rows = _softmax_rows,
+        dup_up_add = _dup_up_add,
+        up_nearest2x = _up_nearest2x,
     )
 
 
@@ -451,7 +478,12 @@ def _as5d(x: Any) -> tuple:
 # GroupNorm
 
 
-def group_norm_reference(x: Any, norm: Any, act: bool, in_bias: Any = None) -> Any:
+def group_norm_reference(
+    x: Any,
+    norm: Any,
+    act: bool,
+    in_bias: Any = None,
+) -> Any:
     import torch.nn.functional as F
 
     if in_bias is not None:
@@ -483,7 +515,12 @@ def _torch():
     return torch
 
 
-def group_norm_act(x: Any, norm: Any, act: bool = True, in_bias: Any = None) -> Any:
+def group_norm_act(
+    x: Any,
+    norm: Any,
+    act: bool = True,
+    in_bias: Any = None,
+) -> Any:
     """``silu?(group_norm(x + in_bias))`` for a 3/4/5-D ``x`` of any layout; channels-last output.
 
     GroupNorm over (C/G, spatial) per sample; for 5-D input the statistics span T as well (``nn.GroupNorm``)."""
@@ -497,7 +534,9 @@ def group_norm_act(x: Any, norm: Any, act: bool = True, in_bias: Any = None) -> 
     # nn.GroupNorm pools the whole (T, H, W) extent: flatten T into H when strides allow, else fall back
     if t > 1:
         if x5.stride(2) == h * x5.stride(3):
-            x5 = x5.as_strided((b, c, 1, t * h, w), (x5.stride(0), x5.stride(1), 0, x5.stride(3), x5.stride(4)))
+            x5 = x5.as_strided(
+                (b, c, 1, t * h, w), (x5.stride(0), x5.stride(1), 0, x5.stride(3), x5.stride(4))
+            )
             b, c, t, h, w = x5.shape
         else:
             return group_norm_reference(x, norm, act, in_bias)
@@ -518,7 +557,9 @@ def group_norm_act(x: Any, norm: Any, act: bool = True, in_bias: Any = None) -> 
     )  # fmt: skip
     mean = torch.empty(rows * g, dtype = torch.float32, device = x.device)
     rstd = torch.empty(rows * g, dtype = torch.float32, device = x.device)
-    k.gn_combine[(rows * g,)](pn, pmean, pm2, mean, rstd, n_chunks, g, float(norm.eps), BLOCK = 1024, num_warps = 4)
+    k.gn_combine[(rows * g,)](
+        pn, pmean, pm2, mean, rstd, n_chunks, g, float(norm.eps), BLOCK = 1024, num_warps = 4
+    )
     out = torch.empty((b, t, h, w, c), dtype = x.dtype, device = x.device)
     block_c = min(128, _next_pow2(c))
     block_p2 = max(1, 4096 // block_c)
@@ -541,7 +582,12 @@ def group_norm_act(x: Any, norm: Any, act: bool = True, in_bias: Any = None) -> 
 # Channel RMS norm (Wan / Qwen-Image / HunyuanVideo-1.5 ``*RMS_norm`` with channel_first=True)
 
 
-def rms_norm_reference(x: Any, norm: Any, act: bool, in_bias: Any = None) -> Any:
+def rms_norm_reference(
+    x: Any,
+    norm: Any,
+    act: bool,
+    in_bias: Any = None,
+) -> Any:
     import torch.nn.functional as F
 
     if in_bias is not None:
@@ -622,11 +668,13 @@ def rms_norm_act(
         y = rms_norm_reference(x, norm, act, in_bias)
         if replicate_pad is not None:
             import torch.nn.functional as F
+
             ph, pw = replicate_pad
             y = F.pad(y.float(), (pw, pw, ph, ph, front, back), mode = "replicate").to(y.dtype)
             return y.contiguous(memory_format = torch.channels_last_3d)
         if front:
             import torch.nn.functional as F
+
             n_cache = 0
             if cache is not None:
                 cache = cache[:, :, -front:].to(y.dtype)
@@ -667,9 +715,20 @@ def _conv_kind(conv: Any) -> Optional[str]:
     pad = getattr(conv, "_padding", None)
     if pad is None or getattr(conv, "padding_mode", "zeros") != "zeros" or conv.groups != 1:
         return None
-    if isinstance(conv, torch.nn.Conv3d) and len(pad) == 6 and pad[5] == 0 and pad[0] == pad[1] and pad[2] == pad[3]:
+    if (
+        isinstance(conv, torch.nn.Conv3d)
+        and len(pad) == 6
+        and pad[5] == 0
+        and pad[0] == pad[1]
+        and pad[2] == pad[3]
+    ):
         return "3d"
-    if isinstance(conv, torch.nn.Conv2d) and len(pad) == 4 and pad[0] == pad[1] and pad[2] == pad[3]:
+    if (
+        isinstance(conv, torch.nn.Conv2d)
+        and len(pad) == 4
+        and pad[0] == pad[1]
+        and pad[2] == pad[3]
+    ):
         return "2d"
     return None
 
@@ -695,7 +754,11 @@ def causal_conv(
     if kind == "2d":  # Qwen-Image-2.1: the one-frame specialisation, never cached
         if cache is not None:
             raise ValueError("2D causal conv takes no cache")
-        y = x if (norm is None and not act and in_bias is None) else rms_norm_act(x, norm, act, in_bias = in_bias)
+        y = (
+            x
+            if (norm is None and not act and in_bias is None)
+            else rms_norm_act(x, norm, act, in_bias = in_bias)
+        )
         pw, _, ph, _ = conv._padding
         out = F.conv2d(y[:, :, 0], conv.weight, bias, conv.stride, (ph, pw), conv.dilation)
         return out.unsqueeze(2), None
@@ -706,9 +769,19 @@ def causal_conv(
     spatial = (0, ph, pw)
     t = x.shape[2]
     if front == 0:
-        y = x if (norm is None and not act and in_bias is None) else rms_norm_act(x, norm, act, in_bias = in_bias)
+        y = (
+            x
+            if (norm is None and not act and in_bias is None)
+            else rms_norm_act(x, norm, act, in_bias = in_bias)
+        )
         return F.conv3d(y, conv.weight, bias, conv.stride, spatial, conv.dilation), None
-    if cache is None and t == 1 and front == kt - 1 and conv.stride[0] == 1 and conv.dilation[0] == 1:
+    if (
+        cache is None
+        and t == 1
+        and front == kt - 1
+        and conv.stride[0] == 1
+        and conv.dilation[0] == 1
+    ):
         # one frame after kt-1 zero frames: only the last temporal tap meets data
         y = rms_norm_act(x, norm, act, in_bias = in_bias)
         weight = conv.weight[:, :, -1:]
@@ -769,7 +842,7 @@ class FusedSingleHeadProcessor:
         self.fallback = fallback
 
     def __call__(self, attn: Any, hidden_states: Any, encoder_hidden_states: Any = None, attention_mask: Any = None,
-                 temb: Any = None, *args: Any, **kwargs: Any) -> Any:  # fmt: skip
+                 temb: Any = None, *args: Any, **kwargs: Any,) -> Any:  # fmt: skip
         if (
             args
             or kwargs
@@ -782,7 +855,9 @@ class FusedSingleHeadProcessor:
             or hidden_states.ndim != 4
             or getattr(attn, "_unsloth_vae_fused_failed", False)
         ):
-            return self.fallback(attn, hidden_states, encoder_hidden_states, attention_mask, temb, *args, **kwargs)
+            return self.fallback(
+                attn, hidden_states, encoder_hidden_states, attention_mask, temb, *args, **kwargs
+            )
         try:
             residual = hidden_states
             b, c, h, w = hidden_states.shape
@@ -808,7 +883,11 @@ class FusedSingleHeadProcessor:
 def install_attention_processors(part: Any) -> int:
     n = 0
     for m in part.modules():
-        if type(m).__name__ == "Attention" and getattr(m, "heads", None) == 1 and callable(getattr(m, "processor", None)):
+        if (
+            type(m).__name__ == "Attention"
+            and getattr(m, "heads", None) == 1
+            and callable(getattr(m, "processor", None))
+        ):
             if not isinstance(m.processor, FusedSingleHeadProcessor):
                 m.processor = FusedSingleHeadProcessor(m.processor)
                 n += 1
@@ -817,11 +896,12 @@ def install_attention_processors(part: Any) -> int:
 
 def _fast_wan_attention(block: Any) -> Any:
     import torch.nn.functional as F
-
     def fast(x: Any) -> Any:
         identity = x
         b, c, t, h, w = x.shape
-        y = rms_norm_act(x, block.norm, False)  # (b, c, t, h, w) channels-last_3d: (b, t, h, w, c) in memory
+        y = rms_norm_act(
+            x, block.norm, False
+        )  # (b, c, t, h, w) channels-last_3d: (b, t, h, w, c) in memory
         y = y.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)  # a channels-last view, no copy
         qkv = F.conv2d(y, block.to_qkv.weight, block.to_qkv.bias)
         qkv = qkv.permute(0, 2, 3, 1).reshape(b * t, h * w, 3 * c)
@@ -831,7 +911,9 @@ def _fast_wan_attention(block: Any) -> Any:
         o = single_head_attention(q, k, v)  # (b*t, hw, c)
         o = F.linear(o, block.proj.weight.view(c, c), block.proj.bias)
         o = o.view(b, t, h, w, c).permute(0, 4, 1, 2, 3)
-        return add_bias_residual(o.contiguous(memory_format = _torch().channels_last_3d), None, identity)
+        return add_bias_residual(
+            o.contiguous(memory_format = _torch().channels_last_3d), None, identity
+        )
 
     return fast
 
@@ -856,11 +938,23 @@ def _cl_contig(t: Any) -> bool:
     return t.is_contiguous(memory_format = fmt)
 
 
-def add_bias_residual(out: Any, out_bias: Any, res: Any, res_bias: Any = None, scale: float = 1.0) -> Any:
+def add_bias_residual(
+    out: Any,
+    out_bias: Any,
+    res: Any,
+    res_bias: Any = None,
+    scale: float = 1.0,
+) -> Any:
     """``(out + out_bias + res + res_bias) / scale`` written into ``out`` (a fresh channels-last conv output)."""
     torch = _torch()
     k = _kernels()
-    if k is None or not out.is_cuda or out.dim() not in (4, 5) or not _cl_contig(out) or res.shape != out.shape:
+    if (
+        k is None
+        or not out.is_cuda
+        or out.dim() not in (4, 5)
+        or not _cl_contig(out)
+        or res.shape != out.shape
+    ):
         if out_bias is not None:
             out.add_(out_bias.view(1, -1, *([1] * (out.dim() - 2))).to(out.dtype))
         if res_bias is not None:
@@ -917,7 +1011,9 @@ def _guard(module: Any, fast: Any, stock: Any, label: str, logger: Any) -> None:
             out = stock(*args, **kwargs)
             module._unsloth_vae_fused_failed = True
             if logger is not None:
-                logger.warning("diffusion.vae_fused: fused %s failed, using the stock path: %s", label, exc)
+                logger.warning(
+                    "diffusion.vae_fused: fused %s failed, using the stock path: %s", label, exc
+                )
             return out
 
     forward._unsloth_vae_fused = True
@@ -945,15 +1041,24 @@ def _resnet2d_fusable(block: Any) -> bool:
 
 
 def _fast_resnet2d(block: Any) -> Any:
-    def fast(input_tensor: Any, temb: Any = None, *args: Any, **kwargs: Any) -> Any:
+    def fast(
+        input_tensor: Any,
+        temb: Any = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
         if temb is not None or args or kwargs or block.training:
             return _stock_forward(block)(input_tensor, temb, *args, **kwargs)
         h = group_norm_act(input_tensor, block.norm1, act = True)
         h = conv_nobias(block.conv1, h)
         h = group_norm_act(h, block.norm2, act = True, in_bias = block.conv1.bias)
         h = conv_nobias(block.conv2, h)
-        shortcut = block.conv_shortcut(input_tensor) if block.conv_shortcut is not None else input_tensor
-        return add_bias_residual(h, block.conv2.bias, shortcut, None, float(block.output_scale_factor))
+        shortcut = (
+            block.conv_shortcut(input_tensor) if block.conv_shortcut is not None else input_tensor
+        )
+        return add_bias_residual(
+            h, block.conv2.bias, shortcut, None, float(block.output_scale_factor)
+        )
 
     return fast
 
@@ -995,7 +1100,9 @@ def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
             if getattr(module.forward, "_unsloth_vae_fused", False):
                 continue
             if type(module).__name__ == "ResnetBlock2D" and _resnet2d_fusable(module):
-                _guard(module, _fast_resnet2d(module), _stock_forward(module), "ResnetBlock2D", logger)
+                _guard(
+                    module, _fast_resnet2d(module), _stock_forward(module), "ResnetBlock2D", logger
+                )
                 n += 1
         for module in part.modules():
             if (
@@ -1003,7 +1110,9 @@ def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
                 and id(module) not in fused_act_norms
                 and not getattr(module.forward, "_unsloth_vae_fused", False)
             ):
-                _guard(module, _fast_norm(module, False), _stock_forward(module), "GroupNorm", logger)
+                _guard(
+                    module, _fast_norm(module, False), _stock_forward(module), "GroupNorm", logger
+                )
                 n += 1
     return n
 
@@ -1037,7 +1146,11 @@ _CACHE_T = 2
 
 
 def _is_rms(norm: Any) -> bool:
-    return type(norm).__name__.endswith("RMS_norm") and hasattr(norm, "gamma") and hasattr(norm, "scale")
+    return (
+        type(norm).__name__.endswith("RMS_norm")
+        and hasattr(norm, "gamma")
+        and hasattr(norm, "scale")
+    )
 
 
 def _wan_resblock_fusable(block: Any) -> bool:
@@ -1053,10 +1166,17 @@ def _wan_resblock_fusable(block: Any) -> bool:
 
 def _fast_wan_resblock(block: Any) -> Any:
     import torch.nn.functional as F
-
-    def fast(x: Any, feat_cache: Any = None, feat_idx: Any = None, *args: Any, **kwargs: Any) -> Any:
+    def fast(
+        x: Any,
+        feat_cache: Any = None,
+        feat_idx: Any = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
         if args or kwargs or block.training or (block.dropout.p and block.dropout.training):
-            return _stock_forward(block)(x, feat_cache, feat_idx if feat_idx is not None else [0], *args, **kwargs)
+            return _stock_forward(block)(
+                x, feat_cache, feat_idx if feat_idx is not None else [0], *args, **kwargs
+            )
         sc = block.conv_shortcut
         if isinstance(sc, _torch().nn.Identity):
             h = x
@@ -1066,7 +1186,9 @@ def _fast_wan_resblock(block: Any) -> Any:
             h = F.conv3d(x, sc.weight, sc.bias, sc.stride)
         if feat_cache is not None:
             idx = feat_idx[0]
-            out, new = causal_conv(block.conv1, x, feat_cache[idx], norm = block.norm1, act = True, with_bias = False)
+            out, new = causal_conv(
+                block.conv1, x, feat_cache[idx], norm = block.norm1, act = True, with_bias = False
+            )
             feat_cache[idx] = new
             feat_idx[0] += 1
             idx = feat_idx[0]
@@ -1079,7 +1201,13 @@ def _fast_wan_resblock(block: Any) -> Any:
         else:
             out, _ = causal_conv(block.conv1, x, None, norm = block.norm1, act = True, with_bias = False)
             out, _ = causal_conv(
-                block.conv2, out, None, norm = block.norm2, act = True, in_bias = block.conv1.bias, with_bias = False
+                block.conv2,
+                out,
+                None,
+                norm = block.norm2,
+                act = True,
+                in_bias = block.conv1.bias,
+                with_bias = False,
             )
         return add_bias_residual(out, block.conv2.bias, h)
 
@@ -1108,7 +1236,11 @@ def dup_up_add(out: Any, x: Any, dup: Any, first_chunk: bool) -> Any:
     ft, fs, rep = int(dup.factor_t), int(dup.factor_s), int(dup.repeats)
     b, c, t_o, h_o, w_o = out.shape
     t_off = ft - 1 if first_chunk else 0
-    if (x.shape[2] * ft - t_off, x.shape[3] * fs, x.shape[4] * fs) != (t_o, h_o, w_o) or c != dup.out_channels:
+    if (x.shape[2] * ft - t_off, x.shape[3] * fs, x.shape[4] * fs) != (
+        t_o,
+        h_o,
+        w_o,
+    ) or c != dup.out_channels:
         raise ValueError("dup_up_add: shape mismatch")
     block_c = min(128, _next_pow2(c))
     block_p = max(1, 4096 // block_c)
@@ -1133,7 +1265,17 @@ def up_nearest2x(x: Any, interleave: bool) -> Any:
     block_p = max(1, 4096 // block_c)
     grid = ((4 * h * w + block_p - 1) // block_p, b * t_o, (c + block_c - 1) // block_c)
     k.up_nearest2x[grid](
-        x, out, c, t_o, h, w, *x.stride(), INTERLEAVE = interleave, BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4
+        x,
+        out,
+        c,
+        t_o,
+        h,
+        w,
+        *x.stride(),
+        INTERLEAVE = interleave,
+        BLOCK_P = block_p,
+        BLOCK_C = block_c,
+        num_warps = 4,
     )
     return out.permute(0, 3, 1, 2), t_o
 
@@ -1143,7 +1285,11 @@ def _fast_wan_resample(mod: Any) -> Any:
 
     conv = mod.resample[1]
 
-    def fast(x: Any, feat_cache: Any = None, feat_idx: Any = None) -> Any:
+    def fast(
+        x: Any,
+        feat_cache: Any = None,
+        feat_idx: Any = None,
+    ) -> Any:
         if feat_idx is None:
             feat_idx = [0]
         b = x.shape[0]
@@ -1182,12 +1328,21 @@ def _wan_resample_ok(mod: Any) -> bool:
 
 
 def _fast_wan_residual_up(block: Any) -> Any:
-    def fast(x: Any, feat_cache: Any = None, feat_idx: Any = None, first_chunk: bool = False) -> Any:
+    def fast(
+        x: Any,
+        feat_cache: Any = None,
+        feat_idx: Any = None,
+        first_chunk: bool = False,
+    ) -> Any:
         if feat_idx is None:
             feat_idx = [0]
         x_in = x  # the stock ``x.clone()`` guards nothing: no block below writes its input
         for resnet in block.resnets:
-            x = resnet(x, feat_cache = feat_cache, feat_idx = feat_idx) if feat_cache is not None else resnet(x)
+            x = (
+                resnet(x, feat_cache = feat_cache, feat_idx = feat_idx)
+                if feat_cache is not None
+                else resnet(x)
+            )
         if block.upsampler is not None:
             if feat_cache is not None:
                 x = block.upsampler(x, feat_cache = feat_cache, feat_idx = feat_idx)
@@ -1230,13 +1385,31 @@ def install_wan_vae(vae: Any, logger: Any = None) -> int:
                 continue  # already patched (by us or another speed path)
             name = type(module).__name__
             if name.endswith("ResidualBlock") and _wan_resblock_fusable(module):
-                _guard(module, _fast_wan_resblock(module), _stock_forward(module), "residual block", logger)
+                _guard(
+                    module,
+                    _fast_wan_resblock(module),
+                    _stock_forward(module),
+                    "residual block",
+                    logger,
+                )
                 n += 1
-            elif name.endswith("ResidualUpBlock") and hasattr(module, "avg_shortcut") and hasattr(module, "resnets"):
-                _guard(module, _fast_wan_residual_up(module), _stock_forward(module), "residual up block", logger)
+            elif (
+                name.endswith("ResidualUpBlock")
+                and hasattr(module, "avg_shortcut")
+                and hasattr(module, "resnets")
+            ):
+                _guard(
+                    module,
+                    _fast_wan_residual_up(module),
+                    _stock_forward(module),
+                    "residual up block",
+                    logger,
+                )
                 n += 1
             elif name.endswith("Resample") and _wan_resample_ok(module):
-                _guard(module, _fast_wan_resample(module), _stock_forward(module), "resample", logger)
+                _guard(
+                    module, _fast_wan_resample(module), _stock_forward(module), "resample", logger
+                )
                 n += 1
             elif (
                 name.endswith("AttentionBlock")
@@ -1244,13 +1417,17 @@ def install_wan_vae(vae: Any, logger: Any = None) -> int:
                 and isinstance(getattr(module, "to_qkv", None), torch.nn.Conv2d)
                 and isinstance(getattr(module, "proj", None), torch.nn.Conv2d)
             ):
-                _guard(module, _fast_wan_attention(module), _stock_forward(module), "attention", logger)
+                _guard(
+                    module, _fast_wan_attention(module), _stock_forward(module), "attention", logger
+                )
                 n += 1
         for module in part.modules():
             if "forward" in module.__dict__:
                 continue
             if type(module).__name__.endswith("CausalConv3d") and _conv_kind(module) is not None:
-                _guard(module, _fast_causal_conv(module), _stock_forward(module), "causal conv", logger)
+                _guard(
+                    module, _fast_causal_conv(module), _stock_forward(module), "causal conv", logger
+                )
                 n += 1
             elif (
                 isinstance(module, torch.nn.Upsample)
@@ -1270,8 +1447,14 @@ def _fast_upsample(mod: Any) -> Any:
 
     def fast(x: Any) -> Any:
         import torch.nn.functional as F
-
-        return F.interpolate(x, mod.size, mod.scale_factor, mod.mode, mod.align_corners, recompute_scale_factor = mod.recompute_scale_factor)
+        return F.interpolate(
+            x,
+            mod.size,
+            mod.scale_factor,
+            mod.mode,
+            mod.align_corners,
+            recompute_scale_factor = mod.recompute_scale_factor,
+        )
 
     return fast
 
@@ -1308,7 +1491,11 @@ def _blend_weights(extent: int, device: Any) -> tuple:
     torch = _torch()
     # the stock python scalars y / extent and 1 - y / extent (double), as the fp32 opmath scalars PyTorch uses
     wb = torch.tensor([y / extent for y in range(extent)], dtype = torch.float64).float().to(device)
-    wa = torch.tensor([1 - y / extent for y in range(extent)], dtype = torch.float64).float().to(device)
+    wa = (
+        torch.tensor([1 - y / extent for y in range(extent)], dtype = torch.float64)
+        .float()
+        .to(device)
+    )
     return wa, wb
 
 
@@ -1333,14 +1520,17 @@ def blend_seam(a: Any, b: Any, extent: int, dim: int) -> Any:
 
 def _accepts_first_chunk(decoder: Any) -> bool:
     import inspect
-
     try:
         return "first_chunk" in inspect.signature(decoder.forward).parameters
     except (TypeError, ValueError):
         return False
 
 
-def _wan_batched_tiled_decode(self: Any, z: Any, return_dict: bool = True) -> Any:
+def _wan_batched_tiled_decode(
+    self: Any,
+    z: Any,
+    return_dict: bool = True,
+) -> Any:
     """``tiled_decode`` of a Wan-lineage VAE with same-shaped tiles decoded as one batch (fewer, larger launches:
     the stock loop issues ~50k kernels for an 81-frame 832x480 decode) and vectorised seam blending."""
     torch = _torch()
@@ -1379,7 +1569,9 @@ def _wan_batched_tiled_decode(self: Any, z: Any, return_dict: bool = True) -> An
             self._conv_idx = [0]
             tile = self.post_quant_conv(zt[:, :, k : k + 1])
             kw = {"first_chunk": k == 0} if first_chunk else {}
-            frames.append(self.decoder(tile, feat_cache = self._feat_map, feat_idx = self._conv_idx, **kw))
+            frames.append(
+                self.decoder(tile, feat_cache = self._feat_map, feat_idx = self._conv_idx, **kw)
+            )
         return torch.cat(frames, dim = 2)
 
     for members in groups.values():
@@ -1414,7 +1606,6 @@ def _wan_batched_tiled_decode(self: Any, z: Any, return_dict: bool = True) -> An
     dec = torch.cat(result_rows, dim = 3)[:, :, :, :sample_height, :sample_width]
     if patch is not None:
         from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
-
         dec = unpatchify(dec, patch_size = patch)
     dec = torch.clamp(dec, min = -1.0, max = 1.0)
     if not return_dict:
@@ -1423,7 +1614,11 @@ def _wan_batched_tiled_decode(self: Any, z: Any, return_dict: bool = True) -> An
 
 
 def install_wan_tile_batch(vae: Any, logger: Any = None) -> bool:
-    if vae is None or "tiled_decode" in vae.__dict__ or not callable(getattr(vae, "tiled_decode", None)):
+    if (
+        vae is None
+        or "tiled_decode" in vae.__dict__
+        or not callable(getattr(vae, "tiled_decode", None))
+    ):
         return False
     stock = _stock_forward_attr(vae, "tiled_decode")
 
@@ -1437,7 +1632,10 @@ def install_wan_tile_batch(vae: Any, logger: Any = None) -> bool:
                 raise
             vae._unsloth_vae_fused_failed = True
             if logger is not None:
-                logger.warning("diffusion.vae_fused: batched tiled decode failed, using the stock loop: %s", exc)
+                logger.warning(
+                    "diffusion.vae_fused: batched tiled decode failed, using the stock loop: %s",
+                    exc,
+                )
             return stock(z, return_dict = return_dict)
 
     tiled_decode._unsloth_vae_fused = True
@@ -1471,14 +1669,24 @@ def _hv_conv_ok(conv: Any) -> bool:
     )
 
 
-def hv_conv(conv: Any, x: Any, *, norm: Any = None, act: bool = False, in_bias: Any = None, with_bias: bool = True) -> Any:
+def hv_conv(
+    conv: Any,
+    x: Any,
+    *,
+    norm: Any = None,
+    act: bool = False,
+    in_bias: Any = None,
+    with_bias: bool = True,
+) -> Any:
     """``conv(pad_replicate(silu?(rms?(x + in_bias))))`` with the pad, norm and act in one channels-last pass."""
     import torch.nn.functional as F
 
     pw, _, ph, _, front, _ = conv.time_causal_padding
     inner = conv.conv
     y = rms_norm_act(x, norm, act, front = front, in_bias = in_bias, replicate_pad = (ph, pw))
-    return F.conv3d(y, inner.weight, inner.bias if with_bias else None, inner.stride, 0, inner.dilation)
+    return F.conv3d(
+        y, inner.weight, inner.bias if with_bias else None, inner.stride, 0, inner.dilation
+    )
 
 
 def _hv_resnet_ok(block: Any) -> bool:
@@ -1494,10 +1702,16 @@ def _hv_resnet_ok(block: Any) -> bool:
 
 def _fast_hv_resnet(block: Any) -> Any:
     import torch.nn.functional as F
-
     def fast(x: Any) -> Any:
         h = hv_conv(block.conv1, x, norm = block.norm1, act = True, with_bias = False)
-        h = hv_conv(block.conv2, h, norm = block.norm2, act = True, in_bias = block.conv1.conv.bias, with_bias = False)
+        h = hv_conv(
+            block.conv2,
+            h,
+            norm = block.norm2,
+            act = True,
+            in_bias = block.conv1.conv.bias,
+            with_bias = False,
+        )
         sc = block.conv_shortcut
         res = x if sc is None else F.conv3d(x, sc.weight, sc.bias, sc.stride, sc.padding)
         return add_bias_residual(h, block.conv2.conv.bias, res)
@@ -1548,7 +1762,13 @@ def hv_upsample(up: Any, x: Any) -> Any:
     return out.permute(0, 4, 1, 2, 3)
 
 
-def _hv_causal_mask(n_frame: int, n_hw: int, dtype: Any, device: Any, batch_size: Any = None) -> Any:
+def _hv_causal_mask(
+    n_frame: int,
+    n_hw: int,
+    dtype: Any,
+    device: Any,
+    batch_size: Any = None,
+) -> Any:
     """Vectorised ``prepare_causal_attention_mask`` (the stock one launches one fill kernel per token row: 80k fills
     per 848x480x121 decode). Same values: 0 where key frame <= query frame, else -inf."""
     torch = _torch()
@@ -1570,7 +1790,11 @@ def install_hv15_vae(vae: Any, logger: Any = None) -> int:
         if part is None:
             continue
         norm_out, act = getattr(part, "norm_out", None), getattr(part, "conv_act", None)
-        if _is_rms(norm_out) and isinstance(act, torch.nn.SiLU) and "forward" not in norm_out.__dict__:
+        if (
+            _is_rms(norm_out)
+            and isinstance(act, torch.nn.SiLU)
+            and "forward" not in norm_out.__dict__
+        ):
             _guard(
                 norm_out,
                 _fast_hv_norm_act(norm_out),
@@ -1592,10 +1816,22 @@ def install_hv15_vae(vae: Any, logger: Any = None) -> int:
             if "forward" in module.__dict__:
                 continue
             name = type(module).__name__
-            if name.endswith("Upsample") and _hv_conv_ok(getattr(module, "conv", None)) and hasattr(module, "repeats"):
-                _guard(module, lambda x, _m = module: hv_upsample(_m, x), _stock_forward(module), "upsample", logger)
+            if (
+                name.endswith("Upsample")
+                and _hv_conv_ok(getattr(module, "conv", None))
+                and hasattr(module, "repeats")
+            ):
+                _guard(
+                    module,
+                    lambda x, _m = module: hv_upsample(_m, x),
+                    _stock_forward(module),
+                    "upsample",
+                    logger,
+                )
                 n += 1
-            elif name.endswith("AttnBlock") and callable(getattr(module, "prepare_causal_attention_mask", None)):
+            elif name.endswith("AttnBlock") and callable(
+                getattr(module, "prepare_causal_attention_mask", None)
+            ):
                 module.prepare_causal_attention_mask = _hv_causal_mask
                 n += 1
         for module in part.modules():
@@ -1626,7 +1862,14 @@ def _ltx_conv_ok(conv: Any) -> bool:
 
 
 def ltx_conv(
-    conv: Any, x: Any, causal: bool, *, norm: Any = None, act: bool = False, in_bias: Any = None, with_bias: bool = True
+    conv: Any,
+    x: Any,
+    causal: bool,
+    *,
+    norm: Any = None,
+    act: bool = False,
+    in_bias: Any = None,
+    with_bias: bool = True,
 ) -> Any:
     """``LTX2VideoCausalConv3d.forward`` over ``silu?(pixel_norm?(x + in_bias))``, pad + norm + act in one pass."""
     import torch.nn.functional as F
@@ -1637,8 +1880,17 @@ def ltx_conv(
     if kt == 1 and norm is None and not act and in_bias is None:
         y = x
     else:
-        y = rms_norm_act(x, norm, act, front = front, back = back, in_bias = in_bias, replicate_pad = (0, 0))
-    return F.conv3d(y, inner.weight, inner.bias if with_bias else None, inner.stride, inner.padding, inner.dilation)
+        y = rms_norm_act(
+            x, norm, act, front = front, back = back, in_bias = in_bias, replicate_pad = (0, 0)
+        )
+    return F.conv3d(
+        y,
+        inner.weight,
+        inner.bias if with_bias else None,
+        inner.stride,
+        inner.padding,
+        inner.dilation,
+    )
 
 
 def _ltx_resnet_ok(block: Any) -> bool:
@@ -1657,12 +1909,24 @@ def _ltx_resnet_ok(block: Any) -> bool:
 
 def _fast_ltx_resnet(block: Any) -> Any:
     import torch.nn.functional as F
-
-    def fast(inputs: Any, temb: Any = None, generator: Any = None, causal: bool = True) -> Any:
+    def fast(
+        inputs: Any,
+        temb: Any = None,
+        generator: Any = None,
+        causal: bool = True,
+    ) -> Any:
         if block.training and block.dropout.p:
             return _stock_forward(block)(inputs, temb, generator, causal = causal)
         h = ltx_conv(block.conv1, inputs, causal, norm = block.norm1, act = True, with_bias = False)
-        h = ltx_conv(block.conv2, h, causal, norm = block.norm2, act = True, in_bias = block.conv1.conv.bias, with_bias = False)
+        h = ltx_conv(
+            block.conv2,
+            h,
+            causal,
+            norm = block.norm2,
+            act = True,
+            in_bias = block.conv1.conv.bias,
+            with_bias = False,
+        )
         res = inputs
         if block.norm3 is not None:
             res = block.norm3(res.movedim(1, -1)).movedim(-1, 1)
@@ -1710,7 +1974,9 @@ def install_ltx2_vae(vae: Any, logger: Any = None) -> int:
             _guard(
                 norm_out,
                 _fast_pixel_norm_act(norm_out),
-                lambda x, channel_dim = None, _n = norm_out: torch.nn.functional.silu(type(_n).forward(_n, x, channel_dim)),
+                lambda x, channel_dim = None, _n = norm_out: torch.nn.functional.silu(
+                    type(_n).forward(_n, x, channel_dim)
+                ),
                 "norm_out",
                 logger,
             )
@@ -1727,7 +1993,9 @@ def install_ltx2_vae(vae: Any, logger: Any = None) -> int:
             if "forward" in module.__dict__:
                 continue
             if type(module).__name__ == "LTX2VideoCausalConv3d" and _ltx_conv_ok(module):
-                _guard(module, _fast_ltx_conv(module), _stock_forward(module), "causal conv", logger)
+                _guard(
+                    module, _fast_ltx_conv(module), _stock_forward(module), "causal conv", logger
+                )
                 n += 1
     return n
 
@@ -1745,7 +2013,9 @@ def install_vectorised_blend(vae: Any) -> int:
     return n
 
 
-_CL_WEIGHT_VAES = frozenset({"AutoencoderKL", "AutoencoderKLFlux2", "AutoencoderKLHunyuanVideo15", "AutoencoderKLLTX2Video"})
+_CL_WEIGHT_VAES = frozenset(
+    {"AutoencoderKL", "AutoencoderKLFlux2", "AutoencoderKLHunyuanVideo15", "AutoencoderKLLTX2Video"}
+)
 
 
 def channels_last_weights(vae: Any) -> int:
@@ -1757,7 +2027,11 @@ def channels_last_weights(vae: Any) -> int:
             continue
         for m in part.modules():
             w = getattr(m, "weight", None)
-            if isinstance(m, (torch.nn.Conv2d, torch.nn.Conv3d)) and isinstance(w, torch.Tensor) and w.dim() in (4, 5):
+            if (
+                isinstance(m, (torch.nn.Conv2d, torch.nn.Conv3d))
+                and isinstance(w, torch.Tensor)
+                and w.dim() in (4, 5)
+            ):
                 fmt = torch.channels_last if w.dim() == 4 else torch.channels_last_3d
                 if not w.is_contiguous(memory_format = fmt):
                     w.data = w.data.contiguous(memory_format = fmt)
@@ -1783,7 +2057,11 @@ def will_install(vae: Any) -> bool:
     return vae is not None and type(vae).__name__ in SUPPORTED_VAES and runtime_ok()
 
 
-def install(vae: Any, logger: Any = None, level: str = "fused") -> int:
+def install(
+    vae: Any,
+    logger: Any = None,
+    level: str = "fused",
+) -> int:
     """Install every fused path that applies to ``vae``'s class. Returns the number of patched modules."""
     if vae is None or not will_install(vae):
         return 0
@@ -1793,7 +2071,11 @@ def install(vae: Any, logger: Any = None, level: str = "fused") -> int:
     n = _install(vae, logger)
     # measured: HV-1.5 -3%, LTX-2.3 -4%, AutoencoderKL layout-neutral (Studio already sets it); the Wan lineage keeps
     # its own (Qwen-Image's one-frame conv3d is 15% SLOWER on channels-last weights; Wan's fp16 decode sets them)
-    if n and type(vae).__name__ in _CL_WEIGHT_VAES and os.environ.get("UNSLOTH_VAE_FUSED_CL_WEIGHTS", "1") != "0":
+    if (
+        n
+        and type(vae).__name__ in _CL_WEIGHT_VAES
+        and os.environ.get("UNSLOTH_VAE_FUSED_CL_WEIGHTS", "1") != "0"
+    ):
         channels_last_weights(vae)
     if n:
         vae._unsloth_vae_fused_installed = n

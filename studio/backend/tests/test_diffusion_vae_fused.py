@@ -29,12 +29,16 @@ def test_blend_seam_bit_identical_to_stock_loops(dtype, extent):
     a = torch.randn(1, 3, 2, 40, 44, generator = g).to(dtype)
     b = torch.randn(1, 3, 2, 40, 44, generator = g).to(dtype)
     for stock, dim in ((wan.blend_v, -2), (wan.blend_h, -1)):
-        assert torch.equal(stock(None, a, b.clone(), extent), F.blend_seam(a, b.clone(), extent, dim))
+        assert torch.equal(
+            stock(None, a, b.clone(), extent), F.blend_seam(a, b.clone(), extent, dim)
+        )
 
 
 def test_hv_causal_mask_matches_stock():
     mod = pytest.importorskip("diffusers.models.autoencoders.autoencoder_kl_hunyuanvideo15")
-    stock = mod.HunyuanVideo15AttnBlock.prepare_causal_attention_mask(3, 5, torch.float32, "cpu", batch_size = 2)
+    stock = mod.HunyuanVideo15AttnBlock.prepare_causal_attention_mask(
+        3, 5, torch.float32, "cpu", batch_size = 2
+    )
     assert torch.equal(stock, F._hv_causal_mask(3, 5, torch.float32, "cpu", batch_size = 2))
 
 
@@ -130,13 +134,21 @@ def _decode(vae, z):
     return vae.decode(z, return_dict = False)[0].float()
 
 
-def _check(vae, z, *, min_psnr, encode_x = None):
+def _check(
+    vae,
+    z,
+    *,
+    min_psnr,
+    encode_x = None,
+):
     with torch.inference_mode():
         ref = _decode(vae, z)
         n = F.install(vae)
         assert n > 0
         out = _decode(vae, z)
-        assert not any(getattr(m, "_unsloth_vae_fused_failed", False) for m in vae.modules()), "fused path fell back"
+        assert not any(
+            getattr(m, "_unsloth_vae_fused_failed", False) for m in vae.modules()
+        ), "fused path fell back"
         assert out.shape == ref.shape
         assert _psnr(out, ref) > min_psnr, _psnr(out, ref)
         if encode_x is not None:
@@ -171,12 +183,19 @@ def test_wan_fused_matches_stock_across_chunks(tiled, monkeypatch):
     from diffusers import AutoencoderKLWan
 
     torch.manual_seed(0)
-    vae = AutoencoderKLWan(base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1).cuda().half().eval()
+    vae = (
+        AutoencoderKLWan(base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1)
+        .cuda()
+        .half()
+        .eval()
+    )
     if tiled:
         vae.enable_tiling(tile_sample_min_height = 64, tile_sample_min_width = 64, tile_sample_stride_height = 48,
                           tile_sample_stride_width = 48)  # fmt: skip
         monkeypatch.setenv(F.TILE_BATCH_ENV, "3")
-    z = torch.randn(1, 4, 4, 14, 18, device = "cuda", dtype = torch.float16)  # 4 latent frames: cached chunks
+    z = torch.randn(
+        1, 4, 4, 14, 18, device = "cuda", dtype = torch.float16
+    )  # 4 latent frames: cached chunks
     x = torch.rand(1, 3, 5, 48, 64, device = "cuda", dtype = torch.float16) * 2 - 1
     _check(vae, z, min_psnr = 45, encode_x = None if tiled else x)
 
@@ -201,7 +220,12 @@ def test_qwenimage_single_frame_fused_matches_stock():
     from diffusers import AutoencoderKLQwenImage
 
     torch.manual_seed(0)
-    vae = AutoencoderKLQwenImage(base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1).cuda().bfloat16().eval()
+    vae = (
+        AutoencoderKLQwenImage(base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1)
+        .cuda()
+        .bfloat16()
+        .eval()
+    )
     z = torch.randn(1, 4, 1, 16, 12, device = "cuda", dtype = torch.bfloat16)
     x = torch.rand(1, 3, 1, 64, 48, device = "cuda", dtype = torch.bfloat16) * 2 - 1
     _check(vae, z, min_psnr = 40, encode_x = x)
@@ -256,7 +280,9 @@ def test_guard_falls_back_to_stock_for_good(monkeypatch):
 
         monkeypatch.setattr(F, "group_norm_act", boom)
         out = _decode(vae, z)
-    assert torch.allclose(out, ref, atol = 5e-3)  # channels-last weights: another (TF32) cuDNN algorithm
+    assert torch.allclose(
+        out, ref, atol = 5e-3
+    )  # channels-last weights: another (TF32) cuDNN algorithm
     assert any(getattr(m, "_unsloth_vae_fused_failed", False) for m in vae.modules())
 
 
@@ -266,7 +292,12 @@ def test_guard_restores_causal_cache_state_on_fallback(monkeypatch):
     from diffusers import AutoencoderKLWan
 
     torch.manual_seed(0)
-    vae = AutoencoderKLWan(base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1).cuda().half().eval()
+    vae = (
+        AutoencoderKLWan(base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1)
+        .cuda()
+        .half()
+        .eval()
+    )
     z = torch.randn(1, 4, 3, 8, 8, device = "cuda", dtype = torch.float16)
     with torch.inference_mode():
         ref = _decode(vae, z)
@@ -274,9 +305,16 @@ def test_guard_restores_causal_cache_state_on_fallback(monkeypatch):
         real = F.causal_conv
         calls = {"n": 0}
 
-        def flaky(conv, x, cache = None, **kw):
+        def flaky(
+            conv,
+            x,
+            cache = None,
+            **kw,
+        ):
             calls["n"] += 1
-            if calls["n"] == 2:  # conv2 of the first block: conv1 already advanced feat_idx and wrote a slot
+            if (
+                calls["n"] == 2
+            ):  # conv2 of the first block: conv1 already advanced feat_idx and wrote a slot
                 raise RuntimeError("boom")
             return real(conv, x, cache, **kw)
 
