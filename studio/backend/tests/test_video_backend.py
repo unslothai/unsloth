@@ -3635,6 +3635,43 @@ def test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state(
     assert H3_COMPONENT_REPO in claimed
 
 
+def test_begin_load_publishes_the_hosted_ltx23_fp8_claim_with_the_loading_state(
+    fake_runtime, monkeypatch
+):
+    # The explicit fp8 on the LTX-2.3 distilled single file fetches its DiT from unsloth/LTX-2.3-FP8, a repo that is
+    # neither repo_id nor base_repo. Claimed only on the worker, a cache delete arriving between begin_load publishing
+    # _loading and that claim is admitted and races the fetch, so the claim goes out with _loading, like H3's.
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        video_mod, "assert_video_precision_available", lambda fam, **kw: None, raising = False
+    )
+    # Never started: the window under test is before the load thread is scheduled.
+    monkeypatch.setattr(
+        threading, "Thread", lambda *a, **k: SimpleNamespace(start = lambda: None, daemon = True)
+    )
+
+    def _claimed(**kwargs):
+        backend = VideoBackend()
+        backend.begin_load(
+            "Lightricks/LTX-2.3",
+            gguf_filename = "ltx-2.3-22b-distilled.safetensors",
+            family_override = "ltx-2",
+            model_kind = "single_file",
+            **kwargs,
+        )
+        return backend.loading_repo_ids()
+
+    assert "unsloth/LTX-2.3-FP8" in _claimed(transformer_quant = "fp8")
+    # A load that never opens the hosted DiT must not block its deletion.
+    assert "unsloth/LTX-2.3-FP8" not in _claimed()
+    assert "unsloth/LTX-2.3-FP8" not in _claimed(transformer_quant = "fp8", memory_mode = "balanced")
+
+
 def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, monkeypatch):
     # H3-native only: naming the companions on a pipeline load would block deletes of repos it
     # never reads.
@@ -11545,6 +11582,33 @@ def test_ltx23_single_file_fp8_is_planned_at_the_hosted_dit_size(
     assert priced and all(mib < 30_000 for mib in priced)
     assert backend.status()["transformer_quant"] == "fp8"
     backend.unload()
+
+
+def test_ltx23_single_file_fp8_is_priced_at_the_hosted_artifact_not_the_scaled_file(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The 46 GB single file is the DiT PLUS its VAEs / connectors / vocoder, which the plan already prices through the
+    # companion term, and the hosted FP8 artifact replaces only the DiT: 19,057,628,489 bytes (~18,175 MiB) on the Hub.
+    # Scaling the whole file by the generic fp8 factor priced it at ~24,200 MiB, so a card with room for the real DiT
+    # but not 6 GB more planned an offload and refused the pick. Budget between the two.
+    priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 20_000)
+    seeded_dit = object()
+    source = types.SimpleNamespace(
+        location = "unsloth/LTX-2.3-FP8", kind = "repo", filename = "LTX-2.3-FP8.pt"
+    )
+    backend, calls = _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (seeded_dit, source))
+    assert calls["override"] is seeded_dit
+    assert priced and all(18_000 < mib < 20_000 for mib in priced), priced
+    backend.unload()
+
+
+def test_ltx23_single_file_fp8_just_under_the_hosted_artifact_still_offloads(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The other side of the boundary: a card without room for the hosted DiT itself is still refused, not seeded.
+    _ltx23_fp8_plan_at(monkeypatch, fits_mib = 18_000)
+    with pytest.raises(RuntimeError, match = "offloads the DiT even at fp8 size"):
+        _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (object(), None))
 
 
 def test_ltx23_single_file_fp8_that_still_offloads_is_refused_before_the_assembly(

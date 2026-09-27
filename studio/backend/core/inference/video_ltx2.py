@@ -447,6 +447,9 @@ def ltx2_distilled_guidance_kwargs(call_params: Any, guidance: Optional[float]) 
 # distilled-1.1 refresh retrained the DiT and the dev DiT is a different model, so neither may take them.
 LTX23_PREQUANT_BASE = "Lightricks/LTX-2.3"
 LTX23_PREQUANT_SOURCE_FILES = frozenset({"ltx-2.3-22b-distilled.safetensors"})
+# RESIDENT size of the hosted fp8 DiT, in decimal GB, from Hub file metadata (2026-09-27): LTX-2.3-FP8.pt
+# 19,057,628,489 bytes. The DiT only: the single file's VAEs / connectors / vocoder are priced as companions.
+LTX23_PREQUANT_RESIDENT_GB = 19.06
 
 
 def ltx23_prequant_eligible(checkpoint_path: Path | str) -> bool:

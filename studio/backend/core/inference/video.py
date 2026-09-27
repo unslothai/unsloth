@@ -1983,6 +1983,21 @@ class VideoBackend:
         claimed_assets = (
             (H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO) if h3_native else ()
         )
+        # The hosted LTX-2.3 FP8 DiT is a third repo too, fetched by the worker: claimed with _loading for the same
+        # reason. Registry only, and asked the same question (same card, same memory policy) the worker asks.
+        if _ltx23_prequant_serves_on_card(
+            fam,
+            resolve_video_model_kind(gguf_filename, model_kind),
+            gguf_filename,
+            transformer_quant,
+            memory_mode = memory_mode,
+            gpu_ordinal = gpu_ordinal,
+        ):
+            from .video_ltx2 import LTX23_PREQUANT_BASE
+
+            claimed_assets = claimed_assets + self._denoiser_prequant_repo_ids(
+                fam, TQ_FP8, LTX23_PREQUANT_BASE
+            )
 
         with self._lock:
             if self._loading is not None and self._loading.error is None:
@@ -4668,8 +4683,13 @@ class VideoBackend:
             memory_mode = memory_mode,
         )
         ltx23_dense_transformer_mib = transformer_mib
-        if ltx23_prequant_pick and _QUANT_STEADY_FACTOR.get(TQ_FP8) is not None:
-            transformer_mib = int(transformer_mib * _QUANT_STEADY_FACTOR[TQ_FP8])
+        if ltx23_prequant_pick:
+            # From the hosted artifact itself, not the file scaled by the fp8 factor: the ~46 GB file also carries the
+            # VAEs / connectors / vocoder the companion term already prices, so 0.55 x file over-stated the DiT by ~6 GB
+            # and a card where the real one fits resident planned an offload and refused the pick.
+            from .video_ltx2 import LTX23_PREQUANT_RESIDENT_GB
+
+            transformer_mib = int(LTX23_PREQUANT_RESIDENT_GB * mib_per_gb)
         runtime_mib = estimate_video_runtime_mib(
             width = fam.resolution_presets[0][0],
             height = fam.resolution_presets[0][1],
