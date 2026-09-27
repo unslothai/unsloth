@@ -1772,6 +1772,13 @@ export function useChatModelRuntime() {
         ReturnType<typeof confirmStopRunningChatsIfNeeded>
       >;
       const keepModelsLoaded = useChatRuntimeStore.getState().keepModelsLoaded;
+      // With the box off a load replaces only the chat's own model. Once that is unloaded, loading
+      // beside the others keeps the backend from replacing one of them as well.
+      const replacesOneOfSeveral =
+        !keepModelsLoaded &&
+        !forceReload &&
+        !isExternalModelId(useChatRuntimeStore.getState().params.checkpoint) &&
+        useChatRuntimeStore.getState().loadedModels.length > 1;
       try {
         // Loading alongside replaces nothing, so no running chat is in its way.
         stopDecision =
@@ -2409,8 +2416,11 @@ export function useChatModelRuntime() {
               // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
               // preflight, so a rejected target truncates replies for a model that never loads. Idle,
               // unload first and free VRAM early.
-              if (!forceCancelActive) {
-                await unloadModel({ model_path: currentCheckpoint });
+              if (!forceCancelActive || replacesOneOfSeveral) {
+                await unloadModel({
+                  model_path: currentCheckpoint,
+                  force_cancel_active: forceCancelActive,
+                });
                 // Only a real /unload removes the resident model. The forced path leaves
                 // it to /load, so cancellation must not treat it as gone.
                 loadRun.residentModelUnloaded = true;
@@ -2607,7 +2617,7 @@ export function useChatModelRuntime() {
               force_cancel_active: forceCancelActive,
 
               force_reload: forceReload,
-              alongside: keepModelsLoaded,
+              alongside: keepModelsLoaded || replacesOneOfSeveral,
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
@@ -3003,7 +3013,7 @@ export function useChatModelRuntime() {
                   cpu_fallback: rollbackState.loadedCpuFallback,
                   n_cpu_moe: rollbackState.loadedNCpuMoe ?? 0,
                   // Back beside the kept models, not in place of the primary.
-                  alongside: keepModelsLoaded,
+                  alongside: keepModelsLoaded || replacesOneOfSeveral,
                   tensor_split: rollbackState.loadedSplitRatio ?? undefined,
                   gpu_ids: rollbackState.loadedGpuIds ?? undefined,
                   // The failed swap already unloaded the server those runs used.

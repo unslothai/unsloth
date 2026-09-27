@@ -8134,6 +8134,18 @@ def _in_slot(slot: Optional[_ExtraSlot], fn):
     return context.run(fn)
 
 
+def extra_slot_backends() -> list[tuple[LlamaCppBackend, InferenceOrchestrator]]:
+    """The backends of every model kept alongside, whichever account loaded it."""
+    return [(slot.llama, slot.orchestrator) for slot in list(_extra_slots)]
+
+
+def extra_slot_loading() -> bool:
+    """Whether a model is still loading into a slot of its own."""
+    return _loading_slot is not None or any(
+        getattr(slot.orchestrator, "loading_models", None) for slot in list(_extra_slots)
+    )
+
+
 def _slot_in_use(slot: _ExtraSlot) -> bool:
     return bool(slot.llama.is_active or slot.orchestrator.active_model_name)
 

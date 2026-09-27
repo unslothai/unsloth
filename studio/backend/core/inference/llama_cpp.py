@@ -510,6 +510,22 @@ class LlamaServerNotFoundError(RuntimeError):
     __slots__ = ()
 
 
+def _gpu_short_message(
+    need_gb: float, free_gb: float, asked_ctx: int, fitting_ctx: int, capped_only: bool
+) -> str:
+    """What a user reads when a model does not fit next to the loaded ones."""
+    message = (
+        f"This model needs about {need_gb:.1f} GB of GPU memory at a {asked_ctx} context, "
+        f"and {free_gb:.1f} GB is free next to the models already loaded. "
+    )
+    if capped_only:
+        return message + f"It fits with a {fitting_ctx} context."
+    return message + (
+        "Unload one of them, lower the context length, or turn off "
+        '"Keep other models loaded" to replace the current model.'
+    )
+
+
 class GpuMemoryShortError(RuntimeError):
     """A load that must fit next to the loaded models does not. ``capped``: it would, at a
     smaller context than asked for. ``gpu_indices``: the GPUs ``short_mib`` was measured on."""
@@ -26619,14 +26635,7 @@ class LlamaCppBackend:
                     free_mib = sum(free for _, free in gpus)
                     need_gb, free_gb = need_mib / 1024, free_mib / 1024
                     raise GpuMemoryShortError(
-                        f"This model needs about {need_gb:.0f} GB of GPU memory at a {asked_ctx} "
-                        f"context and {free_gb:.0f} GB is free next to the models already loaded. "
-                        "Unload a model or lower the context length. force_alongside loads it "
-                        + (
-                            f"anyway, with a {effective_ctx} context."
-                            if capped_only
-                            else "anyway, running partly from system RAM."
-                        ),
+                        _gpu_short_message(need_gb, free_gb, asked_ctx, effective_ctx, capped_only),
                         capped = capped_only,
                         short_mib = max(0, need_mib - free_mib),
                         gpu_indices = tuple(idx for idx, _ in gpus),

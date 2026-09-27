@@ -32,6 +32,7 @@ class FakeLlama:
         self.model_identifier = identifier
         self.hf_variant = variant
         self.is_loaded = self.is_active = identifier is not None
+        self.is_vision = False
         self.context_length = 4096
 
     def unload_model(self):
@@ -1059,3 +1060,57 @@ def test_training_sees_a_model_still_loading_alongside(backends, monkeypatch):
     monkeypatch.setattr(inf, "_loading_slot", (extra, "org/D-GGUF"))
     summary = training_vram.summarize_resident_chat()
     assert summary["any"] and summary["loading"]
+
+
+def test_deleting_a_model_another_slot_serves_is_refused(backends):
+    from hub.services.models import deletion
+
+    _, extra = backends
+    assert deletion._llama_cpp_blocks_delete("org/B-GGUF", None)
+    assert deletion._llama_cpp_blocks_delete("org/B-GGUF", "Q8_0")
+    assert not deletion._llama_cpp_blocks_delete("org/B-GGUF", "Q4_K_M")
+    assert not deletion._llama_cpp_blocks_delete("org/Z-GGUF", None)
+    inf._extra_slots.append(inf._ExtraSlot(FakeLlama(), FakeOrchestrator("org/C"), "owner"))
+    assert deletion._inference_backend_blocks_delete("org/C")
+    assert not deletion._inference_backend_blocks_delete("org/Z")
+
+
+def test_clearing_the_cache_waits_for_models_kept_alongside(backends, monkeypatch):
+    import core.inference.llama_cpp as llama_cpp
+    from hub.services.models import deletion
+
+    primary, extra = backends
+    monkeypatch.setattr(llama_cpp, "chat_load_active", lambda: False)
+    primary.unload_model()
+    assert deletion.any_model_load_blocks_cache_clear() == (
+        "Unload the model before clearing the model cache"
+    )
+    extra.llama.unload_model()
+    monkeypatch.setattr(inf, "_loading_slot", (extra, "org/B-GGUF"))
+    assert "load" in deletion.any_model_load_blocks_cache_clear()
+
+
+def test_the_model_list_marks_kept_models_loaded(backends, monkeypatch):
+    import routes.models as models_routes
+
+    _, extra = backends
+    fake = FakeOrchestrator()
+    fake.default_models = []
+    monkeypatch.setattr(models_routes, "get_inference_backend", lambda: fake)
+    inf._extra_slots.append(inf._ExtraSlot(FakeLlama(), FakeOrchestrator("org/C"), "owner"))
+    app = FastAPI()
+    app.include_router(models_routes.router, prefix = "/api/models")
+    app.dependency_overrides[get_current_subject] = lambda: "test-subject"
+    with TestClient(app) as client:
+        ids = {m["id"] for m in client.get("/api/models/list").json()["models"]}
+    assert {"org/A-GGUF", "org/B-GGUF", "org/C"} <= ids
+
+
+def test_a_model_that_does_not_fit_says_so_without_api_flags():
+    from core.inference.llama_cpp import _gpu_short_message
+
+    spill = _gpu_short_message(13.2, 8.4, 32768, 32768, False)
+    assert "13.2 GB" in spill and "8.4 GB" in spill and "Keep other models loaded" in spill
+    capped = _gpu_short_message(13.2, 8.4, 32768, 8192, True)
+    assert "8192 context" in capped
+    assert "force_alongside" not in spill + capped
