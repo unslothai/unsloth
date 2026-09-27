@@ -1899,11 +1899,15 @@ html[data-chat-font] .aui-root {
 		@apply flex min-w-0 max-w-full flex-col gap-6;
 	}
 	.settings-page > :has(.settings-heading):not(:first-child) {
-		margin-top: 0.75rem;
+		margin-top: calc(var(--spacing) * 3);
 	}
 
-	/* Settings section headings: muted, eased slightly toward the page, so they read apart from the row labels. */
+	/* Settings section headings: muted, so they read apart from the row labels.
+	   Dark eases slightly toward the page; light keeps muted's 4.5:1. */
 	.settings-heading {
+		color: var(--muted-foreground);
+	}
+	.dark .settings-heading {
 		color: color-mix(in oklab, var(--muted-foreground), var(--background) 7%);
 	}
 

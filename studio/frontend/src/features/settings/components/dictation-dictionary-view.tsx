@@ -40,7 +40,7 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex items-center gap-2">
         <button
           type="button"
