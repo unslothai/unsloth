@@ -26,8 +26,17 @@ def _rowwise_weight(N, K):
 
 
 def _backends(F):
-    out = ["dequant", "scaled_mm"]
-    if hasattr(torch.ops.fbgemm, "f8f8bf16_rowwise"):
+    device = torch.device("cuda", torch.cuda.current_device())
+    ones = lambda n: torch.ones(n, dtype = torch.float32, device = device)
+    out = ["dequant"]
+    if F._rowwise_gemm_works(
+        lambda x: torch._scaled_mm(
+            x, x.t(), scale_a = ones((128, 1)), scale_b = ones((1, 128)), out_dtype = torch.bfloat16
+        ),
+        device,
+    ):
+        out.append("scaled_mm")
+    if F._fp8_rowwise_backend(device) == "fbgemm":
         out.append("fbgemm")
     return out
 
@@ -46,21 +55,12 @@ def test_backend_is_one_that_runs_here(F):
 @pytest.mark.parametrize("backend", ["dequant", "scaled_mm", "fbgemm"])
 def test_every_backend_matches_reference(F, backend):
     if backend not in _backends(F):
-        pytest.skip("FBGEMM not installed")
-    if (
-        backend != "dequant"
-        and F._fp8_rowwise_backend(torch.device("cuda", torch.cuda.current_device())) == "dequant"
-    ):
-        pytest.skip("no FP8 GEMM on this GPU")
-    if (
-        backend == "fbgemm"
-        and F._fp8_rowwise_backend(torch.device("cuda", torch.cuda.current_device())) != "fbgemm"
-    ):
-        pytest.skip("FBGEMM has no kernel for this GPU")
+        pytest.skip(f"{backend} is not usable on this GPU")
     torch.manual_seed(0)
     w, s = _rowwise_weight(768, 512)
     X = torch.randn(2, 48, 512, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
-    bias = torch.randn(768, device = "cuda", dtype = torch.bfloat16)
+    # FbgemmFp8Linear stores its bias in float32.
+    bias = torch.randn(768, device = "cuda", dtype = torch.float32)
     y = F.FbgemmFp8Linear_matmul.apply(X, w, s, bias, backend)
     W = w.float() * s
     ref = X.detach().float() @ W.t() + bias.float()
@@ -69,6 +69,11 @@ def test_every_backend_matches_reference(F, backend):
     y.float().sum().backward()
     ref_dx = torch.ones(2, 48, 768, device = "cuda") @ W
     assert ((X.grad.float() - ref_dx).norm() / ref_dx.norm()) < 0.01
+    # Decode-sized calls take the dequant branch on the scaled_mm backend.
+    assert (
+        F.FbgemmFp8Linear_matmul.apply(X[:1, :1].detach(), w, s, bias, backend).dtype
+        == torch.bfloat16
+    )
 
 
 def test_quantize_matches_fbgemm(F):

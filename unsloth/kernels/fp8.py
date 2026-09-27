@@ -613,6 +613,9 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
                 use_fast_accum = True,
             )
             output = output + bias if bias is not None else output
+            # FbgemmFp8Linear keeps its bias in float32; only cast when it promoted (a no-op .to() aliases).
+            if output.dtype != x.dtype:
+                output = output.to(x.dtype)
             output = output.reshape(output_shape)
             del x_quantized, x_scale
         elif rowwise or weight.shape[1] == weight_scale.shape[0]:
@@ -621,6 +624,8 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             W_deq = weight_dequant(weight, weight_scale).T
             output = torch_matmul(x, W_deq)
             output = output + bias if bias is not None else output
+            if output.dtype != x.dtype:
+                output = output.to(x.dtype)
             del W_deq
         else:
             raise ValueError(
