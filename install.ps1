@@ -2783,8 +2783,23 @@ exit 1
         if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $null }
         $candidates = @()
         if ($venvKnown) {
-            $candidates += (Join-Path $venvDirValue "Scripts\python.exe")
-            $candidates += (Join-Path $venvDirValue "bin/python3")
+            # A custom UNSLOTH_STUDIO_HOME can be a shared root, and the guard refusing a venv that is
+            # not Unsloth's runs later: only run one here that the guard would accept.
+            $venvOurs = $false
+            try {
+                $mode = Get-Variable -Name StudioRedirectMode -ValueOnly -ErrorAction Stop
+                $studioHomeValue = Get-Variable -Name StudioHome -ValueOnly -ErrorAction Stop
+                $venvOurs = ($mode -ne 'env') -or
+                    (Test-Path -LiteralPath (Join-Path $studioHomeValue ".unsloth-studio-owned") -PathType Leaf) -or
+                    (Test-Path -LiteralPath (Join-Path $venvDirValue ".unsloth-studio-owned") -PathType Leaf) -or
+                    (Test-Path -LiteralPath (Join-Path $studioHomeValue "share\studio.conf") -PathType Leaf) -or
+                    (Test-Path -LiteralPath (Join-Path $studioHomeValue "bin\unsloth.exe") -PathType Leaf) -or
+                    (Test-Path -LiteralPath (Join-Path $studioHomeValue "bin\unsloth.cmd") -PathType Leaf)
+            } catch { $venvOurs = $false }
+            if ($venvOurs) {
+                $candidates += (Join-Path $venvDirValue "Scripts\python.exe")
+                $candidates += (Join-Path $venvDirValue "bin/python3")
+            }
         }
         foreach ($name in @("python3", "python")) {
             try {
