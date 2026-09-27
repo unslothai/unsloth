@@ -31,6 +31,7 @@ import unsloth  # noqa: F401  (sets UNSLOTH_IS_PRESENT before transformers)
 import bitsandbytes as bnb
 import bitsandbytes.functional as F
 from unsloth.kernels import utils as U
+from unsloth.kernels import fast_lora
 from unsloth.kernels.fast_lora import (
     LoRA_W,
     apply_lora_mlp_swiglu,
@@ -152,7 +153,7 @@ def _assert_compiled_matches(
 ):
     if exact is None:
         exact = _torch_compiles_lora_exactly(backend)
-    if exact or torch.equal(compiled, eager):
+    if exact:
         assert torch.equal(compiled, eager)
         return
     scale = eager.float().abs().max().clamp_min(1e-6)
@@ -415,44 +416,6 @@ def _lora_block(
     return model, model.base_model.model
 
 
-def _dense_block(
-    dtype,
-    D = 256,
-    H = 512,
-):
-    """The same LoRA block on dense 16bit weights: fast_dequantize passes a weight without a quant
-    state through, so its compiled graph is the 4bit one minus the 4bit ops."""
-    import torch.nn as nn
-    from peft import LoraConfig, get_peft_model
-
-    torch.manual_seed(0)
-
-    class Block(nn.Module):
-        def __init__(self):
-            super().__init__()
-            L = lambda i, o: nn.Linear(i, o, bias = False)
-            self.gate_proj, self.up_proj, self.down_proj = L(D, H), L(D, H), L(H, D)
-            self.q_proj, self.k_proj, self.v_proj, self.o_proj = (
-                L(D, D),
-                L(D, 128),
-                L(D, 128),
-                L(D, D),
-            )
-
-    block = Block().to(DEVICE, dtype)
-    for p in block.parameters():
-        p.requires_grad_(False)
-    targets = ["gate_proj", "up_proj", "down_proj", "q_proj", "k_proj", "v_proj", "o_proj"]
-    model = get_peft_model(block, LoraConfig(r = 8, lora_alpha = 16, target_modules = targets))
-    for name, p in model.named_parameters():
-        if "lora_" in name:
-            # fp32 adapters, as PEFT makes them on the Linear4bit block.
-            p.data = p.data.float()
-        if "lora_B" in name:
-            torch.nn.init.normal_(p, std = 0.02)
-    return model, model.base_model.model
-
-
 _LORA_FNS = {
     "mlp": lambda block: (lambda x: apply_lora_mlp_swiglu(block, x)),
     "qkv": lambda block: (lambda x: apply_lora_qkv(block, x, inplace = False)),
@@ -477,23 +440,18 @@ def test_fast_lora_compiles_fullgraph(nf4_kernels, which):
     fn = _LORA_FNS[which](block)
     X = torch.randn(2, 16, 256, dtype = CDTYPE, device = DEVICE)
     eager = _fwd_bwd(model, fn, X)
-    fullgraph = _dynamo_traces_params4bit()
+    # Before torch 2.11 the LoRA Functions stay opaque to torch.compile (fast_lora.TRACE_LORA_FUNCTIONS).
+    fullgraph = _dynamo_traces_params4bit() and fast_lora.TRACE_LORA_FUNCTIONS
     if fullgraph:
         explained = torch._dynamo.explain(fn)(X.clone().requires_grad_())
         assert explained.graph_break_count == 0, explained.break_reasons
     torch._dynamo.reset()
     compiled = _fwd_bwd(model, torch.compile(fn, fullgraph = fullgraph), X)
-    # Exact wherever torch compiles the same block on dense weights exactly (not all versions and
-    # dtypes do for the LoRA backward matmuls); within tolerance otherwise.
-    dense_model, dense_block = _dense_block(CDTYPE)
-    dense_fn = _LORA_FNS[which](dense_block)
-    torch._dynamo.reset()
-    dense_eager = _fwd_bwd(dense_model, dense_fn, X)
-    dense_compiled = _fwd_bwd(dense_model, torch.compile(dense_fn), X)
-    exact = all(torch.equal(a, b) for a, b in zip(dense_eager, dense_compiled))
+    # The dequant inside is exact under compile (test_primitives_compile_fullgraph); the LoRA
+    # matmuls around it are plain torch, which does not promise compiled == eager bit for bit.
     assert len(compiled) == len(eager)
     for a, b in zip(eager, compiled):
-        _assert_compiled_matches(b, a, exact = exact)
+        _assert_compiled_matches(b, a, exact = False)
 
 
 def test_primitives_compile_fullgraph(nf4_kernels):
@@ -567,3 +525,50 @@ def test_graph_break_is_not_mistaken_for_a_kernel_failure(nf4_kernels, monkeypat
     with pytest.raises(torch._dynamo.exc.Unsupported):
         U.fast_dequantize(q, s)
     assert U._USE_NF4_KERNELS is True
+
+
+# Module-level code as a user script would write it: that is the shape that reproduced the stale
+# reads on torch 2.10 (the same steps inside a test function did not), so it runs as a script.
+_STALE_MEMORY_SCRIPT = """
+import sys, torch
+sys.path.insert(0, sys.argv[1])
+from unsloth.kernels import fast_lora
+import test_bnb_integration_compile as t
+
+model, block = t._lora_block(dtype = getattr(torch, sys.argv[3]))
+fn = lambda x: getattr(fast_lora, sys.argv[2])(block, x)
+X = torch.randn(2, 16, 256, dtype = getattr(torch, sys.argv[3]), device = "cuda")
+compiled = torch.compile(fn)
+eager = t._fwd_bwd(model, fn, X)
+bad = 0
+for _ in range(10):
+    poison = [torch.full((n,), float("nan"), device = "cuda") for n in (2048, 4096, 8192, 16384, 65536, 131072)]
+    del poison
+    # The previous step's outputs stay alive until this one returns, as in a training loop.
+    out = t._fwd_bwd(model, compiled, X)
+    bad += sum((~torch.isfinite(o)).sum().item() for o in out)
+print("NONFINITE", bad)
+"""
+
+
+@pytest.mark.parametrize("mlp", ["swiglu", "geglu_exact", "geglu_approx"])
+def test_compiled_lora_mlp_backward_never_reads_stale_memory(mlp):
+    """torch 2.10 miscompiles the traced LoRA_MLP backward: with freed NaN memory around, LoRA
+    gradients came back non-finite. There the LoRA Functions must stay opaque to torch.compile."""
+    import os, subprocess, sys
+
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _STALE_MEMORY_SCRIPT,
+            tests_dir,
+            f"apply_lora_mlp_{mlp}",
+            str(CDTYPE).split(".")[-1],
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    assert "NONFINITE 0" in run.stdout, run.stdout[-2000:] + run.stderr[-3000:]
