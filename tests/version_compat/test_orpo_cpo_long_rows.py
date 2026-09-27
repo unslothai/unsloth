@@ -129,6 +129,7 @@ def test_long_rows_fit_max_length(name, row):
         assert len(ids) == len(labels) == len(out[f"{side}_attention_mask"])
         assert len(ids) <= 32, f"{side} row of {len(ids)} tokens exceeds max_length 32"
         assert any(label != -100 for label in labels), f"{side} lost every answer token"
+    assert len(out["prompt_input_ids"]) == len(out["prompt_attention_mask"]) <= 32
 
 
 @pytest.mark.parametrize("name", ["orpo", "cpo"])

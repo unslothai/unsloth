@@ -911,9 +911,10 @@ _ORPO_ROW_CAP = (
     "if self.max_length is not None and _unsloth_pl + _unsloth_ul > self.max_length:\n"
     "    _unsloth_keep = min(_unsloth_pl, max(self.max_length - _unsloth_ul, self.max_length // 2))\n"
     "    _unsloth_keep_start = getattr(self, 'truncation_mode', 'keep_end') == 'keep_start'\n"
-    "    for answer_tokens in [chosen_tokens, rejected_tokens]:\n"
+    "    for answer_tokens in [chosen_tokens, rejected_tokens, prompt_tokens]:\n"
     "        for k in ['prompt_input_ids', 'prompt_attention_mask']:\n"
     "            answer_tokens[k] = answer_tokens[k][:_unsloth_keep] if _unsloth_keep_start else answer_tokens[k][max(0, len(answer_tokens[k]) - _unsloth_keep):]\n"
+    "    for answer_tokens in [chosen_tokens, rejected_tokens]:\n"
     "        for k in ['input_ids', 'attention_mask']:\n"
     "            answer_tokens[k] = answer_tokens[k][: self.max_length - _unsloth_keep]\n"
 )
