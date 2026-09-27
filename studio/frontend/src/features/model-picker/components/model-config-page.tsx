@@ -17,6 +17,7 @@ import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
+  getMlxSpeculativeOptions,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   resolveStagedDiffusionClassification,
@@ -54,9 +55,43 @@ import {
   resolveFreeGpuCapacityGb,
   resolveMemoryCapacityGb,
 } from "@/hooks/gpu-vram";
+import {
+  MLX_DRAFT_TOKENS_RANGE,
+  MLX_SPECULATIVE_MODES,
+  type MlxSpeculativeCandidate,
+  type MlxSpeculativeMethod,
+  type MlxSpeculativeMode,
+  type MlxSpeculativeOptions,
+  mlxDraftSelection,
+  isUnavailableMlxSpeculativeMode,
+  mlxDraftRowCheckpoint,
+  normalizeMlxDraftBlockSize,
+  normalizeMlxDraftModel,
+  normalizeMlxSpeculativeMode,
+  normalizeMlxSpeculativeMethod,
+  selectExternalMlxDraftCandidate,
+  selectMlxSpeculativeCandidate,
+  selectableExternalMlxDraftCandidates,
+} from "@/lib/speculative-modes";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Input } from "@/components/ui/input";
+import { DownloadProgressBar } from "@/features/hub/download-manager/download-progress-bar";
+import {
+  DOWNLOAD_KIND,
+  subscribeJobListeners,
+} from "@/features/hub/download-manager";
+import { useRepoDownload } from "@/features/hub/download-manager/use-repo-download";
+import { TransportConflictDialog } from "@/features/hub/catalog/transport-conflict-dialog";
+import { formatBytes } from "@/features/hub/lib/format";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import {
+  type ComponentProps,
   type ReactNode,
   type Ref,
   type SetStateAction,
@@ -190,6 +225,19 @@ const LABEL_CLASS =
   "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 const LABEL_CLASS_WRAP =
   "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
+const SPECULATIVE_HINT_SUMMARY =
+  "Drafts several tokens ahead and verifies them in one step, so generation " +
+  "is faster when the drafts are accepted.";
+const SPECULATIVE_HINT_PICK = "Pick one to force it, or Off to disable.";
+const GGUF_SPECULATIVE_HINT =
+  "Faster generation. Auto picks the best strategy for the model and " +
+  "platform, or choose one to force it. DSpark and DFlash download a " +
+  "drafter sidecar (about 11 GB and 1.5 GB) and trade VRAM for speed; " +
+  "MTP and ngram do not change output.";
+const MLX_SPECULATIVE_HINT =
+  `${SPECULATIVE_HINT_SUMMARY} Auto picks the fastest method this model has a ` +
+  `drafter for. ${SPECULATIVE_HINT_PICK} Output can differ from ordinary ` +
+  "generation, and the speedup depends on how many drafted tokens are accepted.";
 // Same surface token as the panel's fields and textareas.
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-[var(--panel-input-surface)] hover:bg-[var(--panel-input-surface-hover)] dark:bg-[var(--panel-input-surface)] dark:hover:bg-[var(--panel-input-surface-hover)]";
@@ -1085,6 +1133,7 @@ function MlxAdvancedSettings({
   servedByMlx,
   onEditTemplate,
   templateOutcome,
+  speculative,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -1095,11 +1144,14 @@ function MlxAdvancedSettings({
   onEditTemplate: () => void;
   /** Why the loaded model could not take the override it was given. */
   templateOutcome: string | null;
+  speculative: ComponentProps<typeof MlxSpeculativeSetting>;
 }) {
   return (
     // Same row spacing as the GGUF rows, whose fragment sits in the list above.
     <div className="flex flex-col gap-5">
       {servedByMlx && (
+        <>
+          <MlxSpeculativeSetting {...speculative} />
         <div className="space-y-1">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
@@ -1137,6 +1189,7 @@ function MlxAdvancedSettings({
         <p className="text-ui-11 text-muted-foreground">{outcome}</p>
       ) : null}
         </div>
+        </>
       )}
       <div className="space-y-1">
         <ChatTemplateSetting
@@ -1224,6 +1277,386 @@ function LoadModeRow({
         </p>
       )}
     </div>
+  );
+}
+
+const MLX_SPECULATIVE_METHOD_LABELS: Record<MlxSpeculativeMethod, string> = {
+  mtp: "MTP",
+  dspark: "DSpark",
+  dflash2: "DFlash2",
+  dflash: "DFlash",
+  eagle3: "EAGLE-3",
+};
+
+function mlxMethodLabel(mode: MlxSpeculativeMode): string {
+  return mode === "off"
+    ? "Off"
+    : mode === "auto"
+      ? "Auto"
+      : MLX_SPECULATIVE_METHOD_LABELS[mode];
+}
+
+const MLX_DRAFT_SEARCH_SEPARATOR = /\s+/;
+
+function MlxDraftCheckpointDownload({
+  candidate,
+}: {
+  candidate: MlxSpeculativeCandidate;
+}) {
+  const [failed, setFailed] = useState(false);
+  const job = useRepoDownload({
+    kind: "model",
+    repoId: candidate.repo_id,
+    activeVariant: null,
+    autoAdopt: true,
+    onError: () => setFailed(true),
+  });
+  const downloading = job.progress !== null && job.progress.variant === null;
+
+  return (
+    <div className="space-y-2" aria-live="polite">
+      {downloading && job.progress ? (
+        <>
+          <DownloadProgressBar
+            progress={job.progress}
+            bytesPerSec={job.bytesPerSec}
+          />
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-ui-11 text-muted-foreground">
+              {job.cancelling ? "Cancelling…" : "Downloading checkpoint…"}
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className={`h-8 px-3 text-ui-13 ${CONTROL_SURFACE}`}
+              disabled={job.cancelling}
+              onClick={() => job.cancelDownload(null)}
+            >
+              Cancel
+            </Button>
+          </div>
+        </>
+      ) : (
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-ui-11 text-muted-foreground">
+            Not downloaded ({formatBytes(candidate.approximate_size_bytes)})
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className={`h-8 px-3 text-ui-13 ${CONTROL_SURFACE}`}
+            disabled={job.repoPeerActive}
+            onClick={() => {
+              setFailed(false);
+              job.requestStartDownload(null, candidate.approximate_size_bytes);
+            }}
+          >
+            Download
+          </Button>
+        </div>
+      )}
+      {failed ? (
+        <p className="text-ui-11 leading-snug text-destructive">
+          Download failed. Check your connection or credentials and try again.
+        </p>
+      ) : null}
+      <TransportConflictDialog
+        conflict={job.transportConflict}
+        onCancel={job.cancelConflict}
+        onKeepTransport={job.resumeConflict}
+        onSwitchTransport={job.restartConflict}
+      />
+    </div>
+  );
+}
+
+function MlxDraftModelSetting({
+  candidates,
+  selected,
+  resolved,
+  update,
+}: {
+  candidates: readonly MlxSpeculativeCandidate[];
+  selected: MlxSpeculativeCandidate | null;
+  resolved: MlxSpeculativeCandidate | null;
+  update: (patch: Partial<PerModelConfig>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const matches = useMemo(() => {
+    const terms = query
+      .toLowerCase()
+      .trim()
+      .split(MLX_DRAFT_SEARCH_SEPARATOR)
+      .filter(Boolean);
+    const found = candidates.filter((candidate) => {
+      const text = `${candidate.label} ${candidate.repo_id}`.toLowerCase();
+      return terms.every((term) => text.includes(term));
+    });
+    // Already ordered ready-first by the caller; do not re-sort.
+    return found;
+  }, [candidates, query]);
+  const { shown, fetchable } = mlxDraftRowCheckpoint(selected, resolved);
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const choose = (candidate: MlxSpeculativeCandidate) => {
+    update(mlxDraftSelection(candidate));
+    setOpen(false);
+    setQuery("");
+  };
+
+  return (
+    <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Draft Model</span>
+          <InfoHint>
+            The checkpoint that proposes tokens. Only checkpoints built for this
+            model are listed.
+          </InfoHint>
+        </div>
+        <Popover
+          open={open}
+          onOpenChange={(next) => {
+            setOpen(next);
+            if (!next) {
+              setQuery("");
+            }
+          }}
+        >
+          <PopoverTrigger asChild={true}>
+            <button
+              type="button"
+              aria-label="MLX speculative decoding draft model"
+              className={`flex h-8 w-[calc(168px*var(--ui-space-scale,1))] min-w-0 shrink-0 items-center justify-between gap-1 ${CONTROL_SURFACE} pl-3 pr-2 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-2 focus-visible:ring-ring/50`}
+            >
+              <span className="truncate">
+                {shown === null ? "Choose a checkpoint" : shown.label}
+              </span>
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
+                strokeWidth={2}
+                className="pointer-events-none size-3.5 shrink-0 text-muted-foreground"
+              />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="end" sideOffset={4} className="w-72 gap-0 p-0">
+            <div className="p-1.5 pb-0.5">
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search checkpoints"
+                className="h-8 text-sm"
+                onKeyDown={(event) => {
+                  const first = matches[0];
+                  if (event.key === "Enter" && first) {
+                    event.preventDefault();
+                    choose(first);
+                  }
+                }}
+              />
+            </div>
+            <div className="max-h-64 overflow-y-auto p-1">
+              {matches.length === 0 ? (
+                <div className="px-3 py-3 text-xs text-muted-foreground">
+                  No checkpoint matches that search.
+                </div>
+              ) : (
+                matches.map((candidate) => (
+                  <button
+                    key={candidate.repo_id}
+                    type="button"
+                    onClick={() => choose(candidate)}
+                    aria-selected={candidate.repo_id === selected?.repo_id}
+                    className={`flex w-full items-center justify-between gap-3 rounded-[10px] px-2.5 py-1.5 text-left transition-colors hover:bg-muted ${
+                      candidate.repo_id === selected?.repo_id ? "bg-muted" : ""
+                    }`}
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-ui-13 text-nav-fg">
+                        {candidate.label}
+                      </span>
+                      <span className="block truncate text-ui-11 text-muted-foreground">
+                        {mlxMethodLabel(candidate.method)}
+                        {candidate.downloaded ? "" : " · not downloaded"}
+                      </span>
+                    </span>
+                    {candidate.recommended ? (
+                      <span className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400">
+                        Recommended
+                      </span>
+                    ) : null}
+                  </button>
+                ))
+              )}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
+      {shown && fetchable ? (
+        <MlxDraftCheckpointDownload key={shown.repo_id} candidate={shown} />
+      ) : null}
+    </>
+  );
+}
+
+function MlxSpeculativeSetting({
+  config,
+  update,
+  candidates,
+  pending,
+  error,
+  onRetry,
+  reason,
+  autoDraftModel,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  candidates: readonly MlxSpeculativeCandidate[];
+  pending: boolean;
+  error: string | null;
+  onRetry: () => void;
+  reason: string | null;
+  autoDraftModel: string | null;
+}) {
+  const mode = config.mlxSpeculativeMode ?? "auto";
+  const predicted = selectMlxSpeculativeCandidate(
+    candidates,
+    "auto",
+    null,
+    autoDraftModel,
+  );
+  const resolved = selectMlxSpeculativeCandidate(
+    candidates,
+    mode,
+    config.mlxDraftModel,
+    autoDraftModel,
+  );
+  const externalCandidates = useMemo(
+    () => selectableExternalMlxDraftCandidates(candidates),
+    [candidates],
+  );
+  const known = !pending && error === null;
+  const autoLabel = known
+    ? `Auto (${predicted ? mlxMethodLabel(predicted.method) : "Off"})`
+    : "Auto";
+
+  return (
+    <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Speculative Decoding</span>
+          <InfoHint>{MLX_SPECULATIVE_HINT}</InfoHint>
+        </div>
+        <Select
+          value={mode}
+          onValueChange={(value) => {
+            const next = normalizeMlxSpeculativeMode(value, "auto");
+            update({
+              mlxSpeculativeMode: next,
+              mlxDraftModel: normalizeMlxDraftModel(
+                selectMlxSpeculativeCandidate(candidates, next, null, autoDraftModel)
+                  ?.repo_id,
+                next,
+              ),
+              mlxDraftBlockSize: normalizeMlxDraftBlockSize(
+                config.mlxDraftBlockSize,
+                next,
+              ),
+            });
+          }}
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            aria-label="MLX speculative decoding method"
+            className={`w-[calc(132px*var(--ui-space-scale,1))] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+          >
+            <SelectValue>
+              {mode === "auto" ? autoLabel : mlxMethodLabel(mode)}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface rounded-lg border-0 ring-0">
+            {MLX_SPECULATIVE_MODES.map((option) => (
+              <SelectItem
+                key={option}
+                value={option}
+                disabled={isUnavailableMlxSpeculativeMode(candidates, option)}
+              >
+                {option === "auto" ? autoLabel : mlxMethodLabel(option)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {mode !== "off" && resolved?.source !== "builtin" ? (
+        <MlxDraftModelSetting
+          candidates={externalCandidates}
+          selected={selectExternalMlxDraftCandidate(
+            candidates,
+            config.mlxDraftModel,
+          )}
+          resolved={resolved}
+          update={update}
+        />
+      ) : null}
+      {normalizeMlxSpeculativeMethod(mode) !== null ? (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Draft Tokens</span>
+            <InfoHint>
+              How many tokens to draft per step. Leave blank to use the method's
+              own default.
+            </InfoHint>
+          </div>
+          <input
+            type="number"
+            min={MLX_DRAFT_TOKENS_RANGE[0]}
+            max={MLX_DRAFT_TOKENS_RANGE[1]}
+            step={1}
+            // The backend counts the verified token, so block size is drafted + 1.
+            value={
+              config.mlxDraftBlockSize == null
+                ? ""
+                : config.mlxDraftBlockSize - 1
+            }
+            placeholder="auto"
+            aria-label="MLX speculative decoding draft tokens"
+            className={NUMBER_INPUT_CLASS}
+            onChange={(event) => {
+              const raw = event.target.value;
+              if (raw === "") {
+                update({ mlxDraftBlockSize: null });
+                return;
+              }
+              const parsed = Number.parseInt(raw, 10);
+              if (Number.isFinite(parsed)) {
+                const [min, max] = MLX_DRAFT_TOKENS_RANGE;
+                update({
+                  mlxDraftBlockSize: Math.max(min, Math.min(max, parsed)) + 1,
+                });
+              }
+            }}
+          />
+        </div>
+      ) : null}
+      {error ? (
+        <p className="text-ui-11 leading-snug text-muted-foreground">
+          Matching checkpoints could not be listed.{" "}
+          <button type="button" className="underline" onClick={onRetry}>
+            Retry
+          </button>
+        </p>
+      ) : null}
+      {reason ? (
+        <p className="text-ui-11 leading-snug text-destructive">{reason}</p>
+      ) : null}
+    </>
   );
 }
 
@@ -1319,12 +1752,7 @@ function GgufAdvancedSettings({
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
-          <InfoHint>
-            Faster generation. Auto picks the best strategy for the model and
-            platform, or choose one to force it. DSpark and DFlash download a
-            drafter sidecar (about 11 GB and 1.5 GB) and trade VRAM for speed;
-            MTP and ngram do not change output.
-          </InfoHint>
+          <InfoHint>{GGUF_SPECULATIVE_HINT}</InfoHint>
         </div>
         <Select
           value={config.speculativeType ?? speculativeFallback}
@@ -1959,6 +2387,91 @@ interface ModelConfigPageProps {
   showHeader?: boolean;
 }
 
+type MlxSpeculativeOptionsState = {
+  options: MlxSpeculativeOptions | null;
+  error: string | null;
+  pending: boolean;
+  retry: () => void;
+};
+
+function useMlxSpeculativeOptions(
+  targetModel: string | null,
+  enabled: boolean,
+  hfToken?: string | null,
+): MlxSpeculativeOptionsState {
+  const [state, setState] = useState<{
+    targetModel: string;
+    options: MlxSpeculativeOptions | null;
+    error: string | null;
+  } | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt is the retry trigger, not a value the effect reads, so dropping it makes Retry inert.
+  useEffect(() => {
+    if (!(enabled && targetModel)) {
+      return;
+    }
+    setState(null);
+    const controller = new AbortController();
+    getMlxSpeculativeOptions(targetModel, hfToken, controller.signal)
+      .then((options) => {
+        if (!controller.signal.aborted) {
+          setState({ targetModel, options, error: null });
+        }
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setState({
+          targetModel,
+          options: null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    return () => controller.abort();
+  }, [targetModel, enabled, hfToken, attempt]);
+
+  const current = state?.targetModel === targetModel ? state : null;
+  return {
+    options: current?.options ?? null,
+    error: current?.error ?? null,
+    pending: enabled && targetModel !== null && current === null,
+    retry: useCallback(() => setAttempt((n) => n + 1), []),
+  };
+}
+
+/** Held above the collapsible download row, whose unmount would lose the completion. */
+function useMlxDraftDownloadRefresh(
+  options: MlxSpeculativeOptions | null,
+  refresh: () => void,
+): void {
+  const pending = (options?.candidates ?? [])
+    .filter((candidate) => !candidate.downloaded)
+    .map((candidate) => candidate.repo_id)
+    .sort()
+    .join("\n");
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the joined ids are the identity of the set, so resubscribing on the array itself would churn every render
+  useEffect(() => {
+    if (!pending) {
+      return;
+    }
+    const unsubscribes = pending
+      .split("\n")
+      .map((repoId) =>
+        subscribeJobListeners(DOWNLOAD_KIND.MODEL, repoId, {
+          onComplete: () => refresh(),
+        }),
+      );
+    return () => {
+      for (const unsubscribe of unsubscribes) {
+        unsubscribe();
+      }
+    };
+  }, [pending, refresh]);
+}
+
 export function ModelConfigPage({
   target,
   onBack,
@@ -2142,6 +2655,33 @@ export function ModelConfigPage({
     platformDeviceType,
     platformChatOnlyReason,
   );
+  // Probe the snapshot the pick loads from, not the repo id: another revision's config would be paired.
+  const mlxSpeculative = useMlxSpeculativeOptions(
+    target.meta?.loadId || target.id,
+    servedByMlx,
+    hfToken,
+  );
+  useMlxDraftDownloadRefresh(mlxSpeculative.options, mlxSpeculative.retry);
+  const loadedMlxSpeculativeMode = useChatRuntimeStore(
+    (s) => s.loadedMlxSpeculativeMode,
+  );
+  const mlxSpeculativeReason = useChatRuntimeStore(
+    (s) => s.mlxSpeculativeReason,
+  );
+  const loadedMlxDraftModel = useChatRuntimeStore((s) => s.loadedMlxDraftModel);
+  const loadedMlxDraftBlockSize = useChatRuntimeStore(
+    (s) => s.loadedMlxDraftBlockSize,
+  );
+  const mlxSpeculativeRequestUnchanged =
+    isActiveModel &&
+    (configState.mlxSpeculativeMode ?? "auto") ===
+      (loadedMlxSpeculativeMode ?? "auto") &&
+    (configState.mlxDraftModel ?? null) === (loadedMlxDraftModel ?? null) &&
+    (configState.mlxDraftBlockSize ?? null) ===
+      (loadedMlxDraftBlockSize ?? null);
+  const mlxSpeculativeOutcome = mlxSpeculativeRequestUnchanged
+    ? mlxSpeculativeReason
+    : null;
   // Read live, not snapshotted at mount: the sidebar copy stays mounted while collapsed.
   const advancedPreference = useSyncExternalStore(
     subscribeAdvancedSettingsOpen,
@@ -3372,6 +3912,17 @@ export function ModelConfigPage({
                 servedByMlx={servedByMlx}
                 onEditTemplate={() => setTemplateOpen(true)}
                 templateOutcome={chatTemplateOutcome}
+                speculative={{
+                  config,
+                  update,
+                  candidates: mlxSpeculative.options?.candidates ?? [],
+                  pending: mlxSpeculative.pending,
+                  error: mlxSpeculative.error,
+                  onRetry: mlxSpeculative.retry,
+                  reason: mlxSpeculativeOutcome,
+                  autoDraftModel:
+                    mlxSpeculative.options?.auto_draft_model ?? null,
+                }}
               />
             )}
           </>

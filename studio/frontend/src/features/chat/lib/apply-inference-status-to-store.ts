@@ -40,6 +40,7 @@ import type { ChatModelRow } from "../types/runtime";
 import { showLoadWarning } from "../utils/load-warning-toast";
 import { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
+import { reconcileMlxSpeculativeStatus } from "./mlx-runtime-state";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 import { resolveCtxPinSeed } from "./resolve-ctx-pin-seed";
@@ -436,6 +437,12 @@ export function applyActiveModelStatusToStore(
       }),
   };
 
+  const mlxSpeculativeFields = reconcileMlxSpeculativeStatus(
+    prevState,
+    status,
+    hydratingExistingModel,
+  );
+
   useChatRuntimeStore.setState({
     supportsReasoning,
     reasoningAlwaysOn,
@@ -466,6 +473,9 @@ export function applyActiveModelStatusToStore(
     specFallbackReason: status.spec_fallback_reason ?? null,
     mmprojFallbackReason: status.mmproj_fallback_reason ?? null,
     specDrafterKind: status.spec_drafter_kind ?? null,
+    ...(seedLoadParams &&
+      status.is_mlx !== undefined &&
+      mlxSpeculativeFields),
     // Controls follow the server while clean; loaded baselines always describe
     // the settled resident, including same-model reloads from another client.
     ...(seedLoadParams &&

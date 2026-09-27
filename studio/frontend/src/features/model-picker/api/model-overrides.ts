@@ -35,6 +35,12 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_kv_bits?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_speculative_mode?: "auto" | "mtp" | "dspark" | "dflash2" | "dflash" | "eagle3";
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_draft_model?: string;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_draft_block_size?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
   speculative_type?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
   spec_draft_n_max?: number;
@@ -375,6 +381,19 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   // Travels beside kv_cache_dtype, or an API auto-switch loads a remembered MLX model at full precision.
   if (config.mlxKvBits != null) {
     payload.mlx_kv_bits = config.mlxKvBits;
+  }
+  // Only a pinned pair travels: Auto re-resolves per load.
+  if (
+    config.mlxSpeculativeMode &&
+    config.mlxSpeculativeMode !== "off" &&
+    config.mlxSpeculativeMode !== "auto" &&
+    config.mlxDraftModel
+  ) {
+    payload.mlx_speculative_mode = config.mlxSpeculativeMode;
+    payload.mlx_draft_model = config.mlxDraftModel;
+    if (config.mlxDraftBlockSize != null) {
+      payload.mlx_draft_block_size = config.mlxDraftBlockSize;
+    }
   }
   if (config.speculativeType) {
     payload.speculative_type = config.speculativeType;

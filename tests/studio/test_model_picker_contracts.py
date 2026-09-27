@@ -457,6 +457,70 @@ def test_default_caches_keyed_on_inventory_version():
     assert src.count("${inventoryVersion}") >= 2
 
 
+def test_validate_sends_the_mlx_speculative_tuple_it_will_load_with():
+    body = _code_only(_read("features/chat/api/chat-api.ts"))
+    start = body.index("/api/inference/validate")
+    sent = body[start : body.index("});", start)]
+    for field in ("mlx_speculative_mode", "mlx_draft_model", "mlx_draft_block_size"):
+        assert f"{field}: payload.{field}" in sent, field
+
+
+def test_the_drafter_probe_asks_about_the_snapshot_the_pick_loads():
+    page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    start = page.index("const mlxSpeculative = useMlxSpeculativeOptions(")
+    call = page[start : page.index(")", start)]
+    assert "target.meta?.loadId" in call, call
+    assert "target.id" in call, call
+
+
+def test_a_drafter_download_is_watched_from_outside_the_collapsible():
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    flat = " ".join(page.split())
+    assert "useMlxDraftDownloadRefresh(mlxSpeculative.options, mlxSpeculative.retry)" in flat
+    assert flat.index("useMlxDraftDownloadRefresh(mlxSpeculative.options") < flat.index(
+        "{showAdvanced && ( <MlxAdvancedSettings"
+    ), "the refresh moved inside the collapsible it exists to outlive"
+    row = page[page.index("function MlxDraftCheckpointDownload(") :]
+    row = row[: row.index("\nfunction ")]
+    assert "onComplete" not in row, row
+    hook = flat[flat.index("function useMlxDraftDownloadRefresh(") :]
+    hook = hook[: hook.index("export function ModelConfigPage(")]
+    assert "subscribeJobListeners(DOWNLOAD_KIND.MODEL, repoId, {" in hook, hook
+    assert "onComplete: () => refresh()" in hook, hook
+    assert "!candidate.downloaded" in hook, hook
+    assert '.split("\\n") .map((repoId) =>' in hook, hook
+    assert ".slice(" not in hook, hook
+    assert ".at(" not in hook and "[0]" not in hook, hook
+
+
+def test_the_picker_and_the_backend_name_the_same_speculative_methods():
+    spec = _read_backend("core/inference/mlx_speculative.py")
+    start = spec.index("MLX_SPECULATIVE_METHODS = frozenset(")
+    backend = set(re.findall(r'"([a-z0-9_]+)"', spec[start : spec.index(")", start)]))
+    assert backend, "the backend's method set moved"
+
+    modes = " ".join(_read("lib/speculative-modes.ts").split())
+    start = modes.index("MLX_SPECULATIVE_METHODS = [")
+    assert set(re.findall(r'"([a-z0-9_]+)"', modes[start : modes.index("]", start)])) == backend
+
+    literal = _read_backend("models/inference.py")
+    start = literal.index("MlxSpeculativeMode = Literal[")
+    accepted = set(re.findall(r'"([a-z0-9_]+)"', literal[start : literal.index("]", start)]))
+    assert accepted == backend | {"off", "auto"}
+
+
+def test_the_picker_offers_every_pairing_the_backend_defers():
+    spec = _read_backend("core/inference/mlx_speculative.py")
+    start = spec.index("_UNPROVEN_REASONS = frozenset(")
+    deferred = set(re.findall(r'"([a-z_]+)"', spec[start : spec.index(")", start)]))
+    assert deferred, "the backend's deferred-reason set moved"
+
+    modes = " ".join(_read("lib/speculative-modes.ts").split())
+    start = modes.index("UNSETTLED_REASONS = new Set([")
+    offered = set(re.findall(r'"([a-z_]+)"', modes[start : modes.index("]", start)]))
+    assert offered == deferred | {"checkpoint_not_downloaded"}
+
+
 def test_hidden_infra_model_needles_present():
     """The frontend static needle list must keep hiding the RAG embedder and the
     llama.cpp validation probe."""

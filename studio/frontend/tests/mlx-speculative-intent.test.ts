@@ -1,0 +1,336 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  installLocalStorageFake,
+  registerStoreStubResolver,
+} from "./helpers/kit.ts";
+
+registerStoreStubResolver();
+installLocalStorageFake();
+
+const {
+  MLX_DRAFT_BLOCK_SIZE_RANGE,
+  MLX_DRAFT_TOKENS_RANGE,
+  isSelectableMlxDraftCandidate,
+  mlxDraftRowCheckpoint,
+  isUnavailableMlxSpeculativeMode,
+  mlxDraftSelection,
+  selectExternalMlxDraftCandidate,
+  selectableExternalMlxDraftCandidates,
+  mlxSpeculativeLoadFields,
+  selectMlxSpeculativeCandidate,
+  normalizeMlxDraftBlockSize,
+  normalizeMlxDraftModel,
+  normalizeMlxSpeculativeMode,
+} = await import("../src/lib/speculative-modes.ts");
+type MlxSpeculativeCandidate = import("../src/lib/speculative-modes.ts").MlxSpeculativeCandidate;
+
+const { mlxRuntimeStateFrom, reconcileMlxSpeculativeStatus } = await import(
+  "../src/features/chat/lib/mlx-runtime-state.ts"
+);
+const { toApiOverride } = await import(
+  "../src/features/model-picker/api/model-overrides.ts"
+);
+const { DEFAULT_PER_MODEL_CONFIG } = await import(
+  "../src/features/model-picker/model-config/per-model-config.ts"
+);
+
+test("an absent mode takes the caller's default, an unusable one is refused", () => {
+  assert.equal(normalizeMlxSpeculativeMode(undefined, "auto"), "auto");
+  assert.equal(normalizeMlxSpeculativeMode(" MTP ", "auto"), "mtp");
+  assert.equal(normalizeMlxSpeculativeMode("ngram", "auto"), "off");
+});
+
+test("a pinned drafter survives only under the method that pinned it", () => {
+  for (const method of ["mtp", "dflash", "eagle3"] as const) {
+    assert.equal(normalizeMlxDraftModel(" org/d ", method), "org/d");
+  }
+  assert.equal(normalizeMlxDraftModel("org/d", "auto"), null);
+  assert.equal(normalizeMlxDraftModel("org/d", "off"), null);
+});
+
+test("a draft block size is clamped to what the backend accepts, and dropped unless a method owns it", () => {
+  assert.equal(normalizeMlxDraftBlockSize(1, "mtp"), 2);
+  assert.equal(normalizeMlxDraftBlockSize(99, "mtp"), 16);
+  assert.equal(normalizeMlxDraftBlockSize(4.4, "mtp"), 4);
+  assert.equal(normalizeMlxDraftBlockSize(8, "off"), null);
+  assert.equal(normalizeMlxDraftBlockSize(8, "auto"), null);
+  assert.deepEqual(
+    MLX_DRAFT_TOKENS_RANGE,
+    MLX_DRAFT_BLOCK_SIZE_RANGE.map((size) => size - 1),
+  );
+});
+
+test("a server override travels only for a pin the server can act on", () => {
+  const override = (config: Record<string, unknown>) =>
+    toApiOverride({ ...DEFAULT_PER_MODEL_CONFIG, ...config });
+  assert.deepEqual(
+    override({
+      mlxSpeculativeMode: "mtp",
+      mlxDraftModel: "org/d",
+      mlxDraftBlockSize: 4,
+    }),
+    {
+      mlx_speculative_mode: "mtp",
+      mlx_draft_model: "org/d",
+      mlx_draft_block_size: 4,
+    },
+  );
+  assert.deepEqual(
+    override({ mlxSpeculativeMode: "auto", mlxDraftModel: "org/d" }),
+    {},
+  );
+  assert.deepEqual(
+    override({ mlxSpeculativeMode: "off", mlxDraftModel: "org/d" }),
+    {},
+  );
+  assert.deepEqual(override({ mlxSpeculativeMode: "mtp" }), {});
+});
+
+test("a load sends the tuple only for a model MLX will serve", () => {
+  const pinned = {
+    mlxSpeculativeMode: "mtp",
+    mlxDraftModel: "org/d",
+    mlxDraftBlockSize: 6,
+  };
+  assert.deepEqual(mlxSpeculativeLoadFields(pinned, true), {
+    mlx_speculative_mode: "mtp",
+    mlx_draft_model: "org/d",
+    mlx_draft_block_size: 6,
+  });
+  assert.deepEqual(mlxSpeculativeLoadFields(pinned, false), {
+    mlx_speculative_mode: "off",
+    mlx_draft_model: null,
+    mlx_draft_block_size: null,
+  });
+  assert.equal(mlxSpeculativeLoadFields({}, true).mlx_speculative_mode, "auto");
+});
+
+const MLX_STATUS = {
+  is_mlx: true,
+  mlx_speculative_mode: "auto",
+  mlx_draft_model: "org/d",
+  mlx_draft_block_size: 4,
+  mlx_speculative_reason: null,
+} as const;
+
+test("a verdict is read only from an MLX response, and never over the request", () => {
+  const off = mlxRuntimeStateFrom({ ...MLX_STATUS, is_mlx: false });
+  assert.equal(off.loadedMlxSpeculativeMode, null);
+  assert.equal(off.mlxSpeculativeReason, null);
+  assert.equal("mlxSpeculativeMode" in off, false);
+  const on = mlxRuntimeStateFrom(MLX_STATUS);
+  assert.equal(on.loadedMlxSpeculativeMode, "auto");
+  assert.equal(on.loadedMlxDraftModel, null);
+});
+
+const RESIDENT = {
+  mlxSpeculativeMode: "auto" as const,
+  mlxDraftModel: null,
+  mlxDraftBlockSize: null,
+  loadedMlxSpeculativeMode: "auto" as const,
+  loadedMlxDraftModel: null,
+  loadedMlxDraftBlockSize: null,
+  mlxSpeculativeReason: null,
+};
+
+test("a status refresh does not overwrite an edit that has not been sent yet", () => {
+  const staged = { ...RESIDENT, mlxSpeculativeMode: "dflash" as const };
+  const fields = reconcileMlxSpeculativeStatus(staged, MLX_STATUS, false);
+  assert.equal(fields.mlxSpeculativeMode, undefined);
+  assert.equal(fields.loadedMlxSpeculativeMode, "auto");
+  const fresh = reconcileMlxSpeculativeStatus(
+    { ...RESIDENT, loadedMlxSpeculativeMode: null },
+    MLX_STATUS,
+    false,
+  );
+  assert.equal(fresh.mlxSpeculativeMode, "auto");
+  const hydrated = reconcileMlxSpeculativeStatus(staged, MLX_STATUS, true);
+  assert.equal(hydrated.mlxSpeculativeMode, "auto");
+});
+
+function candidate(over: Record<string, unknown> = {}) {
+  return {
+    method: "mtp",
+    repo_id: "org/d",
+    label: "d",
+    source: "cached",
+    approximate_size_bytes: 1,
+    estimated_memory_bytes: 1,
+    materialization_bytes: 0,
+    downloaded: true,
+    compatible: true,
+    runtime_supported: true,
+    integration_ready: true,
+    loadable: true,
+    reason: null,
+    recommended: false,
+    ...over,
+  } as MlxSpeculativeCandidate;
+}
+
+test("Auto names the drafter the backend resolved, rather than ranking the rows again", () => {
+  const picked = (cs: MlxSpeculativeCandidate[], resolved: string | null) =>
+    selectMlxSpeculativeCandidate(cs, "auto", null, resolved)?.repo_id;
+  const own = candidate({ source: "builtin", repo_id: "builtin://mtp" });
+  const dflash = candidate({ method: "dflash", repo_id: "org/f" });
+  const rows = [dflash, own, candidate({ repo_id: "a/also-mtp" })];
+
+  assert.equal(picked(rows, "org/f"), "org/f");
+  assert.equal(picked(rows, "builtin://mtp"), "builtin://mtp");
+  assert.equal(picked(rows, "a/also-mtp"), "a/also-mtp");
+  assert.equal(picked(rows, null), undefined);
+  assert.equal(picked(rows, "org/absent"), undefined);
+  assert.equal(picked(rows, "  ORG/F  "), "org/f");
+  assert.equal(selectMlxSpeculativeCandidate([own], "off", null, "org/f"), null);
+});
+
+test("Off selects nothing, even from a row that claims to be an Off drafter", () => {
+  assert.equal(
+    selectMlxSpeculativeCandidate([candidate({ method: "off" })], "off", null),
+    null,
+  );
+});
+
+test("a method one download away is offered, since the picker offers the download", () => {
+  const undownloaded = candidate({
+    loadable: false,
+    downloaded: false,
+    reason: "checkpoint_not_downloaded",
+  });
+  assert.equal(isSelectableMlxDraftCandidate(undownloaded), true);
+  assert.equal(
+    selectMlxSpeculativeCandidate([undownloaded], "mtp", null)?.repo_id,
+    "org/d",
+  );
+  for (const deferred of [
+    "tokenizer_contract_unavailable",
+    "target_config_unavailable",
+    "target_weights_unmeasured",
+  ]) {
+    assert.equal(
+      isSelectableMlxDraftCandidate(
+        candidate({ loadable: false, downloaded: true, reason: deferred }),
+      ),
+      true,
+      deferred,
+    );
+  }
+  for (const broken of [
+    { compatible: false },
+    { runtime_supported: false },
+    { integration_ready: false },
+    { reason: "insufficient_unified_memory" },
+    { source: "builtin" },
+  ]) {
+    assert.equal(
+      isSelectableMlxDraftCandidate(candidate({ ...undownloaded, ...broken })),
+      false,
+      JSON.stringify(broken),
+    );
+  }
+  assert.equal(
+    selectMlxSpeculativeCandidate(
+      [
+        candidate({ repo_id: "org/unusable", loadable: false, compatible: false }),
+        candidate({ repo_id: "org/usable" }),
+      ],
+      "mtp",
+      null,
+    )?.repo_id,
+    "org/usable",
+  );
+  const cs = [candidate(), candidate({ repo_id: "org/other" })];
+  assert.equal(selectMlxSpeculativeCandidate(cs, "mtp", "ORG/Other")?.repo_id, "org/other");
+  assert.equal(selectMlxSpeculativeCandidate(cs, "mtp", "org/absent"), null);
+});
+
+test("the drafter list offers companions only, ready ones first", () => {
+  const ready = candidate({ repo_id: "org/ready" });
+  const download = candidate({
+    repo_id: "a/needs-download",
+    loadable: false,
+    downloaded: false,
+    reason: "checkpoint_not_downloaded",
+  });
+  const own = candidate({ source: "builtin", repo_id: "builtin://mtp" });
+  const listed = selectableExternalMlxDraftCandidates([download, own, ready]);
+  assert.deepEqual(
+    listed.map((c) => c.repo_id),
+    ["org/ready", "a/needs-download"],
+  );
+  assert.equal(
+    selectableExternalMlxDraftCandidates([
+      { ...download, compatible: false },
+    ]).length,
+    0,
+  );
+  assert.equal(
+    selectMlxSpeculativeCandidate(
+      [{ ...download, recommended: true }, ready],
+      "mtp",
+      null,
+    )?.repo_id,
+    "org/ready",
+  );
+});
+
+test("a pin names a companion, never the target's own head", () => {
+  const own = candidate({ source: "builtin", repo_id: "builtin://mtp" });
+  const external = candidate({ repo_id: "org/d" });
+  assert.equal(
+    selectExternalMlxDraftCandidate([own, external], " ORG/D ")?.repo_id,
+    "org/d",
+  );
+  assert.equal(selectExternalMlxDraftCandidate([own], "builtin://mtp"), null);
+  assert.equal(selectExternalMlxDraftCandidate([external], null), null);
+  assert.deepEqual(mlxDraftSelection(candidate({ method: "dflash" })), {
+    mlxSpeculativeMode: "dflash",
+    mlxDraftModel: "org/d",
+  });
+});
+
+test("only a named method with no drafter is ruled out", () => {
+  const cs = [candidate()];
+  assert.equal(isUnavailableMlxSpeculativeMode(cs, "mtp"), false);
+  assert.equal(isUnavailableMlxSpeculativeMode(cs, "dflash"), true);
+  for (const listing of [cs, []]) {
+    assert.equal(isUnavailableMlxSpeculativeMode(listing, "auto"), false);
+    assert.equal(isUnavailableMlxSpeculativeMode(listing, "off"), false);
+  }
+});
+
+test("the draft row names the pin, and offers to fetch only what would run", () => {
+  const pinned = candidate({ repo_id: "org/pinned" });
+  const resolved = candidate({ repo_id: "org/resolved" });
+  assert.equal(mlxDraftRowCheckpoint(pinned, resolved).shown?.repo_id, "org/pinned");
+  assert.equal(mlxDraftRowCheckpoint(null, resolved).shown?.repo_id, "org/resolved");
+  assert.equal(mlxDraftRowCheckpoint(null, null).shown, null);
+  const fetchable = candidate({ repo_id: "org/resolved", downloaded: false });
+  assert.equal(mlxDraftRowCheckpoint(null, fetchable).fetchable, true);
+  assert.equal(mlxDraftRowCheckpoint(fetchable, fetchable).fetchable, true);
+  const foreign = candidate({ repo_id: "org/foreign", downloaded: false });
+  assert.equal(mlxDraftRowCheckpoint(foreign, resolved).fetchable, false);
+  assert.equal(mlxDraftRowCheckpoint(foreign, null).fetchable, false);
+  assert.equal(mlxDraftRowCheckpoint(null, resolved).fetchable, false);
+});
+
+
+test("the control reads back the request, not the runtime's own pick", async () => {
+  const { mlxRuntimeStateFrom } = await import(
+    "../src/features/chat/lib/mlx-runtime-state.ts"
+  );
+  const state = mlxRuntimeStateFrom({
+    is_mlx: true,
+    mlx_speculative_mode_requested: "mtp",
+    mlx_draft_model_requested: "org/asked",
+    mlx_draft_block_size_requested: 2,
+  });
+  assert.equal(state.mlxSpeculativeMode, "mtp");
+  assert.equal(state.mlxDraftModel, "org/asked");
+  assert.equal(state.mlxDraftBlockSize, 2);
+});

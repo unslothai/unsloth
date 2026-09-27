@@ -28,6 +28,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const mlxKvBits = useChatRuntimeStore((s) => s.mlxKvBits);
+  const mlxSpeculativeMode = useChatRuntimeStore((s) => s.mlxSpeculativeMode);
+  const mlxDraftModel = useChatRuntimeStore((s) => s.mlxDraftModel);
+  const mlxDraftBlockSize = useChatRuntimeStore((s) => s.mlxDraftBlockSize);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
@@ -95,6 +98,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       maxSeqLength: isGguf || isMlx ? null : maxSeqLength,
       kvCacheDtype: kvCacheDtype ?? null,
       mlxKvBits: effectiveMlxKvBits,
+      mlxSpeculativeMode,
+      mlxDraftModel,
+      mlxDraftBlockSize,
       speculativeType: speculativeType ?? "auto",
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
@@ -130,6 +136,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     customContextLength,
     kvCacheDtype,
     effectiveMlxKvBits,
+    mlxSpeculativeMode,
+    mlxDraftModel,
+    mlxDraftBlockSize,
     speculativeType,
     specDraftNMax,
     nParallel,

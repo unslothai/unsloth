@@ -18,11 +18,16 @@ const { savePerModelConfig, resolveInitialConfig } = await import(
 
 const MODEL = "unsloth/Repo-GGUF";
 
-function config(nBatch: number | null, nUbatch: number | null = null) {
+function config(
+  nBatch: number | null,
+  nUbatch: number | null = null,
+  mlx: Record<string, unknown> = {},
+) {
   return {
     customContextLength: null,
     maxSeqLength: null,
     kvCacheDtype: null,
+    ...mlx,
     speculativeType: null,
     specDraftNMax: null,
     nParallel: 4,
@@ -57,4 +62,23 @@ test("a record without batch fields keeps v1 so older clients can still read it"
   store.clear();
   assert.ok(savePerModelConfig(MODEL, "Q4_K_M", config(null)));
   assert.equal(storedVersion(), 1);
+});
+
+for (const mode of ["mtp", "off"] as const) {
+  test(`a record asking for ${mode} is stamped v7 so a v6 client cannot rewrite it away`, () => {
+    store.clear();
+    const mlx = { mlxSpeculativeMode: mode, mlxDraftModel: "org/drafter" };
+    assert.ok(savePerModelConfig(MODEL, "Q4_K_M", config(null, null, mlx)));
+    assert.equal(storedVersion(), 7);
+    const { config: read } = resolveInitialConfig(MODEL, "Q4_K_M");
+    assert.equal(read.mlxSpeculativeMode, mode);
+    assert.equal(read.mlxDraftModel, mode === "mtp" ? "org/drafter" : null);
+  });
+}
+
+test("a record left on Auto keeps the version its other fields earn", () => {
+  store.clear();
+  const mlx = { mlxSpeculativeMode: "auto" };
+  assert.ok(savePerModelConfig(MODEL, "Q4_K_M", config(4096, 1024, mlx)));
+  assert.equal(storedVersion(), 2);
 });

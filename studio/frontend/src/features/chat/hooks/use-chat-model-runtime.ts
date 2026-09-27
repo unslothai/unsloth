@@ -15,6 +15,7 @@ import {
   serverTuningLoadPayload,
 } from "../lib/server-tuning-fields";
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
+import { mlxSpeculativeLoadFields } from "@/lib/speculative-modes";
 import { toast } from "@/lib/toast";
 import {
   isBackendDownForDesktopUpdate,
@@ -2006,6 +2007,16 @@ export function useChatModelRuntime() {
           // Per-model, not a standing preference: eligibility is decided per model.
           let loadMlxKvBits =
             pendingLoadConfig?.mlxKvBits ?? stateBeforeUnload.mlxKvBits;
+          let loadMlxSpeculative: Pick<
+            PerModelConfig,
+            "mlxSpeculativeMode" | "mlxDraftModel" | "mlxDraftBlockSize"
+          > = pendingLoadConfig ?? stateBeforeUnload;
+          const loadPlatform = usePlatformStore.getState();
+          const targetUsesMlx = isServedByMlx(
+            isGguf,
+            loadPlatform.deviceType,
+            loadPlatform.chatOnlyReason,
+          );
           // gpuMemoryMode is a standing preference; the rest are per-model knobs the reset below clears, so
           // they are re-baselined there in lock-step with the store. A GGUF native context can exceed
           // maxSeqLength, so sizing on raw maxSeqLength could pass, unload, then have /load refuse it. A
@@ -2118,6 +2129,9 @@ export function useChatModelRuntime() {
             const validateCustomContextLength = resetsPerModelSettings
               ? null
               : loadCustomContextLength;
+            const validateMlxSpeculative = resetsPerModelSettings
+              ? (pendingLoadConfig ?? DEFAULT_PER_MODEL_CONFIG)
+              : loadMlxSpeculative;
             const validateGpuIds = resetsPerModelSettings
               ? null
               : loadSelectedGpuIds;
@@ -2183,6 +2197,7 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               cache_type_kv: loadKvCacheDtype,
+              ...mlxSpeculativeLoadFields(validateMlxSpeculative, targetUsesMlx),
               tensor_parallel: loadTensorParallel,
               disable_vision: loadDisableVision,
               gpu_ids: validateGpuIds ?? undefined,
@@ -2331,6 +2346,14 @@ export function useChatModelRuntime() {
                 loadedSpeculativeType: persistedSpeculativeType,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
+                mlxSpeculativeMode:
+                  pendingLoadConfig?.mlxSpeculativeMode ?? "auto",
+                mlxDraftModel: pendingLoadConfig?.mlxDraftModel ?? null,
+                mlxDraftBlockSize: pendingLoadConfig?.mlxDraftBlockSize ?? null,
+                loadedMlxSpeculativeMode: null,
+                loadedMlxDraftModel: null,
+                loadedMlxDraftBlockSize: null,
+                mlxSpeculativeReason: null,
                 // Per-model too: a different model follows the server default unless its staged config overrides it.
                 nParallel: null,
                 loadedNParallel: null,
@@ -2377,6 +2400,7 @@ export function useChatModelRuntime() {
               // Both payload-only. The store keeps its values: a width is dormant preset state off MLX, and a
               // completed load rewrites both anyway.
               loadMlxKvBits = pendingLoadConfig?.mlxKvBits ?? null;
+              loadMlxSpeculative = pendingLoadConfig ?? DEFAULT_PER_MODEL_CONFIG;
               loadChatTemplateOverride =
                 pendingLoadConfig?.chatTemplateOverride?.trim()
                   ? pendingLoadConfig.chatTemplateOverride
@@ -2474,6 +2498,7 @@ export function useChatModelRuntime() {
               chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: loadKvCacheDtype,
               mlx_kv_bits: loadMlxKvBits ?? null,
+              ...mlxSpeculativeLoadFields(loadMlxSpeculative, targetUsesMlx),
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
@@ -2850,6 +2875,11 @@ export function useChatModelRuntime() {
                     rollbackState.loadedChatTemplateOverride,
                   cache_type_kv: rollbackState.loadedKvCacheDtype,
                   mlx_kv_bits: rollbackState.loadedMlxKvBitsRequested,
+                  mlx_speculative_mode:
+                    rollbackState.loadedMlxSpeculativeMode ?? "off",
+                  mlx_draft_model: rollbackState.loadedMlxDraftModel,
+                  mlx_draft_block_size:
+                    rollbackState.loadedMlxDraftBlockSize,
                   speculative_type:
                     rollbackState.loadedSpeculativeType,
                   spec_draft_n_max:

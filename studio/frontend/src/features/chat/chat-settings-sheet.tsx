@@ -552,6 +552,9 @@ export function ChatSettingsPanel({
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const mlxKvBits = useChatRuntimeStore((s) => s.mlxKvBits);
+  const mlxSpeculativeMode = useChatRuntimeStore((s) => s.mlxSpeculativeMode);
+  const mlxDraftModel = useChatRuntimeStore((s) => s.mlxDraftModel);
+  const mlxDraftBlockSize = useChatRuntimeStore((s) => s.mlxDraftBlockSize);
   const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
@@ -748,6 +751,9 @@ export function ChatSettingsPanel({
     loadedContextLength,
     kvCacheDtype,
     mlxKvBits,
+    mlxSpeculativeMode,
+    mlxDraftModel,
+    mlxDraftBlockSize,
     gpuMemoryMode,
     gpuLayers,
     nCpuMoe,
@@ -773,6 +779,9 @@ export function ChatSettingsPanel({
       loadedContextLength,
       kvCacheDtype,
       mlxKvBits,
+      mlxSpeculativeMode,
+      mlxDraftModel,
+      mlxDraftBlockSize,
       gpuMemoryMode,
       gpuLayers,
       nCpuMoe,

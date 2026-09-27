@@ -1844,6 +1844,68 @@ class TestRouteErrors(unittest.TestCase):
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids [99]", exc_info.exception.detail)
 
+    def test_inference_route_loads_a_model_once(self):
+        inference_route = _load_route_module(
+            "inference_route_module_for_single_load_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/test")
+        model_config = SimpleNamespace(
+            is_gguf = False,
+            is_lora = False,
+            path = None,
+            identifier = "unsloth/test",
+            display_name = "unsloth/test",
+            is_vision = False,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
+        )
+        calls = []
+
+        class DummyInferenceBackend:
+            active_model_name = None
+            models = {}
+
+            def load_model(self, **kwargs):
+                calls.append(kwargs)
+                return False
+
+        with (
+            patch.object(
+                inference_route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
+            ),
+            patch.object(
+                inference_route,
+                "get_inference_backend",
+                return_value = DummyInferenceBackend(),
+            ),
+            patch.object(
+                inference_route,
+                "get_llama_cpp_backend",
+                return_value = SimpleNamespace(is_loaded = False),
+            ),
+            patch.object(
+                inference_route,
+                "_guard_chat_load_against_training",
+                return_value = None,
+            ),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
+            patch(
+                "core.export.get_export_backend",
+                return_value = SimpleNamespace(current_checkpoint = None),
+            ),
+        ):
+            with self.assertRaises(HTTPException):
+                asyncio.run(_load_model(inference_route, request))
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("audio_device", calls[0])
+        self.assertEqual(calls[0]["mlx_speculative_mode"], request.mlx_speculative_mode)
+
     def test_inference_route_returns_400_for_uuid_parent_visibility_gpu_ids(self):
         inference_route = _load_route_module(
             "inference_route_module_for_uuid_parent_visibility_test",

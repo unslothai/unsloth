@@ -23,6 +23,7 @@ import {
   type ModelRuntime,
   withModelLoadNotice,
 } from "@/lib/model-lifecycle-events";
+import type { MlxSpeculativeOptions } from "@/lib/speculative-modes";
 import { showLoadWarning } from "../utils/load-warning-toast";
 import type {
   MessageRecord,
@@ -223,6 +224,19 @@ export async function getInferenceStatus(
   return parseJsonOrThrow<InferenceStatusResponse>(response);
 }
 
+export async function getMlxSpeculativeOptions(
+  targetModel: string,
+  hfToken?: string | null,
+  signal?: AbortSignal,
+): Promise<MlxSpeculativeOptions> {
+  const query = new URLSearchParams({ target_model: targetModel });
+  const response = await authFetch(
+    `/api/inference/mlx-speculative/options?${query}`,
+    { headers: hubTokenHeader(hfToken), signal },
+  );
+  return parseJsonOrThrow<MlxSpeculativeOptions>(response);
+}
+
 export async function getApiMonitor(): Promise<ApiMonitorResponse> {
   const response = await authFetch("/api/inference/monitor");
   return parseJsonOrThrow<ApiMonitorResponse>(response);
@@ -400,6 +414,10 @@ export async function validateModel(
       // omitting the mode makes this preflight disagree with /load in both directions.
       speculative_type: payload.speculative_type ?? null,
       spec_draft_n_max: payload.spec_draft_n_max ?? null,
+      // The MLX tuple too, or validate approves Off while /load refuses the drafter.
+      mlx_speculative_mode: payload.mlx_speculative_mode ?? "off",
+      mlx_draft_model: payload.mlx_draft_model ?? null,
+      mlx_draft_block_size: payload.mlx_draft_block_size ?? null,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
