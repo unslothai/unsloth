@@ -5,6 +5,7 @@ transformers 5 rewrites a flash_attention_2 request on such a class to its first
 (MiMoV2FlashPreTrainedModel._compatible_flash_implementations = ["flash_attention_4"]), so FastModel on
 MiMo-V2-Flash / MiMo-V2.6 died with "FlashAttention4 has been toggled on, but ... doesn't seem to be installed".
 """
+
 from types import SimpleNamespace
 
 import pytest
@@ -50,22 +51,30 @@ def test_class_without_fa2_in_its_compatible_list_is_not_flash():
 
 def test_resolver_picks_a_non_flash_backend(monkeypatch):
     monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True, raising = False)
-    impl = _utils.resolve_attention_implementation(Fa4Only, _config("fa4_only_test"), supports_sdpa = True)
+    impl = _utils.resolve_attention_implementation(
+        Fa4Only, _config("fa4_only_test"), supports_sdpa = True
+    )
     assert impl == "sdpa"
-    impl = _utils.resolve_attention_implementation(Fa4OnlyNoSdpa, _config("fa4_only_test"), supports_sdpa = False)
+    impl = _utils.resolve_attention_implementation(
+        Fa4OnlyNoSdpa, _config("fa4_only_test"), supports_sdpa = False
+    )
     assert impl == "eager"
 
 
 def test_real_mimo_v2_flash_class_is_not_given_flash_attention_2():
     modeling = pytest.importorskip("transformers.models.mimo_v2_flash.modeling_mimo_v2_flash")
     cls = modeling.MiMoV2FlashForCausalLM
-    if "flash_attention_2" in (getattr(cls, "_compatible_flash_implementations", None) or ["flash_attention_2"]):
+    if "flash_attention_2" in (
+        getattr(cls, "_compatible_flash_implementations", None) or ["flash_attention_2"]
+    ):
         pytest.skip("this transformers lets mimo_v2_flash use flash_attention_2")
     assert _utils._model_class_supports_flash_attention(cls) is False
 
 
 def test_flash_is_kept_when_the_switched_to_kernel_is_installed(monkeypatch):
-    monkeypatch.setattr(_utils, "_flash_implementation_available", lambda name: name == "flash_attention_4")
+    monkeypatch.setattr(
+        _utils, "_flash_implementation_available", lambda name: name == "flash_attention_4"
+    )
     assert _utils._model_class_supports_flash_attention(Fa4Only) is True
 
     class HubOnly(_Base):

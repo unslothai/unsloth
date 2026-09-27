@@ -7,6 +7,7 @@ FastModel passes that as supports_sdpa=True. MiMoV2FlashForCausalLM declares `_s
 "MiMoV2FlashForCausalLM does not support an attention implementation through
 torch.nn.functional.scaled_dot_product_attention yet".
 """
+
 from types import SimpleNamespace
 
 import pytest
@@ -45,13 +46,21 @@ def _no_flash(monkeypatch):
 
 
 def test_declared_false_wins_over_a_source_level_sdpa_guess():
-    assert _utils.resolve_attention_implementation(DeclaresNoSdpa, _config(), supports_sdpa = True) == "eager"
+    assert (
+        _utils.resolve_attention_implementation(DeclaresNoSdpa, _config(), supports_sdpa = True)
+        == "eager"
+    )
 
 
 def test_classes_that_do_not_opt_out_keep_sdpa():
-    assert _utils.resolve_attention_implementation(Inherits, _config(), supports_sdpa = True) == "sdpa"
+    assert (
+        _utils.resolve_attention_implementation(Inherits, _config(), supports_sdpa = True) == "sdpa"
+    )
     # PreTrainedModel's own default is not a declaration by the architecture.
-    assert _utils.resolve_attention_implementation(BarePreTrained, _config(), supports_sdpa = True) == "sdpa"
+    assert (
+        _utils.resolve_attention_implementation(BarePreTrained, _config(), supports_sdpa = True)
+        == "sdpa"
+    )
 
 
 def test_explicit_sdpa_request_is_still_honoured():
