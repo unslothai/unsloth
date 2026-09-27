@@ -81,11 +81,7 @@ def _index_name(shard):
 
 @pytest.fixture
 def sizes(monkeypatch, tmp_path):
-    """Hermetic checkpoint size (Hub file metadata) and free accelerator memory, in GiB.
-
-    Every sharded group gets the index a real save writes, listing all its shards, unless
-    state["index"] pins that index's shard list.
-    """
+    """Hermetic checkpoint size and free memory (GiB); state["index"] pins a shard index."""
     import huggingface_hub
     import torch
 
@@ -570,8 +566,7 @@ def test_balanced_low_0_still_counts_the_first_card(zoo, sizes):
 
 
 def test_offline_sizing_ignores_repo_files_a_load_never_fetches(zoo, tmp_path, monkeypatch):
-    # A real cache after an online load: its tree listing names metal/ and original/ files that were
-    # never downloaded, which made snapshot_download(local_files_only=True) raise.
+    # Cache listing names undownloaded metal/, original/ files: snapshot_download(local_files_only) raised.
     import huggingface_hub
     import torch
 

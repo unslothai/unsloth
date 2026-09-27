@@ -1255,12 +1255,10 @@ def _mxfp4_lora_keeps_experts_packed(
     token = None,
     use_safetensors = None,
 ):
-    """Whether an MXFP4 LoRA load should use unsloth_zoo's packed experts (dequantize = True).
+    """Use unsloth_zoo's packed MXFP4 experts for LoRA: native matmul_ogs has no backward.
 
-    Native matmul_ogs has no backward (transformers silently detaches LoRA grads below MoE layers).
-    Off for full finetuning, UNSLOTH_MXFP4_KEEP_PACKED=0, or CPU / disk offload (zoo would then
-    dequantize every expert to 16 bit); "auto"-style maps count as offload if the checkpoint does
-    not fit in free accelerator memory / max_memory."""
+    Off for full finetuning, UNSLOTH_MXFP4_KEEP_PACKED=0, or CPU / disk offload (zoo would
+    dequantize every expert to 16 bit); "auto" maps offload if the checkpoint exceeds free memory."""
     # In-memory configs carry the QuantizationMethod enum; str() is "QuantizationMethod.MXFP4".
     quant_method = getattr(quant_method, "value", quant_method)
     if full_finetuning or str(quant_method).lower() != "mxfp4":
@@ -1389,8 +1387,7 @@ def _mxfp4_lora_keeps_experts_packed(
                         hub_index,
                     )
                 except Exception:
-                    # Offline or unreachable: size the cached snapshot.
-                    # Not snapshot_download: its tree check fails on files a load never fetches (metal/, original/).
+                    # Offline: size the cache; not snapshot_download (fails on unfetched metal/, original/).
                     from huggingface_hub import try_to_load_from_cache
 
                     folder = None
