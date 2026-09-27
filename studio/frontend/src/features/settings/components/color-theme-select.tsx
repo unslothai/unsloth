@@ -34,7 +34,7 @@ function ThemeChip({
     <span
       aria-hidden="true"
       className={cn(
-        "flex size-6 shrink-0 items-center justify-center rounded-full border text-[11px] font-semibold leading-none",
+        "flex size-6 shrink-0 items-center justify-center rounded-full border text-ui-11 font-semibold leading-none",
         colors
           ? "border-black/10 dark:border-white/15"
           : "border-border bg-muted text-muted-foreground",

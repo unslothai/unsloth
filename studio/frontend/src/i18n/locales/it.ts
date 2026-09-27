@@ -1243,19 +1243,20 @@ export const it = {
       title: "Aspetto",
       description: "Come si presenta Unsloth su questo dispositivo.",
       theme: {
-        title: "Tema",
-        label: "Combinazione di colori",
+        title: "Stile visivo",
+        label: "Modalità",
         description: "Chiaro, scuro o in base alle impostazioni di sistema.",
         system: "Sistema",
         light: "Chiaro",
         dark: "Scuro",
       },
       palette: {
-        label: "Tavolozza dei colori",
+        label: "Tema",
         description: "Colori usati in Unsloth, nei temi chiaro e scuro.",
         standard: "Standard",
         classic: "Classica",
         minimal: "Minimale",
+        moreThemes: "Altri temi",
       },
       custom: {
         chatWidth: {

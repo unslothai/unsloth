@@ -1257,19 +1257,20 @@ export const ar = {
       title: "المظهر",
       description: "كيفية ظهور Unsloth على هذا الجهاز.",
       theme: {
-        title: "السمة",
-        label: "نظام الألوان",
+        title: "النمط المرئي",
+        label: "الوضع",
         description: "فاتح أو داكن أو حسب إعداد نظامك.",
         system: "النظام",
         light: "فاتح",
         dark: "داكن",
       },
       palette: {
-        label: "لوحة الألوان",
+        label: "السمة",
         description: "الألوان المستخدمة في Unsloth في الوضعين الفاتح والداكن.",
         standard: "قياسية",
         classic: "كلاسيكية",
         minimal: "بسيطة",
+        moreThemes: "المزيد من السمات",
       },
       custom: {
         chatWidth: {

@@ -1260,19 +1260,20 @@ export const hi = {
       title: "रूप-रंग",
       description: "इस डिवाइस पर Unsloth कैसा दिखता है।",
       theme: {
-        title: "थीम",
-        label: "रंग योजना",
+        title: "विज़ुअल स्टाइल",
+        label: "मोड",
         description: "लाइट, डार्क या सिस्टम सेटिंग के अनुसार।",
         system: "सिस्टम",
         light: "लाइट",
         dark: "डार्क",
       },
       palette: {
-        label: "रंग पैलेट",
+        label: "थीम",
         description: "लाइट और डार्क मोड में पूरे Unsloth में दिखने वाले रंग।",
         standard: "मानक",
         classic: "क्लासिक",
         minimal: "मिनिमल",
+        moreThemes: "और थीम",
       },
       custom: {
         chatWidth: {
