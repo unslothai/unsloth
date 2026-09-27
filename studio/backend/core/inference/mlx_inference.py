@@ -529,8 +529,7 @@ class VLMPromptSnapshotStore:
         return bool(shared)
 
     def _hand_down(self, item):
-        """Keep what reads through ``item`` before it goes: an edit's replay replacing the old
-        branch's would otherwise drop every snapshot past the edit."""
+        """Re-home ``item``'s readers first, else an edit's new replay drops the old branch."""
         readers = [other for other, base in self._bases.items() if base == item]
         for other in sorted(readers, key = lambda other: len(other[1]), reverse = True):
             del self._bases[other]
