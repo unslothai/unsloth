@@ -3936,6 +3936,7 @@ def _references_studio_credential_here(
     workdir: "str | None",
     _unescaped: bool = False,
     _assign_expand_depth: int = 0,
+    _quoted_assignments: bool = False,
 ) -> bool:
     """`_references_studio_credential`, plus the relative paths *text* would open from *workdir*.
 
@@ -4008,11 +4009,17 @@ def _references_studio_credential_here(
     # One level of indirection, `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"`. Same substitution the
     # sensitive-path scan uses, and it only ADDS detections.
     if "$" in text:
-        expanded = _expand_shell_assignments(text)
-        # The WHOLE workdir-aware analysis, not only the literal scan: `d=../..; cd "$d"` moves the
-        # directory every later relative path opens from, and handing the unexpanded text to the cwd
-        # walk read `$d` as a directory name and never moved.
-        if expanded != text:
+        # Keep quoted bindings as a separate scan for inline shell programs. They must not
+        # overwrite real bindings when assignment-shaped text is only a log message.
+        modes = (
+            (False, True)
+            if _assign_expand_depth == 0 and ("'" in text or '"' in text)
+            else (_quoted_assignments,)
+        )
+        for include_quoted in modes:
+            expanded = _expand_shell_assignments(text, _include_quoted = include_quoted)
+            if expanded == text:
+                continue
             # An unfinished expansion can still hide the auth path. Exhausting the scan budget
             # must refuse the command, not classify its unresolved aliases as ordinary paths.
             if _assign_expand_depth >= _MAX_SHELL_ASSIGN_EXPAND_PASSES or (
@@ -4020,7 +4027,10 @@ def _references_studio_credential_here(
             ):
                 return True
             if _references_studio_credential_here(
-                expanded, workdir, _assign_expand_depth = _assign_expand_depth + 1
+                expanded,
+                workdir,
+                _assign_expand_depth = _assign_expand_depth + 1,
+                _quoted_assignments = include_quoted,
             ):
                 return True
     # A `cd` earlier in the command moves where every later relative path opens from.
@@ -5269,7 +5279,7 @@ def _shell_assign_value_self_references(name: str, value: str) -> bool:
     )
 
 
-def _expand_shell_assignments(command: str) -> str:
+def _expand_shell_assignments(command: str, *, _include_quoted: bool = True) -> str:
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path split across an
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
     pattern replacement. Fail-open: only adds detections."""
@@ -5305,7 +5315,14 @@ def _expand_shell_assignments(command: str) -> str:
         text = _SHELL_PARAM_CASE_RE.sub(repl_case, text)
         return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), text)
 
-    for var, val in _SHELL_ASSIGN_RE.findall(command):
+    quote_states = None
+    for match in _SHELL_ASSIGN_RE.finditer(command):
+        if not _include_quoted:
+            if quote_states is None:
+                quote_states = _shell_quote_states(command)
+            if quote_states[match.start(1)]:
+                continue
+        var, val = match.groups()
         if _shell_assign_value_self_references(var, val):
             # Keep concrete path pieces without feeding the binding back into itself.
             # An unset self-reference contributes nothing; an earlier binding can supply it.

@@ -2413,6 +2413,28 @@ def test_self_referential_assignments_preserve_concrete_paths(studio_home, value
     assert not tools._references_studio_credential_here(harmless, workdir)
 
 
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize("value", ["$x/safe", "./safe"])
+def test_quoted_log_text_does_not_rebind_path_variables(studio_home, quote, value):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = f'x=../..; echo {quote}log x={value}{quote}; cat "$x/auth/auth.db"'
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here(
+        command.replace("../..", "./project"), workdir
+    )
+
+
+@pytest.mark.parametrize("prefix", ["", "p=./project; "])
+@pytest.mark.parametrize("reader", ["cat $p/auth/auth.db", "q=$p; cat $q/auth/auth.db"])
+def test_quoted_inline_shell_assignments_still_refuse_auth(studio_home, prefix, reader):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = prefix + f"bash -c ' p=../..; {reader}'"
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here(
+        command.replace("../..", "./project"), workdir
+    )
+
+
 @pytest.mark.parametrize("hops", [14, 15, 16, 32, 128])
 @pytest.mark.parametrize("read", ["cat $v{hops}/auth/auth.db", "cd $v{hops}; cat auth/auth.db"])
 def test_long_alias_chains_still_refuse_the_auth_directory(studio_home, hops, read):
