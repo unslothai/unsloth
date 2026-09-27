@@ -3520,6 +3520,11 @@ class MLXInferenceBackend:
             if tools or preserve_native_channels or tool_protocol_active
             else None
         )
+        if constraint is not None:
+            # Whatever this decode drops must never spell part of the document.
+            constraint.decoded_dropping(
+                native_token_decoder.dropped_ids() if native_token_decoder is not None else None
+            )
         # Consulted per token on the reasoning path below, so resolved once here.
         stop_token_ids = (
             _mlx_stop_token_ids(self._tokenizer, self._model)
@@ -4004,6 +4009,9 @@ class MLXInferenceBackend:
             and self._tokenizer
             else None
         )
+        if constraint is not None and vlm_token_decoder is not None:
+            # Raw mlx-vlm text keeps every special; this decoder does not.
+            constraint.decoded_dropping(vlm_token_decoder.dropped_ids())
         # The runtime EOS can itself be an allowlisted control, and this path appends every
         # decoded token to the snapshot, so it would trail each answer. As in _generate_text.
         vlm_stop_ids = (

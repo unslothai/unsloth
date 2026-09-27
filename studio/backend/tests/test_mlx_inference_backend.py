@@ -7232,7 +7232,11 @@ def test_a_constrained_plain_reply_is_decoded_without_space_cleanup(monkeypatch,
     monkeypatch.setattr(
         mlx_inference,
         "_build_grammar_constraint",
-        lambda *_a, **_k: SimpleNamespace(allows_reasoning = False) if constrained else None,
+        lambda *_a, **_k: SimpleNamespace(
+            allows_reasoning = False, decoded_dropping = lambda _ids: None
+        )
+        if constrained
+        else None,
     )
     backend = _budget_backend(monkeypatch)
     decodes = []
@@ -7285,3 +7289,81 @@ def test_a_special_token_the_reply_would_drop_is_refused_not_silently_deleted():
     )
     with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
         _after_quote(build_constraint(fmt, tokenizer, "p"))
+
+
+def test_only_the_specials_the_decoder_drops_are_withheld_from_the_document():
+    """A native decoder keeps its allowlist and drops every other special id, so the grammar is
+    held to exactly that set, not to all specials or none."""
+    tokenizer = _char_tokenizer("ab", "cd", markers_are_special = True)
+    dropped, kept = (tokenizer.convert_tokens_to_ids(t) for t in ("ab", "cd"))
+
+    def _after_quote(literal):
+        constraint = build_constraint(
+            {"type": "json_schema", "schema": {"const": literal}},
+            tokenizer,
+            "p",
+            reply_keeps_special_tokens = True,
+        )
+        constraint.decoded_dropping({dropped})
+        for token in tokenizer.encode('"', add_special_tokens = False):
+            _allowed(constraint, len(tokenizer))
+            constraint.advance(int(token))
+        return _allowed(constraint, len(tokenizer))
+
+    assert kept in _after_quote("cd")
+    with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
+        _after_quote("ab")
+
+
+def test_the_text_path_hands_the_constraint_its_decoders_dropped_ids(monkeypatch):
+    from core.inference import mlx_inference
+
+    mlx_lm = types.ModuleType("mlx_lm")
+    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    sample_utils.make_sampler = lambda **_k: object()
+    mlx_lm.sample_utils = sample_utils
+    mlx_lm.stream_generate = lambda *_a, **_k: iter([_Resp("ok", 1)])
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_k: None)
+    seen = []
+    constraint = SimpleNamespace(allows_reasoning = False, decoded_dropping = seen.append)
+    monkeypatch.setattr(mlx_inference, "_build_grammar_constraint", lambda *_a, **_k: constraint)
+
+    class _Decoder:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def dropped_ids(self):
+            return frozenset({7})
+
+    monkeypatch.setattr(mlx_inference, "NativeToolTokenDecoder", _Decoder)
+    backend = _budget_backend(monkeypatch)
+    monkeypatch.setattr(
+        backend,
+        "_render_text_prompt",
+        lambda *_a, **_k: SimpleNamespace(prompt = "P", reasoning_channel_markers = None),
+        raising = False,
+    )
+    run = lambda **kw: list(
+        backend._generate_text(
+            _TEXT_TURN,
+            0.0,
+            1.0,
+            0,
+            0.0,
+            8,
+            1.0,
+            None,
+            response_format = {"type": "json_object"},
+            **kw,
+        )
+    )
+    try:
+        run(tools = [{"type": "function", "function": {"name": "f"}}])
+    except Exception:
+        pass  # the stand-in decoder cannot decode; the handoff happened before generation
+    assert seen and seen[0] == frozenset({7})
+    seen.clear()
+    run()
+    assert seen == [None], "a plain skip_special_tokens decode drops every special id"

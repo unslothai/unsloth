@@ -244,6 +244,7 @@ class GrammarConstraint:
         self._stop_ids = ()
         self._stripped_ids = ()
         self._strips_special_tokens = strips_special_tokens
+        self._dropped_ids = None
         self.allows_reasoning = allows_reasoning
 
     def _bind(self, n_vocab: int) -> None:
@@ -251,7 +252,9 @@ class GrammarConstraint:
         if self._strips_special_tokens:
             # llguidance offers a special token to spell a schema literal, and a decode that
             # skips special tokens would delete it from a reply reported as valid.
-            self._stripped_ids = _stripped_special_ids(self._tokenizer, n_vocab, self._stop_ids)
+            self._stripped_ids = _stripped_special_ids(
+                self._tokenizer, n_vocab, self._stop_ids, self._dropped_ids
+            )
         ll_tokenizer = _cached_ll_tokenizer(self._tokenizer, n_vocab)
         matcher = _llg.LLMatcher(ll_tokenizer, self._grammar)
         error = matcher.get_error()
@@ -270,6 +273,12 @@ class GrammarConstraint:
         self._forbid_stripped_ids()
         masked = _llg_mlx.apply_token_bitmask(logits.reshape(1, -1), self._bitmask)
         return masked.reshape(logits.shape)
+
+    def decoded_dropping(self, ids = None) -> None:
+        """Name the special ids the reply's decoder removes (None: every special id), once the
+        decode path is chosen; the grammar then never spells a literal with one."""
+        self._strips_special_tokens = True
+        self._dropped_ids = None if ids is None else frozenset(int(i) for i in ids)
 
     def _forbid_stripped_ids(self) -> None:
         offered = [i for i in self._stripped_ids if self._mask_allowed(i)]
@@ -409,17 +418,27 @@ def _unwrap_hf_tokenizer(tokenizer):
     return tokenizer
 
 
-def _stripped_special_ids(tokenizer, n_vocab: int, stop_ids) -> tuple:
-    # What decode(skip_special_tokens=True) drops: every added token marked special, which
-    # all_special_ids alone misses.
+def _stripped_special_ids(
+    tokenizer,
+    n_vocab: int,
+    stop_ids,
+    dropped = None,
+) -> tuple:
     inner = _unwrap_hf_tokenizer(tokenizer)
-    try:
-        ids = set(getattr(inner, "all_special_ids", None) or ())
-        ids.update(
-            i for i, t in (getattr(inner, "added_tokens_decoder", None) or {}).items() if t.special
-        )
-    except Exception:
-        return ()
+    if dropped is not None:
+        ids = set(dropped)
+    else:
+        # What decode(skip_special_tokens=True) drops: every added token marked special, which
+        # all_special_ids alone misses.
+        try:
+            ids = set(getattr(inner, "all_special_ids", None) or ())
+            ids.update(
+                i
+                for i, t in (getattr(inner, "added_tokens_decoder", None) or {}).items()
+                if t.special
+            )
+        except Exception:
+            return ()
     # llguidance falls back to the tokenizer's own end token when the runtime names none.
     keep = set(stop_ids or ()) | {getattr(inner, "eos_token_id", None)}
     return tuple(sorted({int(i) for i in ids if 0 <= int(i) < int(n_vocab)} - keep))
