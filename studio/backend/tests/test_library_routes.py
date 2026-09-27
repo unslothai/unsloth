@@ -676,7 +676,7 @@ def test_an_export_links_to_its_run_only_through_studio_metadata(tmp_path, monke
     for name, meta in [
         ("foo-GGUF", None),
         ("foo-merged", '{"base_model": null}'),
-        ("renamed", f'{{"source_checkpoint": "{outputs}/bar/checkpoint-10"}}'),
+        ("renamed", json.dumps({"source_checkpoint": str(outputs / "bar" / "checkpoint-10")})),
     ]:
         (exports / name).mkdir(parents = True)
         (exports / name / "model.gguf").write_bytes(b"x")
