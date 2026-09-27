@@ -19,6 +19,7 @@ from ._utils import move_to_device, per_layer_device
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import get_packed_info_from_kwargs
+from ._utils import embedding_applies_scale
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
@@ -458,7 +459,8 @@ def Gemma2Model_fast_forward_inference(
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     # 3072**0.5 is 55.5000 in bfloat16 against 55.4256 in float32, and 2048**0.5 is 45.2500 against 45.2548.
-    hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
+    if not embedding_applies_scale(self.model.embed_tokens):
+        hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
 
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]

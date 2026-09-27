@@ -3992,6 +3992,24 @@ def _accelerate_execution_device(module):
     return device
 
 
+def embedding_applies_scale(embedding) -> bool:
+    """True if the input embedding already multiplies by sqrt(hidden_size) itself.
+
+    Gemma and Gemma2 moved the normalizer into GemmaTextScaledWordEmbedding / Gemma2TextScaledWordEmbedding
+    (an `embed_scale` buffer) in transformers 5.4.0; before that the model forward applied it. Looks through
+    PEFT wrappers (`base_layer`, `original_module`).
+    """
+    for _ in range(4):
+        if embedding is None:
+            return False
+        if getattr(embedding, "embed_scale", None) is not None:
+            return True
+        embedding = getattr(embedding, "base_layer", None) or getattr(
+            embedding, "original_module", None
+        )
+    return False
+
+
 def per_layer_device(module, default = 0):
     """Where this decoder layer lives, as (device, buffer_index); gemma, gemma2 and cohere
     still need the index, to subscript a per-device tuple. Probed, not version-gated: an older
