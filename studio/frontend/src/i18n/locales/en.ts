@@ -92,6 +92,10 @@ export const en = {
     multipleMatches: "Multiple matching {noun}. Choose one from the list.",
     rateLimitedTitle: "Hugging Face rate limit reached",
     rateLimitedBody: "Wait a moment, then retry searching {noun}.",
+    modelScope: "ModelScope",
+    useModelScope: "Use ModelScope",
+    useModelScopeHint: "Search and download from ModelScope instead. You can switch back in Settings.",
+    useModelScopeFailed: "Couldn't switch to ModelScope.",
     hfToken: {
       label: "HF token",
       saved: "Saved",
@@ -121,6 +125,16 @@ export const en = {
     shutdown: "Shutdown",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Documentation",
+      keyboardShortcuts: "Keyboard Shortcuts",
+      whatsNew: "What's New",
+      troubleshooting: "Troubleshooting",
+      systemStatus: "System Status",
+      sendFeedback: "Send Feedback",
+      about: "About Unsloth",
+    },
     find: {
       label: "Find in page",
       previous: "Previous match",
@@ -178,6 +192,10 @@ export const en = {
       noChats: "No chats",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "All projects pinned",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "All projects are pinned or in sections",
+      // Shown in the Projects section when there are no projects yet.
+      noProjects: "No projects",
       showMore: "Show more",
       showLess: "Show less",
       settings: "Settings",
@@ -225,16 +243,42 @@ export const en = {
       byProject: "By project",
       inOneList: "In one list",
       sortChatsBy: "Sort chats by",
-      sortPinnedBy: "Sort pinned by",
-      priority: "Priority",
       lastUpdated: "Last updated",
       manualOrder: "Manual order",
       switchedToManual: "Sorted manually: drag rows to reorder",
       organizeChats: "Organize chats",
       organizeProjects: "Organize projects",
       sortPinnedChats: "Sort pinned chats",
-      moveUp: "Move up",
-      moveDown: "Move down",
+      // Header of the menu's section-visibility toggles.
+      show: "Show",
+      newSection: "New section",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "New section",
+      createDescription: "Group chats and projects however you like",
+      namePlaceholder: "Section name",
+      create: "Create section",
+      renameTitle: "Rename section",
+      renameDescription: "Give this section a new name",
+      edit: "Edit",
+      remove: "Remove section",
+      markAllRead: "Mark all as read",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "Move to",
+      section: "Section",
+      sectionsHeading: "Sections",
+      removeFromProject: "Remove from project",
+      newSection: "New section",
+      removeFromSection: "Remove from section",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "Remove from {name}",
+      // Shown in a section with nothing filed in it yet.
+      empty: "Drag chats or projects here",
+      sectionOptions: "Section options",
+      newChatInSection: "New chat in {name}",
+      deleted: "Deleted section “{name}”",
+      undo: "Undo",
     },
     dialog: {
       deleteChat: {
@@ -1042,6 +1086,19 @@ export const en = {
         closeToTraySaveError: "Failed to update the close to system tray setting.",
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
+      },
+      hub: {
+        source: "Model source",
+        sourceDescription: "Where the model hub searches and downloads. Choose ModelScope if Hugging Face is blocked or slow on your network.",
+        sourceFallback: "ModelScope couldn't be started, so Hugging Face is in use. Check the Unsloth logs.",
+        sectionTitle: "Model hub",
+        endpoint: "Hugging Face endpoint",
+        endpointDescription: "Where models and datasets are downloaded from. Leave empty for huggingface.co, or enter a mirror such as https://hf-mirror.com.",
+        datasetsServer: "Use it for dataset previews",
+        datasetsServerDescription: "Also send dataset preview requests (HF_DATASETS_SERVER) to this endpoint. Turn on only if the mirror serves them.",
+        invalidEndpoint: "Enter an http(s) URL without a login or query. Plain http works only for a local address.",
+        saveFailed: "Couldn't save the hub settings.",
+        loadFailed: "Couldn't load the hub settings.",
       },
       downloads: {
         sectionTitle: "Downloads",
@@ -3014,6 +3071,11 @@ export const en = {
       gridView: "Grid view",
       listView: "List view",
       settings: "Library settings",
+      sort: "Sort",
+      sortDefault: "Default order",
+      sortName: "Name",
+      sortModified: "Modified",
+      sortSize: "Size",
     },
     // Entries of the New menu.
     create: {
@@ -3100,7 +3162,7 @@ export const en = {
     // The full-window file viewer, shared with the Images, Video and Audio pages.
     viewer: {
       scale: "Scale",
-      fit: "Fit",
+      fit: "Zoom to fit",
       moreActionsImage: "More actions for this image",
       moreActionsVideo: "More actions for this video",
       moreActionsClip: "More actions for this clip",

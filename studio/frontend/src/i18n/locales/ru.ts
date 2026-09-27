@@ -92,6 +92,10 @@ export const ru = {
     rateLimitedTitle: "Достигнут лимит запросов Hugging Face",
     rateLimitedBody:
       "Подождите немного, затем повторите поиск в категории «{noun}».",
+    modelScope: "ModelScope",
+    useModelScope: "Использовать ModelScope",
+    useModelScopeHint: "Искать и скачивать через ModelScope. Вернуть можно в настройках.",
+    useModelScopeFailed: "Не удалось переключиться на ModelScope.",
     hfToken: {
       label: "Токен HF",
       saved: "Сохранён",
@@ -122,6 +126,16 @@ export const ru = {
     shutdown: "Выключить",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Документация",
+      keyboardShortcuts: "Сочетания клавиш",
+      whatsNew: "Что нового",
+      troubleshooting: "Устранение неполадок",
+      systemStatus: "Состояние системы",
+      sendFeedback: "Отправить отзыв",
+      about: "Об Unsloth",
+    },
     find: {
       label: "Поиск на странице",
       previous: "Предыдущее совпадение",
@@ -176,6 +190,9 @@ export const ru = {
       noChats: "Нет чатов",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Все проекты закреплены",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "Все проекты закреплены или находятся в разделах",
+      noProjects: "Нет проектов",
       showMore: "Показать больше",
       showLess: "Показать меньше",
       settings: "Настройки",
@@ -221,16 +238,42 @@ export const ru = {
       byProject: "По проектам",
       inOneList: "Одним списком",
       sortChatsBy: "Сортировать чаты по",
-      sortPinnedBy: "Сортировать закреплённые по",
-      priority: "Приоритету",
       lastUpdated: "Последнему обновлению",
       manualOrder: "Вручную",
       switchedToManual: "Ручной порядок: перетащите строки, чтобы изменить порядок",
       organizeChats: "Настроить чаты",
       organizeProjects: "Настроить проекты",
       sortPinnedChats: "Сортировать закреплённые чаты",
-      moveUp: "Переместить вверх",
-      moveDown: "Переместить вниз",
+      // Header of the menu's section-visibility toggles.
+      show: "Показывать",
+      newSection: "Новый раздел",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "Новый раздел",
+      createDescription: "Группируйте чаты и проекты как угодно",
+      namePlaceholder: "Название раздела",
+      create: "Создать раздел",
+      renameTitle: "Переименовать раздел",
+      renameDescription: "Дайте этому разделу новое название",
+      edit: "Изменить",
+      remove: "Удалить раздел",
+      markAllRead: "Отметить все как прочитанные",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "Переместить в",
+      section: "Раздел",
+      sectionsHeading: "Разделы",
+      removeFromProject: "Убрать из проекта",
+      newSection: "Новый раздел",
+      removeFromSection: "Убрать из раздела",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "Убрать из {name}",
+      // Shown in a section with nothing filed in it yet.
+      empty: "Перетащите сюда чаты или проекты",
+      sectionOptions: "Параметры раздела",
+      newChatInSection: "Новый чат в «{name}»",
+      deleted: "Раздел «{name}» удалён",
+      undo: "Отменить",
     },
     dialog: {
       deleteChat: {
@@ -1041,6 +1084,19 @@ export const ru = {
           "Не удалось обновить настройку закрытия в системный трей.",
         loadError: "Не удалось загрузить настройку автозапуска.",
         saveError: "Не удалось обновить настройку автозапуска.",
+      },
+      hub: {
+        source: "Источник моделей",
+        sourceDescription: "Где хаб моделей ищет и откуда скачивает. Выберите ModelScope, если Hugging Face заблокирован или медленно работает в вашей сети.",
+        sourceFallback: "Не удалось запустить ModelScope, поэтому используется Hugging Face. Проверьте журналы Unsloth.",
+        sectionTitle: "Хаб моделей",
+        endpoint: "Эндпоинт Hugging Face",
+        endpointDescription: "Откуда загружаются модели и датасеты. Оставьте пустым для huggingface.co или укажите зеркало, например https://hf-mirror.com.",
+        datasetsServer: "Использовать и для предпросмотра датасетов",
+        datasetsServerDescription: "Отправлять запросы предпросмотра датасетов (HF_DATASETS_SERVER) на этот же эндпоинт. Включайте, только если зеркало их поддерживает.",
+        invalidEndpoint: "Введите адрес http(s) без учётных данных и параметров. Обычный http работает только для локального адреса.",
+        saveFailed: "Не удалось сохранить настройки хаба.",
+        loadFailed: "Не удалось загрузить настройки хаба.",
       },
       downloads: {
         sectionTitle: "Загрузки",
@@ -3052,6 +3108,11 @@ export const ru = {
       gridView: "Сетка",
       listView: "Список",
       settings: "Настройки библиотеки",
+      sort: "Сортировка",
+      sortDefault: "Порядок по умолчанию",
+      sortName: "Имя",
+      sortModified: "Изменено",
+      sortSize: "Размер",
     },
     create: {
       note: "Заметка",

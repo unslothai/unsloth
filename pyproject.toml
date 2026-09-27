@@ -75,6 +75,8 @@ studio = [
     # Swagger UI / ReDoc, served from this origin instead of a CDN. Without these the
     # /docs and /redoc pages render blank in an installed Unsloth.
     "backend/assets/docs_ui/*",
+    # Gate verdicts the auto ladder reads: missing from the wheel, nvfp4 silently leaves the ladder.
+    "backend/core/inference/nvfp4_gate_record.json",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",

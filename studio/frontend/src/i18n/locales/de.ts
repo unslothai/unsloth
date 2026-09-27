@@ -92,6 +92,10 @@ export const de = {
     rateLimitedTitle: "Hugging Face-Ratenlimit erreicht",
     rateLimitedBody:
       "Warten Sie einen Moment und wiederholen Sie dann die Suche ({noun}).",
+    modelScope: "ModelScope",
+    useModelScope: "ModelScope verwenden",
+    useModelScopeHint: "Stattdessen über ModelScope suchen und herunterladen. Sie können in den Einstellungen zurückwechseln.",
+    useModelScopeFailed: "Wechsel zu ModelScope fehlgeschlagen.",
     hfToken: {
       label: "HF-Token",
       saved: "Gespeichert",
@@ -123,6 +127,16 @@ export const de = {
     shutdown: "Herunterfahren",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Dokumentation",
+      keyboardShortcuts: "Tastenkürzel",
+      whatsNew: "Neuigkeiten",
+      troubleshooting: "Fehlerbehebung",
+      systemStatus: "Systemstatus",
+      sendFeedback: "Feedback senden",
+      about: "Über Unsloth",
+    },
     find: {
       label: "Auf der Seite suchen",
       previous: "Vorheriger Treffer",
@@ -177,6 +191,9 @@ export const de = {
       noChats: "Keine Chats",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Alle Projekte angepinnt",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "Alle Projekte sind angeheftet oder in Abschnitten",
+      noProjects: "Keine Projekte",
       showMore: "Mehr anzeigen",
       showLess: "Weniger anzeigen",
       settings: "Einstellungen",
@@ -222,16 +239,42 @@ export const de = {
       byProject: "Nach Projekt",
       inOneList: "In einer Liste",
       sortChatsBy: "Chats sortieren nach",
-      sortPinnedBy: "Angeheftete sortieren nach",
-      priority: "Priorität",
       lastUpdated: "Zuletzt aktualisiert",
       manualOrder: "Manuelle Reihenfolge",
       switchedToManual: "Manuell sortiert: Zeilen zum Umordnen ziehen",
       organizeChats: "Chats organisieren",
       organizeProjects: "Projekte organisieren",
       sortPinnedChats: "Angeheftete Chats sortieren",
-      moveUp: "Nach oben",
-      moveDown: "Nach unten",
+      // Header of the menu's section-visibility toggles.
+      show: "Anzeigen",
+      newSection: "Neuer Abschnitt",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "Neuer Abschnitt",
+      createDescription: "Gruppiere Chats und Projekte ganz nach Belieben",
+      namePlaceholder: "Name des Abschnitts",
+      create: "Abschnitt erstellen",
+      renameTitle: "Abschnitt umbenennen",
+      renameDescription: "Gib diesem Abschnitt einen neuen Namen",
+      edit: "Bearbeiten",
+      remove: "Abschnitt entfernen",
+      markAllRead: "Alle als gelesen markieren",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "Verschieben nach",
+      section: "Abschnitt",
+      sectionsHeading: "Abschnitte",
+      removeFromProject: "Aus Projekt entfernen",
+      newSection: "Neuer Abschnitt",
+      removeFromSection: "Aus Abschnitt entfernen",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "Aus {name} entfernen",
+      // Shown in a section with nothing filed in it yet.
+      empty: "Chats oder Projekte hierher ziehen",
+      sectionOptions: "Abschnittsoptionen",
+      newChatInSection: "Neuer Chat in {name}",
+      deleted: "Abschnitt „{name}“ gelöscht",
+      undo: "Rückgängig",
     },
     dialog: {
       deleteChat: {
@@ -1059,6 +1102,19 @@ export const de = {
         loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
+      },
+      hub: {
+        source: "Modellquelle",
+        sourceDescription: "Wo der Model-Hub sucht und herunterlädt. Wählen Sie ModelScope, wenn Hugging Face in Ihrem Netzwerk blockiert oder langsam ist.",
+        sourceFallback: "ModelScope konnte nicht gestartet werden, daher wird Hugging Face verwendet. Prüfen Sie die Unsloth-Logs.",
+        sectionTitle: "Modell-Hub",
+        endpoint: "Hugging-Face-Endpunkt",
+        endpointDescription: "Von hier werden Modelle und Datensätze geladen. Leer lassen für huggingface.co oder einen Mirror wie https://hf-mirror.com eintragen.",
+        datasetsServer: "Auch für Datensatz-Vorschauen verwenden",
+        datasetsServerDescription: "Datensatz-Vorschauen (HF_DATASETS_SERVER) ebenfalls an diesen Endpunkt senden. Nur einschalten, wenn der Mirror sie bereitstellt.",
+        invalidEndpoint: "Geben Sie eine http(s)-URL ohne Anmeldedaten oder Query ein. Reines http funktioniert nur für eine lokale Adresse.",
+        saveFailed: "Die Hub-Einstellungen konnten nicht gespeichert werden.",
+        loadFailed: "Die Hub-Einstellungen konnten nicht geladen werden.",
       },
       downloads: {
         sectionTitle: "Downloads",
@@ -3094,6 +3150,11 @@ export const de = {
       gridView: "Rasteransicht",
       listView: "Listenansicht",
       settings: "Bibliothekseinstellungen",
+      sort: "Sortieren",
+      sortDefault: "Standardreihenfolge",
+      sortName: "Name",
+      sortModified: "Geändert",
+      sortSize: "Größe",
     },
     create: {
       note: "Notiz",

@@ -117,7 +117,13 @@ import {
   catalogToModelOptions,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
-import { useDenseQuantSchemes, useHostClass } from "@/hooks/use-host-class";
+import {
+  useDenseQuantSchemes,
+  useHostClass,
+  useNvfp4Diffusion,
+  useNvfp4DiffusionKnown,
+} from "@/hooks/use-host-class";
+import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -208,6 +214,7 @@ import {
   loadVideoModel,
   unloadVideoModel,
 } from "./api";
+import { stopButtonLabel } from "@/features/images/lib/generation-stop";
 import { type Playback, fetchWithFreshLink, playWithMutedFallback, readPlayback } from "./viewer";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
 
@@ -931,6 +938,8 @@ function VideoGenerator({
   const isMobileShell = useIsMobileShell();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
+  const nvfp4Diffusion = useNvfp4Diffusion();
+  const nvfp4DiffusionKnown = useNvfp4DiffusionKnown();
   const videoModels = useVideoModels(hostClass, denseQuantSchemes);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   // Starts from the last prompt generated with; the example is only a placeholder.
@@ -1024,12 +1033,20 @@ function VideoGenerator({
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
+  useEffect(() => {
+    setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
+  }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant]);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options.
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
 
   const [busy, setBusy] = useState<Busy>(null);
+  const [stopping, setStopping] = useState(false);
+  // A run ends via several paths (poll, refusal, reload): clear on any.
+  useEffect(() => {
+    if (busy !== "generating") setStopping(false);
+  }, [busy]);
   const [genStep, setGenStep] = useState<VideoGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // visibilitychange handler active while a generation poll runs: background tabs clamp
@@ -3316,9 +3333,12 @@ function VideoGenerator({
   }, [handleCancelLoad]);
 
   const handleCancelGenerate = useCallback(async () => {
+    setStopping(true);
     try {
-      await cancelVideoGeneration();
+      const { cancelled } = await cancelVideoGeneration();
+      if (!cancelled) setStopping(false);
     } catch {
+      setStopping(false);
       // The generation may have already finished; the poll/finally clears the UI.
     }
   }, []);
@@ -3500,12 +3520,15 @@ function VideoGenerator({
             // The explicit low-precision schemes need the dense tensor-core path, which a Mac or
             // CPU-only host cannot run, so the picker does not list what the loader would refuse.
             ...(hostOffersDensePrecision(hostClass)
-              ? ([
-                  ["fp8", "FP8"],
-                  ["int8", "INT8"],
-                  ["nvfp4", "NVFP4 (Blackwell)"],
-                  ["mxfp8", "MXFP8 (Blackwell)"],
-                ] as [string, string][])
+              ? withNvfp4Option(
+                  [
+                    ["fp8", "FP8"],
+                    ["int8", "INT8"],
+                    ["nvfp4", "NVFP4 (Blackwell)"],
+                    ["mxfp8", "MXFP8 (Blackwell)"],
+                  ] as [string, string][],
+                  nvfp4Diffusion,
+                )
               : []),
           ]}
         />
@@ -4267,7 +4290,7 @@ function VideoGenerator({
                 onClick={handleCancelGenerate}
               >
                 <Spinner className="mr-2 size-4" />
-                Cancel
+                {stopButtonLabel({ stopping, done: null, count: 1, idle: "Cancel" })}
               </Button>
             ) : (
               <>

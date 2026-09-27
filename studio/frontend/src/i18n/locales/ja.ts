@@ -92,6 +92,10 @@ export const ja = {
       "一致する{noun}が複数あります。リストから1つ選択してください。",
     rateLimitedTitle: "Hugging Face のレート制限に達しました",
     rateLimitedBody: "しばらく待ってから、{noun}の検索を再試行してください。",
+    modelScope: "ModelScope",
+    useModelScope: "ModelScope を使う",
+    useModelScopeHint: "代わりに ModelScope で検索・ダウンロードします。設定からいつでも戻せます。",
+    useModelScopeFailed: "ModelScope に切り替えられませんでした。",
     hfToken: {
       label: "HF トークン",
       saved: "保存済み",
@@ -122,6 +126,16 @@ export const ja = {
     shutdown: "シャットダウン",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "ドキュメント",
+      keyboardShortcuts: "キーボードショートカット",
+      whatsNew: "新機能",
+      troubleshooting: "トラブルシューティング",
+      systemStatus: "システムの状態",
+      sendFeedback: "フィードバックを送信",
+      about: "Unsloth について",
+    },
     find: {
       label: "ページ内検索",
       previous: "前の一致",
@@ -176,6 +190,9 @@ export const ja = {
       noChats: "チャットなし",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "すべてのプロジェクトをピン留め済み",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "すべてのプロジェクトがピン留め済みまたはセクション内にあります",
+      noProjects: "プロジェクトはありません",
       showMore: "もっと見る",
       showLess: "表示を減らす",
       settings: "設定",
@@ -221,16 +238,42 @@ export const ja = {
       byProject: "プロジェクト別",
       inOneList: "1つのリストで",
       sortChatsBy: "チャットの並び順",
-      sortPinnedBy: "ピン留めの並び順",
-      priority: "優先度",
       lastUpdated: "最終更新",
       manualOrder: "手動で並べ替え",
       switchedToManual: "手動の並び順に切り替えました。行をドラッグして並べ替えます",
       organizeChats: "チャットを整理",
       organizeProjects: "プロジェクトを整理",
       sortPinnedChats: "ピン留めチャットを並べ替え",
-      moveUp: "上へ移動",
-      moveDown: "下へ移動",
+      // Header of the menu's section-visibility toggles.
+      show: "表示",
+      newSection: "新しいセクション",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "新しいセクション",
+      createDescription: "チャットやプロジェクトを自由にグループ化できます",
+      namePlaceholder: "セクション名",
+      create: "セクションを作成",
+      renameTitle: "セクション名を変更",
+      renameDescription: "このセクションに新しい名前を付けます",
+      edit: "編集",
+      remove: "セクションを削除",
+      markAllRead: "すべて既読にする",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "移動先",
+      section: "セクション",
+      sectionsHeading: "セクション",
+      removeFromProject: "プロジェクトから削除",
+      newSection: "新しいセクション",
+      removeFromSection: "セクションから削除",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "{name}から削除",
+      // Shown in a section with nothing filed in it yet.
+      empty: "ここにチャットやプロジェクトをドラッグ",
+      sectionOptions: "セクションのオプション",
+      newChatInSection: "{name} に新しいチャット",
+      deleted: "セクション「{name}」を削除しました",
+      undo: "元に戻す",
     },
     dialog: {
       deleteChat: {
@@ -1025,6 +1068,19 @@ export const ja = {
         closeToTraySaveError: "システムトレイに格納する設定を更新できませんでした。",
         loadError: "ログイン時起動の設定を読み込めませんでした。",
         saveError: "ログイン時起動の設定を更新できませんでした。",
+      },
+      hub: {
+        source: "モデルの取得元",
+        sourceDescription: "モデルハブの検索とダウンロード先です。ネットワークで Hugging Face がブロックされている、または遅い場合は ModelScope を選んでください。",
+        sourceFallback: "ModelScope を起動できなかったため、Hugging Face を使用しています。Unsloth のログを確認してください。",
+        sectionTitle: "モデルハブ",
+        endpoint: "Hugging Face エンドポイント",
+        endpointDescription: "モデルとデータセットのダウンロード元です。空欄なら huggingface.co、ミラーを使う場合は https://hf-mirror.com などを入力します。",
+        datasetsServer: "データセットのプレビューにも使う",
+        datasetsServerDescription: "データセットのプレビュー要求（HF_DATASETS_SERVER）もこのエンドポイントに送ります。ミラーが対応している場合のみオンにしてください。",
+        invalidEndpoint: "ログイン情報やクエリを含まない http(s) の URL を入力してください。http はローカルアドレスでのみ使えます。",
+        saveFailed: "ハブ設定を保存できませんでした。",
+        loadFailed: "ハブ設定を読み込めませんでした。",
       },
       downloads: {
         sectionTitle: "ダウンロード",
@@ -2973,6 +3029,11 @@ export const ja = {
       gridView: "グリッド表示",
       listView: "リスト表示",
       settings: "ライブラリの設定",
+      sort: "並べ替え",
+      sortDefault: "デフォルトの順序",
+      sortName: "名前",
+      sortModified: "更新日時",
+      sortSize: "サイズ",
     },
     create: {
       note: "メモ",

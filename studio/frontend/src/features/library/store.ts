@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { AUTH_SESSION_CLEARED_EVENT, getAuthSessionEpoch } from "@/features/auth";
 import { deleteFineTunedModel, emitChatAttachmentDeleted } from "@/features/chat";
+import { usePinnedModelsStore } from "@/features/model-picker";
 import { translate } from "@/i18n";
 import { type GalleryKind, notifyGalleryChanged } from "@/lib/gallery-flags";
 import {
@@ -195,6 +196,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
                 source: model.origin,
                 exportType: model.exportType,
               });
+              // The model picker may have it pinned.
+              usePinnedModelsStore.getState().unpinRepo(model.path);
               return;
             }
             await deleteLibraryItem(id, fingerprint);

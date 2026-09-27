@@ -472,12 +472,31 @@ def _gallery(kind: str) -> _Gallery:
     return _Gallery(module, getattr(module, records), getattr(module, resolve), *rest)
 
 
+def _listed_file(gallery: _Gallery, root: Path, record_id: str) -> Optional[Path]:
+    """``gallery.resolve`` for an id its own listing gave, with one lstat: a plain file in the
+    folder cannot lead out of it, a symlink still takes the full check."""
+    if not gallery.module._ID_RE.match(record_id):
+        return None
+    path = root / f"{record_id}.{gallery.extension}"
+    try:
+        mode = path.lstat().st_mode
+    except OSError:
+        return None
+    if stat.S_ISREG(mode):
+        return path
+    return gallery.resolve(record_id) if stat.S_ISLNK(mode) else None
+
+
 def _gallery_items(kind: str) -> list[dict]:
     gallery = _gallery(kind)
     items = []
     for archived in (False, True):
-        for record in gallery.records(archived = archived):
-            path = gallery.resolve(record["id"])
+        records = gallery.records(archived = archived)
+        # Looked up after the records, as each resolve was, so a folder moved meanwhile is the one
+        # sized; and only when there are some, so an unreadable folder still lists nothing.
+        root = gallery.module.gallery_dir() if records else None
+        for record in records:
+            path = _listed_file(gallery, root, record["id"])
             try:
                 size = path.stat().st_size if path is not None else None
             except OSError:

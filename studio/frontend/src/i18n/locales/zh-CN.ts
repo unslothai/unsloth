@@ -89,6 +89,10 @@ export const zhCN = {
     multipleMatches: "找到多个匹配的{noun}。请从列表中选择一个。",
     rateLimitedTitle: "已达到 Hugging Face 速率限制",
     rateLimitedBody: "请稍候，然后重试搜索{noun}。",
+    modelScope: "ModelScope",
+    useModelScope: "使用 ModelScope",
+    useModelScopeHint: "改为从 ModelScope 搜索和下载。可随时在设置中切换回来。",
+    useModelScopeFailed: "无法切换到 ModelScope。",
     hfToken: {
       label: "HF token",
       saved: "已保存",
@@ -118,6 +122,16 @@ export const zhCN = {
     shutdown: "关闭服务",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "文档",
+      keyboardShortcuts: "键盘快捷键",
+      whatsNew: "新功能",
+      troubleshooting: "故障排除",
+      systemStatus: "系统状态",
+      sendFeedback: "发送反馈",
+      about: "关于 Unsloth",
+    },
     find: {
       label: "在页面中查找",
       previous: "上一个匹配项",
@@ -172,6 +186,9 @@ export const zhCN = {
       noChats: "无对话",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "所有项目均已置顶",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "所有项目均已置顶或归入分区",
+      noProjects: "暂无项目",
       showMore: "显示更多",
       showLess: "显示更少",
       settings: "设置",
@@ -217,16 +234,42 @@ export const zhCN = {
       byProject: "按项目",
       inOneList: "合并为一个列表",
       sortChatsBy: "对话排序方式",
-      sortPinnedBy: "置顶排序方式",
-      priority: "优先级",
       lastUpdated: "最近更新",
       manualOrder: "手动排序",
       switchedToManual: "已改为手动排序，拖动行即可重新排序",
       organizeChats: "整理对话",
       organizeProjects: "整理项目",
       sortPinnedChats: "对置顶对话排序",
-      moveUp: "上移",
-      moveDown: "下移",
+      // Header of the menu's section-visibility toggles.
+      show: "显示",
+      newSection: "新建分区",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "新建分区",
+      createDescription: "按你的喜好对对话和项目进行分组",
+      namePlaceholder: "分区名称",
+      create: "创建分区",
+      renameTitle: "重命名分区",
+      renameDescription: "为此分区取一个新名称",
+      edit: "编辑",
+      remove: "移除分区",
+      markAllRead: "全部标为已读",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "移动到",
+      section: "分区",
+      sectionsHeading: "分区",
+      removeFromProject: "从项目中移除",
+      newSection: "新建分区",
+      removeFromSection: "从分区中移除",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "从{name}中移除",
+      // Shown in a section with nothing filed in it yet.
+      empty: "将对话或项目拖到此处",
+      sectionOptions: "分区选项",
+      newChatInSection: "在 {name} 中新建聊天",
+      deleted: "已删除分区“{name}”",
+      undo: "撤销",
     },
     dialog: {
       deleteChat: {
@@ -1016,6 +1059,19 @@ export const zhCN = {
         closeToTraySaveError: "无法更新关闭到系统托盘设置。",
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
+      },
+      hub: {
+        source: "模型来源",
+        sourceDescription: "模型中心搜索和下载的来源。如果你的网络无法访问 Hugging Face 或速度很慢，请选择 ModelScope。",
+        sourceFallback: "无法启动 ModelScope，当前使用 Hugging Face。请查看 Unsloth 日志。",
+        sectionTitle: "模型中心",
+        endpoint: "Hugging Face 端点",
+        endpointDescription: "模型和数据集的下载来源。留空则使用 huggingface.co，或填写镜像地址，例如 https://hf-mirror.com。",
+        datasetsServer: "同时用于数据集预览",
+        datasetsServerDescription: "数据集预览请求（HF_DATASETS_SERVER）也发送到此端点。仅当镜像提供该服务时开启。",
+        invalidEndpoint: "请输入不含登录信息和查询参数的 http(s) 地址。http 仅适用于本机地址。",
+        saveFailed: "无法保存模型中心设置。",
+        loadFailed: "无法加载模型中心设置。",
       },
       downloads: {
         sectionTitle: "下载",
@@ -2932,6 +2988,11 @@ export const zhCN = {
       gridView: "网格视图",
       listView: "列表视图",
       settings: "资料库设置",
+      sort: "排序",
+      sortDefault: "默认顺序",
+      sortName: "名称",
+      sortModified: "修改时间",
+      sortSize: "大小",
     },
     create: {
       note: "笔记",

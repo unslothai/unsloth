@@ -2201,10 +2201,7 @@ def test_cancel_generation_route_requires_auth():
 )
 def test_an_offloading_memory_request_refuses_an_explicit_precision(monkeypatch, memory):
     """balanced and low_vram name their offload policy outright, and the legacy cpu_offload flag
-    forces whole-module offload. Offload hooks move modules with Module.to(), which torchao
-    tensors do not survive, so the loader skips the dense build -- and the strict refusal then
-    arrived after the resident image model had already been torn down. The two requests are
-    incompatible on their face, so the refusal is owed before anything is staged or evicted."""
+    forces whole-module offload, so the refusal is owed before anything is staged or evicted."""
     from core.inference.diffusion import DiffusionBackend
 
     backend = DiffusionBackend.__new__(DiffusionBackend)
@@ -2219,6 +2216,38 @@ def test_an_offloading_memory_request_refuses_an_explicit_precision(monkeypatch,
         )
     assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
     assert "offload" in str(excinfo.value)
+
+
+def _pipeline_precision_gate(monkeypatch, **memory):
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: _cuda_target(),
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "z-image"),
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        **memory,
+    )
+
+
+@pytest.mark.parametrize("memory", [{"memory_mode": "low_vram"}, {"cpu_offload": True}])
+def test_a_whole_module_offload_request_admits_a_pipeline_precision(monkeypatch, memory):
+    """low_vram and cpu_offload pick whole-module offload, which a pipeline quantises under."""
+    _pipeline_precision_gate(monkeypatch, **memory)
+
+
+def test_balanced_memory_refuses_a_pipeline_precision(monkeypatch):
+    """balanced is group offload, which the loader never quantises under."""
+    with pytest.raises(RuntimeError) as excinfo:
+        _pipeline_precision_gate(monkeypatch, memory_mode = "balanced")
+    assert "group-offload hooks" in str(excinfo.value)
 
 
 def test_a_measured_memory_mode_is_not_refused_by_the_precision_gate(monkeypatch):
@@ -2746,6 +2775,104 @@ def test_generate_schema_bounds_for_unified_editing(client):
     assert _post_generate(client, prompt = "p", width = 2768).status_code == 422
     bad_mode = _post_generate(client, prompt = "p", localized_edit = {"mode": "lasso", "image": "QUJD"})
     assert bad_mode.status_code == 422
+
+
+def test_the_precision_gate_judges_an_explicit_scheme_on_the_pipeline_base(monkeypatch):
+    """A per-base NVFP4 gate record (Qwen-Image-2512) lifts the family deny only for that base, so the
+    route gate must ask about the base the load keys on, or it 409s a load the loader accepts."""
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        diffusion_module, "_pipeline_quant_uncompilable_reason", lambda *a, **k: None
+    )
+    seen = []
+
+    def _select(target, requested, **kwargs):
+        seen.append(kwargs.get("base_repo"))
+        return requested
+
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", _select)
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "qwen-image"),
+        model_kind = "pipeline",
+        transformer_quant = "nvfp4",
+        repo_id = "Qwen/Qwen-Image-2512",
+    )
+    assert seen == ["Qwen/Qwen-Image-2512"]
+
+
+def test_a_gpu_refusal_on_a_gated_base_is_not_blamed_on_the_family_deny(monkeypatch):
+    """Qwen-Image-2512's gate record lifts the qwen-image NVFP4 deny for that base only. When the GPU then declines
+    the scheme, the refusal must say so, not claim no accuracy record covers the base."""
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        diffusion_module, "_pipeline_quant_uncompilable_reason", lambda *a, **k: None
+    )
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: None)
+    import core.inference.diffusion_transformer_quant as tq
+
+    monkeypatch.setattr(tq, "torchao_unavailable_reason", lambda: None)
+    base = "Qwen/Qwen-Image-2512"
+    assert not tq.family_denies_scheme("qwen-image", "nvfp4", base)
+    with pytest.raises(RuntimeError) as err:
+        backend.assert_precision_available(
+            types.SimpleNamespace(name = "qwen-image"),
+            model_kind = "pipeline",
+            transformer_quant = "nvfp4",
+            repo_id = base,
+        )
+    message = str(err.value)
+    assert "on this GPU" in message
+    assert "accuracy-gate record" not in message
+
+
+def test_a_gguf_pick_whose_base_comes_from_its_card_is_judged_on_the_gated_base(monkeypatch):
+    """A GGUF load that names no base_repo resolves it from the repo card at load time. The network-free gate must not
+    refuse explicit NVFP4 under the generic family deny that the Qwen-Image-2512 gate record lifts."""
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        diffusion_module, "_pipeline_quant_uncompilable_reason", lambda *a, **k: None
+    )
+    import core.inference.diffusion_transformer_quant as tq
+
+    seen = []
+
+    def _select(target, requested, **kwargs):
+        seen.append(kwargs.get("base_repo"))
+        return (
+            None
+            if tq.family_denies_scheme(kwargs.get("family"), requested, kwargs.get("base_repo"))
+            else requested
+        )
+
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", _select)
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "qwen-image"),
+        model_kind = "gguf",
+        transformer_quant = "nvfp4",
+        repo_id = "unsloth/Qwen-Image-2512-GGUF",
+    )
+    assert seen == ["Qwen/Qwen-Image-2512"]
 
 
 def test_a_managed_account_cannot_send_allow_oversized(client, monkeypatch):

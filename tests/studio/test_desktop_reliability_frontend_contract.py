@@ -2609,8 +2609,9 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     # The sidebar row: its height, the gap it sets when pinned, and the indent a project row
     # takes. These are hand-set one-off lengths, which is exactly the spacing that used to
     # stay put while the labels grew, so the row clips its own text at a larger setting.
-    # Six rows: #11589 added the drop-cue row, scaled like the rest.
-    (APP_SIDEBAR, "", "h", "30px", 6),
+    # Seven rows: #11589 added the drop-cue row, and #12016 a second section header for the
+    # custom sidebar sections, both scaled like the rest.
+    (APP_SIDEBAR, "", "h", "30px", 7),
     (APP_SIDEBAR, "", "gap", "8.5px", 6),
     (APP_SIDEBAR, "", "pl", "39px", 2),
     # The 34px pill controls in the media headers, in all three spellings the pages use. The

@@ -2882,6 +2882,26 @@ async def scan_loras(
         )
 
 
+def _disk_bytes(model_path: str, export_type: Optional[str]) -> Optional[int]:
+    """Bytes a fine-tune takes on disk. A GGUF export counts its whole folder."""
+    path = Path(model_path)
+    if export_type == "gguf" and path.is_file():
+        path = path.parent
+    try:
+        if path.is_file():
+            return path.stat().st_size
+        total = 0
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                try:
+                    total += os.lstat(os.path.join(root, name)).st_size
+                except OSError:
+                    continue
+        return total
+    except OSError:
+        return None
+
+
 def _scan_loras_sync(
     resolved_outputs_dir: str, resolved_exports_dir: str, hf_token: Optional[str]
 ) -> List[LoRAInfo]:
@@ -2897,6 +2917,7 @@ def _scan_loras_sync(
                 base_model = base_model,
                 source = "training",
                 export_type = model_type,
+                size_bytes = _disk_bytes(model_path, model_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
             )
         )
@@ -2910,6 +2931,7 @@ def _scan_loras_sync(
                 base_model = base_model,
                 source = "exported",
                 export_type = export_type,
+                size_bytes = _disk_bytes(model_path, export_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
             )
         )
@@ -4115,7 +4137,11 @@ async def get_kv_cache_estimate(
                 _cc_caps,
                 None,
                 ctx_checkpoints,
-                per_checkpoint_bytes = getattr(be, "_rollback_state_bytes", lambda _n: 0)(1),
+                per_checkpoint_bytes = getattr(be, "_ctx_checkpoint_bytes", lambda *_a, **_k: 0)(
+                    _effective_cache_type,
+                    swa_full = _plan_kwargs.get("swa_full", False),
+                    flash_attn = _plan_kwargs.get("flash_attn", True),
+                ),
                 n_parallel = n_parallel,
                 total_host_bytes = (_total_ram_mib * 1024 * 1024) if _total_ram_mib else None,
             )
@@ -4782,16 +4808,14 @@ def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
 
 
 def _one_shard_family_of(entries: list) -> list:
-    """*entries* narrowed to the single shard family the loader would open, as ``(rel, path, size)`` triples.
-    Same rule as ``hub.utils.gguf.group_gguf_variant_files``: every shard of one split GGUF shares a family,
-    two files that do not are two checkpoints, and the family kept is the one holding the first file."""
+    """``(rel, path, size)`` *entries* narrowed to the one shard set the loader opens, as ``hub.utils.gguf.group_gguf_variant_files``."""
     if len(entries) < 2:
         return list(entries)
-    from hub.utils.gguf import gguf_variant_family
+    from hub.utils.gguf import gguf_shard_set
 
-    families: dict[str, list] = {}
+    families: dict[tuple[str, int], list] = {}
     for entry in entries:
-        families.setdefault(gguf_variant_family(entry[0]), []).append(entry)
+        families.setdefault(gguf_shard_set(entry[0]), []).append(entry)
     if len(families) < 2:
         return list(entries)
     return min(families.values(), key = lambda group: min(e[0] for e in group))
