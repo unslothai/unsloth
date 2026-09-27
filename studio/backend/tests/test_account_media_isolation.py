@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from auth import policy, storage as auth_storage
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference import audio_gallery, image_gallery, search_images, video_gallery
 from routes import inference, video
 from utils.account_context import OWNER, AccountContext, bind_account, reset_account, run_as
@@ -78,6 +78,7 @@ def _client(account):
             reset_account(token)
 
     app.dependency_overrides[get_current_subject] = subject
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     app.include_router(inference.studio_router, prefix = "/api/inference")
     app.include_router(video.router, prefix = "/api/inference")
     app.include_router(video.openai_router, prefix = "/v1")

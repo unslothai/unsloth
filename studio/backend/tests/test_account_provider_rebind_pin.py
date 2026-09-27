@@ -63,7 +63,7 @@ def rebinding_dns(monkeypatch, owner_local):
 
     monkeypatch.setattr(socket, "getaddrinfo", fake)
     monkeypatch.setattr(providers, "_dns_cache", {})
-    monkeypatch.setattr(external_provider, "_managed_http_client", None, raising = False)
+    monkeypatch.setattr(external_provider, "_managed_clients", {}, raising = False)
     return answers
 
 

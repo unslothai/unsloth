@@ -315,6 +315,8 @@ def _run_packed_block(hidden_states = False, model = None):
         "calculate_pad_tokens_in_prompt": HELPERS["calculate_pad_tokens_in_prompt"],
         "_get_inference_mode_context_manager": lambda _model: torch.no_grad(),
         "device_synchronize": lambda *args, **kwargs: None,
+        # The generated trainer gets this from rl.py's preamble, so the block resolves it here too.
+        "DEVICE_TYPE_TORCH": "cuda",
         "UNSLOTH_ENABLE_LOGGING": False,
         "UNSLOTH_GRPO_SEQ_PACKING_ON": True,
         "UNSLOTH_ZOO_HAS_MASKED_COL_GUARD": True,

@@ -21,6 +21,13 @@ def _quiet_bar_kwargs() -> dict:
         return {}
 
 
+def _normalize_role_alias(role) -> str:
+    """Stripped and lowercased, as `standardize_data_formats` and the preview do it."""
+    if role is None:
+        return ""
+    return str(role).strip().lower()
+
+
 def standardize_chat_format(
     dataset,
     tokenizer = None,
@@ -107,13 +114,14 @@ def standardize_chat_format(
     else:
         raise ValueError(f"Could not infer role/content keys for chat column '{chat_column}'")
 
+    # Keyed on the normalised alias: "Human" / " user " would reach the template raw.
     aliases_mapping = {}
     for x in aliases_for_system:
-        aliases_mapping[x] = "system"
+        aliases_mapping[_normalize_role_alias(x)] = "system"
     for x in aliases_for_user:
-        aliases_mapping[x] = "user"
+        aliases_mapping[_normalize_role_alias(x)] = "user"
     for x in aliases_for_assistant:
-        aliases_mapping[x] = "assistant"
+        aliases_mapping[_normalize_role_alias(x)] = "assistant"
 
     def _standardize_dataset(examples):
         convos = examples[chat_column]
@@ -131,12 +139,21 @@ def standardize_chat_format(
                 # Use the inferred keys first, falling back per-message so mixed ShareGPT/ChatML rows keep valid turns.
                 original_role = message.get(role_key)
                 original_content = message.get(content_key)
-                if original_role is None:
+                # Blank counts as absent for the ROLE, matching the preview: `is None` here
+                # trained {"role": "", "from": "gpt"} as a user turn. Content is not blank-
+                # checked, because an empty message is a legitimate value.
+                if not _normalize_role_alias(original_role):
                     original_role = message.get("role") or message.get("from") or ""
                 if original_content is None:
                     original_content = message.get("content") or message.get("value") or ""
 
-                standard_role = aliases_mapping.get(original_role, original_role)
+                # Unknown alias left as written; blank is "user", as most templates reject one.
+                normalized_role = _normalize_role_alias(original_role)
+                standard_role = (
+                    aliases_mapping.get(normalized_role, original_role)
+                    if normalized_role
+                    else "user"
+                )
 
                 if is_vlm:
                     original_content = [{"type": "text", "text": original_content}]

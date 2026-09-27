@@ -52,7 +52,7 @@ function DropdownMenuContent({
           // The 3px alignment nudge must be margin, not translate: a transform
           // here makes this scroll container the containing block for nested
           // position:fixed submenu wrappers, clipping every submenu.
-          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 bg-popover text-popover-foreground min-w-48 rounded-lg p-1 duration-100 z-50 max-h-(--radix-dropdown-menu-content-available-height) w-[calc(var(--radix-dropdown-menu-trigger-width)_+_6px)] data-[align=start]:-ml-[3px] data-[align=end]:ml-[3px] origin-(--radix-dropdown-menu-content-transform-origin) flex flex-col overflow-hidden",
+          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 bg-popover text-popover-foreground min-w-48 max-w-[calc(100vw-32px)] rounded-lg p-1 duration-100 z-50 max-h-(--radix-dropdown-menu-content-available-height) w-[calc(var(--radix-dropdown-menu-trigger-width)_+_6px*var(--ui-space-scale,1))] data-[align=start]:-ml-[calc(3px*var(--ui-space-scale,1))] data-[align=end]:ml-[calc(3px*var(--ui-space-scale,1))] origin-(--radix-dropdown-menu-content-transform-origin) flex flex-col overflow-hidden",
           className,
         )}
         {...props}
@@ -254,7 +254,7 @@ function DropdownMenuSubTrigger({
       <HugeiconsIcon
         icon={ChevronRightStandardIcon}
         strokeWidth={1.5}
-        className="ml-auto size-[12px]"
+        className="ml-auto size-[calc(12px*var(--ui-space-scale,1))]"
       />
     </DropdownMenuPrimitive.SubTrigger>
   );

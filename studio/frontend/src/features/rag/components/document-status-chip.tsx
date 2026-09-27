@@ -51,7 +51,7 @@ export function DocumentStatusChip({
             : filename)
       }
       className={cn(
-        "rounded-full inline-flex items-center gap-1.5 max-w-[16rem]",
+        "rounded-full inline-flex items-center gap-1.5 max-w-[calc(16rem*var(--ui-space-scale,1))]",
         status === "failed" && "border-destructive/40 text-destructive",
       )}
     >

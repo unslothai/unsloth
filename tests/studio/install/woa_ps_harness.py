@@ -15,10 +15,12 @@ from __future__ import annotations
 import pathlib
 import re
 import shutil
-import subprocess
+import sys
 
 import pytest
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "_shared"))
+from unsloth_pwsh_runner import run_pwsh  # noqa: E402
 
 PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[3]
 MANIFEST_PY = PACKAGE_ROOT / "studio" / "install_manifest.py"
@@ -58,8 +60,17 @@ def _ps(
     timeout = 120,
     **kwargs,
 ):
-    """Run a PowerShell snippet and hand back the completed process."""
-    return subprocess.run(
+    """Run a PowerShell snippet and hand back the completed process.
+
+    Through `run_pwsh`, not `subprocess.run`: every module in this directory shares one
+    $XDG_CACHE_HOME/powershell startup cache with the other xdist workers otherwise, and a
+    startup that deserialises a half-written one dies before it reaches the snippet. That
+    lands as `Stack overflow.` + SIGABRT, or as a FileLoadException, on a test that never
+    ran. The runner gives each worker its own cache directory and retries only a run that
+    crashed WITHOUT answering, so a snippet that runs to completion and returns the wrong
+    answer still fails here with its own message.
+    """
+    return run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,

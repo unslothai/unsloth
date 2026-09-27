@@ -120,6 +120,7 @@ def _run_cuda_repair(
     cvd = None,
     index_family = None,
     index_url = None,
+    probe = False,
 ):
     """Invoke _ensure_cuda_torch under a fully mocked host; return the pip mock.
 
@@ -173,7 +174,12 @@ def _run_cuda_repair(
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
         if index_url is None:
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
-        _ensure_cuda_torch()
+        # probe asks setup.sh's fast-path question instead. Carried on the pip mock so the
+        # scenarios above keep their single return value.
+        if probe:
+            mock_pip.probe_answer = stack_mod._cuda_torch_needs_dependency_pass()
+        else:
+            _ensure_cuda_torch()
     return mock_pip
 
 
@@ -1990,6 +1996,54 @@ class TestTheResidentXformersBuildIsReadFromDisk:
             assert stack_mod._resident_xformers_build_torch() is None
 
 
+class TestTheLinuxRepairRemovesAnXformersItsTorchCannotImport:
+    """Remove incompatible xFormers even when the final repair leaves torch unchanged (#11545)."""
+
+    def _evict(
+        self,
+        mismatch,
+        *,
+        uninstall_ok = True,
+    ):
+        with (
+            patch.object(stack_mod, "xformers_torch_requirement_unmet", return_value = mismatch),
+            patch.object(
+                stack_mod, "_uninstall_distribution", return_value = uninstall_ok
+            ) as uninstall,
+        ):
+            return stack_mod._evict_xformers_requiring_another_torch(), uninstall
+
+    def test_an_xformers_requiring_a_newer_torch_is_removed(self, capsys):
+        removed, uninstall = self._evict(("0.0.35", ">=2.10", "2.6.0+cu124"))
+        assert removed is True
+        uninstall.assert_called_once_with("xformers")
+        out = capsys.readouterr().out
+        assert "xformers 0.0.35 requires torch>=2.10, not 2.6.0+cu124" in out
+
+    def test_an_xformers_whose_requirement_holds_is_kept(self):
+        removed, uninstall = self._evict(None)
+        assert removed is False
+        uninstall.assert_not_called()
+
+    def test_a_blocked_removal_is_reported(self, capsys):
+        removed, _ = self._evict(("0.0.35", ">=2.10", "2.6.0+cu124"), uninstall_ok = False)
+        assert removed is False
+        assert "could not be removed" in capsys.readouterr().out
+
+    def test_the_final_repair_checks_even_when_torch_did_not_move(self):
+        source = inspect.getsource(stack_mod.install_python_stack)
+        step = source.split('_progress(_torch_step_label("final"))', 1)[1]
+        step = step.split("# 13w.", 1)[0]
+        guard = "if _torch_after_repair and _torch_after_repair != _torch_before_repair:"
+        assert guard in step
+        after = step.split(guard, 1)[1]
+        call = "\n        _evict_xformers_requiring_another_torch()\n"
+        assert (
+            call in after
+        ), "the check must sit at the step's indent, outside the torch-moved guard"
+        assert after.index("_install_torchao_for_torch(_torch_after_repair)") < after.index(call)
+
+
 class TestTheResyncNoticesItsOwnFailures:
     """Both halves report failure by return value, not by raising.
 
@@ -2726,3 +2780,41 @@ def test_detect_index_url_reads_a_localized_nvidia_smi_banner(monkeypatch, tmp_p
         lambda name, *a, **k: "nvidia-smi" if name == "nvidia-smi" else None,
     )
     assert _detect_cuda_torch_index_url() == f"{stack_mod._PYTORCH_WHL_BASE}/cu130"
+
+
+# setup.sh's fast path skips the dependency pass whole, so the repair above is unreachable on an
+# "up to date" install. --cuda-torch-needs-dependency-pass forces the pass, and answers by asking
+# the repair itself: these assert the two cannot drift apart.
+class TestTheFastPathProbeAgreesWithTheRepair:
+    SCENARIOS = {
+        "cpu wheel on an NVIDIA host": dict(torch_state = "cpu"),
+        "rocm wheel on an NVIDIA host": dict(torch_state = "hip"),
+        "healthy cuda wheel": dict(torch_state = "cuda", cuda_version = "12.8"),
+        "deliberate cpu backend": dict(torch_state = "cpu", backend = "cpu"),
+        "the GPU is masked away": dict(torch_state = "cpu", cvd = ""),
+        "no NVIDIA GPU": dict(torch_state = "cpu", nvidia = False),
+        "a no-torch install": dict(torch_state = "cpu", no_torch = True),
+        "windows, where setup.ps1 owns torch": dict(torch_state = "cpu", is_windows = True),
+        "macos": dict(torch_state = "cpu", is_macos = True),
+        "a deliberate rocm install": dict(torch_state = "hip", rocm_marker = True),
+    }
+
+    @pytest.mark.parametrize("name", sorted(SCENARIOS))
+    def test_the_probe_answers_what_the_repair_would_do(self, name):
+        scenario = self.SCENARIOS[name]
+        repaired = _run_cuda_repair(**scenario).call_count == 1
+        probe = _run_cuda_repair(**scenario, probe = True)
+        assert probe.probe_answer is repaired
+        # A probe that installs would download multi-gigabyte wheels from a fast path.
+        assert probe.call_count == 0
+
+    def test_at_least_one_scenario_answers_each_way(self):
+        answers = {
+            _run_cuda_repair(**scenario, probe = True).probe_answer
+            for scenario in self.SCENARIOS.values()
+        }
+        assert answers == {True, False}
+
+    def test_a_probe_that_cannot_answer_keeps_the_fast_path(self):
+        with patch.object(stack_mod, "_ensure_cuda_torch", side_effect = OSError("no")):
+            assert stack_mod._cuda_torch_needs_dependency_pass() is False

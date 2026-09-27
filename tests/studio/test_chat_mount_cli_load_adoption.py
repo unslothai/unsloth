@@ -173,6 +173,10 @@ export const toast = {
   error: (title: string, options?: any) => EVENTS.push({ kind: "toast.error", title, options }),
 };
 
+// No desktop update runs here, so every failure must report.
+export const isBackendDownForDesktopUpdate = () => false;
+export const isSilencedDesktopUpdateFailure = () => false;
+
 // The two ponyfills server-model-wait.ts imports. Its own per-read cap is 30s, which no test
 // should wait out, so the timeout here is short and the real constant is asserted separately.
 export const TEST_POLL_TIMEOUT_MS = 1200;
