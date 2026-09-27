@@ -2815,7 +2815,7 @@ exit 1
             $isFile = $false
             try { $isFile = Test-Path -LiteralPath $candidate -PathType Leaf } catch {}
             if (-not $isFile) { continue }
-            # Probe the interpreter's own directory: $PSScriptRoot is empty under `irm | iex`.
+            # Probe the interpreter's own directory: $PSScriptRoot is empty when the script runs from memory.
             $probeDir = $null
             try { $probeDir = [System.IO.Path]::GetDirectoryName($candidate) } catch {}
             if ([string]::IsNullOrWhiteSpace($probeDir)) { continue }
