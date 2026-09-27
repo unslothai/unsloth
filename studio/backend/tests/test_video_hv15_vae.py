@@ -12,7 +12,13 @@ torch = pytest.importorskip("torch")
 from core.inference import video_hv15_vae as hv  # noqa: E402
 
 
-def _stock(n_frame, n_hw, dtype, device, batch_size = None):
+def _stock(
+    n_frame,
+    n_hw,
+    dtype,
+    device,
+    batch_size = None,
+):
     seq_len = n_frame * n_hw
     mask = torch.full((seq_len, seq_len), float("-inf"), dtype = dtype, device = device)
     for i in range(seq_len):
@@ -71,7 +77,13 @@ def test_other_vaes_and_missing_vae_are_left_alone():
 def test_a_rewritten_upstream_mask_is_not_replaced():
     class HunyuanVideo15AttnBlock(torch.nn.Module):  # noqa: N801 - mirrors the diffusers name
         @staticmethod
-        def prepare_causal_attention_mask(n_frame, n_hw, dtype, device, batch_size = None):
+        def prepare_causal_attention_mask(
+            n_frame,
+            n_hw,
+            dtype,
+            device,
+            batch_size = None,
+        ):
             return torch.zeros(1)
 
     class AutoencoderKLHunyuanVideo15(torch.nn.Module):  # noqa: N801

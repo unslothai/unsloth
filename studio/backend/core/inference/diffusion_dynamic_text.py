@@ -82,7 +82,6 @@ def unbacked_supported() -> bool:
         return False
     try:
         from torch._dynamo.variables import builder  # noqa: PLC0415
-
         getattr(cfg, "unbacked_sources")
     except Exception:  # noqa: BLE001 - knob absent on this build
         return False
@@ -98,7 +97,9 @@ def unbacked_sources_for(transformer: Any) -> tuple[str, ...]:
 def sources_for(transformer: Any) -> tuple[str, ...]:
     # A source is dynamic OR unbacked; without the unbacked knob it stays on the dynamic list.
     unbacked = set(unbacked_sources_for(transformer))
-    return tuple(s for s in _FAMILY_SOURCES.get(type(transformer).__name__, ()) if s not in unbacked)
+    return tuple(
+        s for s in _FAMILY_SOURCES.get(type(transformer).__name__, ()) if s not in unbacked
+    )
 
 
 def fingerprint(transformer: Any, dynamic: Any) -> Optional[str]:

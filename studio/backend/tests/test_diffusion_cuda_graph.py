@@ -689,9 +689,14 @@ def test_graph_eligible_refusals(stub_torch, monkeypatch, overrides, reason):
 
 def test_graph_eligible_accepts_a_unet_denoiser(stub_torch, monkeypatch):
     """A whole-compiled SDXL U-Net is captured at ``_compiled_call_impl`` (GraphedCompiledCall)."""
-    assert _eligible(monkeypatch, pipe = types.SimpleNamespace(unet = UNet2DConditionModel()))[0] is True
+    assert (
+        _eligible(monkeypatch, pipe = types.SimpleNamespace(unet = UNet2DConditionModel()))[0] is True
+    )
     other = type("SomeOtherUNet", (), {})()
-    assert _eligible(monkeypatch, pipe = types.SimpleNamespace(unet = other))[1] == "no denoiser transformer"
+    assert (
+        _eligible(monkeypatch, pipe = types.SimpleNamespace(unet = other))[1]
+        == "no denoiser transformer"
+    )
 
 
 class _CompiledUNet:
@@ -700,7 +705,11 @@ class _CompiledUNet:
     def __init__(self):
         self.calls = 0
 
-        def compiled(sample, timestep = None, return_dict = True):
+        def compiled(
+            sample,
+            timestep = None,
+            return_dict = True,
+        ):
             self.calls += 1
             return (_FakeTensor((1, 4), value = ("out", self.calls), tag = "out"),)
 
@@ -1098,7 +1107,12 @@ def test_real_cuda_compiled_module_capture_matches_the_compiled_call():
             self.a = nn.Linear(dim, dim)
             self.b = nn.Linear(dim, dim)
 
-        def forward(self, sample, timestep, return_dict = True):
+        def forward(
+            self,
+            sample,
+            timestep,
+            return_dict = True,
+        ):
             out = self.b(torch.nn.functional.silu(self.a(sample))) * timestep
             return types.SimpleNamespace(sample = out) if return_dict else (out,)
 

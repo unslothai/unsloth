@@ -22,7 +22,11 @@ _STOCK_NEEDLES = ("for i in range(seq_len)", "mask[i, : (i_frame + 1) * n_hw] = 
 
 
 def causal_attention_mask(
-    n_frame: int, n_hw: int, dtype: Any, device: Any, batch_size: Optional[int] = None
+    n_frame: int,
+    n_hw: int,
+    dtype: Any,
+    device: Any,
+    batch_size: Optional[int] = None,
 ) -> Any:
     """``prepare_causal_attention_mask`` without the per-row loop: 0 where frame(col) <= frame(row), else -inf."""
     import torch
@@ -67,5 +71,7 @@ def install_vectorised_causal_mask(pipe: Any, logger: Any = None) -> int:
             logger.warning("video.hv15_vae_mask: install failed, keeping the stock mask: %s", exc)
         return 0
     if patched and logger is not None:
-        logger.info("video.hv15_vae_mask: vectorised causal mask on %d VAE attention block(s)", patched)
+        logger.info(
+            "video.hv15_vae_mask: vectorised causal mask on %d VAE attention block(s)", patched
+        )
     return patched

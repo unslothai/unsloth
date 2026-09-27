@@ -279,7 +279,9 @@ def test_minimax_h3_new_caption_and_i2v_reuse_the_first_graphs():
     assert graphs_per_render(True)[2:] == [0, 0, 0]
 
 
-@pytest.mark.skipif(not dt.unbacked_supported(), reason = "torch lacks compiler.config.unbacked_sources")
+@pytest.mark.skipif(
+    not dt.unbacked_supported(), reason = "torch lacks compiler.config.unbacked_sources"
+)
 def test_minimax_h3_first_render_compiles_the_block_once():
     """temb has 1 row on the first step and 2 after it: a backed symbol specialises the 1 and compiles twice."""
     from torch._dynamo.utils import counters
