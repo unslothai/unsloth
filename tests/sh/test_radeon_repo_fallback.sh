@@ -62,14 +62,12 @@ assert_eq "connection refused -> inconclusive" \
 assert_eq "timeout -> inconclusive" \
     "fail answered=inconclusive" "$(run_fetch 28 000)"
 
-# curl -w still reports 200 when the body is cut off mid-transfer; the partial listing must not be used.
 _partial='<a href="torch-2.9.0%2Brocm7.2.4-cp312-cp312-linux_x86_64.whl">torch</a>'
 assert_eq "HTTP 200 truncated by a timeout -> fetch fails, inconclusive" \
     "fail answered=inconclusive" "$(run_fetch 28 200 "$_partial")"
 assert_eq "HTTP 200 truncated by a reset -> fetch fails, inconclusive" \
     "fail answered=inconclusive" "$(run_fetch 56 200 "$_partial")"
 
-# A newline-only 200 body stays a failed fetch, as before -w, so the X.Y retry still runs.
 _curl_dir=$(mktemp -d)
 cat > "$_curl_dir/curl" <<'STUB'
 #!/bin/sh
