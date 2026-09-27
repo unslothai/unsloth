@@ -1981,8 +1981,14 @@ export async function buildLocalTokenCountExtras(
   // tools-on default answer and the server renders a catalog the completion does not.
   // No budget, because the completion sends none either, so a policy that injects tools
   // past this false gets the server default on both sides.
+  // The completion always sends thread_id; the server dates a thread's prompt from it.
+  const threadField = threadId ? { thread_id: threadId } : {};
   if (!supportsTools) {
-    return { enable_tools: false, bypass_permissions: bypassPermissions };
+    return {
+      enable_tools: false,
+      bypass_permissions: bypassPermissions,
+      ...threadField,
+    };
   }
 
   const ragProjectId = await resolveProjectId(threadId);
@@ -2006,7 +2012,11 @@ export async function buildLocalTokenCountExtras(
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
     // along because `--enable-tools` still outranks that false in _effective_enable_tools.
-    return { enable_tools: false, bypass_permissions: bypassPermissions };
+    return {
+      enable_tools: false,
+      bypass_permissions: bypassPermissions,
+      ...threadField,
+    };
   }
 
   return {
@@ -2032,7 +2042,7 @@ export async function buildLocalTokenCountExtras(
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
     // compaction nudge in the prompt whether or not RAG is on, and the completion sends it here.
-    ...(threadId ? { thread_id: threadId } : {}),
+    ...threadField,
     // Armed research puts the deep_research schema in the prompt, so the count carries it.
     ...(deepResearchEnabled ? { deep_research_armed: true } : {}),
     // Keeps search_knowledge_base and its grounding nudge in the prompt. No retrieval runs for
