@@ -116,9 +116,13 @@ Check "the reader delegates straight to the Python rung" `
     ($rawBlock -match '\$raw = Read-NvidiaLibraryRawViaPython -TimeoutMs \$TimeoutMs\b')
 Check "only a timed-out first child earns the CUDA-only retry" `
     (($rawBlock -match 'if \(-not \$script:NvidiaPythonProbeTimedOut\) \{ return \$raw \}') -and
-     ($rawBlock -match 'Read-NvidiaLibraryRawViaPython -TimeoutMs \$TimeoutMs -SkipNvml'))
+     ($rawBlock -match 'Read-NvidiaLibraryRawViaPython -TimeoutMs \$childMs -SkipNvml'))
 Check "the per-reader bound defaults to 30s" ($rawBlock -match 'param\(\[int\]\$TimeoutMs = 30000\)')
-Check "the whole budget goes to it, not a remainder" ($rawBlock -notmatch 'remainingMs')
+Check "both children share one deadline" ($rawBlock -match '\$deadline = \(Get-Date\)\.AddMilliseconds\(\$TimeoutMs \* 2\)')
+Check "the retry gets what is left, less 2 s to reap it, capped at one bound" `
+    ($rawBlock -match '\$childMs = \$remainingMs - 2000; if \(\$childMs -gt \$TimeoutMs\) \{ \$childMs = \$TimeoutMs \}')
+Check "an exhausted budget skips the retry entirely" ($rawBlock -match 'if \(\$remainingMs -lt 3000\) \{ return "" \}')
+Check "the reader itself avoids [math], which CLM refuses" ($rawBlock -notmatch '\[math\]::Min')
 Check "there is no emitted rung left to attempt first" ($rawBlock -notmatch 'Get-NvidiaLibraryProbeType|\$native')
 Check "a throw in the rung is an empty answer, not a failed install" ($rawBlock -match 'catch \{ return "" \}')
 foreach ($file in @($installPs1, $setupPs1)) {
@@ -391,26 +395,30 @@ Check "the launcher sets the switch only for a -SkipNvml child" `
     (($pyCode -match 'if \(\$SkipNvml\) \{ \$env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = "1" \}') -and
      ($pyCode -match 'finally \{[\s\S]*Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML'))
 
-function Invoke-RawWithStub($outcomes) {
+function Invoke-RawWithStub($outcomes, [int]$TimeoutMs = 30000, [int]$TimeoutSleepMs = 0) {
     $script:StubCalls = @()
     $script:StubOutcomes = [System.Collections.ArrayList]@($outcomes)
+    $script:StubSleepMs = $TimeoutSleepMs
     return & {
         function Read-NvidiaLibraryRawViaPython {
             param([int]$TimeoutMs = 10000, [switch]$SkipNvml)
             $script:StubCalls += , @{ TimeoutMs = $TimeoutMs; SkipNvml = [bool]$SkipNvml }
             $next = $script:StubOutcomes[0]; $script:StubOutcomes.RemoveAt(0)
             $script:NvidiaPythonProbeTimedOut = ($next -eq "TIMEOUT")
-            if ($next -eq "TIMEOUT") { return "" }
+            if ($next -eq "TIMEOUT") {
+                if ($script:StubSleepMs -gt 0) { Start-Sleep -Milliseconds $script:StubSleepMs }
+                return ""
+            }
             return $next
         }
-        Read-NvidiaLibraryRaw -TimeoutMs 30000
+        Read-NvidiaLibraryRaw -TimeoutMs $TimeoutMs
     }
 }
 $got = Invoke-RawWithStub @("TIMEOUT", "cuda;12;8;8.9")
 Check "stub: a timed-out first child is followed by exactly one more" ($script:StubCalls.Count -eq 2)
 Check "stub: the first child reads NVML, the second skips it" `
     ($script:StubCalls.Count -eq 2 -and -not $script:StubCalls[0].SkipNvml -and $script:StubCalls[1].SkipNvml)
-Check "stub: each child gets the whole 30s per-reader bound" `
+Check "stub: an instant timeout leaves the retry a whole 30s bound, capped at one" `
     ($script:StubCalls.Count -eq 2 -and $script:StubCalls[0].TimeoutMs -eq 30000 -and $script:StubCalls[1].TimeoutMs -eq 30000)
 Check "stub: the CUDA-only answer is returned" ($got -eq "cuda;12;8;8.9")
 foreach ($row in @(
@@ -421,6 +429,20 @@ foreach ($row in @(
     $got = Invoke-RawWithStub $row[1]
     Check $row[0] ($script:StubCalls.Count -eq $row[2] -and $got -eq $row[3])
 }
+# Shared deadline 2 x 1500 ms; the first child burns 1200 ms of it, leaving under 3 s.
+$got = Invoke-RawWithStub @("TIMEOUT", "cuda;12;8;8.9") -TimeoutMs 1500 -TimeoutSleepMs 1200
+Check "stub: no CUDA-only child when under 3 s of the shared budget remain" ($script:StubCalls.Count -eq 1 -and $got -eq "")
+# Shared deadline 2 x 4000 ms; the first child hangs for 3000 ms. Each child's bound leaves 2 s to
+# reap it, so the CUDA-only child gets what is left minus that, and the pair ends by the deadline.
+$got = Invoke-RawWithStub @("TIMEOUT", "cuda;12;8;8.9") -TimeoutMs 4000 -TimeoutSleepMs 3000
+Check "stub: every child's bound leaves 2 s of the shared deadline to reap it" (
+    $script:StubCalls.Count -eq 2 -and $script:StubCalls[0].TimeoutMs -eq 4000 -and
+    $script:StubCalls[1].TimeoutMs -le 3000 -and $script:StubCalls[1].TimeoutMs -ge 2000)
+# Shared deadline 2 x 5000 ms; the first child burns 5000 ms, so the retry gets only the rest.
+$got = Invoke-RawWithStub @("TIMEOUT", "cuda;12;8;8.9") -TimeoutMs 5000 -TimeoutSleepMs 5000
+Check "stub: the CUDA-only child gets what is left of the shared budget, not a fresh bound" `
+    ($script:StubCalls.Count -eq 2 -and $script:StubCalls[0].TimeoutMs -eq 5000 -and
+     $script:StubCalls[1].TimeoutMs -lt 5000 -and $script:StubCalls[1].TimeoutMs -ge 2000 -and $got -eq "cuda;12;8;8.9")
 
 # End to end through the real launcher, with a fake interpreter that logs the switch it sees and
 # hangs like a wedged NVML unless it is set. POSIX sh only: a .cmd stand-in's sleeping child would
@@ -472,7 +494,7 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
         $env:UNSLOTH_FAKE_PY_LOG = $fakeLog
         # A value already in this shell must reach no first child and must survive the calls.
         $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = "caller"
-        $raw = { Read-NvidiaLibraryRaw -TimeoutMs 2000 }
+        $raw = { Read-NvidiaLibraryRaw -TimeoutMs 5000 }
         $viaPython = { Read-NvidiaLibraryRawViaPython -TimeoutMs 5000 }
 
         $seen = Invoke-Fake "hang" $raw

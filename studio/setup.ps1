@@ -2011,10 +2011,17 @@ main()
 # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
 function Read-NvidiaLibraryRaw {
     param([int]$TimeoutMs = 30000)
+    # One deadline for both children, as the two in-process readers had: the first gets a whole
+    # bound, and only a hung NVML earns a CUDA-only child with what is left, less the 2 s kept back
+    # to reap the child it may have to kill. Compared by hand: CLM refuses [math].
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMs * 2)
     $raw = ""
     try { $raw = Read-NvidiaLibraryRawViaPython -TimeoutMs $TimeoutMs } catch { return "" }
     if (-not $script:NvidiaPythonProbeTimedOut) { return $raw }
-    try { return (Read-NvidiaLibraryRawViaPython -TimeoutMs $TimeoutMs -SkipNvml) } catch { return "" }
+    $remainingMs = [int]($deadline - (Get-Date)).TotalMilliseconds
+    if ($remainingMs -lt 3000) { return "" }
+    $childMs = $remainingMs - 2000; if ($childMs -gt $TimeoutMs) { $childMs = $TimeoutMs }
+    try { return (Read-NvidiaLibraryRawViaPython -TimeoutMs $childMs -SkipNvml) } catch { return "" }
 }
 
 # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
