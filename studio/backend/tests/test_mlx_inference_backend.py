@@ -7580,6 +7580,8 @@ def _constrained_vlm_reply(
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
     backend._processor = SimpleNamespace(chat_template = "template", all_special_tokens = specials)
+    backend._is_vlm = True
+    backend._reads_vision = True
     args = ([{"role": "user", "content": "hi"}], [], 0.7, 0.9, 40, 0.01, 64, 1.0, None)
     return list(backend._generate_vlm(*args, response_format = {"type": "json_object"}))
 
@@ -8003,3 +8005,39 @@ def test_turboquant_sends_its_width_on_the_reused_vlm_session_too(monkeypatch):
         assert kwargs["kv_quant_scheme"] == "turboquant"
         assert kwargs["quantized_kv_start"] == 0
     assert "prompt_cache" in reused and "prompt_cache" not in fresh
+
+
+def test_a_turboquant_load_turns_a_pin_into_a_request_budget(monkeypatch):
+    # Same rule as mx.quantize since #11084: an enforceable pin budgets requests, it does not refuse.
+    pytest.importorskip("mlx_lm.models.cache")
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    def status(
+        _model,
+        bits,
+        refusal = "",
+    ):
+        if refusal:
+            return {"kv_bits": None, "eligibility": "refused", "reason": refusal}
+        return {"kv_bits": bits, "eligibility": "full", "reason": ""}
+
+    monkeypatch.setattr(mlx_inference, "_turboquant_status", status)
+    honours = SimpleNamespace(layers = [object(), object()])
+
+    def policy(
+        requested,
+        served,
+        refusal = "",
+    ):
+        backend = MLXInferenceBackend()
+        backend._model = honours
+        backend._is_vlm = True
+        backend._turboquant = True
+        backend._turboquant_refusal = refusal
+        quant, window, enforced, budget = backend._resolve_kv_policy(True, 3.5, requested, served)
+        return quant["kv_bits"], window, enforced, budget
+
+    assert policy(8192, 8192) == (3.5, None, False, 8192)
+    assert policy(0, 262144) == (3.5, None, False, None)
+    assert policy(8192, 8192, "refused") == (None, 8192, True, None)
