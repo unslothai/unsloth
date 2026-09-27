@@ -373,6 +373,7 @@ def apply_speed_optims(
     applied = {
         "channels_last": False,
         "vae_fp16_decode": False,
+        "vae_single_frame": False,
         "cudnn_benchmark": False,
         "tf32": False,
         "fp16_accum": False,
@@ -391,12 +392,15 @@ def apply_speed_optims(
     on_cuda = getattr(target, "device", None) == "cuda"
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
 
+    # Near-lossless (PSNR ~60 dB): a one-frame image through the Qwen-Image causal 3D VAE as a 2D conv net. Before
+    # channels_last, which a 5D-weight VAE otherwise refuses outright.
+    applied["vae_single_frame"] = _vae_single_frame(pipe, logger)
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
     applied["channels_last"] = _vae_channels_last(pipe, logger)
     # Near-lossless, not bit-identical, so never on "off" (returned above).
     applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
 
-    if on_cuda:
+    if on_cuda and not _cudnn_benchmark_pointless(pipe):
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
 
     if on_cuda:
@@ -493,9 +497,37 @@ def fp16_unet_offloaded(target: Any, pipe: Any, *, offload_active: bool) -> bool
     )
 
 
+def _vae_single_frame(pipe: Any, logger: Any) -> bool:
+    try:
+        from . import diffusion_vae_single_frame  # noqa: PLC0415
+        return diffusion_vae_single_frame.install(getattr(pipe, "vae", None), logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "vae single-frame path", exc)
+        return False
+
+
+# VAEs MEASURED slower in channels_last; they keep the contiguous layout. AutoencoderKLQwenImage21 (a 2D conv net with
+# channel RMS norms), 1024 decode on B200: 72.7 ms contiguous vs 89 ms channels_last.
+_VAE_CHANNELS_LAST_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
+
+
+# DiT pipelines whose only conv net is one of these VAEs: cudnn.benchmark MEASURED no steady gain and a re-tune on
+# every new resolution. AutoencoderKLQwenImage21, Qwen-Image-2.1 fp8 on B200: steady decode 75.8 ms off vs 77.8 ms on,
+# first decode at a new resolution 0.08-0.17 s off vs 0.74-1.86 s on (each new size, every session).
+_CUDNN_BENCHMARK_DENY_VAES: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
+
+
+def _cudnn_benchmark_pointless(pipe: Any) -> bool:
+    if _denoiser_unet(pipe) is not None:
+        return False
+    return type(getattr(pipe, "vae", None)).__name__ in _CUDNN_BENCHMARK_DENY_VAES
+
+
 def _vae_channels_last(pipe: Any, logger: Any) -> bool:
     vae = getattr(pipe, "vae", None)
     if vae is None or not hasattr(vae, "to"):
+        return False
+    if type(vae).__name__ in _VAE_CHANNELS_LAST_DENY:
         return False
     try:
         import torch
@@ -590,7 +622,7 @@ def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
     if mode == SPEED_MAX:
         # An auto-dynamic DiT generalises a dimension once and then reuses that graph for unseen values, so a new
         # (width, height, batch) is not a new artifact; the Dynamo graph-count delta marks the renders that compiled.
-        return _denoiser_unet(pipe) is not None or not auto_dynamic_active(pipe)
+        return _denoiser_unet(pipe) is not None or not _dits_auto_dynamic(pipe)
     if mode != SPEED_DEFAULT:
         return False
     return (
@@ -638,7 +670,20 @@ def _class_merges_streams(cls: type, broad: bool = False) -> bool:
     return bool(_STREAM_MERGE_SOURCE.search(source))
 
 
+def _divisibility_proof_available() -> bool:
+    """Whether inductor proves ``(k*a + k*b) % (a + b) == 0`` (torch 2.14+, or the backport; see diffusion_inductor_backports)."""
+    try:
+        from . import diffusion_inductor_backports  # noqa: PLC0415 - imports torch
+        return diffusion_inductor_backports.proof_available()
+    except Exception:  # noqa: BLE001 - unanswerable: keep the static fallback
+        return False
+
+
 def _dits_merge_streams(dits: list) -> bool:
+    """Whether a stream-merging block must compile static. Not once inductor can prove the split (the CantSplit root
+    cause): FLUX.1 then compiles dynamic like every other DiT, one artifact across resolutions."""
+    if _divisibility_proof_available():
+        return False
     broad = os.environ.get(_STREAM_MERGE_DETECT_ENV) == "1"
     seen: set[type] = set()
     for transformer in dits:
@@ -673,6 +718,7 @@ def _compile_repeated_blocks(
     unet = _denoiser_unet(pipe) if not dits else None
     if not dits and unet is None:
         return False
+    _install_inductor_backports(logger)
     # default: dynamic=True, fast cold start, no recompile on resolution change. max: max-autotune-no-cudagraphs +
     # automatic dynamic (None): the first shape compiles static and autotuned, and a dimension that then changes is
     # generalised once. dynamic=False recompiled on every new prompt length for DiTs whose blocks see the text tokens
@@ -778,13 +824,26 @@ def _compile_repeated_blocks(
     return engaged
 
 
+def _install_inductor_backports(logger: Any) -> bool:
+    """torch 2.12 / 2.13 cannot prove ``(k*a - k*b) % (a - b) == 0`` and raise inductor ``CantSplit`` on it (fixed in
+    2.14); a probe-gated backport of that proof, a no-op on every other torch. Never fails a load."""
+    try:
+        from . import diffusion_inductor_backports
+        return diffusion_inductor_backports.install(logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "inductor backports", exc)
+        return False
+
+
 def compile_dynamic(transformer: Any, dynamic: Optional[bool]) -> Optional[bool]:
     """The ``dynamic`` a DiT is actually compiled with, so compile-cache fingerprints key on the same value.
 
     dynamic=True makes even the constant segment starts symbolic, and on Qwen-Image-2.1 the attention output cat
-    (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction, which inductor
-    cannot split (CantSplit, every render failed). Automatic dynamic (None) compiles the first shapes static and only
-    generalises what actually varies: stable after ~3 recompiles, same numerics."""
+    (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction. torch 2.12 / 2.13
+    cannot prove that split exact (CantSplit, every render failed); ``diffusion_inductor_backports`` restores the proof,
+    after which dynamic=True compiles, but measured slower than automatic dynamic (Qwen-Image-2.1 fp8 1024px on B200:
+    +6 s cold, +1.5% per step). Automatic dynamic (None) plus ``diffusion_dynamic_text`` compiles once and did not
+    recompile across 6 prompt lengths and 3 resolutions, so it stays."""
     if dynamic and transformer is not None and _carries_torchao_weights(transformer):
         return None
     return dynamic
@@ -970,7 +1029,14 @@ def settle_compile_fallback(
 
 
 def auto_dynamic_active(pipe: Any) -> bool:
-    """Whether any denoiser DiT compiled with automatic dynamic (the max tier, or torchao weights on the default)."""
+    """Whether any denoiser DiT (the max tier, or torchao weights on the default) or the VAE decode compiled with
+    automatic dynamic, whose generalising recompile must reach the compile-cache bundle."""
+    if getattr(getattr(pipe, "vae", None), "_unsloth_auto_dynamic", False) is True:
+        return True
+    return _dits_auto_dynamic(pipe)
+
+
+def _dits_auto_dynamic(pipe: Any) -> bool:
     return any(getattr(t, "_unsloth_auto_dynamic", False) for t in _guarded_dits(pipe))
 
 
@@ -1006,11 +1072,30 @@ COMPILE_VAE_ENV = "UNSLOTH_DIFFUSION_COMPILE_VAE"
 _VAE_TRUE_TOKENS = ("1", "true", "yes", "on")
 _VAE_FALSE_TOKENS = ("0", "false", "no", "off")
 
-# Not a correctness list: these decode correctly compiled but measured SLOWER than eager.
+# Not a correctness list: these decode correctly compiled but measured SLOWER than eager. The Qwen-Image VAE leaves
+# the list once its single-frame 2D path is armed (diffusion_vae_single_frame): the stock causal-3D graph compiled
+# dynamic ran 300-370 ms vs 120-180 ms eager at 1024 (B200), the 2D graph compiled static runs ~35 ms.
 _VAE_COMPILE_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage", "AutoencoderKLWan"})
 
 # ``auto`` compiles only measured VAEs: video DiTs also pass through apply_speed_optims.
-_VAE_COMPILE_ALLOW: frozenset[str] = frozenset({"AutoencoderKL"})
+_VAE_COMPILE_ALLOW: frozenset[str] = frozenset(
+    {"AutoencoderKL", "AutoencoderKLFlux2", "AutoencoderKLQwenImage"}
+)
+
+# Automatic dynamic (first shape static), not dynamic=True: symbolic shapes switch off inductor's conv layout
+# optimisation and triple the cold compile. B200 1024 decode, static vs dynamic: FLUX.1 AutoencoderKL 27.0 vs 26.5 ms
+# (eager 117 ms), cold 24 vs 71 s; FLUX.2 55 vs 82 ms, 30 vs 79 s; Qwen-Image 2D 35 vs 50 ms, 11 vs 41 s. A second
+# distinct shape generalises once, like the max-tier DiT.
+_VAE_COMPILE_AUTO_DYNAMIC: frozenset[str] = frozenset(
+    {"AutoencoderKL", "AutoencoderKLFlux2", "AutoencoderKLQwenImage"}
+)
+
+
+def _vae_compile_name_ok(vae: Any) -> bool:
+    name = type(vae).__name__
+    if name == "AutoencoderKLQwenImage" and getattr(vae, "_unsloth_single_frame", False):
+        return True
+    return name in _VAE_COMPILE_ALLOW and name not in _VAE_COMPILE_DENY
 
 
 def vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
@@ -1029,8 +1114,7 @@ def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
         return True
     if speed_mode != SPEED_MAX:
         return False
-    name = type(getattr(pipe, "vae", None)).__name__
-    return name in _VAE_COMPILE_ALLOW and name not in _VAE_COMPILE_DENY
+    return _vae_compile_name_ok(getattr(pipe, "vae", None))
 
 
 def _vae_eager_when_tiled(pipe: Any) -> bool:
@@ -1105,12 +1189,15 @@ def _compile_vae_decode(
     # A dual-DiT family calls apply_speed_optims twice over the same pipe.
     if getattr(vae, "_unsloth_compiled_decode", False):
         return True
+    _install_inductor_backports(logger)
     if _vae_declares_repeated_blocks(vae):
         return _compile_vae_regionally(vae, logger, max_autotune = max_autotune)
     try:
         import torch
 
-        kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": True}
+        # A U-Net keeps the dynamic decode its whole-module compile was measured with.
+        auto = _denoiser_unet(pipe) is None and type(vae).__name__ in _VAE_COMPILE_AUTO_DYNAMIC
+        kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": None if auto else True}
         if max_autotune:
             kwargs["mode"] = "max-autotune-no-cudagraphs"
         compiled = torch.compile(decode, **kwargs)
@@ -1118,6 +1205,7 @@ def _compile_vae_decode(
             vae, compiled, decode, logger, eager_when_tiled = eager_when_tiled
         )
         vae._unsloth_compiled_decode = True
+        vae._unsloth_auto_dynamic = auto
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "vae decode compile", exc)
