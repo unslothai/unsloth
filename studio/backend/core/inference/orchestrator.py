@@ -1920,10 +1920,10 @@ class InferenceOrchestrator:
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
         audio_device: Optional[str] = None,
         on_prior_worker_released: Optional[Callable[[], None]] = None,
-        n_parallel: Optional[int] = None,
         cache_environment: Optional[Mapping[str, str]] = None,
         anonymous_hf_access: bool = False,
         audio_codec_path: Optional[str] = None,
+        n_parallel: Optional[int] = None,
     ) -> bool:
         """Load a model for inference."""
         from core.inference.llama_server_args import clamp_parallel_slots

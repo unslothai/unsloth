@@ -206,6 +206,8 @@ def test_orchestrator_cmd_carries_all_sampling_params():
     from core.inference.orchestrator import InferenceOrchestrator
 
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o.models, o.active_model_name = {}, None
+    o._stop_ledger = o._pending_teardowns = None
     o._stop_ledger = None
     o._pending_teardowns = None
     cmd = o._build_generate_cmd(
@@ -261,6 +263,8 @@ def test_orchestrator_cmd_carries_the_tool_protocol_flag():
     from core.inference.orchestrator import InferenceOrchestrator
 
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o.models, o.active_model_name = {}, None
+    o._stop_ledger = o._pending_teardowns = None
     base = dict(messages = [{"role": "user", "content": "hi"}], tools = [])
     assert (
         o._build_generate_cmd("r", None, tool_protocol_active = True, **base)["tool_protocol_active"]
@@ -291,7 +295,7 @@ def test_the_worker_gates_the_tool_protocol_flag_on_the_backend_signature():
 
     from core.inference import worker
 
-    src = inspect.getsource(worker._handle_generate)
+    src = inspect.getsource(worker._generation_kwargs)
     gated = src[src.index("for gated in (") : src.index("for gated in (") + 200]
     assert '"tool_protocol_active"' in gated, "the flag must be gated on _backend_declares"
 
@@ -366,6 +370,8 @@ def test_a_video_clip_crosses_the_worker_boundary_only_to_a_backend_that_takes_i
     from core.inference.worker import _handle_generate
 
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o.models, o.active_model_name = {}, None
+    o._stop_ledger = o._pending_teardowns = None
     assert "video_base64" not in o._build_generate_cmd("r", None, messages = [])
     cmd = o._build_generate_cmd(
         "r", None, messages = [{"role": "user", "content": "hi"}], video_b64 = "AAAA"
@@ -425,12 +431,14 @@ def test_both_orchestrator_entry_points_forward_the_clip_into_the_command():
 
     built = []
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o.models, o.active_model_name = {}, None
+    o._stop_ledger = o._pending_teardowns = None
     o._gen_lock = threading.Lock()
     o._unload_pending = False
-    o._exclusive_tts_pending = False
+    o._worker_reserved_for = None
     o.active_model_name = "m"
     o._ensure_subprocess_alive = lambda: True
-    o._wait_dispatcher_idle = lambda: None
+    o._wait_worker_idle = lambda *a, **k: True
     o._start_dispatcher = lambda: False
 
     def _build(*_args, **kwargs):
