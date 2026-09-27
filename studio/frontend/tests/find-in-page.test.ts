@@ -1511,6 +1511,20 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
   assert.equal(/\bw-(?:40|64)\b/.test(input[1]), false);
 });
 
+// The toasts' offset under the open bar is written against the bar's top and h-13.
+const FIND_SURFACE_GEOMETRY =
+  /className="find-bar-surface [^"]*top-\[calc\(var\(--studio-content-top-inset,0px\)\+3\.5rem\)\] [^"]*\bh-13\b/;
+const TOAST_UNDER_FIND_BAR =
+  /offset-top: calc\(var\(--studio-content-top-inset, 0px\) \+ 3\.5rem \+ 3\.25rem \* var\(--ui-space-scale, 1\) \+ 0\.5rem\) !important;\s*--mobile-offset-top: calc\(var\(--studio-content-top-inset, 0px\) \+ 3\.5rem \+ 3\.25rem \* var\(--ui-space-scale, 1\) \+ 0\.5rem\) !important;/;
+
+test("toasts clear the bar while it is open", () => {
+  assert.match(FIND_BAR, FIND_SURFACE_GEOMETRY);
+  assert.match(FIND_IN_PAGE, FIND_SURFACE_GEOMETRY);
+  const toaster = '[data-sonner-toaster][data-y-position="top"]';
+  const rule = cssRule(INDEX, `:root:has(.find-bar-surface) ${toaster}`);
+  assert.match(rule, TOAST_UNDER_FIND_BAR);
+});
+
 test("the reveal looks again while the scroll is still moving", async () => {
   // Such a subtree contributes placeholder height until it renders, clamping the first scroll
   // 3415px short on all three engines. The node suite cannot see a scroll.

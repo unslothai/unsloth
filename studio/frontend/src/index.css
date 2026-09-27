@@ -5425,6 +5425,13 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	box-shadow: 0 4px 20px 6px var(--background);
 }
 
+/* The find bar holds the top-right corner the toasts use, so while it is open they stack under it:
+   its top-[content inset + 3.5rem] and h-13, then an 8px gap. */
+:root:has(.find-bar-surface) [data-sonner-toaster][data-y-position="top"] {
+	--offset-top: calc(var(--studio-content-top-inset, 0px) + 3.5rem + 3.25rem * var(--ui-space-scale, 1) + 0.5rem) !important;
+	--mobile-offset-top: calc(var(--studio-content-top-inset, 0px) + 3.5rem + 3.25rem * var(--ui-space-scale, 1) + 0.5rem) !important;
+}
+
 @layer components {
 	/* Align the arrow with page content while retaining its hit area. */
 	.settings-back-button {
