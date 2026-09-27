@@ -3510,7 +3510,9 @@ def test_completion_only_reads_the_columns_the_split_actually_yields():
     from datasets import Dataset
 
     ds = Dataset.from_list([{"prompt": "a", "completion": "b", "input_ids": [1, 2]}])
-    ds.set_format("numpy", columns = ["input_ids"], output_all_columns = False)
+    # Plain python rows: the narrowing is format-type independent, and datasets<4's numpy/torch
+    # formatters import torchvision.io.VideoReader, which torchvision 0.28 removed.
+    ds.set_format(None, columns = ["input_ids"], output_all_columns = False)
     assert "completion" in ds.column_names
     assert ds.format.get("columns") == ["input_ids"]
     assert "completion" not in ds[0]
