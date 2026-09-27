@@ -2319,5 +2319,6 @@ def test_the_mlx_grammar_engine_is_pinned_skippable_and_never_fatal() -> None:
     source = STACK_PATH.read_text(encoding = "utf-8")
     step = source[source.index("# 11d.") : source.index("# 12. Patch metadata")]
     assert "_exact_distribution_spec_is_installed(_LLGUIDANCE_PIN)" in step
+    assert "not _full_deps_requested() and" in step
     assert "except SystemExit:" in step
     assert "--upgrade" not in step
