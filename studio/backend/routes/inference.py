@@ -6024,11 +6024,7 @@ def _wants_current_date(request: Any) -> bool:
 
 
 def _current_date_parts(request: Any, thread_id: Any) -> tuple[str, str]:
-    """(system date line, note for the latest user turn).
-
-    A Studio thread states its start date so the prompt prefix, and the server's KV cache of it,
-    survive midnight; once today differs, the note on the newest user turn carries the new date.
-    """
+    """(system line, user-turn note); a thread keeps its start date so its cached prefix survives."""
     date_line = current_date_prompt_line(request = request)
     if not date_line or not thread_id or request is None or not _wants_current_date(request):
         return date_line, ""
