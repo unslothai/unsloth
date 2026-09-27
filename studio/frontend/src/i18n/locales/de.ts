@@ -264,7 +264,7 @@ export const de = {
       moveTo: "Verschieben nach",
       sectionsHeading: "Abschnitte",
       removeFromProject: "Aus Projekt entfernen",
-      newSectionEllipsis: "Neuer Abschnitt…",
+      newSection: "Neuer Abschnitt",
       removeFromSection: "Aus Abschnitt entfernen",
       // Shown in a section with nothing filed in it yet.
       empty: "Chats oder Projekte hierher ziehen",

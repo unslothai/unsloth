@@ -261,7 +261,7 @@ export const ar = {
       moveTo: "نقل إلى",
       sectionsHeading: "الأقسام",
       removeFromProject: "إزالة من المشروع",
-      newSectionEllipsis: "قسم جديد…",
+      newSection: "قسم جديد",
       removeFromSection: "إزالة من القسم",
       // Shown in a section with nothing filed in it yet.
       empty: "اسحب المحادثات أو المشاريع إلى هنا",

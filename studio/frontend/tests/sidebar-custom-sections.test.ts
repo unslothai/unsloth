@@ -502,7 +502,7 @@ test("reordering Pinned keeps a pinned row's section for when it is unpinned", (
 test("each list header's menu carries only what that list is about, as in ChatGPT", () => {
   const menu = APP_SIDEBAR.slice(
     APP_SIDEBAR.indexOf("function renderSidebarHeaderMenu("),
-    APP_SIDEBAR.indexOf("function renderNewSectionItem("),
+    APP_SIDEBAR.indexOf("function renderSectionItems("),
   );
   const branch = (from: string, to: string) =>
     menu.slice(menu.indexOf(from), to ? menu.indexOf(to) : undefined);
@@ -642,7 +642,7 @@ test("the sidebar and account menus share one flat surface and type; other menus
   );
   assert.match(css, /\.app-user-menu\.sidebar-menu :is\([\s\S]*?\) \{\n\s*@apply text-ui-14;\n\s*font-weight: 400;/);
   // Every sidebar menu is marked, the account menu and its Help submenu included.
-  assert.equal((APP_SIDEBAR.match(/"unsloth-plus-menu sidebar-row-menu sidebar-menu/g) ?? []).length, 14);
+  assert.equal((APP_SIDEBAR.match(/"unsloth-plus-menu sidebar-row-menu sidebar-menu/g) ?? []).length, 13);
   assert.match(APP_SIDEBAR, /className="app-user-menu sidebar-menu menu-soft-surface-up/);
 });
 
@@ -713,7 +713,7 @@ test("sidebar and account submenus open clear of their menu, first rows level", 
     /sideOffset: Math\.round\(SIDEBAR_MENU_PAD_X \* uiSpaceScale \+ SUBMENU_GAP_PX\),\n\s*alignOffset: -Math\.round\(SIDEBAR_MENU_PAD_Y \* uiSpaceScale \+ MENU_ROW_MARGIN_PX\),/,
   );
   assert.match(APP_SIDEBAR, /sideOffset: ACCOUNT_MENU_PAD_X \+ SUBMENU_GAP_PX,/);
-  assert.equal((APP_SIDEBAR.match(/\{\.\.\.sidebarSubmenuOffsets\}/g) ?? []).length, 6);
+  assert.equal((APP_SIDEBAR.match(/\{\.\.\.sidebarSubmenuOffsets\}/g) ?? []).length, 5);
   assert.equal((APP_SIDEBAR.match(/\{\.\.\.accountSubmenuOffsets\}/g) ?? []).length, 1);
   // No sidebar submenu keeps a hand-set offset that would overlap its menu.
   assert.doesNotMatch(APP_SIDEBAR, /SubContent[^>]*sideOffset=\{[0-9]+\}[^>]*sidebar-menu/);

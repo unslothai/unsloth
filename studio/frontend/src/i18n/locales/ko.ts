@@ -261,7 +261,7 @@ export const ko = {
       moveTo: "이동",
       sectionsHeading: "섹션",
       removeFromProject: "프로젝트에서 제거",
-      newSectionEllipsis: "새 섹션…",
+      newSection: "새 섹션",
       removeFromSection: "섹션에서 제거",
       // Shown in a section with nothing filed in it yet.
       empty: "채팅이나 프로젝트를 여기로 드래그하세요",

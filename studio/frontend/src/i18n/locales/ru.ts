@@ -263,7 +263,7 @@ export const ru = {
       moveTo: "Переместить в",
       sectionsHeading: "Разделы",
       removeFromProject: "Убрать из проекта",
-      newSectionEllipsis: "Новый раздел…",
+      newSection: "Новый раздел",
       removeFromSection: "Убрать из раздела",
       // Shown in a section with nothing filed in it yet.
       empty: "Перетащите сюда чаты или проекты",

@@ -99,9 +99,9 @@ test("an empty open folder says it is empty", () => {
   assert.match(APP_SIDEBAR, /if \(chats\.length === 0\) rows \+= 1;/);
 });
 
-// A chat's "Move to" holds actions and destinations, projects and sections together. A rule
-// separates the actions above from the destinations, each group under its heading.
-test("a chat's Move to submenu puts its actions above its projects and sections", () => {
+// A chat's "Move to" holds projects and sections, each its own group under a heading: its New
+// first, then the destinations, then its Remove last and only where there is one to leave.
+test("a chat's Move to submenu groups projects and sections, New first and Remove last", () => {
   const sub = APP_SIDEBAR.slice(
     APP_SIDEBAR.indexOf("{/* Projects and sections in one place"),
     APP_SIDEBAR.indexOf("<span>Export</span>"),
@@ -109,28 +109,37 @@ test("a chat's Move to submenu puts its actions above its projects and sections"
   assert.ok(sub.length > 0, "the Move to submenu moved");
   const at = {
     trigger: sub.indexOf('<span>{t("shell.sections.moveTo")}</span>'),
-    newProject: sub.indexOf("<span>New project</span>"),
-    newSection: sub.indexOf("{renderNewSectionItem(P, { chatIds: [item.id] })}"),
-    sources: sub.indexOf("<span>Project sources</span>"),
-    rule: sub.indexOf("<P.Separator />"),
     projects: sub.indexOf('<P.Label>{t("shell.navigation.projects")}</P.Label>'),
+    newProject: sub.indexOf("<span>New project</span>"),
+    destinations: sub.indexOf("{projects.map((project) => ("),
     removeProject: sub.indexOf('t("shell.sections.removeFromProject")'),
-    sections: sub.indexOf("heading: true,"),
+    rule: sub.indexOf("<P.Separator />"),
+    sections: sub.indexOf("{renderSectionItems(P, {"),
   };
   for (const [name, index] of Object.entries(at)) {
     assert.notEqual(index, -1, `${name} is gone from the Move to submenu`);
   }
-  assert.ok(at.trigger < at.newProject && at.newProject < at.newSection && at.newSection < at.sources);
-  assert.ok(at.sources < at.rule && at.rule < at.projects && at.projects < at.removeProject);
-  assert.ok(at.removeProject < at.sections, "sections come after projects");
-  // Remove from project only where there is one to leave, not a greyed-out "Recents".
+  const order = Object.values(at);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, "the Move to submenu is out of order");
+  // Remove from project only where there is one to leave.
   assert.match(sub, /\{item\.projectId && \(\n\s*<P\.Item onSelect=\{\(\) => void moveChatToProject\(item, null\)\}>/);
-  assert.ok(!sub.includes("<span>Recents</span>"));
-  // No separate Project or Section submenus any more.
+  // New project and New section share one icon.
+  assert.match(sub, /icon=\{PlusSignIcon\}[^\n]*\n\s*<span>New project<\/span>/);
+  const items = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("function renderSectionItems("),
+    APP_SIDEBAR.indexOf('/** "Move to" for rows that only sections take'),
+  );
+  assert.match(items, /icon=\{PlusSignIcon\}[^\n]*\n\s*<span>\{t\("shell\.sections\.newSection"\)\}<\/span>/);
+  // Sections run New section, the sections, then Remove from section, only where there is one.
+  const newSection = items.indexOf('t("shell.sections.newSection")');
+  const list = items.indexOf("{customSections.map((section) => (");
+  const remove = items.indexOf("{config.anyFiled && (");
+  assert.ok(newSection < list && list < remove, "the Sections group is out of order");
+  // No Project sources, no separate Project or Section submenus, no ellipsis on New section.
+  assert.ok(!APP_SIDEBAR.includes("<span>Project sources</span>"));
   assert.ok(!APP_SIDEBAR.includes("<span>Project</span>"));
   assert.ok(!APP_SIDEBAR.includes('t("shell.sections.section")'));
-  assert.ok(!APP_SIDEBAR.includes("<span>Move to project</span>"));
-  assert.ok(!APP_SIDEBAR.includes("<span>Save to project sources</span>"));
+  assert.ok(!APP_SIDEBAR.includes("newSectionEllipsis"));
 });
 
 // The folder menu: pin beside Project home, Edit for the dialog that owns the name, and no

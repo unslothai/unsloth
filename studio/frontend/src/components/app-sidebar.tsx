@@ -97,8 +97,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FolderAddIcon,
-  FolderAttachmentIcon,
   FolderExportIcon,
   FolderOpenIcon,
   Folder01Icon,
@@ -283,10 +281,7 @@ import {
   type SidebarSection,
 } from "@/features/chat";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
-import {
-  buildChatItemMarkdown,
-  saveChatItemAsProjectSource,
-} from "@/features/chat/prompt-storage/prompt-storage-dialog";
+import { buildChatItemMarkdown } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { translate, useT, type TranslationKey } from "@/i18n";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
@@ -529,13 +524,6 @@ function switchedListSort(
     return state.customSections.find((section) => section.id === sectionId)?.sort;
   }
   return state.chatSort;
-}
-
-async function saveChatToProjectSources(
-  item: SidebarItem,
-  projectId: string,
-): Promise<void> {
-  await saveChatItemAsProjectSource(item, projectId);
 }
 
 
@@ -4104,27 +4092,9 @@ export function AppSidebar() {
     if (target.selection) clearSelection();
   }
 
-  /** Starts a section with the rows in it. */
-  function renderNewSectionItem(P: RowMenuParts, target: SectionTarget) {
-    return (
-      <P.Item
-        onSelect={() =>
-          setSectionDialog({
-            mode: "create",
-            chatIds: target.chatIds,
-            projectIds: target.projectIds,
-          })
-        }
-      >
-        <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
-        <span>{t("shell.sections.newSectionEllipsis")}</span>
-      </P.Item>
-    );
-  }
-
-  /** The sections a row, or a selection of rows, can be filed into: "Remove from section" where
-   *  there is one to leave, then every section. Nothing when there are no sections. */
-  function renderSectionDestinations(
+  /** The Sections group of a "Move to": New section, every section, then "Remove from section"
+   *  last, only where a row has a section to leave. */
+  function renderSectionItems(
     P: RowMenuParts,
     config: {
       target: SectionTarget;
@@ -4134,22 +4104,26 @@ export function AppSidebar() {
       /** Whether any row is drawn in a section it was filed in, which "Remove from section"
        *  undoes. Not a pinned row: Pinned draws it, whatever section it goes back to. */
       anyFiled: boolean;
-      /** Headed, where the list shares a menu with projects. */
+      /** Headed, where the group shares a menu with the projects. */
       heading?: boolean;
     },
   ) {
     const { target } = config;
-    if (customSections.length === 0) return null;
     return (
       <>
         {config.heading && <P.Label>{t("shell.sections.sectionsHeading")}</P.Label>}
-        {/* An action, so only where there is something to undo: greyed out it read as a label. */}
-        {config.anyFiled && (
-          <P.Item onSelect={() => fileSectionTarget(target, null)}>
-            <HugeiconsIcon icon={MinusSignCircleIcon} strokeWidth={1.75} className="size-icon" />
-            <span>{t("shell.sections.removeFromSection")}</span>
-          </P.Item>
-        )}
+        <P.Item
+          onSelect={() =>
+            setSectionDialog({
+              mode: "create",
+              chatIds: target.chatIds,
+              projectIds: target.projectIds,
+            })
+          }
+        >
+          <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
+          <span>{t("shell.sections.newSection")}</span>
+        </P.Item>
         {customSections.map((section) => (
           <P.Item
             key={section.id}
@@ -4160,6 +4134,13 @@ export function AppSidebar() {
             <span className="truncate">{section.name}</span>
           </P.Item>
         ))}
+        {/* An action, so only where there is something to undo: greyed out it read as a label. */}
+        {config.anyFiled && (
+          <P.Item onSelect={() => fileSectionTarget(target, null)}>
+            <HugeiconsIcon icon={MinusSignCircleIcon} strokeWidth={1.75} className="size-icon" />
+            <span>{t("shell.sections.removeFromSection")}</span>
+          </P.Item>
+        )}
       </>
     );
   }
@@ -4184,9 +4165,7 @@ export function AppSidebar() {
           {...sidebarSubmenuOffsets}
           className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-52"
         >
-          {renderNewSectionItem(P, config.target)}
-          {customSections.length > 0 && <P.Separator />}
-          {renderSectionDestinations(P, config)}
+          {renderSectionItems(P, config)}
         </P.SubContent>
       </P.Sub>
     );
@@ -4415,68 +4394,36 @@ export function AppSidebar() {
                 {...sidebarSubmenuOffsets}
                 className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-52"
               >
-                {/* Actions above the rule, destinations below it. */}
+                {/* Two groups, each with its New first and its Remove last. */}
+                <P.Label>{t("shell.navigation.projects")}</P.Label>
                 <P.Item
                   onSelect={() => {
                     setProjectCreateMoveTarget(item);
                     setCreatingProject(true);
                   }}
                 >
-                  <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
+                  <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
                   <span>New project</span>
                 </P.Item>
-                {renderNewSectionItem(P, { chatIds: [item.id] })}
-                <P.Sub>
-                  <P.SubTrigger>
-                    <HugeiconsIcon icon={FolderAttachmentIcon} strokeWidth={1.75} className="size-icon" />
-                    <span>Project sources</span>
-                  </P.SubTrigger>
-                  <P.SubContent {...sidebarSubmenuOffsets} className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-48">
-                    {projects.length === 0 && (
-                      <P.Item disabled>No projects yet</P.Item>
-                    )}
-                    {projects.map((project) => (
-                      <P.Item
-                        key={project.id}
-                        onSelect={async () => {
-                          try {
-                            await saveChatToProjectSources(item, project.id);
-                          } catch {
-                            toast.error("Failed to save to project sources.");
-                          }
-                        }}
-                      >
-                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                        <span className="truncate">{project.name}</span>
-                      </P.Item>
-                    ))}
-                  </P.SubContent>
-                </P.Sub>
-                {(projects.length > 0 || item.projectId) && (
-                  <>
-                    <P.Separator />
-                    <P.Label>{t("shell.navigation.projects")}</P.Label>
-                    {/* An action, as Remove from section is: only where there is a project to leave. */}
-                    {item.projectId && (
-                      <P.Item onSelect={() => void moveChatToProject(item, null)}>
-                        <HugeiconsIcon icon={MinusSignCircleIcon} strokeWidth={1.75} className="size-icon" />
-                        <span>{t("shell.sections.removeFromProject")}</span>
-                      </P.Item>
-                    )}
-                    {projects.map((project) => (
-                      <P.Item
-                        key={project.id}
-                        disabled={item.projectId === project.id}
-                        onSelect={() => void moveChatToProject(item, project.id)}
-                      >
-                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                        <span className="truncate">{project.name}</span>
-                      </P.Item>
-                    ))}
-                  </>
+                {projects.map((project) => (
+                  <P.Item
+                    key={project.id}
+                    disabled={item.projectId === project.id}
+                    onSelect={() => void moveChatToProject(item, project.id)}
+                  >
+                    <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                    <span className="truncate">{project.name}</span>
+                  </P.Item>
+                ))}
+                {/* An action, as Remove from section is: only where there is a project to leave. */}
+                {item.projectId && (
+                  <P.Item onSelect={() => void moveChatToProject(item, null)}>
+                    <HugeiconsIcon icon={MinusSignCircleIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>{t("shell.sections.removeFromProject")}</span>
+                  </P.Item>
                 )}
-                {customSections.length > 0 && <P.Separator />}
-                {renderSectionDestinations(P, {
+                <P.Separator />
+                {renderSectionItems(P, {
                   target: { chatIds: [item.id] },
                   current: pinnedIdSet.has(item.id) ? null : sectionByChatId[item.id] ?? null,
                   anyFiled: !pinnedIdSet.has(item.id) && Boolean(sectionByChatId[item.id]),

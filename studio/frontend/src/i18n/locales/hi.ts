@@ -264,7 +264,7 @@ export const hi = {
       moveTo: "यहाँ ले जाएँ",
       sectionsHeading: "सेक्शन",
       removeFromProject: "प्रोजेक्ट से हटाएँ",
-      newSectionEllipsis: "नया सेक्शन…",
+      newSection: "नया सेक्शन",
       removeFromSection: "सेक्शन से हटाएँ",
       // Shown in a section with nothing filed in it yet.
       empty: "चैट या प्रोजेक्ट यहाँ खींचें",

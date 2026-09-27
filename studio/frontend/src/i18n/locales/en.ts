@@ -268,7 +268,7 @@ export const en = {
       moveTo: "Move to",
       sectionsHeading: "Sections",
       removeFromProject: "Remove from project",
-      newSectionEllipsis: "New section…",
+      newSection: "New section",
       removeFromSection: "Remove from section",
       // Shown in a section with nothing filed in it yet.
       empty: "Drag chats or projects here",
