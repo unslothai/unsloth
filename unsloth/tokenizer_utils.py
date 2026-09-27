@@ -216,7 +216,12 @@ def _fix_gemma4_base_bos_token(tokenizer, config = None):
 
 # v5 loads byte-level BPE repos declaring LlamaTokenizerFast with Metaspace, dropping spaces (transformers#45488, #48206).
 _BACKEND_ROUNDTRIP_PROBE = "Hello world, this is a test."
-_BACKEND_IDS_PROBE = "Hello world! def f(x): return x**2  # code\n你好 éè Αβγ 12345.678"
+_BACKEND_IDS_PROBE = (
+    "Hello world! def f(x): return x**2  # code\n你好 éè Αβγ 12345.678 नमस्ते दुनिया open(path):\n"
+)
+# v5 classes whose __init__ installs a hard-coded pre-tokenizer over the one in tokenizer.json. Text still
+# round-trips, but ids differ: tiny-aya's Split regex becomes Digits + ByteLevel (2x tokens on Hindi).
+_V5_REBUILT_PRETOKENIZER_CLASSES = frozenset(("CohereTokenizer",))
 
 
 def _backend_roundtrip(backend, text):
@@ -264,7 +269,7 @@ def _repair_one_tokenizer_backend(
     if backend is None or not hasattr(backend, "pre_tokenizer"):
         return False
     ok, _ = _backend_roundtrip(backend, _BACKEND_ROUNDTRIP_PROBE)
-    if ok is not False:
+    if ok is None or (ok and type(tokenizer).__name__ not in _V5_REBUILT_PRETOKENIZER_CLASSES):
         return False
     path = _resolve_tokenizer_json(tokenizer, cache_dir = cache_dir, revision = revision)
     if path is None:
@@ -285,6 +290,8 @@ def _repair_one_tokenizer_backend(
     except Exception:
         return False
     _, ref_ids = _backend_roundtrip(reference, _BACKEND_IDS_PROBE)
+    if ok and _backend_roundtrip(backend, _BACKEND_IDS_PROBE)[1] == ref_ids:
+        return False
     saved = (backend.model, backend.normalizer, backend.pre_tokenizer, backend.decoder)
     try:
         # Keep the loaded post_processor, padding, truncation and added tokens.
@@ -317,8 +324,8 @@ def _repair_tokenizer_backend_from_json(
             obj._unsloth_tokenizer_json_repaired = True
             getattr(logger, "warning_once", logger.warning)(
                 f"Unsloth: {type(obj).__name__} for {getattr(obj, 'name_or_path', '')} did not "
-                "round-trip text (transformers v5 replaced the byte-level pre-tokenizer from "
-                "tokenizer.json), so it was rebuilt from tokenizer.json."
+                "match tokenizer.json (transformers v5 replaced its pre-tokenizer), so it was "
+                "rebuilt from tokenizer.json."
             )
     return tokenizer
 
