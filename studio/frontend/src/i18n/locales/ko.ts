@@ -3044,6 +3044,11 @@ export const ko = {
       gridView: "그리드 보기",
       listView: "목록 보기",
       settings: "라이브러리 설정",
+      sort: "정렬",
+      sortDefault: "기본 순서",
+      sortName: "이름",
+      sortModified: "수정한 날짜",
+      sortSize: "크기",
     },
     create: {
       note: "메모",

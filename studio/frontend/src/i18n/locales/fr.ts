@@ -3130,6 +3130,11 @@ export const fr = {
       gridView: "Vue en grille",
       listView: "Vue en liste",
       settings: "Paramètres de la Bibliothèque",
+      sort: "Trier",
+      sortDefault: "Ordre par défaut",
+      sortName: "Nom",
+      sortModified: "Modifié",
+      sortSize: "Taille",
     },
     create: {
       note: "Note",
