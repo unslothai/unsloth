@@ -2174,7 +2174,15 @@ def _get_cached_system_gpu_info(
             visibility_info = {"available": False, "devices": []}
 
         try:
-            utilization_info = get_visible_gpu_utilization() or {"devices": []}
+            import contextlib
+
+            from utils.hardware import gpu_query
+
+            # Already behind a 10 s cache: no stale-while-revalidate on top.
+            with (
+                contextlib.nullcontext() if refresh_memory else gpu_query.display_reads(max_stale = 0)
+            ):
+                utilization_info = get_visible_gpu_utilization() or {"devices": []}
         except Exception as e:
             logger.debug(f"Failed to get GPU utilization info: {e}")
             utilization_info = {"devices": []}
