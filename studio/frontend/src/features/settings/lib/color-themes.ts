@@ -293,7 +293,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   wasabi: {
-    name: "Key Lime",
+    name: "Lime",
     light: {
       accent: "#4f7d00",
       background: "#f8faf2",
@@ -323,7 +323,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   cinnamon: {
-    name: "Cinnamon Roll",
+    name: "Cinnamon",
     light: {
       accent: "#a8461f",
       background: "#fcf7f4",
@@ -368,7 +368,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   yuzu: {
-    name: "Yuzu Citrus",
+    name: "Yuzu",
     light: {
       accent: "#d4c400",
       background: "#fcfcf2",

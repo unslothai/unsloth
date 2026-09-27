@@ -858,7 +858,7 @@
 	--th-chart-5: #d99af0;
 }
 
-/* Cinnamon Roll */
+/* Cinnamon */
 :root[data-palette="cinnamon"]:not(.dark) {
 	--th-bg: #fcf7f4;
 	--th-surface: #f6ece6;
@@ -1510,7 +1510,7 @@
 	--th-chart-5: #9cbcf0;
 }
 
-/* Key Lime */
+/* Lime */
 :root[data-palette="wasabi"]:not(.dark) {
 	--th-bg: #f8faf2;
 	--th-surface: #eef3e3;
@@ -1546,7 +1546,7 @@
 	--th-chart-5: #ff8f6b;
 }
 
-/* Yuzu Citrus */
+/* Yuzu */
 :root[data-palette="yuzu"]:not(.dark) {
 	--th-bg: #fcfcf2;
 	--th-surface: #f5f6e4;
