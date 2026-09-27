@@ -110,6 +110,8 @@ export function ChatSkillsDialog({
   );
   // Bodies being read right now, so opening the same skill twice does not read it twice.
   const inflight = useRef(new Set<string>());
+  // Bumped when the catalog changes, so a read started before that change cannot land after it.
+  const manifestGeneration = useRef(0);
   const [pending, setPending] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [changing, setChanging] = useState<string | null>(null);
@@ -178,13 +180,17 @@ export function ChatSkillsDialog({
   // The body is read when a skill is opened, once per sitting; Refresh forgets them all. A late
   // result is kept rather than cancelled: it is the same file either way. A read that fails
   // lands back on the library, with the reason in a toast.
-  const readManifest = (skill: SkillRecord) => {
+  const readManifest = (skill: SkillRecord, replace = false) => {
     const name = skill.name;
-    if (!skill.valid || skill.shadowed || inflight.current.has(name)) return;
+    if (!skill.valid || skill.shadowed || (!replace && inflight.current.has(name))) return;
     inflight.current.add(name);
+    const generation = manifestGeneration.current;
     getSkillManifest(name)
       .then((manifest) => {
-        setManifests((prev) => (prev.has(name) ? prev : new Map(prev).set(name, manifest)));
+        if (generation !== manifestGeneration.current) return;
+        setManifests((prev) =>
+          replace || !prev.has(name) ? new Map(prev).set(name, manifest) : prev,
+        );
       })
       .catch((cause: unknown) => {
         toast.error(t("skills.openError"), { description: describe(cause) });
@@ -198,6 +204,22 @@ export function ChatSkillsDialog({
   };
 
   const manifest = selected ? (manifests.get(selected.name) ?? null) : null;
+
+  // A catalog refresh (this window's write or another window's broadcast) may mean a changed
+  // file: forget other bodies and re-read the open one in place. An unsaved draft is kept.
+  const [seenSkills, setSeenSkills] = useState(skills);
+  if (skills !== seenSkills) {
+    setSeenSkills(skills);
+    setManifests((prev) => {
+      const kept = selected ? prev.get(selected.name) : undefined;
+      return kept && selected ? new Map([[selected.name, kept]]) : new Map();
+    });
+  }
+  useEffect(() => {
+    manifestGeneration.current += 1;
+    if (selected) readManifest(selected, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the catalog alone
+  }, [skills]);
   const editable = selected !== null && isEditable(selected);
   const newStarted =
     newDraft.name !== "" || newDraft.description !== "" || newDraft.instructions !== "";
@@ -358,7 +380,7 @@ export function ChatSkillsDialog({
       <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
     </Button>
   );
-  const divider = <div className="mx-1 h-5 w-px shrink-0 bg-border/60" />;
+  const divider = <div className="mx-1 h-5 w-px shrink-0 bg-border/60 max-sm:hidden" />;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -547,7 +569,7 @@ export function ChatSkillsDialog({
           </>
         ) : (
           <>
-            <header className="flex shrink-0 items-center gap-3 border-b border-border/50 px-4 pt-4 pb-3 sm:px-6">
+            <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border/50 px-4 pt-4 pb-3 sm:px-6">
               <Button
                 type="button"
                 variant="ghost"
@@ -564,7 +586,7 @@ export function ChatSkillsDialog({
                 name={view.kind === "new" ? trimmedName : (selected?.name ?? "")}
                 on={view.kind === "new" ? true : (selected?.enabled ?? false)}
               />
-              <div className="min-w-0 flex-1">
+              <div className="min-w-32 flex-1">
                 <DialogTitle className="truncate text-base font-semibold tracking-tight">
                   {view.kind === "new" ? t("skills.newSkill") : (selected?.name ?? "")}
                 </DialogTitle>
