@@ -638,7 +638,20 @@ def _class_merges_streams(cls: type, broad: bool = False) -> bool:
     return bool(_STREAM_MERGE_SOURCE.search(source))
 
 
+def _divisibility_proof_available() -> bool:
+    """Whether inductor proves ``(k*a + k*b) % (a + b) == 0`` (torch 2.14+, or the backport; see diffusion_inductor_backports)."""
+    try:
+        from . import diffusion_inductor_backports  # noqa: PLC0415 - imports torch
+        return diffusion_inductor_backports.proof_available()
+    except Exception:  # noqa: BLE001 - unanswerable: keep the static fallback
+        return False
+
+
 def _dits_merge_streams(dits: list) -> bool:
+    """Whether a stream-merging block must compile static. Not once inductor can prove the split (the CantSplit root
+    cause): FLUX.1 then compiles dynamic like every other DiT, one artifact across resolutions."""
+    if _divisibility_proof_available():
+        return False
     broad = os.environ.get(_STREAM_MERGE_DETECT_ENV) == "1"
     seen: set[type] = set()
     for transformer in dits:
