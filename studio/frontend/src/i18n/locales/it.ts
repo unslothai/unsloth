@@ -2114,6 +2114,7 @@ export const it = {
         infoDisk: "Disco",
         infoFreeOf: "{free} liberi su {total}",
         infoVramUsed: "{used} su {total}",
+        infoTotalVram: "VRAM totale",
         infoRuntime: "Ambiente",
         infoPlatform: "Piattaforma",
         infoAccelerator: "Acceleratore",

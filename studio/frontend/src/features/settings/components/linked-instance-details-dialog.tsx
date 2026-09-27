@@ -31,6 +31,7 @@ import {
   connectionKind,
   formatGb,
   formatUptime,
+  gpuPool,
   installLabel,
   platformLabel,
 } from "./linked-instance-format";
@@ -48,7 +49,13 @@ const CONNECTION_KEY = {
   public: "infoPublic",
 } as const satisfies Record<string, LinkedKey>;
 
-export function GpuMeter({ gpu }: { gpu: LinkedInstanceGpu }) {
+export function GpuMeter({
+  gpu,
+  index,
+}: {
+  gpu: LinkedInstanceGpu;
+  index?: number;
+}) {
   const t = useT();
   const total = formatGb(gpu.vram_total_gb);
   const used = formatGb(gpu.vram_used_gb);
@@ -58,8 +65,13 @@ export function GpuMeter({ gpu }: { gpu: LinkedInstanceGpu }) {
       : null;
   return (
     <div className="flex min-w-0 flex-col gap-1">
-      <div className="flex min-w-0 items-baseline justify-between gap-3">
-        <span className="truncate text-ui-12 text-foreground" title={gpu.name}>
+      <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3">
+        <span className="min-w-0 break-words text-ui-12 text-foreground">
+          {index != null ? (
+            <span className="mr-1.5 font-mono text-ui-10 text-muted-foreground">
+              {index}
+            </span>
+          ) : null}
           {gpu.name}
         </span>
         <span className="shrink-0 text-ui-11 tabular-nums text-muted-foreground">
@@ -236,11 +248,33 @@ export function LinkedInstanceDetailsDialog({
           <Section title={k("infoHardware")}>
             {ready ? (
               <div className="flex flex-col gap-3">
+                {info.gpus.length > 1 ? (
+                  <GpuMeter
+                    gpu={{
+                      name: k("infoTotalVram"),
+                      vram_total_gb: gpuPool(info.gpus).total,
+                      vram_used_gb: gpuPool(info.gpus).used,
+                      utilization_pct: null,
+                    }}
+                  />
+                ) : null}
                 {info.gpus.length > 0 ? (
-                  info.gpus.map((gpu, i) => (
-                    // biome-ignore lint/suspicious/noArrayIndexKey: identical cards share a name
-                    <GpuMeter key={i} gpu={gpu} />
-                  ))
+                  <div
+                    className={cn(
+                      "flex flex-col gap-2.5",
+                      info.gpus.length > 2 &&
+                        "max-h-[calc(11rem*var(--ui-space-scale,1))] overflow-y-auto border-l border-border/60 pr-1 pl-2.5",
+                    )}
+                  >
+                    {info.gpus.map((gpu, i) => (
+                      <GpuMeter
+                        // biome-ignore lint/suspicious/noArrayIndexKey: identical cards share a name
+                        key={i}
+                        gpu={gpu}
+                        index={info.gpus.length > 1 ? i : undefined}
+                      />
+                    ))}
+                  </div>
                 ) : (
                   <span className="text-ui-12 text-muted-foreground">
                     {k("infoNoGpu")}

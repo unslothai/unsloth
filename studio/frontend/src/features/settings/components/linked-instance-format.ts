@@ -40,6 +40,42 @@ export function formatGb(value: number | null | undefined): string | null {
   return `${value >= 100 ? Math.round(value) : value.toFixed(1)} GB`;
 }
 
+type PoolGpu = {
+  name: string;
+  vram_total_gb?: number | null;
+  vram_used_gb?: number | null;
+};
+
+const sum = (values: (number | null | undefined)[]) =>
+  values.every((v) => v != null)
+    ? values.reduce<number>((a, v) => a + (v as number), 0)
+    : null;
+
+/** Cards by model, in first-seen order: [{ name, count }]. */
+export function gpuGroups(gpus: PoolGpu[]): { name: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const gpu of gpus) counts.set(gpu.name, (counts.get(gpu.name) ?? 0) + 1);
+  return [...counts].map(([name, count]) => ({ name, count }));
+}
+
+export function vramPercent(gpu: PoolGpu): number | null {
+  return gpu.vram_used_gb != null && gpu.vram_total_gb
+    ? Math.min(100, (gpu.vram_used_gb / gpu.vram_total_gb) * 100)
+    : null;
+}
+
+/** Every GPU as one pool: "2× NVIDIA L4" or "RX 6500 XT + RX 5700 XT", with summed VRAM. */
+export function gpuPool(gpus: PoolGpu[]) {
+  const label = gpuGroups(gpus)
+    .map(({ name, count }) => (count > 1 ? `${count}× ${name}` : name))
+    .join(" + ");
+  return {
+    label,
+    total: sum(gpus.map((g) => g.vram_total_gb)),
+    used: sum(gpus.map((g) => g.vram_used_gb)),
+  };
+}
+
 export function formatUptime(
   seconds: number | null | undefined,
 ): string | null {

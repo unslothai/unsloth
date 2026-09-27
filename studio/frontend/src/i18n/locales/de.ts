@@ -2154,6 +2154,7 @@ export const de = {
         infoDisk: "Datenträger",
         infoFreeOf: "{free} frei von {total}",
         infoVramUsed: "{used} von {total}",
+        infoTotalVram: "VRAM gesamt",
         infoRuntime: "Laufzeitumgebung",
         infoPlatform: "Plattform",
         infoAccelerator: "Beschleuniger",
