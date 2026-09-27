@@ -140,3 +140,14 @@ def test_rows_that_fit_are_unchanged(name):
     assert _tokenize_row(trainer, True)(dict(feature)) == _tokenize_row(trainer, False)(
         dict(feature)
     )
+
+
+@pytest.mark.parametrize("name", ["orpo", "cpo"])
+def test_unpatched_trl_row_overflows(name):
+    # Control: without the cap, TRL 0.29+ really emits rows past max_length for these inputs.
+    trainer = _trainer(name)
+    if "max_prompt_length" in trainer[1]["tokenize_row"]:
+        pytest.skip("this TRL truncates the prompt itself")
+    prompt, chosen, rejected = LONG_ROWS["long_prompt"]
+    out = _tokenize_row(trainer, False)({"prompt": prompt, "chosen": chosen, "rejected": rejected})
+    assert len(out["chosen_input_ids"]) > 32
