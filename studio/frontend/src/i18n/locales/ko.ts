@@ -82,6 +82,18 @@ export const ko = {
     searchAriaLabel: "{noun} 검색",
     modelSourceAriaLabel: "모델 소스",
     hubSectionAriaLabel: "Hub 섹션",
+    linkedConsentTitle: "Send this chat to {name}?",
+    linkedConsentBody:
+      "{name} is another machine. Everything this chat sends is processed there, and its replies come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentToolsOff:
+      "Tools stay off for this machine, so the model answers with text only.",
+    linkedConsentToolsOn:
+      "Tools are allowed for {name}: it can run code, read files and reach the network on that machine, without asking here.",
+    linkedConsentConfirm: "Use this machine",
     modelDropped: "더 이상 제공되지 않음",
     modelDroppedByProvider: "{provider} · 더 이상 제공되지 않음",
     modelDisabled: "사용 안 함",
@@ -2117,6 +2129,13 @@ export const ko = {
         edit: "편집",
         apiKeyKeep: "비워 두면 기존 키 유지",
         removeTitle: "@{name}을(를) 제거할까요?",
+        allowTools: "Allow tools",
+        allowToolsHint:
+          "Off: {name} answers with text only. On: it can run code, read files and reach the network on that machine.",
+        allowToolsTitle: "Let {name} run tools?",
+        allowToolsWarning:
+          "Tools requested for a model on {name} run on that machine, under its permission settings, not this one's. This machine shows no approval prompt for them. Only turn this on for a machine you control and trust.",
+        allowToolsConfirm: "Allow tools",
         removeDescription: "@{name}/…에 대한 요청이 더 이상 작동하지 않으며, 저장된 API 키가 이 컴퓨터에서 삭제됩니다. 다른 인스턴스에는 영향이 없습니다.",
         details: "세부 정보",
         refresh: "새로고침",

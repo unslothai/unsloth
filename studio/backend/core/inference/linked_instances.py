@@ -24,12 +24,40 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from core.inference.api_monitor import api_monitor
+from loggers import get_logger
 from storage import linked_instances_db
+
+logger = get_logger(__name__)
 
 MODEL_PREFIX = "@"
 # Set on forwarded requests so a remote never forwards again (A links B links A).
 HOP_HEADER = "X-Unsloth-Linked-Hop"
 _FORWARDED_HEADERS = ("anthropic-version", "anthropic-beta")
+
+# Tool fields run code, read files and reach the network ON THE REMOTE, under its permission
+# settings, with no prompt on this machine. They only travel to an instance the owner has
+# ticked "Allow tools" for.
+_TOOL_FIELDS = (
+    "enable_tools",
+    "enabled_tools",
+    "mcp_enabled",
+    "deep_research_armed",
+    "confirm_tool_calls",
+    "bypass_permissions",
+    "permission_mode",
+)
+
+
+def strip_tool_fields(body: dict, instance: dict) -> list[str]:
+    """Drop every tool field unless the instance is trusted with tools. Returns what was dropped."""
+    if instance.get("allow_tools"):
+        return []
+    dropped = [f for f in _TOOL_FIELDS if body.get(f) not in (None, False)]
+    for field in _TOOL_FIELDS:
+        body.pop(field, None)
+    # An explicit refusal, so a remote default cannot turn them back on.
+    body["enable_tools"] = False
+    return dropped
 _CATALOG_TTL_S = 10.0
 # A remote builds /v1/models from a disk scan; a busy Windows box takes 5 to 6 s.
 _PROBE_TIMEOUT = httpx.Timeout(20.0, connect = 5.0)
@@ -223,6 +251,11 @@ async def forward(
         via_api_key = via_api_key,
     )
     body["model"] = remote_model
+    if dropped := strip_tool_fields(body, instance):
+        logger.info(
+            "linked_instance_tools_stripped",
+            extra = {"instance": instance.get("name"), "fields": dropped},
+        )
     stream = bool(body.get("stream"))
     # OpenAI streams carry usage only on request. Ask for it so the monitor has token
     # counts, and drop that extra chunk again unless the caller asked too.
@@ -391,6 +424,28 @@ _PROXY_ROUTES = (
     (re.compile(r"api/inference/images/[A-Za-z0-9_./-]+"), {"GET", "POST", "PATCH", "DELETE"}),
 )
 _PROXY_REQUEST_HEADERS = ("content-type", "accept", "x-unsloth-hf-token")
+# A relayed body is served from THIS origin, so a remote must not be able to hand the app a
+# document. Anything off this list is relayed as an opaque download.
+_RELAYABLE_TYPES = (
+    "image/",
+    "video/",
+    "audio/",
+    "application/octet-stream",
+    "text/event-stream",
+)
+_OPAQUE_TYPE = "application/octet-stream"
+# Defence in depth for the bytes we do relay: no sniffing, nothing scriptable, never a frame.
+_RELAY_SAFETY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; img-src 'self' data: blob:; media-src 'self' data: blob:; sandbox",
+    "X-Frame-Options": "DENY",
+}
+
+
+def relayed_media_type(upstream_type: str) -> str:
+    """The content type we are willing to repeat from a remote, for a non-JSON body."""
+    base = (upstream_type or "").split(";")[0].strip().lower()
+    return base if base.startswith(_RELAYABLE_TYPES) else _OPAQUE_TYPE
 _GALLERY_PREFIX = "/api/inference/images/"
 
 
@@ -444,7 +499,13 @@ async def proxy(request: Request, instance: dict, path: str) -> Response:
         try:
             payload = json.loads(content)
         except ValueError:
-            return Response(content, status_code = upstream.status_code, media_type = media_type)
+            # It claimed JSON and wasn't: hand it back as an opaque download, never as a document.
+            return Response(
+                content,
+                status_code = upstream.status_code,
+                media_type = _OPAQUE_TYPE,
+                headers = {**_RELAY_SAFETY_HEADERS, "Content-Disposition": "attachment"},
+            )
         prefix = f"/api/linked-instances/{instance['id']}/proxy"
         return JSONResponse(_rewrite_urls(payload, prefix), status_code = upstream.status_code)
 
@@ -455,11 +516,21 @@ async def proxy(request: Request, instance: dict, path: str) -> Response:
         finally:
             await upstream.aclose()
 
+    relayed = relayed_media_type(media_type)
     passthrough = {
-        k: v for k, v in upstream.headers.items() if k.lower() in ("content-disposition", "cache-control")
+        k: v for k, v in upstream.headers.items() if k.lower() == "cache-control"
     }
+    # The remote names the file, so the name is never trusted to pick a handler: an opaque body
+    # downloads rather than opening, and a relayed image keeps its own disposition.
+    if relayed == _OPAQUE_TYPE:
+        passthrough["Content-Disposition"] = "attachment"
+    elif value := upstream.headers.get("content-disposition"):
+        passthrough["Content-Disposition"] = value
     return StreamingResponse(
-        relay(), status_code = upstream.status_code, media_type = media_type, headers = passthrough
+        relay(),
+        status_code = upstream.status_code,
+        media_type = relayed,
+        headers = {**passthrough, **_RELAY_SAFETY_HEADERS},
     )
 
 

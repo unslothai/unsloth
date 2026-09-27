@@ -83,6 +83,18 @@ export const ptBR = {
     searchAriaLabel: "Buscar {noun}",
     modelSourceAriaLabel: "Origem do modelo",
     hubSectionAriaLabel: "Seção do Hub",
+    linkedConsentTitle: "Send this chat to {name}?",
+    linkedConsentBody:
+      "{name} is another machine. Everything this chat sends is processed there, and its replies come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentToolsOff:
+      "Tools stay off for this machine, so the model answers with text only.",
+    linkedConsentToolsOn:
+      "Tools are allowed for {name}: it can run code, read files and reach the network on that machine, without asking here.",
+    linkedConsentConfirm: "Use this machine",
     modelDropped: "Não é mais oferecido",
     modelDroppedByProvider: "{provider} · não é mais oferecido",
     modelDisabled: "Não ativado",
@@ -2139,6 +2151,13 @@ export const ptBR = {
         edit: "Editar",
         apiKeyKeep: "Deixe em branco para manter",
         removeTitle: "Remover @{name}?",
+        allowTools: "Allow tools",
+        allowToolsHint:
+          "Off: {name} answers with text only. On: it can run code, read files and reach the network on that machine.",
+        allowToolsTitle: "Let {name} run tools?",
+        allowToolsWarning:
+          "Tools requested for a model on {name} run on that machine, under its permission settings, not this one's. This machine shows no approval prompt for them. Only turn this on for a machine you control and trust.",
+        allowToolsConfirm: "Allow tools",
         removeDescription: "As solicitações para @{name}/… deixarão de funcionar e a chave de API salva será excluída desta máquina. A outra instância não é afetada.",
         details: "Detalhes",
         refresh: "Atualizar",

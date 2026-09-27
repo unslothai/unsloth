@@ -65,6 +65,11 @@ import {
 } from "./model-selector/model-catalog";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
+import type { LinkedInstance } from "@/features/settings/api/linked-instances";
+import {
+  LinkedConsentDialog,
+  hasLinkedConsent,
+} from "../linked/linked-consent";
 import { loadLinkedChatWithToast } from "../linked/linked-load-toast";
 import { type LinkedPickerKind, useLinkedMachines } from "../linked/linked-machines";
 import {
@@ -368,6 +373,7 @@ function ModelSelectorContent({
   communityModelPolicy,
   linkedPicker,
   onLinkedChatPick,
+  onLinkedImagePick,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -398,6 +404,11 @@ function ModelSelectorContent({
   catalog?: CatalogGroup[];
   communityModelPolicy?: CommunityModelPolicy;
   linkedPicker?: LinkedPickerKind;
+  onLinkedImagePick?: (
+    instance: NonNullable<ReturnType<typeof useLinkedMachines>["instance"]>,
+    id: string,
+    meta: ModelSelectorChangeMeta,
+  ) => void;
   onLinkedChatPick?: (
     instance: NonNullable<ReturnType<typeof useLinkedMachines>["instance"]>,
     pick: LinkedChatPick,
@@ -715,7 +726,11 @@ function ModelSelectorContent({
                 catalog={catalog}
                 value={value}
                 onPickChat={(pick) => onLinkedChatPick?.(linkedInstance, pick)}
-                onPickImage={onSelect}
+                onPickImage={(id, meta) =>
+                  onLinkedImagePick
+                    ? onLinkedImagePick(linkedInstance, id, meta)
+                    : onSelect(id, meta)
+                }
               />
             ) : (
             <HubModelPicker
@@ -791,6 +806,11 @@ export function ModelSelector({
   linkedMachine,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  // A first job on a linked machine says what leaves this one, once per instance.
+  const [consent, setConsent] = useState<{
+    instance: LinkedInstance;
+    run: () => void;
+  } | null>(null);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = onOpenChange ?? setUncontrolledOpen;
   const navigate = useNavigate();
@@ -1007,10 +1027,27 @@ export function ModelSelector({
         linkedPicker={linkedPicker}
         onLinkedChatPick={(instance, pick) => {
           setOpen(false);
-          void loadLinkedChatWithToast(instance, pick, (modelId) =>
-            onValueChange?.(modelId, { source: "external", isLora: false }),
-          );
+          const run = () =>
+            void loadLinkedChatWithToast(instance, pick, (modelId) =>
+              onValueChange?.(modelId, { source: "external", isLora: false }),
+            );
+          if (hasLinkedConsent(instance.id)) run();
+          else setConsent({ instance, run });
         }}
+        onLinkedImagePick={(instance, id, meta) => {
+          const run = () => handleSelect(id, meta);
+          if (hasLinkedConsent(instance.id)) run();
+          else setConsent({ instance, run });
+        }}
+      />
+      <LinkedConsentDialog
+        instance={consent?.instance ?? null}
+        onConfirm={() => {
+          const pending = consent;
+          setConsent(null);
+          pending?.run();
+        }}
+        onCancel={() => setConsent(null)}
       />
     </Popover>
   );

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -88,6 +89,7 @@ function InstanceRow({
   onDetails,
   onEdit,
   onRemove,
+  onAllowTools,
 }: {
   instance: LinkedInstance;
   status: Status;
@@ -96,6 +98,7 @@ function InstanceRow({
   onDetails: () => void;
   onEdit: () => void;
   onRemove: () => void;
+  onAllowTools: (next: boolean) => void;
 }) {
   const t = useT();
   const checking = status === undefined || status === "checking";
@@ -226,6 +229,24 @@ function InstanceRow({
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+      </div>
+      <div className="flex items-start justify-between gap-3 pl-5">
+        <div className="flex min-w-0 flex-col">
+          <span className="text-ui-11 text-foreground">
+            {t("settings.apiKeys.linkedInstances.allowTools")}
+          </span>
+          <span className="text-ui-10 text-muted-foreground">
+            {t("settings.apiKeys.linkedInstances.allowToolsHint", {
+              name: `@${instance.name}`,
+            })}
+          </span>
+        </div>
+        <Switch
+          checked={instance.allow_tools}
+          onCheckedChange={onAllowTools}
+          aria-label={t("settings.apiKeys.linkedInstances.allowTools")}
+          className="mt-0.5 shrink-0"
+        />
       </div>
       {models.length > 0 ? (
         <div className="flex flex-wrap items-center gap-1.5 pl-5">
@@ -428,6 +449,7 @@ export function LinkedInstancesSection() {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<LinkedInstance | null>(null);
+  const [toolsTarget, setToolsTarget] = useState<LinkedInstance | null>(null);
   const [removing, setRemoving] = useState(false);
   const [infos, setInfos] = useState<Record<string, LinkedInstanceInfo>>({});
   const [detailsId, setDetailsId] = useState<string | null>(null);
@@ -477,6 +499,16 @@ export function LinkedInstancesSection() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const setAllowTools = async (instance: LinkedInstance, next: boolean) => {
+    setToolsTarget(null);
+    try {
+      await updateLinkedInstance(instance.id, { allow_tools: next });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : null);
+    }
+  };
 
   const confirmRemove = async () => {
     if (!removeTarget) return;
@@ -614,6 +646,11 @@ export function LinkedInstancesSection() {
                   setEditingId(instance.id);
                 }}
                 onRemove={() => setRemoveTarget(instance)}
+                onAllowTools={(next) =>
+                  next
+                    ? setToolsTarget(instance)
+                    : void setAllowTools(instance, false)
+                }
               />
             ),
           )}
@@ -634,6 +671,38 @@ export function LinkedInstancesSection() {
         }}
         refreshing={detailsId !== null && statuses[detailsId] === "checking"}
       />
+
+      <Dialog
+        open={toolsTarget !== null}
+        onOpenChange={(open) => !open && setToolsTarget(null)}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {t("settings.apiKeys.linkedInstances.allowToolsTitle", {
+                name: `@${toolsTarget?.name ?? ""}`,
+              })}
+            </DialogTitle>
+            <DialogDescription className="whitespace-pre-line">
+              {t("settings.apiKeys.linkedInstances.allowToolsWarning", {
+                name: `@${toolsTarget?.name ?? ""}`,
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setToolsTarget(null)}>
+              {t("common.cancel")}
+            </Button>
+            <Button
+              onClick={() =>
+                toolsTarget && void setAllowTools(toolsTarget, true)
+              }
+            >
+              {t("settings.apiKeys.linkedInstances.allowToolsConfirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={removeTarget !== null}

@@ -96,6 +96,7 @@ async def update_linked_instance(instance_id: str, payload: LinkedInstanceUpdate
             name = payload.name,
             base_url = base_url,
             api_key = payload.api_key.strip() if payload.api_key else None,
+            allow_tools = payload.allow_tools,
         )
     except linked_instances_db.DuplicateName as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc

@@ -263,6 +263,108 @@ def test_a_remote_error_fails_the_monitor_row(monkeypatch):
     assert ("fail", ("entry-1", "model not found"), {}) in monitor.calls
 
 
+@pytest.mark.parametrize(
+    "upstream_type, relayed, attachment",
+    [
+        ("image/png", "image/png", False),
+        ("image/svg+xml", "image/svg+xml", False),
+        ("text/html; charset=utf-8", "application/octet-stream", True),
+        ("application/xhtml+xml", "application/octet-stream", True),
+        ("text/javascript", "application/octet-stream", True),
+        ("", "application/octet-stream", True),
+    ],
+)
+def test_proxy_never_repeats_a_document_type_from_a_remote(monkeypatch, upstream_type, relayed, attachment):
+    """A relayed body is served from this origin, so only media types survive the trip."""
+    instance = linked_instances_db.create_instance("colab", "https://remote.example", REMOTE_KEY)
+    headers = {"content-disposition": "inline; filename=x.html"}
+    if upstream_type:
+        headers["content-type"] = upstream_type
+    _remote(lambda r: httpx.Response(200, content = b"<script>x</script>", headers = headers), monkeypatch)
+    response = asyncio.run(
+        linked_instances.proxy(_proxy_request("GET"), instance, "api/inference/images/gallery/1/file")
+    )
+    assert response.media_type == relayed
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "sandbox" in response.headers["content-security-policy"]
+    assert response.headers.get("content-disposition") == ("attachment" if attachment else "inline; filename=x.html")
+
+
+def test_tool_fields_do_not_reach_an_instance_that_is_not_trusted_with_tools():
+    instance = linked_instances_db.create_instance("colab", "https://remote.example", REMOTE_KEY)
+    body = {
+        "model": "unsloth/x",
+        "enable_tools": True,
+        "enabled_tools": ["python", "terminal"],
+        "mcp_enabled": True,
+        "permission_mode": "off",
+        "bypass_permissions": True,
+        "confirm_tool_calls": True,
+        "deep_research_armed": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    dropped = linked_instances.strip_tool_fields(body, instance)
+
+    assert set(dropped) == {
+        "enable_tools", "enabled_tools", "mcp_enabled", "permission_mode",
+        "bypass_permissions", "confirm_tool_calls", "deep_research_armed",
+    }
+    # An explicit refusal, not just an omission: the remote's own default cannot re-enable them.
+    assert body["enable_tools"] is False
+    assert not any(f in body for f in ("enabled_tools", "mcp_enabled", "permission_mode", "bypass_permissions"))
+    assert body["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_tool_fields_travel_once_the_owner_allows_tools_for_that_instance():
+    instance = linked_instances_db.create_instance("colab", "https://remote.example", REMOTE_KEY)
+    linked_instances_db.update_instance(instance["id"], allow_tools = True)
+    trusted = linked_instances_db.get_instance(instance["id"])
+    body = {"enable_tools": True, "enabled_tools": ["python"], "permission_mode": "auto"}
+
+    assert linked_instances.strip_tool_fields(body, trusted) == []
+    assert body == {"enable_tools": True, "enabled_tools": ["python"], "permission_mode": "auto"}
+
+
+def test_allow_tools_is_off_for_a_new_instance_and_survives_a_rename():
+    instance = linked_instances_db.create_instance("colab", "https://remote.example", REMOTE_KEY)
+    assert instance["allow_tools"] is False
+
+    linked_instances_db.update_instance(instance["id"], allow_tools = True)
+    renamed = linked_instances_db.update_instance(instance["id"], name = "colab2")
+    assert renamed["allow_tools"] is True
+
+    assert linked_instances_db.update_instance(instance["id"], allow_tools = False)["allow_tools"] is False
+
+
+def test_forward_strips_tool_fields_before_they_leave_this_machine(monkeypatch):
+    """The end-to-end shape of the fix: what the remote actually receives."""
+    linked_instances_db.create_instance("wsl", "http://remote", REMOTE_KEY)
+    monkeypatch.setattr(linked_instances, "api_monitor", _Monitor())
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json = {"choices": [{"message": {"content": "ok"}}]})
+
+    _remote(handler, monkeypatch)
+    body = {
+        "model": "@wsl/unsloth/a",
+        "enable_tools": True,
+        "enabled_tools": ["python"],
+        "permission_mode": "off",
+        "messages": [{"role": "user", "content": "run something"}],
+    }
+    request = _request(body)
+
+    async def run():
+        target = await linked_instances.resolve(request, body["model"])
+        return await linked_instances.forward(request, "chat/completions", target)
+
+    asyncio.run(run())
+    assert seen["enable_tools"] is False
+    assert "enabled_tools" not in seen and "permission_mode" not in seen
+    assert seen["model"] == "unsloth/a"
+
 def test_info_merges_the_remotes_system_endpoints(monkeypatch):
     instance = linked_instances_db.create_instance("colab", "http://remote", REMOTE_KEY)
 

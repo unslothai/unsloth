@@ -82,6 +82,18 @@ export const zhCN = {
     searchAriaLabel: "搜索{noun}",
     modelSourceAriaLabel: "模型来源",
     hubSectionAriaLabel: "Hub 分区",
+    linkedConsentTitle: "Send this chat to {name}?",
+    linkedConsentBody:
+      "{name} is another machine. Everything this chat sends is processed there, and its replies come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentToolsOff:
+      "Tools stay off for this machine, so the model answers with text only.",
+    linkedConsentToolsOn:
+      "Tools are allowed for {name}: it can run code, read files and reach the network on that machine, without asking here.",
+    linkedConsentConfirm: "Use this machine",
     modelDropped: "已不再提供",
     modelDroppedByProvider: "{provider} · 已不再提供",
     modelDisabled: "未启用",
@@ -2073,6 +2085,13 @@ export const zhCN = {
         edit: "编辑",
         apiKeyKeep: "留空则保留当前密钥",
         removeTitle: "移除 @{name}？",
+        allowTools: "Allow tools",
+        allowToolsHint:
+          "Off: {name} answers with text only. On: it can run code, read files and reach the network on that machine.",
+        allowToolsTitle: "Let {name} run tools?",
+        allowToolsWarning:
+          "Tools requested for a model on {name} run on that machine, under its permission settings, not this one's. This machine shows no approval prompt for them. Only turn this on for a machine you control and trust.",
+        allowToolsConfirm: "Allow tools",
         removeDescription: "发往 @{name}/… 的请求将失效，保存的 API 密钥会从本机删除。另一个实例不受影响。",
         details: "详情",
         refresh: "刷新",

@@ -7,6 +7,8 @@ export interface LinkedInstance {
   id: string;
   name: string;
   base_url: string;
+  /** Whether this instance's models may run tools. They run on that machine, not this one. */
+  allow_tools: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -77,7 +79,12 @@ export async function fetchLinkedInstancesStatus(): Promise<
 
 export async function updateLinkedInstance(
   id: string,
-  input: { name?: string; base_url?: string; api_key?: string },
+  input: {
+    name?: string;
+    base_url?: string;
+    api_key?: string;
+    allow_tools?: boolean;
+  },
 ): Promise<LinkedInstance> {
   const res = await authFetch(`/api/linked-instances/${id}`, {
     method: "PATCH",

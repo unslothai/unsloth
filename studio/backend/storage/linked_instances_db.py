@@ -43,6 +43,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Tools stay off for a linked instance until the owner turns them on for that instance.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(linked_instances)").fetchall()}
+    if "allow_tools" not in cols:
+        conn.execute("ALTER TABLE linked_instances ADD COLUMN allow_tools INTEGER NOT NULL DEFAULT 0")
     conn.commit()
 
 
@@ -73,6 +77,7 @@ def _row(row: sqlite3.Row) -> dict:
         "id": row["id"],
         "name": row["name"],
         "base_url": row["base_url"],
+        "allow_tools": bool(row["allow_tools"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -145,14 +150,17 @@ def update_instance(
     name: Optional[str] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    allow_tools: Optional[bool] = None,
 ) -> Optional[dict]:
     if get_instance(instance_id) is None:
         return None
-    fields: dict[str, str] = {}
+    fields: dict[str, object] = {}
     if name is not None:
         fields["name"] = validate_name(name)
     if base_url is not None:
         fields["base_url"] = base_url
+    if allow_tools is not None:
+        fields["allow_tools"] = 1 if allow_tools else 0
     fields["updated_at"] = datetime.now(timezone.utc).isoformat()
     credential_secrets.ensure_schema()
     conn = get_connection()

@@ -18,12 +18,17 @@ class LinkedInstanceUpdate(BaseModel):
     name: Optional[str] = Field(None, max_length = 32)
     base_url: Optional[str] = Field(None, max_length = 2048)
     api_key: Optional[str] = Field(None, max_length = 512)
+    allow_tools: Optional[bool] = Field(
+        None,
+        description = "Let this instance's models run tools. They run THERE, under its settings.",
+    )
 
 
 class LinkedInstance(BaseModel):
     id: str
     name: str
     base_url: str
+    allow_tools: bool = False
     created_at: str
     updated_at: str
 
