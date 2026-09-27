@@ -1168,17 +1168,8 @@ export function ChatsLibrary({
     );
   }
 
-  const counts: Record<ChatsSection, number> = {
-    chats: items.length,
-    projects: projects.length,
-    sections: sections.length,
-    archived: archivedItems.length,
-    // All has no count of its own.
-    all: 0,
-  };
-
   const sectionPills = (
-    <nav aria-label={t("library.chats.sections.ariaLabel")} className="flex flex-wrap items-center gap-x-8 gap-y-2">
+    <nav aria-label={t("library.chats.sections.ariaLabel")} className="flex flex-wrap items-center gap-x-8 gap-y-2 pl-3.5">
       {CHATS_SECTIONS.map((entry) => {
         // A section page keeps the Sections pill lit.
         const active = openSectionId ? entry === "sections" : entry === section;
@@ -1189,17 +1180,12 @@ export function ChatsLibrary({
             aria-current={active ? "page" : undefined}
             onClick={() => go(entry === "all" ? {} : { chatView: entry })}
             className={cn(
-              // Plain text: pills here looked like a second row of Library tabs.
+              // Plain text, aligned with the tab labels above (their px-3.5).
               "flex h-8 items-center gap-2 rounded-sm font-heading text-ui-14 text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
               active && "font-medium text-foreground",
             )}
           >
             {t(SECTION_LABELS[entry])}
-            {entry !== "all" && (
-              <span className="tabular-nums text-ui-12 text-muted-foreground font-normal">
-                {counts[entry]}
-              </span>
-            )}
           </button>
         );
       })}
