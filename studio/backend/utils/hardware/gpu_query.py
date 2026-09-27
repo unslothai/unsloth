@@ -3,12 +3,12 @@
 
 """Cached, coalesced nvidia-smi reads: drop-in for ``subprocess.run`` with a bounded wait.
 
-Categories: ``static`` (inventory fields, TTL 600 s), ``display`` (live fields inside
-:func:`display_reads`, TTL 3 s, stale-while-revalidate), ``critical`` (live fields anywhere
-else: never cached or joined, since another process's allocation raises no Studio event).
-``subprocess.run(timeout=...)`` waits unboundedly for a killed child on a blocked driver, so
-the child runs on a daemon thread. Failures pass through uncached. ``UNSLOTH_GPU_QUERY_CACHE=0``
-disables all of this.
+Categories: ``static`` (inventory fields, TTL 60 s like the eGPU-aware physical inventory),
+``display`` (live fields inside :func:`display_reads`, TTL 3 s, stale-while-revalidate),
+``critical`` (live fields anywhere else: never cached or joined, since another process's
+allocation raises no Studio event). ``subprocess.run(timeout=...)`` waits unboundedly for a
+killed child on a blocked driver, so the child runs on a daemon thread. Failures are never
+served and replace older answers. ``UNSLOTH_GPU_QUERY_CACHE=0`` disables all of this.
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ def enabled() -> bool:
 
 def ttl_for(kind: str) -> float:
     if kind == STATIC:
-        return _env_float("UNSLOTH_GPU_QUERY_STATIC_TTL", 600.0)
+        return _env_float("UNSLOTH_GPU_QUERY_STATIC_TTL", 60.0)
     return _env_float("UNSLOTH_GPU_QUERY_DISPLAY_TTL", 3.0)
 
 
