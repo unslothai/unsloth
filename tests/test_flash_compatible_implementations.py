@@ -32,6 +32,12 @@ class ListsFa2(_Base):
     _compatible_flash_implementations = ["flash_attention_4", "flash_attention_2"]
 
 
+@pytest.fixture(autouse = True)
+def _no_fa3_fa4_or_hub_kernels(monkeypatch):
+    # The fallback only applies when the kernel transformers would switch to is missing.
+    monkeypatch.setattr(_utils, "_flash_implementation_available", lambda name: False)
+
+
 def _config(model_type):
     return SimpleNamespace(model_type = model_type, attention_dropout = 0)
 
@@ -56,3 +62,13 @@ def test_real_mimo_v2_flash_class_is_not_given_flash_attention_2():
     if "flash_attention_2" in (getattr(cls, "_compatible_flash_implementations", None) or ["flash_attention_2"]):
         pytest.skip("this transformers lets mimo_v2_flash use flash_attention_2")
     assert _utils._model_class_supports_flash_attention(cls) is False
+
+
+def test_flash_is_kept_when_the_switched_to_kernel_is_installed(monkeypatch):
+    monkeypatch.setattr(_utils, "_flash_implementation_available", lambda name: name == "flash_attention_4")
+    assert _utils._model_class_supports_flash_attention(Fa4Only) is True
+
+    class HubOnly(_Base):
+        _compatible_flash_implementations = ["kernels-community/some-flash"]
+
+    assert _utils._model_class_supports_flash_attention(HubOnly) is False

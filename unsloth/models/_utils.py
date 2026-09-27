@@ -869,11 +869,39 @@ def _flash_attention_2_is_compatible(model_class):
     """transformers 5 lets a class name the only flash kernels it works with (`_compatible_flash_implementations`,
     e.g. mimo_v2_flash / gpt_oss / granite_swa: ["flash_attention_4"] for sinks or asymmetric head dims) and silently
     rewrites a flash_attention_2 request to the first of them, which then fails to import when that kernel is not
-    installed. Unsloth only ever requests flash_attention_2, so such a class must take the non-flash branch."""
+    installed. Unsloth only ever requests flash_attention_2, so such a class takes the non-flash branch unless the
+    kernel transformers would switch to is actually available (FA3 / FA4 installed, or the kernels hub package)."""
     compatible = getattr(model_class, "_compatible_flash_implementations", None)
-    if not isinstance(compatible, (list, tuple)):
+    if not isinstance(compatible, (list, tuple)) or not compatible:
         return True
-    return any(str(name).split("|")[-1] == "flash_attention_2" for name in compatible)
+    if any(str(name).split("|")[-1] == "flash_attention_2" for name in compatible):
+        return True
+    return _flash_implementation_available(str(compatible[0]).split("|")[-1])
+
+
+def _flash_implementation_available(name):
+    try:
+        from transformers.utils import import_utils
+    except Exception:
+        return False
+    checks = {
+        "flash_attention_3": "is_flash_attn_3_available",
+        "flash_attention_4": "is_flash_attn_4_available",
+    }
+    if name in checks:
+        check = getattr(import_utils, checks[name], None)
+        try:
+            return bool(check()) if check is not None else False
+        except Exception:
+            return False
+    if "/" in name:
+        # A hub kernel ("kernels-community/..."): only reachable through a kernels version transformers accepts.
+        check = getattr(import_utils, "is_kernels_available", None)
+        try:
+            return bool(check()) if check is not None else False
+        except Exception:
+            return False
+    return False
 
 
 def _flash_dispatch_reads_legacy_flag(PreTrainedModel) -> bool:
