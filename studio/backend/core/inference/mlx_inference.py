@@ -1500,12 +1500,8 @@ def _quantize_kv_entries(entries, bits):
 
 
 def _kv_quant_probe(language_model, entries, bits):
-    """``(converted, skipped, failure, retainable)`` from the conversion generation will perform.
-
-    Static proxies proved wrong both ways -- a declared head_dim the cache does not use, a window
-    spelled differently per entry -- so this runs a second token through the converted cache, where
-    attention that cannot consume a quantized entry fails. ``retainable`` is False when a converted
-    entry's size cannot be read, which the prompt cache budgets by."""
+    """``(converted, skipped, failure, retainable)``; runs a real second token over the converted cache,
+    since static proxies (declared head_dim, window spelling) proved wrong both ways."""
     import mlx.core as mx
 
     targets = [
@@ -2656,9 +2652,7 @@ class MLXInferenceBackend:
         return entries if bits is None else _quantize_kv_entries(entries, bits)
 
     def _kv_quant_generate_kwargs(self):
-        """A pre-quantized cache in place of kv_bits, which would make either runtime
-        convert every entry from its own start offset and raise on a rotating one.
-        """
+        """Pre-quantized cache instead of kv_bits, which converts every entry and raises on a rotating one."""
         if self._kv_quant_bits() is None:
             return {}
         return {

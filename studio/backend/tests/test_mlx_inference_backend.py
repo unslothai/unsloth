@@ -2999,8 +2999,7 @@ def _tiny_lm(
     dim = 128,
     attends_quantized = True,
 ):
-    """Minimal model whose forward populates whatever cache it is given;
-    ``attends_quantized = False`` rejects a quantized one, as Gemma 4's KV-shared layers do."""
+    """Tiny model filling its cache; ``attends_quantized = False`` mimics Gemma 4's KV-shared layers."""
     import mlx.core as mx
 
     class _LM:
@@ -3664,15 +3663,12 @@ def test_generate_kwargs_and_history_carry_a_pre_quantized_cache_and_no_kv_bits(
     assert isinstance(rotating, lm_cache.RotatingKVCache)
     assert isinstance(full, lm_cache.QuantizedKVCache) and full.bits == 4
 
-    # The prompt-cache history hands out the same shape for a fresh conversation.
     cache, rest = backend._prompt_cache().fetch(backend._model, "key", [1, 2, 3])
     assert isinstance(cache[1], lm_cache.QuantizedKVCache) and rest == [1, 2, 3]
 
 
 def test_vlm_prompt_cache_session_starts_from_a_pre_quantized_cache(monkeypatch):
-    """The session builds the cache the vision path generates with, so the conversion
-    has to happen in its make_cache or a quantized load would run unquantized there.
-    """
+    """The vision session's make_cache must quantize, or a quantized load runs unquantized there."""
     pytest.importorskip("mlx_lm")
     from mlx_lm.models import cache as lm_cache
     from core.inference.mlx_inference import MLXInferenceBackend, VLMPromptSnapshotStore
