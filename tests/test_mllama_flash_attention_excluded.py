@@ -23,6 +23,9 @@ def _tiny_mllama():
     t = config.text_config
     t.hidden_size, t.num_attention_heads, t.num_key_value_heads, t.intermediate_size = 64, 4, 2, 128
     t.num_hidden_layers, t.cross_attention_layers, t.vocab_size, t.pad_token_id = 3, [1], 256, 0
+    # Transformers 4.x defaults rope_scaling to None, which MllamaRotaryEmbedding subscripts.
+    if getattr(t, "rope_scaling", None) is None:
+        t.rope_scaling = {"rope_type": "default"}
     config.image_token_index = 255
     return MllamaForConditionalGeneration, config
 
