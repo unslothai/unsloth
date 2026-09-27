@@ -126,7 +126,8 @@ _MODEL_WAIT_POLL_SECONDS = 2.0
 # A model that keeps disappearing would re-send forever, so cap how many times one call may wait.
 _MAX_MODEL_WAITS = 3
 _NO_MODEL_LOADED_DETAIL = "No model loaded"
-_NO_GRAMMAR_ENGINE_DETAIL = "needs the llama.cpp grammar engine"
+# Every "no grammar engine here" refusal says this (routes, grammar_constraint); a re-send fixes those only.
+_NO_GRAMMAR_ENGINE_DETAIL = "needs a grammar engine"
 # routes.inference reports the same unloaded state this way when auto-switch finds no local match.
 _MODEL_NOT_FOUND_CODE = "model_not_found"
 # routes.inference 503s with this while an auto-switch to the run's model is still loading.

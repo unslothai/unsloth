@@ -13,6 +13,7 @@ import {
   AUTH_SESSION_CLEARED_EVENT,
   AUTH_SESSION_STORED_EVENT,
   hasAuthToken,
+  hasSettledAuthSession,
   useIsAccountOwner,
 } from "@/features/auth";
 import {
@@ -167,8 +168,12 @@ const AudioPage = lazy(() =>
   import("@/features/audio").then((m) => ({ default: m.AudioPage })),
 );
 
+// Enabled once the session is settled, not once a token exists. The first read runs once per session, so a read
+// refused mid password change would leave personalization unhydrated, and every save paused, until a reload. The
+// pathname subscription re-reads the gate on the navigation that ends the change.
 function PersonalizationSyncMount() {
-  usePersonalizationSync(hasAuthToken());
+  useRouterState({ select: (s) => s.location.pathname });
+  usePersonalizationSync(hasSettledAuthSession());
   return null;
 }
 
