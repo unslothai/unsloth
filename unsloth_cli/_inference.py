@@ -935,16 +935,15 @@ class HttpChatBackend:
             return None
         if not isinstance(status, dict) or not status.get("is_gguf"):
             return None
-        # Same identity the server keys the resident on: a local load's active_model is only its basename.
+        # A local load's active_model is only its basename.
         loaded = status.get("model_identifier") or status.get("active_model")
         if not loaded:
             return None
         loaded = str(loaded)
         if model == status.get("model_identifier"):
-            # The exact string the server loaded, however the resolver normalizes it.
             same = True
         elif os.path.exists(model):
-            # Filesystem-aware, as the server's _same_loaded_identifier compares local paths.
+            # Mirrors the server's _same_loaded_identifier.
             same = os.path.normcase(model) == os.path.normcase(loaded)
         else:
             # The server loads an ownerless id as unsloth/<id> (ModelConfig.from_identifier).
