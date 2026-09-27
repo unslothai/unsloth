@@ -5,6 +5,7 @@
 
 import hashlib
 import json
+import re
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -34,7 +35,7 @@ MISSING_ENGINE_MESSAGE = (
 # json_object promises an object, not any JSON value; spelled canonically to share a grammar.
 _JSON_OBJECT_SCHEMA = '{"type":"object"}'
 
-_PRELUDE_MAX_CHARS = 4000
+_PRELUDE_MAX_TOKENS = 4000
 
 _THINK_MARKERS = ("<think>", "</think>")
 
@@ -325,7 +326,7 @@ def _canonical_schema_json(schema: dict) -> str:
 
 def _cached_grammar(schema_json: str, *, prelude_close: Optional[str]) -> str:
     digest = hashlib.sha256(schema_json.encode("utf-8")).hexdigest()
-    key = f"{LLGUIDANCE_VERSION}:{prelude_close or ''}:" f"{_PRELUDE_MAX_CHARS}:{digest}"
+    key = f"{LLGUIDANCE_VERSION}:{prelude_close or ''}:" f"{_PRELUDE_MAX_TOKENS}:{digest}"
     with _CACHE_LOCK:
         cached = _GRAMMAR_CACHE.get(key)
         if cached is not None:
@@ -348,11 +349,15 @@ def _compile_grammar(schema_json: str, prelude_close: Optional[str]) -> str:
         if prelude_close is None:
             grammar = _llg.LLMatcher.grammar_from_json_schema(schema_json)
         else:
+            # Reasoning may not spell the closer as text (the route splits at the first textual one).
+            # Bounded in tokens: a {0,N} count intersected with the negation exhausts llguidance's lexer.
+            closer_rx = re.escape(prelude_close).replace("/", "\\/")
             grammar = (
                 "%llguidance {}\n"
                 "start: prelude doc\n"
-                f"prelude: PRELUDE_TEXT {prelude_close}\n"
-                f"PRELUDE_TEXT: /(.|\\n){{0,{_PRELUDE_MAX_CHARS}}}/\n"
+                f"prelude: prelude_text {prelude_close}\n"
+                f"prelude_text[max_tokens={_PRELUDE_MAX_TOKENS}]: "
+                f"/(.|\\n)*/ & ~/(.|\\n)*{closer_rx}(.|\\n)*/\n"
                 f"doc: %json {schema_json}\n"
             )
     except Exception as exc:

@@ -4922,13 +4922,13 @@ SCHEMA = {
 JSON_SCHEMA_FORMAT = {"type": "json_schema", "schema": SCHEMA}
 
 
-def _char_tokenizer(*extra_specials, markers_are_special = False):
+def _char_tokenizer(*extra_specials, markers_are_special = False, extra_chars = ""):
     if not gc.LLGUIDANCE_AVAILABLE:
         pytest.skip("llguidance.mlx did not import")
     tk = pytest.importorskip("tokenizers")
     transformers = pytest.importorskip("transformers")
 
-    chars = list('{}"[]:,0123456789abcdefghijklmnopqrstuvwxyz \n.-')
+    chars = list('{}"[]:,0123456789abcdefghijklmnopqrstuvwxyz \n.-' + extra_chars)
     backend = tk.Tokenizer(tk.models.BPE(vocab = {c: i for i, c in enumerate(chars)}, merges = []))
     backend.pre_tokenizer = tk.pre_tokenizers.ByteLevel(add_prefix_space = False, use_regex = False)
     backend.decoder = tk.decoders.ByteLevel()
@@ -5025,7 +5025,7 @@ def test_binding_waits_for_the_logits_width_a_padded_lm_head_widens(tiny_tokeniz
 def test_prelude_is_bounded_so_an_unclosed_think_block_cannot_eat_the_budget(
     tiny_tokenizer, monkeypatch
 ):
-    monkeypatch.setattr(gc, "_PRELUDE_MAX_CHARS", 6)
+    monkeypatch.setattr(gc, "_PRELUDE_MAX_TOKENS", 6)
     constraint = build_constraint(
         JSON_SCHEMA_FORMAT, tiny_tokenizer, "chat\n<think>\n", reasoning_is_extracted = True
     )
@@ -5038,6 +5038,39 @@ def test_prelude_is_bounded_so_an_unclosed_think_block_cannot_eat_the_budget(
     assert _allowed(constraint, len(tiny_tokenizer)) == set(
         tiny_tokenizer.encode("{", add_special_tokens = False)
     )
+
+
+def test_reasoning_cannot_spell_the_closer_as_text_and_forge_the_document_boundary():
+    tokenizer = _char_tokenizer(extra_chars = "</>")
+
+    def _fresh():
+        constraint = build_constraint(
+            JSON_SCHEMA_FORMAT, tokenizer, "chat\n<think>", reasoning_is_extracted = True
+        )
+        constraint._bind(len(tokenizer))
+        return constraint
+
+    def _step(constraint, token_id):
+        # The numpy half of mask_logits, so the desync check reads a real mask without Metal.
+        gc._llg_mlx.fill_next_token_bitmask(constraint._matcher, constraint._bitmask)
+        constraint.advance(int(token_id))
+
+    def _chars(text):
+        return [tokenizer.convert_tokens_to_ids(c) for c in text]
+
+    constraint = _fresh()
+    for token_id in _chars("a<b</think"):
+        _step(constraint, token_id)
+    with pytest.raises(gc.GrammarDesyncError):
+        _step(constraint, tokenizer.convert_tokens_to_ids(">"))
+
+    close_id = tokenizer.encode("</think>", add_special_tokens = False)
+    assert len(close_id) == 1
+    constraint = _fresh()
+    for token_id in (
+        _chars("a<b</th") + close_id + tokenizer.encode('{"a":1}', add_special_tokens = False)
+    ):
+        _step(constraint, token_id)
 
 
 @pytest.mark.parametrize("reply_keeps_special_tokens", [False, True])
