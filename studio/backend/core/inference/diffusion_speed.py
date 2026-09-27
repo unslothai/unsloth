@@ -108,6 +108,50 @@ def fp16_accumulation_scope(value: bool) -> Iterator[None]:
             )
 
 
+_CUDNN_BENCH_LOCK = threading.RLock()
+_cudnn_bench_scopes: list = []
+_cudnn_bench_base: Optional[bool] = None
+
+
+def _read_cudnn_benchmark(cudnn: Any) -> bool:
+    with _CUDNN_BENCH_LOCK:
+        if _cudnn_bench_scopes:
+            return bool(_cudnn_bench_base)
+        return bool(cudnn.benchmark)
+
+
+def _write_cudnn_benchmark(cudnn: Any, value: Any) -> None:
+    global _cudnn_bench_base
+    with _CUDNN_BENCH_LOCK:
+        if _cudnn_bench_scopes:
+            _cudnn_bench_base = bool(value)
+        else:
+            cudnn.benchmark = bool(value)
+
+
+@contextmanager
+def cudnn_benchmark_scope(value: bool) -> Iterator[None]:
+    """Hold ``cudnn.benchmark`` at ``value`` for the body, then restore the latest process value."""
+    global _cudnn_bench_base
+    import torch
+
+    cudnn = torch.backends.cudnn
+    token = object()
+    with _CUDNN_BENCH_LOCK:
+        if not _cudnn_bench_scopes:
+            _cudnn_bench_base = bool(cudnn.benchmark)
+        _cudnn_bench_scopes.append((token, bool(value)))
+        cudnn.benchmark = bool(value)
+    try:
+        yield
+    finally:
+        with _CUDNN_BENCH_LOCK:
+            _cudnn_bench_scopes[:] = [e for e in _cudnn_bench_scopes if e[0] is not token]
+            cudnn.benchmark = (
+                _cudnn_bench_scopes[-1][1] if _cudnn_bench_scopes else bool(_cudnn_bench_base)
+            )
+
+
 def snapshot_backend_flags() -> Optional[dict]:
     """Capture the process-wide torch backend flags this layer may mutate, for restore on unload. None
     without torch. Each flag is read defensively: a build missing one still captures the rest."""
@@ -126,7 +170,7 @@ def snapshot_backend_flags() -> Optional[dict]:
         if hasattr(cudnn, "allow_tf32"):
             state["cudnn_tf32"] = bool(cudnn.allow_tf32)
         if hasattr(cudnn, "benchmark"):
-            state["cudnn_benchmark"] = bool(cudnn.benchmark)
+            state["cudnn_benchmark"] = _read_cudnn_benchmark(cudnn)
     inductor_cfg = _inductor_config()
     if inductor_cfg is not None:
         for attr, key in _INDUCTOR_FLAGS:
@@ -183,7 +227,11 @@ def restore_backend_flags(state: Optional[dict]) -> None:
             pass
     cudnn = getattr(torch.backends, "cudnn", None)
     _set(cudnn, "allow_tf32", "cudnn_tf32")
-    _set(cudnn, "benchmark", "cudnn_benchmark")
+    if cudnn is not None and "cudnn_benchmark" in state and hasattr(cudnn, "benchmark"):
+        try:
+            _write_cudnn_benchmark(cudnn, state["cudnn_benchmark"])
+        except Exception:  # noqa: BLE001 - best-effort per-flag restore
+            pass
     inductor_cfg = _inductor_config()
     for attr, key in _INDUCTOR_FLAGS:
         _set(inductor_cfg, attr, key)
@@ -286,7 +334,7 @@ def fp16_compile_explicit_only(target: Any) -> bool:
 
 
 def family_compiles_regionally(family: Any) -> bool:
-    """False only for an EMPTY ``_repeated_blocks`` (``compile_repeated_blocks`` raises); unknown reads True."""
+    """False only for an EMPTY ``_repeated_blocks`` Studio cannot supply; unknown reads True."""
     if getattr(family, "denoiser_attr", "transformer") != "transformer":
         return True
     name = getattr(family, "transformer_class", None)
@@ -306,7 +354,11 @@ def family_compiles_regionally(family: Any) -> bool:
         return True
     if cls is None or not hasattr(cls, "_repeated_blocks"):
         return True
-    return bool(cls._repeated_blocks)
+    if cls._repeated_blocks:
+        return True
+    from .diffusion_regional_compile import verified_repeated_blocks
+
+    return bool(verified_repeated_blocks(name))
 
 
 def _is_bfloat16(dtype: Any) -> bool:
@@ -372,6 +424,7 @@ def apply_speed_optims(
     CUDA-graph arm refuses only on ``cache_engaged``: the caller bypasses per chunk if it toggles."""
     applied = {
         "channels_last": False,
+        "vae_fp16_decode": False,
         "cudnn_benchmark": False,
         "tf32": False,
         "fp16_accum": False,
@@ -392,6 +445,8 @@ def apply_speed_optims(
 
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
     applied["channels_last"] = _vae_channels_last(pipe, logger)
+    # Near-lossless, not bit-identical, so never on "off" (returned above).
+    applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
 
     if on_cuda:
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
@@ -443,6 +498,19 @@ def apply_speed_optims(
             max_autotune = mode == SPEED_MAX and _denoiser_unet(pipe) is None,
             eager_when_tiled = _vae_eager_when_tiled(pipe),
         )
+
+    if applied["channels_last"] and not _channels_last_decode_wins(
+        pipe, target, applied["compiled_vae_decode"], offload_active
+    ):
+        applied["channels_last"] = not _vae_contiguous(pipe, logger)
+    elif applied["compiled_vae_decode"] and not _channels_last_decode_wins(
+        pipe, target, False, offload_active
+    ):
+        # A decode compile that fails at first call falls back eager: relayout then.
+        try:
+            pipe.vae._unsloth_eager_contiguous = True
+        except Exception:  # noqa: BLE001
+            pass
 
     if mode == SPEED_MAX:
         if on_cuda:
@@ -500,6 +568,70 @@ def _vae_channels_last(pipe: Any, logger: Any) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "channels_last", exc)
+        return False
+
+
+def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> bool:
+    """fp16 channels_last(_3d) decode for fp32-pinned video VAEs (Wan) on NVIDIA sm75+; non-finite output reruns fp32.
+
+    fp16, not bf16 (the pin exists because bf16 bands). channels_last_3d alone slows HV1.5 / LTX-2: keep it Wan-only.
+    """
+    if not getattr(family, "vae_force_fp32", False) or getattr(target, "device", None) != "cuda":
+        return False
+    vae = getattr(pipe, "vae", None)
+    decoder = getattr(vae, "decoder", None)
+    original = getattr(vae, "decode", None)
+    if decoder is None or not callable(original):
+        return False
+    # A dual-DiT family calls apply_speed_optims once per expert over the same VAE.
+    if getattr(vae, "_unsloth_half_decode", False):
+        return True
+    if getattr(target, "backend", None) != "cuda" or not _fp16_compile_capable(target):
+        return False
+    try:
+        import functools
+
+        import torch
+
+        parts = [m for m in (getattr(vae, "post_quant_conv", None), decoder) if m is not None]
+        for part in parts:
+            part.to(torch.float16)
+            for module in part.modules():
+                weight = getattr(module, "weight", None)
+                if isinstance(module, (torch.nn.Conv2d, torch.nn.Conv3d)) and weight is not None:
+                    fmt = torch.channels_last if weight.dim() == 4 else torch.channels_last_3d
+                    weight.data = weight.data.contiguous(memory_format = fmt)
+        fell_back: list = []
+
+        @functools.wraps(original)
+        def decode(z: Any, *args: Any, **kwargs: Any) -> Any:
+            if fell_back or not torch.is_tensor(z):
+                return original(z, *args, **kwargs)
+            out = original(z.to(torch.float16), *args, **kwargs)
+            sample = out[0] if isinstance(out, tuple) else getattr(out, "sample", out)
+            if not torch.is_tensor(sample) or bool(torch.isfinite(sample).all()):
+                return out
+            if logger is not None:
+                logger.warning(
+                    "diffusion.speed: fp16 VAE decode was not finite; decoding in fp32 from now on"
+                )
+            for part in parts:
+                part.to(torch.float32)
+            fell_back.append(True)
+            return original(z, *args, **kwargs)
+
+        vae.decode = decode
+        vae._unsloth_half_decode = True
+        return True
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        try:
+            import torch
+            for part in (getattr(vae, "post_quant_conv", None), decoder):
+                if part is not None:
+                    part.to(torch.float32)
+        except Exception:  # noqa: BLE001, S110 - best-effort restore of the fp32 pin
+            pass
+        _warn(logger, "video vae fp16 decode", exc)
         return False
 
 
@@ -606,6 +738,13 @@ def _compile_repeated_blocks(
     unet = _denoiser_unet(pipe) if not dits else None
     if not dits and unet is None:
         return False
+    # Before the stream-merge probe below, which reads the same block names.
+    for transformer in dits:
+        try:
+            from .diffusion_regional_compile import ensure_repeated_blocks
+            ensure_repeated_blocks(transformer)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "repeated block discovery", exc)
     # default: dynamic=True, fast cold start, no recompile on resolution change. max: max-autotune-no-cudagraphs +
     # automatic dynamic (None): the first shape compiles static and autotuned, and a dimension that then changes is
     # generalised once. dynamic=False recompiled on every new prompt length for DiTs whose blocks see the text tokens
@@ -685,6 +824,12 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "compile_repeated_blocks", exc)
             continue
+        if dit_kwargs["dynamic"] is None:
+            try:
+                from . import diffusion_dynamic_text
+                diffusion_dynamic_text.install(transformer, logger)
+            except Exception as exc:  # noqa: BLE001 - optimisation only
+                _warn(logger, "dynamic text dims", exc)
         # compile_repeated_blocks is lazy: inductor only runs on the first forward, inside generate(), where a lowering
         # bug would fail the render. Guard every compiled block so such a failure drops this DiT to eager instead.
         guard_compiled_blocks(transformer, logger)
@@ -967,18 +1112,61 @@ def _vae_eager_when_tiled(pipe: Any) -> bool:
     return os.environ.get(COMPILE_VAE_ENV, "").strip().lower() not in _VAE_TRUE_TOKENS
 
 
+def _vae_contiguous(pipe: Any, logger: Any) -> bool:
+    try:
+        import torch
+        pipe.vae.to(memory_format = torch.contiguous_format)
+        return True
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "contiguous vae", exc)
+        return False
+
+
+# VAE classes whose decode layout was measured; any other keeps channels_last.
+_VAE_LAYOUT_MEASURED: frozenset[str] = frozenset({"AutoencoderKL", "AutoencoderKLFlux2"})
+
+
+def _channels_last_decode_wins(
+    pipe: Any,
+    target: Any,
+    compiled_decode: bool,
+    offload_active: bool = False,
+) -> bool:
+    """NVIDIA-measured: eager 16-bit is faster contiguous (no NHWC GroupNorm) but offload keeps channels_last (lower peak); compiled 16-bit wins channels_last; fp32 wins contiguous."""
+    vae = getattr(pipe, "vae", None)
+    if (
+        getattr(target, "backend", "cuda") != "cuda"
+        or getattr(target, "device", None) != "cuda"
+        or type(vae).__name__ not in _VAE_LAYOUT_MEASURED
+    ):
+        return True
+    config = getattr(vae, "config", None)
+    # SDXL pipelines upcast a force_upcast fp16 VAE to fp32 for the decode.
+    fp32_decode = str(getattr(vae, "dtype", "")).endswith("float32") or (
+        bool(getattr(config, "force_upcast", False))
+        and _is_float16(getattr(vae, "dtype", None))
+        and _denoiser_unet(pipe) is not None
+    )
+    if fp32_decode:
+        return False
+    return compiled_decode or offload_active
+
+
 def _guard_compiled_decode(
     vae: Any,
     compiled: Any,
     eager: Any,
     logger: Any,
     eager_when_tiled: bool = False,
+    owner: Any = None,
 ) -> Any:
     """``compiled`` behind an eager fallback: torch.compile is lazy, so lowering fails on the first call; OOMs still raise.
 
     ``eager_when_tiled``: a tiled decode unrolls its tile loop into one graph (minutes of compile on low-VRAM loads),
-    and tiling is only settled by the memory plan after the compile, so it is read per call."""
-    had_own = "decode" in getattr(vae, "__dict__", {})
+    and tiling is only settled by the memory plan after the compile, so it is read per call.
+    ``owner``: the slot the fallback restores."""
+    owner = vae if owner is None else owner
+    had_own = "decode" in getattr(owner, "__dict__", {})
     failed: list = []
 
     def guarded(*args: Any, **kwargs: Any) -> Any:
@@ -998,11 +1186,17 @@ def _guard_compiled_decode(
                     vae._unsloth_compile_decode_error = error
                     vae._unsloth_compiled_decode = False
                     if had_own:
-                        vae.decode = eager
+                        owner.decode = eager
                     else:
-                        del vae.decode
+                        del owner.decode
                 except Exception:  # noqa: BLE001 - `failed` still routes this wrapper to eager
                     pass
+                if getattr(vae, "_unsloth_eager_contiguous", False):
+                    try:
+                        import torch
+                        vae.to(memory_format = torch.contiguous_format)
+                    except Exception:  # noqa: BLE001 - optimisation only
+                        pass
                 if logger is not None:
                     logger.warning(
                         "diffusion.speed: torch.compile failed on the VAE decode (%s); decoding eager",
@@ -1023,7 +1217,10 @@ def _compile_vae_decode(
 ) -> bool:
     """torch.compile the VAE ``decode`` in place; no cudagraphs, whose capture would pin decode activations."""
     vae = getattr(pipe, "vae", None)
-    decode = getattr(vae, "decode", None) if vae is not None else None
+    # An outer wrapper that must stay eager (fp16 non-finite check) exposes the slot it calls through.
+    outer = getattr(vae, "__dict__", {}).get("decode") if vae is not None else None
+    owner = getattr(outer, "_unsloth_decode_slot", None) or vae
+    decode = getattr(owner, "decode", None) if vae is not None else None
     if not callable(decode):
         return False
     # A dual-DiT family calls apply_speed_optims twice over the same pipe.
@@ -1038,8 +1235,8 @@ def _compile_vae_decode(
         if max_autotune:
             kwargs["mode"] = "max-autotune-no-cudagraphs"
         compiled = torch.compile(decode, **kwargs)
-        vae.decode = _guard_compiled_decode(
-            vae, compiled, decode, logger, eager_when_tiled = eager_when_tiled
+        owner.decode = _guard_compiled_decode(
+            vae, compiled, decode, logger, eager_when_tiled = eager_when_tiled, owner = owner
         )
         vae._unsloth_compiled_decode = True
         return True
@@ -1057,7 +1254,7 @@ def _enable_cudnn_benchmark(logger: Any) -> bool:
         # On ROCm this is MIOpen's exhaustive search: a first VAE decode tuned for 10 to 23 minutes and crashed a gfx1030.
         if _module_is_rocm(torch):
             return False
-        torch.backends.cudnn.benchmark = True
+        _write_cudnn_benchmark(torch.backends.cudnn, True)
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "cudnn_benchmark", exc)

@@ -23,7 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { MicIcon } from "@/lib/mic-icon";
-import { Tick02Icon } from "@/lib/tick-icon";
+import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -2112,7 +2112,7 @@ export function SharedComposer({
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with files
         {ragEnabled && !ragDisabled ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
     ),
@@ -2125,7 +2125,7 @@ export function SharedComposer({
         <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
         MCP
         {mcpEnabledForChat ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
     ),
@@ -2171,7 +2171,7 @@ export function SharedComposer({
       >
         <Columns2Icon />
         Compare chat
-        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
       </DropdownMenuItem>
     ),
     exportChat: (
@@ -2226,7 +2226,7 @@ export function SharedComposer({
         <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
         Canvas
         {artifactsEnabled ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
     ) : null,
@@ -2517,7 +2517,7 @@ export function SharedComposer({
                 Web search
                 {toolsEnabled && !searchDisabled ? (
                   <HugeiconsIcon
-                    icon={Tick02Icon}
+                    icon={MenuTickIcon}
                     strokeWidth={2}
                     className="ml-auto"
                   />
@@ -2541,7 +2541,7 @@ export function SharedComposer({
                 Code
                 {codeToolsEnabled && !codeDisabled ? (
                   <HugeiconsIcon
-                    icon={Tick02Icon}
+                    icon={MenuTickIcon}
                     strokeWidth={2}
                     className="ml-auto"
                   />
@@ -2561,7 +2561,7 @@ export function SharedComposer({
                   Images
                   {imageToolsEnabled && !imageDisabled ? (
                     <HugeiconsIcon
-                      icon={Tick02Icon}
+                      icon={MenuTickIcon}
                       strokeWidth={2}
                       className="ml-auto"
                     />

@@ -1226,6 +1226,14 @@ class _InferenceRuntimeFields(BaseModel):
             "to check, since a model with its own make_cache ignores the requested size."
         ),
     )
+    mlx_context_budget: Optional[int] = Field(
+        None,
+        description = (
+            "Token limit enforced per request rather than by the KV cache, set where a "
+            "requested cache width took the cache and context_length could not bound it. "
+            "A request over it is refused; null where context_length bounds the cache itself."
+        ),
+    )
     supports_reasoning: bool = Field(
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
@@ -3369,6 +3377,7 @@ class AnthropicToolResultBlock(BaseModel):
     type: Literal["tool_result"]
     tool_use_id: str
     content: Union[str, list] = ""
+    is_error: Optional[bool] = None
 
     @field_validator("content", mode = "before")
     @classmethod
@@ -4371,6 +4380,9 @@ class DiffusionGenerateProgressResponse(BaseModel):
     total_steps: int = Field(0, description = "Total denoising steps for this run")
     fraction: float = Field(0.0, description = "step / total_steps, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+    phase: Optional[str] = Field(
+        None, description = "denoise | decode; null from engines that report no phase (sd.cpp)"
+    )
 
 
 class DiffusionLoadProgressResponse(BaseModel):

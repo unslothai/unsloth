@@ -840,6 +840,7 @@ def collect_local_models(
     """
     from storage.studio_db import list_scan_folders
     from hub.utils import gguf as gguf_utils
+    from hub.utils import inventory_scan as hf_cache_scan
     from utils.models.model_config import detect_gguf_model
 
     sources = sources or _compat_local_inventory_sources()
@@ -876,7 +877,11 @@ def collect_local_models(
 
     state_repositories = []
     state_cache_dirs = [cache_dir for cache_dir, _active_cache in hf_sources]
-    state_cache_dirs.extend(Path(folder["path"]) for folder in custom_folders)
+    state_cache_dirs.extend(
+        cache_dir
+        for folder in custom_folders
+        for cache_dir in hf_cache_scan.scan_folder_hf_caches(Path(folder["path"]))
+    )
     for cache_dir in dict.fromkeys(state_cache_dirs):
         try:
             for repo_dir in cache_dir.glob("models--*"):
@@ -928,11 +933,15 @@ def collect_local_models(
                 m
                 for m in (
                     _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
-                    + _scan_hf_cache(
-                        folder_path,
-                        active_cache = False,
-                        variant_states = variant_states,
-                    )
+                    + [
+                        row
+                        for cache_dir in hf_cache_scan.scan_folder_hf_caches(folder_path)
+                        for row in _scan_hf_cache(
+                            cache_dir,
+                            active_cache = False,
+                            variant_states = variant_states,
+                        )
+                    ]
                     + _scan_lmstudio_dir(folder_path)
                 )
                 if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
@@ -4808,16 +4817,14 @@ def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
 
 
 def _one_shard_family_of(entries: list) -> list:
-    """*entries* narrowed to the single shard family the loader would open, as ``(rel, path, size)`` triples.
-    Same rule as ``hub.utils.gguf.group_gguf_variant_files``: every shard of one split GGUF shares a family,
-    two files that do not are two checkpoints, and the family kept is the one holding the first file."""
+    """``(rel, path, size)`` *entries* narrowed to the one shard set the loader opens, as ``hub.utils.gguf.group_gguf_variant_files``."""
     if len(entries) < 2:
         return list(entries)
-    from hub.utils.gguf import gguf_variant_family
+    from hub.utils.gguf import gguf_shard_set
 
-    families: dict[str, list] = {}
+    families: dict[tuple[str, int], list] = {}
     for entry in entries:
-        families.setdefault(gguf_variant_family(entry[0]), []).append(entry)
+        families.setdefault(gguf_shard_set(entry[0]), []).append(entry)
     if len(families) < 2:
         return list(entries)
     return min(families.values(), key = lambda group: min(e[0] for e in group))

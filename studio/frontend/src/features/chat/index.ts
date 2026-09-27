@@ -141,8 +141,15 @@ export {
   useSidebarDrag,
   SPRING_OPEN_DELAY_MS,
   DRAG_THRESHOLD_PX,
-  DRAGGING_BODY_CLASS,
+  markDragging,
+  DROP_CUE_CLASS,
 } from "./hooks/use-sidebar-drag";
+export {
+  useSectionDrag,
+  sectionKeyLanding,
+  SECTION_ATTR,
+  type SectionLanding,
+} from "./hooks/use-section-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
@@ -160,13 +167,24 @@ export {
   RECENTS_ORDER_SCOPE,
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   useSidebarOrganizationStore,
+  customSectionScope,
+  customSectionIdOf,
+  normalizeSectionName,
+  CUSTOM_SECTION_NAME_MAX,
+  PROJECTS_SECTION_KEY,
+  PINNED_SECTION_KEY,
+  inSectionOrder,
+  resolveSectionOrder,
+  assignmentMap,
 } from "./stores/sidebar-organization-store";
 export type {
+  SidebarCustomSection,
   SidebarChatSort,
   SidebarProjectSort,
   SidebarOrganizeBy,
 } from "./stores/sidebar-organization-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
+export { SectionNameDialog } from "./components/section-name-dialog";
 export {
   usePromptQueueUI,
   type PromptQueueUIEntry,
@@ -267,10 +285,27 @@ export {
   attachmentTextLanguage,
   countAttachmentTextLines,
   isAudioAttachment,
+  attachmentBodyText,
   parseAttachmentText,
   readAttachmentText,
+  repackDocxAttachmentArchive,
+  repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
 } from "./attachment-content";
+export {
+  ATTACHMENT_KIND_ICON_CLASS,
+  ATTACHMENT_KIND_ICONS,
+  attachmentFileKind,
+  attachmentKindLabel,
+  type AttachmentFileKind,
+} from "./lib/attachment-file-kind";
+export {
+  COMPOSER_ATTACHMENT_MAX_ROWS,
+  SENT_ATTACHMENT_LIST_MAX,
+  composerAttachmentsOverflow,
+  sentAttachmentLayout,
+  type SentAttachmentLayout,
+} from "./lib/attachment-layout";
 export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
@@ -487,3 +522,4 @@ export {
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
 } from "./utils/composer-preferences";
+export { isTextAttachmentName } from "./text-attachment-accept";
