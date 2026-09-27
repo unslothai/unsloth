@@ -305,6 +305,15 @@ def test_info_reports_a_rejected_key(monkeypatch):
     }
 
 
+def test_reasoning_deltas_stamp_the_first_token(monkeypatch):
+    monitor = _Monitor()
+    monkeypatch.setattr(linked_instances, "api_monitor", monitor)
+    linked_instances._record_sse_line("e", 'data: {"choices": [{"delta": {"reasoning_content": "hmm"}}]}')
+    linked_instances._record_sse_line("e", 'data: {"choices": [{"delta": {"content": "hi"}}]}')
+    names = [c[0] for c in monitor.calls if c[0] in ("mark_first_token", "append_reply")]
+    assert names == ["mark_first_token", "append_reply"]
+
+
 @pytest.mark.parametrize("caller_asked", [False, True])
 def test_stream_usage_is_requested_counted_and_hidden_unless_asked(monkeypatch, caller_asked):
     linked_instances_db.create_instance("wsl", "http://remote", REMOTE_KEY)
