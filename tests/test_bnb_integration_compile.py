@@ -40,6 +40,13 @@ from unsloth.kernels.fast_lora import (
 
 _NF4_KERNELS_AVAILABLE = U._USE_NF4_KERNELS
 DEVICE = "cuda"
+# Unsloth runs fp16 on GPUs without native bf16 (pre-Ampere, e.g. T4), and Inductor cannot re-emit a
+# bf16 Triton kernel there, so the single-graph checks use the dtype Unsloth would.
+CDTYPE = (
+    torch.bfloat16
+    if torch.version.hip or torch.cuda.get_device_capability()[0] >= 8
+    else torch.float16
+)
 
 
 @pytest.fixture(params = ["nf4_kernels", "ctypes_fallback"])
@@ -88,11 +95,11 @@ _CONTROL = {}
 
 def _torch_compiles_lora_exactly(backend):
     """Some torch versions (2.7) decompose the in-place LoRA addmm_/addmv_ differently when
-    compiled, even on a plain bf16 weight with no 4bit op in sight. Measure that on a control so
+    compiled, even on a plain 16bit weight with no 4bit op in sight. Measure that on a control so
     compiled-vs-eager checks stay exact wherever torch itself is exact."""
     if backend not in _CONTROL:
         g = torch.Generator(device = DEVICE).manual_seed(1)
-        r = lambda *s: torch.randn(*s, dtype = torch.bfloat16, device = DEVICE, generator = g)
+        r = lambda *s: torch.randn(*s, dtype = CDTYPE, device = DEVICE, generator = g)
         W, A, B, X, x = r(512, 256), r(8, 256), r(512, 8), r(32, 256), r(256)
 
         def control(X, x):
@@ -141,12 +148,16 @@ def _assert_compiled_matches(
     compiled,
     eager,
     backend = "inductor",
+    exact = None,
 ):
-    if _torch_compiles_lora_exactly(backend):
+    if exact is None:
+        exact = _torch_compiles_lora_exactly(backend)
+    if exact or torch.equal(compiled, eager):
         assert torch.equal(compiled, eager)
-    else:
-        err = ((compiled.float() - eager.float()).abs().max() / eager.float().abs().max()).item()
-        assert err < 2e-2, err
+        return
+    scale = eager.float().abs().max().clamp_min(1e-6)
+    err = ((compiled.float() - eager.float()).abs().max() / scale).item()
+    assert err < 2e-2, err
 
 
 def _bits(t):
@@ -404,6 +415,51 @@ def _lora_block(
     return model, model.base_model.model
 
 
+def _dense_block(
+    dtype,
+    D = 256,
+    H = 512,
+):
+    """The same LoRA block on dense 16bit weights: fast_dequantize passes a weight without a quant
+    state through, so its compiled graph is the 4bit one minus the 4bit ops."""
+    import torch.nn as nn
+    from peft import LoraConfig, get_peft_model
+
+    torch.manual_seed(0)
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            L = lambda i, o: nn.Linear(i, o, bias = False)
+            self.gate_proj, self.up_proj, self.down_proj = L(D, H), L(D, H), L(H, D)
+            self.q_proj, self.k_proj, self.v_proj, self.o_proj = (
+                L(D, D),
+                L(D, 128),
+                L(D, 128),
+                L(D, D),
+            )
+
+    block = Block().to(DEVICE, dtype)
+    for p in block.parameters():
+        p.requires_grad_(False)
+    targets = ["gate_proj", "up_proj", "down_proj", "q_proj", "k_proj", "v_proj", "o_proj"]
+    model = get_peft_model(block, LoraConfig(r = 8, lora_alpha = 16, target_modules = targets))
+    for name, p in model.named_parameters():
+        if "lora_" in name:
+            # fp32 adapters, as PEFT makes them on the Linear4bit block.
+            p.data = p.data.float()
+        if "lora_B" in name:
+            torch.nn.init.normal_(p, std = 0.02)
+    return model, model.base_model.model
+
+
+_LORA_FNS = {
+    "mlp": lambda block: (lambda x: apply_lora_mlp_swiglu(block, x)),
+    "qkv": lambda block: (lambda x: apply_lora_qkv(block, x, inplace = False)),
+    "o": lambda block: (lambda x: apply_lora_o(block, x)),
+}
+
+
 def _fwd_bwd(model, fn, X):
     x = X.clone().requires_grad_()
     out = fn(x)
@@ -417,13 +473,9 @@ def _fwd_bwd(model, fn, X):
 
 @pytest.mark.parametrize("which", ["mlp", "qkv", "o"])
 def test_fast_lora_compiles_fullgraph(nf4_kernels, which):
-    model, block = _lora_block()
-    fn = {
-        "mlp": lambda x: apply_lora_mlp_swiglu(block, x),
-        "qkv": lambda x: apply_lora_qkv(block, x, inplace = False),
-        "o": lambda x: apply_lora_o(block, x),
-    }[which]
-    X = torch.randn(2, 16, 256, dtype = torch.bfloat16, device = DEVICE)
+    model, block = _lora_block(dtype = CDTYPE)
+    fn = _LORA_FNS[which](block)
+    X = torch.randn(2, 16, 256, dtype = CDTYPE, device = DEVICE)
     eager = _fwd_bwd(model, fn, X)
     fullgraph = _dynamo_traces_params4bit()
     if fullgraph:
@@ -431,17 +483,25 @@ def test_fast_lora_compiles_fullgraph(nf4_kernels, which):
         assert explained.graph_break_count == 0, explained.break_reasons
     torch._dynamo.reset()
     compiled = _fwd_bwd(model, torch.compile(fn, fullgraph = fullgraph), X)
+    # Exact wherever torch compiles the same block on dense weights exactly (not all versions and
+    # dtypes do for the LoRA backward matmuls); within tolerance otherwise.
+    dense_model, dense_block = _dense_block(CDTYPE)
+    dense_fn = _LORA_FNS[which](dense_block)
+    torch._dynamo.reset()
+    dense_eager = _fwd_bwd(dense_model, dense_fn, X)
+    dense_compiled = _fwd_bwd(dense_model, torch.compile(dense_fn), X)
+    exact = all(torch.equal(a, b) for a, b in zip(dense_eager, dense_compiled))
     assert len(compiled) == len(eager)
     for a, b in zip(eager, compiled):
-        _assert_compiled_matches(b, a)
+        _assert_compiled_matches(b, a, exact = exact)
 
 
 def test_primitives_compile_fullgraph(nf4_kernels):
-    q, s = _quantize((512, 256), torch.bfloat16)
-    X1 = torch.randn(1, 1, 256, dtype = torch.bfloat16, device = DEVICE)
-    X = torch.randn(2, 16, 256, dtype = torch.bfloat16, device = DEVICE)
-    A = torch.randn(8, 256, dtype = torch.bfloat16, device = DEVICE) * 0.02
-    B = torch.randn(512, 8, dtype = torch.bfloat16, device = DEVICE) * 0.02
+    q, s = _quantize((512, 256), CDTYPE)
+    X1 = torch.randn(1, 1, 256, dtype = CDTYPE, device = DEVICE)
+    X = torch.randn(2, 16, 256, dtype = CDTYPE, device = DEVICE)
+    A = torch.randn(8, 256, dtype = CDTYPE, device = DEVICE) * 0.02
+    B = torch.randn(512, 8, dtype = CDTYPE, device = DEVICE) * 0.02
     cases = [
         (lambda q: U.fast_dequantize(q, s, use_global_buffer = True) * 1, (q,), True),
         (lambda q: U.fast_dequantize(q.t(), s) * 1, (q,), True),
@@ -462,9 +522,9 @@ def test_primitives_compile_fullgraph(nf4_kernels):
 
 @pytest.mark.parametrize("bsz", [1, 2])
 def test_fast_linear_forward_compiles_fullgraph(nf4_kernels, bsz):
-    _, block = _lora_block()
+    _, block = _lora_block(dtype = CDTYPE)
     fn = lambda x: U.fast_linear_forward(block.o_proj, x)
-    X = torch.randn(bsz, 1, 256, dtype = torch.bfloat16, device = DEVICE)
+    X = torch.randn(bsz, 1, 256, dtype = CDTYPE, device = DEVICE)
     with torch.inference_mode():
         eager = fn(X).clone()
         fullgraph = _dynamo_traces_params4bit()
