@@ -1341,7 +1341,9 @@ def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
     assert seen["transformer_quant"] == "int8"
 
 
-def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_load(client, monkeypatch):
+def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_load(
+    client, monkeypatch
+):
     # With precision fallback on, an explicit fp8 on the LTX-2.3 distilled single file under balanced / low_vram loads
     # the bf16 DiT from the file itself, so the ~19 GB unsloth/LTX-2.3-FP8 artifact must not be staged. The plan only
     # knows that if the route forwards the memory policy: the real download_plan runs here, only the Hub is stubbed.
@@ -1377,7 +1379,12 @@ def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_
     }
 
     class _Api:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             return types.SimpleNamespace(siblings = repos[repo_id])
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())

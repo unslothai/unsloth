@@ -11495,7 +11495,6 @@ def test_ltx23_prequant_source_resolves_the_hosted_fp8_only():
 def _ltx23_fp8_card(monkeypatch, *, fp8 = True):
     """The explicit fp8 scheme check on the card the load uses: sm_89+ runs fp8, Ampere (sm_80/86) only int8."""
     from core.inference import video as video_mod
-
     monkeypatch.setattr(
         video_mod, "_ltx23_prequant_scheme_supported", lambda fam, target, pinned: fp8
     )
@@ -11504,7 +11503,6 @@ def _ltx23_fp8_card(monkeypatch, *, fp8 = True):
 def _ltx23_official_file(monkeypatch):
     """Stand-in 1-byte fixtures pass as the official LTX-2.3 distilled file (identity is tested on its own)."""
     from core.inference import video_ltx2
-
     monkeypatch.setattr(video_ltx2, "ltx23_source_file_verified", lambda path: True)
 
 
@@ -11542,7 +11540,13 @@ def test_ltx23_hosted_fp8_seed_requires_fp8_on_the_card(fake_runtime, monkeypatc
     monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda **kw: target)
     assert (
         video_mod._ltx23_prequant_serves_on_card(
-            fam, "single_file", name, "fp8", memory_mode = None, gpu_ordinal = None, checkpoint_repo = repo
+            fam,
+            "single_file",
+            name,
+            "fp8",
+            memory_mode = None,
+            gpu_ordinal = None,
+            checkpoint_repo = repo,
         )
         is fp8
     )
@@ -11622,7 +11626,9 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     for repo in ("someone/LTX-2.3-finetune", "unsloth/LTX-2.3-GGUF", "Lightricks/LTX-2"):
         assert not video_ltx2.ltx23_prequant_eligible(name, repo), repo
     assert not video_ltx2.ltx23_prequant_eligible(name, None)
-    assert not video_ltx2.ltx23_prequant_eligible("ltx-2.3-22b-dev.safetensors", "Lightricks/LTX-2.3")
+    assert not video_ltx2.ltx23_prequant_eligible(
+        "ltx-2.3-22b-dev.safetensors", "Lightricks/LTX-2.3"
+    )
     # Cached: a content-addressed blob of the official size is the file; anything else in its place is not.
     blobs = tmp_path / "blobs"
     blobs.mkdir()
@@ -11644,7 +11650,9 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     assert not video_ltx2.ltx23_prequant_eligible(name, "Lightricks/LTX-2.3")
 
 
-def test_ltx23_unverified_same_name_pick_is_refused_not_substituted(fake_runtime, tmp_path, monkeypatch):
+def test_ltx23_unverified_same_name_pick_is_refused_not_substituted(
+    fake_runtime, tmp_path, monkeypatch
+):
     # Official repo: served. A local same-name file with another identity, or a third-party repo: the explicit fp8 is
     # refused before the load (the pre-substitution behaviour), never silently answered with the stock DiT.
     from core.inference import video as video_mod, video_ltx2

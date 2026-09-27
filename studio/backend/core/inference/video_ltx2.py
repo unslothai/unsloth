@@ -463,7 +463,9 @@ LTX23_PREQUANT_SOURCE_SHA256 = "14409a4d1337a8ded02fa87fb895b17a91ab2c6588f7cc33
 # Outside the Hub cache: sha256 over the safetensors header (the 8-byte length and the JSON, which records this
 # training run's own metadata) and 1 MiB of tensor data at 1/4, 1/2 and 3/4 of the data region and at the end. About
 # 5 MB read instead of hashing 46 GB; taken from the official file with ranged reads.
-LTX23_PREQUANT_SOURCE_FINGERPRINT = "2af533b0abd59f3d0bae1dfbf1a4d22c756cf3ddaccfc3e6e90e6df025cdce0a"
+LTX23_PREQUANT_SOURCE_FINGERPRINT = (
+    "2af533b0abd59f3d0bae1dfbf1a4d22c756cf3ddaccfc3e6e90e6df025cdce0a"
+)
 _LTX23_SAMPLE_BYTES = 1 << 20
 _LTX23_MAX_HEADER_BYTES = 100 << 20
 _LTX23_VERIFIED: dict[tuple[str, int, int], bool] = {}
@@ -529,7 +531,6 @@ def _ltx23_hub_cached_file(repo_id: str, filename: str) -> Optional[Path]:
         from huggingface_hub import try_to_load_from_cache
 
         from .diffusion import hub_cache_dir
-
         for cache_dir in dict.fromkeys((None, hub_cache_dir())):
             hit = try_to_load_from_cache(repo_id, filename, cache_dir = cache_dir)
             if isinstance(hit, str):
@@ -540,8 +541,7 @@ def _ltx23_hub_cached_file(repo_id: str, filename: str) -> Optional[Path]:
 
 
 def ltx23_prequant_eligible(
-    checkpoint_filename: Optional[str],
-    repo_id: Optional[str] = None,
+    checkpoint_filename: Optional[str], repo_id: Optional[str] = None
 ) -> bool:
     """Whether the hosted DiT may replace this pick's own: the official file, by name AND identity.
 
@@ -558,8 +558,9 @@ def ltx23_prequant_eligible(
             return ltx23_source_file_verified(root)
         if root.is_dir():
             from .diffusion_families import resolve_local_gguf_child
-
-            return ltx23_source_file_verified(resolve_local_gguf_child(root, str(checkpoint_filename)))
+            return ltx23_source_file_verified(
+                resolve_local_gguf_child(root, str(checkpoint_filename))
+            )
     except Exception:  # noqa: BLE001 -- an unresolvable local pick is not verified
         return False
     if str(repo_id).strip().lower() not in LTX23_PREQUANT_SOURCE_REPOS:
