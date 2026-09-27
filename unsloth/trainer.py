@@ -136,6 +136,8 @@ def _block_gemma4_multidevice_padding_free(model, model_types) -> bool:
     ):
         return False
     return _model_spans_multiple_devices(model)
+
+
 # Hybrid linear-attention / state-space models (Qwen3.5, Qwen3-Next) carry a recurrent gated-delta
 # state plus a causal conv1d that leak across sequence boundaries once packing flattens the batch.
 # Detected structurally by _is_hybrid_linear_attention_model, not by model name.
