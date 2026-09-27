@@ -3935,6 +3935,7 @@ def _references_studio_credential_here(
     text: str,
     workdir: "str | None",
     _unescaped: bool = False,
+    _expanded: bool = False,
 ) -> bool:
     """`_references_studio_credential`, plus the relative paths *text* would open from *workdir*.
 
@@ -3971,7 +3972,7 @@ def _references_studio_credential_here(
         # was a RecursionError raised out of the guard rather than a decision.
         unescaped = _ESCAPED_WORD_CHAR_RE.sub(r"\1", text)
         if unescaped != text and _references_studio_credential_here(
-            unescaped, workdir, _unescaped = True
+            unescaped, workdir, _unescaped = True, _expanded = _expanded
         ):
             return True
     if "[" in text:
@@ -3979,12 +3980,16 @@ def _references_studio_credential_here(
         # spelled out, and it has to be read as the literal BEFORE the wildcard collapse below
         # discards it.
         literal = _SINGLETON_CLASS_RE.sub(r"\1", text)
-        if literal != text and _references_studio_credential_here(literal, workdir):
+        if literal != text and _references_studio_credential_here(
+            literal, workdir, _expanded = _expanded
+        ):
             return True
     # `aut[h]` splits at the brackets, which also end a path token; `aut?` keeps it whole.
     if "[" in text:
         collapsed = _BRACKET_CLASS_RE.sub("?", text)
-        if collapsed != text and _references_studio_credential_here(collapsed, workdir):
+        if collapsed != text and _references_studio_credential_here(
+            collapsed, workdir, _expanded = _expanded
+        ):
             return True
     # The kernel resolves the symlink FIRST, then applies `..`; a lexical normpath reads
     # `/proc/self/cwd/../../auth` as `/proc/self/auth` and misses.
@@ -3996,23 +4001,25 @@ def _references_studio_credential_here(
     # Substituted, not replaced: the raw text still carries the real-home spellings.
     if workdir and ("pwd" in text.lower() or "%cd%" in text.lower()):
         here = _CWD_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
-        if here != text and _references_studio_credential_here(here, workdir):
+        if here != text and _references_studio_credential_here(here, workdir, _expanded = _expanded):
             return True
     if workdir and ("home" in text.lower() or "~" in text):
         homed = _HOME_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
         # A workdir spelling `~` would substitute to another match, so recurse only once it is gone.
         if homed != text and not _HOME_VARIABLE_RE.search(homed):
-            if _references_studio_credential_here(homed, workdir):
+            if _references_studio_credential_here(homed, workdir, _expanded = _expanded):
                 return True
-    # One level of indirection, `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"`. Same substitution the
-    # sensitive-path scan uses, and it only ADDS detections.
-    if "$" in text:
-        expanded = _expand_shell_assignments(text)
+    # Indirection, `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"`. Same substitution the sensitive-path
+    # scan uses, and it only ADDS detections. Once per path through this analysis, so every branch
+    # above passes the flag on: resetting it let `a=$b b=$c c=$a` beside a run of escapes restart the
+    # passes at every level and recurse exponentially.
+    if "$" in text and not _expanded:
         # The WHOLE workdir-aware analysis, not only the literal scan: `d=../..; cd "$d"` moves the
         # directory every later relative path opens from, and handing the unexpanded text to the cwd
         # walk read `$d` as a directory name and never moved.
-        if expanded != text and _references_studio_credential_here(expanded, workdir):
-            return True
+        for expanded in _shell_assignment_passes(text):
+            if _references_studio_credential_here(expanded, workdir, _expanded = True):
+                return True
     # A `cd` earlier in the command moves where every later relative path opens from.
     if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
         for offset, limit, cwd in _cwds_after_cd(workdir, text):
@@ -5245,11 +5252,31 @@ def _posix_join(parts) -> str:
     return out
 
 
+def _shell_assignments(command: str) -> "dict[str, str]":
+    """The `NAME=value` bindings in *command*, the last of each name winning.
+
+    A value naming its own variable takes the binding before it, `p=..; p=$p/auth` binding
+    `../auth`, or nothing when there is none, as the shell reads an unset name. Substituting the
+    name into its own value instead doubled it on every pass (`PATH=$PATH:/x`, or the ` fl=$fl"`
+    the capture reads out of `echo "hb=$hb fl=$fl"`) and the scan never settled."""
+    env: "dict[str, str]" = {}
+    for name, value in _SHELL_ASSIGN_RE.findall(command):
+        own = re.compile(rf"\$(?:{name}\b|\{{!?{name}\b[^{{}}]*\}})")
+        if own.search(value):
+            value = own.sub(lambda _m: env.get(name, ""), value)
+            # `a=X; a=$a$a` repeated doubles the value each time; past what any path could be, the
+            # earlier binding stands.
+            if len(value) > _MAX_PATH_SCAN_CHARS:
+                continue
+        env[name] = value
+    return env
+
+
 def _expand_shell_assignments(command: str) -> str:
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path split across an
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
     pattern replacement. Fail-open: only adds detections."""
-    env = dict(_SHELL_ASSIGN_RE.findall(command))
+    env = _shell_assignments(command)
     if not env:
         return command
 
@@ -5281,6 +5308,24 @@ def _expand_shell_assignments(command: str) -> str:
     command = _SHELL_PARAM_REPL_RE.sub(repl_pattern, command)
     command = _SHELL_PARAM_CASE_RE.sub(repl_case, command)
     return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command)
+
+
+def _shell_assignment_passes(command: str):
+    """Successive `_expand_shell_assignments` passes over *command*, while each changes it.
+
+    A pass resolves `b=$a` from the values the previous pass left, so a chain through n names settles
+    within n.bit_length() passes. The first pass is what the scan has always read. A cycle through
+    several names (`a=$b b=$c c=$a`), or values built of copies of each other (`b=$a$a`, `c=$b$b`),
+    never settles, so the later passes stop at the pass count, or once a pass outgrows the command
+    by more than any real path, where analysing the text costs far more than the command."""
+    passes = len({name for name, _ in _SHELL_ASSIGN_RE.findall(command)}).bit_length() + 1
+    limit = 4 * len(command) + _MAX_TERMINAL_SCAN_CHARS
+    for index in range(passes):
+        expanded = _expand_shell_assignments(command)
+        if expanded == command or (index and len(expanded) > limit):
+            return
+        yield expanded
+        command = expanded
 
 
 def _expand_param_defaults(command: str) -> str:
