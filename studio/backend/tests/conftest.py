@@ -425,6 +425,15 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _no_live_metal_wired_ceiling(monkeypatch):
+    """Keep Metal context verdicts off the host's live GPU memory."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_wired_ceiling_bytes", staticmethod(lambda: 0)
+    )
+
+
+@pytest.fixture(autouse = True)
 def _no_leftover_generation_account(monkeypatch):
     """Clear the media-generation owner, which is a process global no route ever resets.
 

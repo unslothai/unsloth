@@ -429,6 +429,18 @@ _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {
 }
 
 
+# AUTO keeps bf16 while it fits for these (measured with both sides compiled: INT8 was at most ~5% faster and failed the
+# default-on LPIPS bar); when bf16 would offload, INT8 is still picked.
+_FAMILY_AUTO_BF16_WHEN_RESIDENT: dict[str, str] = {
+    "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail",
+    "hidream-i1": "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail",
+}
+
+
+def auto_bf16_when_resident_reason(family: Optional[str]) -> Optional[str]:
+    return _FAMILY_AUTO_BF16_WHEN_RESIDENT.get(str(family or "").strip().lower())
+
+
 # Schemes denied for TRAINING on top of the inference table. Training holds a stricter bar because the evidence above
 # is rendering evidence: it says a frozen fp8 forward reconstructs the bf16 image, not that a LoRA converges when its
 # frozen linears are fp8. Nobody has run that, so qwen fp8 stays out of the Train UI until someone does. Delete the
@@ -634,10 +646,12 @@ def _strip_paths(text: str) -> str:
 _SMOKE_CACHE: dict[tuple[str, str], bool] = {}
 
 
-def _smoke_cache_device_key(device: str) -> str:
-    """``device`` qualified with the current CUDA index, so each card is validated on its own."""
+def _smoke_cache_device_key(device: str, ordinal: Optional[int] = None) -> str:
+    """``device`` qualified with the current CUDA index, or ``ordinal`` when given."""
     if device != "cuda":
         return device
+    if ordinal is not None:
+        return f"cuda:{ordinal}"
     try:
         import torch
         return f"cuda:{torch.cuda.current_device()}"
@@ -1082,10 +1096,11 @@ def dense_quant_host_capable(target: Any) -> bool:
     # import fails, so an ABI skew would advertise a fast path every load then falls back from.
     if torchao_unavailable_reason() is not None:
         return False
-    cap = _capability()
+    ordinal = getattr(target, "ordinal", None)
+    cap = _capability(ordinal)
     if cap is None:
         return False
-    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
+    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")), ordinal)
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
             return any(_SMOKE_CACHE.get((scheme, card), True) for scheme in without_nvfp4(schemes))
@@ -1183,11 +1198,12 @@ def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> 
     published ladder sharpens as loads record verdicts instead of paying for them here."""
     if not dense_transformer_supported(target):
         return ()
-    cap = _capability()
+    ordinal = getattr(target, "ordinal", None)
+    cap = _capability(ordinal)
     if cap is None:
         return ()
     device = str(getattr(target, "device", "cuda"))
-    card = _smoke_cache_device_key(device)
+    card = _smoke_cache_device_key(device, ordinal)
     return tuple(
         scheme
         for scheme in _auto_scheme_order(family, device, cap)
@@ -1196,10 +1212,10 @@ def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> 
     )
 
 
-def _capability() -> Optional[tuple[int, int]]:
+def _capability(ordinal: Optional[int] = None) -> Optional[tuple[int, int]]:
     try:
         import torch
-        major, minor = torch.cuda.get_device_capability()
+        major, minor = torch.cuda.get_device_capability(ordinal)
         return (int(major), int(minor))
     except Exception:
         return None
