@@ -32,6 +32,7 @@ from .cohere import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
+from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -299,6 +300,43 @@ def _config_diff(config):
         except Exception:
             pass
     return {}
+
+
+def _is_mistral_format_checkpoint(
+    model_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+):
+    """True for a checkpoint in Mistral's own format (`params.json`, no `config.json`), which
+    AutoConfig cannot read. Answers False on any doubt, including offline."""
+    # Meta's original Llama checkpoints also ship `params.json`, so require a Mistral-only file.
+    markers = ("tekken.json", "consolidated.safetensors", "consolidated.safetensors.index.json")
+    try:
+        if os.path.isdir(model_name):
+            has = lambda name: os.path.isfile(os.path.join(model_name, name))
+        else:
+            if local_files_only:
+                return False
+            from huggingface_hub import file_exists
+            has = lambda name: file_exists(model_name, name, revision = revision, token = token)
+        return has("params.json") and not has("config.json") and any(has(m) for m in markers)
+    except Exception:
+        return False
+
+
+def _mistral_format_error(model_name):
+    return (
+        f"Unsloth: `{model_name}` is a checkpoint in Mistral's own format: it ships `params.json` "
+        "and no `config.json`, and transformers has no modeling code for it (the model card says "
+        "so and points at vLLM).\n"
+        "Unsloth trains through transformers, so this checkpoint cannot be loaded for training "
+        "until transformers gains an implementation or a transformers-format conversion of the "
+        "weights is published. For inference use vLLM with mistral-common, as the model card "
+        "describes.\n"
+        "If you meant a transformers-format repo, check the repo id: the converted uploads carry "
+        "a `config.json`."
+    )
 
 
 def _has_sequence_classification_architecture(config):
@@ -955,6 +993,8 @@ class FastLanguageModel(FastLlamaModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
                     f"to obtain the latest transformers build, then restart this session."
                 )
+            if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
+                raise RuntimeError(_mistral_format_error(model_name)) from autoconfig_exc
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
                 f"AutoConfig error: {autoconfig_error}\n\n"
@@ -1310,6 +1350,17 @@ class FastLanguageModel(FastLlamaModel):
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
+            # Grouped linears (DeepSeek-V4 o_a_proj): the LoRA mapping is not saved, re-register it.
+            _grouped_config = register_grouped_linear_lora_for_adapter(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                **peft_load_kwargs,
+            )
+            if _grouped_config is not None:
+                peft_load_kwargs["config"] = _grouped_config
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -1758,6 +1809,8 @@ class FastModel(FastBaseModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
                     f"to obtain the latest transformers build, then restart this session."
                 )
+            if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
+                raise RuntimeError(_mistral_format_error(model_name)) from autoconfig_exc
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
                 f"AutoConfig error: {autoconfig_error}\n\n"
@@ -2437,6 +2490,16 @@ class FastModel(FastBaseModel):
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
+            _grouped_config = register_grouped_linear_lora_for_adapter(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                **peft_load_kwargs,
+            )
+            if _grouped_config is not None:
+                peft_load_kwargs["config"] = _grouped_config
             try:
                 model = PeftModel.from_pretrained(
                     model,

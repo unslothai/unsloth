@@ -854,8 +854,8 @@ def fake_runtime(monkeypatch):
     torch.Generator = _FakeGenerator
     torch.cuda = types.SimpleNamespace(is_available = lambda: False)
     torch.backends = types.SimpleNamespace(mps = None)
-    # generate() wraps the pipe call in torch.inference_mode(); a no-op CM here.
     torch.inference_mode = lambda: contextlib.nullcontext()
+    torch.no_grad = lambda: contextlib.nullcontext()
 
     diffusers = types.ModuleType("diffusers")
     diffusers.GGUFQuantizationConfig = lambda compute_dtype = None: ("quant", compute_dtype)
@@ -12087,23 +12087,166 @@ def test_a_pipeline_pick_refuses_an_explicit_scheme_that_did_not_engage(
     assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
 
 
-def test_a_pipeline_pick_does_not_quantise_under_offload(fake_runtime, tmp_path, monkeypatch):
-    """Offloaded pipelines stay dense because torchao tensors cannot move."""
-    backend = DiffusionBackend()
-    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+def _offload_plan(
+    offload_policy,
+    budget_mib = 1_000_000,
+    runtime_headroom_mib = 0,
+):
     real_plan = DiffusionBackend._plan_memory
 
-    def _offloading_plan(self, *args, **kwargs):
+    def _plan(self, *args, **kwargs):
         plan = real_plan(self, *args, **kwargs)
-        return dataclasses.replace(plan, offload_policy = "model")
+        return dataclasses.replace(
+            plan,
+            offload_policy = offload_policy,
+            estimates = {
+                **plan.estimates,
+                "safe_device_budget_mib": budget_mib,
+                "runtime_headroom_mib": runtime_headroom_mib,
+                "base_overhead_mib": 0,
+            },
+        )
 
-    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offloading_plan)
+    return _plan
+
+
+def test_a_pipeline_pick_quantises_under_whole_module_offload(fake_runtime, tmp_path, monkeypatch):
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan("model"))
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls != []
+    assert status["transformer_quant"] is not None
+    backend.unload()
+
+
+@pytest.mark.parametrize(
+    ("offload_policy", "expected"), [("none", "inference_mode"), ("model", "no_grad")]
+)
+def test_an_offloaded_quantised_transformer_renders_outside_inference_mode(
+    fake_runtime, tmp_path, monkeypatch, offload_policy, expected
+):
+    """torchao tensors cannot change device under inference_mode, so offloaded quant renders use no_grad."""
+    import torch
+
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan(offload_policy))
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert status["transformer_quant"] is not None
+    used = []
+
+    def _mode(name):
+        @contextlib.contextmanager
+        def _cm():
+            used.append(name)
+            yield
+
+        return _cm
+
+    monkeypatch.setattr(torch, "inference_mode", _mode("inference_mode"))
+    monkeypatch.setattr(torch, "no_grad", _mode("no_grad"))
+    backend.generate(prompt = "p", steps = 2)
+    assert used == [expected]
+    backend.unload()
+
+
+def test_the_offload_replan_prices_a_precast_text_encoder_once(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion_te_prequant as te_prequant
+
+    real_plan = DiffusionBackend._plan_memory
+
+    class _Module:
+        def __init__(self, mib):
+            self._t = types.SimpleNamespace(numel = lambda: mib * 1024 * 1024, element_size = lambda: 1)
+
+        def parameters(self, recurse = True):
+            return [self._t]
+
+        def buffers(self, recurse = True):
+            return []
+
+    monkeypatch.setattr(
+        sys.modules["torch"], "nn", types.SimpleNamespace(Module = _Module), raising = False
+    )
+
+    def _replan_te(scale, held_mib = None):
+        monkeypatch.setattr(te_prequant, "te_prequant_budget_scale", lambda *a, **k: scale)
+        backend = DiffusionBackend()
+        _stub_pipeline_dense_quant(backend, monkeypatch)
+        if held_mib is not None:
+            # the pipe already holds the pre-cast encoder: the plan must not price it below the scaled table again
+            monkeypatch.setattr(
+                _FakePipe, "components", {"text_encoder": _Module(held_mib)}, raising = False
+            )
+        seen = []
+
+        def _plan(self, *args, **kwargs):
+            plan = real_plan(self, *args, **kwargs)
+            if kwargs.get("transformer_resident_override_mib") is not None:
+                seen.append(kwargs.get("text_encoder_override_mib"))
+            return dataclasses.replace(plan, offload_policy = "model")
+
+        monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+        backend.load_pipeline(
+            "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+        )
+        backend.unload()
+        assert seen, "the quant replan never ran"
+        return seen[-1]
+
+    table_te = _replan_te(1.0)
+    precast_te = _replan_te(0.65)
+    assert precast_te == int(table_te * 0.65)
+    assert _replan_te(0.65, held_mib = table_te // 2) == precast_te
+
+
+@pytest.mark.parametrize("offload_policy", ["group", "sequential"])
+def test_a_pipeline_pick_stays_dense_under_streamed_offload(
+    fake_runtime, tmp_path, monkeypatch, offload_policy
+):
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan(offload_policy))
     status = backend.load_pipeline(
         "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
     )
     assert calls == []
     assert status["transformer_quant"] is None
-    assert "offload" in status["resolved"]["transformer_quant"]["reason"]
+    assert (
+        "hooks torchao weights do not survive" in status["resolved"]["transformer_quant"]["reason"]
+    )
+    backend.unload()
+
+
+@pytest.mark.parametrize(
+    ("budget_mib", "runtime_headroom_mib", "companion_mib"),
+    [(1, 0, None), (1_000_000, 1_000_000, None), (1_000_000, 0, 2_000_000)],
+)
+def test_a_pipeline_pick_stays_dense_when_the_quantised_transformer_exceeds_the_budget(
+    fake_runtime, tmp_path, monkeypatch, budget_mib, runtime_headroom_mib, companion_mib
+):
+    """Quantised transformer (plus runtime headroom) and every text encoder must fit unstreamed."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "largest_streamable_companion_mib", lambda pipe: companion_mib)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        _offload_plan("model", budget_mib = budget_mib, runtime_headroom_mib = runtime_headroom_mib),
+    )
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert "not known to fit" in status["resolved"]["transformer_quant"]["reason"]
     backend.unload()
 
 
@@ -13235,12 +13378,15 @@ def test_an_explicit_fp8_under_offload_on_nvidia_is_still_declined(
         _base_local_dir = str(tmp_path),
     )
     if fallback == "0":
-        with pytest.raises(RuntimeError, match = "Module.to"):
+        with pytest.raises(RuntimeError, match = "hooks torchao weights do not survive"):
             backend.load_pipeline("Qwen/Qwen-Image-2512", **kwargs)
     else:
         status = backend.load_pipeline("Qwen/Qwen-Image-2512", **kwargs)
         assert status["transformer_quant"] is None
-        assert "Module.to()" in status["resolved"]["transformer_quant"]["reason"]
+        assert (
+            "hooks torchao weights do not survive"
+            in status["resolved"]["transformer_quant"]["reason"]
+        )
         backend.unload()
     assert calls == [] and reasons == []
 
@@ -13611,7 +13757,7 @@ def test_a_pipeline_whose_quantised_plan_still_streams_the_transformer_stays_den
             _base_local_dir = str(tmp_path),
         )
     assert calls == []
-    assert "Module.to()" in str(excinfo.value)
+    assert "hooks torchao weights do not survive" in str(excinfo.value)
 
 
 def _gguf_candidate_backend(monkeypatch, tmp_path, *, initial_policy, candidate_plan):

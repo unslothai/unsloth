@@ -728,6 +728,54 @@ def _flex_attn_impl_for(config, other_attn_implementation):
     return None
 
 
+def _flash_unsupported_sub_configs(config):
+    """{sub-config: fallback} for towers lacking flash, which Transformers rejects (LFM2-VL SigLIP2)."""
+    try:
+        from transformers import AutoModel, AutoModelForCausalLM
+        mappings = (AutoModel._model_mapping, AutoModelForCausalLM._model_mapping)
+    except Exception:
+        return {}
+    # Encoder-decoder composites (Donut, MusicGen) name their towers "encoder" / "decoder".
+    declared = getattr(config, "sub_configs", None) or ()
+    out = {}
+    for field_name, child_config in _config_items(config):
+        if not isinstance(field_name, str):
+            continue
+        if not (field_name.endswith("_config") or field_name in declared):
+            continue
+        if not hasattr(child_config, "model_type"):
+            continue
+        child_class = None
+        for mapping in mappings:
+            try:
+                child_class = mapping[type(child_config)]
+                break
+            except Exception:
+                continue
+        if isinstance(child_class, (list, tuple)):
+            child_class = child_class[0] if child_class else None
+        if child_class is None:
+            continue
+        if getattr(child_class, "_supports_flash_attn", False) or getattr(
+            child_class, "_supports_flash_attn_2", False
+        ):
+            continue
+        out[field_name] = "sdpa" if getattr(child_class, "_supports_sdpa", False) else "eager"
+    return out
+
+
+def _scoped_flash_attention(config, supports_sdpa):
+    unsupported = _flash_unsupported_sub_configs(config)
+    if not unsupported:
+        return "flash_attention_2"
+    if not _transformers_supports_attn_impl_mapping():
+        # One plain value reaches every tower, so it must suit the weakest (Pixtral on 4.51).
+        if not supports_sdpa or "eager" in unsupported.values():
+            return "eager"
+        return "sdpa"
+    return {"": "flash_attention_2", **unsupported}
+
+
 def _flex_support_anchor_class(model_class):
     """The architecture's own PreTrainedModel base, so `_supports_flex_attn` also covers the inner
     text model Transformers validates separately under a mapping."""
@@ -2008,7 +2056,7 @@ def resolve_attention_implementation(
             and supports_flash_attention
             and not flex_forced_for_head_dim
         ):
-            attn_impl = _set_attn_impl(config, "flash_attention_2")
+            attn_impl = _set_attn_impl(config, _scoped_flash_attention(config, supports_sdpa))
         elif flash_attention_disabled:
             attn_impl = _disable_flash_attention_if_needed(
                 config,
@@ -2056,6 +2104,8 @@ def resolve_attention_implementation(
         )
     else:
         final_attn_impl = requested_attn_implementation
+        if final_attn_impl == "flash_attention_2":
+            final_attn_impl = _scoped_flash_attention(config, supports_sdpa)
         _set_attn_impl(config, final_attn_impl)
 
     # An explicit "sdpa" is kept even on a conservatively unsupported model, except where SDPA is known-broken, which still downgrades to eager just as flex falls back for _FLEX_EXCLUDED_MODELS. A synthesized default sdpa (requested is None) also downgrades.
