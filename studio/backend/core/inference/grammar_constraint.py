@@ -255,8 +255,7 @@ class GrammarConstraint:
             else _runtime_stop_ids(self._tokenizer, n_vocab) or ()
         )
         if self._strips_special_tokens:
-            # llguidance offers a special token to spell a schema literal, and a decode that
-            # skips special tokens would delete it from a reply reported as valid.
+            # llguidance may spell a literal with a special id that this decode would delete.
             self._stripped_ids = _stripped_special_ids(
                 self._tokenizer, n_vocab, self._stop_ids, self._dropped_ids
             )
@@ -284,8 +283,7 @@ class GrammarConstraint:
         self._runtime_stops = tuple(ids or ()) or None
 
     def decoded_dropping(self, ids = None) -> None:
-        """Name the special ids the reply's decoder removes (None: every special id), once the
-        decode path is chosen; the grammar then never spells a literal with one."""
+        """The special ids the reply's decoder removes; None means every special id."""
         self._strips_special_tokens = True
         self._dropped_ids = None if ids is None else frozenset(int(i) for i in ids)
 
@@ -394,8 +392,7 @@ def _compile_grammar(schema_json: str, prelude_close: Optional[str]) -> str:
         if prelude_close is None:
             grammar = _llg.LLMatcher.grammar_from_json_schema(schema_json)
         else:
-            # Reasoning may not spell the closer as text (the route splits at the first textual one).
-            # Bounded in tokens: a {0,N} count intersected with the negation exhausts llguidance's lexer.
+            # No textual closer in reasoning (the route splits there); a {0,N} bound here exhausts llguidance's lexer.
             closer_rx = re.escape(prelude_close).replace("/", "\\/")
             grammar = (
                 "%llguidance {}\n"
@@ -437,8 +434,7 @@ def _stripped_special_ids(
     if dropped is not None:
         ids = set(dropped)
     else:
-        # What decode(skip_special_tokens=True) drops: every added token marked special, which
-        # all_special_ids alone misses.
+        # skip_special_tokens drops every added special token, not just all_special_ids.
         try:
             ids = set(getattr(inner, "all_special_ids", None) or ())
             ids.update(

@@ -3464,8 +3464,7 @@ class MLXInferenceBackend:
         preserve_native_channels = reasoning_channel_markers is not None
         # An open <think> prefilled by the template lives in the prompt, not the generated tokens; re-emit it so the
         # frontend renders the block.
-        # Matches native_token_decoder below: when it runs </think> survives, so the
-        # prefilled opener has to be re-emitted with it.
+        # Matches native_token_decoder below: when it runs </think> survives, so re-emit the opener.
         think_close_survives = (
             bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
         ) and decoder_preserves_token(
@@ -3521,7 +3520,6 @@ class MLXInferenceBackend:
             else None
         )
         if constraint is not None:
-            # Whatever this decode drops must never spell part of the document.
             constraint.decoded_dropping(
                 native_token_decoder.dropped_ids() if native_token_decoder is not None else None
             )
@@ -4013,7 +4011,6 @@ class MLXInferenceBackend:
             # mlx-vlm stops on the config's ids, which some repos set apart from the tokenizer's.
             constraint.stops_on(_mlx_stop_token_ids(self._tokenizer, self._model))
         if constraint is not None and vlm_token_decoder is not None:
-            # Raw mlx-vlm text keeps every special; this decoder does not.
             constraint.decoded_dropping(vlm_token_decoder.dropped_ids())
         # The runtime EOS can itself be an allowlisted control, and this path appends every
         # decoded token to the snapshot, so it would trail each answer. As in _generate_text.
