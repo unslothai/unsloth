@@ -2123,8 +2123,6 @@ export function useChatModelRuntime() {
             const validateCustomContextLength = resetsPerModelSettings
               ? null
               : loadCustomContextLength;
-            // Per-model like the rest: charging the preflight with the outgoing model's
-            // drafter refuses an incoming one the load would have asked Auto for.
             const validateMlxSpeculative = resetsPerModelSettings
               ? (pendingLoadConfig ?? DEFAULT_PER_MODEL_CONFIG)
               : loadMlxSpeculative;
@@ -2871,8 +2869,6 @@ export function useChatModelRuntime() {
                     rollbackState.loadedChatTemplateOverride,
                   cache_type_kv: rollbackState.loadedKvCacheDtype,
                   mlx_kv_bits: rollbackState.loadedMlxKvBitsRequested,
-                  // What that runtime ran, not what was requested: a preset writes the
-                  // request without loading, so the request may name settings it never had.
                   mlx_speculative_mode:
                     rollbackState.loadedMlxSpeculativeMode ?? "off",
                   mlx_draft_model: rollbackState.loadedMlxDraftModel,

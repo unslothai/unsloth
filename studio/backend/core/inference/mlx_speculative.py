@@ -26,9 +26,7 @@ from typing import Any, Callable, Iterator, Optional
 
 MLX_SPECULATIVE_METHODS = frozenset({"mtp", "dflash", "eagle3", "dspark", "dflash2"})
 
-# DSpark and DFlash2 are architectures over the DFlash loop rather than loops of their own, and
-# mlx-vlm refuses any kind outside KNOWN_DRAFTER_KINDS, so only a kind from here may reach
-# ``load_drafter``.
+# mlx-vlm refuses kinds outside KNOWN_DRAFTER_KINDS; only these may reach ``load_drafter``.
 MLX_SPECULATIVE_DRAFT_KINDS: dict[str, str] = {
     "mtp": "mtp",
     "dflash": "dflash",
@@ -37,21 +35,16 @@ MLX_SPECULATIVE_DRAFT_KINDS: dict[str, str] = {
     "dflash2": "dflash",
 }
 
-# Methods carried by a drafter module a runtime can predate; absent means as old as the API.
 _MLX_METHOD_MODULES: dict[str, str] = {
     "dspark": "mlx_vlm.speculative.drafters.dspark",
     "dflash2": "mlx_vlm.speculative.drafters.dflash2",
 }
 MLX_SPECULATIVE_MODES = MLX_SPECULATIVE_METHODS | {"auto"}
 
-# Each method joins this set with the load path that can run it, so a request for a
-# method the worker cannot execute is refused before the active model is torn down.
 ENABLED_MLX_SPECULATIVE_METHODS: frozenset[str] = frozenset(
     {"mtp", "dflash", "eagle3", "dspark", "dflash2"}
 )
 
-# Refusals reach the client as prose, while the codes stay the vocabulary the response
-# schema will use to say why a resolved method differs from the one requested.
 MLX_SPECULATIVE_REFUSALS: dict[str, str] = {
     "method_not_integrated": "This build cannot run the requested MLX speculative decoding method.",
     "checkpoint_required": "Choose a draft checkpoint to use this MLX speculative decoding method.",
@@ -77,8 +70,6 @@ MLX_SPECULATIVE_REFUSALS: dict[str, str] = {
     "mlx_speculative_distributed_unsupported": "Speculative decoding does not run on a distributed load.",
 }
 
-# A code with no entry of its own still has to reach the client as a 400 rather than as the
-# KeyError a subscript would raise.
 MLX_SPECULATIVE_GENERIC_REFUSAL = "This model cannot use the requested speculative decoding method."
 
 
@@ -335,16 +326,10 @@ _RECOMMENDATIONS = (
 
 
 def mlx_speculative_refusal_text(reason: str) -> str:
-    """The sentence for a refusal, as an error detail. Unknown reasons read generically."""
     return MLX_SPECULATIVE_REFUSALS.get(reason, MLX_SPECULATIVE_GENERIC_REFUSAL)
 
 
 def mlx_speculative_reason_text(reason: Optional[str]) -> Optional[str]:
-    """The sentence a client shows for a load that ended without a drafter.
-
-    Auto never fails a load, so its outcomes arrive on a successful response rather than as
-    an error detail.
-    """
     return None if not reason else mlx_speculative_refusal_text(reason)
 
 
@@ -354,7 +339,6 @@ def normalize_mlx_speculative_mode(value: Any) -> str:
 
 
 def normalize_mlx_speculative_method(value: Any) -> str:
-    """The concrete method ``value`` names, or "off". Auto is a request, not a method."""
     mode = normalize_mlx_speculative_mode(value)
     return mode if mode in MLX_SPECULATIVE_METHODS else "off"
 
@@ -362,13 +346,7 @@ def normalize_mlx_speculative_method(value: Any) -> str:
 def mlx_speculative_request_identity(
     mode: Any, draft_model: Optional[str], block_size: Optional[int]
 ) -> tuple[str, Optional[str], Optional[int]]:
-    """The speculative settings a resident model must already have to be reused.
-
-    Off carries no drafter, and a repository id differing only in case or surrounding
-    space names the same checkpoint. Every place that decides whether two requests name
-    the same drafter folds through here, so they cannot normalize differently, which
-    reads as a settings change on every request and reloads the model forever.
-    """
+    """Every drafter-identity comparison folds through here; normalizing twice differently reloads forever."""
     normalized = normalize_mlx_speculative_mode(mode)
     if normalized == "off":
         return normalized, None, None
@@ -380,14 +358,7 @@ _RUNTIME_CAPABILITIES: Optional[dict[str, Any]] = None
 
 
 def mlx_speculative_runtime_capabilities() -> dict[str, Any]:
-    """What the installed MLX stack can draft with.
-
-    Self-heal installs and upgrades the stack inside this running process, so nothing it can
-    still change is answered from before it ran. It is asked first, from distribution metadata:
-    importing a stack it is about to replace pins the old modules in ``sys.modules``, where the
-    upgraded ones can no longer be reached. Only a usable stack, or a platform that can never
-    have one, is remembered.
-    """
+    """Answered from distribution metadata first: importing a stack self-heal replaces pins the old modules."""
     global _RUNTIME_CAPABILITIES
     if _RUNTIME_CAPABILITIES is not None:
         return _RUNTIME_CAPABILITIES
@@ -445,9 +416,6 @@ def _runtime_capabilities_from_modules(drafters: Any, ar: Any, utils: Any) -> di
 
 
 def _local_path(model_id: str) -> Optional[Path]:
-    """A "~unknown-user" prefix has no home to expand into, and callers are asking
-    whether a checkpoint sits on disk rather than asserting that it does.
-    """
     try:
         return Path(model_id).expanduser()
     except RuntimeError:
@@ -465,16 +433,13 @@ def _public_target_model_id(target_id: str) -> str:
     return public_model_id(target_id) or "local-model"
 
 
-_MATCH = "match"  # structurally verified against the target
-_MISMATCH = "mismatch"  # structurally refuted
-_INDETERMINATE = "indeterminate"  # contract unreadable, neither proved nor refuted
-_UNVERIFIED = "unverified"  # source asserts no structural verdict (seeds)
+_MATCH = "match"
+_MISMATCH = "mismatch"
+_INDETERMINATE = "indeterminate"
+_UNVERIFIED = "unverified"
 
 
 class _CandidateRow:
-    """One source's claim about one drafter repository. ``inherit`` names fields the
-    merge must take from the row being replaced rather than from this one.
-    """
 
     __slots__ = ("key", "status", "fields", "reason", "inherit")
 
@@ -494,10 +459,7 @@ class _CandidateRow:
 
 
 def _merge_candidate_rows(rows):
-    """One repository yields a row per cached revision. A verified match freezes it and an
-    unreadable one blocks a later refutation, giving match > indeterminate > mismatch
-    whatever order the snapshots are read in.
-    """
+    """Merge gives match > indeterminate > mismatch regardless of snapshot read order."""
     candidates: list[dict] = []
     index: dict[str, int] = {}
     frozen: set[str] = set()
@@ -514,8 +476,6 @@ def _merge_candidate_rows(rows):
             for field in row.inherit:
                 fields[field] = candidates[existing].get(field, fields.get(field))
 
-        # A refuted row says why a drafter another source offered does not fit; with
-        # nothing to attach it to there is no candidate to describe, so it is dropped.
         if row.status == _MISMATCH:
             if key in indeterminate or existing is None:
                 continue
@@ -545,8 +505,6 @@ def _active_hf_cache_root() -> Optional[Path]:
 
 
 def _known_hf_cache_roots() -> list[Path]:
-    """Every hub cache Studio has pointed at, which is the same set local model resolution
-    trusts. Outside them a ``models--`` directory is a name anyone can write."""
     try:
         from utils.hf_cache_settings import known_hf_hub_caches
         roots = known_hf_hub_caches()
@@ -586,7 +544,6 @@ def _read_config(repo_id: str) -> Optional[dict[str, Any]]:
 
 
 def mlx_target_config_is_cached(target_id: str) -> bool:
-    """Whether this target's configuration is already on disk, so reading it needs no Hub call."""
     return _cached_config_path(target_id) is not None
 
 
@@ -627,7 +584,6 @@ def _snapshot_complete_at(snapshot: Path, *, require_tokenizer: bool = False) ->
         return False
 
 
-# repository id, configuration, snapshot directory, weight bytes
 _DrafterRows = tuple[tuple[str, dict[str, Any], Path, int], ...]
 
 
@@ -640,12 +596,10 @@ def _config_from_path(path: Path) -> Optional[dict[str, Any]]:
 
 
 def _scan_active_cached_drafter_configs(root: Path) -> Optional[_DrafterRows]:
-    """The drafters under ``root``, or None where the cache itself could not be read."""
     try:
         from hub.utils.hf_cache_state import latest_snapshot_dir, ref_snapshot_dir
 
-        # Listed rather than matched with a glob, which reports a directory it cannot read as one
-        # holding nothing and would have this return an empty cache instead of no answer.
+        # listdir, not glob: glob reports an unreadable directory as empty.
         repo_dirs = sorted(
             (path for path in root.iterdir() if path.name.startswith("models--")),
             key = lambda path: path.name.casefold(),
@@ -678,12 +632,9 @@ def _scan_active_cached_drafter_configs(root: Path) -> Optional[_DrafterRows]:
             config = _config_from_path(snapshot / "config.json")
             if config is None:
                 continue
-            # Completeness reads shard indexes off disk, so reject on the configuration first.
             method = _drafter_method(config)
             if method is None:
                 continue
-            # An architecture this runtime cannot load looks like a config that is not a
-            # drafter. A method the probe tracks is the exception: its row survives to name why.
             if method not in _MLX_METHOD_MODULES and (
                 not _drafter_architecture_available(config)
                 or _normalized_drafter_config(config) is None
@@ -697,25 +648,16 @@ def _scan_active_cached_drafter_configs(root: Path) -> Optional[_DrafterRows]:
     return tuple(rows)
 
 
-# A scan ages from the moment it ran, so the lookups a request makes within that age share one
-# scan rather than falling either side of a deadline and scanning the cache twice. It also bounds
-# how long the scan's view may disagree with disk about a change Studio did not make, in either
-# direction: a checkpoint written behind its back stays invisible, and one deleted behind its back
-# stays selectable. Changes Studio does make bump the scan epoch, and are seen by the first
-# lookup that starts after the bump.
+# Lookups within this age share one scan; changes Studio makes bump the scan epoch.
 _DRAFTER_SCAN_MAX_AGE_SECONDS = 15.0
-# A floor, raised by callers that traverse: a cap below the number of roots evicts the entries
-# the traversal is still walking towards, and every request rescans every cache.
+# Floor: a cap below the number of roots makes every request rescan every cache.
 _DRAFTER_SCANS_KEPT = 8
-# (cache root, scan epoch) -> when that scan finished, and the drafters it found
 _drafter_scans: dict[tuple[str, int], tuple[float, _DrafterRows]] = {}
 _drafter_scans_lock = threading.Lock()
 
 
 def _serve_kept_scan(key: tuple[str, int]) -> _DrafterRows:
-    """The rows held for ``key``, moved youngest-last because they were just asked for."""
-    # Reinserted rather than read in place: assigning to a key a dictionary already holds leaves
-    # it where it was, which is first in line to be dropped when scans arrive behind it.
+    # Reinsert: assigning an existing key keeps its eviction-first position.
     held = _drafter_scans.pop(key)
     _drafter_scans[key] = held
     return held[1]
@@ -737,19 +679,12 @@ def _cached_active_drafter_configs(
     with _drafter_scans_lock:
         held = _drafter_scans.get(key)
         fresh = held is not None and finished - held[0] < _DRAFTER_SCAN_MAX_AGE_SECONDS
-        # A cache that could not be read is not a cache holding no drafters. Remembering it as one
-        # would keep every request off the accelerator until the entry aged out, and reporting it
-        # is worse still while a scan that did read the cache is standing right there.
+        # An unreadable cache is not an empty one, so it is never cached.
         if rows is None:
             return _serve_kept_scan(key) if fresh else ()
-        # The first scan of an epoch to finish is the one kept until it ages out, so one that
-        # started earlier but arrived later does not replace it, and every caller is answered with
-        # the scan that was kept rather than its own. Scans of other epochs, or of another cache
-        # root, are kept beside it rather than displacing it.
+        # The first scan of an epoch to finish is kept; later arrivals do not replace it.
         if fresh:
             return _serve_kept_scan(key)
-        # Ages from the moment it finished, so a scan slower than the age it is kept for does not
-        # arrive already expired.
         _drafter_scans.pop(key, None)
         _drafter_scans[key] = (finished, rows)
         while len(_drafter_scans) > max(_DRAFTER_SCANS_KEPT, keep):
@@ -758,15 +693,12 @@ def _cached_active_drafter_configs(
 
 
 def _cached_drafter_configs() -> Iterator[tuple[str, dict[str, Any], Path, int]]:
-    """Every cache Studio knows, active first, so a target left in a previously configured one
-    still finds the drafters beside it."""
     try:
         from hub.utils.inventory_scan import hf_cache_scans_epoch
         epoch = hf_cache_scans_epoch()
     except Exception:
         return iter(())
     roots = _known_hf_cache_roots()
-    # Two epochs' worth, so one turning over mid-traversal does not evict the roots behind it.
     keep = len(roots) * 2
     return iter(
         [row for root in roots for row in _cached_active_drafter_configs(str(root), epoch, keep)]
@@ -774,7 +706,6 @@ def _cached_drafter_configs() -> Iterator[tuple[str, dict[str, Any], Path, int]]
 
 
 def _mlx_memory_budget() -> Optional[int]:
-    """The ceiling the worker will enforce, or None when the device cannot report one."""
     try:
         import mlx.core as mx
         if not mx.metal.is_available():
@@ -782,17 +713,11 @@ def _mlx_memory_budget() -> Optional[int]:
         recommended = mx.device_info().get("max_recommended_working_set_size") or 0
     except Exception:
         return None
-    # The same fraction of the recommended working set the worker applies before it loads.
     return int(recommended * 0.85) if recommended > 0 else None
 
 
 def _mlx_speculative_memory_ready(estimated_bytes: int) -> bool:
-    """Whether a measured target and drafter fit the budget the load is held to.
-
-    Metal caps allocations below physical memory, so sizing against RAM offers a pair the cap
-    then refuses -- and an explicit method takes the resident model down with it. Answered from
-    checkpoint files, which a load quantizing them holds less of: a pair this refuses may fit.
-    """
+    """Sized against Metal's allocation cap, not physical RAM, which the cap would refuse."""
     if estimated_bytes <= 0:
         return True
     budget = _mlx_memory_budget()
@@ -868,10 +793,6 @@ def _cached_token_id_map(
 
 
 def _dflash_family_method(config: dict[str, Any]) -> Optional[str]:
-    """These checkpoints leave ``model_type`` as their backbone's, so mlx-vlm separates them in
-    ``get_model_and_args`` by architecture and projector. Read the same way rather than by loading
-    the drafter module, so a runtime too old to load one can still name the method.
-    """
     architectures = config.get("architectures")
     if "DFlash2DraftModel" in set(architectures if isinstance(architectures, list) else ()):
         return "dflash2"
@@ -922,8 +843,6 @@ def _drafter_architecture_available(config: dict[str, Any]) -> bool:
 
 
 def _accepts_mtp_captures(target_class: Any) -> bool:
-    """Whether MTP's capture keywords reach this class's call. Mirrors the check the loaded
-    pair repeats; a class taking ``**kwargs`` passes them through."""
     try:
         parameters = inspect.signature(target_class.__call__).parameters
     except (TypeError, ValueError):
@@ -934,13 +853,7 @@ def _accepts_mtp_captures(target_class: Any) -> bool:
 
 
 def _target_method_contract_available(method: str, config: dict[str, Any]) -> bool:
-    """Every method rewinds the target's cache, so a model class without that entry point is
-    filtered during discovery rather than refused once both models are resident. An
-    unrecognized target resolves to the generic text model, which lacks it too.
-
-    MTP also reads hidden states and shared KV back out of the target's call. The loaded pair is
-    checked for that again, which is after the resident model has gone, so it is asked here too.
-    """
+    """Every method rewinds the target cache and MTP reads hidden states back; checked before teardown."""
     try:
         from mlx_vlm.utils import get_model_and_args
 
@@ -999,9 +912,6 @@ def _same_eos(left: Any, right: Any) -> bool:
 
 
 def _drafter_eos_serves(draft_eos: Any, target_config: dict[str, Any], text: Any) -> bool:
-    """A drafter naming none does not discriminate on it, and a family can declare several
-    while its text config names one, so both places count.
-    """
     if draft_eos is None:
         return True
     return _same_eos(draft_eos, target_config.get("eos_token_id")) or _same_eos(
@@ -1046,10 +956,6 @@ def _target_repository_owner(target_id: str) -> Optional[str]:
     ):
         return None
     if path.is_absolute():
-        # The layout under any cache Studio knows, not only the active one: a target picked out
-        # of a previously configured cache loads by snapshot path, and the repository that
-        # snapshot came from is still what a recommendation is allowed against. Outside those
-        # roots the same three components are directory names that vouch for nobody.
         try:
             layout_path = path.parent.resolve() / path.name
         except OSError:
@@ -1154,10 +1060,6 @@ def _verifier_matches_target(
 
 
 def _identity_conflict(target_id: str, draft_id: str) -> bool:
-    """A same-shape successor — Qwen3.5-27B and Qwen3.6-27B agree on model type, width,
-    depth, vocabulary and tokenizer — leaves the published names as the only evidence. An
-    unresolved name is silence, not disagreement.
-    """
     target_key = _target_identity_key(target_id)
     draft_key = _target_identity_key(draft_id)
     return target_key is not None and draft_key is not None and target_key != draft_key
@@ -1210,8 +1112,7 @@ def _dynamic_candidate_config_matches(
         return False
 
     if MLX_SPECULATIVE_DRAFT_KINDS.get(method) == "dflash":
-        # Where a field lives is the config class's decision, not the raw file's: newer
-        # checkpoints state num_target_layers under dflash_config.
+        # Newer checkpoints state num_target_layers under dflash_config.
         captures = _config_value(normalized, "target_layer_ids")
         hidden = _config_value(normalized, "hidden_size")
         vocab = _config_value(normalized, "vocab_size")
@@ -1271,42 +1172,27 @@ def _dynamic_materialization_bytes(config: dict[str, Any]) -> int:
 
 BUILTIN_MTP_ID = "builtin://mtp"
 
-# Draft tokens Auto runs each method at. The drafter's own configuration declares either
-# nothing or its block size, neither near where the method pays off.
 MLX_AUTO_DRAFT_TOKENS: dict[str, int] = {
     "mtp": 3,
     "dflash": 3,
-    # Drafts exactly what it is asked for, and acceptance falls off faster than a third token
-    # repays: measured slower at three on every target.
+    # Measured slower at three on every target.
     "dspark": 2,
-    # Adapts below the request -- measured two per round when asked for three -- so the third
-    # is headroom for sequences that accept enough to use it, not a cost paid up front.
     "dflash2": 3,
     "eagle3": 1,
 }
 
-# A target's own head ranks with MTP because it is MTP, and needs no download to get there.
-# What a round returns against what it costs: a drafter's weights are read once per drafted
-# token, the target once for the whole round. Neither term orders these methods alone.
 _AUTO_METHOD_RANK: dict[str, int] = {
-    # Within a few hundredths of DFlash2's acceptance per round, from a fifth of the weights.
     "mtp": 0,
-    # Accepts enough more than DSpark to cover the weights it adds. That margin narrows with
-    # the target and reverses under about 10 GB of it, which a low-bit large target can reach.
+    # DFlash2's margin over DSpark reverses under about 10 GB of target.
     "dflash2": 1,
     "dspark": 2,
-    # Both lead the original DFlash by family, ordering checkpoints no target currently spans.
     "dflash": 3,
     "eagle3": 4,
 }
 
 
 def _precision_rank(bits: Optional[int]) -> tuple[int, int]:
-    """How a drafter's width ranks: 8-bit, then full precision, then the rest widest-first.
-
-    8-bit first because a narrower drafter leaves more memory to the target it drafts for
-    at little cost in acceptance; below full precision the widths order themselves.
-    """
+    """8-bit, then full precision, then widest: a narrower drafter leaves memory to the target."""
     if bits == 8:
         return (0, 0)
     if bits is None:
@@ -1315,24 +1201,15 @@ def _precision_rank(bits: Optional[int]) -> tuple[int, int]:
 
 
 def mlx_auto_draft_block_size(method: str) -> Optional[int]:
-    """Block size for the depth Auto runs ``method`` at, or None for a method it does not run.
-
-    mlx-vlm counts the verified token alongside the drafted ones, so a block is one longer
-    than the depth.
-    """
+    """mlx-vlm counts the verified token, so block size is depth + 1."""
     depth = MLX_AUTO_DRAFT_TOKENS.get(normalize_mlx_speculative_method(method))
     return None if depth is None else depth + 1
 
 
-# Below this, verification costs about what the drafted tokens save.
 MLX_AUTO_MIN_TARGET_PARAMETERS = 4_000_000_000
 
 
 def _largest_int(value: Any) -> Optional[int]:
-    """The largest of a field some configurations state per layer and others state once.
-
-    Over-counting leaves a target the drafter it has; under-counting takes one away.
-    """
     if type(value) is int:
         return value
     if isinstance(value, list):
@@ -1342,13 +1219,7 @@ def _largest_int(value: Any) -> Optional[int]:
 
 
 def _target_parameter_estimate(config: dict[str, Any]) -> Optional[int]:
-    """Roughly how large the target is, or None when its shape does not say.
-
-    From declared dimensions, so a quantized checkpoint and its full-precision twin estimate
-    alike. Tables indexed by token id are excluded, since counting Gemma's per-layer embeddings
-    would rate an E2B checkpoint above 4B; every expert is counted, since counting only the
-    routed ones would rate a 35B mixture below a dense 4B.
-    """
+    """Excludes token-indexed tables (Gemma per-layer embeddings); counts every expert."""
     text = _text_config(config)
     hidden = _largest_int(text.get("hidden_size"))
     layers = _largest_int(text.get("num_hidden_layers"))
@@ -1366,11 +1237,6 @@ def _target_parameter_estimate(config: dict[str, Any]) -> Optional[int]:
 
 
 def _target_carries_quantization(config: dict[str, Any]) -> bool:
-    """Whether the checkpoint is already quantized on disk.
-
-    A load asked for 4-bit leaves such a checkpoint alone and quantizes a full-precision one
-    as it loads, which is what decides whether the target's own head still matches it.
-    """
     return bool(config.get("quantization") or config.get("quantization_config"))
 
 
@@ -1381,13 +1247,7 @@ def _fitting_cached_revision(
     method: Optional[str],
     revisions: Optional[tuple[tuple[str, dict[str, Any], Path, int], ...]] = None,
 ) -> tuple[Optional[dict[str, Any]], Optional[Path]]:
-    """The cached revision of ``repo_id`` a load would choose for this target.
-
-    One repository is often cached in several revisions, so ranking and loading share this:
-    ranking one revision and loading another picks a drafter for a precision it lacks. A caller
-    asking about several repositories hands the scan over rather than reaching for it each time,
-    which is what can otherwise expire mid-request and scan the cache twice.
-    """
+    """Ranking and loading share this so both pick the same cached revision."""
     if revisions is None:
         revisions = tuple(_cached_drafter_configs())
     for cached_repo_id, config, snapshot, _size in revisions:
@@ -1404,19 +1264,12 @@ def _fitting_cached_revision(
     return None, None
 
 
-# Widths mlx-vlm derives from a method name, so a checkpoint ranks at the width it loads at.
 _QUANT_METHOD_BITS: dict[str, int] = {"mxfp4": 4, "compressed-tensors": 4}
-# The runtime warns, leaves the model dense, then loads the packed tensors into it strictly.
 _QUANT_METHODS_REFUSED = frozenset({"awq", "gptq", "bitnet"})
 
 
 def _loader_quantization(config: dict[str, Any]) -> tuple[Optional[dict[str, Any]], bool]:
-    """The one declaration mlx-vlm will apply, and whether it settled the question by itself.
-
-    A top-level "quantization" is applied as it stands, so a stale method left elsewhere decides
-    nothing. Without one it falls to "quantization_config", top level then nested; the nested
-    "quantization" spelling it never reads.
-    """
+    """Top-level "quantization" wins as-is; else "quantization_config", top level then nested."""
     if "quantization" in config:
         block = config["quantization"]
         return (block if isinstance(block, dict) else None), True
@@ -1428,20 +1281,13 @@ def _loader_quantization(config: dict[str, Any]) -> tuple[Optional[dict[str, Any
 
 
 def _declared_quant_method(block: dict[str, Any]) -> Optional[str]:
-    """The method a block names, or None where it names nothing usable.
-
-    Configurations carry whatever they carry: a non-string used as a lookup key raises and takes
-    the resolution with it, failing the target's load over a drafter it did not need.
-    """
     method = block.get("quant_method")
     return method if isinstance(method, str) else None
 
 
 def _refuses_quantization(config: dict[str, Any]) -> bool:
-    """Whether the loader will decline this checkpoint's quantization, or break on it."""
     block, settled = _loader_quantization(config)
     if settled:
-        # The loader subscripts both fields, so a block missing either fails the load.
         return not (
             isinstance(block, dict)
             and type(block.get("bits")) is int
@@ -1453,7 +1299,6 @@ def _refuses_quantization(config: dict[str, Any]) -> bool:
 
 
 def _sidecar_quantization_bits(snapshot: Optional[Path]) -> Optional[int]:
-    """The width a checkpoint declares beside its configuration rather than inside it."""
     if snapshot is None:
         return None
     try:
@@ -1461,7 +1306,6 @@ def _sidecar_quantization_bits(snapshot: Optional[Path]) -> Optional[int]:
             beside = json.load(handle)
     except (OSError, ValueError):
         return None
-    # Well-formed JSON that is not an object still has to leave the target loadable.
     declared = beside.get("quantization") if isinstance(beside, dict) else None
     return 4 if isinstance(declared, dict) and declared.get("quant_algo") == "NVFP4" else None
 
@@ -1469,18 +1313,10 @@ def _sidecar_quantization_bits(snapshot: Optional[Path]) -> Optional[int]:
 def _config_precision_rank(
     config: dict[str, Any], snapshot: Optional[Path] = None
 ) -> tuple[int, int]:
-    """How the width one cached revision would load at ranks.
-
-    Read every way the loader reads it: a declaration missed reads as full precision, which is
-    how a quantized drafter outranks the one it should lose to. DeepSeek's fp8 and a bare width
-    under "quantization_config" rank full precision, neither being one it can answer.
-    """
     block, settled = _loader_quantization(config)
     if block is None:
-        # Only where the configuration declares nothing does the loader look beside it.
         return _precision_rank(None if settled else _sidecar_quantization_bits(snapshot))
     if not settled:
-        # The runtime replaces the whole block, so a derived width beats one declared beside it.
         implied = _QUANT_METHOD_BITS.get(_declared_quant_method(block))
         if implied is not None:
             return _precision_rank(implied)
@@ -1844,9 +1680,7 @@ _GLM_HEAD_TENSORS = (
     "mlp.shared_experts.down_proj.weight",
 )
 _GLM_EXPERT_TENSORS = ("gate_proj.weight", "up_proj.weight", "down_proj.weight")
-# Quantization sidecars are absent deliberately: this family's splitter reads the source
-# as plain weights and only quantizes what it writes, so a quantized head cannot be split
-# and must not be offered as one.
+# This family's splitter cannot split a quantized head, so never offer one.
 _GLM_OPTIONAL_TENSORS = ("embed_tokens.weight", "mlp.gate.e_score_correction_bias")
 
 
@@ -1856,7 +1690,6 @@ def _glm_text_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _glm_prefixes(config: dict[str, Any]) -> tuple[str, ...]:
-    """This family's head is stored as one layer past the last real layer."""
     layers = _glm_text_config(config).get("num_hidden_layers")
     return (f"model.layers.{layers}.",) if type(layers) is int and layers >= 0 else ()
 
@@ -2039,7 +1872,6 @@ def _snapshot_identity(snapshot: Path, handler: _NativeMtpHandler) -> str:
 
 @dataclass(frozen = True)
 class MlxSpeculativeResolution:
-    """Concrete drafter pinned for one requested load."""
 
     method: str
     draft_model: Optional[str]
@@ -2079,7 +1911,6 @@ def cleanup_native_mtp_staging() -> None:
             continue
 
 
-# A sibling is inside the critical section, so the destructive half is declined.
 MLX_SIDECAR_LOCK_BUSY = "busy"
 
 
@@ -2090,15 +1921,7 @@ def _sidecar_lock_debug(what: str, exc: BaseException) -> None:
 
 @contextlib.contextmanager
 def native_mtp_sidecar_lock(timeout: float = 10.0):
-    """Serialize handing a sidecar out against reclaiming one, across this install's backends.
-
-    Two backends of one install share this cache (see ``live_sibling_backend`` in ``run.py``), so
-    one can reclaim a copy the other resolved a moment earlier and is about to open. Hold it until
-    the drafter's files are open, after which unlinking them is harmless.
-
-    Yields ``compiled_cache_lock``'s three states: only busy proves a sibling, and only busy must
-    decline the destructive half.
-    """
+    """Serialize sidecar hand-out against reclaim across backends; only "busy" declines reclaim."""
     from utils.cache_cleanup import (
         _CONTENTION_ERRNOS,
         LOCK_BUSY,
@@ -2120,7 +1943,7 @@ def native_mtp_sidecar_lock(timeout: float = 10.0):
         yield LOCK_UNAVAILABLE
         return
 
-    # _unlock closes the descriptor it is given, so only an acquired one may reach it.
+    # # _unlock closes the descriptor it is given, so only an acquired one may reach it.
     acquired: list[int] = []
     state = LOCK_HELD
     deadline = time.monotonic() + timeout
@@ -2132,8 +1955,7 @@ def native_mtp_sidecar_lock(timeout: float = 10.0):
                 break
             except OSError as exc:
                 if exc.errno not in _CONTENTION_ERRNOS:
-                    # Not contention: this filesystem cannot lock at all. Waiting out the timeout
-                    # to answer "busy" would stall every load, then decline reclaiming forever.
+                    # Filesystem cannot lock: not contention, so do not wait out the timeout.
                     _sidecar_lock_debug("is unavailable", exc)
                     with contextlib.suppress(OSError):
                         os.close(fd)
@@ -2165,20 +1987,10 @@ def _mark_sidecar_in_use(path: Path) -> None:
         pass
 
 
-# A caller opens the directory just after it is handed back, so one touched this recently may be
-# about to be read and is left for a later pass rather than deleted out from under it.
 _SIDECAR_IN_USE_SECONDS = 300.0
 
 
 def reclaim_superseded_native_mtp(root: Path, source: Path, identity: str) -> None:
-    """Drop the sidecars split from ``source`` that this materialization replaces.
-
-    A sidecar's name digests the splitter, the mlx-vlm version and the source's own files, so
-    upgrading the runtime or re-splitting a re-downloaded target mints a new one and strands the
-    old. Standing on this same source is what makes one superseded, so nothing about the target
-    is guessed at: a sidecar whose target went away names a source never materialized again, and
-    stays.
-    """
     try:
         paths = tuple(root.iterdir())
     except OSError:
@@ -2198,11 +2010,7 @@ def reclaim_superseded_native_mtp(root: Path, source: Path, identity: str) -> No
 
 
 def materialize_native_mtp(snapshot: Path, *, reclaim: bool = False) -> Path:
-    """Split the target's built-in head into a sidecar, reusing one already on disk.
-
-    ``reclaim`` drops the copies this split supersedes. It defaults off because that is safe only
-    under ``native_mtp_sidecar_lock``, so the caller holding it is the one that asks.
-    """
+    """``reclaim`` is safe only under ``native_mtp_sidecar_lock``."""
     config = json.loads((snapshot / "config.json").read_text(encoding = "utf-8"))
     handler = _handler(config) if isinstance(config, dict) else None
     if not handler or native_mtp_evidence(snapshot, config) is None:
@@ -2215,8 +2023,6 @@ def materialize_native_mtp(snapshot: Path, *, reclaim: bool = False) -> Path:
     final = root / identity
     if _complete_sidecar(final, identity):
         _mark_sidecar_in_use(final)
-        # Swept here too, not only when a split runs: a copy this one superseded may have been
-        # in use at that moment and skipped, and after that every request is this early return.
         if reclaim:
             reclaim_superseded_native_mtp(root, source, identity)
         return final
@@ -2259,12 +2065,7 @@ def mlx_speculative_snapshot_path(
     target_id: Optional[str] = None,
     method: Optional[str] = None,
 ) -> Path:
-    """The cached snapshot for ``repo_id`` that fits ``target_id``.
-
-    With a target named this requires a fit rather than preferring one: a repository
-    present in more than one revision resolves to the revision that matches, and one with
-    no matching revision raises, so a stale snapshot cannot be handed to the worker.
-    """
+    """With a target named, a fitting revision is required; none fitting raises."""
     target_config = _read_config(target_id) if target_id else None
     _config, snapshot = _fitting_cached_revision(repo_id, target_id, target_config, method)
     if snapshot is not None:
@@ -2278,15 +2079,10 @@ def mlx_speculative_snapshot_path(
 
 
 def native_mtp_tensors_present(snapshot: Path, config: dict[str, Any]) -> bool:
-    """Return whether the target carries a complete native head, independent of runtime support."""
     return _native_mtp_evidence(snapshot, config, _handler_definition(config)) is not None
 
 
 def _builtin_candidate_rows(target_id, target_config, caps, enabled):
-    """A target that drafts for itself needs no companion, so this precedes every
-    downloadable candidate. Carrying a head is not enough: one whose model class cannot
-    rewind its cache is filtered here rather than refused at load.
-    """
     if not _target_method_contract_available("mtp", target_config):
         return
     try:
@@ -2336,9 +2132,6 @@ def _builtin_candidate_rows(target_id, target_config, caps, enabled):
 
 
 def _recommendation_offered(seed, target_id, target_key, target_config, native_head) -> bool:
-    """A checkpoint is proposed only for the family it was built for and only from an owner
-    the target vouches for, so an unrelated repository sharing a name cannot steer one.
-    """
     if target_key != seed.target_key or not _recommendation_target_owner_allowed(
         target_id, target_key
     ):
@@ -2349,23 +2142,18 @@ def _recommendation_offered(seed, target_id, target_key, target_config, native_h
         seed.method, target_config
     ):
         return False
-    # A target that already carries a head needs no companion for the same job.
     return not (seed.requires_missing_native_mtp and native_head)
 
 
 def _recommended_candidate_rows(
     target_id, target_config, caps, enabled, native_head, builtin_offered
 ):
-    """One proposal is marked, so the badge names a choice instead of restating the list."""
     target_key = _recommendation_target_key(target_id, target_config)
     offered = [
         seed
         for seed in _RECOMMENDATIONS
         if _recommendation_offered(seed, target_id, target_key, target_config, native_head)
     ]
-    # The method Auto would reach for first. A resident head no proposal outranks is only
-    # better than downloading one where it is actually offered: carrying the tensors is not
-    # enough when this runtime cannot split them into a drafter.
     best = (
         None
         if builtin_offered
@@ -2412,7 +2200,6 @@ def _recommended_candidate_rows(
 
 
 def _cached_candidate_rows(target_id, target_config, caps, enabled):
-    """One row per snapshot directory, so the merge — not this source — picks the revision."""
     target_bytes = _snapshot_weight_bytes(target_id)
     for repo_id, draft_config, snapshot, weight_bytes in _cached_drafter_configs():
         method = _drafter_method(draft_config)
@@ -2441,7 +2228,6 @@ def _cached_candidate_rows(target_id, target_config, caps, enabled):
         match = _dynamic_candidate_config_matches(
             method, target_id, target_config, draft_config, snapshot, repo_id
         )
-        # A runtime that cannot load the drafter cannot judge its configuration either.
         if match is False and upstream_ready:
             yield _CandidateRow(
                 repo_id.casefold(),
@@ -2481,10 +2267,6 @@ def _cached_candidate_rows(target_id, target_config, caps, enabled):
 
 
 def _canonical_target_id(target_id: str) -> str:
-    """The load path strips the request, expands a bare name to the default owner and reuses
-    a cached spelling's case. Matching the raw request instead scans a cache entry that does
-    not exist, so the target is told it has no drafter while the load then finds one.
-    """
     from utils.models.model_config import is_local_path
     from utils.paths.path_utils import resolve_cached_repo_id_case
 
@@ -2497,43 +2279,23 @@ def _canonical_target_id(target_id: str) -> str:
 
 
 def _mlx_stack_being_replaced(capabilities: dict[str, Any]) -> bool:
-    """Whether self-heal can still swap this process's MLX stack out from under it.
-
-    Every candidate probe imports mlx-vlm, and an import taken during the reinstall pins the
-    modules it is about to supersede, which is why the capability probe answers from distribution
-    metadata rather than importing. Only the reason that means the stack was measured unusable
-    asks further, mirroring how the hardware verdict holds Train back over the same window.
-
-    A stack nothing is going to replace is described as usual, whether it is missing, below the
-    minimum with the repair opted out or already finished, or simply too old for the speculative
-    API: the rows are what tell the user why each drafter cannot run, and an empty list would not.
-    """
     if capabilities["reason"] != "runtime_unavailable":
         return False
     try:
         from utils.mlx_repair import mlx_repair_in_flight
         return mlx_repair_in_flight()
     except Exception:
-        # A repair that cannot even be asked about is one nothing should be withheld for.
         return False
 
 
 def mlx_speculative_options(target_id: str) -> dict[str, Any]:
-    """Speculative drafters usable with ``target_id``, with local paths redacted.
-
-    A runtime without speculative support still answers, with every candidate carrying the reason
-    it cannot run rather than being omitted -- unless a repair is about to replace that runtime,
-    where reading it to name them is what the reason above already rules out.
-    """
+    """Speculative drafters usable with ``target_id``, with local paths redacted."""
     capabilities = mlx_speculative_runtime_capabilities()
     target_id = _canonical_target_id(target_id)
     target_config = _read_config(target_id)
     rows = []
     if target_config is not None and not _mlx_stack_being_replaced(capabilities):
         args = (target_id, target_config, capabilities, ENABLED_MLX_SPECULATIVE_METHODS)
-        # Read from the checkpoint itself, not from whether this runtime could drive it, so
-        # a runtime without speculative support does not become advice to download a head
-        # the target already has. A target not on disk simply suppresses nothing.
         native_head = False
         try:
             snapshot = mlx_target_snapshot_path(target_id)
@@ -2559,10 +2321,7 @@ def mlx_speculative_options(target_id: str) -> dict[str, Any]:
 def _pinned_drafter(
     mode: str, draft_model: Optional[str], candidates: list[dict[str, Any]]
 ) -> tuple[Optional[str], Optional[str]]:
-    """An accepted drafter carries the candidate's own repository id, not the spelling the
-    request used, because the loader matches names exactly: accepting one it cannot resolve
-    moves the failure from a refusal to a crash after the resident model is gone.
-    """
+    """Carries the candidate's own repo id: the loader matches names exactly."""
     if mode not in ENABLED_MLX_SPECULATIVE_METHODS:
         return draft_model, "method_not_integrated"
     _, named, _ = mlx_speculative_request_identity(mode, draft_model, None)
@@ -2583,11 +2342,7 @@ def mlx_speculative_request_reason(
     is_lora: bool = False,
     is_gguf: bool = False,
 ) -> Optional[str]:
-    """Why an MLX speculative request cannot be served, or None when it can.
-
-    Off and Auto always resolve; an explicit method is refused unless the candidate list reports
-    its drafter loadable, carrying that candidate's own reason.
-    """
+    """Why an MLX speculative request cannot be served, or None when it can."""
     mode = normalize_mlx_speculative_mode(mode)
     if mode in {"off", "auto"}:
         return None
@@ -2601,8 +2356,6 @@ def mlx_speculative_request_reason(
     ).reason
 
 
-# Missing an input the target load supplies. The verifier contract is not one: it is read from
-# the cached drafter, which no download changes.
 _UNPROVEN_REASONS = frozenset(
     {
         "tokenizer_contract_unavailable",
@@ -2613,24 +2366,12 @@ _UNPROVEN_REASONS = frozenset(
 
 
 def mlx_speculative_reason_is_unproven(reason: Optional[str]) -> bool:
-    """Whether ``reason`` records a comparison still missing its inputs, rather than a pair known
-    not to fit.
-
-    Refusing one rejects a pair that would have loaded, because downloading the target is what
-    makes the comparison possible. The worker performs it once both checkpoints are resident,
-    and an explicit method still fails its load there.
-    """
+    """Whether ``reason`` records a comparison still missing its inputs, rather than a pair known"""
     return reason in _UNPROVEN_REASONS
 
 
 def mlx_speculative_refusal(mode: Any, resolution: "MlxSpeculativeResolution") -> Optional[str]:
-    """Why ``resolution`` cannot be loaded, or None to load it.
-
-    Auto never fails a load. Its reason is a diagnosis of why the request runs without
-    speculation, not a refusal, so a model that cannot be accelerated still generates. A
-    comparison still missing its inputs is carried the same way: the download this load is about
-    to perform supplies them, and the worker judges the pair with both checkpoints resident.
-    """
+    """Why ``resolution`` cannot be loaded, or None. Auto never fails a load."""
     if normalize_mlx_speculative_mode(mode) in {"off", "auto"} or resolution.reason is None:
         return None
     if mlx_speculative_reason_is_unproven(resolution.reason):
@@ -2639,12 +2380,7 @@ def mlx_speculative_refusal(mode: Any, resolution: "MlxSpeculativeResolution") -
 
 
 def mlx_speculative_target_is_adapter(target_id: str) -> bool:
-    """Whether the target is a LoRA adapter, read from the files its load would open.
-
-    The candidate list is built for callers holding no model configuration, so the adapter is
-    recognised from the snapshot rather than asked of one, on the same markers the rest of the
-    model layer recognises it by.
-    """
+    """Whether the target is a LoRA adapter, read from the files its load would open."""
     from utils.models.model_config import _looks_like_lora_adapter
 
     path = _cached_config_path(_canonical_target_id(target_id))
@@ -2658,13 +2394,7 @@ def mlx_speculative_target_ineligible(
     is_distributed: bool = False,
     is_gguf: bool = False,
 ) -> Optional[str]:
-    """Why this launch can run no drafter, or None when it can.
-
-    Speculation rides the mlx-vlm path, which a text-only target never takes and a GGUF launch
-    leaves for llama-server; an adapter or a sharded placement does take it but has no drafter
-    support. Asked wherever a drafter is resolved, so the answer a request is given is the one
-    its load reaches.
-    """
+    """Why this launch can run no drafter, or None when it can."""
     if is_gguf or not is_vision:
         return "mlx_vlm_target_required"
     if is_lora:
@@ -2686,12 +2416,7 @@ def mlx_speculative_load_resolution(
     is_lora: bool,
     is_distributed: bool,
 ) -> "MlxSpeculativeResolution":
-    """The drafter a load will use, reusing the caller's pinned choice when it has one.
-
-    A caller that already resolved passes its choice through unchanged, so the decision is
-    not made twice against two different views of the cache. Only Auto with nothing pinned
-    scans here, which is the path a caller that never resolved takes.
-    """
+    """The drafter a load will use, reusing the caller's pinned choice when it has one."""
     requested, _, _ = mlx_speculative_request_identity(mode, draft_model, None)
     ineligible = mlx_speculative_target_ineligible(
         is_vision = is_vision, is_lora = is_lora, is_distributed = is_distributed
@@ -2716,18 +2441,10 @@ def resolve_mlx_speculative_request(
     is_gguf: bool = False,
     options: Optional[dict[str, Any]] = None,
 ) -> MlxSpeculativeResolution:
-    """Pin one concrete local drafter, or ordinary MLX when Auto finds none.
-
-    Auto never fails a load: with no loadable candidate it resolves to Off carrying the reason.
-
-    ``is_vision``, ``is_lora`` and ``is_gguf`` describe the target the load will build. Omitted,
-    the answer is about the drafters alone; passed, a target no drafter can attach to is answered
-    here rather than after the resident model has been torn down for it.
-    """
+    """Pin one concrete local drafter, or ordinary MLX when Auto finds none."""
     requested = normalize_mlx_speculative_mode(mode)
     if requested == "off":
         return MlxSpeculativeResolution("off", None)
-    # Ahead of every cache read: no drafter changes an answer the target itself settles.
     ineligible = mlx_speculative_target_ineligible(
         is_vision = is_vision, is_lora = is_lora, is_gguf = is_gguf
     )
@@ -2735,29 +2452,20 @@ def resolve_mlx_speculative_request(
         return MlxSpeculativeResolution(
             "off" if requested == "auto" else requested, None, ineligible
         )
-    # Both the scan and the compatibility checks match on the canonical id.
     target_id = _canonical_target_id(target_id)
     target_config = _read_config(target_id)
     if requested != "auto":
         available = (options or mlx_speculative_options(target_id))["candidates"]
         pinned, reason = _pinned_drafter(requested, draft_model, available)
-        # Candidates match on the target's identity, so an unfetched target offers none and
-        # would be refused for having none. The load resolves again once it can.
         if reason == "checkpoint_not_compatible" and not available and target_config is None:
-            # Built anyway, but carrying why it is unjudged: the settlement after the
-            # download has nothing to recognise otherwise.
             return MlxSpeculativeResolution(requested, draft_model, "target_config_unavailable")
         return MlxSpeculativeResolution(requested, pinned, reason)
 
-    # No readable configuration is a different answer from having matched no drafter.
     if target_config is None:
         return MlxSpeculativeResolution("off", None, "target_config_unavailable")
 
-    # Answered about the list the caller holds, rather than rescanning the cache.
     available = (options or mlx_speculative_options(target_id))["candidates"]
     _, preferred, _ = mlx_speculative_request_identity(requested, draft_model, None)
-    # Ahead of the pin below, since a drafter named by hand is still one this target cannot
-    # profit from. An unmeasurable target is not refused on ignorance.
     parameters = _target_parameter_estimate(target_config)
     if parameters is not None and parameters < MLX_AUTO_MIN_TARGET_PARAMETERS:
         return MlxSpeculativeResolution("off", None, "target_too_small_to_draft")
@@ -2781,8 +2489,6 @@ def resolve_mlx_speculative_request(
         return MlxSpeculativeResolution("mtp", builtin["repo_id"])
 
     downloaded = [row for row in available if row["source"] != "recommended"]
-    # Ranked by the revision a load would take. A row with none that fits is one the loader
-    # would refuse, whatever the list said when it was built.
     precision = {}
     rankable = [row for row in downloaded if row["loadable"] and row is not builtin]
     revisions = tuple(_cached_drafter_configs()) if rankable else ()
@@ -2805,6 +2511,5 @@ def resolve_mlx_speculative_request(
         selected = min(candidates, key = priority)
         return MlxSpeculativeResolution(selected["method"], selected["repo_id"])
 
-    # Which way it failed matters: too large asks different action than never downloaded.
     refused = next((row["reason"] for row in downloaded if row.get("reason")), None)
     return MlxSpeculativeResolution("off", None, refused or "no_cached_drafter")

@@ -405,11 +405,7 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
 
 
 def _mlx_speculative_load_kwargs(backend: Any, config: dict) -> dict:
-    """The speculative load arguments this backend takes, empty for any but MLX.
-
-    Only the MLX backend accepts them, so projecting nothing elsewhere is what keeps the
-    llama.cpp load from being handed arguments it has no parameters for.
-    """
+    """The speculative load arguments this backend takes, empty for any but MLX."""
     if getattr(backend, "device", None) != "mlx":
         return {}
     return {

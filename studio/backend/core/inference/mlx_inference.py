@@ -1329,19 +1329,9 @@ def _mlx_finish_reason(response, stop_ids, generated_n, max_tokens):
     return "stop" if token is not None and token in tuple(stop_ids) else "length"
 
 
-# --- MLX speculative preflight -------------------------------------------------------
-# A shim, structurally gated so it only touches the layout it corrects, then a validator
-# that runs on every pair and fails the load rather than repairing it.
-
 
 def materialize_mtp_masked_embedding(draft_model: Any) -> int:
-    """Materialize the packed Gemma assistant head used by MaskedEmbedder.
-
-    mlx-vlm's ordered-embedding head indexes ``embed_tokens.weight`` as a dense
-    ``[vocab, hidden]`` table. MXFP4 stores it packed as uint32, so indexing it
-    directly produces the wrong last dimension. Return the dense bytes owned by
-    this adapter; unaffected assistants are a no-op.
-    """
+    """Densify the MXFP4-packed Gemma assistant ``embed_tokens.weight`` MaskedEmbedder indexes."""
     config = getattr(draft_model, "config", None)
     masked = getattr(draft_model, "masked_embedding", None)
     if not bool(getattr(config, "use_ordered_embeddings", False)) or masked is None:
@@ -1385,13 +1375,7 @@ def materialize_mtp_masked_embedding(draft_model: Any) -> int:
 
 
 def detach_null_quantized_biases(target_model: Any) -> None:
-    """Detach the null MXFP4 bias attribute the EAGLE-3 hot head indexes without checking.
-
-    mlx-vlm builds that head from ``embed.biases`` whenever the attribute exists, and MXFP4
-    exposes it holding None, so the first speculative step raises. Removing it leaves the
-    same None the dequantization beside it already expects. A checkpoint whose embedding
-    carries real biases, or none at all, is untouched.
-    """
+    """Drop the None ``embed.biases`` MXFP4 exposes, which the EAGLE-3 head would index."""
     lm = getattr(target_model, "language_model", target_model)
     embed = getattr(getattr(lm, "model", None), "embed_tokens", None)
     if embed is None or not hasattr(embed, "scales"):
@@ -1401,14 +1385,7 @@ def detach_null_quantized_biases(target_model: Any) -> None:
 
 
 def validate_speculative_target_contract(target_model, draft_model, method) -> None:
-    """Fail before publication when a loaded pair lacks the hooks ``method`` needs.
-
-    Rewinding the target's cache and resetting the drafter are needed by every method. The
-    two capture keywords below are MTP's alone: DFlash and EAGLE-3 ask for layer captures
-    instead, so requiring MTP's pair of them would refuse targets over arguments those
-    methods never pass. Resets the drafter against the target as its last step, so a pair
-    that passes is left ready to generate rather than merely checked.
-    """
+    """Fail before publication when a loaded pair lacks the hooks ``method`` needs, then reset the drafter."""
     lm = getattr(target_model, "language_model", target_model)
     if not callable(getattr(lm, "rollback_speculative_cache", None)):
         raise RuntimeError("mlx_speculative_target_rollback_missing")
@@ -1429,8 +1406,6 @@ def validate_speculative_target_contract(target_model, draft_model, method) -> N
         raise RuntimeError("mlx_speculative_drafter_reset_missing")
     reset(target_model)
 
-
-# --- end MLX speculative preflight ---------------------------------------------------
 
 
 def _build_generation_stats(
@@ -2927,9 +2902,7 @@ class MLXInferenceBackend:
             if repo_id == BUILTIN_MTP_ID:
                 if mode != "mtp" or not target_id:
                     raise ValueError("mlx_builtin_mtp_target_required")
-                # Held until the split head's files are open, or a sibling backend reclaiming a
-                # superseded copy could unlink the one just resolved here. Busy means that
-                # sibling is inside the critical section, so this load splits without reclaiming.
+                # Held until the head's files are open; busy means a sibling holds it, so do not reclaim.
                 lock_state = resolving.enter_context(native_mtp_sidecar_lock())
                 path = materialize_native_mtp(
                     mlx_target_snapshot_path(target_id),
@@ -2941,7 +2914,6 @@ class MLXInferenceBackend:
                     if target_id
                     else mlx_speculative_snapshot_path(repo_id)
                 )
-            # load_drafter refuses any kind it does not dispatch.
             kind = MLX_SPECULATIVE_DRAFT_KINDS.get(mode, mode)
             draft_model, resolved_kind = load_drafter(str(path), kind = kind)
         if resolved_kind != kind:
@@ -2953,7 +2925,6 @@ class MLXInferenceBackend:
         validate_speculative_target_contract(self._model, draft_model, resolved_kind)
         self._draft_model = draft_model
         self._draft_kind = resolved_kind
-        # Several methods share a kind, so what ran is reported as what was asked for.
         self._draft_method = mode
         self._draft_repo_id = repo_id
         self._draft_block_size = block_size
@@ -2992,8 +2963,6 @@ class MLXInferenceBackend:
             resolve_mlx_speculative_request,
         )
 
-        # Recording what was asked rather than what Off implies keeps an earlier drafter
-        # through a load with speculation off; reuse compares through the same identity.
         requested_speculative_mode, _, _ = mlx_speculative_request_identity(
             mlx_speculative_mode, mlx_draft_model, mlx_draft_block_size
         )
@@ -3110,8 +3079,6 @@ class MLXInferenceBackend:
             self._processor = None
             self._is_vlm = False
 
-        # The load supplied the files the pin could not read, so the deferred comparison is
-        # settled here. Every mode: attaching a drafter never compares token ids.
         if mlx_speculative_reason_is_unproven(resolution.reason):
             resolution = resolve_mlx_speculative_request(
                 model_name,
@@ -3120,8 +3087,6 @@ class MLXInferenceBackend:
                 is_vision = is_vision,
                 is_lora = is_lora,
             )
-        # Raised where the drafter would be built, so a settled-against pairing leaves through
-        # that teardown rather than stranding the resident target.
         settled_refusal = resolution.reason if requested_speculative_mode != "auto" else None
 
         _audio_type = _classify_mlx_audio_type(
@@ -3231,15 +3196,12 @@ class MLXInferenceBackend:
             "mlx_speculative_effective_mode": "off",
             "mlx_speculative_effective_draft_model": None,
             "mlx_speculative_effective_block_size": None,
-            # What Auto settled on for this launch. Kept even where the drafter then failed to
-            # load, so asking again is recognised as the same answer rather than a new one.
             "mlx_speculative_pinned_mode": resolution.method,
             "mlx_speculative_pinned_draft_model": resolution.draft_model,
             "mlx_speculative_reason": resolution.reason,
             "mlx_speculative_materialization_bytes": 0,
         }
         if resolution.method != "off":
-            # Auto picks the depth its method pays off at; a depth the user set outranks it.
             block_size = mlx_draft_block_size
             if block_size is None and requested_speculative_mode == "auto":
                 block_size = mlx_auto_draft_block_size(resolution.method)
@@ -3253,9 +3215,7 @@ class MLXInferenceBackend:
                     model_name,
                 )
             except Exception as exc:
-                # A named method was the point of the load, so its failure is the load's. Auto
-                # asked only for an accelerator, and tearing down the resident target beside it
-                # would cost the user the model itself.
+                # A named method's failure fails the load; Auto keeps the resident target.
                 if requested_speculative_mode != "auto":
                     self._model = None
                     self._tokenizer = None
@@ -3281,7 +3241,6 @@ class MLXInferenceBackend:
                     mlx_speculative_effective_block_size = self._draft_block_size,
                     mlx_speculative_materialization_bytes = self._draft_materialization_bytes,
                 )
-                # The settled answer, not the verdict the preflight could not reach.
                 model_record["mlx_speculative_reason"] = resolution.reason
 
         self.active_model_name = model_name
@@ -4192,9 +4151,7 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
         if self._draft_model is not None:
-            # Known gap: mlx_vlm's speculative rounds take the sampler but not the processors,
-            # so the penalties and logit_bias above score only the token before the handoff.
-            # Left alone: they default off, and refusing to draft would be the larger regression.
+            # Known gap: mlx_vlm speculative rounds take the sampler but not logits processors.
             vlm_kwargs.update(
                 draft_model = self._draft_model,
                 draft_kind = self._draft_kind,
@@ -4325,9 +4282,7 @@ class MLXInferenceBackend:
                     # As in _generate_text: what was withheld is ordinary text now.
                     if sequences and not stopped and released < len(sampled):
                         yield prefill + sampled
-                    # A stop sequence abandons vlm_stream mid-round exactly as a cancel does,
-                    # so it takes the same teardown rather than leaving the round for the next
-                    # request to inherit.
+                    # A stop sequence abandons vlm_stream mid-round, so it takes the cancel teardown.
                     completed = not stopped and (cancel_event is None or not cancel_event.is_set())
                 finally:
                     if clip_path is not None:
@@ -4369,9 +4324,7 @@ class MLXInferenceBackend:
                             ),
                         )
                     if self._draft_model is not None and not completed:
-                        # Reached on generator teardown, where raising would mask the exit that
-                        # caused it -- including the import, which a closing generator can run
-                        # after the interpreter has begun tearing modules down.
+                        # Never raise here: it runs on generator teardown, possibly during interpreter shutdown.
                         try:
                             self._draft_model.reset(self._model)
                         except Exception as exc:
@@ -4381,7 +4334,6 @@ class MLXInferenceBackend:
                             _drain_generation_streams(mx)
                             mx.clear_cache()
                         except Exception as exc:
-                            # Separate, so a reset that raises still frees what it held.
                             logger.warning("MLX speculative cache release failed: %s", exc)
 
         yield from normalize_reasoning_snapshots(
@@ -4462,9 +4414,6 @@ class MLXInferenceBackend:
         sampled = ""
         released = 0
         stopped = False
-        # An attached drafter serves this path too: mlx_vlm prefills audio through the same
-        # get_input_embeddings the decoder uses, and speculates over the text it decodes.
-        # Without these the load reports speculation active while audio requests decode plainly.
         speculative_kwargs = {}
         if self._draft_model is not None:
             speculative_kwargs = {
@@ -4523,7 +4472,6 @@ class MLXInferenceBackend:
                             break
                         if cancel_event and cancel_event.is_set():
                             break
-                # Both early exits leave the stream mid-round, as the vision path explains.
                 completed = not stopped and (cancel_event is None or not cancel_event.is_set())
             finally:
                 # Derived as the vision path derives it: this backend reports no finish reason, and unset reads as a
@@ -4543,7 +4491,6 @@ class MLXInferenceBackend:
                         ),
                     )
                 if self._draft_model is not None and not completed:
-                    # Released as the vision path releases it, and for the same reason.
                     try:
                         self._draft_model.reset(self._model)
                     except Exception as exc:

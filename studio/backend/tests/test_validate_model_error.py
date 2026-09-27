@@ -156,34 +156,23 @@ def test_non_gguf_load_still_runs_trc_and_security_review(monkeypatch):
 
 
 def test_a_target_no_drafter_can_attach_to_is_refused_before_the_model_is_unloaded(monkeypatch):
-    # This is the preflight the picker runs before /load frees the resident model, so a
-    # pairing the load will refuse has to be refused here rather than after the unload. The
-    # drafter itself is sound, which is the case that reaches the target's own rules at all.
     monkeypatch.setattr(inf, "mlx_speculative_request_reason", lambda *_a, **_k: None)
     with pytest.raises(HTTPException) as excinfo:
         _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "mtp")
     assert excinfo.value.status_code == 400
     assert "vision-language" in excinfo.value.detail
-    # Auto is not a request to refuse: it falls back to ordinary MLX generation instead.
     assert _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "auto")
 
 
 def test_a_comparison_the_target_cannot_answer_yet_is_not_a_refusal(monkeypatch):
-    # Comparing tokenizers needs the target's own tokenizer, which a first-time target has not
-    # downloaded at preflight time. Refusing on that rejects a pair the load would have run,
-    # because fetching the target is what makes the comparison possible.
     monkeypatch.setattr(
         inf, "mlx_speculative_request_reason", lambda *_a, **_k: "tokenizer_contract_unavailable"
     )
-    # The target itself is eligible, so the undecided comparison is the only thing left to
-    # refuse on -- and validation still succeeds.
     monkeypatch.setattr(inf, "mlx_speculative_target_ineligible", lambda **_k: None)
     assert _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "mtp")
 
 
 def test_the_pairing_is_judged_once_the_target_configuration_arrives(monkeypatch):
-    # Judged after the fetch, and only then: asked earlier it would answer from whatever
-    # revision happened to be cached, which is not the one the load goes on to use.
     order = []
 
     def _reason(*_a, **_k):
@@ -199,8 +188,6 @@ def test_the_pairing_is_judged_once_the_target_configuration_arrives(monkeypatch
             on_fetch = lambda: order.append("fetched"),
         )
     assert excinfo.value.status_code == 400
-    # Once, and after the fetch: asked before it, the answer comes from whatever revision was
-    # cached rather than the one this load resolved.
     assert order == ["fetched", "judged"]
     assert "vision-language" not in excinfo.value.detail
 

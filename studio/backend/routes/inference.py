@@ -15533,7 +15533,6 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         resolve_mlx_speculative_request,
     )
 
-    # Without a reload the drafter is never attached and the request looks honoured.
     requested = mlx_speculative_request_identity(
         request.mlx_speculative_mode, request.mlx_draft_model, request.mlx_draft_block_size
     )
@@ -15545,19 +15544,15 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         )
         == requested
     )
-    # Auto is compared as resolved, not as asked: the cache decides its drafter, and only a
-    # reload can attach or drop one.
+    # Auto compares as resolved: only a reload can attach or drop its drafter.
     if speculative and requested[0] == "auto":
         resolution = resolve_mlx_speculative_request(
             backend.active_model_name,
             "auto",
             request.mlx_draft_model,
-            # The resident target, so one no drafter can attach to compares equal to its Off.
             is_vision = entry.get("is_vision", False),
             is_lora = entry.get("is_lora", False),
         )
-        # Against what Auto pinned, not what survived the load: a drafter that failed to load
-        # resolves to the same answer, not a new one.
         speculative = resolution.method == (entry.get("mlx_speculative_pinned_mode") or "off") and (
             resolution.draft_model or None
         ) == (entry.get("mlx_speculative_pinned_draft_model") or None)
@@ -15618,19 +15613,8 @@ async def get_mlx_speculative_options(
     from core.inference.mlx_speculative import _canonical_target_id, mlx_target_config_is_cached
     from utils.models.model_config import is_vision_model
 
-    # The name the scan and the load both match on; the request's own spelling may name nothing.
     canonical_target = await asyncio.to_thread(_canonical_target_id, target_model)
-    # Whether this target can attach any drafter is its own question, so a checkpoint the load
-    # could never accept is not offered for the download that would precede it. Ahead of the
-    # scan: this fetches the configuration a first-seen target has not cached yet, which the
-    # scan would otherwise pair against and freeze an empty list.
-    # With the caller's token: a gated target the probe cannot read caches no configuration,
-    # and the scan then pairs against nothing and offers no drafter at all.
-    # Asked offline first when that configuration is already here, which is the fetch this probe
-    # exists for: revalidating a cached file against the Hub costs seconds of round trips on an
-    # endpoint the picker calls for every model it shows. Only a positive is taken from it. A
-    # negative is the answer the online probe can still overturn, by escalating a raw config with
-    # no vision_config to the latest tier's sidecar, so that one is asked for rather than assumed.
+    # Before the scan (which would freeze an empty list), with the caller's token for gated targets; offline first.
     target_config_cached = await asyncio.to_thread(mlx_target_config_is_cached, canonical_target)
     target_is_vision = False
     if target_config_cached:
@@ -15656,7 +15640,6 @@ async def get_mlx_speculative_options(
                 for row in options["candidates"]
             ],
         )
-    # Two of Auto's rules turn on the target, not on a drafter, so the panel is told the answer.
     resolution = await asyncio.to_thread(
         resolve_mlx_speculative_request,
         target_model,
@@ -16502,11 +16485,7 @@ async def _load_model_impl(
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
 
-        # Ahead of the reuse path and the unload, so a rejected setting never costs the user a
-        # resident model. Auto never refuses and needs a quantization not settled yet. The GGUF
-        # answer is taken from the request rather than the configuration, which is resolved
-        # further down: the reuse path below returns on these same two signals, so a drafter
-        # judged only there would be dropped without a word whenever the server is already up.
+        # Before reuse and unload, so a rejected setting never costs the resident model.
         _mlx_resolution = None
         if normalize_mlx_speculative_mode(request.mlx_speculative_mode) != "auto":
             _mlx_resolution = await asyncio.to_thread(
@@ -16661,10 +16640,7 @@ async def _load_model_impl(
             )
         await asyncio.to_thread(_require_resolved_base_access, config)
 
-        # The first point the target is known, and ahead of every path that can return without
-        # reaching the resolution below -- the GGUF reuse branch returns from inside it. A launch
-        # that carries no drafter reads none of the drafter fields, so an explicit request that is
-        # answered any later is not refused but dropped in silence.
+        # Before every early return (incl. GGUF reuse), or an explicit drafter is dropped silently.
         _mlx_ineligible = mlx_speculative_target_ineligible(
             is_vision = getattr(config, "is_vision", False),
             is_lora = getattr(config, "is_lora", False),
@@ -16827,7 +16803,6 @@ async def _load_model_impl(
                     "architectures)"
                 )
 
-        # Pinned here, not in the worker, so one view of the cache decides it.
         _mlx_resolution = await asyncio.to_thread(
             resolve_mlx_speculative_request,
             model_identifier,
@@ -18007,8 +17982,7 @@ async def validate_model(
                 request.hf_token,
             ):
                 effective_load_in_4bit = False
-        # After the fetch, never before: asked earlier this answers from whatever revision was
-        # cached rather than the one being loaded. An undecided comparison is still deferred.
+        # After the fetch, so it answers from the revision being loaded.
         _mlx_spec_reason = await asyncio.to_thread(
             mlx_speculative_request_reason,
             model_identifier,
@@ -18022,8 +17996,6 @@ async def validate_model(
                 status_code = 400, detail = mlx_speculative_refusal_text(_mlx_spec_reason)
             )
 
-        # Settled by the target alone, so it is asked of every request. Auto resolves to ordinary
-        # MLX generation rather than being refused.
         _mlx_ineligible = mlx_speculative_target_ineligible(
             is_vision = getattr(config, "is_vision", False),
             is_lora = getattr(config, "is_lora", False),
@@ -19949,7 +19921,6 @@ async def get_status(current_subject: str):
             mlx_kv_quant_eligibility = model_info.get("mlx_kv_quant_eligibility"),
             mlx_kv_quant_reason = model_info.get("mlx_kv_quant_reason"),
             mlx_kv_quant_note = model_info.get("mlx_kv_quant_note"),
-            # Requested, not effective: a caller compares this against its own request.
             mlx_speculative_mode = model_info.get("mlx_speculative_effective_mode") or "off",
             mlx_speculative_mode_requested = (
                 model_info.get("mlx_speculative_mode_requested") or "off"

@@ -3393,7 +3393,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         speculative_type: effectiveSpeculativeType,
         spec_draft_n_max: effectiveSpecDraftNMax,
         ...mlxSpeculativeFields,
-        // The same remembered-derived GPU pick the load below sends.
         ...(candidate.kind === "gguf"
           ? {
               gpu_ids: effectiveGpuIds ?? undefined,

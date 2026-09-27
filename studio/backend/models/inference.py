@@ -51,10 +51,7 @@ def resolve_inventory_handle(value: str) -> str:
     return resolved
 
 
-# The method a load may ask for; ``auto`` lets the backend choose.
 MlxSpeculativeMode = Literal["off", "auto", "mtp", "dflash", "dspark", "dflash2", "eagle3"]
-# The method a resolution can produce: ``auto`` has already been decided by the time it is
-# reported, so it is never an answer.
 MlxSpeculativeResolvedMode = Literal["off", "mtp", "dflash", "dspark", "dflash2", "eagle3"]
 
 
@@ -1571,11 +1568,7 @@ class LoadResponse(_InferenceRuntimeFields):
 
 
 class MlxSpeculativeCandidate(BaseModel):
-    """One drafter a target could run, with why it can or cannot.
-
-    Grouped as identity, then what it costs, then the four questions that decide it, then the
-    verdict. ``loadable`` is exactly ``reason is None``, carried so a client need not re-derive it.
-    """
+    """One drafter a target could run, with why it can or cannot."""
 
     method: Literal["mtp", "dflash", "dspark", "dflash2", "eagle3"]
     repo_id: str
@@ -1597,18 +1590,15 @@ class MlxSpeculativeCandidate(BaseModel):
 
 
 class MlxSpeculativeOptionsResponse(BaseModel):
-    """The drafters one target can run, and what Auto would pick among them."""
 
     target_model: str
-    # Reserved: this contract may still change between releases. Kept so that settling it
-    # later is a value change rather than a new field.
+    # Reserved: this contract may still change between releases.
     experimental: bool = True
 
     runtime_supported: bool
     runtime_reason: Optional[str] = None
     candidates: List[MlxSpeculativeCandidate] = Field(default_factory = list)
 
-    # What Auto would run, so a client names its pick without re-deriving the target's rules.
     auto_method: MlxSpeculativeResolvedMode = "off"
     auto_draft_model: Optional[str] = None
     auto_reason: Optional[str] = None

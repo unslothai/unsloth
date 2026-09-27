@@ -275,16 +275,7 @@ const SETTING_CHECKS: SettingCheck[] = [
       (c.mlxKvBits ?? null) === (s.mlx_kv_bits_requested ?? null),
   },
   {
-    // The requested tuple, not the effective one. Both sides go through the load's own helper,
-    // so an unset mode resolves alike and a non-MLX resident collapses to Off rather than
-    // comparing.
-    //
-    // Auto is compared as requested even though the backend compares it as resolved, which
-    // leaves one gap: a drafter downloaded while the model is already resident does not
-    // attach until something else about the request changes. Declining to adopt instead is
-    // worse — a resident model would then re-enter the load path on every re-pick, which
-    // prompts to stop running chats and drops queued prompts before /load answers that
-    // nothing changed.
+    // Auto compares as requested (backend: as resolved); adopting avoids a reload on every re-pick.
     mlxComparable: true,
     pinned: () => true,
     agrees: (c, s) => {

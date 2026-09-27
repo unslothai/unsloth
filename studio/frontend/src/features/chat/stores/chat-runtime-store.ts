@@ -2398,12 +2398,9 @@ type ChatRuntimeStore = {
   mlxSpeculativeMode: MlxSpeculativeMode;
   mlxDraftModel: string | null;
   mlxDraftBlockSize: number | null;
-  /** The tuple the resident runtime was actually launched with, or null off MLX. */
   loadedMlxSpeculativeMode: MlxSpeculativeMode | null;
   loadedMlxDraftModel: string | null;
   loadedMlxDraftBlockSize: number | null;
-  /** Why speculation is not running, as prose; the effective mode and drafter are separate
-   * fields above. Null while it runs, or before any load has answered. */
   mlxSpeculativeReason: string | null;
   /** Width the backend was last asked for; the verdict belongs beside it. */
   loadedMlxKvBitsRequested: number | null;

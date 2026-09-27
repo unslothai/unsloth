@@ -473,8 +473,6 @@ export function applyActiveModelStatusToStore(
     specFallbackReason: status.spec_fallback_reason ?? null,
     mmprojFallbackReason: status.mmproj_fallback_reason ?? null,
     specDrafterKind: status.spec_drafter_kind ?? null,
-    // Held behind the same seed guard as the KV verdict below: a status that is not reporting a
-    // settled load must not retire the state a staged pick is holding.
     ...(seedLoadParams &&
       status.is_mlx !== undefined &&
       mlxSpeculativeFields),

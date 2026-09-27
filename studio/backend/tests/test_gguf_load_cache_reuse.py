@@ -940,8 +940,6 @@ class TestLoadHubDownloadExclusion:
         assert result is response
 
     def test_resident_gguf_reuse_refuses_an_explicit_mlx_drafter(self):
-        # The reuse fast path answers before the configuration exists, so a drafter judged only
-        # from the configuration would be dropped without a word on every load of a resident GGUF.
         from fastapi import HTTPException
         from models.inference import LoadRequest
 
@@ -973,9 +971,6 @@ class TestLoadHubDownloadExclusion:
         assert refused.value.status_code == 400
 
     def test_post_config_gguf_reuse_refuses_an_explicit_mlx_drafter(self):
-        # The second reuse path: a GGUF named without a variant or a .gguf suffix is only known to
-        # be one once the configuration resolves, and that branch returns from inside itself. The
-        # target is vision here, so the GGUF classification is the only thing that can refuse it.
         from fastapi import HTTPException
         from models.inference import LoadRequest
 
@@ -1008,7 +1003,6 @@ class TestLoadHubDownloadExclusion:
                 "ModelConfig",
                 SimpleNamespace(from_identifier = lambda **_kwargs: config),
             ),
-            # What an uncached GGUF repository answers: unproven, so the earlier gate defers it.
             patch.object(
                 route,
                 "resolve_mlx_speculative_request",

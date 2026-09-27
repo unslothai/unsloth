@@ -221,8 +221,6 @@ const LABEL_CLASS =
   "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 const LABEL_CLASS_WRAP =
   "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
-// Both backends offer this feature, so the sentences that describe the feature itself are
-// shared and only the backend-specific parts differ.
 const SPECULATIVE_HINT_SUMMARY =
   "Drafts several tokens ahead and verifies them in one step, so generation " +
   "is faster when the drafts are accepted.";
@@ -1217,7 +1215,6 @@ function mlxMethodLabel(mode: MlxSpeculativeMode): string {
       : MLX_SPECULATIVE_METHOD_LABELS[mode];
 }
 
-/** Split on any run of whitespace, so "qwen  mtp" matches as two terms. */
 const MLX_DRAFT_SEARCH_SEPARATOR = /\s+/;
 
 function MlxDraftCheckpointDownload({
@@ -1226,13 +1223,11 @@ function MlxDraftCheckpointDownload({
   candidate: MlxSpeculativeCandidate;
 }) {
   const [failed, setFailed] = useState(false);
-  // The existing manager, not a second downloader, so it keeps running if this closes.
   const job = useRepoDownload({
     kind: "model",
     repoId: candidate.repo_id,
     activeVariant: null,
     autoAdopt: true,
-    // Completion is watched by useMlxDraftDownloadRefresh, which outlives this row.
     onError: () => setFailed(true),
   });
   const downloading = job.progress !== null && job.progress.variant === null;
@@ -1271,7 +1266,6 @@ function MlxDraftCheckpointDownload({
             size="sm"
             variant="ghost"
             className={`h-8 px-3 text-ui-13 ${CONTROL_SURFACE}`}
-            // One at a time: a second download would fight the first for the same files.
             disabled={job.repoPeerActive}
             onClick={() => {
               setFailed(false);
@@ -1305,7 +1299,6 @@ function MlxDraftModelSetting({
 }: {
   candidates: readonly MlxSpeculativeCandidate[];
   selected: MlxSpeculativeCandidate | null;
-  /** What this request would actually draft with, which a pin can fail to name. */
   resolved: MlxSpeculativeCandidate | null;
   update: (patch: Partial<PerModelConfig>) => void;
 }) {
@@ -1321,8 +1314,7 @@ function MlxDraftModelSetting({
       const text = `${candidate.label} ${candidate.repo_id}`.toLowerCase();
       return terms.every((term) => text.includes(term));
     });
-    // Already ordered ready-first by the caller; re-sorting here would offer a download
-    // above a checkpoint the user already has.
+    // Already ordered ready-first by the caller; do not re-sort.
     return found;
   }, [candidates, query]);
   const { shown, fetchable } = mlxDraftRowCheckpoint(selected, resolved);
@@ -1424,8 +1416,6 @@ function MlxDraftModelSetting({
           </PopoverContent>
         </Popover>
       </div>
-      {/* Keyed by repository, so a failure reported for one is not still on screen
-          under the next. */}
       {shown && fetchable ? (
         <MlxDraftCheckpointDownload key={shown.repo_id} candidate={shown} />
       ) : null}
@@ -1449,20 +1439,16 @@ function MlxSpeculativeSetting({
   pending: boolean;
   error: string | null;
   onRetry: () => void;
-  /** Why the loaded runtime is not drafting as asked, or null when it is. */
   reason: string | null;
-  /** The drafter Auto resolved to for this target, or null when it resolved to none. */
   autoDraftModel: string | null;
 }) {
   const mode = config.mlxSpeculativeMode ?? "auto";
-  // What Auto picked, so the control names a method rather than making the user load.
   const predicted = selectMlxSpeculativeCandidate(
     candidates,
     "auto",
     null,
     autoDraftModel,
   );
-  // What this request would run, which decides whether a companion is choosable.
   const resolved = selectMlxSpeculativeCandidate(
     candidates,
     mode,
@@ -1473,8 +1459,6 @@ function MlxSpeculativeSetting({
     () => selectableExternalMlxDraftCandidates(candidates),
     [candidates],
   );
-  // An empty list would claim the load will not speculate, which a failed or in-flight
-  // request cannot support.
   const known = !pending && error === null;
   const autoLabel = known
     ? `Auto (${predicted ? mlxMethodLabel(predicted.method) : "Off"})`
@@ -1529,10 +1513,6 @@ function MlxSpeculativeSetting({
           </SelectContent>
         </Select>
       </div>
-      {/* Hidden only when this request resolves to the target's own head, which needs
-          no companion: there is nothing left for the control to choose. A checkpoint
-          pinned explicitly resolves to that checkpoint instead, here and in the
-          backend, and keeps the row. */}
       {mode !== "off" && resolved?.source !== "builtin" ? (
         <MlxDraftModelSetting
           candidates={externalCandidates}
@@ -1544,8 +1524,6 @@ function MlxSpeculativeSetting({
           update={update}
         />
       ) : null}
-      {/* Auto carries its own depth per method, chosen with the drafter, so there is no
-          default here for a depth to override. */}
       {normalizeMlxSpeculativeMethod(mode) !== null ? (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
@@ -2335,10 +2313,6 @@ type MlxSpeculativeOptionsState = {
   retry: () => void;
 };
 
-/**
- * State is stored beside the target it describes and read back only for the current one,
- * so a slow answer cannot be shown against the model that replaced it.
- */
 function useMlxSpeculativeOptions(
   targetModel: string | null,
   enabled: boolean,
@@ -2356,14 +2330,10 @@ function useMlxSpeculativeOptions(
     if (!(enabled && targetModel)) {
       return;
     }
-    // Retired before the request goes out, or Retry would leave the failure it is
-    // answering on screen, reported as settled, for as long as the retry takes.
     setState(null);
     const controller = new AbortController();
     getMlxSpeculativeOptions(targetModel, hfToken, controller.signal)
       .then((options) => {
-        // Checked on success too: reading the body is a second async hop, so an abandoned
-        // request for this target can still deliver after its replacement.
         if (!controller.signal.aborted) {
           setState({ targetModel, options, error: null });
         }
@@ -2385,20 +2355,12 @@ function useMlxSpeculativeOptions(
   return {
     options: current?.options ?? null,
     error: current?.error ?? null,
-    // Pending until this target answers, so a model switch does not report "no drafter".
     pending: enabled && targetModel !== null && current === null,
     retry: useCallback(() => setAttempt((n) => n + 1), []),
   };
 }
 
-/**
- * Re-ask what is available when a drafter this page offered finishes downloading.
- *
- * The download row lives under Advanced settings and unmounts when they collapse, while the
- * transfer keeps running; remounting does not recover the completion, because the adopt probe
- * takes over running jobs only. Held here so the candidate stops reading "Not downloaded"
- * whatever the panel is showing when the bytes land.
- */
+/** Held above the collapsible download row, whose unmount would lose the completion. */
 function useMlxDraftDownloadRefresh(
   options: MlxSpeculativeOptions | null,
   refresh: () => void,
@@ -2612,9 +2574,7 @@ export function ModelConfigPage({
     platformDeviceType,
     platformChatOnlyReason,
   );
-  // The snapshot this pick loads from, which is not always the repository id: one cached
-  // outside the active HF cache loads by path. Probing the id there reads another revision's
-  // config and weights, so the drafter offered is not the one the load would pair.
+  // Probe the snapshot the pick loads from, not the repo id: another revision's config would be paired.
   const mlxSpeculative = useMlxSpeculativeOptions(
     target.meta?.loadId || target.id,
     servedByMlx,
@@ -2631,7 +2591,6 @@ export function ModelConfigPage({
   const loadedMlxDraftBlockSize = useChatRuntimeStore(
     (s) => s.loadedMlxDraftBlockSize,
   );
-  // As with the KV verdict: a staged edit retires a reason that answered another request.
   const mlxSpeculativeRequestUnchanged =
     isActiveModel &&
     (configState.mlxSpeculativeMode ?? "auto") ===

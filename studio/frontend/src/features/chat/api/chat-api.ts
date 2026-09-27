@@ -230,8 +230,6 @@ export async function getMlxSpeculativeOptions(
   signal?: AbortSignal,
 ): Promise<MlxSpeculativeOptions> {
   const query = new URLSearchParams({ target_model: targetModel });
-  // The probe behind this reads the target's configuration, which a gated repository answers
-  // only for a caller that carries the token.
   const response = await authFetch(
     `/api/inference/mlx-speculative/options?${query}`,
     { headers: hubTokenHeader(hfToken), signal },
@@ -416,8 +414,7 @@ export async function validateModel(
       // omitting the mode makes this preflight disagree with /load in both directions.
       speculative_type: payload.speculative_type ?? null,
       spec_draft_n_max: payload.spec_draft_n_max ?? null,
-      // The MLX tuple decides the same preflight: without it validate approves Off while
-      // /load judges the drafter, and the refusal lands after the switch has been committed to.
+      // The MLX tuple too, or validate approves Off while /load refuses the drafter.
       mlx_speculative_mode: payload.mlx_speculative_mode ?? "off",
       mlx_draft_model: payload.mlx_draft_model ?? null,
       mlx_draft_block_size: payload.mlx_draft_block_size ?? null,

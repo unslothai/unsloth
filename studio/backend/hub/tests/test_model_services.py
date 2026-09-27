@@ -2152,8 +2152,6 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
 
 
 def test_cached_models_scan_lists_a_speculative_drafter_like_any_other_model(monkeypatch, tmp_path):
-    """The listing describes what is on disk. A drafter downloaded for MLX speculation carries its
-    target's own ``model_type``, and it is cached, so it is a row."""
     active_hub = tmp_path / "hub"
     repo_path = active_hub / "models--Org--Drafter"
     snapshot = repo_path / "snapshots" / ("b" * 40)

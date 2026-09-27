@@ -160,8 +160,6 @@ const FIELDS: FieldCase[] = [
     same: 8,
     different: 4,
   },
-  // Only ever compared against an MLX resident: for anything else both sides collapse
-  // to Off, so a GGUF pick is not reloaded over a setting it cannot carry.
   {
     key: "mlxSpeculativeMode",
     statusKey: "mlx_speculative_mode_requested",
@@ -489,11 +487,6 @@ test("an empty pinned pool is Automatic, not a demand for no GPUs", () => {
 });
 
 test("an MLX resident running what was asked for is adopted, not reloaded", () => {
-  // The shape /status emits, which the explicit-mode sweep above never produces: answering
-  // "changed" for an echoed Auto sends every re-pick of every MLX model back through the
-  // load path, which prompts to stop running chats and drops queued prompts before /load
-  // answers that nothing changed. The cost is that a drafter downloaded while this model is
-  // resident does not attach until something else about the request changes.
   for (const base of Object.values(ACCELERATORS)) {
     const resident = {
       ...base,
@@ -501,12 +494,8 @@ test("an MLX resident running what was asked for is adopted, not reloaded", () =
       mlx_speculative_mode_requested: "auto" as const,
     };
     assert.equal(residentRuntimeMatchesConfig(resident, BLANK), true);
-    // And a backend too old to echo the request reads the same way, rather than as an Off
-    // no pick could match.
     const silent = { ...base, is_mlx: true };
     assert.equal(residentRuntimeMatchesConfig(silent, BLANK), true);
-    // An explicit pin is its own effective answer, so it is still compared here: unchanged
-    // adopts, changed reloads.
     const pinned = {
       ...base,
       is_mlx: true,
@@ -530,8 +519,6 @@ test("an MLX resident running what was asked for is adopted, not reloaded", () =
 });
 
 test("a resident that is not MLX is not reloaded over speculation it cannot carry", () => {
-  // The other side of the same check: a remembered drafter picked against a GGUF runtime
-  // collapses both sides to Off, instead of a reload on every pick of every GGUF model.
   for (const base of Object.values(ACCELERATORS)) {
     assert.equal(
       residentRuntimeMatchesConfig(base, {

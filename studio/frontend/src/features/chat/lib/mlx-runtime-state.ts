@@ -22,9 +22,7 @@ type MlxRuntimeResponse = Pick<
   | "mlx_speculative_reason"
 >;
 
-/** MLX runtime state a load response establishes. A non-MLX response retires the verdicts but omits
- *  the requests: they are dormant there, not wrong, and a preset carrying one must survive the
- *  round-trip. */
+/** MLX runtime state a load response establishes; non-MLX retires the verdicts but keeps the requests. */
 export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
   mlxKvBits?: number | null;
   loadedMlxKvBitsRequested: number | null;
@@ -51,8 +49,7 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
       mlxSpeculativeReason: null,
     };
   }
-  // A response that does not mention speculation came from a backend too old to report
-  // it, not from one asked to run none.
+  // No speculation field means an older backend, not Off.
   const mode = normalizeMlxSpeculativeMode(resp.mlx_speculative_mode_requested, "auto");
   const draftModel = normalizeMlxDraftModel(resp.mlx_draft_model_requested, mode);
   const blockSize = normalizeMlxDraftBlockSize(resp.mlx_draft_block_size_requested, mode);
@@ -83,11 +80,7 @@ type MlxSpeculativeStoreState = {
   mlxSpeculativeReason?: string | null;
 };
 
-/**
- * A refresh owns the loaded and effective halves outright, and the requested half only
- * when nothing is pending: it would otherwise overwrite an unsent edit with the running
- * values, leaving the reload comparison nothing to reload for.
- */
+/** The requested half is only refreshed when nothing is pending. */
 export function reconcileMlxSpeculativeStatus(
   previous: MlxSpeculativeStoreState,
   response: MlxRuntimeResponse,
@@ -100,7 +93,6 @@ export function reconcileMlxSpeculativeStatus(
     loadedMlxDraftBlockSize: runtime.loadedMlxDraftBlockSize,
     mlxSpeculativeReason: runtime.mlxSpeculativeReason,
   };
-  // An absent loaded mode reads as Auto, so a request never staged is not read as an edit.
   const editsPending =
     previous.mlxSpeculativeMode !==
       (previous.loadedMlxSpeculativeMode ?? "auto") ||

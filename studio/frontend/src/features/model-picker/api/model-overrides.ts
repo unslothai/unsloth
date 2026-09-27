@@ -382,9 +382,7 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.mlxKvBits != null) {
     payload.mlx_kv_bits = config.mlxKvBits;
   }
-  // Only a pinned pair travels: an override names one drafter for one method, and
-  // Auto re-resolves per load, so sending it would freeze a pick it has not made.
-  // The settings route does not accept these keys yet, so they are dropped there.
+  // Only a pinned pair travels: Auto re-resolves per load.
   if (
     config.mlxSpeculativeMode &&
     config.mlxSpeculativeMode !== "off" &&
