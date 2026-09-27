@@ -490,3 +490,31 @@ def test_blend_seam_on_cuda_is_bit_identical_and_host_free(dtype):
         out = F.blend_seam(a, b.clone(), 17, -1)
     assert rec.ops == []
     assert torch.equal(AutoencoderKLWan.blend_h(None, a, b.clone(), 17), out)
+
+
+def test_wan_attention_oom_retries_stock_for_that_call_only(monkeypatch):
+    # the fused attention holds fp32 score chunks the stock SDPA never allocates, so its OOM must not abort the decode
+    diffusers = pytest.importorskip("diffusers")
+    monkeypatch.setattr(F, "runtime_ok", lambda: True)
+    torch.manual_seed(0)
+    vae = diffusers.AutoencoderKLWan(base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1).eval()
+    F.install_wan_vae(vae)
+    block = next(m for m in vae.decoder.modules() if type(m).__name__.endswith("AttentionBlock"))
+    x = torch.randn(1, block.norm.gamma.shape[0], 1, 4, 4)
+    with torch.inference_mode():
+        ref = type(block).forward(block, x)
+        monkeypatch.setattr(F, "_mm_attention_ok", lambda q: True)
+
+        def norm_5d(x, norm, act):  # the fused norm is CUDA-only; per frame like the stock block
+            y = norm(x.permute(0, 2, 1, 3, 4).flatten(0, 1)).unflatten(0, x.shape[::2][:2])
+            return y.permute(0, 2, 1, 3, 4).contiguous(memory_format = torch.channels_last_3d)
+
+        monkeypatch.setattr(F, "rms_norm_act", norm_5d)
+
+        def oom(*a, **k):
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+
+        monkeypatch.setattr(F, "single_head_attention", oom)
+        out = block(x)
+    assert torch.equal(out, ref)
+    assert not getattr(block, "_unsloth_vae_fused_failed", False)

@@ -1005,11 +1005,14 @@ def _is_oom(exc: BaseException) -> bool:
     return "out of memory" in str(exc).lower()
 
 
-def _guard(module: Any, fast: Any, stock: Any, label: str, logger: Any) -> None:
+def _guard(
+    module: Any, fast: Any, stock: Any, label: str, logger: Any, oom_stock: bool = False
+) -> None:
     """``module.forward = fast`` until it raises something ``stock`` does not; then stock for good.
 
     Causal-cache state (Wan's ``feat_cache`` / ``feat_idx`` lists) is snapshotted and restored before the stock
-    retry, so a fast path that failed half way (cache slot written, index advanced) cannot desync the decode."""
+    retry, so a fast path that failed half way (cache slot written, index advanced) cannot desync the decode.
+    ``oom_stock``: an OOM retries stock for that call only (attention, where stock SDPA needs less memory)."""
 
     def forward(*args, **kwargs):
         if getattr(module, "_unsloth_vae_fused_failed", False):
@@ -1021,15 +1024,17 @@ def _guard(module: Any, fast: Any, stock: Any, label: str, logger: Any) -> None:
         except Exception as exc:  # noqa: BLE001
             for a, saved in zip(lists, snap):
                 a[:] = saved
-            if _is_oom(exc):
+            if not _is_oom(exc):
+                out = stock(*args, **kwargs)
+                module._unsloth_vae_fused_failed = True
+                if logger is not None:
+                    logger.warning(
+                        "diffusion.vae_fused: fused %s failed, using the stock path: %s", label, exc
+                    )
+                return out
+            if not oom_stock:
                 raise
-            out = stock(*args, **kwargs)
-            module._unsloth_vae_fused_failed = True
-            if logger is not None:
-                logger.warning(
-                    "diffusion.vae_fused: fused %s failed, using the stock path: %s", label, exc
-                )
-            return out
+        return stock(*args, **kwargs)  # outside the handler, so the failed call's tensors are freed first
 
     forward._unsloth_vae_fused = True
     module.forward = forward
@@ -1433,8 +1438,9 @@ def install_wan_vae(vae: Any, logger: Any = None) -> int:
                 and isinstance(getattr(module, "proj", None), torch.nn.Conv2d)
             ):
                 _guard(
-                    module, _fast_wan_attention(module), _stock_forward(module), "attention", logger
-                )
+                    module, _fast_wan_attention(module), _stock_forward(module), "attention", logger,
+                    oom_stock = True,
+                )  # fmt: skip
                 n += 1
         for module in part.modules():
             if "forward" in module.__dict__:
