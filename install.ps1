@@ -8202,7 +8202,7 @@ exit 0
     # so the banner below can skip a second query: detection already waited out the full
     # bound on this binary, and asking a hung nvidia-smi again only doubles the stall.
     $script:NvidiaSmiWedged = $false
-    # Reset per run: under `irm | iex` the script scope IS the caller's session.
+    # Reset per run: streamed execution shares the caller's script scope.
     $script:NvidiaPresenceOnly = $false
     $script:NvidiaPresenceCudaFloor = $null
     $script:NvidiaPresenceDriverRelease = $null
