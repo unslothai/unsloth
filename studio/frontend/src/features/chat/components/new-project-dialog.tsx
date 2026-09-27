@@ -13,6 +13,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  linkStagedFolders,
+  ProjectFolderPicker,
+  type StagedFolder,
+} from "@/features/rag";
+import {
   ProjectSourceDropzone,
   type StagedSource,
   uploadStagedSources,
@@ -51,6 +56,7 @@ export function NewProjectDialog({
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [staged, setStaged] = useState<StagedSource[]>([]);
+  const [folders, setFolders] = useState<StagedFolder[]>([]);
   const [busy, setBusy] = useState(false);
   // A desktop drop reaches `staged` only once its native registration settles. Creating before
   // then would upload without the files the user just dropped.
@@ -70,6 +76,7 @@ export function NewProjectDialog({
   function reset() {
     setName("");
     setStaged([]);
+    setFolders([]);
     setStagingDrop(false);
   }
 
@@ -92,6 +99,7 @@ export function NewProjectDialog({
       const project = await createChatProject(trimmed);
       // Upload before closing so the Sources panel lists them on first fetch.
       await uploadStagedSources(project.id, staged);
+      await linkStagedFolders(project.id, folders);
       if (!mounted.current) return;
       const stayedOnRoute = currentRoute() === origin;
       onOpenChange(false);
@@ -161,6 +169,11 @@ export function NewProjectDialog({
           onChange={setStaged}
           disabled={busy}
           onPendingChange={setStagingDrop}
+        />
+        <ProjectFolderPicker
+          folders={folders}
+          onChange={setFolders}
+          disabled={busy}
         />
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">
           <Button type="button" variant="ghost" disabled={busy} onClick={close}>
