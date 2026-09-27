@@ -112,6 +112,26 @@ def get_tokenizer_chat_template(tokenizer, model_name):
     return tokenizer
 
 
+def get_training_chat_template(tokenizer, model_name, final_format):
+    if getattr(tokenizer, "chat_template", None):
+        return tokenizer
+    if final_format in ("chatml_messages", "chatml_conversations"):
+        return get_tokenizer_chat_template(tokenizer, model_name)
+    if final_format != "alpaca":
+        return tokenizer
+    try:
+        from unsloth.chat_templates import get_chat_template
+        tokenizer = get_chat_template(
+            tokenizer,
+            chat_template = "alpaca",
+            **_chat_template_kwargs(),
+        )
+        logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
+    except Exception as e:
+        logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")
+    return tokenizer
+
+
 def _set_chat_template(tokenizer, chat_template):
     """Set on processor and tokenizer; does not undo ``get_chat_template`` EOS remapping (Gemma 1/2)."""
     tokenizer.chat_template = chat_template
@@ -362,18 +382,7 @@ def apply_chat_template_to_dataset(
     # ALPACA FORMAT
     if final_format == "alpaca":
 
-        # Set the alpaca chat template if unset, so it is saved for inference.
-        if not (hasattr(tokenizer, 'chat_template') and tokenizer.chat_template):
-            try:
-                from unsloth.chat_templates import get_chat_template
-                tokenizer = get_chat_template(
-                    tokenizer,
-                    chat_template = "alpaca",
-                    **_chat_template_kwargs(),
-                )
-                logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
-            except Exception as e:
-                logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")
+        tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
 
         def _format_alpaca(examples):
             texts = []
