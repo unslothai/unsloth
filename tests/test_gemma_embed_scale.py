@@ -81,7 +81,9 @@ def _tiny_checkpoint(path, repo):
     return str(path)
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a GPU")
+@pytest.mark.skipif(
+    not has_real_cuda(), reason = "loads tiny Gemma checkpoints through FastLanguageModel on CUDA"
+)
 @pytest.mark.parametrize(
     "repo, module_name",
     [
