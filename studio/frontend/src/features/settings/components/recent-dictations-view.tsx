@@ -216,7 +216,7 @@ export function RecentDictationsView({
       </header>
 
       <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-semibold">
+        <h2 className="settings-heading text-sm font-semibold">
           {selected
             ? t("settings.voice.recents.detailTitle")
             : t("settings.voice.recents.sectionTitle")}

@@ -1893,6 +1893,11 @@ html[data-chat-font] .aui-root {
 		background-color: var(--card);
 	}
 
+	/* Settings section headings: a step quieter than the row labels. */
+	.settings-heading {
+		color: color-mix(in oklab, var(--foreground), var(--muted-foreground) 60%);
+	}
+
 	/* App-wide: every clickable control shows the hand cursor. Disabled ones
 	   (native :disabled, aria-disabled, Radix data-disabled) keep the default. */
 	button:not(:disabled):not([aria-disabled="true"]),

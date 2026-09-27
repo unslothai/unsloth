@@ -151,7 +151,7 @@ export function ApiKeysTab() {
       </AnimatePresence>
 
       <section className="flex min-w-0 flex-col">
-        <h2 className="mb-2 text-sm font-semibold text-foreground">
+        <h2 className="settings-heading mb-2 text-sm font-semibold">
           {t("settings.apiKeys.accessTokens")}
         </h2>
         {error ? (
