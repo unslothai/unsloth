@@ -17,6 +17,37 @@ export type ComposerKeyEvent = {
   keyCode?: number;
 };
 
+/** Whether a keydown is owned by IME and must not reach submit handling. */
+export function imeKeydownBlocksComposerSubmit(
+  event: ComposerKeyEvent,
+  wasInCompositionSession: boolean,
+): boolean {
+  const ime = event.isComposing === true || event.keyCode === 229;
+  if (!ime) return false;
+  // macOS built-in Pinyin (#12137) can mark idle Enter as composing even when
+  // no candidate session is active. Modifier chords stay IME-owned.
+  if (
+    event.key === "Enter" &&
+    !wasInCompositionSession &&
+    !event.metaKey &&
+    !event.ctrlKey
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** Normalize an idle-IME Enter for `composerSubmitIntent`. */
+export function composerKeyEventForImeSubmit(
+  event: ComposerKeyEvent,
+): ComposerKeyEvent {
+  return {
+    ...event,
+    isComposing: false,
+    keyCode: event.keyCode === 229 ? 13 : event.keyCode,
+  };
+}
+
 /** The rule in force for `draft`. */
 export function effectiveSendShortcut(
   shortcut: ComposerSendShortcut,

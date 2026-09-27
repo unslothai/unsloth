@@ -61,7 +61,9 @@ import {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  composerKeyEventForImeSubmit,
   effectiveSendShortcut,
+  imeKeydownBlocksComposerSubmit,
   followUpSubmitIntent,
   steeringInsertionIndex,
   cancelPreStreamRunForThreadIds,
@@ -5746,12 +5748,38 @@ function useImeComposerInputHandlers({
   // forever and block Send again.
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      const keyEvent = {
+        key: e.key,
+        metaKey: e.metaKey,
+        ctrlKey: e.ctrlKey,
+        shiftKey: e.shiftKey,
+        altKey: e.altKey,
+        repeat: e.repeat,
+        isComposing: e.nativeEvent.isComposing,
+        keyCode: e.keyCode,
+      };
+      const wasComposing = composingRef.current;
       if (e.nativeEvent.isComposing || e.keyCode === 229) {
         // Deliberately NOT user input: picking a candidate in a composition the
         // send left open is that composition continuing. One begun after the
         // send is marked by compositionstart instead.
         composingRef.current = true;
         refreshStuckTimer();
+        if (!imeKeydownBlocksComposerSubmit(keyEvent, wasComposing)) {
+          if (submitOnEnter && !skipEnterRef?.current) {
+            const intent = composerSubmitIntent(
+              composerKeyEventForImeSubmit(keyEvent),
+              sendShortcut,
+              e.currentTarget?.value,
+            );
+            if (intent) {
+              e.preventDefault();
+              setCompositionState(false);
+              if (onSubmitKey) onSubmitKey(e, intent);
+              else e.currentTarget.form?.requestSubmit();
+            }
+          }
+        }
         return;
       }
       if (justSentRef && isGuardRetiringKey(e)) {

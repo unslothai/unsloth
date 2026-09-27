@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "typescript";
 import { readSrc } from "./helpers/kit.ts";
-import { composerSubmitIntent } from "../src/features/chat/utils/composer-preferences.ts";
+import {
+  composerKeyEventForImeSubmit,
+  composerSubmitIntent,
+  imeKeydownBlocksComposerSubmit,
+} from "../src/features/chat/utils/composer-preferences.ts";
 
 const text = readSrc("components/assistant-ui/thread.tsx");
 const source = ts.createSourceFile(
@@ -63,6 +67,8 @@ test("the shipped main composer key handler protects IME and mention selection",
   const skipEnterRef = { current: false };
   const deps = {
     composerSubmitIntent,
+    composerKeyEventForImeSubmit,
+    imeKeydownBlocksComposerSubmit,
     sendShortcut: "mod-enter",
     submitOnEnter: true,
     skipEnterRef,
@@ -104,6 +110,44 @@ test("the shipped main composer key handler protects IME and mention selection",
   onKey(event);
   assert.equal(submits, 1);
   assert.ok(prevented > 0);
+});
+
+test("idle IME Enter sends when no composition session was active (#12137)", () => {
+  let submits = 0;
+  const composingRef = { current: false };
+  const skipEnterRef = { current: false };
+  const deps = {
+    composerSubmitIntent,
+    composerKeyEventForImeSubmit,
+    imeKeydownBlocksComposerSubmit,
+    sendShortcut: "enter",
+    submitOnEnter: true,
+    skipEnterRef,
+    composingRef,
+    justSentRef: undefined,
+    refreshStuckTimer: () => undefined,
+    setCompositionState: (value: boolean) => {
+      composingRef.current = value;
+    },
+    onSubmitKey: () => {
+      submits += 1;
+    },
+  };
+  const onKey = createCallback(keyCallback, deps) as unknown as (
+    event: Record<string, unknown>,
+  ) => void;
+  onKey({
+    key: "Enter",
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    keyCode: 229,
+    nativeEvent: { isComposing: true },
+    preventDefault: () => undefined,
+  });
+  assert.equal(submits, 1);
+  assert.equal(composingRef.current, false);
 });
 
 for (const active of ["runtime", "pre-stream", "queue", "idle"]) {

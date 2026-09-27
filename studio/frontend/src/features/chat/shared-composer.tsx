@@ -18,6 +18,8 @@ import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import {
   composerSubmitIntent,
   composerShortcutLabels,
+  composerKeyEventForImeSubmit,
+  imeKeydownBlocksComposerSubmit,
 } from "./utils/composer-preferences";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -2022,12 +2024,37 @@ export function SharedComposer({
   const busy = running || comparing;
 
   function onKeyDown(e: KeyboardEvent) {
+    const keyEvent = {
+      key: e.key,
+      metaKey: e.metaKey,
+      ctrlKey: e.ctrlKey,
+      shiftKey: e.shiftKey,
+      altKey: e.altKey,
+      repeat: e.repeat,
+      isComposing: e.nativeEvent.isComposing,
+      keyCode: e.keyCode,
+    };
+    const wasComposing = composingRef.current;
     // IME composition (JP/CN/KR): Enter commits the candidate, so do not hijack it (#5318). Re-pin
     // composingRef in case the stuck watchdog (#5546) cleared it during a long candidate-window pause,
     // and re-arm the watchdog on the same path, or the WSL+Chrome no-compositionend case pins it forever.
     if (e.nativeEvent.isComposing || e.keyCode === 229) {
       composingRef.current = true;
       refreshStuckImeTimer();
+      if (!imeKeydownBlocksComposerSubmit(keyEvent, wasComposing)) {
+        const intent = composerSubmitIntent(
+          composerKeyEventForImeSubmit(keyEvent),
+          sendShortcut,
+          text,
+        );
+        if (intent) {
+          e.preventDefault();
+          setCompositionState(false);
+          if (!busy && !isDictating) {
+            send();
+          }
+        }
+      }
       return;
     }
     // Non-IME key while composingRef is stuck; mirrors the fix in thread.tsx. On macOS, switching
