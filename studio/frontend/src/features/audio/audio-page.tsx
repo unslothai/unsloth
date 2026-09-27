@@ -16,6 +16,8 @@ import {
   StopIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { LibraryPageLink } from "@/components/media-page-link";
+import { translate } from "@/i18n";
 import {
   type ReactNode,
   useCallback,
@@ -110,6 +112,7 @@ import {
 } from "@/lib/gallery-flags";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
+import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
 import { cn } from "@/lib/utils";
 import { useIsMobileShell } from "@/hooks/use-mobile";
@@ -1726,6 +1729,7 @@ export function AudioPage({
     task?: string;
     audioType?: string;
     loadId?: string;
+    item?: string;
   };
   const handledRouteModel = useRef<string | null>(null);
   useEffect(() => {
@@ -1780,6 +1784,41 @@ export function AudioPage({
     navigateSelf,
     transitionMode,
   ]);
+
+  // A Library "View in Audio" link arrives as ?task=text-to-speech&item=: the task switches to Speak
+  // (and clears its part of the query), this selects the clip, paging back until it loads. A
+  // counter, not effect cleanup, retires a lookup: clearing the query must not cancel its own.
+  const routedItem = active ? routeSearch.item : undefined;
+  const routedLookup = useRef(0);
+  useEffect(() => {
+    if (!active) routedLookup.current += 1;
+  }, [active]);
+  useEffect(() => {
+    if (!routedItem) return;
+    const lookup = ++routedLookup.current;
+    void navigateSelf({
+      to: "/audio",
+      search: (prev) => ({ ...prev, item: undefined }),
+      replace: true,
+    });
+    void loadGalleryUntil({
+      has: () => galleryCache.clips.some((clip) => clip.id === routedItem),
+      count: () => galleryCache.clips.length,
+      hasMore: () => galleryCache.hasMore,
+      refresh: () => refreshGallery(undefined, galleryCache.clips.length),
+      loadMore,
+      busy: () => loadingMoreRef.current,
+      cancelled: () => lookup !== routedLookup.current,
+    }).then((found) => {
+      if (lookup !== routedLookup.current) return;
+      if (found) selectClip(routedItem);
+      else {
+        toast(translate("library.toast.clipNotFound"), {
+          description: translate("library.toast.notFoundDescription"),
+        });
+      }
+    });
+  }, [routedItem, navigateSelf, refreshGallery, loadMore, selectClip]);
 
 
   const ttsLoaded = Boolean(
@@ -2663,8 +2702,8 @@ export function AudioPage({
             />
           </div>
         </div>
-        <div className="grid h-full min-w-0 grid-cols-[1fr_auto] @[50rem]:grid-cols-[1fr_auto_1fr]">
-          <div className="pointer-events-auto col-start-2 justify-self-end pr-3 pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:justify-self-center @[50rem]:pr-0">
+        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
+          <div className="pointer-events-auto col-start-2 justify-self-end pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:justify-self-center">
             <PillTabs
               ariaLabel="Page mode"
               // Always "create": Train navigates away, so the pill never latches.
@@ -2699,6 +2738,15 @@ export function AudioPage({
                 },
               ]}
             />
+          </div>
+          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+            <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+              <LibraryPageLink
+                tab="audio"
+                labelClassName="hidden @[50rem]:inline"
+                arrowClassName="hidden @[50rem]:block"
+              />
+            </div>
           </div>
         </div>
       </div>

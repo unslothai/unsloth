@@ -730,6 +730,19 @@ export async function revealCachedModel(
   await parseJsonOrThrow<unknown>(response);
 }
 
+/** Reveal a training or exported fine-tune in the OS file manager. */
+export async function revealFineTunedModel(
+  modelPath: string,
+  source: "training" | "exported",
+): Promise<void> {
+  const response = await authFetch("/api/library/items/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: `model:${source}:${modelPath}` }),
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
 export async function deleteFineTunedModel(args: {
   modelPath: string;
   source: "training" | "exported";

@@ -21,6 +21,7 @@ import type {
 } from "../api/keyless-api-access";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
+import { DecisionApiSection } from "../components/decision-api-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
 import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
 import { LanAccessSection } from "../components/lan-access-section";
@@ -203,6 +204,8 @@ export function ApiKeysTab() {
         keylessTools={keyless.tools}
         keylessExposure={keyless.exposure}
       />
+
+      {isOwner ? <DecisionApiSection /> : null}
 
       <Dialog
         open={revokeTarget !== null}

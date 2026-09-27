@@ -1239,3 +1239,44 @@ def _drop_the_idle_reload_stash_between_tests():
         yield
     finally:
         _keepwarm._set_last_unloaded(None)
+
+
+# Run with the NVFP4 switch on; test_nvfp4_diffusion_flag and test_build_prequant_checkpoint must stay off.
+_NVFP4_ENABLED_TEST_MODULES = frozenset(
+    {
+        "test_dense_quant_rocm_gate_9396",
+        "test_diffusion_auto_policy",
+        "test_diffusion_backend",
+        "test_diffusion_inference_info",
+        "test_diffusion_lora",
+        "test_diffusion_more_families",
+        "test_diffusion_native_quant",
+        "test_diffusion_pipeline_prequant",
+        "test_diffusion_precision",
+        "test_diffusion_prequant",
+        "test_diffusion_quant_pad",
+        "test_diffusion_routes",
+        "test_diffusion_te_prequant",
+        "test_diffusion_transformer_quant",
+        "test_train_precision_scheme_contract",
+        "test_video_backend",
+        "test_video_families",
+        "test_video_h3_te_quant",
+        "test_video_prequant",
+        "test_video_routes",
+        "test_xformers_stub_diffusion_parity",
+    }
+)
+_NVFP4_ENABLED_TEST_PREFIX = "test_diffusion_nvfp4_"
+
+
+@pytest.fixture(autouse = True)
+def _nvfp4_diffusion_enabled_for_nvfp4_tests(request, monkeypatch):
+    """Switch NVFP4 on for the modules above; every other module sees the default (off)."""
+    module = getattr(request, "module", None)
+    name = getattr(module, "__name__", "").rsplit(".", 1)[-1]
+    if name in _NVFP4_ENABLED_TEST_MODULES or name.startswith(_NVFP4_ENABLED_TEST_PREFIX):
+        monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
+    yield
