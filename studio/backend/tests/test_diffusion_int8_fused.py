@@ -417,3 +417,220 @@ def test_uninstall_cancels_the_deferred_install(monkeypatch):
     assert finalized == []
     assert "int8_fused" not in mod.__dict__.get("_unsloth_first_call_hooks", {})
     assert not mod._forward_pre_hooks
+
+
+def _tiny_flux():
+    tf = pytest.importorskip("diffusers.models.transformers.transformer_flux")
+    torch.manual_seed(0)
+    return tf.FluxTransformer2DModel(
+        patch_size = 1,
+        in_channels = 4,
+        num_layers = 1,
+        num_single_layers = 3,
+        attention_head_dim = 16,
+        num_attention_heads = 2,
+        joint_attention_dim = 32,
+        pooled_projection_dim = 32,
+        axes_dims_rope = (4, 6, 6),
+    ).eval()
+
+
+def _flux_inputs():
+    g = torch.Generator().manual_seed(1)
+    return dict(
+        hidden_states = torch.randn(1, 16, 4, generator = g),
+        encoder_hidden_states = torch.randn(1, 8, 32, generator = g),
+        pooled_projections = torch.randn(1, 32, generator = g),
+        timestep = torch.tensor([1.0]),
+        img_ids = torch.zeros(16, 3),
+        txt_ids = torch.zeros(8, 3),
+        return_dict = False,
+    )
+
+
+def _fake_cuda_install(monkeypatch, model):
+    """Run the real _finalize swap on a CPU model: the fused forwards fall back to the class forward off CUDA, so the
+    outputs stay exact and only the forward plumbing is under test. Returns the list the swapped forward appends to."""
+    calls = []
+    real = fused._flux_single_forward
+
+    def spy(self, *args, **kwargs):
+        calls.append(self)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(fused, "_flux_single_forward", spy)
+    monkeypatch.setattr(fused, "resident_cuda_device", lambda m: torch.device("cuda", 0))
+    monkeypatch.setattr(fused, "_device_ok", lambda index: True)
+    monkeypatch.setattr(fused, "_op", lambda: None)
+    monkeypatch.setattr(fused, "_ff_eligible", lambda m: False)
+    monkeypatch.setattr(fused, "_prepare_swiglu", lambda m: False)
+    monkeypatch.setattr(fused, "_has_eligible", lambda t: True)
+    monkeypatch.setattr(
+        fused, "_flux_single_eligible", lambda m: type(m).__name__ == "FluxSingleTransformerBlock"
+    )
+    assert fused.install(model) == len(model.single_transformer_blocks)
+    return calls
+
+
+def _fbcache(model):
+    hooks = pytest.importorskip("diffusers.hooks")
+    model.enable_cache(hooks.FirstBlockCacheConfig(threshold = 1e9))
+
+
+def _two_steps(model):
+    outs = []
+    with torch.no_grad(), model.cache_context("cond"):
+        for _ in range(2):
+            outs.append(model(**_flux_inputs())[0])
+    return outs
+
+
+def test_fused_flux_single_keeps_fbcache_hooks_installed_before(monkeypatch):
+    # Studio engages the step cache before the speed layer: the swap must go under the FBCache block hooks, else
+    # the tail hook never records its residuals and the first reuse step reads None.
+    import copy
+
+    model = _tiny_flux()
+    ref_model = copy.deepcopy(model)
+    _fbcache(ref_model)
+    ref = _two_steps(ref_model)
+
+    _fbcache(model)
+    wrappers = [b.__dict__.get("forward") for b in model.single_transformer_blocks]
+    calls = _fake_cuda_install(monkeypatch, model)
+    out = _two_steps(model)
+    assert torch.equal(out[0], ref[0]) and torch.equal(out[1], ref[1])
+    assert [b.__dict__.get("forward") for b in model.single_transformer_blocks] == wrappers
+    # Step 1 computes every single block through the fused forward; step 2 reuses the cached tail and skips them.
+    assert len(calls) == len(model.single_transformer_blocks)
+
+    # Turning the cache off splices the hook's inner forward back: the fused forward must survive it.
+    model.disable_cache()
+    for b in model.single_transformer_blocks:
+        assert b.forward.__func__ is fused._flux_single_forward
+    fused.uninstall(model)
+    for b in model.single_transformer_blocks:
+        assert not fused.is_installed(b)
+        assert b.forward.__func__ is type(b).forward
+
+
+def test_fused_flux_single_then_fbcache_and_uninstall_keeps_hooks(monkeypatch):
+    import copy
+
+    model = _tiny_flux()
+    ref_model = copy.deepcopy(model)
+    _fbcache(ref_model)
+    ref = _two_steps(ref_model)
+
+    calls = _fake_cuda_install(monkeypatch, model)
+    _fbcache(model)
+    out = _two_steps(model)
+    assert torch.equal(out[0], ref[0]) and torch.equal(out[1], ref[1])
+    assert len(calls) == len(model.single_transformer_blocks)
+    # Uninstall under a live cache restores the stock inner forward and leaves the hook wrappers in place.
+    wrappers = [b.__dict__.get("forward") for b in model.single_transformer_blocks]
+    fused.uninstall(model)
+    assert [b.__dict__.get("forward") for b in model.single_transformer_blocks] == wrappers
+    calls.clear()
+    out = _two_steps(model)
+    assert torch.equal(out[0], ref[0]) and torch.equal(out[1], ref[1]) and not calls
+
+
+def test_fused_flux_single_rearms_a_compiled_cache_inner(monkeypatch):
+    # Deferred install: the speed layer already armed the FBCache hooks' inner forward with a compiled wrapper of the
+    # stock forward before the first-forward swap; the swap must re-arm it on the fused forward, not bypass it.
+    import copy
+
+    from core.inference import diffusion_cache
+
+    model = _tiny_flux()
+    ref_model = copy.deepcopy(model)
+    _fbcache(ref_model)
+    ref = _two_steps(ref_model)
+
+    compiled = []
+
+    def fake_compile(fn, **kwargs):
+        def wrapper(*args, **kw):
+            return fn(*args, **kw)
+
+        wrapper.inner = fn
+        compiled.append(fn)
+        return wrapper
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    _fbcache(model)
+    for b in model.single_transformer_blocks:
+        b._compiled_call_impl = b._call_impl  # stands in for compile_repeated_blocks
+    armed = diffusion_cache._compile_hooked_block_inners(model)
+    assert armed == len(model.single_transformer_blocks)
+    calls = _fake_cuda_install(monkeypatch, model)
+    for b in model.single_transformer_blocks:
+        inner = b._diffusers_hook.hooks["fbc_block_hook"].fn_ref.original_forward
+        assert inner.inner.__func__ is fused._flux_single_forward
+    out = _two_steps(model)
+    assert torch.equal(out[0], ref[0]) and torch.equal(out[1], ref[1])
+    assert len(calls) == len(model.single_transformer_blocks)
+
+    fused.uninstall(model)
+    for b in model.single_transformer_blocks:
+        inner = b._diffusers_hook.hooks["fbc_block_hook"].fn_ref.original_forward
+        assert inner.__func__ is type(b).forward
+
+
+@needs_cuda
+def test_int8_flux_under_fbcache_renders_through_the_fused_kernel():
+    # End to end on the real kernel: FBCache engaged first (Studio's order), then the swap; the reuse step must not
+    # fail and both steps must match the same int8 model without the swap.
+    import copy
+
+    tf = pytest.importorskip("diffusers.models.transformers.transformer_flux")
+    hooks = pytest.importorskip("diffusers.hooks")
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    torch.manual_seed(0)
+    model = tf.FluxTransformer2DModel(
+        patch_size = 1,
+        in_channels = 16,
+        num_layers = 1,
+        num_single_layers = 2,
+        attention_head_dim = 64,
+        num_attention_heads = 4,
+        joint_attention_dim = 64,
+        pooled_projection_dim = 64,
+        axes_dims_rope = (16, 24, 24),
+    ).cuda().to(torch.bfloat16).eval()
+    for p in model.parameters():
+        p.data.normal_(0, 0.05)
+    quantize_(
+        model,
+        Int8DynamicActivationInt8WeightConfig(),
+        filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and "single_transformer_blocks" in fqn
+        and "norm" not in fqn,
+    )
+    ref_model = copy.deepcopy(model)
+    g = torch.Generator(device = "cuda").manual_seed(1)
+    kwargs = dict(
+        hidden_states = torch.randn(1, 256, 16, device = "cuda", dtype = torch.bfloat16, generator = g),
+        encoder_hidden_states = torch.randn(1, 64, 64, device = "cuda", dtype = torch.bfloat16, generator = g),
+        pooled_projections = torch.randn(1, 64, device = "cuda", dtype = torch.bfloat16, generator = g),
+        timestep = torch.tensor([1.0], device = "cuda"),
+        img_ids = torch.zeros(256, 3, device = "cuda"),
+        txt_ids = torch.zeros(64, 3, device = "cuda"),
+        return_dict = False,
+    )
+
+    def run(m):
+        outs = []
+        with torch.no_grad(), m.cache_context("cond"):
+            for _ in range(2):
+                outs.append(m(**kwargs)[0])
+        return outs
+
+    ref_model.enable_cache(hooks.FirstBlockCacheConfig(threshold = 1e9))
+    ref = run(ref_model)
+    model.enable_cache(hooks.FirstBlockCacheConfig(threshold = 1e9))
+    assert fused.install(model) == 2
+    out = run(model)
+    assert torch.equal(out[0], ref[0]) and torch.equal(out[1], ref[1])
+    assert all(fused.is_installed(b) for b in model.single_transformer_blocks)

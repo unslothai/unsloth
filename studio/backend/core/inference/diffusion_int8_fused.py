@@ -966,6 +966,7 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
     if not _device_ok(dev.index if dev.index is not None else torch.cuda.current_device()):
         return 0
     count = 0
+    rearm = False
     with _LOCK:
         _OP_HANDLE = _op()
         for _name, module in transformer.named_modules():
@@ -981,15 +982,99 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
                 module._unsloth_i8_addcmul = _flux_single_class_is_arch_patched(module)
             else:
                 continue
-            module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
-            module.forward = types.MethodType(fn, module)
+            bound = types.MethodType(fn, module)
+            slot = _hooked_forward_slot(module)
+            if slot is not None:
+                # A step cache (FBCache / MagCache) engaged before the speed layer: its hook owns the instance forward,
+                # so the swap goes under it. Overwriting the wrapper would drop the skip logic and the tail residuals.
+                ref, attr = slot
+                stock_inner = _drop_compiled_inner(module)
+                module.__dict__[_MARK] = (
+                    stock_inner if stock_inner is not None else getattr(ref, attr)
+                )
+                setattr(ref, attr, bound)
+                rearm = rearm or stock_inner is not None
+            else:
+                module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
+                module.forward = bound
             count += 1
+    if rearm:
+        try:
+            from .diffusion_cache import _compile_hooked_block_inners
+            _compile_hooked_block_inners(transformer, logger)
+        except Exception:  # noqa: BLE001 - the fused inner still runs, eager
+            pass
     if logger is not None and count:
         logger.info(
             "diffusion.int8_fused: %d int8 MLP region(s) run the fused dequant/activation/quant kernel",
             count,
         )
     return count
+
+
+def _hooked_forward_slot(module: Any) -> Optional[tuple]:
+    """(fn_ref, attribute) holding the module's own forward under a live diffusers hook chain, else None.
+
+    ``HookRegistry.register_hook`` replaces the instance ``forward`` with a wrapper and keeps the callable it wrapped in
+    the innermost ``HookFunctionReference``: ``original_forward`` for a hook with ``new_forward`` (FBCache, MagCache),
+    else ``forward``. ``remove_hook`` splices that callable back into ``module.forward``."""
+    registry = getattr(module, "_diffusers_hook", None)
+    fn_refs = getattr(registry, "_fn_refs", None)
+    if not fn_refs or "forward" not in getattr(module, "__dict__", {}):
+        return None
+    ref = fn_refs[0]
+    if getattr(ref, "original_forward", None) is not None:
+        return ref, "original_forward"
+    if getattr(ref, "forward", None) is not None:
+        return ref, "forward"
+    return None
+
+
+def _is_fused_forward(fn: Any, module: Any) -> bool:
+    return getattr(fn, "__self__", None) is module and getattr(fn, "__func__", None) in (
+        _ff_forward,
+        _swiglu_forward,
+        _flux_single_forward,
+    )
+
+
+def _class_forward(module: Any) -> Any:
+    return types.MethodType(type(module).forward, module)
+
+
+def _cache_hooks(module: Any) -> list:
+    try:
+        from .diffusion_cache import _CACHE_HOOK_NAMES
+    except Exception:  # noqa: BLE001
+        return []
+    hooks = getattr(getattr(module, "_diffusers_hook", None), "hooks", None) or {}
+    return [hooks[name] for name in _CACHE_HOOK_NAMES if name in hooks]
+
+
+def _drop_compiled_inner(module: Any) -> Any:
+    """A cache hook whose inner forward the speed layer already armed with a compiled wrapper of the STOCK forward
+    (deferred install: the swap runs at the first forward, after the compile setup): drop that arming so the caller
+    re-arms it on the fused forward. Returns the stock inner it wrapped, else None."""
+    stock = None
+    for hook in _cache_hooks(module):
+        inner = getattr(hook, "_unsloth_orig_inner", None)
+        if inner is not None:
+            hook._unsloth_orig_inner = None
+            stock = inner
+    return stock
+
+
+def _disarm_fused_inner(module: Any, prev: Any) -> None:
+    """Uninstall under an armed cache hook: its compiled inner wraps the fused forward, point it back at stock."""
+    for hook in _cache_hooks(module):
+        inner = getattr(hook, "_unsloth_orig_inner", None)
+        if inner is not None and _is_fused_forward(inner, module):
+            stock = prev if prev is not _NO_PREV else _class_forward(module)
+            hook._unsloth_orig_inner = None
+            try:
+                hook.fn_ref.original_forward = stock
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def uninstall(transformer: Any = None) -> None:
@@ -1003,10 +1088,16 @@ def uninstall(transformer: Any = None) -> None:
             prev = module.__dict__.pop(_MARK, None)
             if prev is None:
                 continue
-            if prev is _NO_PREV:
-                module.__dict__.pop("forward", None)
-            else:
-                module.forward = prev
+            slot = _hooked_forward_slot(module)
+            if slot is not None and _is_fused_forward(getattr(*slot), module):
+                # Swapped under a hook, or a cache engaged after the swap: restore the hook's inner, keep its wrapper.
+                setattr(*slot, prev if prev is not _NO_PREV else _class_forward(module))
+            elif _is_fused_forward(module.__dict__.get("forward"), module):
+                if prev is _NO_PREV:
+                    module.__dict__.pop("forward", None)
+                else:
+                    module.forward = prev
+            _disarm_fused_inner(module, prev)
             module.__dict__.pop("_unsloth_i8_addcmul", None)
             module.__dict__.pop(_SWIGLU_ATTR, None)
 
