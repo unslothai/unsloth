@@ -881,9 +881,16 @@ def assert_row_never_greyed_while_unmeasured(page) -> None:
 
 
 def stand_in_shown(page, row_id: str) -> bool:
-    """Whether the element a pinned row yields to is in the document, for a row that has one."""
+    """Whether the element a pinned row yields to is on screen, for a row that has one.
+
+    Visible, not merely mounted: on the collapsed icon rail the Projects section stays in the DOM
+    hidden by CSS, and that is exactly when its row has to come back.
+    """
     selector = ROW_STAND_INS.get(row_id)
-    return selector is not None and page.locator(selector).count() > 0
+    if selector is None:
+        return False
+    stand_in = page.locator(selector)
+    return stand_in.count() > 0 and stand_in.first.is_visible()
 
 
 def drive_tabs(page) -> None:

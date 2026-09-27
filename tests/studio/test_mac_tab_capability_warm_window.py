@@ -72,9 +72,17 @@ def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 class FakeLocator:
-    def __init__(self, present: bool) -> None:
+    def __init__(
+        self,
+        present: bool,
+        visible: bool = True,
+    ) -> None:
         self._present = present
+        self._visible = present and visible
         self.clicked = False
+
+    def is_visible(self) -> bool:
+        return self._visible
 
     def count(self) -> int:
         return 1 if self._present else 0
@@ -104,10 +112,12 @@ class FakePage:
         *,
         row_missing: bool = False,
         sections: frozenset = frozenset(),
+        hidden_sections: frozenset = frozenset(),
     ) -> None:
         self.rows = rows
         self.row_missing = row_missing
         self.sections = sections
+        self.hidden_sections = hidden_sections
         self.url = f"{BASE}/chat"
         self.routed: list[str] = []
         self.unrouted: list[str] = []
@@ -165,7 +175,11 @@ class FakePage:
     def locator(self, selector: str):
         section = re.fullmatch(r'\[data-sidebar-section="(\w+)"\]', selector)
         if section:
-            return FakeLocator(section.group(1) in self.sections)
+            key = section.group(1)
+            return FakeLocator(
+                key in self.sections or key in self.hidden_sections,
+                visible = key not in self.hidden_sections,
+            )
         rid = selector.split("nav-row-")[1].rstrip('"]')
         return FakeLocator(self.rows.get(rid) is not None)
 
@@ -402,6 +416,20 @@ def test_a_missing_row_whose_section_is_also_missing_still_fails(tmp_path, monke
     _health(mod, [SETTLED])
     rows = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS if rid != "projects"}
     page = FakePage(rows)
+
+    mod.drive_tabs(page)
+
+    assert "projects" not in mod._rows_seen
+    assert any("nav row projects is pinned inline" in m for m in mod._failed), mod._failed
+
+
+def test_a_mounted_but_hidden_section_does_not_stand_in(tmp_path, monkeypatch):
+    """The icon rail keeps the Projects section mounted and hides it in CSS, and that is when the
+    Projects row must come back. A hidden section proves nothing about the row."""
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [SETTLED])
+    rows = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS if rid != "projects"}
+    page = FakePage(rows, hidden_sections = frozenset({"projects"}))
 
     mod.drive_tabs(page)
 
