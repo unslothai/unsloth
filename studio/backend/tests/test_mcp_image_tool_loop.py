@@ -42,8 +42,11 @@ def test_aliased_image_tool_rewrites_schema_and_still_requires_consent(monkeypat
     mapping = {"tool": raw_name, "field": "image", "encoding": "base64"}
     _, digest = validate_image_input_mappings([mapping], catalog, server_key = "server")
     server = dict(
-        id = "server", is_enabled = True, allow_image_attachments = True,
-        url = "https://example.test/mcp", image_input_schema_digest = digest,
+        id = "server",
+        is_enabled = True,
+        allow_image_attachments = True,
+        url = "https://example.test/mcp",
+        image_input_schema_digest = digest,
         image_input_mappings_json = json.dumps([mapping]),
     )
     monkeypatch.setattr(mcp_servers_db, "get_server_for_tool", lambda _: server)
@@ -66,13 +69,17 @@ def test_image_mapping_rejects_alias_collision_with_another_tool():
     raw_name = "inspect.picture"
     claimed = "inspect_picture_" + hashlib.sha256(raw_name.encode()).hexdigest()[:8]
     catalog = [
-        {"name": name, "inputSchema": {"type": "object", "properties": {"image": {"type": "string"}}}}
+        {
+            "name": name,
+            "inputSchema": {"type": "object", "properties": {"image": {"type": "string"}}},
+        }
         for name in (raw_name, claimed)
     ]
     with pytest.raises(McpImageDisclosureError, match = "not available to the model"):
         validate_image_input_mappings(
             [{"tool": raw_name, "field": "image", "encoding": "base64"}],
-            catalog, server_key = "server",
+            catalog,
+            server_key = "server",
         )
 
 
