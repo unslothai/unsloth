@@ -469,7 +469,9 @@ _LTX23_HASH_CHUNK = 16 << 20
 _LTX23_VERDICTS_FILE = "ltx23-source-verdicts.json"
 _LTX23_VERDICTS_VERSION = 1
 _LTX23_VERIFY_LOCK = threading.Lock()
-_LTX23_NO_HASH: contextvars.ContextVar[bool] = contextvars.ContextVar("ltx23_no_hash", default = False)
+_LTX23_NO_HASH: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "ltx23_no_hash", default = False
+)
 
 
 @contextlib.contextmanager
@@ -514,7 +516,11 @@ def _ltx23_write_verdict(real: str, record: dict[str, Any]) -> None:
     files[real] = record
     path = _ltx23_verdicts_path()
     tmp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
-    payload = {"version": _LTX23_VERDICTS_VERSION, "sha256": LTX23_PREQUANT_SOURCE_SHA256, "files": files}
+    payload = {
+        "version": _LTX23_VERDICTS_VERSION,
+        "sha256": LTX23_PREQUANT_SOURCE_SHA256,
+        "files": files,
+    }
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
         with tmp.open("w", encoding = "utf-8") as fh:
@@ -570,7 +576,9 @@ def ltx23_source_file_verified(checkpoint_path: Path | str) -> bool:
             stored = _ltx23_read_verdicts().get(str(real))
             if isinstance(stored, dict) and {k: stored.get(k) for k in key} == key:
                 return stored.get("verified") is True
-            logger.info("video.ltx23_prequant: hashing %s once to confirm it is the official file", real)
+            logger.info(
+                "video.ltx23_prequant: hashing %s once to confirm it is the official file", real
+            )
             verified = ltx23_source_sha256(real) == LTX23_PREQUANT_SOURCE_SHA256
             # Changed while being read: the digest describes neither version, so it is neither stored nor trusted.
             if _ltx23_stat_key(real.stat()) != key:

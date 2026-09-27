@@ -11594,7 +11594,9 @@ def _ltx23_synthetic_official(monkeypatch, path):
     data = 8 + len(header)
     offsets = [data + (len(blob) - data) * k // 4 for k in (1, 2, 3)] + [len(blob) - sample]
     monkeypatch.setattr(video_ltx2, "LTX23_PREQUANT_SOURCE_SIZE", len(blob))
-    monkeypatch.setattr(video_ltx2, "LTX23_PREQUANT_SOURCE_SHA256", hashlib.sha256(blob).hexdigest())
+    monkeypatch.setattr(
+        video_ltx2, "LTX23_PREQUANT_SOURCE_SHA256", hashlib.sha256(blob).hexdigest()
+    )
     return len(blob), offsets
 
 
@@ -11660,6 +11662,7 @@ def test_ltx23_local_verdict_is_hashed_once_and_invalidated_by_a_change(tmp_path
         assert not video_ltx2.ltx23_source_file_verified(path)
         assert video_ltx2.ltx23_source_file_verified(other)
     assert len(hashed) == 2
+
     # A read error is not official and is not remembered.
     def _unreadable(p):
         raise OSError("EIO")

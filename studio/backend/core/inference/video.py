@@ -388,7 +388,6 @@ def _ltx23_prequant_serves_on_card(
     ``hash_source=False`` (planning) never hashes a local source file; see ``ltx23_identity_without_hashing``."""
     if not hash_source:
         from .video_ltx2 import ltx23_identity_without_hashing
-
         with ltx23_identity_without_hashing():
             return _ltx23_prequant_serves_on_card(
                 fam,

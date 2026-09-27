@@ -202,7 +202,6 @@ async def video_download_plan(
             gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
         if fam is not None and not training:
             from core.inference.video_ltx2 import ltx23_identity_without_hashing
-
             def _plan_precision_check(*args, **kwargs):
                 # A plan never hashes the 46 GB LTX-2.3 file; /video/load does, once.
                 with ltx23_identity_without_hashing():
