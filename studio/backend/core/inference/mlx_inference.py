@@ -430,7 +430,6 @@ def compact_sliding_windows(entries):
                 compacted.extend((entry.keys, entry.values))
     if compacted:
         import mlx.core as mx
-
         mx.eval(compacted)
 
 
