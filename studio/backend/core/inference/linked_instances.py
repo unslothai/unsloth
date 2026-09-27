@@ -176,13 +176,21 @@ def _record_sse_line(entry_id: str, line: str) -> Optional[dict]:
     if not isinstance(event, dict):
         return None
     text = ""
+    thinking = False
     choices = event.get("choices")
     if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-        text = (choices[0].get("delta") or {}).get("content") or choices[0].get("text") or ""
+        delta = choices[0].get("delta") or {}
+        text = delta.get("content") or choices[0].get("text") or ""
+        thinking = bool(delta.get("reasoning_content") or delta.get("reasoning"))
     elif event.get("type") == "content_block_delta":
-        text = (event.get("delta") or {}).get("text") or ""
-    if isinstance(text, str):
+        delta = event.get("delta") or {}
+        text = delta.get("text") or ""
+        thinking = bool(delta.get("thinking"))
+    if isinstance(text, str) and text:
         api_monitor.append_reply(entry_id, text)
+    elif thinking:
+        # A reasoning model's first tokens are thinking; without this TTFT waits for the answer.
+        api_monitor.mark_first_token(entry_id)
     _record_usage(entry_id, event.get("usage") or (event.get("message") or {}).get("usage"))
     return event
 
