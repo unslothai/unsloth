@@ -2395,8 +2395,35 @@ def test_two_self_referential_assignments_in_one_quoted_string_do_not_hang(studi
         'echo "hb=$hb fl=$fl"',
         "echo 'A=$A B=$B'",
         'echo "x=$x y=$y"',
+        'echo "A=${A:-x} B=${B:-y}"',
+        'echo "A=${A^^} B=${B^^}"',
+        'echo "A=${A/x/y} B=${B/x/y}"',
     ):
         assert tools._references_studio_credential_here(ordinary, workdir) is False, ordinary
+
+
+@pytest.mark.parametrize("hops", [14, 15, 16, 32, 128])
+@pytest.mark.parametrize("read", ["cat $v{hops}/auth/auth.db", "cd $v{hops}; cat auth/auth.db"])
+def test_long_alias_chains_still_refuse_the_auth_directory(studio_home, hops, read):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    aliases = "; ".join(f"v{i}=$v{i - 1}" for i in range(1, hops + 1))
+    tail = aliases + "; " + read.format(hops = hops)
+    assert tools._references_studio_credential_here("v0=../..; " + tail, workdir)
+    assert not tools._references_studio_credential_here("v0=./project; " + tail, workdir)
+
+
+def test_an_unfinished_alias_scan_fails_closed(studio_home, monkeypatch):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    monkeypatch.setattr(tools, "_MAX_SHELL_ASSIGN_EXPAND_PASSES", 1)
+    command = "v0=../..; v1=$v0; v2=$v1; v3=$v2; cat $v3/auth/auth.db"
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here('echo "A=$A B=$B"', workdir)
+
+
+def test_growing_unresolved_assignments_fail_closed(studio_home):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = "a=" + "$b" * 64 + "; b=" + "$a" * 64 + "; echo $a"
+    assert tools._references_studio_credential_here(command, workdir)
 
 
 def test_every_home_variable_is_checked_before_the_expansion(studio_home):
