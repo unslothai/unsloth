@@ -16,16 +16,19 @@ import pytest
 torch = pytest.importorskip("torch")
 fp8 = pytest.importorskip("transformers.integrations.finegrained_fp8")
 if not hasattr(fp8, "Fp8Dequantize") or not hasattr(fp8.Fp8Dequantize, "_dequantize_one"):
-    pytest.skip("transformers without the Fp8Dequantize conversion op (4.x)", allow_module_level=True)
+    pytest.skip(
+        "transformers without the Fp8Dequantize conversion op (4.x)", allow_module_level = True
+    )
 if not hasattr(torch, "float8_e4m3fn"):
-    pytest.skip("torch without float8", allow_module_level=True)
+    pytest.skip("torch without float8", allow_module_level = True)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_import_fixes():
     spec = importlib.util.spec_from_file_location(
-        "_unsloth_import_fixes_fp8_ragged_ling3_under_test", REPO_ROOT / "unsloth" / "import_fixes.py"
+        "_unsloth_import_fixes_fp8_ragged_ling3_under_test",
+        REPO_ROOT / "unsloth" / "import_fixes.py",
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -45,16 +48,24 @@ def _fresh_op_cls():
     return type("Fp8DequantizeUnderTest", (fp8.Fp8Dequantize,), {})
 
 
-def _reference(w8, s, block=128):
+def _reference(
+    w8,
+    s,
+    block = 128,
+):
     rows, cols = w8.shape
     full = s.float().repeat_interleave(block, 0)[:rows].repeat_interleave(block, 1)[:, :cols]
     return (w8.float() * full).to(torch.bfloat16)
 
 
-def _case(rows, cols, seed=0):
+def _case(
+    rows,
+    cols,
+    seed = 0,
+):
     g = torch.Generator().manual_seed(seed)
-    w = (torch.randn(rows, cols, generator=g) * 2).to(torch.float8_e4m3fn)
-    s = torch.rand(-(-rows // 128), -(-cols // 128), generator=g) + 0.5
+    w = (torch.randn(rows, cols, generator = g) * 2).to(torch.float8_e4m3fn)
+    s = torch.rand(-(-rows // 128), -(-cols // 128), generator = g) + 0.5
     return w, s
 
 
@@ -63,10 +74,10 @@ def test_ceil_tiled_rows_dequantize_like_the_block_quantizer():
     cls = _fresh_op_cls()
     op = cls(_Quantizer())
     w, s = _case(576, 256)
-    with pytest.raises(ValueError, match="not divisible by scale grid"):
-        op._dequantize_one(w, s, output_dtype=torch.bfloat16)  # before the fix
+    with pytest.raises(ValueError, match = "not divisible by scale grid"):
+        op._dequantize_one(w, s, output_dtype = torch.bfloat16)  # before the fix
     ifx._pad_fp8_dequantize_ragged_blocks(cls)
-    out = op._dequantize_one(w, s, output_dtype=torch.bfloat16)
+    out = op._dequantize_one(w, s, output_dtype = torch.bfloat16)
     assert out.shape == (576, 256) and out.dtype == torch.bfloat16
     assert torch.equal(out, _reference(w, s))
 
@@ -76,22 +87,22 @@ def test_fp8_values_already_cast_to_the_model_dtype():
     ifx = _load_import_fixes()
     cls = _fresh_op_cls()
     op = cls(_Quantizer())
-    w, s = _case(576, 2560, seed=2)
+    w, s = _case(576, 2560, seed = 2)
     w16 = w.to(torch.bfloat16)
-    with pytest.raises(ValueError, match="not divisible by scale grid"):
-        op._dequantize_one(w16, s, output_dtype=torch.bfloat16)
+    with pytest.raises(ValueError, match = "not divisible by scale grid"):
+        op._dequantize_one(w16, s, output_dtype = torch.bfloat16)
     ifx._pad_fp8_dequantize_ragged_blocks(cls)
-    assert torch.equal(op._dequantize_one(w16, s, output_dtype=torch.bfloat16), _reference(w, s))
+    assert torch.equal(op._dequantize_one(w16, s, output_dtype = torch.bfloat16), _reference(w, s))
 
 
 def test_divisible_shapes_are_bit_identical_to_the_original():
     ifx = _load_import_fixes()
     cls = _fresh_op_cls()
     op = cls(_Quantizer())
-    w, s = _case(512, 384, seed=1)
-    before = op._dequantize_one(w, s, output_dtype=torch.bfloat16)
+    w, s = _case(512, 384, seed = 1)
+    before = op._dequantize_one(w, s, output_dtype = torch.bfloat16)
     ifx._pad_fp8_dequantize_ragged_blocks(cls)
-    after = op._dequantize_one(w, s, output_dtype=torch.bfloat16)
+    after = op._dequantize_one(w, s, output_dtype = torch.bfloat16)
     assert torch.equal(before, after)
     ifx._pad_fp8_dequantize_ragged_blocks(cls)  # idempotent
     assert getattr(cls._dequantize_one, "_unsloth_ragged_blocks", False)
@@ -104,5 +115,5 @@ def test_a_grid_that_is_not_a_ceil_tiling_still_raises():
     op = cls(_Quantizer())
     w, _ = _case(576, 256)
     bad = torch.ones(7, 2)  # no block edge gives ceil(576 / b) == 7
-    with pytest.raises(ValueError, match="not divisible by scale grid"):
-        op._dequantize_one(w, bad, output_dtype=torch.bfloat16)
+    with pytest.raises(ValueError, match = "not divisible by scale grid"):
+        op._dequantize_one(w, bad, output_dtype = torch.bfloat16)
