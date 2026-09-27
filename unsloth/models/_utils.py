@@ -1191,10 +1191,52 @@ def _attn_impl_label(impl):
     return impl
 
 
+def _undeclared_nested_configs(config):
+    """Nested configs outside `sub_configs`, which transformers' attn setter never reaches (Nemotron-Omni `llm_config`)."""
+    try:
+        from transformers import PretrainedConfig
+    except Exception:
+        return []
+    if not isinstance(config, PretrainedConfig):
+        return []
+    # Read from the instance: DPT / DETR / VitMatte on 4.57 define `sub_configs` as a property.
+    declared = getattr(config, "sub_configs", None)
+    declared = set(declared) if isinstance(declared, dict) else set()
+    return [
+        value
+        for name, value in vars(config).items()
+        if name not in declared and value is not config and isinstance(value, PretrainedConfig)
+    ]
+
+
+def _sync_baked_attn_impl(config, previous, impl):
+    # Remote __init__ bakes its flash default into nested configs; follow the top value over stale or flash copies.
+    if not isinstance(impl, str):
+        return
+    for nested in _undeclared_nested_configs(config):
+        current = getattr(nested, "_attn_implementation", None)
+        if (
+            current is not None
+            and current != impl
+            and (
+                current == previous
+                or (
+                    _is_flash_attention_requested(current)
+                    and not _is_flash_attention_requested(impl)
+                )
+            )
+        ):
+            _write_attn_impl(nested, impl)
+        if isinstance(getattr(nested, "use_flash_attn", None), bool):
+            nested.use_flash_attn = _is_flash_attention_requested(impl)
+
+
 def _write_attn_impl(config, impl):
+    previous = _config_get(config, "_attn_implementation", None)
     _config_set(config, "_attn_implementation", impl)
     if isinstance(config, dict) or hasattr(config, "attn_implementation"):
         _config_set(config, "attn_implementation", impl)
+    _sync_baked_attn_impl(config, previous, impl)
 
 
 def _set_attn_impl(config, impl):
