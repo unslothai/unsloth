@@ -7062,6 +7062,15 @@ def test_normalize_model_override_drops_unusable_fields_and_keeps_the_rest():
     assert entry == {"max_seq_length": 8192, "speculative_type": "mtp", "gpu_ids": [1, 0, 2]}
 
 
+@pytest.mark.parametrize("stored", ["invalid", "4", True, [4]])
+def test_a_non_numeric_legacy_mlx_width_is_dropped_not_raised(stored):
+    entry = settings.normalize_model_override({"max_seq_length": 8192, "mlx_kv_bits": stored})
+    assert entry == {"max_seq_length": 8192}
+    assert "mlx_kv_quant" not in settings.model_override_load_kwargs(
+        {"mlx_kv_bits": stored}, is_gguf = False
+    )
+
+
 def test_gpu_index_kind_is_stored_only_when_it_is_not_the_legacy_default():
     # Absent means physical, so writing it back would churn every row for no information.
     physical = settings.normalize_model_override({"gpu_ids": [0], "gpu_index_kind": "physical"})

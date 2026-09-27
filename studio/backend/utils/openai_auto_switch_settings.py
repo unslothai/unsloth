@@ -391,11 +391,13 @@ def _mlx_kv_quant_of(entry: dict[str, Any]) -> Optional[str]:
     holds. Only an entry omitting the field predates the setting."""
     if "mlx_kv_quant" in entry:
         return _clean_str(entry["mlx_kv_quant"], VALID_MLX_KV_QUANT)
-    if entry.get("mlx_kv_bits") is None:
+    bits = entry.get("mlx_kv_bits")
+    # Only a number: a hand-edited string or a bool must drop the width, not abort the whole override.
+    if isinstance(bits, bool) or not isinstance(bits, (int, float)):
         return None
     from core.inference.mlx_inference import encode_mlx_kv_quant
 
-    return _clean_str(encode_mlx_kv_quant(entry["mlx_kv_bits"]), VALID_MLX_KV_QUANT)
+    return _clean_str(encode_mlx_kv_quant(bits), VALID_MLX_KV_QUANT)
 
 
 def _clean_str(value: Any, allowed: frozenset[str]) -> Optional[str]:
