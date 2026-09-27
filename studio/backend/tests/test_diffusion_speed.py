@@ -746,15 +746,19 @@ def test_dit_vae_decode_compile_max_tier_autotunes(monkeypatch):
     ]
 
 
-def test_qwen_image_vae_decode_compiles_only_with_the_single_frame_path(monkeypatch):
+def test_qwen_image_vae_decode_stays_eager_with_the_single_frame_path(monkeypatch):
+    """Not worth a compile on max (see _VAE_COMPILE_DENY), and never keyed on the marker installed after the
+    compile-cache fingerprint: the loader and apply_speed_optims must give the same answer."""
     _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     AutoencoderKLQwenImage = type("AutoencoderKLQwenImage", (), {})
     pipe = types.SimpleNamespace(vae = AutoencoderKLQwenImage())
     assert ds_mod._vae_decode_compile_allowed(pipe, SPEED_MAX) is False
     pipe.vae._unsloth_single_frame = True
-    assert ds_mod._vae_decode_compile_allowed(pipe, SPEED_MAX) is True
+    assert ds_mod._vae_decode_compile_allowed(pipe, SPEED_MAX) is False
     assert ds_mod._vae_decode_compile_allowed(pipe, SPEED_DEFAULT) is False
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    assert ds_mod._vae_decode_compile_allowed(pipe, SPEED_DEFAULT) is True
 
 
 def test_unet_vae_decode_compile_ignores_the_env(monkeypatch):
