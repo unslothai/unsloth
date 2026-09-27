@@ -17,8 +17,7 @@ def cell_text(value):
     if value is None:
         return ""
     if isinstance(value, dict) and {"text", "answer_start"} <= value.keys():
-        # A SQuAD-style `answers` cell arrives as {"text": [...], "answer_start": [...]}.
-        # Train the answer, as AI Assist's mapping already does, not the dict's repr.
+        # SQuAD-style `answers` span: train the first answer, as _extract_column_value does.
         answer = value["text"]
         if isinstance(answer, list):
             answer = answer[0] if answer else None

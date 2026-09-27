@@ -57,7 +57,6 @@ def test_cell_text_reads_the_text_of_an_answer_dict():
     assert cell_text({"text": ["first", "second"], "answer_start": [1, 9]}) == "first"
     # squad_v2 marks an unanswerable question with no answer.
     assert cell_text({"text": [], "answer_start": []}) == ""
-    # Any other dict is not an answer span and keeps its old rendering.
     assert cell_text({"label": 1}) == "{'label': 1}"
     assert cell_text({"label": ["A", "B"], "text": ["x", "y"]}) == (
         "{'label': ['A', 'B'], 'text': ['x', 'y']}"
