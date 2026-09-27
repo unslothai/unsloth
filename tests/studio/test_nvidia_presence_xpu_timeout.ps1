@@ -7,7 +7,8 @@ $ErrorActionPreference='Stop'
 $repo=(Resolve-Path $RepoRoot).Path
 $path=Join-Path $repo 'studio/setup.ps1'
 $text=[IO.File]::ReadAllText($path)
-$ast=[System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$null,[ref]$null)
+# Parse the text that is sliced below: Windows PowerShell 5.1 reads a BOM-less file as ANSI, which shifts offsets.
+$ast=[System.Management.Automation.Language.Parser]::ParseInput($text,$path,[ref]$null,[ref]$null)
 $functions=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true))
 foreach($f in $functions){. ([scriptblock]::Create($f.Extent.Text))}
 $ifs=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.IfStatementAst]},$true))

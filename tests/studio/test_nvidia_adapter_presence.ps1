@@ -480,7 +480,8 @@ Check "and the registry was never consulted" ($script:RegistryConsulted -eq $fal
 $script:RegKeys = @(); $script:FakeScanOk = $null
 
 # Runs the real Get-TorchIndexUrl: promoting without a version used to still yield a CPU index.
-$idxAst = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [ref]$null, [ref]$null)
+# ParseInput on the UTF-8 text: 5.1's ParseFile reads a BOM-less file as ANSI, so its offsets would not index it.
+$idxAst = [System.Management.Automation.Language.Parser]::ParseInput($installText, $installPs1, [ref]$null, [ref]$null)
 foreach ($n in @("Get-TorchIndexUrl", "Trim-IndexPathSlashes", "Get-CudaFamilyCappedForPreTuring")) {
     $f = @($idxAst.FindAll({ param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true))
     if ($f.Count -ge 1) { Invoke-Expression $f[0].Extent.Text }
@@ -526,7 +527,7 @@ foreach ($case in @(
 
 # install_llama_prebuilt.py never sees the bus, so llama.cpp sites read $HasNvidiaDriverEvidence.
 $setupAstErrors = $null
-$setupAst = [System.Management.Automation.Language.Parser]::ParseFile($setupPs1, [ref]$null, [ref]$setupAstErrors)
+$setupAst = [System.Management.Automation.Language.Parser]::ParseInput($setupText, $setupPs1, [ref]$null, [ref]$setupAstErrors)
 Check "setup.ps1 parses" (-not $setupAstErrors)
 $llamaStart = $setupText.IndexOf('$_arm64CudaOptOut = ')
 $keepFn = $setupAst.FindAll({ param($n)
