@@ -11450,7 +11450,12 @@ def test_ltx23_prequant_source_resolves_the_hosted_fp8_only():
     assert resolve_prequant_source(fam, "fp8", base_repo = "Lightricks/LTX-2") is None
 
 
-def _load_ltx23_single_file_fp8(tmp_path, monkeypatch, seeded, memory_mode = None):
+def _load_ltx23_single_file_fp8(
+    tmp_path,
+    monkeypatch,
+    seeded,
+    memory_mode = None,
+):
     from core.inference import video as video_mod, video_ltx2
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
@@ -11605,7 +11610,11 @@ def test_download_plan_stages_the_hosted_fp8_dit_for_the_ltx23_distilled_single_
     supported = [True]
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: supported[0])
 
-    def _plan(filename, quant, memory_mode = None):
+    def _plan(
+        filename,
+        quant,
+        memory_mode = None,
+    ):
         return VideoBackend().download_plan(
             "Lightricks/LTX-2.3",
             gguf_filename = filename,
@@ -11694,7 +11703,11 @@ def test_the_ltx23_fp8_load_prefetches_the_hosted_dit_under_its_cancel_event(tmp
     )
     assert fetched == []
     # Precision fallback lets these loads through on bf16, which never opens the hosted DiT: no 19 GB prefetch.
-    for token, memory_mode, card_ok in ((9, "balanced", True), (10, "low_vram", True), (11, None, False)):
+    for token, memory_mode, card_ok in (
+        (9, "balanced", True),
+        (10, "low_vram", True),
+        (11, None, False),
+    ):
         supported[0] = card_ok
         backend._load_token = token
         backend._run_load(
