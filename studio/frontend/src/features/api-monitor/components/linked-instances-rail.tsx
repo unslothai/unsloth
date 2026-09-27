@@ -123,7 +123,38 @@ function InstanceCard({
                   indicatorClassName={cn(pct > 90 && "bg-amber-500")}
                 />
               ) : null}
-              {gpus.length > 1 ? (
+              {gpus.length > 1 && gpus.length < 4 ? (
+                <div className="mt-1 flex flex-col gap-1.5">
+                  {gpus.map((gpu, i) => {
+                    const cell = vramPercent(gpu);
+                    return (
+                      // biome-ignore lint/suspicious/noArrayIndexKey: identical cards share a name
+                      <div key={i} className="flex flex-col gap-0.5">
+                        <div className="flex items-baseline justify-between gap-x-2 text-ui-10 text-muted-foreground">
+                          <span className="min-w-0 break-words">{gpu.name}</span>
+                          {gpu.vram_total_gb != null ? (
+                            <span className="shrink-0 tabular-nums">
+                              {gpu.vram_used_gb != null
+                                ? `${gpu.vram_used_gb.toFixed(1)} / `
+                                : ""}
+                              {formatGb(gpu.vram_total_gb)}
+                            </span>
+                          ) : null}
+                        </div>
+                        <span className="h-[3px] overflow-hidden rounded-full bg-foreground/10">
+                          <span
+                            className={cn(
+                              "block h-full bg-primary/70",
+                              cell != null && cell > 90 && "bg-amber-500",
+                            )}
+                            style={{ width: `${cell ?? 0}%` }}
+                          />
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : gpus.length > 1 ? (
                 <>
                   <div className="flex flex-col text-ui-10 text-muted-foreground">
                     {gpuGroups(gpus).map(({ name, count }) => (
