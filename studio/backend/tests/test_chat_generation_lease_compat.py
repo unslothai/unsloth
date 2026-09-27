@@ -704,8 +704,13 @@ def test_the_admission_marker_matches_the_route_that_emits_it():
 
     assert inference_route._OPENAI_ADMISSION_SSE_WAIT.startswith(runs_mod._ADMISSION_WAIT_MARKER)
     assert inference_route._OPENAI_ADMISSION_SSE_DONE.startswith(runs_mod._ADMISSION_DONE_MARKER)
-    # And neither may match the stall keep-alive, which is the opposite signal.
-    for marker in (runs_mod._ADMISSION_WAIT_MARKER, runs_mod._ADMISSION_DONE_MARKER):
+    assert inference_route._OPENAI_TOOL_HEARTBEAT_SSE.startswith(runs_mod._TOOL_HEARTBEAT_MARKER)
+    # And none may match the stall keep-alive, which is the opposite signal.
+    for marker in (
+        runs_mod._ADMISSION_WAIT_MARKER,
+        runs_mod._ADMISSION_DONE_MARKER,
+        runs_mod._TOOL_HEARTBEAT_MARKER,
+    ):
         assert not inference_route._OPENAI_PASSTHROUGH_SSE_KEEPALIVE.startswith(marker)
     # The two must stay distinct, or the done branch would swallow every wait.
     assert not inference_route._OPENAI_ADMISSION_SSE_WAIT.startswith(

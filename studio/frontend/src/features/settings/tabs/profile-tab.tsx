@@ -11,7 +11,7 @@ export function ProfileTab() {
   const t = useT();
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1
           data-settings-label={t("settings.profile.title")}
