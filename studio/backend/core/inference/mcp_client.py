@@ -1616,7 +1616,6 @@ def _block_image(block: Any) -> Optional[tuple[str, str]]:
     mime = _image_mime(mime)
     if data and mime:
         from core.inference.mcp_images import normalize_mcp_image_b64
-
         normalized = normalize_mcp_image_b64(str(data))
         if normalized:
             return normalized, mime
