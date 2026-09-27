@@ -719,7 +719,12 @@ function Get-UnrevertedLabel([string] $dir) {
         ForEach-Object { $_.FullName })
     $self = Get-PendingEntry $dir
     foreach ($entry in @(Get-ChildItem -LiteralPath (Get-PendingRegistry) -File -Filter '*.txt' -ErrorAction SilentlyContinue)) {
-        if ($entry.FullName -eq $self) { continue }
+        if ($entry.FullName -eq $self) {
+            # Retry only against the original baseline. A missing WorkDir must
+            # not turn this label's installed policy into a fresh baseline.
+            if (-not (Test-Path -LiteralPath (Join-Path $dir 'baseline.json'))) { return $dir }
+            continue
+        }
         # A pending machine-wide claim remains authoritative when its WorkDir is
         # disconnected, renamed or unreadable. Do not snapshot its changes as baseline.
         $recorded = Get-Content -LiteralPath $entry.FullName -Raw -ErrorAction Stop

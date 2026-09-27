@@ -2413,3 +2413,43 @@ function Test-Quantize { QUANTIZE }
     assert (
         "No binary in the shipped runtime would be refused" not in ran.stdout
     ) == refuse, ran.stdout
+
+
+def test_pending_self_cannot_recapture_a_missing_baseline(tmp_path):
+    """A label whose evidence moved re-captured a baseline with its own probe policy as pre-existing, so revert left it installed."""
+    _drive_stages(
+        tmp_path,
+        r"""
+function Get-SacState { [pscustomobject]@{ Policies = @(if (Test-Path -LiteralPath $NOISG_DEST) { [pscustomobject]@{ PolicyID = '{aaaa}'; FriendlyName = 'AuditNoISG' } }) } }
+function Test-AuditPolicyEvaluating { $true }
+$WorkDir = Join-Path $Work 'evidence'; $Label = 'A'
+Invoke-Prepare
+$pending = Get-PendingEntry (Join-Path $WorkDir $Label)
+$claimBefore = Get-Content -LiteralPath $pending -Raw
+# Move the evidence tree, as with renamed/disconnected storage. The machine-wide claim survives.
+$relocated = Join-Path $Work 'relocated'
+Move-Item -LiteralPath $WorkDir -Destination $relocated
+$refused = $false
+try { Invoke-Prepare } catch {
+  if ("$_" -notlike '*has not been reverted*' -and "$_" -notlike '*baseline*') { throw }
+  $refused = $true
+}
+if (-not $refused) {
+  $replacement = Get-Content -LiteralPath (Join-Path $WorkDir 'A/baseline.json') -Raw | ConvertFrom-Json
+  Invoke-Revert
+  $after = Get-Content -LiteralPath (Join-Path $WorkDir 'A/baseline.json') -Raw | ConvertFrom-Json
+  Write-Host "BUG: recaptured_preexisting=$($replacement.AuditPolicyPreexisting) policy_left=$(Test-Path -LiteralPath $NOISG_DEST) revert_completed=$([bool]$after.RevertCompletedAt) pending_left=$(Test-Path -LiteralPath $pending)"
+  throw 'pending self claim was ignored; revert completed with the probe policy still installed'
+}
+if ((Get-Content -LiteralPath $pending -Raw) -cne $claimBefore) { throw 'pending claim changed during refusal' }
+if (Test-Path -LiteralPath (Join-Path $WorkDir 'A/baseline.json')) { throw 'refusal wrote a replacement baseline' }
+# Restore the ORIGINAL evidence and prove the guard still permits retry and revert.
+Remove-Item -LiteralPath $WorkDir -Recurse -Force
+Move-Item -LiteralPath $relocated -Destination $WorkDir
+Invoke-Prepare
+Invoke-Revert
+if (Test-Path -LiteralPath $NOISG_DEST) { throw 'original revert left policy behind' }
+if (Test-Path -LiteralPath $pending) { throw 'original revert left pending claim' }
+Write-Host 'pending-self recovery passed'
+""",
+    )
