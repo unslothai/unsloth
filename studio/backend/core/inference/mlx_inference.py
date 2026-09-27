@@ -2675,7 +2675,10 @@ class MLXInferenceBackend:
             if cap is not None:
                 max_new_tokens = min(max_new_tokens, cap)
         if prompt_tokens is not None:
-            self._check_context_budget(prompt, max_new_tokens, prompt_tokens)
+            # Refuse only a prompt that leaves no room; a longer ask is cut at the budget as
+            # llama-server does, since callers such as Deep Research size it from an estimate.
+            self._check_context_budget(prompt, 1, prompt_tokens)
+            max_new_tokens = max(1, min(int(max_new_tokens), int(budget) - len(prompt_tokens)))
         return max_new_tokens
 
     def _kv_quant_generate_kwargs(self):

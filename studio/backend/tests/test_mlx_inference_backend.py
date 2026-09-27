@@ -4751,8 +4751,11 @@ def test_a_max_tokens_at_the_whole_window_is_the_chat_saying_no_cap(monkeypatch)
     assert backend._generation_limit(prompt, 1024) == 1024 - 4
     assert backend._generation_limit(prompt, 1024, images = [object()]) == 1024 - 524
     assert backend._generation_limit(prompt, 16) == 16
+    # An ask past the budget is cut to what fits, not refused while the prompt fits.
+    assert backend._generation_limit(prompt, 2048) == 1024 - 4
+    assert backend._generation_limit(prompt, 500, range(700)) == 1024 - 700
     with pytest.raises(context_refusal.ContextBudgetExceeded):
-        backend._generation_limit(prompt, 2048)
+        backend._generation_limit(prompt, 1, range(1024))
 
 
 def test_the_bound_is_checked_on_a_real_cache_at_the_size_that_was_asked_for():
