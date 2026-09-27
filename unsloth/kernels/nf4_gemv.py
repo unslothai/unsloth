@@ -15,6 +15,7 @@ import triton
 import triton.language as tl
 
 from .nf4 import _HAS_MUL_RN
+from .triton_launch import launch
 
 __all__ = [
     "gemv_nf4",
@@ -203,11 +204,11 @@ def _gemv_config(N: int, K: int, blocksize: int, major: int, words_ok: bool, for
     if use_words:
         block_k = max(blocksize, min(2048, triton.next_power_of_2(K)))
         block_n, num_warps = 1, 1
-        return True, (triton.cdiv(N, block_n),), block_n, block_k, num_warps
+        return True, (-(-N // block_n),), block_n, block_k, num_warps
     if major == 10 and force is None:
         block_k = max(blocksize, min(2048, triton.next_power_of_2(K)))
         block_n, num_warps = 4, 4
-        return False, (triton.cdiv(N, block_n),), block_n, block_k, num_warps
+        return False, (-(-N // block_n),), block_n, block_k, num_warps
     # Swept on a B200 over the shapes above: BLOCK_K=1024 won every shape; few rows per program
     # for small N, 4 rows and 2 warps for tall N.
     block_k = max(blocksize, min(1024, triton.next_power_of_2(K)))
@@ -217,7 +218,7 @@ def _gemv_config(N: int, K: int, blocksize: int, major: int, words_ok: bool, for
         block_n, num_warps = 8, 4
     else:
         block_n, num_warps = 4, 2
-    return False, (triton.cdiv(N, block_n),), block_n, block_k, num_warps
+    return False, (-(-N // block_n),), block_n, block_k, num_warps
 
 
 @functools.lru_cache(maxsize = None)
@@ -231,7 +232,7 @@ def _launch(kernels, X, W, absmax, code2, absmax2, offset, code, out, N, K, bloc
         N, K, blocksize, _major(X.device.index), _word_aligned(W), _FORCE_KERNEL
     )
     kernel = kernels[1] if use_words else kernels[0]
-    kernel[grid](
+    args = (
         X,
         W,
         absmax,
@@ -242,14 +243,19 @@ def _launch(kernels, X, W, absmax, code2, absmax2, offset, code, out, N, K, bloc
         out,
         N,
         K,
+    )
+    constexprs = dict(
         BLOCKSIZE = blocksize,
         BLOCKSIZE2 = blocksize2 if nested else 1,
         NESTED = nested,
         USE_MUL_RN = _HAS_MUL_RN,
         BLOCK_N = block_n,
         BLOCK_K = block_k,
-        num_warps = num_warps,
     )
+    if kernel is _gemv_nf4_kernel or kernel is _gemv_nf4_words_kernel:
+        launch(kernel, grid, args, 8, constexprs, X.device.index, num_warps = num_warps)
+    else:
+        kernel[grid](*args, **constexprs, num_warps = num_warps)
     return out
 
 

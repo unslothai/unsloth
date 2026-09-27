@@ -16,6 +16,8 @@ import triton
 import triton.language as tl
 from unsloth_zoo.utils import Version
 
+from .triton_launch import launch
+
 __all__ = [
     "dequantize_nf4",
 ]
@@ -191,12 +193,13 @@ def _launch(kernel, W, absmax, code2, absmax2, offset, code, blocksize, blocksiz
     n_elements = out.numel()
     n_bytes = (n_elements + 1) // 2
     half = blocksize // 2
-    n_blocks = triton.cdiv(n_elements, blocksize)
+    # Integer ceil division: triton.cdiv is a JIT function on recent Triton and costs microseconds.
+    n_blocks = -(-n_elements // blocksize)
     rows, num_warps, words, evict, lut_mode = _config_for(n_bytes, half, W.device)
     # int32 loads need every row to start on a word and no partial trailing word.
     words = words and half % 4 == 0 and n_bytes % 4 == 0 and (W.storage_offset() * W.element_size()) % 4 == 0
     # The nested-only pointers are never dereferenced for a flat state; absmax fills the slots.
-    kernel[(triton.cdiv(n_blocks, rows),)](
+    args = (
         W,
         absmax,
         code2 if nested else absmax,
@@ -207,6 +210,8 @@ def _launch(kernel, W, absmax, code2, absmax2, offset, code, blocksize, blocksiz
         n_elements,
         n_bytes,
         n_blocks,
+    )
+    constexprs = dict(
         HALF = half,
         BLOCKSIZE2_SHIFT = (blocksize2.bit_length() - 1) if nested else 0,
         NESTED = nested,
@@ -215,9 +220,13 @@ def _launch(kernel, W, absmax, code2, absmax2, offset, code, blocksize, blocksiz
         WORDS = words,
         EVICT = "evict_first" if evict else "",
         LUT_MODE = lut_mode,
-        num_warps = num_warps,
-        **({} if fp_fusion else {"enable_fp_fusion": False}),
     )
+    grid = (-(-n_blocks // rows),)
+    options = {"num_warps": num_warps} if fp_fusion else {"num_warps": num_warps, "enable_fp_fusion": False}
+    if kernel is _nf4_dequant_kernel:
+        launch(kernel, grid, args, 7, constexprs, W.device.index, **options)
+    else:
+        kernel[grid](*args, **constexprs, **options)
     return out
 
 
