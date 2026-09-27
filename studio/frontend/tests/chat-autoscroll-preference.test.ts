@@ -11,9 +11,8 @@ import test from "node:test";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { useChatPreferencesStore } = await import(
-  "../src/features/chat/stores/chat-preferences-store.ts"
-);
+const { useChatPreferencesStore } =
+  await import("../src/features/chat/stores/chat-preferences-store.ts");
 
 const HOOK = readSrc("components/assistant-ui/use-intent-aware-autoscroll.tsx");
 const STORE = readSrc("features/chat/stores/chat-preferences-store.ts");
@@ -67,12 +66,32 @@ test("only a run started on screen holds still, not one already streaming when o
   );
 });
 
-test("streamed content does not extend the follow window while holding still", () => {
+test("a held run follows until its turn reaches the top, then parks", () => {
+  // A fixed pin window detached before a slow first token, leaving the reply out of sight.
   const onLayoutChange = body("const onLayoutChange = (): void => {");
-  assert.match(onLayoutChange, /if \(!holdStill\(\)\) \{\s*extendFollow\(\);/);
-  // Detaching once the send-time pin lapses is what stops the run's final layout change
-  // re-opening the window and yanking the reader to the bottom as the response ends.
-  assert.match(onLayoutChange, /detach\(\);/);
+  assert.match(onLayoutChange, /if \(!parkIfHeld\(\)\) \{\s*extendFollow\(\);/);
+  const park = body("const parkIfHeld = (): boolean => {");
+  assert.match(park, /!holdStill\(\)/);
+  assert.match(park, /holdCeiling\(\)/);
+  // Detaching stops the run's last layout change re-pinning to the bottom.
+  assert.match(
+    park,
+    /el\.scrollTo\(\{ top: ceiling, behavior: "instant" \}\);\s*detach\(\);/,
+  );
+  // Same row attribute progressive-messages.tsx relies on.
+  const ceiling = body("const holdCeiling = (): number | null => {");
+  assert.match(ceiling, /querySelectorAll<HTMLElement>\("\[data-role\]"\)/);
+  const tick = body("const tick = (): void => {");
+  assert.ok(tick.indexOf("parkIfHeld();") < tick.indexOf("const following"));
+});
+
+test("the scroll-to-bottom button ends the hold for the rest of the run", () => {
+  const at = HOOK.indexOf("const scrollToBottom = useCallback<ScrollToBottom>");
+  assert.notEqual(at, -1);
+  assert.match(
+    HOOK.slice(at, HOOK.indexOf("}, []);", at)),
+    /runStartedHereRef\.current = false;/,
+  );
 });
 
 test("reaching the bottom by hand does not re-attach while holding still", () => {

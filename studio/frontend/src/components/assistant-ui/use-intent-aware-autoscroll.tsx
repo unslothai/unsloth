@@ -35,8 +35,8 @@ import {
  *   - Detect user intent (wheel up, swipe up, scroll direction) to detach.
  *     While detached, resize/mutation don't extend the deadline. Re-attach
  *     when the user scrolls down within 24px of the bottom.
- *   - "Auto-scroll while generating" off: a run started here gets only the
- *     send pin, then detaches so the response grows below the reader.
+ *   - "Auto-scroll while generating" off: a run started here follows until
+ *     its user message reaches the top, then detaches.
  */
 
 // 2px, not 1: HiDPI subpixel rounding can leave a fractional gap that a
@@ -183,7 +183,9 @@ export function useIntentAwareAutoScroll(): {
     }
   }, []);
 
+  // The scroll-to-bottom button. Ends a held run's hold so the rest is followed.
   const scrollToBottom = useCallback<ScrollToBottom>((behavior) => {
+    runStartedHereRef.current = false;
     scrollImplRef.current(behavior);
   }, []);
 
@@ -275,6 +277,33 @@ export function useIntentAwareAutoScroll(): {
         !useChatPreferencesStore.getState().autoScrollWhileGenerating &&
         aui.thread().getState().isRunning;
 
+      // scrollTop putting the new user message at the top, or the reply at mid-view when the
+      // message is taller. Null until the reply mounts.
+      const holdCeiling = (): number | null => {
+        const rows = el.querySelectorAll<HTMLElement>("[data-role]");
+        let reply: HTMLElement | null = null;
+        let user: HTMLElement | null = null;
+        for (let i = rows.length - 1; i >= 0 && !user; i--) {
+          if (rows[i].dataset.role === "user") {
+            user = rows[i];
+          } else if (rows[i].dataset.role === "assistant") {
+            reply = rows[i];
+          }
+        }
+        if (!user || !reply) {
+          return null;
+        }
+        const origin =
+          el.getBoundingClientRect().top -
+          el.scrollTop +
+          (Number.parseFloat(getComputedStyle(el).paddingTop) || 0);
+        return Math.max(
+          0,
+          user.getBoundingClientRect().top - origin,
+          reply.getBoundingClientRect().top - origin - el.clientHeight / 2,
+        );
+      };
+
       const clearSettleCheck = (): void => {
         if (settleTimer !== null) {
           clearTimeout(settleTimer);
@@ -294,6 +323,20 @@ export function useIntentAwareAutoScroll(): {
         // can't cap their scrollTop.
         releaseStabilizer();
         maxContentHeight = el.scrollHeight;
+      };
+
+      // Held run: park at the ceiling once reached, then stop following.
+      const parkIfHeld = (): boolean => {
+        if (userDetachedRef.current || !holdStill()) {
+          return false;
+        }
+        const ceiling = holdCeiling();
+        if (ceiling === null || el.scrollHeight - el.clientHeight < ceiling) {
+          return false;
+        }
+        el.scrollTo({ top: ceiling, behavior: "instant" });
+        detach();
+        return true;
       };
 
       const requestTick = (): void => {
@@ -331,6 +374,8 @@ export function useIntentAwareAutoScroll(): {
         rafId = null;
         const settling = settleCheckDue;
         settleCheckDue = false;
+        // Park first so a frame without an observer record can't overshoot.
+        parkIfHeld();
         const following =
           !userDetachedRef.current &&
           (settling || performance.now() < followUntilRef.current);
@@ -549,14 +594,8 @@ export function useIntentAwareAutoScroll(): {
       // pinning so we scroll to the post-adjustment scrollHeight.
       const onLayoutChange = (): void => {
         layoutChanged = true;
-        if (!holdStill()) {
+        if (!parkIfHeld()) {
           extendFollow();
-        } else if (
-          !userDetachedRef.current &&
-          performance.now() >= followUntilRef.current
-        ) {
-          // Send pin settled. Detach, or the run's last layout change would re-pin.
-          detach();
         }
         const scrollHeight = stabilize();
         pinIfFollowing(scrollHeight);
