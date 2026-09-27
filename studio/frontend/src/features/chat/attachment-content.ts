@@ -949,6 +949,66 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
   return value;
 }
 
+const HTML_PRESCAN_BYTES = 1024;
+// A comment or whole tag, quoted values included; an unterminated tag ends the scan, as in browsers.
+const HTML_PRESCAN_TAG_RE =
+  /<!--[\s\S]*?(?:-->|$)|<([a-z][^\s/>]*)((?:[\s/](?:[^>"']|"[^"]*"|'[^']*')*)?)>|<[!/?][^>]*>|<[a-z!/?][\s\S]*/gi;
+const HTML_META_ATTR_RE =
+  /([^\s"'/=>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*)))?/g;
+const HTML_META_CONTENT_CHARSET_RE = /charset\s*=\s*["']?\s*([^\s"';]+)/i;
+
+function declaredHtmlEncoding(bytes: Uint8Array): string | null {
+  const head = new TextDecoder("windows-1252").decode(
+    bytes.subarray(0, HTML_PRESCAN_BYTES),
+  );
+  for (const [, tag, attributes] of head.matchAll(HTML_PRESCAN_TAG_RE)) {
+    if (tag?.toLowerCase() !== "meta") {
+      continue;
+    }
+    const attrs = new Map<string, string>();
+    for (const [, name, ...values] of attributes.matchAll(HTML_META_ATTR_RE)) {
+      const key = name.toLowerCase();
+      if (!attrs.has(key)) {
+        attrs.set(key, values.join(""));
+      }
+    }
+    let label = attrs.get("charset");
+    if (
+      label === undefined &&
+      attrs.get("http-equiv")?.toLowerCase() === "content-type"
+    ) {
+      label = attrs.get("content")?.match(HTML_META_CONTENT_CHARSET_RE)?.[1];
+    }
+    if (!label) {
+      continue;
+    }
+    let encoding: string;
+    try {
+      encoding = new TextDecoder(label).encoding;
+    } catch {
+      continue;
+    }
+    // HTML reads a <meta> claiming UTF-16 as UTF-8: the tag itself was readable as ASCII.
+    if (encoding.startsWith("utf-16")) {
+      return "utf-8";
+    }
+    return encoding === "x-user-defined" ? "windows-1252" : encoding;
+  }
+  return null;
+}
+
+export function decodeHtmlAttachmentBytes(bytes: Uint8Array): string {
+  const encoding =
+    bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
+      ? "utf-8"
+      : bytes[0] === 0xff && bytes[1] === 0xfe
+        ? "utf-16le"
+        : bytes[0] === 0xfe && bytes[1] === 0xff
+          ? "utf-16be"
+          : (declaredHtmlEncoding(bytes) ?? "utf-8");
+  return new TextDecoder(encoding).decode(bytes);
+}
+
 export function extractHtmlAttachmentText(html: string): string {
   const doc = new DOMParser().parseFromString(html, "text/html");
   for (const el of doc.querySelectorAll("script, style, noscript, template")) {
@@ -1016,7 +1076,7 @@ export async function readAttachmentText(
   }
   // raw markup, not the extraction; kept before opendocument to match the adapters
   if (isHtmlAttachment(name, contentType)) {
-    return { label: null, ...(await readBoundedText(file)) };
+    return { label: null, ...(await readBoundedHtml(file)) };
   }
   if (isOpenDocumentAttachment(name, contentType)) {
     const { label, text } = await readOpenDocumentAttachmentContent(
@@ -1070,6 +1130,15 @@ async function readBoundedText(
     text: decodeTextAttachmentBytes(bytes, file.name, truncated, whole),
     truncated,
   };
+}
+
+async function readBoundedHtml(
+  file: File,
+): Promise<{ text: string; truncated: boolean }> {
+  const truncated = file.size > MAX_PREVIEW_TEXT_BYTES;
+  const slice = truncated ? file.slice(0, MAX_PREVIEW_TEXT_BYTES) : file;
+  const bytes = new Uint8Array(await slice.arrayBuffer());
+  return { text: decodeHtmlAttachmentBytes(bytes), truncated };
 }
 
 // A sent attachment keeps only the text its adapter produced, so the preview unwraps the
