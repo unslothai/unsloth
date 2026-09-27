@@ -117,19 +117,41 @@ def _cuda_is_available():
 
 @pytest.mark.skipif(not _cuda_is_available(), reason = "needs a GPU to load a 4-bit model")
 def test_native_model_with_trust_remote_code_keeps_fast_lora(tmp_path, monkeypatch):
-    """The arm that fails without the fix: PEFT's Linear4bit forward is left in place."""
+    """The arm that fails without the fix: PEFT's Linear4bit forward is left in place.
+
+    Skips only on errors meaning the checkpoint cannot be built here (old transformers, no torchvision, offline).
+    """
     monkeypatch.chdir(tmp_path)  # fresh unsloth_compiled_cache
     import torch
     import unsloth  # noqa: F401
     from unsloth import FastModel
 
-    model, _ = FastModel.from_pretrained(
-        "tiny-random/gemma-4-moe",
-        max_seq_length = 256,
-        dtype = torch.bfloat16,
-        load_in_4bit = True,
-        trust_remote_code = True,
-    )
+    try:
+        model, _ = FastModel.from_pretrained(
+            "tiny-random/gemma-4-moe",
+            max_seq_length = 256,
+            dtype = torch.bfloat16,
+            load_in_4bit = True,
+            trust_remote_code = True,
+        )
+    except Exception as exception:
+        text = str(exception)
+        if any(
+            marker in text
+            for marker in (
+                "does not recognize this architecture",
+                "is not supported yet in",
+                "torchvision",
+                "Could not load the vision processor",
+                "We couldn't connect to",
+                "offline mode",
+                "Connection error",
+            )
+        ):
+            pytest.skip(
+                f"the checkpoint cannot be built on this host ({type(exception).__name__}: {text[:160]})"
+            )
+        raise
     model = FastModel.get_peft_model(model, r = 8, lora_alpha = 16, lora_dropout = 0, bias = "none")
     from peft.tuners.lora.bnb import Linear4bit
 
@@ -168,3 +190,96 @@ def test_compiler_call_site_gates_the_flag_on_the_config():
         f"{gated.count(False)} of {len(gated)} compiler call sites pass trust_remote_code "
         "straight through instead of gating it on _config_uses_remote_code(model_config)"
     )
+
+
+def test_nested_object_sub_configs_are_walked():
+    """A native root whose declared child is itself composite: the remote grandchild counts."""
+    from transformers import PretrainedConfig
+
+    f = _helper()
+
+    class LlmConfig(PretrainedConfig):
+        model_type = "llm_test"
+        sub_configs = {"audio_config": PretrainedConfig}
+
+    class RootConfig(PretrainedConfig):
+        model_type = "root_test"
+        sub_configs = {"llm_config": LlmConfig}
+
+    class RemoteAudioConfig(PretrainedConfig):
+        model_type = "remote_audio_test"
+
+    RemoteAudioConfig.__module__ = "transformers_modules.some_repo.configuration_x"
+
+    root = RootConfig()
+    root.llm_config = LlmConfig()
+    root.llm_config.audio_config = PretrainedConfig()
+    assert f(root) is False
+    root.llm_config.audio_config = RemoteAudioConfig()
+    assert f(root) is True
+    root.llm_config.audio_config = PretrainedConfig(auto_map = {"AutoModel": "modeling_x.XModel"})
+    assert f(root) is True
+
+
+def test_a_mock_config_does_not_recurse_forever():
+    from unittest.mock import MagicMock
+
+    f = _helper()
+    config = SimpleNamespace(auto_map = None, text_config = MagicMock(auto_map = None))
+    assert f(config) is False
+
+
+def test_config_objects_inside_dict_configs_are_walked():
+    from transformers import PretrainedConfig
+
+    f = _helper()
+
+    class RemoteAudioConfig(PretrainedConfig):
+        model_type = "remote_audio_dict_test"
+
+    RemoteAudioConfig.__module__ = "transformers_modules.some_repo.configuration_x"
+    assert f({"model_type": "root", "audio": PretrainedConfig()}) is False
+    assert f({"model_type": "root", "audio": RemoteAudioConfig()}) is True
+    assert f({"model_type": "root", "nested": {"audio": RemoteAudioConfig()}}) is True
+
+
+def test_configs_past_the_depth_bound_count_as_remote():
+    """Deeper than the walk goes is answered conservatively, never as native."""
+    f = _helper()
+
+    def chain(levels, leaf):
+        node = leaf
+        for _ in range(levels):
+            node = {"model_type": "wrapper", "llm_config": node}
+        return node
+
+    remote_leaf = {"auto_map": {"AutoModel": "modeling_x.XModel"}}
+    native_leaf = {"model_type": "llama"}
+    assert f(chain(3, native_leaf)) is False
+    assert f(chain(3, remote_leaf)) is True
+    assert f(chain(12, remote_leaf)) is True
+
+
+def test_sub_configs_declared_as_a_property_are_read():
+    """transformers 4.57 declares backbone configs' `sub_configs` as a property (VitMatte, DPT)."""
+    from transformers import PretrainedConfig
+
+    f = _helper()
+
+    class RemoteBackbone(PretrainedConfig):
+        model_type = "remote_backbone_test"
+
+    RemoteBackbone.__module__ = "transformers_modules.some_repo.configuration_x"
+
+    class BackboneHolder(PretrainedConfig):
+        model_type = "backbone_holder_test"
+
+        @property
+        def sub_configs(self):
+            return {"backbone_config": PretrainedConfig}
+
+    holder = BackboneHolder()
+    holder.backbone_config = PretrainedConfig()
+    assert f(holder) is False
+    holder.backbone_config = RemoteBackbone()
+    assert f(holder) is True

@@ -362,6 +362,8 @@ class UnslothTrainer:
         self.model_load_error = None
         self.dataset_loaded_from_exact_snapshot = False
         self.dataset_snapshot_path = None
+        # A max_steps bound keeps a uniform sample of the rows, so a pass over it is this share of a dataset pass.
+        self._kept_row_fraction = 1.0
 
         self.training_start_time: Optional[float] = None
         self.session_start_step: int = 0
@@ -663,7 +665,9 @@ class UnslothTrainer:
 
                 trainer_ref._update_progress(
                     step = current_step,
-                    epoch = round(state.epoch, 2) if state.epoch else 0,
+                    epoch = round(state.epoch * trainer_ref._kept_row_fraction, 2)
+                    if state.epoch
+                    else 0,
                     loss = loss_value,
                     learning_rate = logs.get("learning_rate", None),
                     elapsed_seconds = elapsed_seconds,
@@ -677,7 +681,9 @@ class UnslothTrainer:
                 )
 
             def on_epoch_end(self, args, state, control, **kwargs):
-                trainer_ref._update_progress(epoch = state.epoch, step = state.global_step)
+                trainer_ref._update_progress(
+                    epoch = state.epoch * trainer_ref._kept_row_fraction, step = state.global_step
+                )
 
             def on_step_end(self, args, state, control, **kwargs):
                 if trainer_ref.should_stop:
@@ -853,6 +859,14 @@ class UnslothTrainer:
         elif "speaker_id" in cols:
             speaker_col = "speaker_id"
 
+        if audio_col is None or text_col is None or speaker_col is None:
+            from hub.utils.dataset_format import detect_multimodal_dataset
+
+            detected = detect_multimodal_dataset(dataset)
+            audio_col = audio_col or detected["detected_audio_column"]
+            text_col = text_col or detected["detected_text_column"]
+            speaker_col = speaker_col or detected["detected_speaker_column"]
+
         return {
             "audio_col": audio_col,
             "text_col": text_col,
@@ -1005,7 +1019,9 @@ class UnslothTrainer:
                         RepositoryNotFoundError,
                     )
                     if isinstance(gate_err, (GatedRepoError, RepositoryNotFoundError)):
-                        friendly = (
+                        from hub.utils.hf_errors import modelscope_missing
+
+                        friendly = modelscope_missing(gate_err) or (
                             f"Access denied for '{model_name}'. This model is gated or private. "
                             f"Please add a Hugging Face token with access and try again."
                         )
@@ -2705,6 +2721,7 @@ class UnslothTrainer:
         try:
             self.dataset_loaded_from_exact_snapshot = False
             self.dataset_snapshot_path = None
+            self._kept_row_fraction = 1.0
             dataset = None
             eval_dataset = None
             dataset_attestation_source = None
@@ -3127,6 +3144,7 @@ class UnslothTrainer:
             ):
 
                 def _log_bound(kept, total):
+                    self._kept_row_fraction = kept / total
                     logger.info(
                         f"Bounded dataset to {kept} of {total} rows for a "
                         f"max_steps run (seed {max_train_rows_seed})\n"

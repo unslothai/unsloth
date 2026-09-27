@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import {
   classifiedAttachmentFile,
   needsAttachmentTrackInspection,
@@ -60,10 +60,12 @@ import {
   TEXT_ATTACHMENT_ACCEPT,
   extractDocxAttachmentText,
   extractHtmlAttachmentText,
+  extractOfficeAttachmentText,
   extractPdfAttachmentText,
   getDocumentAttachmentSizeError,
   getDocxAttachmentError,
 } from "./attachment-content";
+import { persistAttachmentOriginals, withAttachmentOriginal } from "./attachment-originals";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
   isBinaryPropertyList,
@@ -156,7 +158,9 @@ import {
   markThreadIncognito,
   saveStoredChatMessage,
   saveStoredChatThread,
+  syncStoredChatMessages,
   trackStoredChatThreadRecord,
+  unmarkThreadIncognito,
   updateStoredChatThread,
 } from "./utils/chat-history-storage";
 import {
@@ -263,8 +267,10 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const threadIds = this.getThreadIds();
     const reservationToken = findPreStreamRunReservation(threadIds);
+    const { incognito } = useChatRuntimeStore.getState();
+    const epoch = getAuthSessionEpoch();
     try {
-      return await this.delegate.send(attachment);
+      return await withAttachmentOriginal(attachment, await this.delegate.send(attachment), incognito, epoch);
     } catch (error) {
       if (
         reservationToken &&
@@ -305,17 +311,19 @@ class VisionImageAdapter implements AttachmentAdapter {
       );
       externalModelLabel = externalSelection.modelId;
     }
-    const unavailableReason = getImageInputUnavailableReason({
-      activeModel,
-      isExternalModel,
-      externalSupportsVision,
-      externalModelLabel,
-      loadedIsMultimodal: state.loadedIsMultimodal,
-      modelLoaded,
-      loadError: state.lastModelLoadError,
-      visionDisabledByUser: state.loadedVisionDisabledByUser,
-      mmprojFallbackReason: state.mmprojFallbackReason,
-    });
+    const unavailableReason = !modelLoaded
+      ? null
+      : getImageInputUnavailableReason({
+          activeModel,
+          isExternalModel,
+          externalSupportsVision,
+          externalModelLabel,
+          loadedIsMultimodal: state.loadedIsMultimodal,
+          modelLoaded,
+          loadError: state.lastModelLoadError,
+          visionDisabledByUser: state.loadedVisionDisabledByUser,
+          mmprojFallbackReason: state.mmprojFallbackReason,
+        });
     if (unavailableReason) {
       toast.error(unavailableReason);
       throw new Error(unavailableReason);
@@ -568,6 +576,76 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
+const OFFICE_LABELS: Record<string, "XLSX" | "PPTX"> = {
+  xlsx: "XLSX",
+  xlsm: "XLSX",
+  pptx: "PPTX",
+};
+
+class OfficeAttachmentAdapter implements AttachmentAdapter {
+  accept = [
+    ".xlsx,.xlsm,.pptx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel.sheet.macroEnabled.12",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ].join(",");
+
+  private label(name: string, type: string): "XLSX" | "PPTX" {
+    const extension = name.split(".").pop()?.toLowerCase() ?? "";
+    const byName = Object.hasOwn(OFFICE_LABELS, extension) ? OFFICE_LABELS[extension] : undefined;
+    return byName ?? (type.includes("presentationml") ? "PPTX" : "XLSX");
+  }
+
+  // Read at add: the composer drops the typed message before send(), so refuse unreadable files here.
+  private readonly texts = new Map<string, string>();
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    const label = this.label(file.name, file.type);
+    let text: string;
+    try {
+      text = await extractOfficeAttachmentText(file, label);
+    } catch (cause) {
+      const message = (cause as Error | undefined)?.message;
+      const tooLarge = `${label} file is too large: ${file.name}`;
+      const error =
+        message === tooLarge || message === "File is too large to preview."
+          ? tooLarge
+          : `${label} file could not be read: ${file.name}`;
+      toast.error(error);
+      throw new Error(error);
+    }
+    const id = crypto.randomUUID();
+    this.texts.set(id, text);
+    return {
+      id,
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const label = this.label(attachment.name, attachment.contentType ?? "");
+    const text = this.texts.get(attachment.id) ?? (await extractOfficeAttachmentText(attachment.file, label));
+    this.texts.delete(attachment.id);
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text: `[${label}: ${attachment.name}]\n${text}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    this.texts.delete(attachment.id);
+    return Promise.resolve();
+  }
+}
+
 class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
   private readonly active = new Set<string>();
   private readonly sending = new Set<string>();
@@ -772,7 +850,7 @@ function cloneAttachments(
   if (!Array.isArray(attachments)) {
     return [];
   }
-  return JSON.parse(JSON.stringify(attachments));
+  return JSON.parse(JSON.stringify(attachments.map((attachment) => ({ ...attachment, file: undefined }))));
 }
 
 function toThreadMessage(m: MessageRecord): ThreadMessage {
@@ -1250,6 +1328,12 @@ function scheduleGenerationRecovery(
   generationRecoveries.set(runId, { promise: recovery, views });
 }
 
+/** What a temporary thread was started with, so saving it later keeps its starting model. */
+const temporaryThreadCreation = new Map<
+  string,
+  { modelId: string; modelGgufVariant: string | null | undefined; createdAt: number }
+>();
+
 export async function ensureThreadRecord({
   threadId,
   modelType,
@@ -1292,8 +1376,14 @@ export async function ensureThreadRecord({
   // A temporary chat skips the history list so a storage outage cannot block its first send.
   // Gated on the caller knowing the thread is new, not on its id: a `__LOCALID_` id is the
   // permanent key of every chat the app creates, so keying on the prefix tagged SAVED chats.
+  const creation = {
+    modelId: modelIdAtInit,
+    modelGgufVariant: modelGgufVariantAtInit,
+    createdAt: createdAtInit,
+  };
   if (incognitoAtInit && neverSent) {
     markThreadIncognito(threadId);
+    temporaryThreadCreation.set(threadId, creation);
     return;
   }
   // A point lookup, not a listing: this must not scale with how many chats exist.
@@ -1305,6 +1395,7 @@ export async function ensureThreadRecord({
   // real chat saving normally when the toggle flips on mid-stream.
   if (incognitoAtInit) {
     markThreadIncognito(threadId);
+    temporaryThreadCreation.set(threadId, creation);
     return;
   }
 
@@ -1331,6 +1422,83 @@ export async function ensureThreadRecord({
     if (existingAfterRace) {
       return;
     }
+    throw error;
+  }
+}
+
+/** Parents before children, so every saved message's parent already exists. */
+function parentsFirst(
+  items: readonly ExportedMessageRepositoryItem[],
+): ExportedMessageRepositoryItem[] {
+  const byId = new Map(items.map((item) => [item.message.id, item]));
+  const seen = new Set<string>();
+  const ordered: ExportedMessageRepositoryItem[] = [];
+  const visit = (item: ExportedMessageRepositoryItem) => {
+    if (seen.has(item.message.id)) return;
+    seen.add(item.message.id);
+    const parent = item.parentId ? byId.get(item.parentId) : undefined;
+    if (parent) visit(parent);
+    ordered.push(item);
+  };
+  items.forEach(visit);
+  return ordered;
+}
+
+/** Save a temporary chat to history: its row, then every message on every branch in one batch,
+ *  after which it saves like any other chat. The batch is one transaction, so a failure leaves at
+ *  most an empty row, which a retry reuses; the chat stays temporary until then. */
+export async function persistTemporaryThread({
+  threadId,
+  modelType,
+  messages,
+}: {
+  threadId: string;
+  modelType: ModelType;
+  messages: readonly ExportedMessageRepositoryItem[];
+}): Promise<void> {
+  unmarkThreadIncognito(threadId);
+  try {
+    const times = messages
+      .map(({ message }) => message.createdAt?.getTime?.())
+      .filter((time): time is number => typeof time === "number");
+    const creation = temporaryThreadCreation.get(threadId);
+    await ensureThreadRecord({
+      threadId,
+      modelType,
+      projectId: null,
+      incognito: false,
+      ...(creation && {
+        modelId: creation.modelId,
+        modelGgufVariant: creation.modelGgufVariant,
+      }),
+      createdAt:
+        creation?.createdAt ?? (times.length > 0 ? Math.min(...times) : Date.now()),
+    });
+    const epoch = getAuthSessionEpoch();
+    const records: MessageRecord[] = await Promise.all(parentsFirst(messages).map(async ({ parentId, message }) => {
+      // Documents kept in memory are uploaded now, before the File is lost to JSON.
+      const attachments =
+        message.role === "user"
+          ? cloneAttachments(await persistAttachmentOriginals(message.attachments, epoch))
+          : [];
+      const metadata = message.metadata?.custom as
+        | Record<string, unknown>
+        | undefined;
+      return {
+        id: message.id,
+        threadId,
+        parentId: parentId ?? null,
+        role: message.role,
+        content: cloneContent(message.content),
+        ...(attachments.length > 0 && { attachments }),
+        ...(metadata && { metadata }),
+        createdAt: message.createdAt?.getTime?.() ?? Date.now(),
+      };
+    }));
+    await syncStoredChatMessages(threadId, records, { pruneMissing: false });
+    temporaryThreadCreation.delete(threadId);
+  } catch (error) {
+    markThreadIncognito(threadId);
     throw error;
   }
 }
@@ -2327,6 +2495,7 @@ function useStudioRuntimeAdapters(
           new HtmlAttachmentAdapter(),
           new PDFAttachmentAdapter(),
           new DocxAttachmentAdapter(),
+          new OfficeAttachmentAdapter(),
           new OpenDocumentAttachmentAdapter(),
         ]),
         () => {

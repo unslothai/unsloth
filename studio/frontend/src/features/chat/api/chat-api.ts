@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
@@ -757,6 +757,19 @@ export async function revealCachedModel(
   await parseJsonOrThrow<unknown>(response);
 }
 
+/** Reveal a training or exported fine-tune in the OS file manager. */
+export async function revealFineTunedModel(
+  modelPath: string,
+  source: "training" | "exported",
+): Promise<void> {
+  const response = await authFetch("/api/library/items/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: `model:${source}:${modelPath}` }),
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
 export async function deleteFineTunedModel(args: {
   modelPath: string;
   source: "training" | "exported";
@@ -869,7 +882,25 @@ export async function listChatAttachments(
   };
 }
 
-/** Stored attachment content (image bytes or extracted text) as a Blob. */
+export async function uploadChatAttachmentOriginal(
+  file: File,
+  epoch = getAuthSessionEpoch(),
+): Promise<{ sha256: string; sizeBytes: number }> {
+  const sameAccount = () => {
+    if (getAuthSessionEpoch() !== epoch) throw new Error("The account changed during the upload.");
+  };
+  sameAccount();
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const response = await authFetch(
+    "/api/chat/attachment-originals",
+    { method: "POST", body: form },
+    { beforeRetry: sameAccount },
+  );
+  sameAccount();
+  return parseJsonOrThrow<{ sha256: string; sizeBytes: number }>(response);
+}
+
 export async function fetchChatAttachmentBlob(
   messageId: string,
   attachmentId: string,

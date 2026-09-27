@@ -1934,6 +1934,29 @@ class TestLaunchShapedPricing:
         # But the GPU figure does not move: that is the whole finding.
         assert many.gpu_bytes == none.gpu_bytes
 
+    def test_the_panel_route_reports_the_checkpoint_share(self, swa, monkeypatch):
+        config = SimpleNamespace(
+            identifier = "local/swa",
+            gguf_file = swa,
+            is_gguf = True,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 1.0)
+        priced = dict(model_path = swa, n_ctx = 131072, cache_type_kv = "f16")
+        none = _estimate(ctx_checkpoints = 0, **priced)
+        many = _estimate(ctx_checkpoints = 8, **priced)
+
+        assert none.kv_checkpoint_bytes == 0
+        assert many.kv_checkpoint_bytes > 0
+        assert many.kv_checkpoint_bytes == many.kv_bytes - none.kv_bytes
+        assert (many.total_bytes - many.gpu_bytes) - (
+            none.total_bytes - none.gpu_bytes
+        ) == many.kv_checkpoint_bytes
+
     def test_one_card_is_priced_as_the_layer_load_it_launches(self, spec_config, swa):
         # Tensor mode needs two usable GPUs. Below that load_model drops it, so the
         # panel prices the layer load. A tensor device holds the single-device compute

@@ -1324,7 +1324,7 @@ export function SeedDialog({
               <div className="text-xs text-muted-foreground">
                 Loaded columns: {previewColumns.join(", ") || "None"}
               </div>
-              <div className="max-h-[360px] overflow-y-auto overflow-x-hidden rounded-xl corner-squircle border border-border/60">
+              <div className="max-h-[calc(360px*var(--ui-space-scale,1))] overflow-y-auto overflow-x-hidden rounded-xl corner-squircle border border-border/60">
                 <Table className="corner-squircle min-w-max">
                   <TableHeader>
                     <TableRow>
@@ -1358,7 +1358,7 @@ export function SeedDialog({
                         {previewColumns.map((col) => (
                           <TableCell
                             key={`${rowIdx}-${col}`}
-                            className="max-w-[260px] whitespace-pre-wrap break-words text-xs"
+                            className="max-w-[calc(260px*var(--ui-space-scale,1))] whitespace-pre-wrap break-words text-xs"
                           >
                             {(() => {
                               const imagePreview = resolveImagePreview(
@@ -1370,7 +1370,7 @@ export function SeedDialog({
                                     src={imagePreview.src}
                                     alt={`${col} preview`}
                                     loading="lazy"
-                                    className="h-20 w-auto max-w-[220px] rounded-md border border-border/60 bg-muted/20 object-contain"
+                                    className="h-20 w-auto max-w-[calc(220px*var(--ui-space-scale,1))] rounded-md border border-border/60 bg-muted/20 object-contain"
                                   />
                                 );
                               }

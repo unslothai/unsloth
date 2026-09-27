@@ -22,6 +22,10 @@ import {
   resolveStagedDiffusionClassification,
   useChatRuntimeStore,
 } from "@/features/chat";
+import {
+  distributeByWeight,
+  rebalanceSplit,
+} from "@/features/chat/stores/chat-runtime-store";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   type VramBudgetSettings,
@@ -88,6 +92,7 @@ import {
   fetchLoadModelOverride,
   fromApiOverride,
   modelOverrideKey,
+  panelOverrideRow,
   syncModelOverride,
 } from "../api/model-overrides";
 import {
@@ -190,7 +195,7 @@ const CONTROL_SURFACE =
   "rounded-full border-transparent bg-[var(--panel-input-surface)] hover:bg-[var(--panel-input-surface-hover)] dark:bg-[var(--panel-input-surface)] dark:hover:bg-[var(--panel-input-surface-hover)]";
 // One width for every typed field: a box that resized per keystroke would jump under the
 // caret. Narrow, so the label beside it is not clipped in a ~240px panel.
-const INPUT_WIDTH_CLASS = "w-[84px] shrink-0";
+const INPUT_WIDTH_CLASS = "w-[calc(84px*var(--ui-space-scale,1))] shrink-0";
 // A select holds one of a known set of values, so it sizes to that value.
 const SELECT_WIDTH_CLASS = "w-auto max-w-full shrink-0";
 // .panel-select-trigger carries the surface, padding and type; this adds the layout.
@@ -740,7 +745,7 @@ function VramBudgetRow() {
 }
 
 // GPU Memory placement controls, GGUF only. Slider ceilings come from the GGUF header dims;
-// --tensor-split is not persisted per model.
+// --tensor-split is set per GPU row but not persisted per model.
 function GpuMemorySettings({
   config,
   update,
@@ -782,11 +787,44 @@ function GpuMemorySettings({
   // The list order IS the device order the backend pins, so a re-checked GPU goes
   // to the end rather than back to its numeric slot.
   const orderedGpuIds = selectedGpuIds ?? gpuContext.ids ?? [];
-  const commitGpuIds = (next: number[]) => {
+  // Mirrors the backend's --tensor-split gate.
+  const splitTotal = Math.max(0, Math.min(gpuLayers, gpuLayersMax));
+  const showSplit =
+    !isDiffusion &&
+    isManual &&
+    !autoLayers &&
+    splitTotal > 0 &&
+    showGpuPicker &&
+    orderedGpuIds.length > 1;
+  const splitIsPercent = Boolean(config.tensorParallel);
+  const splitScale = splitIsPercent ? 100 : splitTotal;
+  const tensorSplit = config.tensorSplit ?? null;
+  const splitIsCustom =
+    tensorSplit != null && tensorSplit.length === orderedGpuIds.length;
+  // Untouched: show a VRAM-proportional split and send nothing.
+  const splitShares = showSplit
+    ? distributeByWeight(
+        splitScale,
+        splitIsCustom
+          ? tensorSplit
+          : orderedGpuIds.map(
+              (id) =>
+                pinnableDevices.find((d) => d.index === id)?.memoryTotalGb ?? 1,
+            ),
+      )
+    : [];
+  const setSplitShare = (id: number, value: number) => {
+    const k = orderedGpuIds.indexOf(id);
+    if (k < 0) return;
+    update({ tensorSplit: rebalanceSplit(splitScale, splitShares, k, value) });
+  };
+  const commitGpuIds = (next: number[], nextSplit: number[] | null = null) => {
     if (next.length === 0) return; // keep at least one GPU selected
     update({
       selectedGpuIds: next,
       selectedGpuIndexKind: gpuIndexKind,
+      // Positional, so a different GPU set invalidates it.
+      tensorSplit: nextSplit,
     });
   };
   const toggleGpu = (index: number) => {
@@ -809,7 +847,12 @@ function GpuMemorySettings({
     if (from < 0 || to < 0 || to >= orderedGpuIds.length) return;
     const next = [...orderedGpuIds];
     [next[from], next[to]] = [next[to], next[from]];
-    commitGpuIds(next);
+    let nextSplit: number[] | null = null;
+    if (splitIsCustom) {
+      nextSplit = [...tensorSplit];
+      [nextSplit[from], nextSplit[to]] = [nextSplit[to], nextSplit[from]];
+    }
+    commitGpuIds(next, nextSplit);
   };
   return (
     <>
@@ -842,6 +885,7 @@ function GpuMemorySettings({
                     nCpuMoe: undefined,
                     selectedGpuIds: undefined,
                     selectedGpuIndexKind: undefined,
+                    tensorSplit: null,
                   },
             )
           }
@@ -874,7 +918,9 @@ function GpuMemorySettings({
             value={Math.max(GPU_LAYERS_AUTO, Math.min(gpuLayers, gpuLayersMax))}
             min={GPU_LAYERS_AUTO}
             max={gpuLayersMax}
-            onChange={(v) => update({ gpuLayers: v })}
+            onChange={(v) =>
+              update(v < 0 ? { gpuLayers: v, tensorSplit: null } : { gpuLayers: v })
+            }
             displayValue={autoLayers ? "Auto" : undefined}
             info={
               <>
@@ -911,7 +957,20 @@ function GpuMemorySettings({
               {!isDiffusion &&
                 " Their order here is the order the model gets them."}{" "}
               Keep at least one selected.
+              {showSplit &&
+                (splitIsPercent
+                  ? " The number beside each is its share of every layer, in percent (--tensor-split)."
+                  : " The number beside each is how many of the GPU Layers it holds (--tensor-split).")}
             </InfoHint>
+            {showSplit && splitIsCustom && (
+              <button
+                type="button"
+                className="ml-auto shrink-0 rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground"
+                onClick={() => update({ tensorSplit: null })}
+              >
+                Reset split
+              </button>
+            )}
           </div>
           <div className="flex flex-col gap-2">
             {orderedPinnableDevices.map((d, position) => (
@@ -925,6 +984,29 @@ function GpuMemorySettings({
                     ? ` · ${Math.round(d.memoryTotalGb)} GiB`
                     : ""}
                 </span>
+                {showSplit && isGpuChecked(d.index) && (
+                  <div className="ml-auto flex shrink-0 items-center gap-1">
+                    <NumericValueInput
+                      value={splitShares[orderedGpuIds.indexOf(d.index)] ?? 0}
+                      min={0}
+                      max={splitScale}
+                      step={1}
+                      onChange={(v) => setSplitShare(d.index, v)}
+                      derived={!splitIsCustom}
+                      ariaLabel={
+                        splitIsPercent
+                          ? `Share of each layer on GPU ${d.index}, percent`
+                          : `Layers on GPU ${d.index}`
+                      }
+                      className="panel-field h-7 w-[calc(52px*var(--ui-space-scale,1))] shrink-0"
+                      fixedWidth={true}
+                      size={4}
+                    />
+                    <span className="w-[3.25em] text-ui-12 text-muted-foreground">
+                      {splitIsPercent ? "%" : "layers"}
+                    </span>
+                  </div>
+                )}
                 {/* Not for diffusion: that runner drives one device and matches_gpu_ids
                     reduces the request to its lowest id, so the arrows would move a row
                     without moving the model, under help text promising the opposite. */}
@@ -2028,17 +2110,17 @@ export function ModelConfigPage({
   // refuse. Held by the panel rather than the row, since the row unmounts whenever Advanced
   // settings collapse while its tokens stay in the config.
   const [extraArgsLoadable, setExtraArgsLoadable] = useState(true);
-  // True until the stored-arguments read below settles: a load started before it lands sends no
-  // llama_extra_args, and /load cannot inherit them from a process that is not running.
+  // True until the server-row read below settles: a load started before it lands sends none of the
+  // row's settings, and with Remember unchecked it forgets the row it never read.
   const [extraArgsHydrating, setExtraArgsHydrating] = useState(
-    () => target.isGguf && !isDiffusion,
+    () => !isDiffusion,
   );
   // The row does not withdraw its own objection when it unmounts, or collapsing Advanced settings
   // would re-enable Load for arguments the backend refuses. Only a different model retires it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the model, not on the setter
   useEffect(() => {
     setExtraArgsLoadable(true);
-    setExtraArgsHydrating(target.isGguf && !isDiffusion);
+    setExtraArgsHydrating(!isDiffusion);
   }, [configId, target.ggufVariant, target.isGguf, isDiffusion]);
 
   // Compare against what the backend was asked for, not what it applied: staging a new value
@@ -2239,14 +2321,13 @@ export function ModelConfigPage({
   ]);
 
   // The server copy is shared by Desktop, LAN, and tunnel origins, so hydrate the whole
-  // remembered GGUF config here; localStorage is only the immediate seed. This also runs while
-  // Advanced is closed, since extra arguments affect every load.
+  // remembered config here; localStorage is only the immediate seed. This also runs while
+  // Advanced is closed, since the row reaches every load whether or not it is shown.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the model is the identity
   useEffect(() => {
-    if (!target.isGguf || resolvedIsDiffusion) {
-      // Nothing else even has this field: the row is GGUF-only and so is the load payload. A
-      // diffusion GGUF is GGUF-shaped but runs through the shim, which appends no llama-server
-      // flags, so it must not wait either.
+    if (resolvedIsDiffusion) {
+      // A diffusion model runs through the shim, which appends no llama-server flags, so it keeps
+      // Load free of this read.
       setExtraArgsHydrating(false);
       return;
     }
@@ -2285,8 +2366,10 @@ export function ModelConfigPage({
     Promise.all([
       // Resolved by the backend, which owns the rules; the local resolver stays as the fallback for
       // a backend that predates the parameter.
-      fetchLoadModelOverride(loadId, configId, target.ggufVariant, keys),
-      loadManagedLlamaFlags(),
+      fetchLoadModelOverride(loadId, configId, target.ggufVariant, keys).then(
+        (row) => panelOverrideRow(row, target.isGguf),
+      ),
+      target.isGguf ? loadManagedLlamaFlags() : null,
     ])
       .then(([resolvedOverride, managed]) => {
         // Marked here rather than before the request: StrictMode replays the effect, so a key marked
@@ -2315,7 +2398,9 @@ export function ModelConfigPage({
         );
         // A list this build refuses can equally have come from local storage, saved by a build that
         // still allowed it, and nothing else would catch it while Advanced stays collapsed.
-        const local = configRef.current.llamaExtraArgs;
+        const local = target.isGguf
+          ? configRef.current.llamaExtraArgs
+          : undefined;
         // Kept for the merge below as well as for the box: a row that carries no arguments leaves the
         // local list standing, and handing back a refused list would re-enable Load.
         let sanitizedLocal = localAtStart;
@@ -2356,7 +2441,7 @@ export function ModelConfigPage({
         // declared loadable by a verdict read off the empty server list.
         const hydratedArgs = serverConfig?.llamaExtraArgs ?? stored;
         const hydratedIsLoadable =
-          hydratedArgs.length === 0
+          !target.isGguf || hydratedArgs.length === 0
             ? true
             : extraArgsAreLoadable(
                 diagnoseExtraArgs(
@@ -3218,10 +3303,10 @@ export function ModelConfigPage({
                     <p className="text-ui-11 text-amber-500">
                       {isAppleUnifiedMemory ? (
                         <>
-                          Exceeds what fits in unified memory (
-                          {loadedMaxContextLength.toLocaleString()} tokens). The
-                          GPU and the rest of the system share one pool here, so
-                          there is nothing to offload to.
+                          Above Studio&apos;s free-memory estimate (
+                          {loadedMaxContextLength.toLocaleString()} tokens). It
+                          may still load, but macOS may have to compress or swap
+                          other apps and generation may slow down.
                         </>
                       ) : (
                         <>

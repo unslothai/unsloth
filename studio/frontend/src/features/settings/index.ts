@@ -10,6 +10,7 @@ export {
   updateDownloadTransportSettings,
 } from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
+export { updateHubSource } from "./api/hub-settings";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
 export { listOpenAIModels } from "./api/openai-models";
 export {
@@ -56,6 +57,7 @@ export type {
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export {
   applyInterfaceScale,
+  stepInterfaceScale,
   useInterfaceScaleStore,
 } from "./stores/interface-scale-store";
 // The runtime module, not the store, so consumers outside this feature do not have to pull
@@ -80,9 +82,11 @@ export {
   isImeComposing,
   isSurfaceBackgrounded,
   isSurfaceInForeground,
+  triggerShortcut,
   useShortcut,
   useShortcutLabel,
   useShortcutLabels,
+  useShortcutAvailable,
 } from "./hooks/use-shortcut";
 export { Shortcut } from "./components/shortcut";
 export {
@@ -91,9 +95,16 @@ export {
   useKeyboardShortcutsStore,
 } from "./stores/keyboard-shortcuts-store";
 export type { ShortcutId } from "./lib/keyboard-shortcuts";
-export { useSettingsDialogStore } from "./stores/settings-dialog-store";
+export { SETTINGS_TABS, useSettingsDialogStore } from "./stores/settings-dialog-store";
+export { settingsTabVisible } from "./settings-tab-visibility";
 export type { SettingsTab } from "./stores/settings-dialog-store";
+export { requestSttDownload } from "./stores/stt-download-prompt-store";
+export {
+  applyDictationDictionary,
+  recordRecentDictation,
+  sttModelName,
+  useVoiceSettingsStore,
+} from "./stores/voice-settings-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";
 
-export { useVoiceSettingsStore } from "./stores/voice-settings-store";
 export { isMacPlatform } from "./lib/keyboard-shortcuts";

@@ -561,3 +561,26 @@ test("both repo-level deletes clear pins through that one action", async () => {
     ),
   );
 });
+
+// A GGUF export's id is its first file, so a variant delete can move it: the pin follows in place.
+test("replacePinned moves a pin to its new key in the same slot", () => {
+  setPinned(["a", "/exports/run-gguf/x.Q4_K_M.gguf", "b"]);
+  usePinnedModelsStore
+    .getState()
+    .replacePinned("/exports/run-gguf/x.Q4_K_M.gguf", "/exports/run-gguf/x.Q8_0.gguf");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, [
+    "a",
+    "/exports/run-gguf/x.Q8_0.gguf",
+    "b",
+  ]);
+  assert.deepEqual(storedPinned(), usePinnedModelsStore.getState().pinned);
+  // Already pinned under the new key: the old one just goes.
+  setPinned(["a", "b", "c"]);
+  usePinnedModelsStore.getState().replacePinned("a", "c");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["b", "c"]);
+  // Not pinned: nothing changes.
+  setPinned(["a"]);
+  usePinnedModelsStore.getState().replacePinned("z", "y");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["a"]);
+  assert.equal(storedPinned(), null);
+});

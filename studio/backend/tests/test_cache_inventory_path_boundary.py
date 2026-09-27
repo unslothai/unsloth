@@ -940,6 +940,7 @@ def test_a_cache_reference_lists_the_quants_of_the_copy_it_names(monkeypatch, cl
         prefer_local_cache = False,
         offline = False,
         local_path = None,
+        include_cache_locations = False,
         hf_token = None,
     ):
         seen.update(repo_id = repo_id, local_path = local_path)

@@ -11,9 +11,11 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 
+import type { CapabilityKey } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { useNpuStatus } from "@/features/npu";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
@@ -55,7 +57,10 @@ import {
   missingExternalModel,
 } from "./model-selector/missing-external-model";
 import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy";
-import type { CatalogGroup } from "./model-selector/model-catalog";
+import {
+  artifactForRepoId,
+  type CatalogGroup,
+} from "./model-selector/model-catalog";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
 import { loraOptionLabel } from "./model-selector/row-meta";
@@ -133,6 +138,8 @@ interface ModelSelectorProps {
   /** Also list community (non-unsloth) models for `task`. Opt-in: only pages whose runtime loads
    *  arbitrary publishers. */
   communityModelPolicy?: CommunityModelPolicy;
+  /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
+  hubCapability?: CapabilityKey;
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
@@ -165,6 +172,9 @@ function ModelSelectorTrigger({
   placeholder?: string;
 }) {
   const severalLoaded = loadedCount > 1;
+  const triggerTitle = severalLoaded
+    ? `${loadedCount} models loaded`
+    : (currentModel?.name ?? placeholder);
   return (
     <PopoverTrigger asChild={true}>
       <button
@@ -224,35 +234,49 @@ function ModelSelectorTrigger({
             {currentModel.icon}
           </span>
         ) : null}
-        {/* Hellix carries more descent than the caps use, so a box-centred label reads ~0.05em
-            low against the icons. Lift name and description together to keep their baseline. */}
-        <span className="relative -top-[0.05em] flex min-w-0 flex-1 items-baseline">
-          <span
-            className={cn(
-              "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
-              triggerLabelClassName,
-            )}
-          >
-            {severalLoaded
-              ? `${loadedCount} models loaded`
-              : (currentModel?.name ?? placeholder)}
-            {showCloudIndicator ? (
-              <HugeiconsIcon
-                icon={CloudIcon}
-                strokeWidth={1.75}
-                className="relative top-[0.15625rem] ml-1.5 mr-[calc(0.36rem*var(--ui-space-scale,1))] size-3.5 shrink-0 text-muted-foreground"
-              />
-            ) : null}
-          </span>
-          {/* With several loaded the title is the count, so this names the one chat is sending to. */}
-          {(severalLoaded ? currentModel?.name : currentModel?.description) && (
+        {/* No vertical offset, so the caps line up with the project switcher. */}
+        <span className="flex min-w-0 flex-1 items-baseline">
+          {/* Name and quant stay whole; only the description truncates. The suffix sits outside this
+              group, so even an over-long name leaves room for it. */}
+          <span className="flex min-w-0 items-baseline">
             <span
               className={cn(
-                "min-w-0 shrink truncate text-xs leading-tight text-muted-foreground",
-                showCloudIndicator ? "" : "ml-2",
+                "flex max-w-full shrink-0 items-baseline whitespace-nowrap font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
+                triggerLabelClassName,
               )}
             >
-              {severalLoaded ? currentModel?.name : currentModel?.description}
+              <span className="min-w-0 truncate">{triggerTitle}</span>
+              {showCloudIndicator ? (
+                <HugeiconsIcon
+                  icon={CloudIcon}
+                  strokeWidth={1.75}
+                  className="relative top-[0.15625rem] ml-1.5 mr-[calc(0.36rem*var(--ui-space-scale,1))] size-3.5 shrink-0 text-muted-foreground"
+                />
+              ) : null}
+            </span>
+            {/* With several loaded the title is the count, so this names the one chat is sending to. */}
+            {(severalLoaded ? currentModel?.name : currentModel?.description) && (
+              <span
+                className={cn(
+                  "min-w-0 truncate text-xs leading-tight text-muted-foreground",
+                  showCloudIndicator ? "" : "ml-2",
+                )}
+              >
+                {severalLoaded ? currentModel?.name : currentModel?.description}
+              </span>
+            )}
+          </span>
+          {currentModel?.descriptionSuffix && (
+            <span
+              className={cn(
+                "shrink-0 whitespace-nowrap text-xs leading-none text-muted-foreground",
+                !(severalLoaded ? currentModel?.name : currentModel?.description) &&
+                  !showCloudIndicator &&
+                  "ml-2",
+              )}
+            >
+              {(severalLoaded ? currentModel?.name : currentModel?.description) ? " - " : ""}
+              {currentModel.descriptionSuffix}
             </span>
           )}
         </span>
@@ -382,6 +406,11 @@ function ModelSelectorContent({
     [loraModels],
 
   );
+  const [npuStatus, setNpuStatus] = useNpuStatus(open && !task);
+  const npu =
+    !task && npuStatus?.supported === true
+      ? { status: npuStatus, onStatusChange: setNpuStatus }
+      : undefined;
   // Connected sits in the section toggle, shown only with external providers.
   const hubSectionTabs = useMemo(
     () =>
@@ -540,6 +569,8 @@ function ModelSelectorContent({
     <PopoverContent
       align="start"
       alignOffset={10}
+      // Read by the model list, which sets its right inset against the panel's own.
+      data-external={hasExternal || undefined}
       aria-label={
         visibleConfigTarget
           ? `Run settings for ${visibleConfigTarget.displayName}`
@@ -636,6 +667,7 @@ function ModelSelectorContent({
               task={task}
               catalog={catalog}
               communityModelPolicy={communityModelPolicy}
+              npu={npu}
               section={effectiveHubSection}
               sectionToggle={
                 <PillTabs
@@ -697,6 +729,7 @@ export function ModelSelector({
   task,
   catalog,
   communityModelPolicy = "none",
+  hubCapability,
   placeholder,
   loaded,
   loadedCount,
@@ -761,7 +794,12 @@ export function ModelSelector({
 
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
-    const found = optionById.get(selected);
+    // A cached vendor copy loads for its unsloth mirror; name it by the mirror's option.
+    const mirrorId =
+      catalog && artifactForRepoId(selected, catalog)?.artifact.repoId;
+    const found =
+      optionById.get(selected) ??
+      (mirrorId ? optionById.get(mirrorId) : undefined);
     // A pick whose connection no longer offers it takes its option away and leaves the id in the
     // checkpoint, and the generic fallback cannot shorten an `external::` id. Name the model the
     // user picked and say why it is unusable, or a tidy name would hide the failure until the
@@ -774,10 +812,11 @@ export function ModelSelector({
     // not the namespaced public id (#7966), matches the catalog row that later replaces this one.
     const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
     if (activeGgufVariant) {
+      // The variant is the quant, so it goes in the suffix.
       const desc = `GGUF · ${activeGgufVariant}`;
       return found
-        ? { ...found, description: desc }
-        : { id: selected, name: fallbackName, description: desc };
+        ? { ...found, description: undefined, descriptionSuffix: desc }
+        : { id: selected, name: fallbackName, descriptionSuffix: desc };
     }
     if (missingExternal) {
       const disabled = missingExternal.state === "disabled";
@@ -798,6 +837,7 @@ export function ModelSelector({
   }, [
     selected,
     optionById,
+    catalog,
     activeGgufVariant,
     externalModels,
     externalConnections,
@@ -821,7 +861,10 @@ export function ModelSelector({
 
   function handleBrowseHub() {
     setOpen(false);
-    void navigate({ to: "/hub", search: { tab: "discover" } });
+    void navigate({
+      to: "/hub",
+      search: { tab: "discover", capability: hubCapability },
+    });
   }
 
   // A Connected group's gear. What is configurable about a remote model lives on its connection,
@@ -874,10 +917,11 @@ export function ModelSelector({
             : undefined
         }
         onFoldersChange={onFoldersChange}
-        // A curated task picker (Images / Video) is self-contained, so it omits this. A
-        // community-enabled one (Audio) already lists past unsloth, so it keeps it.
+        // Curated task pickers show it only with a Hub filter; community-enabled ones always do.
         onBrowseHub={
-          task && communityModelPolicy === "none" ? undefined : handleBrowseHub
+          task && communityModelPolicy === "none" && !hubCapability
+            ? undefined
+            : handleBrowseHub
         }
         onConfigureConnection={handleConfigureConnection}
         onModelsChange={onModelsChange}

@@ -54,6 +54,8 @@ export interface DownloadRequest {
   files?: string[];
   checkpoint?: boolean;
   callerToast?: CallerToast;
+  /** Skip repeat Xet notices for later entries in a staged plan. */
+  skipXetNotice?: boolean;
 }
 
 export interface DownloadPresentation {

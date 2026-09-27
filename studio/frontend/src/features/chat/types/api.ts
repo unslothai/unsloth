@@ -34,6 +34,7 @@ export interface BackendLoraInfo {
   base_model?: string | null;
   source?: "training" | "exported" | null;
   export_type?: "lora" | "merged" | "gguf" | null;
+  size_bytes?: number | null;
   /** Codec of the checkpoint's base model when it fine-tunes an audio model, else null. */
   audio_type?: string | null;
 }
@@ -162,6 +163,11 @@ export interface ValidateModelResponse {
 }
 
 export interface GgufVariantDetail {
+  context_length?: number | null;
+  cache_path?: string | null;
+  /** Opaque stand-in for `cache_path` under host-path redaction; the only name an API-key
+   *  caller has for one specific copy, so a delete keeps it instead of the cleared path. */
+  cache_ref?: string | null;
   filename: string;
   /** Selection identity. Path-qualified when a repo holds several checkpoints at one quant. */
   quant: string;
@@ -216,6 +222,7 @@ export interface LoadModelResponse {
   is_mlx?: boolean;
   /** Models loaded alongside that were unloaded to make room for this one. */
   evicted?: string[];
+  is_npu?: boolean;
   status: string;
   model: string;
   display_name: string;
@@ -331,6 +338,7 @@ export interface UnloadModelRequest {
 
 export interface InferenceStatusResponse {
   is_mlx?: boolean;
+  is_npu?: boolean;
   active_model: string | null;
   model_identifier?: string | null;
   is_vision: boolean;
@@ -670,6 +678,7 @@ export interface OpenAIChatCompletionsRequest {
   external_model?: string;
   encrypted_api_key?: string;
   provider_base_url?: string | null;
+  provider_api_type?: "chat_completions" | "responses";
   /** Boolean toggle for OpenAI/Anthropic ephemeral cache_control. For Gemini the backend also accepts
    *  a cached-content resource name, forwarded as `generationConfig.cachedContent`. */
   enable_prompt_caching?: boolean | string | null;
@@ -685,8 +694,8 @@ export interface OpenAIChatCompletionsRequest {
   /** Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; dropped silently elsewhere. */
   fast_mode?: boolean | null;
   /** Opt into the OpenAI-standard trailing usage chunk on streams. The backend only emits it when
-   *  `include_usage` is set; the local chat UI sends it so the context-usage bar and tok/s
-   *  readout populate. */
+   *  `include_usage` is set; the chat UI sends it for local and connected-provider models so the
+   *  context-usage bar and tok/s readout populate. */
   stream_options?: { include_usage?: boolean } | null;
 }
 
@@ -740,6 +749,8 @@ export interface OpenAIChatChunk {
     // dropped_messages, so re-sending it after a turn that refit several times cannot advance the
     // boundary past the turns actually evicted.
     boundary_messages?: number;
+    // True when this fit started a new checkpoint, including within the current tool loop.
+    checkpoint_started?: boolean;
     // The text the boundary landed ON, so the count can be re-derived by position: a count is only
     // valid against the transcript it was counted on, and deleting an already evicted prompt
     // shortens that transcript.

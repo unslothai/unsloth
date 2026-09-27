@@ -1499,8 +1499,8 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
   // The counter grows from `1/2` to `1234/5000+` in a long chat. The pill must keep its nominal
   // responsive width and let the query field yield that already-reserved room instead of growing.
   // 22.25/28.25rem is exactly the previous short-counter width: fixed input + 12rem chrome.
-  assert.match(surface[1], /(?:^|\s)w-\[22\.25rem\](?:\s|$)/);
-  assert.match(surface[1], /(?:^|\s)sm:w-\[28\.25rem\](?:\s|$)/);
+  assert.match(surface[1], /(?:^|\s)w-\[calc\(22\.25rem\*var\(--ui-space-scale,1\)\)\](?:\s|$)/);
+  assert.match(surface[1], /(?:^|\s)sm:w-\[calc\(28\.25rem\*var\(--ui-space-scale,1\)\)\](?:\s|$)/);
   // Either form: the field's classes are the point, not whether they go
   // through cn().
   const input = /<input[\s\S]*?className=\{?(?:cn\()?\s*"([^"]*)"/.exec(

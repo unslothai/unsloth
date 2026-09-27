@@ -40,6 +40,7 @@ const props: Props = {
     reason: null,
     weightsBytes: 3.25 * GIB,
     kvBytes: 1.5 * GIB,
+    kvCheckpointBytes: 0,
     computeBytes: 0.75 * GIB,
     drafterRuntimeBytes: 0,
     drafterRuntimeGpuBytes: 0,
@@ -101,6 +102,26 @@ test("the disclosure controls an existing breakdown in both states", () => {
     assert.match(html, /Weights/);
     assert.match(html, /KV cache/);
   }
+});
+
+test("context checkpoints get their own host RAM row instead of inflating the KV cache", () => {
+  // Qwen3.8-27B: 4 slots x 10 checkpoints x 149.625 MiB of recurrent state.
+  const checkpoints = 40 * 149.625 * 1024 ** 2;
+  const html = render({
+    expanded: true,
+    estimate: {
+      ...props.estimate!,
+      kvBytes: 16.584 * GIB + checkpoints,
+      kvCheckpointBytes: checkpoints,
+    },
+  });
+  assert.match(html, /KV cache[\s\S]*?16\.58 GiB/);
+  assert.doesNotMatch(html, /22\.43 GiB/);
+  assert.match(
+    html,
+    /Context checkpoints[\s\S]*?5\.84 GiB[\s\S]*?host RAM, filled as conversations grow/,
+  );
+  assert.doesNotMatch(render({ expanded: true }), /Context checkpoints/);
 });
 
 test("a shared pool shows the total without a duplicate GPU figure", () => {

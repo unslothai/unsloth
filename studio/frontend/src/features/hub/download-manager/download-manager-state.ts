@@ -414,6 +414,32 @@ export function findActiveJobForRepo(
   return selected;
 }
 
+export function findActiveScopedJobForRepo(
+  jobs: Record<string, ManagedDownload>,
+  kind: DownloadKind,
+  repoId: string,
+  inventoryKind?: "model" | "gguf",
+): ManagedDownload | null {
+  let selected: ManagedDownload | null = null;
+  const repoIdentity = normalizeRepoIdentity(repoId);
+  for (const job of Object.values(jobs)) {
+    if (job.kind !== kind || normalizeRepoIdentity(job.repoId) !== repoIdentity)
+      continue;
+    if (!job.variant?.startsWith("@")) continue;
+    if (
+      inventoryKind &&
+      downloadInventoryHintKind(job.kind, job.variant, job.inventoryKind) !==
+        inventoryKind
+    )
+      continue;
+    if (!ACTIVE_STATES.has(job.state)) continue;
+    if (isPreferredRepoActiveJob(job, selected)) {
+      selected = job;
+    }
+  }
+  return selected;
+}
+
 function hasRuntimePeerForRepo(
   kind: DownloadKind,
   repoId: string,

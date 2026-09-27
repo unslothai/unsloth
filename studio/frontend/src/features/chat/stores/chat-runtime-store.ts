@@ -2298,6 +2298,7 @@ type ChatRuntimeStore = {
   /** Whether loadedContextLength actually bounds the cache. Null where the backend does
    *  not answer, which is not the same as a confirmed false. */
   loadedContextEnforced: boolean | null;
+  loadedContextBudget: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -3559,6 +3560,7 @@ export function reconcilePinnedReasoningEffort(opts: {
   checkpoint: string;
   caps: ExternalReasoningCapabilities;
   providerType: string | null | undefined;
+  apiType?: "chat_completions" | "responses";
 }): void {
   const state = useChatRuntimeStore.getState();
   if (state.params.checkpoint !== opts.checkpoint) return;
@@ -3569,6 +3571,7 @@ export function reconcilePinnedReasoningEffort(opts: {
   const next = resolveExternalReasoningEffort({
     caps: opts.caps,
     providerType: opts.providerType,
+    apiType: opts.apiType,
     current: pinned
       ? state.reasoningEffort
       : (takeEffortDisplacedByPin() ?? state.reasoningEffort),
@@ -4109,6 +4112,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedIsGguf: null,
   loadedIsMlx: null,
   loadedContextEnforced: null,
+  loadedContextBudget: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,

@@ -13,6 +13,7 @@ import base64
 import os
 import signal
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import multiprocessing as mp
 import queue
 import re
@@ -23,6 +24,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Generator, Mapping, Optional, Sequence, Tuple, Union
 from core.inference.audio_device import audio_device_forces_cpu
+from core.inference.context_refusal import ContextBudgetExceeded
 from core.inference.native_audio import NATIVE_AUDIO_TYPES, is_native_audio_model
 from core.inference.audio_errors import (
     AUDIO_UNSUPPORTED_CODE,
@@ -30,7 +32,7 @@ from core.inference.audio_errors import (
     AudioGenerationCancelledError,
 )
 from utils.hardware import get_device, prepare_gpu_selection
-from utils.utils import hf_env_offline
+from utils.utils import hf_env_offline, is_metal_queue_dead
 
 # Re-exported from the shared helper so GGUF, training and inference share one type. Via PEP 562, not a module-level
 # import: resolving the name imports unsloth_zoo, hence torch, and routes/inference.py imports this module at startup
@@ -176,6 +178,12 @@ def _redact_worker_output(text: str) -> str:
     return _ABSOLUTE_PATH_RE.sub(_shorten_path, redacted)
 
 
+class _WorkerMailbox(queue.Queue):
+    def __init__(self, worker):
+        super().__init__()
+        self.worker = worker
+
+
 class _LoadCancelled(Exception):
     """Internal control flow for a caller-cancelled model load."""
 
@@ -253,32 +261,42 @@ class GenStreamError(str):
     from model output whose visible text starts with "Error:" by checking isinstance(chunk,
     GenStreamError)."""
 
-    __slots__ = ("public",)
+    __slots__ = ("public", "openai_param")
 
     def __new__(
         cls,
         value,
         *,
         public: bool = False,
+        openai_param: Optional[str] = None,
     ):
         obj = str.__new__(cls, value)
         obj.public = bool(public)
+        # Set for a refusal about one request field, so the caller answers 400 not 500.
+        obj.openai_param = openai_param
         return obj
 
 
 class GenStreamErrorRaised(RuntimeError):
     """Internal exception form of ``GenStreamError`` for generator boundaries."""
 
-    __slots__ = ("public",)
+    __slots__ = ("public", "openai_param")
 
     def __init__(
         self,
         value,
         *,
         public: bool = False,
+        openai_param: Optional[str] = None,
     ):
         super().__init__(value)
         self.public = bool(public)
+        self.openai_param = openai_param
+
+    @classmethod
+    def from_chunk(cls, chunk: "GenStreamError") -> "GenStreamErrorRaised":
+        """Keeps public/openai_param so a refusal is not answered 500."""
+        return cls(str(chunk), public = chunk.public, openai_param = chunk.openai_param)
 
 
 def _summed_tool_loop_stats(total, turn):
@@ -353,6 +371,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "max_context_length": model_info.get("max_context_length"),
         "requested_context_length": model_info.get("requested_context_length"),
         "context_length_enforced": model_info.get("context_length_enforced"),
+        "mlx_context_budget": model_info.get("mlx_context_budget"),
     }
 
 
@@ -707,11 +726,13 @@ class InferenceOrchestrator:
                 return None
             request_id = str(uuid.uuid4())
             with self._send_order_lock:
-                from utils.hardware import get_visible_gpu_utilization
+                from utils.hardware import get_visible_gpu_utilization, gpu_query
 
                 live_free: dict[int, float] = {}
                 total_by_index: dict[int, float] = {}
-                for device in get_visible_gpu_utilization().get("devices", []):
+                with gpu_query.fresh_reads():
+                    _live_devices = get_visible_gpu_utilization().get("devices", [])
+                for device in _live_devices:
                     try:
                         index = int(device["index"])
                         total = float(device["vram_total_gb"])
@@ -845,8 +866,13 @@ class InferenceOrchestrator:
             if time.monotonic() >= deadline:
                 return None
             try:
+                from utils.hardware import gpu_query
+
                 result: dict[int, int] = {}
-                for device in get_visible_gpu_utilization().get("devices", []):
+                # Consecutive samples are compared: a cached one would read as settled.
+                with gpu_query.fresh_reads():
+                    devices = get_visible_gpu_utilization().get("devices", [])
+                for device in devices:
                     index = int(device["index"])
                     total = float(device["vram_total_gb"])
                     used = float(device["vram_used_gb"])
@@ -992,6 +1018,31 @@ class InferenceOrchestrator:
     def _ensure_subprocess_alive(self) -> bool:
         return self._proc is not None and self._proc.is_alive()
 
+    def _observe_response(self, resp, worker):
+        """Retire ``worker`` if its Metal queue is dead; nothing else reaps it."""
+        detail = resp.get("error") or ""
+        if worker is None or not is_metal_queue_dead(detail):
+            return resp
+        with self._subprocess_shutdown_lock:
+            if self._proc is not worker:
+                return resp
+            logger.error("Retiring the inference worker: its GPU queue is dead (%s)", detail)
+            if self._shutdown_subprocess_locked(5):  # a survivor still holds the model
+                self.active_model_name = None
+                self.models.clear()
+        return resp
+
+    def _observe_off_thread(self, resp, worker) -> None:
+        """Off the dispatcher thread because retiring joins it."""
+        if worker is None or not is_metal_queue_dead(resp.get("error") or ""):
+            return
+        threading.Thread(
+            target = self._observe_response,
+            args = (resp, worker),
+            daemon = True,
+            name = "inference-retire-worker",
+        ).start()
+
     def _subprocess_crash_message(
         self,
         context: str,
@@ -1054,12 +1105,27 @@ class InferenceOrchestrator:
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"Failed to send command to subprocess: {exc}")
 
-    def _read_resp(self, timeout: float = 1.0) -> Optional[dict]:
-        """Read a response from the subprocess (non-blocking with timeout)."""
-        if self._resp_queue is None:
+    def _read_mailbox(
+        self,
+        mailbox: _WorkerMailbox,
+        timeout: Optional[float] = None,
+    ):
+        resp = mailbox.get_nowait() if timeout is None else mailbox.get(timeout = timeout)
+        return self._observe_response(resp, mailbox.worker)
+
+    def _read_resp(
+        self,
+        timeout: float = 1.0,
+        observe: bool = True,
+    ) -> Optional[dict]:
+        # Handle before queue, else a reload between them blames the replacement.
+        worker = self._proc
+        resp_queue = self._resp_queue
+        if resp_queue is None:
             return None
         try:
-            return self._resp_queue.get(timeout = timeout)
+            resp = resp_queue.get(timeout = timeout)
+            return self._observe_response(resp, worker) if observe else resp
         except queue.Empty:
             return None
         except (EOFError, OSError, ValueError):
@@ -1153,22 +1219,23 @@ class InferenceOrchestrator:
 
         Returns (read_one, drain, release).
         """
-        mailbox: queue.Queue = queue.Queue()
+        mailbox = _WorkerMailbox(self._proc)
         with self._mailbox_lock:
             self._direct_mailboxes[request_id] = mailbox
 
         def read_one(timeout: float = 1.0):
             try:
-                return mailbox.get_nowait()
+                return self._read_mailbox(mailbox)
             except queue.Empty:
                 pass
             thread = self._dispatcher_thread
             if thread is not None and thread.is_alive():
                 try:
-                    return mailbox.get(timeout = timeout)
+                    return self._read_mailbox(mailbox, timeout)
                 except queue.Empty:
                     return None
-            resp = self._read_resp(timeout = timeout)
+            worker = self._proc  # handle before queue, as in _read_resp
+            resp = self._read_resp(timeout = timeout, observe = False)
             if resp is None:
                 return None
             rid = resp.get("request_id")
@@ -1183,9 +1250,11 @@ class InferenceOrchestrator:
                         else:
                             self._mark_worker_started(owner)
                     other.put(resp)
+                # Observe only after hand-over: retiring clears the registry.
+                self._observe_response(resp, worker)
                 # Outside the mailbox check on purpose: a released request's late frames go to nobody.
                 return None
-            return resp
+            return self._observe_response(resp, worker)
 
         def drain(timeout: float = 5.0) -> bool:
             deadline = time.monotonic() + timeout
@@ -1254,6 +1323,8 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video_b64: Optional[str] = None,
+        response_format: Optional[dict] = None,
+        reasoning_is_extracted: bool = False,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -1278,6 +1349,9 @@ class InferenceOrchestrator:
             cmd["seed"] = seed
         if stop:
             cmd["stop"] = stop
+        if response_format is not None:
+            cmd["response_format"] = response_format
+            cmd["reasoning_is_extracted"] = bool(reasoning_is_extracted)
         if video_b64:
             cmd["video_base64"] = video_b64
         if use_adapter is not None:
@@ -1362,7 +1436,17 @@ class InferenceOrchestrator:
                     stats_holder["stats"] = resp.get("stats")
                 return
             elif rtype == "gen_error":
-                yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
+                _budget = resp.get("context_budget")
+                if _budget:
+                    # Rebuilt rather than yielded as text: the route arms match on the type.
+                    raise ContextBudgetExceeded(
+                        _budget["request_tokens"], _budget["context_tokens"]
+                    )
+                yield GenStreamError(
+                    f"Error: {resp.get('error', 'Unknown error')}",
+                    public = bool(resp.get("public", False)),
+                    openai_param = resp.get("openai_param"),
+                )
                 return
 
     def _start_dispatcher(self) -> bool:
@@ -1417,6 +1501,7 @@ class InferenceOrchestrator:
             if self._resp_queue is None:
                 break
 
+            worker = self._proc  # handle before queue, as in _read_resp
             try:
                 resp = self._resp_queue.get(timeout = _DISPATCH_POLL_INTERVAL)
             except queue.Empty:
@@ -1435,6 +1520,7 @@ class InferenceOrchestrator:
                     continue
 
                 # Route to mailbox if a matching request_id exists
+                delivered = False
                 if rid:
                     with self._mailbox_lock:
                         mbox = self._mailboxes.get(rid) or self._direct_mailboxes.get(rid)
@@ -1449,13 +1535,16 @@ class InferenceOrchestrator:
                             else:
                                 self._mark_worker_started(owner)
                         mbox.put(resp)
-                        continue
+                        delivered = True
 
-                logger.debug(
-                    "Dispatcher: no mailbox for request_id=%s type=%s, dropping",
-                    rid,
-                    rtype,
-                )
+                if not delivered:
+                    logger.debug(
+                        "Dispatcher: no mailbox for request_id=%s type=%s, dropping",
+                        rid,
+                        rtype,
+                    )
+                # Every response: an abandoned mailbox is never read.
+                self._observe_off_thread(resp, worker)
             except Exception:
                 logger.exception("Inference dispatcher: failed to route a response; continuing")
                 continue
@@ -1488,6 +1577,8 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
+        response_format: Optional[dict] = None,
+        reasoning_is_extracted: bool = False,
     ) -> Generator[str, None, None]:
         """Dispatched generation, sending the command without holding _gen_lock. Uses a per-request
         mailbox for tokens so two compare-mode requests can be queued at once. The subprocess
@@ -1543,6 +1634,8 @@ class InferenceOrchestrator:
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
             stop = stop,
+            response_format = response_format,
+            reasoning_is_extracted = reasoning_is_extracted,
             use_adapter = use_adapter,
             tools = tools,
             enable_thinking = enable_thinking,
@@ -1554,7 +1647,7 @@ class InferenceOrchestrator:
             video_b64 = video,
         )
 
-        mailbox: queue.Queue = queue.Queue()
+        mailbox = _WorkerMailbox(self._proc)
         with self._mailbox_lock:
             # _unload_pending alone is not enough: an unload that ran fully since _start_dispatcher clears it in its
             # finally and stops the dispatcher, so it reads False here though the dispatcher is gone and the model
@@ -1614,7 +1707,7 @@ class InferenceOrchestrator:
 
         def read_mailbox(timeout):
             try:
-                return mailbox.get(timeout = timeout)
+                return self._read_mailbox(mailbox, timeout)
             except queue.Empty:
                 return None
 
@@ -1638,15 +1731,15 @@ class InferenceOrchestrator:
 
     def _drain_mailbox(
         self,
-        mailbox: queue.Queue,
+        mailbox: _WorkerMailbox,
         timeout: float = 5.0,
     ) -> None:
         """Drain a mailbox until gen_done/gen_error, discarding tokens."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                resp = mailbox.get(
-                    timeout = min(_DISPATCH_POLL_INTERVAL, deadline - time.monotonic())
+                resp = self._read_mailbox(
+                    mailbox, min(_DISPATCH_POLL_INTERVAL, deadline - time.monotonic())
                 )
             except queue.Empty:
                 continue
@@ -1754,6 +1847,7 @@ class InferenceOrchestrator:
     # get unloaded by the swap.
     load_generation: int = 0
 
+    @_invalidates_gpu_memory("inference load")
     def load_model(
         self,
         config,
@@ -2135,6 +2229,7 @@ class InferenceOrchestrator:
         from core.inference import stt_registry
         return stt_registry.resident()
 
+    @_invalidates_gpu_memory("inference unload")
     def unload_model(self, model_name: str) -> bool:
         # active_model_name can differ in case from the client's raw /unload name (the load path canonicalizes
         # casing). Match case-insensitively and use the canonical spelling so the guard, unload command, and cleanup
@@ -2332,6 +2427,8 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
+        response_format: Optional[dict] = None,
+        reasoning_is_extracted: bool = False,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess. ``tools`` / ``enable_thinking`` /
         ``reasoning_effort`` / ``preserve_thinking`` are forwarded so the template can render
@@ -2365,6 +2462,8 @@ class InferenceOrchestrator:
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
             stop = stop,
+            response_format = response_format,
+            reasoning_is_extracted = reasoning_is_extracted,
             video = video,
         )
 
@@ -2477,7 +2576,7 @@ class InferenceOrchestrator:
                 for chunk in stream:
                     if isinstance(chunk, GenStreamError):
                         close_stream = True
-                        raise GenStreamErrorRaised(str(chunk), public = chunk.public)
+                        raise GenStreamErrorRaised.from_chunk(chunk)
                     yield chunk
             finally:
                 if close_stream:
@@ -2568,9 +2667,7 @@ class InferenceOrchestrator:
         try:
             for chunk in stream:
                 if isinstance(chunk, GenStreamError):
-                    # Preserve the public/operational flag so the route can surface the real message (e.g. "model is
-                    # being unloaded") instead of a generic error. Mirrors the safetensors tool loop's _single_turn.
-                    raise GenStreamErrorRaised(str(chunk), public = chunk.public)
+                    raise GenStreamErrorRaised.from_chunk(chunk)
                 yield chunk
         finally:
             close = getattr(stream, "close", None)
@@ -2605,6 +2702,8 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
+        response_format: Optional[dict] = None,
+        reasoning_is_extracted: bool = False,
     ) -> Generator[str, None, None]:
         """Inner generation logic: sends the command to the subprocess and yields tokens. Serialized
         by _gen_lock (one generation at a time) so concurrent readers don't consume each other's
@@ -2648,6 +2747,8 @@ class InferenceOrchestrator:
                 frequency_penalty = frequency_penalty,
                 logit_bias = logit_bias,
                 stop = stop,
+                response_format = response_format,
+                reasoning_is_extracted = reasoning_is_extracted,
                 use_adapter = use_adapter,
                 tools = tools,
                 enable_thinking = enable_thinking,
