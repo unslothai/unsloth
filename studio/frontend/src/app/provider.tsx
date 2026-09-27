@@ -19,6 +19,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
 import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { DeepLinkHandler } from "@/features/deep-links";
 import {
   DownloadManagerPanel,
@@ -42,10 +43,9 @@ import { TauriRepairContext } from "@/hooks/tauri-repair-context";
 import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { isTauri } from "@/lib/api-base";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
-import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
-import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { getToastOffsets } from "@/lib/toast-offset";
 import { Z_LAYER } from "@/lib/z-layers";
 import { useRouterState } from "@tanstack/react-router";
@@ -75,6 +75,7 @@ import {
   finalizeAppWindowLayout,
   measureWindowLayout,
   observeDevicePixelRatio,
+  prepareSetupWindow,
   shouldFinishWindowLayoutWait,
 } from "./window-layout-lifecycle";
 
@@ -156,8 +157,9 @@ async function observeWindowLayout(
 
   return {
     waitForSettled: async () => {
-      let observedRevision = revision;
-      let sawPostShowChange = false;
+      // Include restore events that arrived before this wait started.
+      let observedRevision = 0;
+      let sawNativeChange = revision > 0;
       for (
         let elapsed = 0;
         elapsed < WINDOW_LAYOUT_TIMEOUT_MS && isCurrent();
@@ -166,10 +168,10 @@ async function observeWindowLayout(
         await delay(WINDOW_LAYOUT_POLL_MS);
         if (revision !== observedRevision) {
           observedRevision = revision;
-          sawPostShowChange = true;
+          sawNativeChange = true;
           continue;
         }
-        if (shouldFinishWindowLayoutWait(sawPostShowChange)) {
+        if (shouldFinishWindowLayoutWait(sawNativeChange)) {
           return;
         }
       }
@@ -268,20 +270,32 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   if (!isCurrent()) return;
 
   const win = windowModule.getCurrentWindow();
-  await invoke("reset_app_window_layout_initialized");
-  if (!isCurrent()) return;
-  await win.setSizeConstraints(null);
-  if (!isCurrent()) return;
-  await win.setResizable(false);
-  if (!isCurrent()) return;
-  const measured = await measureTauriWindowLayout(windowModule, win, isCurrent);
-  if (!measured) return;
-  const setupSize = fitWindowSize(
-    PREFERRED_SETUP_WINDOW_SIZE,
-    measured.bounds.maximum,
-  );
-  await placeWindow(win, windowModule, measured, setupSize, isCurrent);
-  if (!isCurrent()) return;
+  if (
+    !(await prepareSetupWindow({
+      resetLayout: () => invoke("reset_app_window_layout_initialized"),
+      unmaximize: () => win.unmaximize(),
+      clearConstraints: () => win.setSizeConstraints(null),
+      enableResize: () => win.setResizable(true),
+      resizeForSetup: async () => {
+        const measured = await measureTauriWindowLayout(
+          windowModule,
+          win,
+          isCurrent,
+        );
+        if (!measured) return false;
+        const setupSize = fitWindowSize(
+          PREFERRED_SETUP_WINDOW_SIZE,
+          measured.bounds.maximum,
+        );
+        await placeWindow(win, windowModule, measured, setupSize, isCurrent);
+        return isCurrent();
+      },
+      disableResize: () => win.setResizable(false),
+      isCurrent,
+    }))
+  ) {
+    return;
+  }
   if (await wasLaunchedHidden()) return;
   if (!isCurrent()) return;
   await win.show();
@@ -339,17 +353,22 @@ async function applyAppWindowLayout(
 
   let requestedSize: LogicalWindowSize | undefined;
   let restored = false;
+  let nativeRestored = false;
   let layoutObserver: WindowLayoutObserver | null = null;
   try {
     if (hasInitializedAppLayout && hasSavedState) {
       restored = true;
+      nativeRestored = await invoke<boolean>("take_native_layout_restored");
+      if (!isCurrent()) return;
       // Subscribe before restoring so native events cannot race listener setup.
       layoutObserver = await observeWindowLayout(win, isCurrent);
       if (!layoutObserver) return;
-      await restoreStateCurrent(
-        StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED,
-      );
-      if (!isCurrent()) return;
+      if (!nativeRestored) {
+        await restoreStateCurrent(
+          StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED,
+        );
+        if (!isCurrent()) return;
+      }
     } else {
       const cssSafeLogicalWidth = measured.monitor
         ? Math.round(
@@ -364,16 +383,21 @@ async function applyAppWindowLayout(
       await placeWindow(win, windowModule, measured, requestedSize, isCurrent);
     }
     // Apply work-area constraints after restore to preserve the saved size.
+    const hiddenAtLaunch = await wasLaunchedHidden();
+    if (!isCurrent()) return;
     await finalizeAppWindowLayout({
       restored,
+      nativeRestored,
       measured,
       show: async () => {
-        if (await wasLaunchedHidden()) return false;
+        if (hiddenAtLaunch) return false;
         if (!isCurrent()) return false;
         await win.show();
         return true;
       },
-      waitForSettled: layoutObserver?.waitForSettled,
+      waitForSettled: hiddenAtLaunch
+        ? undefined
+        : layoutObserver?.waitForSettled,
       measure: () => measureTauriWindowLayout(windowModule, win, isCurrent),
       setMinimumConstraints: (minimum) =>
         win.setSizeConstraints({
@@ -883,7 +907,10 @@ function TauriWrapper({ children }: { children: ReactNode }) {
                 </>
               }
             >
-              <LlamaUpdateBanner positioned={false} enabled={!hidesTitlebarSidebar} />
+              <LlamaUpdateBanner
+                positioned={false}
+                enabled={!hidesTitlebarSidebar}
+              />
               <DownloadManagerPanel positioned={false} />
               <LoadedModelsIndicator positioned={false} />
             </TauriUpdateLayer>

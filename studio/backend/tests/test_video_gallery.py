@@ -503,6 +503,26 @@ def test_thumbnail_scales_large_frames_to_gallery_width():
         assert image.size == (192, 341)
 
 
+def test_thumbnail_refuses_frames_past_max_pixels_even_when_the_header_understates_them():
+    import io
+
+    av = pytest.importorskip("av")
+    clip = _real_mp4_bytes(frames = 2, size = 256)
+    lying = io.BytesIO()
+    with av.open(io.BytesIO(clip)) as src, av.open(lying, "w", format = "mp4") as out:
+        stream = out.add_stream("mpeg4", rate = 8)
+        stream.width = stream.height = 16
+        stream.pix_fmt = "yuv420p"
+        for packet in src.demux(src.streams.video[0]):
+            if packet.dts is not None:
+                packet.stream = stream
+                out.mux(packet)
+    assert gallery.first_frame_webp(io.BytesIO(clip), container = "mp4", max_pixels = 2 * 256 * 256)
+    for data in (clip, lying.getvalue()):
+        with pytest.raises(RuntimeError):
+            gallery.first_frame_webp(io.BytesIO(data), container = "mp4", max_pixels = 128 * 128)
+
+
 def test_thumbnail_rejects_unowned_and_invalid_videos():
     assert gallery.thumbnail("does-not-exist") is None
     record = gallery.save(_mp4(), _meta())

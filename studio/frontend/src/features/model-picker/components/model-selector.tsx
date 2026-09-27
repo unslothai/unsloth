@@ -15,6 +15,7 @@ import type { CapabilityKey } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { useNpuStatus } from "@/features/npu";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
@@ -391,6 +392,11 @@ function ModelSelectorContent({
     [loraModels],
 
   );
+  const [npuStatus, setNpuStatus] = useNpuStatus(open && !task);
+  const npu =
+    !task && npuStatus?.supported === true
+      ? { status: npuStatus, onStatusChange: setNpuStatus }
+      : undefined;
   // Connected sits in the section toggle, shown only with external providers.
   const hubSectionTabs = useMemo(
     () =>
@@ -549,6 +555,8 @@ function ModelSelectorContent({
     <PopoverContent
       align="start"
       alignOffset={10}
+      // Read by the model list, which sets its right inset against the panel's own.
+      data-external={hasExternal || undefined}
       aria-label={
         visibleConfigTarget
           ? `Run settings for ${visibleConfigTarget.displayName}`
@@ -644,6 +652,7 @@ function ModelSelectorContent({
               task={task}
               catalog={catalog}
               communityModelPolicy={communityModelPolicy}
+              npu={npu}
               section={effectiveHubSection}
               sectionToggle={
                 <PillTabs

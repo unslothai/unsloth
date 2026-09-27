@@ -2819,10 +2819,11 @@ def test_media_payload_in_a_tool_result_is_swept():
 def test_custom_provider_is_treated_as_template_applying():
     """A "custom" provider is a user-supplied OpenAI-compatible base_url
     (routes/providers.py:207-213), which is how a self-hosted vLLM or llama.cpp is
-    registered without its preset, so it has to be swept like the named ones (#7066)."""
+    registered without its preset, so it has to be swept like the named ones (#7066). The
+    NPU's lemond serves FastFlowLM, which applies the model's own template as well."""
     from core.inference.external_provider import _TEMPLATE_APPLYING_PROVIDERS
 
-    assert _TEMPLATE_APPLYING_PROVIDERS == {"vllm", "llama_cpp", "ollama", "custom"}
+    assert _TEMPLATE_APPLYING_PROVIDERS == {"vllm", "llama_cpp", "ollama", "custom", "lemonade"}
     providers = (_REPO_ROOT / "studio" / "backend" / "routes" / "providers.py").read_text(
         encoding = "utf-8"
     )

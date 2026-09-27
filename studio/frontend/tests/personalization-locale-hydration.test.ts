@@ -365,7 +365,7 @@ function widthRemote(chatWidthSaved?: boolean, chatWidth?: string) {
   const remote = remotePersonalization("auto");
   return {
     ...remote,
-    version: 4,
+    version: 5,
     chatWidthSaved,
     appearance: {
       ...remote.appearance,
