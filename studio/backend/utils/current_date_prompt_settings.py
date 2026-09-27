@@ -15,6 +15,9 @@ CURRENT_DATE_PROMPT_SETTING_KEY = "include_current_date_in_prompt"
 CURRENT_DATE_PROMPT_PREFIX = "The current date is "
 # "is now" never matches CURRENT_DATE_PROMPT_LINE_RE, so the system-line refresh leaves it alone.
 CURRENT_DATE_UPDATE_PREFIX = "The current date is now "
+CURRENT_DATE_UPDATE_NOTE_RE = re.compile(
+    rf"\s*{re.escape(CURRENT_DATE_UPDATE_PREFIX)}[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}\.\s*$"
+)
 CURRENT_DATE_PROMPT_LINE_RE = re.compile(
     rf"(?m)^{re.escape(CURRENT_DATE_PROMPT_PREFIX)}[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}\.(?=\r?$)"
 )
@@ -136,3 +139,8 @@ def conversation_start_date(thread_id: Any, request: Any = None) -> date | None:
     except Exception:
         return None
     return _request_local_date(request, now = created)
+
+
+def strip_current_date_update_note(text: str) -> str:
+    """The user's own words, without the date note Studio appends to a turn."""
+    return CURRENT_DATE_UPDATE_NOTE_RE.sub("", text)

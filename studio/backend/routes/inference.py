@@ -6085,7 +6085,8 @@ def _append_current_date_note(
         if isinstance(content, str):
             if content.endswith(note):
                 return messages
-            new_content: Any = f"{content}\n\n{note}" if content else note
+            new_content: Any = f"{content}\n\n{note}"
+            has_text = bool(content.strip())
         elif isinstance(content, list):
             texts = [p.get("text") for p in content if isinstance(p, dict)]
             if note in texts:
@@ -6096,8 +6097,12 @@ def _append_current_date_note(
             ):
                 continue
             new_content = [*content, {"type": "text", "text": note}]
+            has_text = any(isinstance(t, str) and t.strip() for t in texts)
         else:
             continue
+        # a media-only turn falls back to "transcribe" / "describe" defaults the note would replace.
+        if not has_text:
+            return messages
         copied = list(messages)
         copied[index] = {**msg, "content": new_content}
         return copied

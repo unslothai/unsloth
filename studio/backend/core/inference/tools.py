@@ -74,6 +74,7 @@ from core.inference.mcp_client import (
 )
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
+from utils.current_date_prompt_settings import strip_current_date_update_note
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
@@ -13640,20 +13641,20 @@ def _last_searchable_text(messages):
 
 
 def _last_user_text(conversation: list[dict]) -> str:
-    """Plain text of the most recent user turn (text parts only)."""
+    """Plain text of the most recent user turn (text parts only), without Studio's date note."""
     for msg in reversed(conversation):
         if msg.get("role") != "user":
             continue
         content = msg.get("content")
         if isinstance(content, str):
-            return content.strip()
+            return strip_current_date_update_note(content).strip()
         if isinstance(content, list):
             parts = [
                 p.get("text", "")
                 for p in content
                 if isinstance(p, dict) and p.get("type") in ("text", "input_text")
             ]
-            return " ".join(t for t in parts if t).strip()
+            return strip_current_date_update_note(" ".join(t for t in parts if t)).strip()
         return ""
     return ""
 

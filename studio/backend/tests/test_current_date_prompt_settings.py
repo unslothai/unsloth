@@ -578,6 +578,29 @@ class TestDateChangeNote:
         assert out[2] is messages[2]
         assert out[0]["content"] == "list files\n\nThe current date is now 2026-08-16."
 
+    @pytest.mark.parametrize(
+        "content",
+        ["", "  ", [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}]],
+    )
+    def test_a_media_only_turn_keeps_its_transcribe_or_describe_default(self, content):
+        from core.inference.chat_template_helpers import last_user_text
+
+        self.today = "2026-08-16"
+        messages = [{"role": "user", "content": content}]
+        out = self.inference._append_current_date_note(messages, object(), thread_id = "t")
+        assert out is messages
+        assert last_user_text(out) == ""
+
+    def test_retrieval_queries_ignore_the_note(self):
+        from core.inference.tools import _last_user_text
+        self.today = "2026-08-16"
+        for content in ("refund policy", [{"type": "text", "text": "refund policy"}]):
+            noted = self.inference._append_current_date_note(
+                [{"role": "user", "content": content}], object(), thread_id = "t"
+            )
+            assert noted[0]["content"] != content
+            assert _last_user_text(noted) == "refund policy"
+
     def test_note_is_not_added_twice(self):
         self.today = "2026-08-16"
         once = self.inference._append_current_date_note(
