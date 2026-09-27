@@ -105,9 +105,7 @@ def _is_opaque_cache(value):
 
 def _copy_value(value, mx):
     if isinstance(value, mx.array):
-        # Shares a buffer the array spans, and a write through either one then copies it first,
-        # since MLX writes in place only into a buffer nothing else references. A slice of a larger
-        # one is copied out: kept, it would hold the rest alive uncounted.
+        # Safe to share: MLX writes in place only into an unreferenced buffer; slices are copied out.
         return mx.contiguous(value)
     if isinstance(value, list):
         return [_copy_value(item, mx) for item in value]
@@ -161,7 +159,6 @@ def release_cache_entries(entries):
 
 
 def copy_cache_entries(entries):
-    """Copies that share array buffers until either side writes, evaluated so they hold data."""
     import mlx.core as mx
 
     for entry in entries:
@@ -241,7 +238,6 @@ class _ForwardRecord:
         self.forwards = 0
         self.capture_at = 0
         self.snapshot = None
-        # Where the prefill ends, as the last token's own forward begins.
         self.tail_at = 0
         self.tail = None
         self.resume_offset = None
@@ -363,16 +359,12 @@ class RecordingForward:
 
 
 def _cache_classes(name):
-    """``name`` from mlx-vlm's and mlx-lm's cache modules, whichever are loaded: a cache can
-    only be built from a loaded one."""
     modules = (sys.modules.get(m) for m in ("mlx_vlm.models.cache", "mlx_lm.models.cache"))
     return tuple(getattr(m, name) for m in modules if hasattr(m, name))
 
 
 def _rows_in_order(entry, classes):
-    """Whether ``entry`` holds its rows as positions 0..offset-1 in order: a plain KV entry, or
-    a sliding-window one that has not dropped a row yet (Studio's context limit makes every
-    layer one on models without their own cache layout)."""
+    """Rows are positions 0..offset-1: plain KV, or a ring that has not dropped a row yet."""
     kv, rings = classes
     if entry.keys is None:
         return False
@@ -382,10 +374,7 @@ def _rows_in_order(entry, classes):
 
 
 def _shared_kv_pairs(entries, base, classes, pairs):
-    """Collect each entry of ``entries`` whose rows are in order with its counterpart in
-    ``base``; False when ``base`` cannot serve every one of them. All or none: an entry only
-    loses its order by growing, so what a snapshot shares with its base, the base shares with
-    any longer one, and the two always move together."""
+    """All or none: False when ``base`` cannot serve every in-order entry."""
     if isinstance(entries, (list, tuple)):
         if not isinstance(base, (list, tuple)) or len(entries) != len(base):
             return False
@@ -408,15 +397,13 @@ def _shared_kv_pairs(entries, base, classes, pairs):
 
 
 def share_kv_rows(entries, base):
-    """Point every entry of ``entries`` that holds its rows in order at the leading rows of its
-    counterpart in ``base``, all or none, and return the bytes now read through ``base``."""
+    """Point in-order entries at ``base``'s leading rows; returns bytes now read through ``base``."""
     pairs = []
     classes = (_cache_classes("KVCache"), _cache_classes("RotatingKVCache"))
     if not _shared_kv_pairs(entries, base, classes, pairs):
         return 0
     shared = 0
     for entry, source in pairs:
-        # Its own capacity too, so a resume grows the cache exactly as it would have.
         rows = entry.keys.shape[2]
         entry.keys = source.keys[..., :rows, :]
         entry.values = source.values[..., :rows, :]
@@ -425,9 +412,7 @@ def share_kv_rows(entries, base):
 
 
 def compact_sliding_windows(entries):
-    """Drop the rows a sliding-window entry holds beyond its window after a multi-row update.
-    Its next update, of any size, reads none of them, so this changes nothing that update
-    computes, and a snapshot would otherwise keep a whole prefill chunk."""
+    """Drop ring rows past the window after a multi-row update; no later update reads them."""
     rings = _cache_classes("RotatingKVCache")
     pending = list(entries)
     compacted = []
@@ -438,7 +423,6 @@ def compact_sliding_windows(entries):
             pending.extend(nested)
         elif type(entry) in rings and entry.keys is not None:
             excess = entry.keys.shape[2] - entry.max_size
-            # In temporal order, as a multi-row update leaves it; the trim is the single-row update's own.
             if excess > 0 and entry._idx == entry.keys.shape[2]:
                 entry.keys = entry._trim(excess, entry.keys)
                 entry.values = entry._trim(excess, entry.values)
@@ -447,17 +431,12 @@ def compact_sliding_windows(entries):
     if compacted:
         import mlx.core as mx
 
-        # Now, so the rows cut are released rather than held by a pending slice.
         mx.eval(compacted)
 
 
 class VLMPromptSnapshotStore:
-    """Boundary snapshots, most recently used last, under a byte budget. A snapshot that a
-    longer one of the same conversation extends reads its in-order KV rows from that one, its
-    base: both were prefilled on one grid, so those rows are the same, and a base's views are
-    only counted once. One snapshot per key may instead hold where a prompt's prefill ended, a
-    replay: its last rows came from a chunk that stopped there, so it serves only a prompt of
-    that length and reads through no other snapshot."""
+    """LRU boundary snapshots under a byte budget; a shorter prefix reads KV rows from its base.
+    A replay (one per key) serves only a prompt of that exact length and reads through no base."""
 
     def __init__(
         self,
@@ -475,8 +454,7 @@ class VLMPromptSnapshotStore:
         return len(self._entries)
 
     def lookup(self, key, token_ids, limit):
-        """Longest stored prefix of ``token_ids`` under ``key`` ending by ``limit``, or the replay
-        holding all of it but the last token."""
+        """Longest stored prefix ending by ``limit``, or the replay holding all but the last token."""
         best = None
         for item, (entries, _nbytes) in self._entries.items():
             stored_key, prefix = item
@@ -519,7 +497,6 @@ class VLMPromptSnapshotStore:
         if replay:
             self._replays[key] = item
         longer = [other for other in reversed(self._entries) if _extends(other, item)]
-        # A replay is the base of what it extends, so the one it replaces takes nothing along.
         base = self._bases.get(longer[0], longer[0]) if longer and not replay else item
         rebased = {
             other
@@ -530,7 +507,6 @@ class VLMPromptSnapshotStore:
             and self._rebase(other, base)
         }
         for other in readers:
-            # Still reading the replaced buffers, which nothing counts any more.
             if other not in rebased:
                 self.discard(other)
         if replay and replaced not in (None, item):
@@ -556,7 +532,7 @@ class VLMPromptSnapshotStore:
         self._entries.move_to_end(item)
         base = self._bases.get(item)
         if base is not None:
-            # Behind what reads through it, so eviction reaches it last.
+            # Base is evicted last.
             self._entries.move_to_end(base)
 
     def _is_replay(self, item):
@@ -572,7 +548,6 @@ class VLMPromptSnapshotStore:
 
     def discard(self, item):
         self._pop(item)
-        # Views would keep a dropped base's buffers alive, uncounted.
         for other in [other for other, base in self._bases.items() if base == item]:
             self.discard(other)
 
@@ -589,7 +564,6 @@ class VLMPromptSnapshotStore:
 
 
 def _extends(item, other):
-    """Whether ``item`` holds a strictly longer prefix of ``other``'s conversation."""
     (key, prefix), (other_key, other_prefix) = item, other
     return (
         key == other_key
@@ -690,7 +664,6 @@ class VLMPromptCacheSession:
         self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
         record.capture_at = (boundary - prefix_len) // self.step
         if prefix_len <= boundary < len(token_ids) - 1:
-            # One chunk more: what ends the prefill.
             record.tail_at = record.capture_at + 1
         self.reused_tokens = prefix_len
         return prefix_len
@@ -730,7 +703,6 @@ class VLMPromptCacheSession:
         record = self._forward.record
         stored = self._store_boundary(record.snapshot)
         replay = len(self._token_ids) - 1
-        # Only a prefill on the offered chunks: a declined offer started over from row 0.
         if (
             record.tail is not None
             and record.resume_offset == self.reused_tokens

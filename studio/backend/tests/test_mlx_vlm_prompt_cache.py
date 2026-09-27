@@ -445,7 +445,6 @@ def test_session_captures_the_boundary_and_resumes_leaving_a_copy_behind(fake_mx
     assert stored and store.lookup("m", longer + [-1], limit = 768)[1] == 768
 
     session, _cache, stored = _generate(store, language_model, longer + [1])
-    # Nothing new on the grid; the replay is this prompt's own.
     assert session.reused_tokens == 768 and stored and len(store) == 5
 
 
@@ -455,13 +454,11 @@ def test_session_replays_a_prompt_from_where_its_prefill_ended(fake_mx):
     ids = list(range(700))
     _generate(store, language_model, ids)
     assert [len(item[1]) for item in store._entries] == [512, 699]
-    # Its last rows came from a chunk that ended there: no other prompt reads them.
     assert store.lookup("m", ids + [1] * 300, limit = 768)[1] == 512
     session, cache, stored = _generate(store, language_model, ids)
     assert session.reused_tokens == 699 and cache[0].offset == 700 and not stored
     assert session._forward.record.snapshot is None and session._forward.record.tail is None
     assert store.lookup("m", ids + [1] * 300, limit = 768)[1] == 512
-    # One per conversation: the next prompt's replaces it.
     _generate(store, language_model, ids + [1])
     assert [len(item[1]) for item in store._entries] == [512, 700]
 
@@ -481,7 +478,6 @@ def test_session_stores_what_the_snapshot_holds_when_reuse_was_declined(fake_mx,
     assert len(store) == 3 and store.lookup("m", ids + [-1], limit = 1024)[1] == 256
     assert store.lookup("t", ids, limit = 512)[1] == 512
     assert not list(snapshots._arrays(original, sys.modules["mlx.core"]))
-    # The captures only: the boundary and where this prefill ended.
     assert original[0].offset == 1024 and len(fake_mx) == 2
 
     # A copy that cannot be made drops the snapshot it was taken from, too.
@@ -615,14 +611,13 @@ def test_session_prefills_the_media_block_and_chains_from_it(fake_mx, caplog):
     assert session.produced_tokens == 0
     assert [len(item[1]) for item in store._entries] == [356, 612, 699]
     store.clear()
-    session, _cache, stored = generate(300)  # no whole chunk past the block: only a replay
+    session, _cache, stored = generate(300)
     assert session.reused_tokens == 100 and block.prefilled == 2 and stored
     assert [len(item[1]) for item in store._entries] == [100, 299]
     # Declined and run from zero: the capture lands at 256, off the grid; block dropped.
     session, _cache, stored = generate(500, honour_reuse = False)
     assert session.reused_tokens == 100 and block.prefilled == 2
     assert not stored and len(store) == 0
-    # Run from zero, its prefill ends where the block's would, in other chunks.
     session, _cache, stored = generate(200, honour_reuse = False)
     assert session.reused_tokens == 100 and not stored
 
@@ -796,7 +791,6 @@ def test_copy_shares_buffers_yet_keeps_what_the_live_cache_overwrites():
         entry.update_and_fetch(rows(0, 16), -rows(0, 16))
     live = [kv, ring]
     mx.eval([entry.state for entry in live])
-    # Whole buffers: the KV cache's next row lands in its spare capacity.
     held = [np.array(entry.keys) for entry in live]
 
     mx.synchronize()
@@ -805,7 +799,6 @@ def test_copy_shares_buffers_yet_keeps_what_the_live_cache_overwrites():
     mx.synchronize()
     assert mx.get_active_memory() - before < cache_entries_nbytes(live) // 2
 
-    # Both write their next row in place; the full ring's goes over row 0.
     for entry in live:
         entry.update_and_fetch(rows(16, 1), -rows(16, 1))
     mx.eval([entry.state for entry in live])
@@ -864,7 +857,6 @@ def test_store_holds_the_kv_rows_nested_snapshots_share_once():
         entries[2][0] = mx.full((1, 64), float(start + n))
         mx.eval([entry.state for entry in entries])
 
-    # A context-limited layer is a window that has not dropped a row yet.
     short = [cache.KVCache(), cache.RotatingKVCache(max_size = 4096, keep = 4)]
     short.append(cache.ArraysCache(size = 1))
     advance(short, 0, 256)
@@ -890,7 +882,6 @@ def test_store_holds_the_kv_rows_nested_snapshots_share_once():
     for entry, rows in zip(entries, served):
         assert mx.array_equal(entry.state[0], rows).item()
     assert entries[2][0][0, 0].item() == 256.0
-    # The base stays behind what reads through it, is kept with it, and takes it along when dropped.
     base = ("m", tuple(ids))
     assert list(store._entries)[-1] == base
     store.retain(("m", tuple(ids[:256])))
@@ -898,7 +889,6 @@ def test_store_holds_the_kv_rows_nested_snapshots_share_once():
     store.discard(base)
     assert len(store) == 0 and store.nbytes == 0
 
-    # Replaced by a base it cannot read through, it would hold buffers nothing counts.
     store.store("m", ids[:256], short)
     store.store("m", ids, extended)
     store.store("m", ids, copy_cache_entries(extended))
@@ -908,7 +898,6 @@ def test_store_holds_the_kv_rows_nested_snapshots_share_once():
     store.store("m", ids, lone)
     assert len(store) == 1 and store.nbytes == cache_entries_nbytes(lone)
 
-    # A window that dropped rows no longer holds them from position 0.
     windows = [[cache.RotatingKVCache(max_size = 16)] for _ in range(2)]
     for entries, n in zip(windows, (32, 64)):
         entries.append(cache.KVCache())
@@ -916,8 +905,6 @@ def test_store_holds_the_kv_rows_nested_snapshots_share_once():
         advance(entries, 0, n // 2)
         advance(entries, n // 2, n // 2)
     assert snapshots.share_kv_rows(*windows) == windows[0][1].keys.nbytes * 2
-    # Snapshots whose windows are still whole cannot follow a base whose window is not, so none
-    # of their layers do: dropping the one they read through takes the other along.
     nested = [[cache.KVCache(), cache.RotatingKVCache(max_size = 16)] for _ in range(3)]
     for entries, n in zip(nested, (8, 12, 32)):
         entries.append(cache.ArraysCache(size = 1))
@@ -935,7 +922,6 @@ def test_a_replay_reads_through_no_snapshot_yet_serves_as_a_base():
     cache = pytest.importorskip("mlx_vlm.models.cache")
 
     def entries(n, last_chunk):
-        # Rows from 512 on as a chunk ending at ``n`` would produce them, in its own bits.
         rows = mx.arange(n * 64, dtype = mx.float32).reshape(1, 1, n, 64)
         rows = rows + last_chunk * (mx.arange(n) >= 512).reshape(1, 1, n, 1)
         kv = cache.KVCache()
@@ -953,11 +939,9 @@ def test_a_replay_reads_through_no_snapshot_yet_serves_as_a_base():
     grid = ("m", tuple(ids[:512]))
     store.store("m", ids[:512], entries(512, 0.0))
     assert store._bases[grid] == ("m", tuple(ids[:600])) and store._entries[grid][1] == 0
-    # A shorter prompt's replay takes over what it extends from the one it replaces.
     store.store("m", ids[:580], entries(580, 0.25), replay = True)
     assert ("m", tuple(ids[:600])) not in store._entries
     assert store._bases[grid] == ("m", tuple(ids[:580])) and store._entries[grid][1] == 0
-    # One that diverges earlier takes what read through the replaced one with it.
     divergent = ids[:300] + [-1] * 700
     store.store("m", divergent[:590], entries(590, 0.75), replay = True)
     assert set(store._entries) == {("m", tuple(ids[:768])), ("m", tuple(divergent[:590]))}
