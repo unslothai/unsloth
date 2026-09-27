@@ -43,7 +43,7 @@ from fastapi.testclient import TestClient
 import core.inference.diffusion as diffusion_module
 import core.inference.gpu_arbiter as gpu_arbiter
 import core.inference.image_gallery as gallery
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference.diffusion import DiffusionBackend
 from routes.inference import router as openai_router, studio_router
 
@@ -307,7 +307,7 @@ def test_generate_reports_the_engaged_scheme_when_it_differs_from_the_request(
     monkeypatch.setattr(
         diffusion_module,
         "select_transformer_quant_scheme",
-        lambda target, mode, family = None: engaged,
+        lambda target, mode, family = None, **_kw: engaged,
     )
     monkeypatch.setattr(diffusion_module, "resolve_prequant_source", lambda fam, scheme, **kw: None)
     monkeypatch.setattr(
@@ -455,6 +455,7 @@ def engaged_client(monkeypatch, tmp_path):
     # production. Both persistence paths reach the same gallery, so both are exercised here.
     app.include_router(openai_router, prefix = "/v1")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app), backend, saved
 
 

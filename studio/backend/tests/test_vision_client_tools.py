@@ -491,7 +491,12 @@ def test_the_worker_forwards_the_processor_template_to_the_parent():
     import ast
     import pathlib
 
-    source = pathlib.Path("core/inference/worker.py").read_text()
+    # Anchored on this file, like the same read in test_native_context_length and
+    # test_audio_unsupported_backend_error. A bare relative path resolves against the
+    # working directory, so this only found the worker when pytest happened to be
+    # invoked from studio/backend and raised FileNotFoundError from anywhere else.
+    worker = pathlib.Path(__file__).resolve().parents[1] / "core/inference/worker.py"
+    source = worker.read_text("utf-8")
     tree = ast.parse(source)
     keys: set = set()
     for node in ast.walk(tree):

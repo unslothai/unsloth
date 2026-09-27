@@ -143,8 +143,74 @@ function isCodeBlock(block: string): boolean {
   const backtick = BACKTICK_OPENER_RE.exec(block);
   return backtick === null || !backtick[1].includes("`");
 }
+// Must admit exactly what `LINK_DEFINITION_RE` admits: a label resolves only when BOTH ends
+// carry it, so a narrower cap here made the wider one there unreachable (unslothai/unsloth#9540).
 const LINK_REFERENCE_RE =
-  /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
+  /!?\[(?:\\[\s\S]|[^\]\\]){1,999}\]\[(?:\\[\s\S]|[^\]\\]){0,999}\]/u;
+// Label side as above, plus `[` and the optional `!`; the reference side needs no `!`.
+const LINK_REFERENCE_WINDOW = 999 * 3 + 3;
+// The `[` at the seam restarts escape parity, so the reference label is ONE candidate: the text
+// up to the first unescaped `]`. Tested once here instead of from every `[` in the window.
+const LINK_REFERENCE_LABEL_RE = /^(?:\\[\s\S]|[^\]\\]){0,999}$/u;
+
+function unescapedClose(text: string, from: number): number {
+  for (let i = text.indexOf("]", from); i >= 0; i = text.indexOf("]", i + 1)) {
+    if (!isEscaped(text, i)) {
+      return i;
+    }
+  }
+  return -1;
+}
+// Same predicate as the regex over the whole reply, scanned from the rare `][` as
+// `hasLinkDefinition` scans from `]:`. Neither label admits a bare `]`, which bounds a candidate.
+function hasLinkReference(text: string): boolean {
+  let bracket = text.indexOf("[");
+  let nextBracket = bracket < 0 ? -1 : text.indexOf("[", bracket + 1);
+  let close = -1;
+  let nextClose = text.indexOf("]");
+  let after = -1;
+  for (let mid = text.indexOf("]["); mid >= 0; mid = text.indexOf("][", mid + 1)) {
+    // No empty label, so the opener is at `mid - 2` or earlier. Forward: `lastIndexOf` is not.
+    while (nextBracket >= 0 && nextBracket <= mid - 2) {
+      bracket = nextBracket;
+      nextBracket = text.indexOf("[", bracket + 1);
+    }
+    while (nextClose >= 0 && nextClose < mid) {
+      if (!isEscaped(text, nextClose)) {
+        close = nextClose;
+      }
+      nextClose = text.indexOf("]", nextClose + 1);
+    }
+    if (after < mid + 2) {
+      after = unescapedClose(text, mid + 2);
+      if (after < 0) {
+        // Nothing closes from here on, so no later seam can either. Returning rather than
+        // caching -1, which sits behind every later seam and rescans the tail: quadratic.
+        return false;
+      }
+    }
+    if (after - mid - 2 > LINK_REFERENCE_WINDOW) {
+      continue;
+    }
+    let start = mid < LINK_REFERENCE_WINDOW ? 0 : mid - LINK_REFERENCE_WINDOW;
+    if (close > start) {
+      start = close + 1;
+    }
+    if (bracket < start || bracket > mid - 2) {
+      continue;
+    }
+    // After the opener test, so a seam with no opener pays neither.
+    if (!LINK_REFERENCE_LABEL_RE.test(text.slice(mid + 2, after))) {
+      continue;
+    }
+    // `start`, not `bracket`: the class admits `[` inside a label, so an earlier one can
+    // match where the last one fails. Skip test only, as in `hasLinkDefinition`.
+    if (LINK_REFERENCE_RE.test(text.slice(start, after + 1))) {
+      return true;
+    }
+  }
+  return false;
+}
 // Still the first line of a single block, for `updateLinkDefinitionParity` below.
 const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
@@ -187,9 +253,12 @@ function blocksOf(markdown: string): readonly string[] {
 // not, so the scope would otherwise follow the reply's line ending. NOT for
 // `blocksOf`, whose one memo slot is shared with `parseMarkdownIntoRenderableBlocks`:
 // a normalised copy misses it and costs a CRLF reply two splits per render.
+// Definition first is a cost decision: both are pure so the conjunction is unchanged, but only
+// the one asked SECOND is skipped, and the reference scan is the dearer. `][` without a `]:` is
+// the shape that separates them.
 function documentProse(markdown: string): string | null {
   const normalized = normalizeLineEndings(markdown);
-  if (!LINK_REFERENCE_RE.test(normalized) || !hasLinkDefinition(normalized)) {
+  if (!hasLinkDefinition(normalized) || !hasLinkReference(normalized)) {
     return null;
   }
   const prose = normalizeLineEndings(
@@ -197,7 +266,7 @@ function documentProse(markdown: string): string | null {
       .filter((block) => !isCodeBlock(block))
       .join("\n"),
   );
-  return LINK_DEFINITION_LINE_RE.test(prose) && LINK_REFERENCE_RE.test(prose)
+  return LINK_DEFINITION_LINE_RE.test(prose) && hasLinkReference(prose)
     ? prose
     : null;
 }

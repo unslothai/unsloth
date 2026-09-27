@@ -10,7 +10,10 @@ https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md"""
 from __future__ import annotations
 
 import logging
+import math
 import os
+import re
+import struct
 import sys
 from typing import Any, Callable, Iterable, Mapping, Optional
 
@@ -36,7 +39,7 @@ CACHE_RAM_MAX_MIB = 1024 * 1024
 # llama.cpp allocates this default even when Studio emits no flag.
 LLAMA_CTX_CHECKPOINTS_DEFAULT = 32
 
-# Recurrent checkpoints live in host RAM and can be much larger than SWA snapshots.
+# Checkpoints live in host RAM: a hybrid's whole recurrent state, or an SWA model's window.
 CTX_CHECKPOINT_HOST_BUDGET_FRACTION = 0.05
 CTX_CHECKPOINT_HOST_BUDGET_FLOOR_BYTES = 1024**3
 # Keep rollback available; zero forces a full prompt re-ingest after divergence.
@@ -346,6 +349,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     parse_cache_override(out)
     parse_split_mode_override(out)
     parse_gpu_layers_override(out)
+    parse_tensor_split_override(out)
     parse_reasoning_budget_override(out)
     parse_reasoning_budget_message_override(out)
     return out
@@ -914,6 +918,100 @@ def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     if value < -1:
         raise ValueError("llama-server GPU layers flag requires an integer value of at least -1")
     return value
+
+
+def _as_emitted(value: float) -> float:
+    """``value`` as the manual launcher will write it, which is ``f"{x:g}"``: six significant
+    digits, so the text the child parses is not always the number validated here."""
+    return float(f"{value:g}")
+
+
+def _as_float32(value: float) -> float:
+    """``value`` as llama.cpp would hold it: overflow becomes inf rather than raising.
+
+    ``struct.pack`` raises OverflowError where the C cast it stands in for saturates, so the
+    caller would have to guard every call site instead of just testing isfinite once.
+    """
+    try:
+        return struct.unpack("=f", struct.pack("=f", value))[0]
+    except OverflowError:
+        return math.copysign(math.inf, value)
+
+
+# Largest share llama.cpp's float array can hold; anything above is out_of_range to std::stof.
+_FLOAT32_MAX = struct.unpack("=f", struct.pack("=f", 3.4028234663852886e38))[0]
+
+# FLT_MIN. libstdc++ throws out_of_range on any SUBNORMAL result too, so the range has a floor as
+# well as a ceiling (measured: stof("1e-38") throws, stof("0") is fine). Rounding decides, not the
+# literal: 1.1754943508222874e-38 rounds UP to FLT_MIN and is accepted.
+_FLOAT32_MIN_NORMAL = struct.unpack("=f", struct.pack("=f", 1.1754943508222875e-38))[0]
+
+
+def parse_tensor_split_override(
+    args: Optional[Iterable[str]], *, reserialized: bool = False
+) -> Optional[list[float]]:
+    """Return the last user-supplied ``-ts`` / ``--tensor-split`` ratios from extras.
+
+    Manual GPU memory with ``gpu_layers >= 0`` strips ``--tensor-split`` because the first-class
+    ``tensor_split`` field owns it. Callers must promote the last-wins extras value into that
+    field first, or an asymmetric MoE split such as ``-ts 2.2,1`` is discarded and llama-server
+    falls back to a near-even layer count (#11330).
+
+    Delimiters match llama.cpp's ``[,/]+`` (``-ts 3/1`` is the same as ``-ts 3,1``). Degenerate
+    values raise so ``validate_extra_args`` can refuse them as a 400 rather than stripping them
+    silently.
+
+    Bounds are llama.cpp's, not Python's: ``std::stof`` (common/arg.cpp) throws
+    ``std::out_of_range`` above FLT_MAX and on any subnormal, and the shares are prefix-summed
+    into a float array (llama-model.cpp), so a value this parser would take as a finite double
+    can still abort the server at startup. Every share is rounded to float32 BEFORE it joins the
+    total, because that is the order llama.cpp adds them in.
+
+    ``reserialized`` is which text the child will parse. Manual mode promotes the ratio into the
+    first-class field and the launcher writes it back out with ``f"{x:g}"``, six significant
+    digits, so there the emitted string is judged. Everywhere else ``-ts`` is pass-through and
+    llama-server reads the user's own text, so judging a rounded version would refuse input that
+    runs: ``-ts 1.1754943508222874e-38,1`` is fine as typed and subnormal once re-serialized.
+    """
+    raw_value = _last_flag_value(args, _TENSOR_SPLIT_FLAGS)
+    if raw_value is None:
+        return None
+    try:
+        parts = [float(p) for p in re.split(r"[,/]+", raw_value) if p.strip()]
+    except ValueError as exc:
+        raise ValueError(
+            "llama-server --tensor-split requires a comma- or slash-separated list of numbers"
+        ) from exc
+    if not parts:
+        raise ValueError(
+            "llama-server --tensor-split requires a comma- or slash-separated list of numbers"
+        )
+    if any((not math.isfinite(v)) or v < 0 for v in parts):
+        raise ValueError("llama-server --tensor-split entries must be finite and non-negative")
+    if sum(parts) <= 0:
+        raise ValueError("llama-server --tensor-split must have a positive total")
+    running = 0.0
+    for part in parts:
+        # The share as the CHILD will hold it: its own text under pass-through, the launcher's
+        # six-digit rendering once manual mode re-serializes it.
+        share = _as_float32(_as_emitted(part) if reserialized else part)
+        if not math.isfinite(share):
+            raise ValueError(
+                "llama-server --tensor-split entries must fit in a 32-bit float "
+                f"(at most {_FLOAT32_MAX:g})"
+            )
+        if part != 0 and share < _FLOAT32_MIN_NORMAL:
+            raise ValueError(
+                "llama-server --tensor-split entries must be 0 or at least "
+                f"{_FLOAT32_MIN_NORMAL:g}: a smaller share is a subnormal float and "
+                "std::stof refuses it"
+            )
+        # llama.cpp prefix-sums the shares it parsed, in float32, so the total is accumulated
+        # the same way rather than in double and compared once.
+        running = _as_float32(running + share)
+        if not math.isfinite(running):
+            raise ValueError("llama-server --tensor-split adds up past the 32-bit float range")
+    return parts
 
 
 def check_batch_floor(args: Optional[Iterable[str]], n_parallel: int) -> None:

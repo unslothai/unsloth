@@ -2274,6 +2274,7 @@ def test_cached_models_scan_marks_a_companion_only_pipeline_partial(monkeypatch,
     )
 
     assert row["partial"] is True
+    assert row["companion_prefetch"] is True
     # A companion-only snapshot arrived intact, so it has no Resume / Redownload story.
     assert row["partial_transport"] is None
 
@@ -2296,6 +2297,7 @@ def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_
     )
 
     assert row["partial"] is False
+    assert row["companion_prefetch"] is False
     assert row["single_file"] is False
 
 
@@ -3986,6 +3988,62 @@ def test_hf_cache_scan_fallback_row_uses_local_model_info_alias(monkeypatch, tmp
     assert rows[0].model_format == "unknown"
 
 
+@pytest.mark.parametrize(
+    "with_denoiser, download_partial, expected",
+    [(False, False, True), (True, False, False), (False, True, False)],
+    ids = ["companion-only", "complete-pipeline", "interrupted-download"],
+)
+def test_hf_cache_scan_flags_a_companion_only_pipeline(
+    monkeypatch, tmp_path, with_denoiser, download_partial, expected
+):
+    """The local listing must carry companion_prefetch like the cached one: the Hub merges both."""
+    cache_dir = tmp_path / "hub"
+    repo_dir = cache_dir / "models--Org--Pipeline"
+    snapshot = repo_dir / "snapshots" / _SNAPSHOT_SHA
+    for rel in ("vae/diffusion_pytorch_model.safetensors", "text_encoder/model.safetensors"):
+        (snapshot / rel).parent.mkdir(parents = True, exist_ok = True)
+        (snapshot / rel).write_bytes(b"weights")
+    (snapshot / "transformer").mkdir(parents = True, exist_ok = True)
+    (snapshot / "transformer" / "config.json").write_text("{}", encoding = "utf-8")
+    if with_denoiser:
+        (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
+    (snapshot / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "QwenImagePipeline",
+                "transformer": ["diffusers", "QwenImageTransformer2DModel"],
+                "vae": ["diffusers", "AutoencoderKLQwenImage"],
+                "text_encoder": ["transformers", "Qwen2_5_VLForConditionalGeneration"],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "refs" / "main").write_text(_SNAPSHOT_SHA)
+    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "blobs" / "blob").write_bytes(b"content")
+    monkeypatch.setattr(
+        local_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *_args, **_kwargs: download_partial,
+    )
+    monkeypatch.setattr(
+        local_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda *_args, **_kwargs: False,
+    )
+
+    rows = [
+        row for row in local_inventory._scan_hf_cache(cache_dir) if row.model_id == "Org/Pipeline"
+    ]
+
+    assert rows
+    assert all(row.companion_prefetch is expected for row in rows)
+    if expected:
+        # Still partial, so no picker loads a pipeline without its denoiser.
+        assert all(row.partial for row in rows)
+
+
 def test_hf_cache_scan_uses_gguf_partial_row_for_variant_state(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     cache_dir = tmp_path / "hub"
@@ -4068,6 +4126,32 @@ def test_qwen3_asr_gguf_name_hint_is_not_classified_as_chat(monkeypatch, tmp_pat
 
     assert catalog_classification._gguf_path_task(asr) == "automatic-speech-recognition"
     assert catalog_classification._gguf_path_task(chat) == "text-generation"
+
+
+def test_a_gguf_with_no_architecture_is_classified_from_its_name(monkeypatch, tmp_path):
+    """``unsloth/Qwen-Image-2.1-GGUF`` files have kv_count 0; a name that says nothing stays None."""
+    from hub.services.models import catalog_classification
+
+    image = tmp_path / "qwen-image-2.1-Q4_K_M.gguf"
+    chat = tmp_path / "Some-Chat-7B-Q4_K_M.gguf"
+    image.write_bytes(b"gguf")
+    chat.write_bytes(b"gguf")
+    monkeypatch.setattr(catalog_classification, "_gguf_architecture", lambda _path: None)
+    monkeypatch.setattr(catalog_classification, "_gguf_family_buildable", lambda _hints: True)
+
+    assert (
+        catalog_classification._gguf_path_task(image, ("unsloth/Qwen-Image-2.1-GGUF",))
+        == "text-to-image"
+    )
+    assert catalog_classification._gguf_path_task(chat) is None
+
+    # H3's conditioner is kv_count 0 too; only the fl2va / ref2va denoisers are video.
+    conditioner = tmp_path / "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+    denoiser = tmp_path / "minimax_h3_fl2va_pruned-Q4_K.gguf"
+    conditioner.write_bytes(b"gguf")
+    denoiser.write_bytes(b"gguf")
+    assert catalog_classification._gguf_path_task(conditioner) is None
+    assert catalog_classification._gguf_path_task(denoiser) == "text-to-video"
 
 
 def test_local_inventory_filters_embedder_configured_by_snapshot_path(monkeypatch, tmp_path):
@@ -6032,6 +6116,176 @@ def test_delete_variant_unlinks_unshared_blob(monkeypatch, tmp_path):
     assert (repo_dir / "blobs" / "q8blob").exists()
     q8 = repo_dir / "snapshots" / "rev1" / "model-Q8_0.gguf"
     assert q8.is_symlink() and q8.exists()
+
+
+_SHARED_XET_HASH = "ab" + "cd" * 31
+
+
+def _share_variant_blob(
+    hub_cache,
+    repo_dir,
+    blob_name,
+    xet_hash = _SHARED_XET_HASH,
+):
+    pytest.importorskip("huggingface_hub.utils._shared_blobs")
+    store = hub_cache / "blobs"
+    store.mkdir(exist_ok = True)
+    (store / ".huggingface-shared-blobs").write_text("1\n")
+    payload = store / xet_hash[:2] / xet_hash
+    payload.parent.mkdir(exist_ok = True)
+    blob = repo_dir / "blobs" / blob_name
+    if payload.exists():
+        blob.unlink()
+    else:
+        blob.replace(payload)
+    with payload.with_name(f"{xet_hash}.refs").open("a") as refs:
+        refs.write(f"{repo_dir.name}/blobs/{blob_name}\n")
+    blob.symlink_to(os.path.relpath(payload, blob.parent))
+    return payload
+
+
+def test_delete_variant_sweeps_shared_xet_blob(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    repo = _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200, "q8blob": b"y" * 300},
+        snapshot_links = [
+            ("rev1", "model-Q4_K_M.gguf", "q4blob"),
+            ("rev1", "model-Q8_0.gguf", "q8blob"),
+        ],
+    )
+    payload = _share_variant_blob(tmp_path, repo_dir, "q4blob")
+    _shared_setup_13(monkeypatch, repo, tmp_path)
+
+    result = deletion._delete_cached_model_blocking("Org/Repo-GGUF", "Q4_K_M", None)
+
+    assert result["status"] == "deleted"
+    assert not (repo_dir / "blobs" / "q4blob").is_symlink()
+    assert not payload.exists()
+    assert not payload.with_name(f"{payload.name}.refs").exists()
+    assert (repo_dir / "blobs" / "q8blob").exists()
+    q8 = repo_dir / "snapshots" / "rev1" / "model-Q8_0.gguf"
+    assert q8.is_symlink() and q8.exists()
+
+
+def test_delete_variant_keeps_shared_xet_blob_referenced_by_other_repo(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    repo = _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200},
+        snapshot_links = [("rev1", "model-Q4_K_M.gguf", "q4blob")],
+    )
+    payload = _share_variant_blob(tmp_path, repo_dir, "q4blob")
+    other_dir = tmp_path / "models--Org--Other-GGUF"
+    other_repo = _build_variant_cache_repo(
+        other_dir,
+        blob_specs = {"q4blob": b"x" * 200},
+        snapshot_links = [("rev1", "model-Q4_K_M.gguf", "q4blob")],
+    )
+    other_repo.repo_id = "Org/Other-GGUF"
+    _share_variant_blob(tmp_path, other_dir, "q4blob")
+    _shared_setup_13(monkeypatch, repo, tmp_path)
+
+    result = deletion._delete_cached_model_blocking("Org/Repo-GGUF", "Q4_K_M", None)
+
+    assert result["status"] == "deleted"
+    assert not (repo_dir / "blobs" / "q4blob").is_symlink()
+    assert payload.exists()
+    other = other_dir / "snapshots" / "rev1" / "model-Q4_K_M.gguf"
+    assert other.is_symlink() and other.exists()
+    # huggingface_hub 1.32 cannot rewrite the manifest on Windows (it fsyncs a read-only handle), so a stale line for the removed link may stay; it names nothing on disk and is ignored.
+    manifest = payload.with_name(f"{payload.name}.refs")
+    live = [line for line in manifest.read_text().splitlines() if os.path.lexists(tmp_path / line)]
+    assert live == ["models--Org--Other-GGUF/blobs/q4blob"]
+
+    monkeypatch.setattr(
+        deletion.cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [other_repo])],
+    )
+    deletion._delete_cached_model_blocking("Org/Other-GGUF", "Q4_K_M", None)
+
+    assert not payload.exists()
+    assert not manifest.exists()
+
+
+def test_reclaim_replaced_variant_sweeps_shared_xet_blob(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    repo = _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200, "q8blob": b"y" * 300},
+        snapshot_links = [
+            ("rev1", "model-Q4_K_M.gguf", "q4blob"),
+            ("rev1", "model-Q8_0.gguf", "q8blob"),
+        ],
+    )
+    payload = _share_variant_blob(tmp_path, repo_dir, "q4blob")
+    _shared_setup_13(monkeypatch, repo, tmp_path)
+
+    result = deletion.reclaim_replaced_gguf_variant(
+        "Org/Repo-GGUF", "Q4_K_M", frozenset({"newq4blob"}), None, hub_cache = tmp_path
+    )
+
+    assert result["status"] == "reclaimed"
+    assert result["deleted_blobs"] == 1
+    assert not (repo_dir / "blobs" / "q4blob").is_symlink()
+    assert not payload.exists()
+    assert (repo_dir / "blobs" / "q8blob").exists()
+
+
+def test_unlink_variant_blob_sweeps_when_cache_root_is_in_another_form(tmp_path):
+    real = tmp_path / "real"
+    repo_dir = real / "models--Org--Repo-GGUF"
+    _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200},
+        snapshot_links = [("rev1", "model-Q4_K_M.gguf", "q4blob")],
+    )
+    payload = _share_variant_blob(real, repo_dir, "q4blob")
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(real, target_is_directory = True)
+    except OSError:
+        pytest.skip("directory symlinks unavailable")
+    (repo_dir / "snapshots" / "rev1" / "model-Q4_K_M.gguf").unlink()
+    blob = alias / repo_dir.name / "blobs" / "q4blob"
+
+    # The resolved root differs lexically from the blob's path, as a Windows 8.3 short name does.
+    freed = deletion._unlink_variant_blob(blob, real.resolve())
+
+    assert freed == 200
+    assert not payload.exists()
+    assert not payload.with_name(f"{payload.name}.refs").exists()
+
+
+def _load_fresh_deletion(monkeypatch, shared_blobs_module):
+    import importlib.util
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub.utils._shared_blobs", shared_blobs_module)
+    spec = importlib.util.spec_from_file_location("_deletion_probe", deletion.__file__)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_shared_blob_helpers_disabled_when_private_signature_changes(monkeypatch):
+    stub = SimpleNamespace(
+        shared_blob_target = lambda blob_path: None,
+        sweep_shared_blob = lambda store_path, cache_root: 0,
+    )
+    fresh = _load_fresh_deletion(monkeypatch, stub)
+    assert fresh.shared_blob_target is None
+    assert fresh.sweep_shared_blob is None
+
+
+def test_shared_blob_helpers_kept_when_signature_matches(monkeypatch):
+    stub = SimpleNamespace(
+        shared_blob_target = lambda blob_path, cache_dir: None,
+        sweep_shared_blob = lambda store_path, *, cache_dir: 0,
+    )
+    fresh = _load_fresh_deletion(monkeypatch, stub)
+    assert fresh.shared_blob_target is stub.shared_blob_target
+    assert fresh.sweep_shared_blob is stub.sweep_shared_blob
 
 
 def test_delete_variant_surfaces_locked_file_as_conflict(monkeypatch, tmp_path):

@@ -34,6 +34,7 @@ from hub.utils.hf_tokens import (
     is_anonymous,
     qualify_cache_identity,
 )
+from hub.utils.host_paths import scrub_paths, short_path_for_log
 from hub.utils.state_dir import RepoType
 
 from hub.utils.hf_cache_state import (
@@ -388,7 +389,7 @@ def _with_repos_dropped_by_scan(
         )
     except (AttributeError, TypeError, ValueError) as exc:
         # A scan shape we cannot rebuild is left untouched rather than dropped.
-        logger.debug("Could not attach recovered HF cache repos: %s", exc)
+        logger.debug("Could not attach recovered HF cache repos: %s", scrub_paths(exc))
         return scan
 
 
@@ -420,7 +421,9 @@ def _compute_all_hf_cache_scans() -> list:
             if recovered.repos:
                 scans.append(recovered)
         except Exception as exc:
-            logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
+            logger.warning(
+                "Could not scan HF cache %s: %s", short_path_for_log(cache_root), scrub_paths(exc)
+            )
     return scans
 
 

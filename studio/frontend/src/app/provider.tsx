@@ -19,6 +19,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
 import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { DeepLinkHandler } from "@/features/deep-links";
 import {
   DownloadManagerPanel,
@@ -42,12 +43,13 @@ import { TauriRepairContext } from "@/hooks/tauri-repair-context";
 import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { isTauri } from "@/lib/api-base";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
-import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { getToastOffsets } from "@/lib/toast-offset";
 import { Z_LAYER } from "@/lib/z-layers";
 import { useRouterState } from "@tanstack/react-router";
+import { setDesktopShellReady } from "./desktop-shell-ready";
 import { MotionConfig } from "motion/react";
 import {
   type CSSProperties,
@@ -73,6 +75,7 @@ import {
   finalizeAppWindowLayout,
   measureWindowLayout,
   observeDevicePixelRatio,
+  prepareSetupWindow,
   shouldFinishWindowLayoutWait,
 } from "./window-layout-lifecycle";
 
@@ -154,8 +157,9 @@ async function observeWindowLayout(
 
   return {
     waitForSettled: async () => {
-      let observedRevision = revision;
-      let sawPostShowChange = false;
+      // Include restore events that arrived before this wait started.
+      let observedRevision = 0;
+      let sawNativeChange = revision > 0;
       for (
         let elapsed = 0;
         elapsed < WINDOW_LAYOUT_TIMEOUT_MS && isCurrent();
@@ -164,10 +168,10 @@ async function observeWindowLayout(
         await delay(WINDOW_LAYOUT_POLL_MS);
         if (revision !== observedRevision) {
           observedRevision = revision;
-          sawPostShowChange = true;
+          sawNativeChange = true;
           continue;
         }
-        if (shouldFinishWindowLayoutWait(sawPostShowChange)) {
+        if (shouldFinishWindowLayoutWait(sawNativeChange)) {
           return;
         }
       }
@@ -266,20 +270,32 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   if (!isCurrent()) return;
 
   const win = windowModule.getCurrentWindow();
-  await invoke("reset_app_window_layout_initialized");
-  if (!isCurrent()) return;
-  await win.setSizeConstraints(null);
-  if (!isCurrent()) return;
-  await win.setResizable(false);
-  if (!isCurrent()) return;
-  const measured = await measureTauriWindowLayout(windowModule, win, isCurrent);
-  if (!measured) return;
-  const setupSize = fitWindowSize(
-    PREFERRED_SETUP_WINDOW_SIZE,
-    measured.bounds.maximum,
-  );
-  await placeWindow(win, windowModule, measured, setupSize, isCurrent);
-  if (!isCurrent()) return;
+  if (
+    !(await prepareSetupWindow({
+      resetLayout: () => invoke("reset_app_window_layout_initialized"),
+      unmaximize: () => win.unmaximize(),
+      clearConstraints: () => win.setSizeConstraints(null),
+      enableResize: () => win.setResizable(true),
+      resizeForSetup: async () => {
+        const measured = await measureTauriWindowLayout(
+          windowModule,
+          win,
+          isCurrent,
+        );
+        if (!measured) return false;
+        const setupSize = fitWindowSize(
+          PREFERRED_SETUP_WINDOW_SIZE,
+          measured.bounds.maximum,
+        );
+        await placeWindow(win, windowModule, measured, setupSize, isCurrent);
+        return isCurrent();
+      },
+      disableResize: () => win.setResizable(false),
+      isCurrent,
+    }))
+  ) {
+    return;
+  }
   if (await wasLaunchedHidden()) return;
   if (!isCurrent()) return;
   await win.show();
@@ -337,17 +353,22 @@ async function applyAppWindowLayout(
 
   let requestedSize: LogicalWindowSize | undefined;
   let restored = false;
+  let nativeRestored = false;
   let layoutObserver: WindowLayoutObserver | null = null;
   try {
     if (hasInitializedAppLayout && hasSavedState) {
       restored = true;
+      nativeRestored = await invoke<boolean>("take_native_layout_restored");
+      if (!isCurrent()) return;
       // Subscribe before restoring so native events cannot race listener setup.
       layoutObserver = await observeWindowLayout(win, isCurrent);
       if (!layoutObserver) return;
-      await restoreStateCurrent(
-        StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED,
-      );
-      if (!isCurrent()) return;
+      if (!nativeRestored) {
+        await restoreStateCurrent(
+          StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED,
+        );
+        if (!isCurrent()) return;
+      }
     } else {
       const cssSafeLogicalWidth = measured.monitor
         ? Math.round(
@@ -362,16 +383,21 @@ async function applyAppWindowLayout(
       await placeWindow(win, windowModule, measured, requestedSize, isCurrent);
     }
     // Apply work-area constraints after restore to preserve the saved size.
+    const hiddenAtLaunch = await wasLaunchedHidden();
+    if (!isCurrent()) return;
     await finalizeAppWindowLayout({
       restored,
+      nativeRestored,
       measured,
       show: async () => {
-        if (await wasLaunchedHidden()) return false;
+        if (hiddenAtLaunch) return false;
         if (!isCurrent()) return false;
         await win.show();
         return true;
       },
-      waitForSettled: layoutObserver?.waitForSettled,
+      waitForSettled: hiddenAtLaunch
+        ? undefined
+        : layoutObserver?.waitForSettled,
       measure: () => measureTauriWindowLayout(windowModule, win, isCurrent),
       setMinimumConstraints: (minimum) =>
         win.setSizeConstraints({
@@ -530,10 +556,12 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-content-top-inset": "0px",
   "--studio-non-chat-content-top-inset": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
   "--studio-hidden-route-top-inset": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
-  "--studio-chat-header-height": "44px",
-  "--studio-chat-header-padding-top": "9px",
-  "--studio-media-header-left-inset": "0.5rem",
-  "--studio-chat-control-height": "33px",
+  // Chat chrome holds text, so it follows the UI font size. The window
+  // geometry above does not: it is the OS window's, not ours.
+  "--studio-chat-header-height": "calc(44px * var(--ui-space-scale, 1))",
+  "--studio-chat-header-padding-top": "calc(9px * var(--ui-space-scale, 1))",
+  "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
+  "--studio-chat-control-height": "calc(33px * var(--ui-space-scale, 1))",
   "--studio-chat-header-right-inset": "0px",
 } as CSSProperties;
 
@@ -547,10 +575,11 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-startup-top-inset": "42px",
   "--studio-content-top-inset": "34px",
   "--studio-hidden-route-top-inset": "34px",
-  "--studio-chat-header-height": "48px",
-  "--studio-chat-header-padding-top": "9px",
-  "--studio-media-header-left-inset": "0.5rem",
-  "--studio-chat-control-height": "33px",
+  // Same split as the native-mac block: chat chrome scales, window chrome does not.
+  "--studio-chat-header-height": "calc(48px * var(--ui-space-scale, 1))",
+  "--studio-chat-header-padding-top": "calc(9px * var(--ui-space-scale, 1))",
+  "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
+  "--studio-chat-control-height": "calc(33px * var(--ui-space-scale, 1))",
   "--studio-chat-header-right-inset": "0px",
   "--studio-window-control-inset": "112px",
 } as CSSProperties;
@@ -634,6 +663,12 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const [nativeMacControlsHidden, setNativeMacControlsHidden] = useState(false);
   const [appShellReady, setAppShellReady] = useState(false);
   const canMountApp = status === "running" && desktopAuthReady;
+  // Same as showApp below: until the shell is ready the app sits hidden behind the startup screen.
+  useEffect(() => {
+    if (!isTauri) return;
+    setDesktopShellReady(canMountApp && appShellReady);
+    return () => setDesktopShellReady(false);
+  }, [canMountApp, appShellReady]);
 
   // Readiness is delivered by the mounted AppReadinessBoundary, not the
   // global reload-snapshot event: an obsolete async load cannot reveal us.
@@ -872,7 +907,10 @@ function TauriWrapper({ children }: { children: ReactNode }) {
                 </>
               }
             >
-              <LlamaUpdateBanner positioned={false} enabled={!hidesTitlebarSidebar} />
+              <LlamaUpdateBanner
+                positioned={false}
+                enabled={!hidesTitlebarSidebar}
+              />
               <DownloadManagerPanel positioned={false} />
               <LoadedModelsIndicator positioned={false} />
             </TauriUpdateLayer>
@@ -1000,10 +1038,12 @@ const REDUCED_MOTION_MAP = {
 
 export function AppProvider({ children }: AppProviderProps) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const uiSpaceScale = useUiSpaceScale();
   const toastOffsets = getToastOffsets(
     pathname,
     isTauri,
     shouldUseCustomWindowTitlebar(),
+    uiSpaceScale,
   );
   const reduceMotion = useAppearanceCustomStore(
     (s) => s.customization.reduceMotion,

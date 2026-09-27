@@ -4,7 +4,8 @@
 
 """Cross-platform Node.js prebuilt installer for Unsloth Studio.
 
-Downloads an official Node.js archive from nodejs.org into an isolated
+Downloads an official Node.js archive from nodejs.org (or the dist mirror in
+``UNSLOTH_NODE_MIRROR``) into an isolated
 ``<UNSLOTH_HOME>/node`` and never touches the system Node/npm. Pinning Node 24+
 LTS clears the Unsloth frontend build floor (Vite 8: Node ^20.19 || >=22.12,
 npm >= 11) with the npm it bundles.
@@ -22,6 +23,7 @@ from __future__ import annotations
 import argparse
 import errno
 import hashlib
+import http.client
 import json
 import os
 import stat
@@ -74,7 +76,7 @@ NODE_MIN_LTS_MAJOR = 24
 NPM_MIN_MAJOR = 11
 
 NODE_DIST_BASE = "https://nodejs.org/dist"
-NODE_DIST_INDEX = f"{NODE_DIST_BASE}/index.json"
+NODE_MIRROR_ENV = "UNSLOTH_NODE_MIRROR"
 
 RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
 HTTP_FETCH_ATTEMPTS = 4
@@ -173,12 +175,20 @@ def node_asset_name(version: str, host: HostInfo) -> str:
     return f"{node_asset_stem(version, host)}{host.archive_ext}"
 
 
+def node_dist_base() -> str:
+    return (os.environ.get(NODE_MIRROR_ENV, "").strip() or NODE_DIST_BASE).rstrip("/")
+
+
+def node_dist_index_url() -> str:
+    return f"{node_dist_base()}/index.json"
+
+
 def node_download_url(version: str, asset_name: str) -> str:
-    return f"{NODE_DIST_BASE}/v{version}/{asset_name}"
+    return f"{node_dist_base()}/v{version}/{asset_name}"
 
 
 def node_shasums_url(version: str) -> str:
-    return f"{NODE_DIST_BASE}/v{version}/SHASUMS256.txt"
+    return f"{node_dist_base()}/v{version}/SHASUMS256.txt"
 
 
 def expected_sha256_for(shasums_text: str, asset_name: str) -> str | None:
@@ -210,7 +220,7 @@ def _meets_node_floor(version: str) -> bool:
 
 
 def select_node_version(index: list[dict], *, channel: str, min_major: int) -> str:
-    """Pick a concrete Node version from nodejs.org index.json.
+    """Pick a concrete Node version from the Node dist index.json.
 
     channel='lts'    -> newest LTS release line whose major >= min_major.
     channel='latest' -> newest release overall whose major >= min_major.
@@ -233,7 +243,7 @@ def select_node_version(index: list[dict], *, channel: str, min_major: int) -> s
             best_version = version
     if best_version is None:
         raise PrebuiltFallback(
-            f"no Node '{channel}' release found at or above major {min_major} in {NODE_DIST_INDEX}"
+            f"no Node '{channel}' release found at or above major {min_major} in {node_dist_index_url()}"
         )
     return best_version
 
@@ -248,6 +258,9 @@ def is_retryable_url_error(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code in RETRYABLE_HTTP_STATUS
     if isinstance(exc, (urllib.error.URLError, TimeoutError, socket.timeout)):
+        return True
+    # A dropped connection or a body cut short is not wrapped in URLError; see prebuilt_core.
+    if isinstance(exc, (ConnectionError, http.client.IncompleteRead)):
         return True
     return False
 
@@ -1056,15 +1069,14 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         version = pinned_default_version(pins)
     elif channel in {"lts", "latest"}:
         try:
-            index = fetch_json(NODE_DIST_INDEX)
+            index = fetch_json(node_dist_index_url())
         except Exception as exc:  # noqa: BLE001
-            # nodejs.org unreachable: keep a working isolated Node instead of aborting.
             if not force and existing_install_usable(install_dir, host):
                 log(f"Node dist index unreachable ({exc}); keeping existing isolated Node")
                 return EXIT_SUCCESS
             raise
         if not isinstance(index, list):
-            raise PrebuiltFallback(f"unexpected index.json payload from {NODE_DIST_INDEX}")
+            raise PrebuiltFallback(f"unexpected index.json payload from {node_dist_index_url()}")
         version = select_node_version(index, channel = channel, min_major = min_major)
     else:
         version = channel.lstrip("v")

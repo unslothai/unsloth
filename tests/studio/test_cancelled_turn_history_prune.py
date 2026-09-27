@@ -92,15 +92,15 @@ def _send_path_slice() -> str:
     """
     body = slice_between(
         read(ADAPTER),
-        "      const survivingMessages = pruneOutboundHistory(\n"
-        "        messages,\n"
-        "        !isExternalRequest,\n",
+        "      const survivingMessages = pruneOutboundHistory(messages, replayReasoning);",
         "if (selectedImageEditReference) {",
     )
     return (
         "export function buildSendPathOutbound(messages: any, isExternalRequest: boolean) {\n"
         # No turn here has the python tool, so the send path skips the sandbox copies.
         "  const supportsStudioToolsForThisTurn = false, studioLocalCodeTools: string[] = [];\n"
+        # The provider-dependent flag is covered by external-preserve-thinking.test.ts.
+        + "  const replayReasoning = !isExternalRequest;\n"
         + body
         + "  return outboundMessages;\n}\n"
     )

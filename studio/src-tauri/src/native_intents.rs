@@ -99,6 +99,7 @@ pub struct NativeIntent {
 pub struct NativeDocumentFolderSelection {
     token: String,
     display_name: String,
+    expires_at_ms: u64,
 }
 
 #[derive(Default)]
@@ -244,6 +245,7 @@ impl NativeIntakeState {
         Ok(NativeDocumentFolderSelection {
             token: lease.native_path_lease,
             display_name: lease.display_label,
+            expires_at_ms: lease.expires_at_ms,
         })
     }
 

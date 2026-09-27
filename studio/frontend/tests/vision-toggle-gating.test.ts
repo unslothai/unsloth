@@ -184,14 +184,14 @@ test("every other refusal is untouched by the new branch", () => {
 test("the rollback replays the loaded vision baseline, not the control or the gate", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const replay = runtime.slice(
-    runtime.indexOf("tensor_parallel: stateBeforeUnload.loadedTensorParallel"),
+    runtime.indexOf("tensor_parallel: rollbackState.loadedTensorParallel"),
   );
   const line = replay.slice(
     replay.indexOf("disable_vision:"),
     replay.indexOf("gpu_memory_mode:"),
   );
   assert.ok(
-    line.includes("stateBeforeUnload.loadedDisableVision"),
+    line.includes("rollbackState.loadedDisableVision"),
     `rollback must replay the loaded baseline, got: ${line.trim()}`,
   );
   assert.ok(
@@ -221,7 +221,7 @@ test("the rollback seeds the Vision control from the restored model, not the tar
     assignment.indexOf("loadedVisionDisabledByUser:"),
   );
   assert.ok(
-    line.includes("stateBeforeUnload.loadedDisableVision"),
+    line.includes("rollbackState.loadedDisableVision"),
     `the control must be seeded from the restored model's loaded value, got: ${line.trim()}`,
   );
   assert.ok(

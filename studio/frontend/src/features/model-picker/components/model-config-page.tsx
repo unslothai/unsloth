@@ -88,6 +88,7 @@ import {
   fetchLoadModelOverride,
   fromApiOverride,
   modelOverrideKey,
+  panelOverrideRow,
   syncModelOverride,
 } from "../api/model-overrides";
 import {
@@ -182,15 +183,15 @@ import {
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
-  "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
+  "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 const LABEL_CLASS_WRAP =
-  "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
+  "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 // Same surface token as the panel's fields and textareas.
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-[var(--panel-input-surface)] hover:bg-[var(--panel-input-surface-hover)] dark:bg-[var(--panel-input-surface)] dark:hover:bg-[var(--panel-input-surface-hover)]";
 // One width for every typed field: a box that resized per keystroke would jump under the
 // caret. Narrow, so the label beside it is not clipped in a ~240px panel.
-const INPUT_WIDTH_CLASS = "w-[84px] shrink-0";
+const INPUT_WIDTH_CLASS = "w-[calc(84px*var(--ui-space-scale,1))] shrink-0";
 // A select holds one of a known set of values, so it sizes to that value.
 const SELECT_WIDTH_CLASS = "w-auto max-w-full shrink-0";
 // .panel-select-trigger carries the surface, padding and type; this adds the layout.
@@ -724,7 +725,7 @@ function VramBudgetRow() {
           type="button"
           disabled={locked}
           onClick={resetBudget}
-          className="text-ui-11 text-muted-foreground underline underline-offset-2 hover:text-nav-fg"
+          className="text-ui-11 text-muted-foreground underline underline-offset-2 hover:text-foreground"
         >
           Reset to the server default
         </button>
@@ -919,7 +920,7 @@ function GpuMemorySettings({
                 key={d.index}
                 className="flex items-center justify-between gap-3"
               >
-                <span className="min-w-0 truncate text-ui-12 text-nav-fg/80">
+                <span className="min-w-0 truncate text-ui-12 text-muted-foreground">
                   GPU {d.index}: {d.name}
                   {d.memoryTotalGb
                     ? ` · ${Math.round(d.memoryTotalGb)} GiB`
@@ -932,7 +933,7 @@ function GpuMemorySettings({
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
                       type="button"
-                      className="rounded px-1 text-ui-12 text-nav-fg/60 hover:text-nav-fg disabled:opacity-30"
+                      className="rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       aria-label={`Move GPU ${d.index} earlier`}
                       disabled={position === 0}
                       onClick={() => moveGpu(d.index, -1)}
@@ -941,7 +942,7 @@ function GpuMemorySettings({
                     </button>
                     <button
                       type="button"
-                      className="rounded px-1 text-ui-12 text-nav-fg/60 hover:text-nav-fg disabled:opacity-30"
+                      className="rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       aria-label={`Move GPU ${d.index} later`}
                       disabled={position >= orderedGpuIds.length - 1}
                       onClick={() => moveGpu(d.index, 1)}
@@ -976,7 +977,7 @@ function AdvancedSettingsToggle({
 }) {
   return (
     // Ruled off from the context controls above, matching the estimate row's divider.
-    <div className={`${ROW_CLASS} border-t border-border/60 pt-5`}>
+    <div className={`${ROW_CLASS} border-t border-border pt-5`}>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
           Advanced settings
@@ -1766,6 +1767,9 @@ function ExtraArgsRow({
   const diagnostics = diagnoseExtraArgs(text, catalog, {
     gpuSelectionActive: config.selectedGpuIds != null,
     manualGpuMemory: config.gpuMemoryMode === "manual",
+    // Only manual mode with a resolved layer count of 0 or more rewrites --tensor-split; at Auto
+    // layers the launcher drops it, so the value never reaches llama-server.
+    gpuLayers: config.gpuLayers,
     // The same floor the batch control shows: with Slots blank the count is the server default
     // this page cannot see, so only the hard 2 holds. A build that clamps serves one slot
     // whatever is chosen, so an explicit Slots value must not raise the floor.
@@ -1829,7 +1833,7 @@ function ExtraArgsRow({
             placeholder="--rope-scaling yarn --yarn-orig-ctx 32768"
             aria-label="Extra llama-server arguments"
             aria-describedby={diagnostics.length > 0 ? adviceId : undefined}
-            className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground"
+            className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
           />
         </div>
         {(tokenCount > 0 || diagnostics.length > 0) && (
@@ -2025,17 +2029,17 @@ export function ModelConfigPage({
   // refuse. Held by the panel rather than the row, since the row unmounts whenever Advanced
   // settings collapse while its tokens stay in the config.
   const [extraArgsLoadable, setExtraArgsLoadable] = useState(true);
-  // True until the stored-arguments read below settles: a load started before it lands sends no
-  // llama_extra_args, and /load cannot inherit them from a process that is not running.
+  // True until the server-row read below settles: a load started before it lands sends none of the
+  // row's settings, and with Remember unchecked it forgets the row it never read.
   const [extraArgsHydrating, setExtraArgsHydrating] = useState(
-    () => target.isGguf && !isDiffusion,
+    () => !isDiffusion,
   );
   // The row does not withdraw its own objection when it unmounts, or collapsing Advanced settings
   // would re-enable Load for arguments the backend refuses. Only a different model retires it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the model, not on the setter
   useEffect(() => {
     setExtraArgsLoadable(true);
-    setExtraArgsHydrating(target.isGguf && !isDiffusion);
+    setExtraArgsHydrating(!isDiffusion);
   }, [configId, target.ggufVariant, target.isGguf, isDiffusion]);
 
   // Compare against what the backend was asked for, not what it applied: staging a new value
@@ -2236,14 +2240,13 @@ export function ModelConfigPage({
   ]);
 
   // The server copy is shared by Desktop, LAN, and tunnel origins, so hydrate the whole
-  // remembered GGUF config here; localStorage is only the immediate seed. This also runs while
-  // Advanced is closed, since extra arguments affect every load.
+  // remembered config here; localStorage is only the immediate seed. This also runs while
+  // Advanced is closed, since the row reaches every load whether or not it is shown.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the model is the identity
   useEffect(() => {
-    if (!target.isGguf || resolvedIsDiffusion) {
-      // Nothing else even has this field: the row is GGUF-only and so is the load payload. A
-      // diffusion GGUF is GGUF-shaped but runs through the shim, which appends no llama-server
-      // flags, so it must not wait either.
+    if (resolvedIsDiffusion) {
+      // A diffusion model runs through the shim, which appends no llama-server flags, so it keeps
+      // Load free of this read.
       setExtraArgsHydrating(false);
       return;
     }
@@ -2282,8 +2285,10 @@ export function ModelConfigPage({
     Promise.all([
       // Resolved by the backend, which owns the rules; the local resolver stays as the fallback for
       // a backend that predates the parameter.
-      fetchLoadModelOverride(loadId, configId, target.ggufVariant, keys),
-      loadManagedLlamaFlags(),
+      fetchLoadModelOverride(loadId, configId, target.ggufVariant, keys).then(
+        (row) => panelOverrideRow(row, target.isGguf),
+      ),
+      target.isGguf ? loadManagedLlamaFlags() : null,
     ])
       .then(([resolvedOverride, managed]) => {
         // Marked here rather than before the request: StrictMode replays the effect, so a key marked
@@ -2312,7 +2317,9 @@ export function ModelConfigPage({
         );
         // A list this build refuses can equally have come from local storage, saved by a build that
         // still allowed it, and nothing else would catch it while Advanced stays collapsed.
-        const local = configRef.current.llamaExtraArgs;
+        const local = target.isGguf
+          ? configRef.current.llamaExtraArgs
+          : undefined;
         // Kept for the merge below as well as for the box: a row that carries no arguments leaves the
         // local list standing, and handing back a refused list would re-enable Load.
         let sanitizedLocal = localAtStart;
@@ -2353,7 +2360,7 @@ export function ModelConfigPage({
         // declared loadable by a verdict read off the empty server list.
         const hydratedArgs = serverConfig?.llamaExtraArgs ?? stored;
         const hydratedIsLoadable =
-          hydratedArgs.length === 0
+          !target.isGguf || hydratedArgs.length === 0
             ? true
             : extraArgsAreLoadable(
                 diagnoseExtraArgs(
@@ -3118,7 +3125,7 @@ export function ModelConfigPage({
             <div className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
               Run settings
             </div>
-            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-nav-fg">
+            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
               {target.displayName}
             </div>
           </div>
@@ -3293,8 +3300,8 @@ export function ModelConfigPage({
       <div
         className={
           variant === "sidebar"
-            ? "mt-5 flex flex-col gap-2 border-t border-border/60 pt-5"
-            : "mt-5 flex items-center justify-between gap-3 border-t border-border/60 pt-5"
+            ? "mt-5 flex flex-col gap-2 border-t border-border pt-5"
+            : "mt-5 flex items-center justify-between gap-3 border-t border-border pt-5"
         }
       >
         <div className="flex min-w-0 items-center gap-2">
@@ -3310,7 +3317,7 @@ export function ModelConfigPage({
           />
           <label
             htmlFor={rememberId}
-            className="cursor-pointer select-none truncate text-ui-13 text-nav-fg"
+            className="cursor-pointer select-none truncate text-ui-13 text-foreground"
           >
             Remember for this model
           </label>
