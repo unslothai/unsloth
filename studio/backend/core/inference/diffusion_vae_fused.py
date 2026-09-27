@@ -175,10 +175,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _rms_act(
-        x_ptr, out_ptr, w_ptr, b_ptr, cache_ptr,
+        x_ptr, out_ptr, w_ptr, b_ptr, ib_ptr, cache_ptr,
         C, T, HW, W, To, front, n_cache, scale,
         sb, sc, st, sh, sw, cb, cc, ct, ch, cw,
-        ACT: tl.constexpr, HAS_BIAS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
+        NORM: tl.constexpr, ACT: tl.constexpr, HAS_BIAS: tl.constexpr, HAS_IN_BIAS: tl.constexpr,
+        BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
     ):  # fmt: skip
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
@@ -217,12 +218,16 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 + c.to(tl.int64)[None, :] * sc
             )
             v = tl.load(x_ptr + off, mask = m, other = 0.0).to(tl.float32)
-            ss = tl.sum(v * v, axis = 1)
-            inv = 1.0 / tl.maximum(tl.sqrt(ss), 1e-12)
-            gw = tl.load(w_ptr + c, mask = cmask, other = 0.0).to(tl.float32) * scale
-            v = v * inv[:, None] * gw[None, :]
-            if HAS_BIAS:
-                v = v + tl.load(b_ptr + c, mask = cmask, other = 0.0).to(tl.float32)[None, :]
+            if HAS_IN_BIAS:
+                v = v + tl.load(ib_ptr + c, mask = cmask, other = 0.0).to(tl.float32)[None, :]
+                v = tl.where(m, v, 0.0)
+            if NORM:
+                ss = tl.sum(v * v, axis = 1)
+                inv = 1.0 / tl.maximum(tl.sqrt(ss), 1e-12)
+                gw = tl.load(w_ptr + c, mask = cmask, other = 0.0).to(tl.float32) * scale
+                v = v * inv[:, None] * gw[None, :]
+                if HAS_BIAS:
+                    v = v + tl.load(b_ptr + c, mask = cmask, other = 0.0).to(tl.float32)[None, :]
             if ACT:
                 v = v / (1.0 + tl.exp(-v))
             tl.store(out_ptr + out_off, v.to(out_ptr.dtype.element_ty), mask = m)
@@ -385,14 +390,16 @@ def group_norm_act(x: Any, norm: Any, act: bool = True, in_bias: Any = None) -> 
 # Channel RMS norm (Wan / Qwen-Image / HunyuanVideo-1.5 ``*RMS_norm`` with channel_first=True)
 
 
-def rms_norm_reference(x: Any, norm: Any, act: bool) -> Any:
+def rms_norm_reference(x: Any, norm: Any, act: bool, in_bias: Any = None) -> Any:
     import torch.nn.functional as F
 
-    y = norm(x)
+    if in_bias is not None:
+        x = x + in_bias.view(1, -1, *([1] * (x.dim() - 2))).to(x.dtype)
+    y = x if norm is None else norm(x)
     return F.silu(y) if act else y
 
 
-def _rms_params(norm: Any) -> tuple:
+def _rms_params(norm: Any) -> Optional[tuple]:
     torch = _torch()
     gamma = norm.gamma.reshape(-1)
     bias = norm.bias
@@ -408,32 +415,48 @@ def _rms_fusable(x: Any, norm: Any, cache: Any) -> bool:
     return (
         x.is_cuda
         and x.dim() == 5
-        and getattr(norm, "channel_first", False)
         and c <= _MAX_C
         and x.dtype in (torch.float16, torch.bfloat16, torch.float32)
         and x.numel() > 0
-        and (cache is None or (cache.dim() == 5 and cache.shape[:2] == x.shape[:2] and cache.shape[3:] == x.shape[3:]))
-        and _rms_params(norm) is not None
+        and (
+            cache is None
+            or (
+                torch.is_tensor(cache)
+                and cache.dim() == 5
+                and cache.shape[:2] == x.shape[:2]
+                and cache.shape[3:] == x.shape[3:]
+                and cache.device == x.device
+            )
+        )
+        and (norm is None or (getattr(norm, "channel_first", False) and _rms_params(norm) is not None))
     )
 
 
-def rms_norm_act(x: Any, norm: Any, act: bool = True, *, front: int = 0, cache: Any = None) -> Any:
-    """``cat([cache or zeros] -> front frames, silu?(rms_norm(x)))`` along T, as ONE channels-last_3d tensor.
+def rms_norm_act(
+    x: Any, norm: Any, act: bool = True, *, front: int = 0, cache: Any = None, in_bias: Any = None
+) -> Any:
+    """``cat([cache or zeros] -> front frames, silu?(rms_norm(x + in_bias)))`` along T, as ONE channels-last_3d tensor.
 
-    ``cache`` holds already-activated frames (the stock causal cache); its last ``min(front, T_cache)`` frames are
-    used, zeros fill any remaining front slots, exactly the stock ``cat`` + causal ``F.pad`` input of a conv."""
+    ``norm=None`` skips the norm (a plain causal ``cat``). ``cache`` holds already-activated frames (the stock causal
+    cache); its last ``min(front, T_cache)`` frames are used and zeros fill any remaining front slots: exactly the
+    stock ``torch.cat`` + causal ``F.pad`` input of a conv."""
     torch = _torch()
     if not _rms_fusable(x, norm, cache):
-        y = rms_norm_reference(x, norm, act)
+        y = rms_norm_reference(x, norm, act, in_bias)
         if front:
             import torch.nn.functional as F
+            n_cache = 0
             if cache is not None:
                 cache = cache[:, :, -front:].to(y.dtype)
+                n_cache = cache.shape[2]
                 y = torch.cat([cache, y], dim = 2)
-            y = F.pad(y, (0, 0, 0, 0, front - (cache.shape[2] if cache is not None else 0), 0))
-        return y
+            y = F.pad(y, (0, 0, 0, 0, front - n_cache, 0))
+        return y.contiguous(memory_format = torch.channels_last_3d)
     k = _kernels()
-    gamma, bias, has_bias, scale = _rms_params(norm)
+    if norm is not None:
+        gamma, bias, has_bias, scale = _rms_params(norm)
+    else:
+        gamma, bias, has_bias, scale = x, x, False, 1.0
     b, c, t, h, w = x.shape
     to = t + front
     hw = h * w
@@ -444,12 +467,69 @@ def rms_norm_act(x: Any, norm: Any, act: bool = True, *, front: int = 0, cache: 
     block_p = max(1, min(128, 8192 // block_c))
     grid = ((hw + block_p - 1) // block_p, b * to)
     k.rms_act[grid](
-        x, out, gamma, bias, cache_t, c, t, hw, w, to, front, n_cache, scale,
+        x, out, gamma, bias, in_bias if in_bias is not None else x, cache_t,
+        c, t, hw, w, to, front, n_cache, scale,
         *x.stride(), *cache_t.stride(),
-        ACT = bool(act), HAS_BIAS = has_bias, BLOCK_P = block_p, BLOCK_C = block_c,
-        num_warps = 4 if block_c * block_p <= 4096 else 8,
+        NORM = norm is not None, ACT = bool(act), HAS_BIAS = has_bias, HAS_IN_BIAS = in_bias is not None,
+        BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4 if block_c * block_p <= 4096 else 8,
     )  # fmt: skip
     return out.permute(0, 4, 1, 2, 3)
+
+
+def _conv_kind(conv: Any) -> Optional[str]:
+    torch = _torch()
+    pad = getattr(conv, "_padding", None)
+    if pad is None or getattr(conv, "padding_mode", "zeros") != "zeros" or conv.groups != 1:
+        return None
+    if isinstance(conv, torch.nn.Conv3d) and len(pad) == 6 and pad[5] == 0 and pad[0] == pad[1] and pad[2] == pad[3]:
+        return "3d"
+    if isinstance(conv, torch.nn.Conv2d) and len(pad) == 4 and pad[0] == pad[1] and pad[2] == pad[3]:
+        return "2d"
+    return None
+
+
+def causal_conv(
+    conv: Any,
+    x: Any,
+    cache: Any = None,
+    *,
+    norm: Any = None,
+    act: bool = False,
+    in_bias: Any = None,
+    with_bias: bool = True,
+) -> tuple:
+    """Wan-lineage causal conv of ``silu?(rms?(x + in_bias))`` with the causal cache; returns (out, new_cache).
+
+    ``new_cache`` is what the stock block stores: the activated input's last ``CACHE_T`` (2) frames, prefixed by the
+    previous cache's last frame when the chunk is one frame. It is a VIEW of the conv input (no clone)."""
+    import torch.nn.functional as F
+
+    kind = _conv_kind(conv)
+    bias = conv.bias if with_bias else None
+    if kind == "2d":  # Qwen-Image-2.1: the one-frame specialisation, never cached
+        if cache is not None:
+            raise ValueError("2D causal conv takes no cache")
+        y = x if (norm is None and not act and in_bias is None) else rms_norm_act(x, norm, act, in_bias = in_bias)
+        pw, _, ph, _ = conv._padding
+        out = F.conv2d(y[:, :, 0], conv.weight, bias, conv.stride, (ph, pw), conv.dilation)
+        return out.unsqueeze(2), None
+    if kind != "3d":
+        raise ValueError("unsupported causal conv " + type(conv).__name__)
+    pw, _, ph, _, front, _ = conv._padding
+    kt = conv.kernel_size[0]
+    spatial = (0, ph, pw)
+    t = x.shape[2]
+    if front == 0:
+        y = x if (norm is None and not act and in_bias is None) else rms_norm_act(x, norm, act, in_bias = in_bias)
+        return F.conv3d(y, conv.weight, bias, conv.stride, spatial, conv.dilation), None
+    if cache is None and t == 1 and front == kt - 1 and conv.stride[0] == 1 and conv.dilation[0] == 1:
+        # one frame after kt-1 zero frames: only the last temporal tap meets data
+        y = rms_norm_act(x, norm, act, in_bias = in_bias)
+        weight = conv.weight[:, :, -1:]
+        return F.conv3d(y, weight, bias, conv.stride, spatial, conv.dilation), y
+    p = rms_norm_act(x, norm, act, front = front, cache = cache, in_bias = in_bias)
+    out = F.conv3d(p, conv.weight, bias, conv.stride, spatial, conv.dilation)
+    return out, p[:, :, -2:]
 
 
 # ----------------------------------------------------------------------------------------------------------------
@@ -617,6 +697,8 @@ def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
 
 
 def uninstall(vae: Any) -> None:
+    if getattr(vae.__dict__.get("tiled_decode"), "_unsloth_vae_fused", False):
+        del vae.tiled_decode
     for module in vae.modules():
         if getattr(getattr(module, "forward", None), "_unsloth_vae_fused", False) or getattr(
             module, "_unsloth_vae_fused", False
@@ -629,9 +711,316 @@ def uninstall(vae: Any) -> None:
             module.__dict__.pop("_unsloth_vae_fused_failed", None)
 
 
+# ----------------------------------------------------------------------------------------------------------------
+# Wan lineage: AutoencoderKLWan (2.1 / 2.2), AutoencoderKLQwenImage, AutoencoderKLQwenImage21
+
+_WAN_VAES = frozenset({"AutoencoderKLWan", "AutoencoderKLQwenImage", "AutoencoderKLQwenImage21"})
+_CACHE_T = 2
+
+
+def _is_rms(norm: Any) -> bool:
+    return type(norm).__name__.endswith("RMS_norm") and hasattr(norm, "gamma") and hasattr(norm, "scale")
+
+
+def _wan_resblock_fusable(block: Any) -> bool:
+    torch = _torch()
+    return (
+        _is_rms(getattr(block, "norm1", None))
+        and _is_rms(getattr(block, "norm2", None))
+        and isinstance(getattr(block, "nonlinearity", None), torch.nn.SiLU)
+        and _conv_kind(getattr(block, "conv1", None)) is not None
+        and _conv_kind(getattr(block, "conv2", None)) is not None
+    )
+
+
+def _fast_wan_resblock(block: Any) -> Any:
+    import torch.nn.functional as F
+
+    def fast(x: Any, feat_cache: Any = None, feat_idx: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if args or kwargs or block.training or (block.dropout.p and block.dropout.training):
+            return _stock_forward(block)(x, feat_cache, feat_idx if feat_idx is not None else [0], *args, **kwargs)
+        sc = block.conv_shortcut
+        if isinstance(sc, _torch().nn.Identity):
+            h = x
+        elif _conv_kind(sc) == "2d":
+            h = F.conv2d(x[:, :, 0], sc.weight, sc.bias, sc.stride, 0).unsqueeze(2)
+        else:
+            h = F.conv3d(x, sc.weight, sc.bias, sc.stride)
+        if feat_cache is not None:
+            idx = feat_idx[0]
+            out, new = causal_conv(block.conv1, x, feat_cache[idx], norm = block.norm1, act = True, with_bias = False)
+            feat_cache[idx] = new
+            feat_idx[0] += 1
+            idx = feat_idx[0]
+            out, new = causal_conv(
+                block.conv2, out, feat_cache[idx], norm = block.norm2, act = True, in_bias = block.conv1.bias,
+                with_bias = False,
+            )  # fmt: skip
+            feat_cache[idx] = new
+            feat_idx[0] += 1
+        else:
+            out, _ = causal_conv(block.conv1, x, None, norm = block.norm1, act = True, with_bias = False)
+            out, _ = causal_conv(
+                block.conv2, out, None, norm = block.norm2, act = True, in_bias = block.conv1.bias, with_bias = False
+            )
+        return add_bias_residual(out, block.conv2.bias, h)
+
+    return fast
+
+
+def _fast_causal_conv(conv: Any) -> Any:
+    def fast(x: Any, cache_x: Any = None) -> Any:
+        return causal_conv(conv, x, cache_x)[0]
+
+    return fast
+
+
+def _fast_rms_act(norm: Any) -> Any:
+    def fast(x: Any) -> Any:
+        if x.dim() != 5:
+            return _torch().nn.functional.silu(type(norm).forward(norm, x))
+        return rms_norm_act(x, norm, True)
+
+    return fast
+
+
+def install_wan_vae(vae: Any, logger: Any = None) -> int:
+    """Patch the residual blocks, causal convs and output heads of a Wan-lineage VAE. Returns patch count."""
+    torch = _torch()
+    if vae is None or not runtime_ok():
+        return 0
+    n = 0
+    for part_name in ("encoder", "decoder"):
+        part = getattr(vae, part_name, None)
+        if part is None:
+            continue
+        norm_out = getattr(part, "norm_out", None)
+        act = getattr(part, "nonlinearity", None)
+        if _is_rms(norm_out) and isinstance(act, torch.nn.SiLU):
+            _guard(
+                norm_out,
+                _fast_rms_act(norm_out),
+                lambda x, _n = norm_out: torch.nn.functional.silu(type(_n).forward(_n, x)),
+                "norm_out",
+                logger,
+            )
+            act.forward = lambda x: x
+            act._unsloth_vae_fused = True
+            n += 1
+        for module in part.modules():
+            if "forward" in module.__dict__:
+                continue  # already patched (by us or another speed path)
+            if type(module).__name__.endswith("ResidualBlock") and _wan_resblock_fusable(module):
+                _guard(module, _fast_wan_resblock(module), _stock_forward(module), "residual block", logger)
+                n += 1
+        for module in part.modules():
+            if "forward" in module.__dict__:
+                continue
+            if type(module).__name__.endswith("CausalConv3d") and _conv_kind(module) is not None:
+                _guard(module, _fast_causal_conv(module), _stock_forward(module), "causal conv", logger)
+                n += 1
+            elif (
+                isinstance(module, torch.nn.Upsample)
+                and type(module).__name__.endswith("Upsample")
+                and module.mode in ("nearest", "nearest-exact")
+            ):
+                _guard(module, _fast_upsample(module), _stock_forward(module), "upsample", logger)
+                n += 1
+    if install_wan_tile_batch(vae, logger):
+        n += 1
+    return n
+
+
+def _fast_upsample(mod: Any) -> Any:
+    """Wan's ``nearest-exact`` upsample round-trips through fp32 (``x.float()`` ... ``type_as``); nearest only selects
+    pixels, so running it in the input dtype is bit-identical and skips two full-size copies."""
+
+    def fast(x: Any) -> Any:
+        import torch.nn.functional as F
+
+        return F.interpolate(x, mod.size, mod.scale_factor, mod.mode, mod.align_corners, recompute_scale_factor = mod.recompute_scale_factor)
+
+    return fast
+
+
+# ----------------------------------------------------------------------------------------------------------------
+# Tile batching + vectorised seam blending for the Wan-lineage tiled decode
+
+TILE_BATCH_ENV = "UNSLOTH_VAE_TILE_BATCH"
+_TILE_BATCH_MAX = 4
+# measured decode peak per 256 px Wan-2.1 tile (fp16, 4 frames, 96 full-res channels) ~= 1 GiB = 24x one activation
+_TILE_PEAK_FACTOR = 24
+
+
+def _tile_batch_cap(vae: Any, z: Any) -> int:
+    """Tiles per decoder call: env override, else what half the free VRAM holds at the measured per-tile peak,
+    at most 4 (Wan-2.1 832x480x81: 1 -> 1.27 s, 2 -> 0.91 s, 4 -> 0.80 s, 8 -> 0.77 s at +1 GiB per tile)."""
+    raw = os.environ.get(TILE_BATCH_ENV, "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    try:
+        free, _ = _torch().cuda.mem_get_info(z.device)
+        norm_out = getattr(getattr(vae, "decoder", None), "norm_out", None)
+        c_last = int(norm_out.gamma.numel()) if norm_out is not None else 128
+        px = int(vae.tile_sample_min_height) * int(vae.tile_sample_min_width)
+        frames = int(getattr(vae, "temporal_compression_ratio", 4) or 4)
+        elem = next(vae.decoder.parameters()).element_size()
+        per_tile = _TILE_PEAK_FACTOR * px * frames * c_last * elem
+        return int(max(1, min(_TILE_BATCH_MAX, (free // 2) // max(1, per_tile))))
+    except Exception:  # noqa: BLE001
+        return 1
+
+
+def _blend_weights(extent: int, device: Any) -> tuple:
+    torch = _torch()
+    # the stock python scalars y / extent and 1 - y / extent (double), as the fp32 opmath scalars PyTorch uses
+    wb = torch.tensor([y / extent for y in range(extent)], dtype = torch.float64).float().to(device)
+    wa = torch.tensor([1 - y / extent for y in range(extent)], dtype = torch.float64).float().to(device)
+    return wa, wb
+
+
+def blend_seam(a: Any, b: Any, extent: int, dim: int) -> Any:
+    """Vectorised, bit-identical ``blend_v`` (dim=-2) / ``blend_h`` (dim=-1): one pass instead of ``extent`` x 4."""
+    torch = _torch()
+    extent = min(a.shape[dim], b.shape[dim], extent)
+    if extent <= 0:
+        return b
+    wa, wb = _blend_weights(extent, b.device)
+    shape = [1] * b.dim()
+    shape[dim] = extent
+    wa, wb = wa.view(shape), wb.view(shape)
+    sa = a.narrow(dim, a.shape[dim] - extent, extent)
+    sb = b.narrow(dim, 0, extent)
+    dt = b.dtype
+    pa = (sa.float() * wa).to(dt)
+    pb = (sb.float() * wb).to(dt)
+    sb.copy_((pa.float() + pb.float()).to(dt))
+    return b
+
+
+def _accepts_first_chunk(decoder: Any) -> bool:
+    import inspect
+
+    try:
+        return "first_chunk" in inspect.signature(decoder.forward).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _wan_batched_tiled_decode(self: Any, z: Any, return_dict: bool = True) -> Any:
+    """``tiled_decode`` of a Wan-lineage VAE with same-shaped tiles decoded as one batch (fewer, larger launches:
+    the stock loop issues ~50k kernels for an 81-frame 832x480 decode) and vectorised seam blending."""
+    torch = _torch()
+    from diffusers.models.autoencoders.vae import DecoderOutput
+
+    _, _, num_frames, height, width = z.shape
+    ratio = self.spatial_compression_ratio
+    sample_height, sample_width = height * ratio, width * ratio
+    tmh, tmw = self.tile_sample_min_height // ratio, self.tile_sample_min_width // ratio
+    tsh, tsw = self.tile_sample_stride_height // ratio, self.tile_sample_stride_width // ratio
+    out_sh, out_sw = self.tile_sample_stride_height, self.tile_sample_stride_width
+    patch = getattr(self.config, "patch_size", None)
+    if patch is not None:
+        sample_height, sample_width = sample_height // patch, sample_width // patch
+        out_sh, out_sw = out_sh // patch, out_sw // patch
+        blend_h = self.tile_sample_min_height // patch - out_sh
+        blend_w = self.tile_sample_min_width // patch - out_sw
+    else:
+        blend_h = self.tile_sample_min_height - out_sh
+        blend_w = self.tile_sample_min_width - out_sw
+    first_chunk = _accepts_first_chunk(self.decoder)
+    rows_i = list(range(0, height, tsh))
+    cols_j = list(range(0, width, tsw))
+    groups: dict = {}
+    for i in rows_i:
+        for j in cols_j:
+            groups.setdefault((min(tmh, height - i), min(tmw, width - j)), []).append((i, j))
+    cap = _tile_batch_cap(self, z)
+    tiles: dict = {}
+
+    def decode_tiles(chunk: list) -> Any:
+        zt = torch.cat([z[:, :, :, i : i + tmh, j : j + tmw] for i, j in chunk], 0)
+        self.clear_cache()
+        frames = []
+        for k in range(num_frames):
+            self._conv_idx = [0]
+            tile = self.post_quant_conv(zt[:, :, k : k + 1])
+            kw = {"first_chunk": k == 0} if first_chunk else {}
+            frames.append(self.decoder(tile, feat_cache = self._feat_map, feat_idx = self._conv_idx, **kw))
+        return torch.cat(frames, dim = 2)
+
+    for members in groups.values():
+        s = 0
+        while s < len(members):
+            chunk = members[s : s + cap]
+            try:
+                out = decode_tiles(chunk)
+            except Exception as exc:  # noqa: BLE001
+                # batching raised the peak: an OOM with several tiles retries them one at a time
+                if len(chunk) == 1 or not _is_oom(exc):
+                    raise
+                self.clear_cache()
+                torch.cuda.empty_cache()
+                cap = 1
+                continue
+            for n, key in enumerate(chunk):
+                tiles[key] = out[n : n + 1]
+            s += len(chunk)
+    self.clear_cache()
+    rows = [[tiles[(i, j)] for j in cols_j] for i in rows_i]
+    result_rows = []
+    for ri, row in enumerate(rows):
+        result_row = []
+        for ci, tile in enumerate(row):
+            if ri > 0:
+                tile = blend_seam(rows[ri - 1][ci], tile, blend_h, -2)
+            if ci > 0:
+                tile = blend_seam(row[ci - 1], tile, blend_w, -1)
+            result_row.append(tile[:, :, :, :out_sh, :out_sw])
+        result_rows.append(torch.cat(result_row, dim = -1))
+    dec = torch.cat(result_rows, dim = 3)[:, :, :, :sample_height, :sample_width]
+    if patch is not None:
+        from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
+
+        dec = unpatchify(dec, patch_size = patch)
+    dec = torch.clamp(dec, min = -1.0, max = 1.0)
+    if not return_dict:
+        return (dec,)
+    return DecoderOutput(sample = dec)
+
+
+def install_wan_tile_batch(vae: Any, logger: Any = None) -> bool:
+    if vae is None or "tiled_decode" in vae.__dict__ or not callable(getattr(vae, "tiled_decode", None)):
+        return False
+    stock = _stock_forward_attr(vae, "tiled_decode")
+
+    def tiled_decode(z: Any, return_dict: bool = True) -> Any:
+        if z.shape[0] != 1 or getattr(vae, "_unsloth_vae_fused_failed", False):
+            return stock(z, return_dict = return_dict)
+        try:
+            return _wan_batched_tiled_decode(vae, z, return_dict)
+        except Exception as exc:  # noqa: BLE001
+            if _is_oom(exc):
+                raise
+            vae._unsloth_vae_fused_failed = True
+            if logger is not None:
+                logger.warning("diffusion.vae_fused: batched tiled decode failed, using the stock loop: %s", exc)
+            return stock(z, return_dict = return_dict)
+
+    tiled_decode._unsloth_vae_fused = True
+    vae.tiled_decode = tiled_decode
+    return True
+
+
+def _stock_forward_attr(obj: Any, name: str) -> Any:
+    return getattr(type(obj), name).__get__(obj)
+
+
 def install(vae: Any, logger: Any = None, level: str = "fused") -> int:
     """Install every fused path that applies to ``vae``'s class. Returns the number of patched modules."""
     name = type(vae).__name__
     if name in ("AutoencoderKL", "AutoencoderKLFlux2"):
         return install_group_norm_vae(vae, logger)
+    if name in _WAN_VAES:
+        return install_wan_vae(vae, logger)
     return 0
