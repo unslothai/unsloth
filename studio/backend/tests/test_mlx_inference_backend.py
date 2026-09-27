@@ -2999,8 +2999,7 @@ def _tiny_lm(
     dim = 128,
     attends_quantized = True,
 ):
-    """Minimal model whose forward populates whatever cache it is given;
-    ``attends_quantized = False`` rejects a quantized one, as Gemma 4's KV-shared layers do."""
+    """``attends_quantized = False`` rejects a quantized cache, as Gemma 4's KV-shared layers do."""
     import mlx.core as mx
 
     class _LM:

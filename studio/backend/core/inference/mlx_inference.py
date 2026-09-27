@@ -1492,8 +1492,8 @@ def _kv_entry_windowed(entry):
 
 
 def _kv_quant_targets(entries):
-    """Indices to convert and how many were held back: a windowed entry keeps its ring, and the
-    last full-attention layer stays unquantized past two entries as the most sensitive."""
+    """``(indices, held)``: windowed entries keep their ring; past two entries the last
+    full-attention one stays float, as mlx-vlm's should_quantize_kv_layer does."""
     targets = [
         index
         for index, entry in enumerate(entries)
@@ -1512,12 +1512,8 @@ def _quantize_kv_entries(entries, bits):
 
 
 def _kv_quant_probe(language_model, entries, bits):
-    """``(converted, skipped, failure, retainable)`` from the conversion generation will perform.
-
-    Static proxies proved wrong both ways -- a declared head_dim the cache does not use, a window
-    spelled differently per entry -- so this runs a second token through the converted cache, where
-    attention that cannot consume a quantized entry fails. ``retainable`` is False when a converted
-    entry's size cannot be read, which the prompt cache budgets by."""
+    """``(converted, skipped, failure, retainable)``: runs a token through the converted cache,
+    since static proxies (declared head_dim, window spelling) proved wrong both ways."""
     import mlx.core as mx
 
     targets, held = _kv_quant_targets(entries)
@@ -2672,9 +2668,7 @@ class MLXInferenceBackend:
         return entries if bits is None else _quantize_kv_entries(entries, bits)
 
     def _kv_quant_generate_kwargs(self):
-        """A pre-quantized cache in place of kv_bits, which would make either runtime
-        convert every entry from its own start offset and raise on a rotating one.
-        """
+        """A pre-quantized cache, not kv_bits: both runtimes would convert a rotating entry."""
         if self._kv_quant_bits() is None:
             return {}
         return {
