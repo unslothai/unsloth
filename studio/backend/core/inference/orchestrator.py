@@ -1311,9 +1311,9 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
+        video_b64: Optional[str] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
-        video_b64: Optional[str] = None,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -1559,9 +1559,9 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
+        video: Optional[str] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
-        video: Optional[str] = None,
     ) -> Generator[str, None, None]:
         """Dispatched generation, sending the command without holding _gen_lock. Uses a per-request
         mailbox for tokens so two compare-mode requests can be queued at once. The subprocess
@@ -2407,9 +2407,9 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
+        video: Optional[str] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
-        video: Optional[str] = None,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess. ``tools`` / ``enable_thinking`` /
         ``reasoning_effort`` / ``preserve_thinking`` are forwarded so the template can render
@@ -2682,9 +2682,9 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
+        video: Optional[str] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
-        video: Optional[str] = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic: sends the command to the subprocess and yields tokens. Serialized
         by _gen_lock (one generation at a time) so concurrent readers don't consume each other's

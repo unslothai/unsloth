@@ -3868,9 +3868,9 @@ class MLXInferenceBackend:
         _adapter_state = None,
         tool_protocol_active = None,
         stop = None,
+        video = None,
         response_format = None,
         reasoning_is_extracted = False,
-        video = None,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
