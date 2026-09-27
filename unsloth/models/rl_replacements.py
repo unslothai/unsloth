@@ -3815,6 +3815,7 @@ try:
 except Exception:
     distillation_chunked_jsd = None
 
+
 def _unsloth_gkd_canonical(source):
     """``source`` re-printed by ``ast.unparse`` without docstrings or comments, so the checks below survive
     reformatting. ``None`` when it does not parse."""
@@ -4001,7 +4002,10 @@ def _unsloth_gkd_jsd_supported(trainer_class):
             all(line in known for line in lines)
             and all(line in lines for line in required)
             # a num_items_in_batch parameter must come with its reduction, and vice versa
-            and (("num_items_in_batch=None" in signature) == ("return jsd_sum / num_items_in_batch" in lines))
+            and (
+                ("num_items_in_batch=None" in signature)
+                == ("return jsd_sum / num_items_in_batch" in lines)
+            )
         )
     except Exception:
         ok = False
@@ -4021,8 +4025,9 @@ def _unsloth_gkd_note_fallback(trainer, reason):
     if reason not in fallbacks:
         try:
             from unsloth_zoo.log import logger as _gkd_logger
-
-            _gkd_logger.info(f"Unsloth: GKD chunked JSD not used ({reason}); using TRL's dense loss.")
+            _gkd_logger.info(
+                f"Unsloth: GKD chunked JSD not used ({reason}); using TRL's dense loss."
+            )
         except Exception:
             pass
     fallbacks[reason] = fallbacks.get(reason, 0) + 1
@@ -4175,7 +4180,9 @@ def gkd_trainer_compute_loss(function_name, function):
     layout = _unsloth_gkd_layout(function)
     if layout is None or distillation_chunked_jsd is None:
         return function
-    renamed, n = re.subn(r"\bdef compute_loss\(", "def _unsloth_trl_compute_loss(", function, count = 1)
+    renamed, n = re.subn(
+        r"\bdef compute_loss\(", "def _unsloth_trl_compute_loss(", function, count = 1
+    )
     if n != 1:
         return function
     indent = re.search(r"^([ \t]*)def compute_loss\(", function, flags = re.MULTILINE).group(1)

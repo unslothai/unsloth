@@ -3384,7 +3384,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 attributes = ("model", "teacher_model"),
             )
         except Exception as e:
-            logger.info(f"Unsloth: Could not wrap GKD hidden-state fallback for {RLTrainer_name}: {e}")
+            logger.info(
+                f"Unsloth: Could not wrap GKD hidden-state fallback for {RLTrainer_name}: {e}"
+            )
 
 
 def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):

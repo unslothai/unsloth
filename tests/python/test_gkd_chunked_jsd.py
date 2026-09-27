@@ -32,7 +32,7 @@ if rl.distillation_chunked_jsd is None:
     pytest.skip("installed unsloth_zoo predates distillation_chunked_jsd", allow_module_level = True)
 
 # The two compute_loss layouts TRL shipped between 0.22.2 and 1.14.0, trimmed to the non-Liger branch.
-PROMPT_LAYOUT = '''
+PROMPT_LAYOUT = """
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         student_outputs = model(
             input_ids=inputs["input_ids"],
@@ -56,12 +56,14 @@ PROMPT_LAYOUT = '''
         )
         empty_cache()
         return (loss, student_outputs) if return_outputs else loss
-'''
+"""
 SHIFT_LAYOUT = (
-    PROMPT_LAYOUT.replace("        prompt_lengths = inputs[\"prompts\"].shape[1]\n", "")
+    PROMPT_LAYOUT.replace('        prompt_lengths = inputs["prompts"].shape[1]\n', "")
     .replace("[:, prompt_lengths - 1 : -1, :]", "[:, :-1, :]")
     .replace('inputs["labels"][:, prompt_lengths:]', 'inputs["labels"][:, 1:]')
-    .replace("beta=self.beta,\n", "beta=self.beta,\n            num_items_in_batch=num_items_in_batch,\n")
+    .replace(
+        "beta=self.beta,\n", "beta=self.beta,\n            num_items_in_batch=num_items_in_batch,\n"
+    )
 )
 
 
@@ -82,7 +84,11 @@ def test_installed_trl_layout_is_recognised():
         if spec is None or spec.origin is None:
             continue
         text = open(spec.origin, encoding = "utf-8").read()
-        nodes = [n for n in ast.walk(ast.parse(text)) if isinstance(n, ast.FunctionDef) and n.name == "compute_loss"]
+        nodes = [
+            n
+            for n in ast.walk(ast.parse(text))
+            if isinstance(n, ast.FunctionDef) and n.name == "compute_loss"
+        ]
         if not nodes:
             continue  # a deprecation shim
         source = ast.get_source_segment(text, nodes[0], padded = True)
@@ -95,7 +101,6 @@ def test_patched_trainer_uses_the_chunked_loss():
     patched = GKDTrainer
     try:
         import trl.trainer.gkd_trainer as mod
-
         patched = mod.GKDTrainer
     except Exception:
         pass
@@ -118,12 +123,24 @@ def test_rewrite_parses_and_keeps_trl_body(source):
     [
         lambda s: s.replace("beta=self.beta,", "beta=self.beta, reduction='sum',"),
         lambda s: s.replace("beta=self.beta,", "beta=0.3,"),
-        lambda s: s.replace('attention_mask=inputs["attention_mask"],\n        )', 'attention_mask=inputs["attention_mask"], pixel_values=inputs["pixel_values"],\n        )', 1),
-        lambda s: s.replace('inputs["labels"][:, prompt_lengths:]', 'inputs["labels"][:, prompt_lengths + 1:]'),
+        lambda s: s.replace(
+            'attention_mask=inputs["attention_mask"],\n        )',
+            'attention_mask=inputs["attention_mask"], pixel_values=inputs["pixel_values"],\n        )',
+            1,
+        ),
+        lambda s: s.replace(
+            'inputs["labels"][:, prompt_lengths:]', 'inputs["labels"][:, prompt_lengths + 1:]'
+        ),
         lambda s: s.replace("self.generalized_jsd_loss(", "self.other_loss("),
         lambda s: s.replace("beta=self.beta,", "beta=self.beta, temperature=self.temperature,"),
-        lambda s: s.replace("        empty_cache()\n", "        loss = loss + 0.1 * self.generalized_jsd_loss(student_logits=shifted_student_logits, teacher_logits=shifted_teacher_logits, labels=shifted_labels, beta=self.beta)\n        empty_cache()\n"),
-        lambda s: s.replace("return (loss, student_outputs) if return_outputs else loss", "return (loss * 2, student_outputs) if return_outputs else loss * 2"),
+        lambda s: s.replace(
+            "        empty_cache()\n",
+            "        loss = loss + 0.1 * self.generalized_jsd_loss(student_logits=shifted_student_logits, teacher_logits=shifted_teacher_logits, labels=shifted_labels, beta=self.beta)\n        empty_cache()\n",
+        ),
+        lambda s: s.replace(
+            "return (loss, student_outputs) if return_outputs else loss",
+            "return (loss * 2, student_outputs) if return_outputs else loss * 2",
+        ),
     ],
 )
 def test_unrecognised_layouts_are_left_to_trl(mutate):
@@ -168,7 +185,9 @@ def test_quantized_and_adapted_heads_fall_back():
 
     lora = peft.get_peft_model(Tiny(), peft.LoraConfig(target_modules = ["lm_head"], r = 2))
     assert rl._unsloth_gkd_dense_head(lora.base_model.model) is None
-    saved = peft.get_peft_model(Tiny(), peft.LoraConfig(target_modules = ["proj"], modules_to_save = ["lm_head"], r = 2))
+    saved = peft.get_peft_model(
+        Tiny(), peft.LoraConfig(target_modules = ["proj"], modules_to_save = ["lm_head"], r = 2)
+    )
     assert rl._unsloth_gkd_dense_head(saved.base_model.model) is None
     try:
         import bitsandbytes as bnb
@@ -185,8 +204,12 @@ class _TinyLM(torch.nn.Module):
     def __init__(self, vocab, hidden, softcap, seed):
         super().__init__()
         g = torch.Generator().manual_seed(seed)
-        self.embed = torch.nn.Parameter(torch.randn(vocab, hidden, generator = g, dtype = torch.float64))
-        self.mix = torch.nn.Parameter(torch.randn(hidden, hidden, generator = g, dtype = torch.float64) / hidden**0.5)
+        self.embed = torch.nn.Parameter(
+            torch.randn(vocab, hidden, generator = g, dtype = torch.float64)
+        )
+        self.mix = torch.nn.Parameter(
+            torch.randn(hidden, hidden, generator = g, dtype = torch.float64) / hidden**0.5
+        )
         self.lm_head = torch.nn.Linear(hidden, vocab, bias = False, dtype = torch.float64)
         with torch.no_grad():
             self.lm_head.weight.copy_(torch.randn(vocab, hidden, generator = g, dtype = torch.float64))
@@ -266,8 +289,16 @@ def test_num_items_in_batch_only_where_trl_uses_it(monkeypatch):
     vocab = 97
     student, teacher = _TinyLM(vocab, 16, 0.0, 1), _TinyLM(vocab, 24, 0.0, 2)
     trainer, inputs = _trainer(0.5, student, teacher), _inputs(vocab)
-    local = rl._unsloth_gkd_chunked_loss(trainer, student, inputs, torch.tensor(1000), {"shift": "shift", "num_items_in_batch": False})
-    scaled = rl._unsloth_gkd_chunked_loss(trainer, student, inputs, torch.tensor(1000), {"shift": "shift", "num_items_in_batch": True})
+    local = rl._unsloth_gkd_chunked_loss(
+        trainer,
+        student,
+        inputs,
+        torch.tensor(1000),
+        {"shift": "shift", "num_items_in_batch": False},
+    )
+    scaled = rl._unsloth_gkd_chunked_loss(
+        trainer, student, inputs, torch.tensor(1000), {"shift": "shift", "num_items_in_batch": True}
+    )
     n = int((inputs["labels"][:, 1:] != -100).sum())
     torch.testing.assert_close(scaled * 1000, local * n, rtol = 1e-5, atol = 1e-8)
 
@@ -278,13 +309,24 @@ def test_fallbacks_return_none(monkeypatch):
     inputs = _inputs(vocab)
     layout = {"shift": "shift", "num_items_in_batch": False}
     monkeypatch.setenv("UNSLOTH_GKD_CHUNKED", "0")
-    assert rl._unsloth_gkd_chunked_loss(_trainer(0.5, student, teacher), student, inputs, None, layout) is None
+    assert (
+        rl._unsloth_gkd_chunked_loss(_trainer(0.5, student, teacher), student, inputs, None, layout)
+        is None
+    )
     monkeypatch.delenv("UNSLOTH_GKD_CHUNKED")
     liger = _trainer(0.5, student, teacher)
     liger.use_liger_gkd_loss = True
     assert rl._unsloth_gkd_chunked_loss(liger, student, inputs, None, layout) is None
-    assert rl._unsloth_gkd_chunked_loss(_trainer(0.5, student, None), student, inputs, None, layout) is None
-    assert rl._unsloth_gkd_chunked_loss(_trainer(0.5, student, _TinyLM(98, 24, 0.0, 2)), student, inputs, None, layout) is None
+    assert (
+        rl._unsloth_gkd_chunked_loss(_trainer(0.5, student, None), student, inputs, None, layout)
+        is None
+    )
+    assert (
+        rl._unsloth_gkd_chunked_loss(
+            _trainer(0.5, student, _TinyLM(98, 24, 0.0, 2)), student, inputs, None, layout
+        )
+        is None
+    )
 
     class Custom(GKDTrainer):
         @staticmethod
@@ -365,7 +407,10 @@ def _jsd_source():
 def _jsd_class(source, tmp_path, name):
     import importlib.util
 
-    body = "import torch\nimport torch.nn.functional as F\nclass GKDTrainer:\n    @staticmethod\n" + textwrap.indent(source, "    ")
+    body = (
+        "import torch\nimport torch.nn.functional as F\nclass GKDTrainer:\n    @staticmethod\n"
+        + textwrap.indent(source, "    ")
+    )
     path = tmp_path / f"{name}.py"
     path.write_text(body)
     spec = importlib.util.spec_from_file_location(name, path)
@@ -381,9 +426,15 @@ def test_installed_generalized_jsd_is_accepted(tmp_path):
 @pytest.mark.parametrize(
     "old, new",
     [
-        ("jsd = beta * kl_teacher + (1 - beta) * kl_student", "jsd = (beta * kl_teacher + (1 - beta) * kl_student) * temperature ** 2"),
+        (
+            "jsd = beta * kl_teacher + (1 - beta) * kl_student",
+            "jsd = (beta * kl_teacher + (1 - beta) * kl_student) * temperature ** 2",
+        ),
         ("jsd = jsd[mask]", "jsd = jsd[mask] + 0.0"),
-        ("student_log_probs = F.log_softmax(student_logits, dim=-1)", "student_log_probs = F.log_softmax(student_logits.float(), dim=-1)"),
+        (
+            "student_log_probs = F.log_softmax(student_logits, dim=-1)",
+            "student_log_probs = F.log_softmax(student_logits.float(), dim=-1)",
+        ),
         ("jsd_sum / num_items_in_batch", "jsd_sum / num_items_in_batch / jsd.size(-1)"),
         ("return jsd_sum / num_items_in_batch", "return jsd_sum"),
     ],
@@ -408,7 +459,10 @@ def test_fsdp_deepspeed_and_missing_inputs_fall_back():
         assert trainer._unsloth_gkd_chunked_fallbacks == {"FSDP / DeepSpeed": 1}
     inputs = _inputs(vocab)
     inputs.pop("prompts")
-    assert rl._unsloth_gkd_chunked_loss(_trainer(0.5, student, teacher), student, inputs, None, layout) is None
+    assert (
+        rl._unsloth_gkd_chunked_loss(_trainer(0.5, student, teacher), student, inputs, None, layout)
+        is None
+    )
 
 
 def test_batch_encoding_inputs_take_the_chunked_path():
@@ -417,7 +471,11 @@ def test_batch_encoding_inputs_take_the_chunked_path():
     vocab = 97
     student, teacher = _TinyLM(vocab, 16, 0.0, 1), _TinyLM(vocab, 24, 0.0, 2)
     layout = {"shift": "prompt", "num_items_in_batch": False}
-    got = rl._unsloth_gkd_chunked_loss(_trainer(0.5, student, teacher), student, BatchEncoding(_inputs(vocab)), None, layout)
-    want = rl._unsloth_gkd_chunked_loss(_trainer(0.5, student, teacher), student, _inputs(vocab), None, layout)
+    got = rl._unsloth_gkd_chunked_loss(
+        _trainer(0.5, student, teacher), student, BatchEncoding(_inputs(vocab)), None, layout
+    )
+    want = rl._unsloth_gkd_chunked_loss(
+        _trainer(0.5, student, teacher), student, _inputs(vocab), None, layout
+    )
     assert got is not None
     torch.testing.assert_close(got, want)
