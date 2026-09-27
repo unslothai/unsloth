@@ -417,7 +417,14 @@ def test_generation_guard_never_refuses_the_calibrated_2048_canvas_on_a_promoted
     assert promoted > 0
 
 
-def _guard(free, total, *, calibrated, tile_side = 256, **kw):
+def _guard(
+    free,
+    total,
+    *,
+    calibrated,
+    tile_side = 256,
+    **kw,
+):
     return dm.image_activation_verdict(
         device_memory = DeviceMemory("cuda", "cuda", "discrete_vram", free, total),
         family = kw.pop("family", "qwen-image-2.1"),
@@ -523,7 +530,10 @@ def test_flat_tiers_ignore_the_controlnet_flag(free, kw):
     base = _guard(free, 16 * GIB, calibrated = False, **dict(kw))
     with_cn = _guard(free, 16 * GIB, calibrated = False, controlnet = True, **dict(kw))
     assert with_cn.action == base.action
-    assert (with_cn.needed_mib, with_cn.tiled_needed_mib) == (base.needed_mib, base.tiled_needed_mib)
+    assert (with_cn.needed_mib, with_cn.tiled_needed_mib) == (
+        base.needed_mib,
+        base.tiled_needed_mib,
+    )
 
 
 def test_generate_passes_the_calibrated_placement_and_controlnet_to_the_guard():

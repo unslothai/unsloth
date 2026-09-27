@@ -2284,9 +2284,9 @@ def image_activation_verdict(
         input_pixels = max(0, int(condition_pixels or 0))
         conditioned = bool(calibrated_placement) and (input_pixels > 0 or bool(controlnet))
         if calibrated_placement and controlnet:
-            condition_pixels = input_pixels + max(
-                64, int(width or DEFAULT_IMAGE_WIDTH)
-            ) * max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+            condition_pixels = input_pixels + max(64, int(width or DEFAULT_IMAGE_WIDTH)) * max(
+                64, int(height or DEFAULT_IMAGE_HEIGHT)
+            )
         needed = estimate_image_runtime_mib(
             width = width,
             height = height,
