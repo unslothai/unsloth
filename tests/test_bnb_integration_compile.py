@@ -452,7 +452,9 @@ def test_primitives_compile_fullgraph(nf4_kernels):
     cases = [
         (lambda q: U.fast_dequantize(q, s, use_global_buffer = True) * 1, (q,), True),
         (lambda q: U.fast_dequantize(q.t(), s) * 1, (q,), True),
-        (lambda x: U.fast_gemv(x, q, s) * 1, (X1,), True),
+        # The GEMV is a reduction: Inductor re-emits the Triton kernel and, depending on the
+        # Triton version and launch config, may round a partial sum differently (1 ulp).
+        (lambda x: U.fast_gemv(x, q, s) * 1, (X1,), "close"),
         (lambda x: U.matmul_lora(x, q, s, A, B, 2.0) * 1, (X,), False),
     ]
     for fn, args, always_exact in cases:
@@ -460,7 +462,9 @@ def test_primitives_compile_fullgraph(nf4_kernels):
         assert explained.graph_break_count == 0, explained.break_reasons
         torch._dynamo.reset()
         compiled, eager = torch.compile(fn, fullgraph = True)(*args), fn(*args)
-        if always_exact:
+        if always_exact == "close":
+            _assert_compiled_matches(compiled, eager, exact = False)
+        elif always_exact:
             assert torch.equal(compiled, eager)
         else:
             _assert_compiled_matches(compiled, eager)
