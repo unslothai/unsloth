@@ -69,7 +69,6 @@ def _routing(device):
 
 
 def test_kernels_are_opaque_ops_for_the_compiler():
-    """allow_in_graph is what let the compiler trace through the launch."""
     if not hasattr(torch.library, "custom_op"):
         pytest.skip(
             reason = "torch < 2.4 has no torch.library.custom_op; the kernels fall back to dynamo.disable"

@@ -560,9 +560,8 @@ def _grouped_gemm_dW_impl(
     return dW
 
 
-# Each kernel launches into a buffer it allocates, so torch.compile must treat it as one opaque op:
-# allow_in_graph let AOT trace the Python body on fake tensors, keeping torch.empty and dropping the launch.
-# triton_op is not an option: torch.compile rejects prune_configs_by on triton.autotune.
+# Opaque ops: allow_in_graph let AOT trace the body on fake tensors, keeping torch.empty and dropping the launch.
+# Not triton_op: torch.compile rejects prune_configs_by on triton.autotune.
 def _fwd_fake(X, W, topk, m_sizes, gather_indices, topk_weights, permute_x, permute_y, *args):
     N = W.shape[1] if W.ndim == 3 else W.shape[0] // m_sizes.shape[0]
     total_tokens = gather_indices.shape[0] if (permute_x or permute_y) else X.numel() // X.shape[-1]
