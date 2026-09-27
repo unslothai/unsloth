@@ -120,7 +120,7 @@ def _reference(Q, K_cache, V_cache, kv, leftpad, scale, softcap, window):
     return (torch.softmax(A, -1) @ V).transpose(1, 2)
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "runs the flash_attn_with_kvcache CUDA kernel")
 @pytest.mark.parametrize(
     "n_heads,n_kv_heads,head_dim,scalar", [(8, 4, 256, 256), (32, 16, 128, 144)]
 )
