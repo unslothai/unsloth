@@ -115,9 +115,9 @@ test("a document outside the kept types is uploaded only for the python tool", a
   assert.deepEqual(await send("data.csv", false), { id: "1", type: "document", name: "data.csv", content: [] });
   assert.deepEqual((await send("data.csv", true) as { original?: unknown }).original, original);
   assert.ok("file" in (await send("a.pdf", false, true)));
-  assert.deepEqual((await send("a.pdf", true, true) as { original?: unknown }).original, original);
+  assert.ok("file" in (await send("a.pdf", true, true)));
   await send("t.parquet", true, false, { original });
-  assert.deepEqual(uploads, ["data.csv", "a.pdf"]);
+  assert.deepEqual(uploads, ["data.csv"]);
 });
 
 test("only a python turn asks for copies, and every tool-only file has a reader", () => {
@@ -138,4 +138,9 @@ test("only a python turn asks for copies, and every tool-only file has a reader"
   }
   assert.equal(sandboxReader("logs.tar.gz"), "tarfile.open(path)");
   assert.equal(sandboxReader("report.odt"), null);
+});
+
+test("a malformed stored hash is left out instead of failing the turn", () => {
+  const message = { attachments: [{ name: "a.csv", original: { sha256: "NOT-HEX", sizeBytes: 1 } }] };
+  assert.deepEqual(withSandboxAttachmentPaths([message]).sandboxAttachments, []);
 });

@@ -40,7 +40,7 @@ type Attachment = { name?: string; content?: readonly unknown[] };
 
 function sandboxCopy(attachment: unknown): { sha256: string; path: string } | null {
   const original = attachmentOriginal(attachment);
-  if (!original) return null;
+  if (!original || !/^[0-9a-f]{64}$/.test(original.sha256)) return null;
   const name = (attachment as Attachment).name ?? "";
   return { sha256: original.sha256, path: sandboxAttachmentPath(original.sha256, name) };
 }

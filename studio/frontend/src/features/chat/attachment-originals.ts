@@ -46,7 +46,8 @@ export async function withAttachmentOriginal(
       ? (originalUpload(pending.file) ?? (forPythonTool ? pending.file : null))
       : null;
   if (!upload) return complete;
-  if (temporary && !forPythonTool) return { ...complete, file: pending.file } as CompleteAttachment;
+  // A temporary chat keeps its files in memory, python tool or not: it promises nothing is saved.
+  if (temporary) return { ...complete, file: pending.file } as CompleteAttachment;
   try {
     const original: ChatAttachmentOriginal = await uploadChatAttachmentOriginal(upload, epoch);
     return { ...complete, original } as CompleteAttachment;
