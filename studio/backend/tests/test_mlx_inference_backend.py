@@ -5543,14 +5543,17 @@ def test_a_method_whose_drafter_the_runtime_lacks_is_reported_unavailable(monkey
     ar = importlib.import_module("mlx_vlm.generate.ar")
     utils = importlib.import_module("mlx_vlm.speculative.utils")
 
-    assert spec._runtime_capabilities_from_modules(drafters, ar, utils)["methods"][gated]
+    # mlx-vlm < 0.6.16 already lacks these drafters, so compare against the unpatched runtime.
+    before = spec._runtime_capabilities_from_modules(drafters, ar, utils)["methods"]
 
     monkeypatch.setitem(
         spec._MLX_METHOD_MODULES, gated, "mlx_vlm.speculative.drafters.absent_here"
     )
     methods = spec._runtime_capabilities_from_modules(drafters, ar, utils)["methods"]
     assert methods[gated] is False
-    assert all(methods[other] is True for other in spec.MLX_SPECULATIVE_METHODS - {gated})
+    assert {k: v for k, v in methods.items() if k != gated} == {
+        k: v for k, v in before.items() if k != gated
+    }
 
 
 def test_a_dflash_architecture_loads_under_the_loop_it_runs_not_its_own_name(monkeypatch):
