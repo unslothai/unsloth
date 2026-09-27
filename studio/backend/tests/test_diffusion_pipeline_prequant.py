@@ -1282,6 +1282,14 @@ def test_the_bf16_rule_names_only_the_measured_families(repo, kept):
     reason = dmod._auto_keeps_bf16_reason(fam)
     assert (reason is not None) is kept
     assert reason is None or "cannot be regionally compiled" not in reason
+    # A GGUF load keeps no bf16 transformer, so the measured bf16 rule never claims it.
+    assert dmod._auto_keeps_bf16_reason(fam, "gguf") is None
+
+
+def test_an_uncompilable_family_keeps_its_reason_for_a_gguf_load(monkeypatch):
+    fam = detect_family_for_pick("Alpha-VLLM/Lumina-Image-2.0", None, None)
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: False)
+    assert "cannot be regionally compiled" in dmod._auto_keeps_bf16_reason(fam, "gguf")
 
 
 def test_a_resident_plan_whose_requirement_exceeds_the_budget_proves_no_fit():

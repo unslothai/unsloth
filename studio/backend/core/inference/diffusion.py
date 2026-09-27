@@ -1701,14 +1701,17 @@ def _plan_proves_resident(plan: Any) -> bool:
     )
 
 
-def _auto_keeps_bf16_reason(fam: Any) -> Optional[str]:
-    """Why AUTO keeps bf16 for ``fam`` when bf16 fits, or None; the seed and load deciders must both read this."""
+def _auto_keeps_bf16_reason(fam: Any, kind: Optional[str] = "pipeline") -> Optional[str]:
+    """Why AUTO keeps bf16 for ``fam`` when bf16 fits, or None; the seed and load deciders must both read this.
+    The measured rule covers released bf16 weights only: a GGUF load keeps no bf16 transformer."""
     if not family_compiles_regionally(fam):
         return (
             f"'{getattr(fam, 'name', None)}' cannot be regionally compiled (its transformer declares no "
             "repeated blocks), and an uncompiled quantised transformer runs far slower than the weights "
             "it replaces; they fit on this GPU as they are"
         )
+    if kind != "pipeline":
+        return None
     measured = auto_bf16_when_resident_reason(getattr(fam, "name", None))
     if measured is None:
         return None
@@ -1721,11 +1724,12 @@ def _auto_quant_eager_reason(
     fam: Any,
     plan: Any,
     prequant_path: Optional[str] = None,
+    kind: Optional[str] = "pipeline",
 ) -> Optional[str]:
     """Why AUTO keeps bf16 for this load, or None; an operator's own checkpoint wins."""
     if not _plan_proves_resident(plan):
         return None
-    reason = _auto_keeps_bf16_reason(fam)
+    reason = _auto_keeps_bf16_reason(fam, kind)
     if reason is None:
         return None
     if prequant_path and local_prequant_path_ready(prequant_path):
@@ -5223,7 +5227,7 @@ class DiffusionBackend:
                     and dense_quant_supported_kind(kind)
                     and dense_transformer_supported(target)
                     and not (kind == "gguf" and _has_active_lora(loras))
-                    and _auto_keeps_bf16_reason(fam) is not None
+                    and _auto_keeps_bf16_reason(fam, kind) is not None
                     and (
                         eager_reason := _auto_quant_eager_reason(
                             fam,
@@ -5243,6 +5247,7 @@ class DiffusionBackend:
                                 else None,
                             ),
                             transformer_prequant_path,
+                            kind,
                         )
                     )
                     is not None

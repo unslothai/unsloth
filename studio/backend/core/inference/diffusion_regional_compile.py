@@ -40,19 +40,17 @@ def verified_repeated_blocks(class_name: Optional[str]) -> tuple[str, ...]:
 
 def ensure_repeated_blocks(model: Any) -> tuple[str, ...]:
     """The block names ``compile_repeated_blocks`` will use, supplying them for a verified class that declares none."""
-    declared = tuple(getattr(model, "_repeated_blocks", None) or ())
-    if declared:
-        return declared
-    verified = verified_repeated_blocks(type(model).__name__)
-    if not verified:
-        return ()
-    found = discover_repeated_blocks(model)
-    blocks = tuple(n for n in verified if n in found)
+    blocks = tuple(getattr(model, "_repeated_blocks", None) or ())
     if not blocks:
-        return ()
+        verified = verified_repeated_blocks(type(model).__name__)
+        found = discover_repeated_blocks(model) if verified else ()
+        blocks = tuple(n for n in verified if n in found)
+        if not blocks:
+            return ()
+        model._repeated_blocks = list(blocks)
+    # Also when Diffusers declares the blocks itself: its released moe_infer still host-syncs.
     if type(model).__name__ == "HiDreamImageTransformer2DModel":
         install_traceable_moe(model)
-    model._repeated_blocks = list(blocks)
     return blocks
 
 

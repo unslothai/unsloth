@@ -106,6 +106,14 @@ def test_declared_blocks_are_returned_unchanged():
     assert rc.ensure_repeated_blocks(model) == ("Custom",)
 
 
+def test_hidream_declaring_its_own_blocks_still_gets_traceable_experts():
+    model = _tiny_hidream()
+    model._repeated_blocks = ["HiDreamImageTransformerBlock", "HiDreamImageSingleTransformerBlock"]
+    assert rc.ensure_repeated_blocks(model) == tuple(model._repeated_blocks)
+    moes = [m for m in model.modules() if type(m).__name__ == "MOEFeedForwardSwiGLU"]
+    assert moes and all(m.moe_infer.__func__ is rc._moe_infer_dense for m in moes)
+
+
 def test_discovery_matches_the_verified_names():
     assert rc.discover_repeated_blocks(_tiny_lumina()) == rc.verified_repeated_blocks(
         "Lumina2Transformer2DModel"
