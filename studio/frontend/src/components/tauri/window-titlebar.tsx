@@ -451,12 +451,13 @@ export function WindowTitlebar({
             }
           >
             {maximized ? (
-              // Mirrored, not rotated: Windows puts the front window bottom-left.
+              // Mirrored, not rotated: Windows puts the front window bottom-left. Copy's ink spans
+              // 20 of its 24 units, so 12px draws the 10px glyph its neighbours do.
               <Copy
                 aria-hidden="true"
                 absoluteStrokeWidth
                 strokeWidth={1.5}
-                size={14}
+                size={12}
                 className="-scale-x-100"
               />
             ) : (
