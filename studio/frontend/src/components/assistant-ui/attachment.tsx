@@ -598,7 +598,7 @@ const ComposerAttachmentCard: FC = () => {
   return (
     <AttachmentPrimitive.Root
       key={attachmentId}
-      className={cn("aui-attachment-card group/attachment-card relative", CARD_SLOT)}
+      className={cn("aui-attachment-root aui-attachment-card group/attachment-card relative", CARD_SLOT)}
     >
       <AttachmentPreviewDialog redactFromReload={true}>
         <button

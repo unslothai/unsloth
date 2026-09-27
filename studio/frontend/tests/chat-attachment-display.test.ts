@@ -92,7 +92,7 @@ test("composer cards wrap for two rows, then become one scrolling strip", () => 
     /const CARD_SLOT =\n\s*"shrink-0 w-\[calc\(\(100%_-_var\(--spacing\)\*8\)\/5\)\] min-w-\[calc\(7rem\*var\(--ui-space-scale,1\)\)\]";/,
   );
   assert.match(ATTACHMENT, /const CARD_SIZE = "h-\[calc\(7rem\*var\(--ui-space-scale,1\)\)\] w-full";/);
-  assert.match(ATTACHMENT, /className=\{cn\("aui-attachment-card group\/attachment-card relative", CARD_SLOT\)\}/);
+  assert.match(ATTACHMENT, /className=\{cn\("aui-attachment-root aui-attachment-card group\/attachment-card relative", CARD_SLOT\)\}/);
   assert.match(ATTACHMENT, /variant === "card" && cn\("group\/attachment-card", CARD_SLOT\)/);
   assert.match(ATTACHMENT, /aui-composer-attachment-cards [^"]*\bgap-2\b/);
 });
