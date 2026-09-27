@@ -122,107 +122,120 @@ _STANDARD_USER = "function Test-StudioChildScriptDirectoryElevated { return $fal
 
 
 def _final_path_helpers(source: str) -> str:
-    return "\n".join(
-        _extract(rf"    function {name} \{{.*?\n    \}}\n", source) for name in _FINAL_PATH_CHAIN
-    ) + "\n" + _STANDARD_USER
+    return (
+        "\n".join(
+            _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+            for name in _FINAL_PATH_CHAIN
+        )
+        + "\n"
+        + _STANDARD_USER
+    )
 
 
 def _mutex_helpers(source: str) -> str:
-    return "\n".join(
-        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
-        for name in (
-            # These scripts run under -ErrorActionPreference Stop, and Test-StudioPathEqual reports through
-            # Write-StudioLine. Extracted, not stubbed: a stub would keep passing if the real call went wrong.
-            "Write-StudioLine",
-            "Enter-StudioNamedMutex",
-            # Get-StudioFinalPath is a dispatcher: it falls back to the pure PowerShell resolver (#9140).
-            "Test-StudioDirectoryUsable",
-            "Remove-StudioStalePrivateTempDirectories",
-            "Get-StudioPrivateTempRoots",
-            "New-StudioPrivateTempDirectory",
-            "Initialize-StudioTempEnvironment",
-            "Write-StudioFinalPathDegraded",
-            "Resolve-StudioLinkTarget",
-            "Get-StudioSubstTarget",
-            "Get-ElevationState",
-            "Get-StudioEarlyPython",
-            "Invoke-StudioEarlyPythonScript",
-            "New-StudioChildScriptDirectory",
-            "Test-StudioChildScriptDirectoryElevated",
-            "Test-StudioPathUnderAdminRoot",
-            "Test-StudioSddlRightsAreWrite",
-            "Test-StudioSddlPrincipalIsAdminOnly",
-            "Test-StudioSddlWritableByNonAdmin",
-            "Test-StudioDirectoryIsAdminOnly",
-            "Test-StudioInterpreterFileIsAdminOnly",
-            "Get-StudioLexicalParent",
-            "Invoke-StudioSystem32ToolBounded",
-            "Get-StudioSystem32Tool",
-            "Test-StudioPlainFile",
-            "Test-UnslothCmdShimFile",
-            "Invoke-StudioEarlyPython",
-            "Get-StudioPythonFinalPath",
-            "Resolve-StudioFinalPathsInOneChild",
-            "Get-StudioLexicalPath",
-            "Resolve-StudioFinalPathInfo",
-            "Get-StudioFinalPath",
-            "Get-StudioPathHash",
-            "Get-StudioInstallMutexName",
-            "Test-StudioPathEqual",
-            "Get-StudioRuntimeMutexNameForSid",
-            "Get-StudioRuntimePathHash",
-            "Get-StudioRuntimeMutexNameForPath",
-            "Get-StudioCurrentUserSid",
-            "Get-StudioRuntimeMutexName",
-            "Get-StudioRuntimeMutexNames",
-            "Enter-StudioInstallMutex",
-            "Exit-StudioInstallMutex",
+    return (
+        "\n".join(
+            _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+            for name in (
+                # These scripts run under -ErrorActionPreference Stop, and Test-StudioPathEqual reports through
+                # Write-StudioLine. Extracted, not stubbed: a stub would keep passing if the real call went wrong.
+                "Write-StudioLine",
+                "Enter-StudioNamedMutex",
+                # Get-StudioFinalPath is a dispatcher: it falls back to the pure PowerShell resolver (#9140).
+                "Test-StudioDirectoryUsable",
+                "Remove-StudioStalePrivateTempDirectories",
+                "Get-StudioPrivateTempRoots",
+                "New-StudioPrivateTempDirectory",
+                "Initialize-StudioTempEnvironment",
+                "Write-StudioFinalPathDegraded",
+                "Resolve-StudioLinkTarget",
+                "Get-StudioSubstTarget",
+                "Get-ElevationState",
+                "Get-StudioEarlyPython",
+                "Invoke-StudioEarlyPythonScript",
+                "New-StudioChildScriptDirectory",
+                "Test-StudioChildScriptDirectoryElevated",
+                "Test-StudioPathUnderAdminRoot",
+                "Test-StudioSddlRightsAreWrite",
+                "Test-StudioSddlPrincipalIsAdminOnly",
+                "Test-StudioSddlWritableByNonAdmin",
+                "Test-StudioDirectoryIsAdminOnly",
+                "Test-StudioInterpreterFileIsAdminOnly",
+                "Get-StudioLexicalParent",
+                "Invoke-StudioSystem32ToolBounded",
+                "Get-StudioSystem32Tool",
+                "Test-StudioPlainFile",
+                "Test-UnslothCmdShimFile",
+                "Invoke-StudioEarlyPython",
+                "Get-StudioPythonFinalPath",
+                "Resolve-StudioFinalPathsInOneChild",
+                "Get-StudioLexicalPath",
+                "Resolve-StudioFinalPathInfo",
+                "Get-StudioFinalPath",
+                "Get-StudioPathHash",
+                "Get-StudioInstallMutexName",
+                "Test-StudioPathEqual",
+                "Get-StudioRuntimeMutexNameForSid",
+                "Get-StudioRuntimePathHash",
+                "Get-StudioRuntimeMutexNameForPath",
+                "Get-StudioCurrentUserSid",
+                "Get-StudioRuntimeMutexName",
+                "Get-StudioRuntimeMutexNames",
+                "Enter-StudioInstallMutex",
+                "Exit-StudioInstallMutex",
+            )
         )
-    ) + "\n" + _STANDARD_USER
+        + "\n"
+        + _STANDARD_USER
+    )
 
 
 def _process_helpers(source: str) -> str:
-    return "\n".join(
-        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
-        for name in (
-            "Write-StudioLine",
-            "Test-StudioDirectoryUsable",
-            "Remove-StudioStalePrivateTempDirectories",
-            "Get-StudioPrivateTempRoots",
-            "New-StudioPrivateTempDirectory",
-            "Initialize-StudioTempEnvironment",
-            "Write-StudioFinalPathDegraded",
-            "Resolve-StudioLinkTarget",
-            "Get-StudioSubstTarget",
-            "Get-ElevationState",
-            "Get-StudioEarlyPython",
-            "Invoke-StudioEarlyPythonScript",
-            "New-StudioChildScriptDirectory",
-            "Test-StudioChildScriptDirectoryElevated",
-            "Test-StudioPathUnderAdminRoot",
-            "Test-StudioSddlRightsAreWrite",
-            "Test-StudioSddlPrincipalIsAdminOnly",
-            "Test-StudioSddlWritableByNonAdmin",
-            "Test-StudioDirectoryIsAdminOnly",
-            "Test-StudioInterpreterFileIsAdminOnly",
-            "Get-StudioLexicalParent",
-            "Invoke-StudioSystem32ToolBounded",
-            "Get-StudioSystem32Tool",
-            "Test-StudioPlainFile",
-            "Test-UnslothCmdShimFile",
-            "Invoke-StudioEarlyPython",
-            "Get-StudioPythonFinalPath",
-            "Resolve-StudioFinalPathsInOneChild",
-            "Get-StudioLexicalPath",
-            "Resolve-StudioFinalPathInfo",
-            "Get-StudioFinalPath",
-            "Test-StudioProtectedPathMatch",
-            "Get-StudioPythonProcessImageTable",
-            "Get-StudioWmiProcessImageRows",
-            "Get-StudioProcessImagePath",
-            "Get-RunningStudioVenvProcesses",
+    return (
+        "\n".join(
+            _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+            for name in (
+                "Write-StudioLine",
+                "Test-StudioDirectoryUsable",
+                "Remove-StudioStalePrivateTempDirectories",
+                "Get-StudioPrivateTempRoots",
+                "New-StudioPrivateTempDirectory",
+                "Initialize-StudioTempEnvironment",
+                "Write-StudioFinalPathDegraded",
+                "Resolve-StudioLinkTarget",
+                "Get-StudioSubstTarget",
+                "Get-ElevationState",
+                "Get-StudioEarlyPython",
+                "Invoke-StudioEarlyPythonScript",
+                "New-StudioChildScriptDirectory",
+                "Test-StudioChildScriptDirectoryElevated",
+                "Test-StudioPathUnderAdminRoot",
+                "Test-StudioSddlRightsAreWrite",
+                "Test-StudioSddlPrincipalIsAdminOnly",
+                "Test-StudioSddlWritableByNonAdmin",
+                "Test-StudioDirectoryIsAdminOnly",
+                "Test-StudioInterpreterFileIsAdminOnly",
+                "Get-StudioLexicalParent",
+                "Invoke-StudioSystem32ToolBounded",
+                "Get-StudioSystem32Tool",
+                "Test-StudioPlainFile",
+                "Test-UnslothCmdShimFile",
+                "Invoke-StudioEarlyPython",
+                "Get-StudioPythonFinalPath",
+                "Resolve-StudioFinalPathsInOneChild",
+                "Get-StudioLexicalPath",
+                "Resolve-StudioFinalPathInfo",
+                "Get-StudioFinalPath",
+                "Test-StudioProtectedPathMatch",
+                "Get-StudioPythonProcessImageTable",
+                "Get-StudioWmiProcessImageRows",
+                "Get-StudioProcessImagePath",
+                "Get-RunningStudioVenvProcesses",
+            )
         )
-    ) + "\n" + _STANDARD_USER
+        + "\n"
+        + _STANDARD_USER
+    )
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
