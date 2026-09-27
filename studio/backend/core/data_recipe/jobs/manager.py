@@ -215,8 +215,11 @@ class JobManager:
                     kwargs = process_kwargs,
                     daemon = True,
                 )
-                proc.start()
-                from utils.process_lifetime import adopt_pid
+                from utils.process_lifetime import adopt_pid, spawn_on_lifetime_thread
+
+                # Linux PDEATHSIG follows the spawning thread. A sync request's pool
+                # thread can retire while this recipe is still generating (#11002).
+                spawn_on_lifetime_thread(proc.start)
 
                 adopt_pid(proc.pid)
 

@@ -11,6 +11,7 @@ subprocess.poll() branch so a crashed llama-server surfaces a structured
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -232,7 +233,7 @@ class TestWaitForHealthResilience:
             b._stop_mtp_crash_watchdog = lambda *a, **kw: None
             b._reset_effective_parallel_slots = lambda *a, **kw: None
             b._leading_process_group = lambda *a, **kw: None
-            b._collect_descendants = lambda *a, **kw: []
+            b._collect_descendants = lambda *a, **kw: ([], True)
             b._kill_process_group = lambda *a, **kw: None
             b._terminate_descendants = lambda *a, **kw: None
             b._process.poll.return_value = 0
@@ -249,9 +250,13 @@ class TestWaitForHealthResilience:
         b = _make_backend()
         b._shutting_down = True
         spawned = []
-        monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: spawned.append(1))
+        monkeypatch.setattr(subprocess, "Popen", lambda cmd = None, *a, **kw: spawned.append(cmd))
         assert b._start_llama_process(["llama-server"], {}, child_gpu_physical_ids = None) is False
-        assert spawned == [], "started a server after shutdown had begun"
+        # The argv, not the call count. The defensive kill at the top of
+        # _start_llama_process scans for descendants, and on macOS that scan shells out
+        # to `ps` through this same subprocess.Popen, so "nothing was spawned at all"
+        # fails there for a reason that has nothing to do with the spawn under test.
+        assert ["llama-server"] not in spawned, "started a server after shutdown had begun"
 
     def test_a_teardown_with_no_process_still_marks_shutdown(self):
         """Quitting during a download or staging has nothing to kill, so
@@ -376,7 +381,7 @@ class TestWaitForHealthResilience:
         b._stop_mtp_crash_watchdog = lambda *a, **kw: None
         b._reset_effective_parallel_slots = lambda *a, **kw: None
         b._leading_process_group = lambda *a, **kw: None
-        b._collect_descendants = lambda *a, **kw: []
+        b._collect_descendants = lambda *a, **kw: ([], True)
         b._kill_process_group = lambda *a, **kw: None
         b._terminate_descendants = lambda *a, **kw: None
         seen = {}
@@ -1313,7 +1318,7 @@ class TestHealthPublicationIsAtomicWithTeardown:
         b._process = object()
         b._reset_effective_parallel_slots = lambda: None
         b._leading_process_group = lambda _pid: None
-        b._collect_descendants = lambda _pid: []
+        b._collect_descendants = lambda _pid: ([], True)
         b._diffusion_requested_ngl = None
 
         published = b._publish_healthy()
@@ -1410,7 +1415,7 @@ def test_a_lifecycle_cannot_reopen_while_a_teardown_is_still_killing():
     b._reset_effective_parallel_slots = lambda: None
     b._diffusion_requested_ngl = None
     b._leading_process_group = lambda _pid: None
-    b._collect_descendants = lambda _pid: []
+    b._collect_descendants = lambda _pid: ([], True)
     b._spawn_lock = threading.RLock()  # so the probe below can observe, not deadlock
 
     reopened_during_kill = []
@@ -1488,7 +1493,7 @@ class TestATeardownDoesNotBlockASpawnItWillRefuse:
         b._reset_effective_parallel_slots = lambda: None
         b._diffusion_requested_ngl = None
         b._leading_process_group = lambda _p: None
-        b._collect_descendants = lambda _p: []
+        b._collect_descendants = lambda _p: ([], True)
 
         class _Stubborn:
             pid = 4242
@@ -1585,3 +1590,195 @@ def test_the_lock_order_is_teardown_then_spawn():
                 ):
                     inversions.append(inner.lineno)
     assert not inversions, f"_teardown_lock taken inside _spawn_lock at {inversions}"
+
+
+def test_no_kill_double_still_returns_the_legacy_shape():
+    """`_collect_descendants` answers `(descendants, known)`, and the teardown unpacks it.
+
+    Five doubles in this file still returned a bare list, so every kill path here raised
+    `ValueError: not enough values to unpack` and the teardown cases were exercising nothing.
+    A grep is the cheapest guard against the same drift: a double that returns a list is a
+    test that cannot reach the code it names.
+    """
+    import ast
+    import inspect
+    import sys
+
+    module = sys.modules[__name__]
+    tree = ast.parse(inspect.getsource(module))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Attribute) or target.attr != "_collect_descendants":
+            continue
+        assert isinstance(node.value, ast.Lambda), ast.unparse(node)
+        body = node.value.body
+        assert isinstance(body, ast.Tuple) and len(body.elts) == 2, ast.unparse(node)
+
+
+class TestHealthWaitMeasuresStalls:
+    # Grow RSS, then idle.
+    _WORKER = (
+        "import sys, time\n"
+        "held = []\n"
+        "end = time.monotonic() + float(sys.argv[1])\n"
+        "while time.monotonic() < end:\n"
+        "    held.append(b'\\x01' * (4 << 20))\n"
+        "    time.sleep(0.05)\n"
+        "time.sleep(60)\n"
+    )
+
+    # Page mmap views without retaining RSS or calling read().
+    _MMAP_WORKER = (
+        "import mmap, os, sys, time\n"
+        "fd = os.open(sys.argv[1], os.O_RDONLY | getattr(os, 'O_BINARY', 0))\n"
+        "view = 16 << 20\n"
+        "end = time.monotonic() + float(sys.argv[2])\n"
+        "offset = 0\n"
+        "while time.monotonic() < end:\n"
+        "    if hasattr(os, 'posix_fadvise'):\n"
+        "        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)\n"
+        "    with mmap.mmap(fd, view, access = mmap.ACCESS_READ, offset = offset) as m:\n"
+        "        sum(m[p] for p in range(0, view, mmap.PAGESIZE))\n"
+        "    offset = view - offset\n"
+        "    time.sleep(0.05)\n"
+        "time.sleep(60)\n"
+    )
+
+    def _wait_on_child(
+        self,
+        monkeypatch,
+        argv,
+        *,
+        healthy_after = None,
+        timeout = 0.6,
+    ):
+        monkeypatch.setattr(LlamaCppBackend, "_STARTUP_PROGRESS_SAMPLE_S", 0.1)
+        b = _make_backend()
+        b._process = subprocess.Popen([sys.executable, "-c", *argv])
+        started = time.monotonic()
+
+        def probe(*a, **kw):
+            if healthy_after is not None and time.monotonic() - started >= healthy_after:
+                return mock.Mock(status_code = 200)
+            return mock.Mock(status_code = 503)
+
+        monkeypatch.setattr(httpx, "get", probe)
+        try:
+            ok = b._wait_for_health(timeout = timeout, interval = 0.02)
+            # Taken before the teardown, which is not part of the wait: killing and reaping the
+            # worker on a loaded runner is what pushed a correct wait past a tight bound.
+            elapsed = time.monotonic() - started
+        finally:
+            import psutil
+
+            for descendant in psutil.Process(b._process.pid).children(recursive = True):
+                descendant.kill()
+            b._process.kill()
+            b._process.wait()
+        return b, ok, elapsed
+
+    def test_a_load_that_keeps_working_outlives_the_timeout(self, monkeypatch):
+        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "3.0"], healthy_after = 2.5)
+        assert ok is True
+        assert elapsed >= 2.5
+        assert not any("health check timed out" in ln for ln in b._stdout_lines)
+
+    def test_a_child_doing_nothing_still_times_out(self, monkeypatch):
+        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "0.0"])
+        assert ok is False
+        assert elapsed < 3.0
+        assert any("no startup progress for 0.6s" in ln for ln in b._stdout_lines)
+
+    def test_a_load_that_stalls_times_out_one_timeout_after_its_last_work(self, monkeypatch):
+        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "1.5"])
+        assert ok is False
+        assert 1.5 + 0.6 - 0.2 <= elapsed < 1.5 + 3.0
+        assert any("health check timed out" in ln for ln in b._stdout_lines)
+
+    def test_work_done_by_a_descendant_counts(self, monkeypatch):
+        shim = (
+            "import subprocess, sys, time\n"
+            "subprocess.Popen([sys.executable, '-c', sys.argv[1], '3.0'])\n"
+            "time.sleep(60)\n"
+        )
+        # A second interpreter has to start before the descendant does any work, and on a loaded runner that
+        # alone outlasted the 0.6s default: the wait gave up on a load that was about to make progress. 1.5s
+        # still sits well under healthy_after, so only descendant work can carry the wait to 2.5s.
+        b, ok, elapsed = self._wait_on_child(
+            monkeypatch, [shim, self._WORKER], healthy_after = 2.5, timeout = 1.5
+        )
+        assert ok is True
+        assert elapsed >= 2.5
+
+    def test_mmap_page_ins_with_flat_resident_memory_count(self, monkeypatch, tmp_path):
+        # Make page faults the only enabled progress signal.
+        monkeypatch.setattr(LlamaCppBackend, "_STARTUP_PROGRESS_MIN_CPU_FRACTION", 100.0)
+        monkeypatch.setattr(LlamaCppBackend, "_STARTUP_PROGRESS_MIN_BYTES", 1 << 40)
+        model = tmp_path / "model.gguf"
+        # Small writes avoid collapsing the file into 2 MiB cache folios.
+        with open(model, "wb") as f:
+            for _ in range(512):
+                f.write(os.urandom(64 << 10))
+        # A longer stall window than its siblings use, and the asymmetry is the reason.
+        #
+        # _made_startup_progress measures CPU as MIN_CPU_FRACTION * elapsed, so a CPU-driven
+        # child that loses the scheduler needs proportionally less CPU to still count as
+        # progressing: the tests above are starvation-proof by construction. Page faults are
+        # compared against a flat MIN_PAGE_FAULTS, so the same starvation lowers the count
+        # without lowering the bar, and this is the only test where faults are the sole signal
+        # because the other two are deliberately disabled above.
+        #
+        # At the 0.6s the others use, one window where this child is not scheduled ends the
+        # wait. Reproduced on a 2-CPU cpuset against 8 competing busy loops: 2 failures in 12
+        # runs, both `assert ok is True` at this line, which is the shape seen in Backend CI
+        # (Python 3.13, l-r) where 18,747 tests share four workers.
+        #
+        # 1.5s keeps the claim intact rather than widening it. Without page-fault progress the
+        # wait still dies at 1.5s, well before the 2.5s health flip, so the test still fails if
+        # the signal stops working; it only stops failing when the machine is busy.
+        b, ok, elapsed = self._wait_on_child(
+            monkeypatch, [self._MMAP_WORKER, str(model), "3.0"], healthy_after = 2.5, timeout = 1.5
+        )
+        assert ok is True
+        assert elapsed >= 2.5
+
+    def test_unreadable_counters_keep_the_fixed_deadline(self, monkeypatch):
+        monkeypatch.setattr(LlamaCppBackend, "_startup_work_sample", staticmethod(lambda p: None))
+        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "3.0"])
+        assert ok is False
+        assert elapsed < 1.5
+
+    def test_cpu_after_an_unreadable_sample_is_measured_from_the_last_readable_one(
+        self, monkeypatch
+    ):
+        # 20 ms over 0.9s remains below the threshold.
+        samples = iter([(1.0, 0, 0, 0), *[None] * 8, (1.02, 0, 0, 0)])
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_startup_work_sample",
+            staticmethod(lambda p: next(samples, None)),
+        )
+        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "0.0"], timeout = 1.5)
+        assert ok is False
+        # Measured correctly, the wait ends one timeout after it began, about 1.5s. Measured
+        # from the unreadable samples instead, the 20 ms reads as progress when the tenth
+        # sample lands, and samples are at least 0.1s apart, so the deadline moves to no
+        # earlier than 0.9 + 1.5 = 2.4s. The bound sits below that floor rather than halfway,
+        # which left a correct wait 0.45s of headroom and a loaded runner used it up.
+        assert elapsed < 2.3
+
+    def test_resident_memory_regained_after_eviction_is_not_progress(self):
+        peak = (10.0, 500 << 20, 0, 0)
+        assert not LlamaCppBackend._made_startup_progress(peak, (10.0, 499 << 20, 0, 0), 5.0)
+        assert LlamaCppBackend._made_startup_progress(peak, (10.0, 502 << 20, 0, 0), 5.0)
+
+    def test_answering_health_probes_is_not_progress(self):
+        # Idle health probes stay below both thresholds.
+        before = (1.0, 100 << 20, 50 << 20, 1000)
+        assert not LlamaCppBackend._made_startup_progress(
+            before, (1.02, 100 << 20, 50 << 20, 1033), 5.0
+        )
+        assert LlamaCppBackend._made_startup_progress(before, (1.5, 100 << 20, 50 << 20, 1000), 5.0)
+        assert LlamaCppBackend._made_startup_progress(before, (1.0, 100 << 20, 50 << 20, 1064), 5.0)

@@ -32,6 +32,8 @@ const DEFAULT_ISH = {
   nParallel: null,
   nBatch: null,
   nUbatch: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   tensorParallel: false,
   disableVision: false,
   chatTemplateOverride: null,
@@ -47,6 +49,8 @@ const BLANK = {
   nParallel: null,
   nBatch: null,
   nUbatch: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   tensorParallel: false,
   disableVision: false,
   chatTemplateOverride: null,
@@ -215,7 +219,8 @@ const FIELDS: {
   {
     name: "GPU placement",
     config: { selectedGpuIds: [0, 2] },
-    same: { requested_gpu_ids: [2, 0] },
+    // Same ORDER, not merely the same cards: the reordered pair is a reload now.
+    same: { requested_gpu_ids: [0, 2] },
     differs: { requested_gpu_ids: [0, 1] },
   },
 ];
@@ -241,11 +246,20 @@ for (const field of FIELDS) {
 }
 
 /** Ordering is the backend's to choose: it narrows and reorders placement at fit time. */
-test("GPU placement compares as a set, not as an order", () => {
+test("GPU placement compares as an order, not as a set", () => {
+  // The picker hands the list to the backend in order and position decides which
+  // card takes the prompt, so a reorder is a different placement and must reload.
   assert.equal(
     matches(
       { requested_gpu_ids: [3, 1, 0] },
       { ...BLANK, selectedGpuIds: [0, 1, 3] },
+    ),
+    false,
+  );
+  assert.equal(
+    matches(
+      { requested_gpu_ids: [3, 1, 0] },
+      { ...BLANK, selectedGpuIds: [3, 1, 0] },
     ),
     true,
   );
@@ -385,13 +399,26 @@ test("selectModel weighs the config and the lease before confirming a reload", (
   // written only by a completed load, so this path must not adopt one.
   // Widened as the gate's preamble grows: what matters is that the guard opens the block
   // the identity check sits in, not how many reads it makes first.
+  // Scoped to the adoption short-circuit: the runtime also checks residency while
+  // cancelling a superseded run, and adopting an earlier occurrence would read this
+  // guard as missing.
   const guard = USE_CHAT_MODEL_RUNTIME.lastIndexOf(
     "if (!forceReload && !nativePathToken) {",
-    identityCheck,
+    confirmPrompt,
   );
   assert.ok(
     guard > 0,
     "the resident short-circuit no longer excludes native-lease picks",
+  );
+  // Scoped past the guard: the runtime also checks residency when it reconciles a
+  // cancelled run, and reading the first occurrence would measure the wrong block.
+  const adoptionIdentityCheck = USE_CHAT_MODEL_RUNTIME.indexOf(
+    "residentModelMatchesPick(status",
+    guard,
+  );
+  assert.ok(
+    adoptionIdentityCheck > guard && adoptionIdentityCheck < confirmPrompt,
+    "the resident short-circuit no longer wraps the identity check",
   );
 });
 
@@ -1887,4 +1914,39 @@ test("a remembered manual split the resident load does not run is still a reload
     ),
     false,
   );
+});
+
+
+test("inherited reasoning defaults do not reload an unchanged resident", () => {
+  assert.equal(matches({
+    reasoning_budget: 32,
+    reasoning_budget_message: "Conclude now.",
+    requested_reasoning_budget: -1,
+    requested_reasoning_budget_message: "",
+  }, BLANK), true);
+});
+
+test("pinning the effective reasoning value changes the resident request", () => {
+  assert.equal(matches({
+    reasoning_budget: 32,
+    requested_reasoning_budget: -1,
+  }, { ...BLANK, reasoningBudget: 32 }), false);
+  assert.equal(matches({
+    reasoning_budget_message: "Conclude now.",
+    requested_reasoning_budget_message: "",
+  }, { ...BLANK, reasoningBudgetMessage: "Conclude now." }), false);
+});
+
+test("an explicit zero reasoning request can reuse the resident", () => {
+  assert.equal(matches({
+    reasoning_budget: 0,
+    requested_reasoning_budget: 0,
+  }, { ...BLANK, reasoningBudget: 0 }), true);
+});
+
+test("legacy status without reasoning request echoes keeps its comparison", () => {
+  assert.equal(matches({
+    reasoning_budget: 32,
+    reasoning_budget_message: "Conclude now.",
+  }, { ...BLANK, reasoningBudget: 32, reasoningBudgetMessage: "Conclude now." }), true);
 });

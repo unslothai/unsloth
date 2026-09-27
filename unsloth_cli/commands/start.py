@@ -123,6 +123,10 @@ _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS = (
     "subagents for other delegation requests."
 )
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
+_PI_USER_RESOURCE_DIRS = ("extensions", "skills", "prompts", "themes", "npm", "git")
+_PI_USER_RESOURCE_SETTINGS = ("packages", "extensions", "skills", "prompts", "themes")
+_PI_USER_VERBATIM_SETTINGS = ("npmCommand",)
+_PI_USER_RESOURCES_MANIFEST = ".unsloth-user-resources.json"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid colliding with a user's providers; provider filters are set in the launch-time overlay.
 _OPENCODE_PROVIDER = "unsloth-studio"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
@@ -1612,12 +1616,17 @@ def _loaded_models(base: str, key: str) -> list:
         _fail_request(exc, "Couldn't list models")
 
 
-def _model_still_loaded(base: str, key: str, model_id: object) -> bool:
+def _model_loaded_state(base: str, key: str, model_id: object) -> Optional[bool]:
+    """Return whether the model is loaded, or None if the listing is unavailable."""
     try:
         models = _loaded_models_response(base, key, timeout = 5).get("data", [])
     except Exception:
-        return False
+        return None
     return any(m.get("id") == model_id and m.get("loaded") is not False for m in models)
+
+
+def _model_still_loaded(base: str, key: str, model_id: object) -> bool:
+    return _model_loaded_state(base, key, model_id) is True
 
 
 _HF_REPO_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1666,6 +1675,18 @@ def _public_model_id(value: Optional[str]) -> Optional[str]:
     if name.lower().endswith(".gguf"):
         name = name[: -len(".gguf")]
     return name or None
+
+
+def _public_model_ids(value: Optional[str]) -> set:
+    """Return a path's basename ID and HF cache repo ID for old and current servers."""
+    ids = {_public_model_id(value)} - {None}
+    if ids:
+        parts = value.replace("\\", "/").split("/")
+        for index, part in enumerate(parts):
+            if part.startswith("models--") and parts[index + 1 : index + 2] == ["snapshots"]:
+                ids.add(part[len("models--") :].replace("--", "/"))
+                break
+    return ids
 
 
 def _model_id_matches(
@@ -1904,8 +1925,8 @@ def _resolve_model(
         if preload_check is not None:
             # An explicit knob forces match to None so the server's disk-free dedupe can answer already_loaded; gating it would reject a second session for the model already serving, whose file may have moved. Only the quant is checked below: any other run knob changes the runtime intent, a real reload nothing dedupes.
             other_overrides = bool(overrides - {"gguf_variant"})
-            # The loaded listing shows a path-loaded GGUF under its basename, so match that spelling too, or a second session reruns the gate.
-            wanted_ids = {requested, _public_model_id(requested)} - {None}
+            # Match public path IDs before deciding whether to rerun the gate.
+            wanted_ids = {requested} | _public_model_ids(requested)
             resident_serves_request = not other_overrides and any(
                 m.get("loaded") is not False
                 and any(
@@ -1949,6 +1970,9 @@ def _resolve_model(
                 preload_check(base, key, requested, load.gguf_variant)
         active_id = active.get("id") if active else None
         announced_switch = False
+        # Public IDs can collide, and status hides paths from API keys.
+        # Wait for the load result to distinguish reuse from replacement.
+        switch_unknown = False
         if attach_public_id is not None:
             # An inferred attach never switches model, so the comparison below would misreport a switch and print the server's path.
             if inferred_differs:
@@ -1960,9 +1984,15 @@ def _resolve_model(
             requested,
             allow_casefold = allow_casefold,
         ):
-            typer.echo(f"Switching the Unsloth server from {active_id} to {requested}.")
-            typer.echo("This unloads the current model for every attached session.")
-            announced_switch = True
+            if any(
+                _model_id_matches(active_id, listed, allow_casefold = allow_casefold)
+                for listed in _public_model_ids(requested)
+            ):
+                switch_unknown = True
+            else:
+                typer.echo(f"Switching the Unsloth server from {active_id} to {requested}.")
+                typer.echo("This unloads the current model for every attached session.")
+                announced_switch = True
         elif active_id and load.gguf_variant:
             # Same repo id but an explicit quant still replaces the resident weights; the loaded listing does not carry a variant for every resident model, so ask the status endpoint.
             try:
@@ -2038,13 +2068,20 @@ def _resolve_model(
             # The warning above promised an unload; if the server refused the load before evicting anything, say so. Not BaseException: Ctrl+C must stay immediate, without a probe or a survivor claim.
             if announced_switch and _model_still_loaded(base, key, active_id):
                 typer.echo(f"Nothing was unloaded; {active_id} is still serving.", err = True)
+            # Report an unannounced eviction only if the listing confirms it.
+            if switch_unknown and _model_loaded_state(base, key, active_id) is False:
+                typer.echo(f"{active_id} was unloaded for every attached session.", err = True)
             raise
         if loaded.get("status") == "already_loaded":
             # Show the public id on the inferred path; `requested` may be a server path.
             shown = attach_public_id or requested
             typer.echo(f"Reusing loaded model: {_display_model_spec(shown, load.gguf_variant)}")
-        # Unsloth registers the model under a canonical id (resolved identifier, casing) that the loaded listing echoes but which may differ from the path we passed; match on the id the load reports so we do not silently fall through to models[0] and connect to a different loaded model. attach_public_id: our _public_model_id only strips a basename, while the server also maps an HF cache path to its repo id, so the two can disagree.
-        wanted = {requested, _public_model_id(requested), attach_public_id} - {None}
+        elif switch_unknown:
+            typer.echo(f"Loaded {requested} in place of {active_id}.")
+            typer.echo("This unloaded the previous model for every attached session.")
+        # Match public IDs and load-response names, since the listing may omit paths.
+        # Keep attach_public_id for inferred requests using opaque identifiers.
+        wanted = ({requested, attach_public_id} - {None}) | _public_model_ids(requested)
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
         models = _loaded_models(base, key)
@@ -2112,7 +2149,7 @@ def _hub_gguf_files(repo: str) -> Optional[list]:
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS: dspark and dflash are the same DeepSeek V4 Flash drafter, but dflash/ is also a real family name, so only mtp/ and dspark/ count as a companion folder.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
@@ -2750,6 +2787,8 @@ def _claude_local_env(base: str, key: str, entry: dict) -> dict:
         "ANTHROPIC_AUTH_TOKEN": key,
         "ANTHROPIC_MODEL": model_id,
         "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+        # Per-tool countdown reminders change the system prefix on local models.
+        "CLAUDE_CODE_TOTAL_TOKENS_REMINDER": "off",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
         "CLAUDE_CODE_NO_FLICKER": "1",
@@ -2980,9 +3019,31 @@ def _codex_source_home(*, ignore_configured: bool = False) -> Path:
     return Path.home() / ".codex"
 
 
+def _is_junction(path: Path) -> bool:
+    # Path.is_junction() was added in Python 3.12.
+    if hasattr(path, "is_junction"):
+        return path.is_junction()
+    try:
+        return (
+            getattr(os.lstat(path), "st_reparse_tag", None) == 0xA0000003
+        )  # IO_REPARSE_TAG_MOUNT_POINT
+    except OSError:
+        return False
+
+
+def _is_directory_link(path: Path) -> bool:
+    # lstat reads the link, so FILE_ATTRIBUTE_DIRECTORY answers even when dangling.
+    try:
+        return bool(getattr(os.lstat(path), "st_file_attributes", 0) & 0x10)
+    except OSError:
+        return False
+
+
 def _remove_overlay_entry(path: Path) -> None:
-    is_junction = getattr(path, "is_junction", None)
-    if is_junction and is_junction():
+    if _is_junction(path):
+        path.rmdir()
+    elif os.name == "nt" and path.is_symlink() and _is_directory_link(path):
+        # DeleteFileW, which unlink maps to, refuses a directory entry; rmdir drops the link.
         path.rmdir()
     elif path.is_symlink() or path.is_file():
         path.unlink()
@@ -3506,7 +3567,9 @@ def _refresh_windows_path() -> None:
 def _managed_node_tools() -> Optional[tuple[Path, Path, bool]]:
     # Best-effort: any failure here means "no managed Node", never a broken launch.
     try:
-        ensure_studio_backend_path()
+        # Discovery only: this answers "is there a managed Node", including for a launch aimed
+        # at a remote server, so it must not create the cache tree on the way past.
+        ensure_studio_backend_path(seed_cache_env = False)
         from utils.node_runtime import managed_node_binary, resolve_node_executable
         node = Path(managed_node_binary())
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):
@@ -4049,6 +4112,16 @@ def _connect(
             # That server was started FROM these knobs, so inferring a target here would reload what was just loaded.
             infer_resident = server is None,
         )
+        status = _inference_status(base, key) if model else {}
+        # A GGUF can be active while the resolved entry is another resident model.
+        if status.get("memory_warning") and any(
+            _model_id_matches(
+                (entry or {}).get("id"), status_id, allow_casefold = is_loopback_url(base)
+            )
+            for status_id in (status.get("active_model"), status.get("model_identifier"))
+            if status_id
+        ):
+            typer.echo(f"Warning: {status['memory_warning']}", err = True)
     except BaseException:
         _shutdown_auto_served()
         raise
@@ -4603,6 +4676,258 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
+
+
+def _link_user_dir(source: Path, target: Path) -> bool:
+    """Expose source at target. True once target resolves to source."""
+    # Refresh links, but preserve real session directories.
+    if target.is_symlink() or _is_junction(target):
+        _remove_overlay_entry(target)
+    if target.exists() or not source.is_dir():
+        return False
+    target.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    try:
+        target.symlink_to(source, target_is_directory = True)
+    except OSError:
+        if not _create_directory_junction(source, target):
+            typer.echo(f"Warning: couldn't link {source} into the Pi session.", err = True)
+            return False
+    return True
+
+
+def _pi_local_entry(
+    entry: str,
+    source: Path,
+    home: Path,
+    linked: frozenset,
+    agents_skills = None,
+) -> str:
+    """Re-anchor a user path from the original Pi agent directory."""
+    value = entry.strip()
+    if not value or value == "." or value.startswith("file:"):
+        # Nothing to anchor: "" and "." would name the whole agent directory.
+        return entry
+    if value == "~" or value.startswith(("~/", "~" + os.sep)):
+        target = os.path.join(home, value[2:])
+    else:
+        # Pi stores local packages relative to its agent directory.
+        target = os.path.join(source, value)
+    target = os.path.normpath(target)
+    if agents_skills is not None:
+        # Pi reads ~/.agents/skills through HOME, which moved, so a rule naming the
+        # user's copy must follow it or it stops matching.
+        user_root, session_root = agents_skills
+        try:
+            inside = os.path.relpath(target, user_root)
+        except ValueError:  # on another Windows drive
+            inside = os.pardir
+        if inside == os.curdir:
+            return session_root
+        if inside != os.pardir and not inside.startswith(os.pardir + os.sep):
+            return os.path.join(session_root, inside)
+    try:
+        relative = os.path.relpath(target, source)
+    except ValueError:  # on another Windows drive
+        return target
+    # Session-relative only where the link landed: a real session directory blocks
+    # the link, and the entry would then point into it instead of at the user's.
+    if relative.split(os.sep)[0] in linked:
+        return relative
+    return target
+
+
+def _pi_settings_entries(
+    key: str,
+    entries,
+    source: Path,
+    home: Path,
+    linked: frozenset,
+    agents_skills = None,
+) -> list:
+    if not isinstance(entries, list):
+        return []
+    result = []
+    for entry in entries:
+        if key == "packages":
+            spec = entry.get("source") if isinstance(entry, dict) else entry
+            # All other package sources are local paths.
+            if isinstance(spec, str) and not spec.strip().startswith(
+                ("npm:", "git:", "github:", "http:", "https:", "ssh:")
+            ):
+                spec = _pi_local_entry(spec, source, home, linked, agents_skills)
+                entry = {**entry, "source": spec} if isinstance(entry, dict) else spec
+        elif isinstance(entry, str):
+            prefix = entry[:1] if entry.startswith(("!", "+", "-")) else ""
+            pattern = entry[len(prefix) :]
+            if not prefix and "*" not in entry and "?" not in entry:
+                entry = _pi_local_entry(entry, source, home, linked, agents_skills)
+            elif not pattern.strip().startswith("~"):  # Pi does not expand ~ in patterns
+                # Pi matches patterns against paths relative to the agent directory, which moved.
+                # Keep the original too: it still matches basenames and linked directories.
+                anchored = prefix + _pi_local_entry(
+                    pattern,
+                    source,
+                    home,
+                    linked,
+                    agents_skills,
+                )
+                if anchored != entry:
+                    result.append(entry)
+                    entry = anchored
+        result.append(entry)
+    return result
+
+
+def _clear_pi_user_resources(agent_dir: Path, home: Path) -> None:
+    """Undo what an earlier launch linked and copied, leaving session state alone."""
+    targets = [agent_dir / name for name in _PI_USER_RESOURCE_DIRS]
+    targets.append(home / ".agents" / "skills")
+    for target in targets:
+        if target.is_symlink() or _is_junction(target):
+            _remove_overlay_entry(target)
+    manifest_path = agent_dir / _PI_USER_RESOURCES_MANIFEST
+    previous = _read_json_object(manifest_path)
+    if not previous:
+        return
+    settings_path = agent_dir / "settings.json"
+    settings = _read_json_object(settings_path)
+    if settings is None:
+        return
+    before = json.dumps(settings, sort_keys = True)
+    for key, copied in previous.items():
+        own = settings.get(key)
+        if key in _PI_USER_VERBATIM_SETTINGS:
+            # An argument vector, not entries: subtracting drops whatever the two share.
+            if own == copied:
+                settings.pop(key, None)
+        elif isinstance(copied, list) and isinstance(own, list):
+            rest = [item for item in own if item not in copied]
+            if rest:
+                settings[key] = rest
+            else:
+                settings.pop(key, None)
+        elif own == copied:
+            settings.pop(key, None)
+    if json.dumps(settings, sort_keys = True) != before:
+        _write_private_json(settings_path, settings)
+    manifest_path.unlink(missing_ok = True)
+
+
+def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
+    """Expose selected user Pi resources inside an isolated session."""
+    if _wsl_windows_executable(["pi"]):
+        # Windows Pi cannot reliably follow WSL links into mounted drives, and a session
+        # an earlier Linux pi prepared still holds them, so drop those before returning.
+        _clear_pi_user_resources(agent_dir, home)
+        return
+    user_home = Path.home()
+    configured = os.environ.get("PI_CODING_AGENT_DIR")
+    configured = configured.strip() if configured else ""
+    # Pi resolves a relative override from the launch directory.
+    source = (
+        Path(os.path.abspath(os.path.expanduser(configured)))
+        if configured
+        else user_home / ".pi" / "agent"
+    )
+    if source.resolve(strict = False) == agent_dir.resolve(strict = False):
+        # Do not treat this session as its own resource source.
+        source = user_home / ".pi" / "agent"
+    if configured and not source.is_dir():
+        # Otherwise this looks exactly like the bug this function exists to fix.
+        typer.echo(
+            f"Warning: PI_CODING_AGENT_DIR points at {source}, which is not a directory; "
+            "no Pi extensions or packages will load in this session.",
+            err = True,
+        )
+    linked = frozenset(
+        name for name in _PI_USER_RESOURCE_DIRS if _link_user_dir(source / name, agent_dir / name)
+    )
+    # HOME is relocated, so link Pi's other global skill directory too.
+    user_skills = user_home / ".agents" / "skills"
+    session_skills = home / ".agents" / "skills"
+    agents_skills = (
+        (str(user_skills), str(session_skills))
+        if _link_user_dir(user_skills, session_skills)
+        else None
+    )
+
+    user_settings_path = source / "settings.json"
+    user_settings = _read_json_object(user_settings_path)
+    if user_settings is None:
+        typer.echo(
+            f"Warning: couldn't parse {user_settings_path}; "
+            "Pi packages listed there won't load in this session.",
+            err = True,
+        )
+        user_settings = {}
+    settings_path = agent_dir / "settings.json"
+    settings = _read_json_object(settings_path)
+    if settings is None:
+        typer.echo(
+            f"Warning: couldn't parse {settings_path}; your Pi packages won't load in this session.",
+            err = True,
+        )
+        return
+    manifest_path = agent_dir / _PI_USER_RESOURCES_MANIFEST
+    previous = _read_json_object(manifest_path)
+    if previous is None:
+        # Provenance is lost, so entries the user has since removed cannot be reconciled.
+        typer.echo(
+            f"Warning: couldn't parse {manifest_path}; Pi resources copied by an earlier "
+            "launch stay in this session even if you removed them since.",
+            err = True,
+        )
+        previous = {}
+    before = json.dumps(settings, sort_keys = True)
+    copied = {}
+    for key in _PI_USER_RESOURCE_SETTINGS:
+        entries = _pi_settings_entries(
+            key,
+            user_settings.get(key),
+            source,
+            user_home,
+            linked,
+            agents_skills,
+        )
+        # Refresh copied entries while preserving settings added inside the session.
+        stale = previous.get(key) if isinstance(previous.get(key), list) else []
+        own = settings.get(key)
+        if own is not None and not isinstance(own, list):
+            # Pi types these as arrays; leave a shape we do not understand alone.
+            typer.echo(
+                f"Warning: {settings_path} has a non-list {key!r}; "
+                "leaving it as is, so your Pi entries for it won't load in this session.",
+                err = True,
+            )
+            continue
+        own = [item for item in own or [] if item not in stale and item not in entries]
+        if entries or own:
+            # Pi de-dupes packages by identity keeping the FIRST, so session entries
+            # lead. Patterns apply in order instead, so those stay user-first.
+            settings[key] = own + entries if key == "packages" else entries + own
+        else:
+            settings.pop(key, None)
+        if entries:
+            copied[key] = entries
+    for key in _PI_USER_VERBATIM_SETTINGS:
+        # Pi runs every package lookup and install through npmCommand, so inheriting
+        # the package list without it falls back to an npm that cannot find them.
+        value = user_settings.get(key)
+        own = settings.get(key)
+        if own is not None and own != previous.get(key):
+            continue  # changed inside the session, so the session owns it now
+        if isinstance(value, list) and value and all(isinstance(arg, str) for arg in value):
+            settings[key] = value
+            copied[key] = value
+        else:
+            settings.pop(key, None)
+    if json.dumps(settings, sort_keys = True) != before:
+        _write_private_json(settings_path, settings)
+    if copied != previous:
+        if copied:
+            _write_private_json(manifest_path, copied)
+        else:
+            manifest_path.unlink(missing_ok = True)
 
 
 def write_pi_subagent_config(
@@ -5335,6 +5660,7 @@ def pi(
         # Pi resolves its config dir from PI_CODING_AGENT_DIR first (getAgentDir() prefers it over $HOME/.pi/agent), so pin it at the session dir: an inherited PI_CODING_AGENT_DIR in the user's shell would otherwise send Pi to their real config and skip our provider/key. HOME is relocated too so any other ~/.pi paths stay in the session. The key rides in the config rather than the env.
         pi_agent_dir = home / ".pi" / "agent"
         write_pi_config(base, key, entry, pi_agent_dir / "models.json")
+        write_pi_user_resources(pi_agent_dir, home)
         env = {"HOME": str(home), "PI_CODING_AGENT_DIR": str(pi_agent_dir)}
         if os.name == "nt" or os.environ.get("WSL_DISTRO_NAME"):
             # Node resolves ~/.pi via USERPROFILE (then HOMEDRIVE + HOMEPATH) on Windows, not HOME. Set them whenever Pi may run as a Windows process: native Windows, or a /mnt Windows shim launched from WSL, where the WSLENV bridge then translates the path. Otherwise the Windows process falls back to the user's real %USERPROFILE%\\.pi. splitdrive yields no drive off a POSIX path, so HOMEDRIVE/HOMEPATH stay unset there.

@@ -71,6 +71,8 @@ function harness(validateResponse: unknown, loadResponse: unknown) {
       run: () => Promise<unknown>,
     ) => run(),
     showCarveoutAdvice: () => {},
+    showLoadWarning: () => {},
+    checkDiskSpace: async () => {},
   };
   vm.runInNewContext(compiled, context);
   return { calls, grants, ...context.exports };

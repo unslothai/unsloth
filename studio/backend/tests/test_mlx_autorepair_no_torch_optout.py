@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+from .thread_drain import join_when_started
+
 _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -41,8 +43,7 @@ def _isolated(monkeypatch):
     yield
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
-            thread.join(timeout = 5)
-            assert not thread.is_alive()
+            assert join_when_started(thread, timeout = 5)
 
 
 def _install_manifest_returning(monkeypatch, value):
@@ -220,7 +221,7 @@ def test_a_normal_install_still_repairs(monkeypatch):
     assert mr.start_mlx_autorepair_if_needed() is True
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
-            thread.join(timeout = 5)
+            join_when_started(thread, timeout = 5)
     assert attempts == [1]
 
 
@@ -236,7 +237,7 @@ def test_an_older_install_with_no_recorded_mode_still_repairs(monkeypatch):
     assert mr.start_mlx_autorepair_if_needed() is True
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
-            thread.join(timeout = 5)
+            join_when_started(thread, timeout = 5)
     assert attempts == [1]
 
 

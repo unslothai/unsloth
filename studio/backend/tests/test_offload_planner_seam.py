@@ -1558,9 +1558,8 @@ def test_flash_disabled_v_padding_reaches_the_layer_weights():
     layer's V is padded to hparams.n_embd_v_gqa_max() over the whole model, which
     is what _estimate_kv_cache_bytes charges via _max_kv_value_width. V goes
     constant while K stays per-layer, so an unpadded vector prices a ratio the
-    total does not have. Not an edge case: load_model pins planned_flash_attn =
-    False unconditionally (llama_cpp.py:16690), so the padded branch is the one
-    every spill plan's total is built from."""
+    total does not have. Reached whenever the resolved launch runs without flash
+    attention (_planned_flash_attn_state), which is exactly when llama.cpp pads."""
     b = _swa_backend()
     # SWA layers wider than global ones, so the model-wide max is the SWA width
     # and the padding actually moves: n_embd_v_gqa_max = 8 * 256.
@@ -1836,6 +1835,13 @@ def test_oversubscribed_decode_threads_decline_spill_planning(monkeypatch):
     monkeypatch.setattr(
         llama_mod.os, "sched_getaffinity", lambda _pid: set(range(16)), raising = False
     )
+    # The affinity above has to read as UNRESTRICTED, which means it must match the
+    # host's logical count, and _spilled_decode_threads takes that from psutil. Left
+    # real it is whatever the CI box has: on anything wider than 16 threads the 16-CPU
+    # affinity looks like a taskset, the pricing declines for that reason instead, and
+    # the oversubscription this test is about is never reached. _SmtHost is the 16/8
+    # host the surrounding affinity tests already pin for the same reason.
+    monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
     assert _plan(_Stub(), free_mib = 14 * 1024, extra_args = ["--threads", "16"]) is None
     plan = _plan(
         _Stub(),

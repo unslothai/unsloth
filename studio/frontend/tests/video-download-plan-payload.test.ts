@@ -48,7 +48,7 @@ test("the staged plan pins its controls through the eventual load", () => {
   assert.match(flow, /pendingStagedLoad\.current = \{\s*repoId,\s*opts,\s*advanced,/);
   assert.ok(source.includes("pending.opts, pending.advanced"));
 
-  assert.ok(flow.includes("handleLoadRef.current(repoId, opts, advanced)"));
+  assert.match(flow, /handleLoadRef\.current\(repoId, opts, advanced[,)]/);
 });
 
 test("the video picker resolves the full GGUF footprint", () => {

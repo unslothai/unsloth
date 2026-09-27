@@ -103,7 +103,7 @@ test("custom source and selection round-trip through storage and API without con
   const records = JSON.parse(store.get(PER_MODEL_CONFIG_STORAGE_KEY)!);
   assert.equal(
     Object.values(records).some(
-      (row: unknown) => (row as { version: number }).version === 6,
+      (row: unknown) => (row as { version: number }).version === 7,
     ),
     true,
   );
@@ -139,6 +139,62 @@ test("a per-quant managed tombstone blocks bare-model custom fallback locally an
       ["org/model:Q4", "org/model"],
     )?.llama_cpp_config,
     managed,
+  );
+});
+
+test("custom configuration advances only its own storage tier", () => {
+  const storedVersion = () => {
+    const records = JSON.parse(store.get(PER_MODEL_CONFIG_STORAGE_KEY) ?? "{}");
+    return (Object.values(records)[0] as { version?: number } | undefined)
+      ?.version;
+  };
+
+  store.clear();
+  assert.equal(
+    savePerModelConfig("org/reasoning", "Q4", {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      reasoningBudget: 256,
+      reasoningBudgetMessage: "Keep the proof short",
+    }),
+    true,
+  );
+  assert.equal(storedVersion(), 6);
+  const reasoning = resolveInitialConfig("org/reasoning", "Q4").config;
+  assert.equal(reasoning.reasoningBudget, 256);
+  assert.equal(reasoning.reasoningBudgetMessage, "Keep the proof short");
+  assert.equal(reasoning.llamaCppConfig, undefined);
+
+  store.clear();
+  assert.equal(
+    savePerModelConfig("org/custom", "Q4", {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      reasoningBudget: 256,
+      reasoningBudgetMessage: "Keep the proof short",
+      llamaCppConfig: custom,
+    }),
+    true,
+  );
+  assert.equal(storedVersion(), 7);
+  const customAndReasoning = resolveInitialConfig("org/custom", "Q4").config;
+  assert.equal(customAndReasoning.reasoningBudget, 256);
+  assert.equal(
+    customAndReasoning.reasoningBudgetMessage,
+    "Keep the proof short",
+  );
+  assert.deepEqual(customAndReasoning.llamaCppConfig, custom);
+
+  store.clear();
+  assert.equal(
+    savePerModelConfig("org/tuning", "Q4", {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      loadMode: "mmap",
+    }),
+    true,
+  );
+  assert.equal(storedVersion(), 5);
+  assert.equal(
+    resolveInitialConfig("org/tuning", "Q4").config.loadMode,
+    "mmap",
   );
 });
 
@@ -211,10 +267,13 @@ test("custom configuration is rendered under the advanced GGUF arguments", () =>
     page.indexOf("<div\n        className={", page.indexOf("</fieldset>")),
   );
   const fieldsetEnd = settings.indexOf("</fieldset>");
+  const toggle = settings.indexOf("<AdvancedSettingsToggle", fieldsetEnd);
+  const managedAdvanced = settings.indexOf("<GgufAdvancedSettings", toggle);
   const editor = settings.indexOf("<CustomLlamaConfigEditor");
-  assert.ok(settings.indexOf("<GgufAdvancedSettings") < fieldsetEnd);
-  assert.ok(fieldsetEnd < editor);
-  assert.ok(editor < settings.indexOf("<AdvancedSettingsToggle", editor));
+  assert.ok(fieldsetEnd < toggle);
+  assert.ok(toggle < managedAdvanced);
+  assert.ok(managedAdvanced < editor);
+  assert.match(settings, /aria-label="Managed llama\.cpp settings"/);
   assert.match(page, /configState\.llamaCppConfig\?\.mode === "custom" \|\|/);
 });
 
@@ -345,7 +404,7 @@ test("all ordinary load, preflight and estimate producers carry the config; roll
   );
   assert.match(
     readSrc("features/chat/hooks/use-chat-model-runtime.ts"),
-    /llamaCppConfigPayload\(\s*stateBeforeUnload\.loadedLlamaCppConfig/,
+    /llamaCppConfigPayload\(\s*rollbackState\.loadedLlamaCppConfig/,
   );
   assert.match(
     readSrc("features/chat/lib/apply-inference-status-to-store.ts"),

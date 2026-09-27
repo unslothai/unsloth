@@ -39,7 +39,33 @@ from utils.models.model_config import (  # noqa: E402
 from utils.training_runs import (  # noqa: E402
     base_model_from_run_dir_name,
     build_default_output_dir_name,
+    model_segment_from_default_output_dir_name,
 )
+
+
+# One name per script that `\w` accepts and the Hub's ASCII charset does not. Built as
+# names rather than bare characters because that is the shape the parser sees, and checked
+# against `\w` below so a case cannot quietly stop testing anything.
+_NON_ASCII_NAMES = (
+    "Café-8B",  # Latin-1 accent
+    "naïve_v2",  # Latin-1 diaeresis
+    "модель-8B",  # Cyrillic
+    "μοντέλο",  # Greek
+    "מודל",  # Hebrew
+    "نموذج",  # Arabic
+    "文件夹",  # Han
+    "モデル",  # Katakana
+    "ｑwen",  # fullwidth Latin
+    "Ａ",  # fullwidth capital
+)
+
+
+def test_the_non_ascii_cases_are_word_characters():
+    """Non-vacuity: every name above must be one `\\w` accepts, or it proves nothing."""
+    import re
+    for name in _NON_ASCII_NAMES:
+        assert re.fullmatch(r"[\w.-]+", name), name
+        assert not name.isascii(), name
 
 
 @pytest.mark.parametrize(
@@ -176,8 +202,12 @@ def test_the_transcribed_repo_id_rule_is_never_looser_than_the_hubs():
         " ",
         "a b",
         "a\tb",
-        "Café-8B",
         "a-b.c_d",
+        # Non-ASCII word characters. `\w` matches all of these and the Hub's charset
+        # matches none of them, which is the direction this test exists to catch:
+        # huggingface_hub 1.32.0 put re.ASCII on its own REPO_ID_REGEX and only
+        # "Café-8B" was listed here, so one name stood in for a whole class.
+        *_NON_ASCII_NAMES,
     ]
     looser = [
         n
@@ -186,6 +216,41 @@ def test_the_transcribed_repo_id_rule_is_never_looser_than_the_hubs():
         and not hub_accepts(n)
     ]
     assert looser == []
+
+
+def test_no_non_ascii_letter_or_digit_can_reach_a_repo_id():
+    """The charset rule, asked of the charset rather than of a list of names.
+
+    A list only ever covers the scripts somebody thought to write down. This sweeps one
+    character from each block that `\\w` accepts and ASCII does not, so a rule that goes
+    back to being Unicode aware fails here whichever script it lets through -- including
+    for a reader with no huggingface_hub installed, where the comparison above skips.
+    """
+    escaped = [
+        name
+        for name in _NON_ASCII_NAMES
+        if base_model_from_run_dir_name(f"unsloth_{name}_1771227800") is not None
+    ]
+    assert escaped == [], "a non-ASCII folder name parsed into a repo id the Hub rejects"
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        "١٧٧١٢٢٧٨٠٠",  # Arabic-Indic
+        "१२३४५६",  # Devanagari
+        "１７７１２２",  # fullwidth
+    ],
+)
+def test_a_non_ascii_digit_run_is_not_a_timestamp(stamp):
+    """`\\d` and `str.isdigit()` are both Unicode aware; the writer emits `str(int(...))`.
+
+    Without the ASCII pins these folders read as ones we wrote, so a hand-made directory
+    got a base model attached to it on the strength of digits no run ever produced.
+    """
+    assert stamp.isdigit(), "the case is only meaningful if str.isdigit() accepts it"
+    assert base_model_from_run_dir_name(f"unsloth_Qwen3-8B_{stamp}") is None
+    assert model_segment_from_default_output_dir_name(f"unsloth_Qwen3-8B_{stamp}") is None
 
 
 def _write_adapter(directory):
