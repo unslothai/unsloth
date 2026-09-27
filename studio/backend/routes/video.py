@@ -236,6 +236,8 @@ async def video_download_plan(
             # without them the plan staged the ~19 GB hosted FP8 DiT that load never opens.
             memory_mode = request.memory_mode,
             speed_mode = request.speed_mode,
+            # Same reason the precision gate is skipped above: no uncached smoke probe on the trainer's GPU.
+            allow_device_probe = not training,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:

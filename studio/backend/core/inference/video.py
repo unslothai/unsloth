@@ -140,6 +140,7 @@ from .diffusion_transformer_quant import (
     normalize_transformer_quant,
     quantize_transformer,
     mark_source_precision,
+    explicit_scheme_cached_ok,
     select_transformer_quant_scheme,
     stored_denoiser_precision,
     transformer_is_quantised,
@@ -336,6 +337,7 @@ def _ltx23_prequant_serves(
     target: Any,
     memory_mode: Optional[str],
     checkpoint_repo: Optional[str] = None,
+    probe: bool = True,
 ) -> bool:
     """``_ltx23_prequant_pick`` on a load that can seed the hosted DiT: a torchao-capable target and a memory request
     that keeps the DiT resident (torchao tensors do not survive the offload hooks). The staging, the download plan, the
@@ -345,7 +347,12 @@ def _ltx23_prequant_serves(
         _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned, checkpoint_repo)
         and not _memory_request_forces_offload(memory_mode, False)
         and bool(dense_transformer_supported(target))
-        and _ltx23_prequant_scheme_supported(fam, target, pinned)
+        and (
+            _ltx23_prequant_scheme_supported(fam, target, pinned)
+            if probe
+            # Training owns the GPU: the cached verdict only, never the child smoke probe.
+            else explicit_scheme_cached_ok(target, pinned, family = getattr(fam, "name", None))
+        )
     )
 
 
@@ -374,6 +381,7 @@ def _ltx23_prequant_serves_on_card(
     memory_mode: Optional[str],
     gpu_ordinal: Optional[int],
     checkpoint_repo: Optional[str] = None,
+    probe: bool = True,
 ) -> bool:
     """``_ltx23_prequant_serves`` before the load, asked of the card it will use. An unanswerable probe keeps the pick."""
     pinned = normalize_transformer_quant(transformer_quant)
@@ -395,6 +403,7 @@ def _ltx23_prequant_serves_on_card(
                 target = target,
                 memory_mode = memory_mode,
                 checkpoint_repo = checkpoint_repo,
+                probe = probe,
             )
     except Exception:  # noqa: BLE001
         return True
@@ -3794,6 +3803,7 @@ class VideoBackend:
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         h3_task: Optional[str] = None,
+        allow_device_probe: bool = True,
         **load_kwargs: Any,
     ) -> dict[str, Any]:
         """The repos + exact files this pick needs, for staging through the Hub download
@@ -3983,6 +3993,7 @@ class VideoBackend:
                 memory_mode = load_kwargs.get("memory_mode"),
                 gpu_ordinal = load_kwargs.get("gpu_ordinal"),
                 checkpoint_repo = repo_id,
+                probe = allow_device_probe,
             ):
                 # The LTX-2.3 distilled single file under an explicit fp8 seeds the hosted DiT from its own repo (the
                 # file itself is still read for its connectors / VAEs / vocoder).

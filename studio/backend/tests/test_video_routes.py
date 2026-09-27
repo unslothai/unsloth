@@ -1427,6 +1427,75 @@ def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_
         assert "unsloth/LTX-2.3-FP8" not in _staged(memory_mode), memory_mode
 
 
+def test_video_download_plan_does_not_probe_fp8_while_training(client, monkeypatch):
+    # The route skips the precision gate while a trainer holds the GPU; the hosted LTX-2.3 FP8 DiT check in the planner
+    # must not spawn the uncached smoke probe either. It reads the cached verdict: unprobed stages, a failure does not.
+    import types
+
+    import core.inference.diffusion_device as devmod
+    import core.inference.diffusion_transformer_quant as tq
+    from core.inference.diffusion import DiffusionBackend
+
+    class _Sibling:
+        def __init__(self, rfilename, size):
+            self.rfilename = rfilename
+            self.size = size
+
+    repos = {
+        "Lightricks/LTX-2.3": [_Sibling("ltx-2.3-22b-distilled.safetensors", 46_000_000_000)],
+        "unsloth/LTX-2.3-FP8": [_Sibling("LTX-2.3-FP8.pt", 19_057_628_489)],
+        "unsloth/LTX-2.3-GGUF": [],
+        "Lightricks/LTX-2": [_Sibling("model_index.json", 1000)],
+    }
+
+    class _Api:
+        def model_info(self, repo_id, files_metadata = False, token = None):
+            return types.SimpleNamespace(siblings = repos[repo_id])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None, **kwargs: False),
+    )
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda **kw: types.SimpleNamespace(device = "cuda")
+    )
+    monkeypatch.setattr(video_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device: "cuda:0")
+    monkeypatch.setattr(
+        video_module,
+        "select_transformer_quant_scheme",
+        lambda *a, **k: pytest.fail("the plan probed the fp8 scheme while training"),
+    )
+    monkeypatch.setattr(
+        video_module,
+        "assert_video_precision_available",
+        lambda *a, **k: pytest.fail("the precision gate ran while training"),
+        raising = False,
+    )
+    monkeypatch.setattr(video_routes, "_training_is_active", lambda: True)
+    monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
+
+    def _staged():
+        resp = client.post(
+            "/api/inference/video/download-plan",
+            json = {
+                "model_path": "Lightricks/LTX-2.3",
+                "gguf_filename": "ltx-2.3-22b-distilled.safetensors",
+                "model_kind": "single_file",
+                "family_override": "ltx-2",
+                "transformer_quant": "fp8",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        return {e["repo_id"] for e in resp.json()["entries"]}
+
+    assert "unsloth/LTX-2.3-FP8" in _staged()
+    tq._SMOKE_CACHE[("fp8", "cuda:0")] = False
+    assert "unsloth/LTX-2.3-FP8" not in _staged()
+
 def test_video_download_plan_forwards_the_h3_partition(client, monkeypatch):
     # h3_task decides WHICH of the two 66.28 GB MiniMax-H3 denoiser folders is staged. It was
     # swallowed by **load_kwargs, so a ref2va plan staged the fl2va partition and the one the load
