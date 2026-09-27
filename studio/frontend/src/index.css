@@ -667,7 +667,6 @@
 	--secondary-base: var(--th-raised);
 	--secondary-foreground-base: var(--th-fg);
 	--muted-base: var(--th-raised);
-	--muted-foreground: var(--th-muted);
 	--accent-base: var(--th-hover);
 	--accent-foreground-base: var(--th-fg);
 	--border-base: var(--th-border);
@@ -700,6 +699,11 @@
 	--panel-slider-fg-base: var(--th-muted);
 	--chat-icon-fg-base: color-mix(in srgb, var(--th-fg) 80%, var(--th-bg));
 	--chat-icon-bg-hover-base: var(--th-hover);
+}
+
+/* Attribute specificity only, so html[data-contrast-adjust] still wins. */
+[data-palette]:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"]) {
+	--muted-foreground: var(--th-muted);
 }
 
 /* Lift the dark composer slightly; flavor cards sit close to the page. */
