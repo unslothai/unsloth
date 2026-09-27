@@ -333,6 +333,26 @@ def test_only_nvidia_with_a_confirmed_subquadratic_kernel_is_calibrated(monkeypa
     assert d._calibrated_activation(fam, nvidia) is None
 
 
+def test_an_fp32_promoted_family_keeps_the_flat_plan(monkeypatch):
+    import torch
+
+    import core.inference.diffusion as d
+    from core.inference.diffusion_families import detect_family
+
+    monkeypatch.setattr(d, "sdpa_subquadratic_confirmed", lambda target: True)
+    zimage = detect_family("unsloth/Z-Image-Turbo-GGUF")
+    assert zimage.name == "z-image" and zimage.fp16_incompatible
+    flux = types.SimpleNamespace(name = "flux.1")
+
+    def on(dtype):
+        return types.SimpleNamespace(backend = "cuda", vendor = "nvidia", dtype = dtype)
+
+    assert d._calibrated_activation(zimage, on(torch.float16)) is None
+    assert d._calibrated_activation(zimage, on(torch.float32)) is None
+    assert d._calibrated_activation(zimage, on(torch.bfloat16)) is not None
+    assert d._calibrated_activation(flux, on(torch.float16)) is not None
+
+
 def test_an_explicit_auto_mode_ignores_the_legacy_offload_flag():
     for gib in (12, 16, 20):
         assert _plan(gib, QWEN21_GGUF, QWEN21_ACT, "auto", True) == _plan(

@@ -1641,6 +1641,10 @@ def _calibrated_activation(fam: Any, target: Any) -> Any:
     """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel."""
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
         return None
+    # Measured at 16-bit: an fp16-incompatible family promoted to fp32 (Z-Image on pre-Ampere) holds ~2x.
+    compute = _resolve_diffusion_compute_dtype(fam, getattr(target, "dtype", None))
+    if (_float_load_itemsize(compute) or 2) > 2:
+        return None
     requested = _PLANNED_SPEED_MODE.get(_SPEED_UNKNOWN)
     try:
         max_speed = requested is _SPEED_UNKNOWN or normalize_speed_mode(requested) == SPEED_MAX
