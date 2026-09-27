@@ -606,7 +606,7 @@ def _make_op(name, impl, fake):
 
     op.__signature__ = inspect.Signature(params, return_annotation = torch.Tensor)
     op.__name__ = name
-    op = custom_op(f"unsloth::{name}", op, mutates_args = (), device_types = "cuda")
+    op = custom_op(f"unsloth::{name}", op, mutates_args = ())
     op.register_fake(fake)
     return op
 
