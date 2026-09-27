@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   SETTINGS_SEARCH_KEYWORDS,
   createSettingsSearchIndex,
+  renderedSearchEntries,
 } from "../src/features/settings/settings-search.ts";
 import { en } from "../src/i18n/locales/en.ts";
 
@@ -111,4 +112,13 @@ test("close to tray is searchable only on supported desktops", () => {
   assert.ok(supported.general.includes(CLOSE_TO_TRAY_ENTRY));
   assert.ok(!mac.general.includes(CLOSE_TO_TRAY_ENTRY));
   assert.ok(!browser.general.includes(CLOSE_TO_TRAY_ENTRY));
+});
+
+test("the endpoint rows are searchable only while Hugging Face serves, as they render", () => {
+  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+  const endpoint = ["settings.general.hub.endpoint", "settings.general.hub.datasetsServer"] as const;
+  const modelScope = renderedSearchEntries(index, "general", "modelscope");
+  const huggingFace = renderedSearchEntries(index, "general", "huggingface");
+  assert.deepEqual(endpoint.map((key) => [huggingFace.includes(key), modelScope.includes(key)]), [[true, false], [true, false]]);
+  assert.ok(modelScope.includes("settings.general.hub.source"));
 });

@@ -443,3 +443,207 @@ def test_docx_reads_one_branch_of_alternate_content(tmp_path):
         "</mc:AlternateContent></w:p>",
     )
     assert text == "Preferred"
+
+
+def test_docx_keeps_rows_and_cells_wrapped_in_content_controls(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    ns = nsdecls("w")
+    table = document.add_table(rows = 1, cols = 2)
+    table.cell(0, 0).text = "Name"
+    tr = table.rows[0]._tr
+    tc = table.cell(0, 1)._tc
+    tr.remove(tc)
+    tr.append(
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtContent><w:tc><w:p><w:r><w:t>CELL-WRAPPED</w:t></w:r></w:p></w:tc>"
+            "</w:sdtContent></w:sdt>"
+        )
+    )
+    table._tbl.append(
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtContent><w:sdt><w:sdtContent><w:tr>"
+            "<w:tc><w:p><w:r><w:t>ROW-A</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>ROW-B</w:t></w:r></w:p></w:tc>"
+            "</w:tr></w:sdtContent></w:sdt></w:sdtContent></w:sdt>"
+        )
+    )
+    path = tmp_path / "wrapped.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert "Name | CELL-WRAPPED" in text
+    assert "ROW-A | ROW-B" in text
+
+
+def test_docx_skips_placeholder_text_and_keeps_field_and_bidi_runs(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    ns = nsdecls("w")
+
+    def sdt(props, inner):
+        return parse_xml(
+            f"<w:sdt {ns}><w:sdtPr>{props}</w:sdtPr><w:sdtContent>{inner}</w:sdtContent></w:sdt>"
+        )
+
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        sdt("<w:showingPlcHdr/>", "<w:p><w:r><w:t>BLOCK-PROMPT</w:t></w:r></w:p>"),
+    )
+    p = document.add_paragraph("Name: ")._p
+    p.append(sdt("<w:showingPlcHdr/>", "<w:r><w:t>Click or tap here to enter text.</w:t></w:r>"))
+    p = document.add_paragraph("Client: ")._p
+    p.append(sdt('<w:showingPlcHdr w:val="0"/>', "<w:r><w:t>ACME</w:t></w:r>"))
+    p = document.add_paragraph("Ref ")._p
+    p.append(
+        parse_xml(
+            f'<w:fldSimple {ns} w:instr=" MERGEFIELD Name "><w:r><w:t>FIELD</w:t></w:r></w:fldSimple>'
+        )
+    )
+    p.append(parse_xml(f'<w:dir {ns} w:val="rtl"><w:r><w:t> RTL</w:t></w:r></w:dir>'))
+    table = document.add_table(rows = 1, cols = 2)
+    table.cell(0, 0).text = "Owner"
+    table.cell(0, 1)._tc.append(
+        sdt("<w:showingPlcHdr/>", "<w:p><w:r><w:t>CELL-PROMPT</w:t></w:r></w:p>")
+    )
+    path = tmp_path / "placeholders.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert "PROMPT" not in text and "Click or tap" not in text
+    assert "Client: ACME" in text
+    assert "Ref FIELD RTL" in text
+    assert "Owner | " in text
+
+
+def test_docx_skips_placeholder_rows_and_cells_but_keeps_columns(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    ns = nsdecls("w")
+    table = document.add_table(rows = 1, cols = 3)
+    table.cell(0, 0).text = "Name"
+    table.cell(0, 2).text = "END"
+    tr = table.rows[0]._tr
+    tc = table.cell(0, 1)._tc
+    idx = tr.index(tc)
+    tr.remove(tc)
+    tr.insert(
+        idx,
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>"
+            "<w:tc><w:p><w:r><w:t>CELL-PROMPT</w:t></w:r></w:p></w:tc></w:sdtContent></w:sdt>"
+        ),
+    )
+    table._tbl.append(
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent><w:tr>"
+            "<w:tc><w:p><w:r><w:t>ROW-PROMPT</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr></w:sdtContent></w:sdt>"
+        )
+    )
+    path = tmp_path / "placeholder_cells.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert "PROMPT" not in text
+    assert "Name |  | END" in text
+
+
+def _parse_html(tmp_path, body):
+    from core.rag import parsers
+
+    path = tmp_path / "page.html"
+    path.write_text(f"<html><body>{body}</body></html>", encoding = "utf-8")
+    return "\n".join(p.text for p in parsers.parse(str(path)))
+
+
+def test_html_keeps_inline_elements_in_their_line(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<p>The <b>quick</b> brown fox jumps over the <a href="#">lazy</a> dog.</p>'
+        "<p>It is un<b>believ</b>able.</p>",
+    )
+    assert text == "The quick brown fox jumps over the lazy dog.\nIt is unbelievable."
+
+
+def test_html_adjacent_buttons_stay_separate_words(tmp_path):
+    text = _parse_html(
+        tmp_path, "<p>Click <button>Accept</button><button>Decline</button> to go on.</p>"
+    )
+    assert text == "Click Accept Decline to go on."
+
+
+def test_html_block_elements_start_new_lines(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<h1>Install <em>guide</em></h1><ul><li>One</li><li>Two <i>items</i></li></ul>"
+        "<p>line one<br>line two</p><table><tr><td>cell a</td><td>cell b</td></tr></table>",
+    )
+    assert text == "Install guide\nOne\nTwo items\nline one\nline two\ncell a\ncell b"
+
+
+def test_html_legend_and_options_stay_separate_words(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<fieldset><legend>Size</legend>Pick one</fieldset>"
+        "<select><option>Small</option><option>Large</option></select>",
+    )
+    assert text == "Size\nPick one\nSmall\nLarge"
+
+
+def test_html_keeps_text_after_the_last_block(tmp_path):
+    text = _parse_html(tmp_path, "<p>First</p>Trailing <b>text</b>")
+    assert text == "First\nTrailing text"
+
+
+def test_html_pre_keeps_its_layout(tmp_path):
+    text = _parse_html(tmp_path, "<p>Code:</p><pre>def f():\n    return 1</pre>")
+    assert text == "Code:\ndef f():\n    return 1"
+
+
+def test_html_textarea_keeps_its_layout_and_svg_labels_stay_apart(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<textarea>line one\n    indented</textarea>"
+        '<svg><text x="0">Revenue</text><text x="0" y="20">Cost</text></svg>',
+    )
+    assert text == "line one\n    indented\nRevenue\nCost"
+
+
+def test_html_positioned_svg_tspans_are_separate_labels(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<svg><text><tspan x="0" y="0">Revenue</tspan><tspan x="0" dy="20">Cost</tspan>'
+        "</text><text>Bold<tspan>er</tspan></text></svg>",
+    )
+    assert text == "Revenue\nCost\nBolder"
+
+
+def test_html_skips_script_style_and_template(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<p>Visible</p><script>var x = 1;</script><style>p { color: red }</style>"
+        "<template><p>Inert until cloned</p></template>",
+    )
+    assert text == "Visible"
+
+
+def test_html_keeps_declarative_shadow_root_text(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<my-card><template shadowrootmode="open"><p>Shadow text</p>'
+        "<template><p>inert</p></template></template></my-card><p>After</p>",
+    )
+    assert text == "Shadow text\nAfter"
+
+
+def test_html_template_blocks_do_not_split_visible_text(tmp_path):
+    text = _parse_html(tmp_path, "<p>Hello <template><div>hidden</div></template>world</p>")
+    assert text == "Hello world"
