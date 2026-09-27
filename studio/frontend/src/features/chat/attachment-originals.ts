@@ -64,7 +64,9 @@ export async function persistAttachmentOriginals(
     (attachments ?? []).map(async (attachment) => {
       const { file, ...rest } = attachment as CompleteAttachment & { file?: unknown };
       if (file === undefined) return attachment;
-      const upload = file instanceof File && !attachmentOriginal(rest) ? originalUpload(file) : null;
+      // A file was kept only because a send wanted it stored (a python turn keeps any document).
+      const upload =
+        file instanceof File && !attachmentOriginal(rest) ? (originalUpload(file) ?? file) : null;
       if (!upload) return rest as CompleteAttachment;
       try {
         const original: ChatAttachmentOriginal = await uploadChatAttachmentOriginal(upload, epoch);

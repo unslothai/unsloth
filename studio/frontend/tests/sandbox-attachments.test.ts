@@ -21,7 +21,7 @@ const originals = loadWithStubs<typeof import("../src/features/chat/attachment-o
     },
   },
 );
-const { withAttachmentOriginal } = originals;
+const { persistAttachmentOriginals, withAttachmentOriginal } = originals;
 const { sandboxAttachmentPath, sandboxReader, withSandboxAttachmentPaths } =
   loadWithStubs<typeof import("../src/features/chat/sandbox-attachments.ts")>(
     new URL("../src/features/chat/sandbox-attachments.ts", import.meta.url),
@@ -147,4 +147,11 @@ test("only a python turn asks for copies, and every tool-only file has a reader"
 test("a malformed stored hash is left out instead of failing the turn", () => {
   const message = { attachments: [{ name: "a.csv", original: { sha256: "NOT-HEX", sizeBytes: 1 } }] };
   assert.deepEqual(withSandboxAttachmentPaths([message]).sandboxAttachments, []);
+});
+
+test("saving a temporary chat stores a document it kept for the python tool", async () => {
+  const file = new File(["a,b"], "data.csv");
+  const [saved] = await persistAttachmentOriginals([{ id: "1", type: "document", name: "data.csv", content: [], file } as never], 0);
+  assert.deepEqual((saved as { original?: unknown }).original, { sha256: SHA, sizeBytes: 3 });
+  assert.ok(!("file" in (saved as object)));
 });
