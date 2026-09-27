@@ -171,6 +171,7 @@ def _run_loop(monkeypatch, backend, cmds):
 
     from utils.hardware import hardware as _hw
     from loggers.config import LogConfig
+    from utils import worker_stderr
     import core.inference.mlx_inference as mlx_mod
 
     monkeypatch.setenv("ENVIRONMENT_TYPE", "development")
@@ -187,6 +188,7 @@ def _run_loop(monkeypatch, backend, cmds):
     monkeypatch.setattr(_hw, "detect_hardware", inert)
     monkeypatch.setattr(_hw, "DEVICE", _hw.DeviceType.MLX)
     monkeypatch.setattr(LogConfig, "setup_logging", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(worker_stderr, "mark_log_record_continuations", inert)
     monkeypatch.setattr(mlx_mod, "MLXInferenceBackend", lambda *a, **k: backend)
 
     class _Script:
