@@ -13,10 +13,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 CURRENT_DATE_PROMPT_SETTING_KEY = "include_current_date_in_prompt"
 # Lets callers recognise a prompt that already states a date, whoever put it there.
 CURRENT_DATE_PROMPT_PREFIX = "The current date is "
-# "is now" never matches CURRENT_DATE_PROMPT_LINE_RE, so the system-line refresh leaves it alone.
-CURRENT_DATE_UPDATE_PREFIX = "The current date is now "
+# A bracketed lead-in, not a sentence: it never matches CURRENT_DATE_PROMPT_LINE_RE, and small models
+# answered the question instead of the date far more often with it ahead of the text than after it.
+CURRENT_DATE_UPDATE_PREFIX = "[Current date: "
 CURRENT_DATE_UPDATE_NOTE_RE = re.compile(
-    rf"\s*{re.escape(CURRENT_DATE_UPDATE_PREFIX)}[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}\.\s*$"
+    rf"^\s*{re.escape(CURRENT_DATE_UPDATE_PREFIX)}[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}\]\s*"
 )
 CURRENT_DATE_PROMPT_LINE_RE = re.compile(
     rf"(?m)^{re.escape(CURRENT_DATE_PROMPT_PREFIX)}[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}\.(?=\r?$)"

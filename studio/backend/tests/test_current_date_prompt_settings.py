@@ -508,10 +508,10 @@ class TestDateChangeNote:
         assert after[0] == before[0]
         assert after[0]["content"] == "The current date is 2026-08-15.\n\nBe terse."
         assert after[1:3] == history[1:3]
-        assert after[3]["content"] == "second\n\nThe current date is now 2026-08-16."
+        assert after[3]["content"] == "[Current date: 2026-08-16]\n\nsecond"
         assert history[3]["content"] == "second"
 
-    def test_next_request_after_midnight_shares_the_whole_prefix_up_to_the_new_note(self):
+    def test_next_request_after_midnight_restores_the_earlier_turn_to_its_own_text(self):
         self.today = "2026-08-16"
         turn1 = [{"role": "user", "content": "first"}]
         sent1 = self._proxy(turn1)
@@ -521,8 +521,9 @@ class TestDateChangeNote:
         ]
         sent2 = self._proxy(turn2)
         assert sent2[0] == sent1[0]
-        # the earlier turn loses its note, but only after its own text.
-        assert sent1[1]["content"].startswith(sent2[1]["content"])
+        assert sent1[1]["content"] == "[Current date: 2026-08-16]\n\nfirst"
+        assert sent2[1]["content"] == "first"
+        assert sent2[3]["content"] == "[Current date: 2026-08-16]\n\nsecond"
 
     def test_threadless_requests_still_refresh_to_today(self):
         self.today = "2026-08-16"
@@ -541,9 +542,9 @@ class TestDateChangeNote:
             ]
         )
         assert out[0]["content"] == "The current date is 2026-08-15."
-        assert out[1]["content"] == "hi\n\nThe current date is now 2026-08-16."
+        assert out[1]["content"] == "[Current date: 2026-08-16]\n\nhi"
 
-    def test_note_goes_after_media_parts_and_skips_tool_results(self):
+    def test_note_leads_the_text_part_and_skips_tool_results(self):
         self.today = "2026-08-16"
         image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}
         messages = [
@@ -555,8 +556,7 @@ class TestDateChangeNote:
         assert out[2] is messages[2]
         assert out[0]["content"] == [
             image,
-            {"type": "text", "text": "what is this"},
-            {"type": "text", "text": "The current date is now 2026-08-16."},
+            {"type": "text", "text": "[Current date: 2026-08-16]\n\nwhat is this"},
         ]
 
     def test_note_skips_a_tool_result_folded_into_a_user_turn(self):
@@ -576,7 +576,7 @@ class TestDateChangeNote:
         )
         out = self.inference._append_current_date_note(messages, object(), thread_id = "t")
         assert out[2] is messages[2]
-        assert out[0]["content"] == "list files\n\nThe current date is now 2026-08-16."
+        assert out[0]["content"] == "[Current date: 2026-08-16]\n\nlist files"
 
     @pytest.mark.parametrize(
         "content",

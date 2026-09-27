@@ -6037,7 +6037,7 @@ def _current_date_parts(request: Any, thread_id: Any) -> tuple[str, str]:
         return date_line, ""
     return (
         f"{CURRENT_DATE_PROMPT_PREFIX}{started.isoformat()}.",
-        f"{CURRENT_DATE_UPDATE_PREFIX}{today_iso}.",
+        f"{CURRENT_DATE_UPDATE_PREFIX}{today_iso}]",
     )
 
 
@@ -6068,7 +6068,7 @@ def _append_current_date_note(
     thread_id: Any = None,
     note: str | None = None,
 ) -> list[dict]:
-    """Suffix the newest user turn with the date-change note, so earlier bytes stay cacheable."""
+    """Lead the newest user turn with the date-change note; earlier turns keep their own bytes."""
     if note is None:
         if _date_gate_blocks(request, include_api_key):
             return messages
@@ -6083,21 +6083,33 @@ def _append_current_date_note(
         if _is_folded_tool_result(content):
             continue
         if isinstance(content, str):
-            if content.endswith(note):
+            if content.startswith(note):
                 return messages
-            new_content: Any = f"{content}\n\n{note}"
+            new_content: Any = f"{note}\n\n{content}"
             has_text = bool(content.strip())
         elif isinstance(content, list):
-            texts = [p.get("text") for p in content if isinstance(p, dict)]
-            if note in texts:
-                return messages
             # a tool-result-only turn is protocol, not something the user said.
             if content and all(
                 isinstance(p, dict) and p.get("type") == "tool_result" for p in content
             ):
                 continue
-            new_content = [*content, {"type": "text", "text": note}]
-            has_text = any(isinstance(t, str) and t.strip() for t in texts)
+            first = next(
+                (
+                    i
+                    for i, p in enumerate(content)
+                    if isinstance(p, dict) and isinstance(p.get("text"), str) and p["text"].strip()
+                ),
+                None,
+            )
+            has_text = first is not None
+            if has_text and content[first]["text"].startswith(note):
+                return messages
+            new_content = list(content)
+            if has_text:
+                new_content[first] = {
+                    **content[first],
+                    "text": f"{note}\n\n{content[first]['text']}",
+                }
         else:
             continue
         # a media-only turn falls back to "transcribe" / "describe" defaults the note would replace.
