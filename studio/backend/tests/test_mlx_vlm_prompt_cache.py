@@ -944,10 +944,47 @@ def test_a_replay_reads_through_no_snapshot_yet_serves_as_a_base():
     assert store._bases[grid] == ("m", tuple(ids[:580])) and store._entries[grid][1] == 0
     divergent = ids[:300] + [-1] * 700
     store.store("m", divergent[:590], entries(590, 0.75), replay = True)
-    assert set(store._entries) == {("m", tuple(ids[:768])), ("m", tuple(divergent[:590]))}
-    assert store.nbytes == sum(cache_entries_nbytes(e) for e, _ in store._entries.values())
+    longer = ("m", tuple(ids[:768]))
+    assert set(store._entries) == {grid, longer, ("m", tuple(divergent[:590]))}
+    assert store._bases[grid] == longer and store._entries[grid][1] == 0
+    assert store._entries[grid][0][0].keys[0, 0, 511, 0].item() == 511 * 64
+    assert store.nbytes == cache_entries_nbytes(store._entries[longer][0]) + cache_entries_nbytes(
+        store._entries[("m", tuple(divergent[:590]))][0]
+    )
     store.discard(("m", tuple(divergent[:590])))
     assert not store._replays
+
+
+def test_an_edit_keeps_the_old_branch_to_return_to():
+    mx = pytest.importorskip("mlx.core")
+    cache = pytest.importorskip("mlx_vlm.models.cache")
+
+    def entries(ids):
+        rows = mx.array(ids, dtype = mx.float32).reshape(1, 1, len(ids), 1)
+        kv = cache.KVCache()
+        kv.update_and_fetch(rows, -rows)
+        mx.eval(kv.keys, kv.values)
+        return [kv]
+
+    def request(ids):
+        _, reused = store.lookup("m", ids, len(ids) - 1)
+        for n in range(256, len(ids), 256):
+            if n > reused:
+                store.store("m", ids[:n], entries(ids[:n]))
+        store.store("m", ids[:-1], entries(ids[:-1]), replay = True)
+        return reused
+
+    store = VLMPromptSnapshotStore(1 << 30)
+    turns = [list(range(n)) for n in (557, 931, 1311, 1674)]
+    for ids in turns:
+        request(ids)
+    assert request(turns[0] + [-1] * 393) == 512
+    kept, reused = store.lookup("m", turns[3], 1673)
+    assert reused == 1536
+    assert mx.array_equal(kept[0].keys[0, 0, :, 0], mx.arange(1536, dtype = mx.float32)).item()
+    assert store.nbytes == sum(nbytes for _, nbytes in store._entries.values())
+    assert all(base in store._entries for base in store._bases.values())
+    store.clear()
 
 
 @pytest.mark.parametrize("keep", [0, 4])

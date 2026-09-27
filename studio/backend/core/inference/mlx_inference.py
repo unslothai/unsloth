@@ -509,6 +509,7 @@ class VLMPromptSnapshotStore:
             if other not in rebased:
                 self.discard(other)
         if replay and replaced not in (None, item):
+            self._hand_down(replaced)
             self.discard(replaced)
         self._touch(item)
         while self._entries and (
@@ -526,6 +527,33 @@ class VLMPromptSnapshotStore:
             self.nbytes += owned - nbytes
             self._bases[item] = base
         return bool(shared)
+
+    def _hand_down(self, item):
+        """Keep what reads through ``item`` before it goes: an edit's replay replacing the old
+        branch's would otherwise drop every snapshot past the edit."""
+        readers = [other for other, base in self._bases.items() if base == item]
+        for other in sorted(readers, key = lambda other: len(other[1]), reverse = True):
+            del self._bases[other]
+            longer = [
+                longest
+                for longest in reversed(self._entries)
+                if longest != item and self._bases.get(longest) != item and _extends(longest, other)
+            ]
+            longer.sort(key = lambda longest: len(longest[1]), reverse = True)
+            if longer and self._rebase(other, self._bases.get(longer[0], longer[0])):
+                self._touch(other)
+                continue
+            entries, nbytes = self._entries[other]
+            try:
+                entries = copy_cache_entries(entries)
+            except Exception as exc:
+                logger.info("MLX VLM prompt cache: snapshot not handed down (%s)", exc)
+                self.discard(other)
+                continue
+            owned = cache_entries_nbytes(entries)
+            self._entries[other] = (entries, owned)
+            self.nbytes += owned - nbytes
+            self._entries.move_to_end(other)
 
     def _touch(self, item):
         self._entries.move_to_end(item)
