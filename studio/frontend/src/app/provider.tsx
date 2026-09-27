@@ -576,23 +576,28 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-desktop-titlebar-height": "34px",
   "--studio-sidebar-expanded-width": "17.5rem",
   "--studio-sidebar-collapsed-width": "3rem",
-  // Clears the titlebar navigation (pl-4, three 30px buttons, two gap-0.5) plus a 10px gap.
+  // Clears the titlebar navigation (left-1, three 30px buttons, two gap-0.5) plus a 10px gap.
   "--studio-collapsed-chat-controls-inset":
-    "calc(90px + 30px * var(--ui-space-scale, 1))",
+    "calc(90px + 18px * var(--ui-space-scale, 1))",
   "--studio-startup-top-inset": "42px",
   "--studio-content-top-inset": "0px",
   "--studio-non-chat-content-top-inset": "34px",
   "--studio-non-chat-scroller-top": "34px",
   "--studio-hidden-route-top-inset": "34px",
-  // Same split as the native-mac block: chat chrome scales, window chrome does not.
-  "--studio-chat-header-height": "calc(48px * var(--ui-space-scale, 1))",
-  "--studio-chat-header-padding-top": "calc(9px * var(--ui-space-scale, 1))",
+  // Same split as the native-mac block: chat chrome scales, window chrome does not. The row
+  // starts 1px down, so its centre meets the window controls, which sit 4px from the top.
+  "--studio-chat-header-height": "calc(40px * var(--ui-space-scale, 1))",
+  "--studio-chat-header-padding-top": "calc(1px * var(--ui-space-scale, 1))",
   "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
   "--studio-chat-control-height": "calc(33px * var(--ui-space-scale, 1))",
+  // The row's buttons end 6.5px above the macOS traffic-light row, so the sidebar's brand
+  // rises with them and keeps the same gap below.
+  "--studio-sidebar-brand-lift": "6.5px",
   // Window chrome centres on the header's controls, so the whole row shares one line.
   "--studio-titlebar-row-center":
     "calc(var(--studio-chat-header-padding-top) + var(--studio-chat-control-height) / 2)",
-  // Min, max and close: three 26px buttons, two gap-0.5 and right-1.
+  // Min, max and close: three 26px buttons, two gap-0.5 and right-1, which mirrors the
+  // navigation's left-1 so both corners hold the same margin.
   "--studio-window-control-inset":
     "calc(78px + 8px * var(--ui-space-scale, 1))",
 } as CSSProperties;
@@ -1068,7 +1073,12 @@ const REDUCED_MOTION_MAP = {
 export function AppProvider({ children }: AppProviderProps) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const uiSpaceScale = useUiSpaceScale();
-  const toastOffsets = getToastOffsets(pathname, isTauri, uiSpaceScale);
+  const toastOffsets = getToastOffsets(
+    pathname,
+    isTauri,
+    uiSpaceScale,
+    shouldUseCustomWindowTitlebar(),
+  );
   const reduceMotion = useAppearanceCustomStore(
     (s) => s.customization.reduceMotion,
   );

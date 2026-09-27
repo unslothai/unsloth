@@ -29,7 +29,7 @@ const SIDEBAR = readSrc("components/app-sidebar.tsx");
 const PROVIDER = readSrc("app/provider.tsx");
 
 const SCALED = /calc\([\d.]+(?:px|rem)\s*\*\s*var\(--ui-space-scale,\s*1\)\)/;
-const COLLAPSED_NAV_SLOT = /"calc\(90px \+ 20px \* var\(--ui-space-scale, 1\)\)"/;
+const COLLAPSED_NAV_SLOT = /"calc\(90px \+ 8px \* var\(--ui-space-scale, 1\)\)"/;
 
 test("the spacing scale is the font-size preference, normalised at the default", () => {
   // --ui-font-scale is against a 16px base and the default is 15px, so
@@ -174,14 +174,14 @@ test("the titlebar reserves room for its controls, which stay in the band", () =
   // its own trigger, so it holds the same fixed width.
   assert.match(titlebar, /aria-hidden="true" className="size-\[30px\] shrink-0"/);
   assert.match(titlebar, /inline-flex h-\[26px\] w-\[26px\] shrink-0/);
-  // Collapsed, the slot is the buttons (fixed) plus their scaled pl-4 and gaps,
+  // Collapsed, the slot is the buttons (fixed) plus their scaled left-1 and gaps,
   // and the page header beside it starts a scaled 10px further out, so neither
   // covers the other at any size.
   assert.match(titlebar, COLLAPSED_NAV_SLOT);
   const provider = readSrc("app/provider.tsx");
   assert.match(
     provider,
-    /"--studio-collapsed-chat-controls-inset":\s*"calc\(90px \+ 30px \* var\(--ui-space-scale, 1\)\)"/,
+    /"--studio-collapsed-chat-controls-inset":\s*"calc\(90px \+ 18px \* var\(--ui-space-scale, 1\)\)"/,
   );
 });
 

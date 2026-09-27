@@ -5078,7 +5078,7 @@ export function AppSidebar() {
         className={cn(
           "relative",
           usesDesktopTitlebar
-            ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+calc(17px*var(--ui-space-scale,1)))]"
+            ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+calc(17px*var(--ui-space-scale,1))-var(--studio-sidebar-brand-lift,0px))]"
             : "pl-3 pr-3 pt-[calc(14px*var(--ui-space-scale,1))] pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
         )}
       >

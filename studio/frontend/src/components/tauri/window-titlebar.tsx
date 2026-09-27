@@ -124,7 +124,7 @@ function WindowControlButton({
       onClick={onClick}
       className={cn(
         // The hit area runs up to the window edge, where a pointer thrown at the controls lands.
-        "after:absolute after:inset-x-0 after:bottom-0 after:top-[calc(13px-var(--studio-titlebar-row-center,17px))]",
+        "after:absolute after:inset-x-0 after:bottom-0 after:top-[calc(-4px*var(--ui-space-scale,1))]",
         "relative z-[80] inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground dark:hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
         className,
       )}
@@ -253,11 +253,11 @@ export function WindowTitlebar({
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
 
-  // Collapsed, the slot is exactly the three 30px buttons with their scaled pl-4 and gaps,
+  // Collapsed, the slot is exactly the three 30px buttons with their scaled left-1 and gaps,
   // so it never covers the page header that starts beside it.
   const titlebarNavigationWidth =
     showSidebarSurface && !pinned
-      ? "calc(90px + 20px * var(--ui-space-scale, 1))"
+      ? "calc(90px + 8px * var(--ui-space-scale, 1))"
       : sidebarWidth;
   const unifiedRow = showSidebarSurface && !isMobile && pageHeaderInBand;
 
@@ -410,7 +410,7 @@ export function WindowTitlebar({
               expanded={pinned}
               onToggleSidebar={togglePinned}
               showSidebarToggle={!isMobile}
-              className="absolute left-4 top-[var(--studio-titlebar-row-center)] -translate-y-1/2"
+              className="absolute left-1 top-[var(--studio-titlebar-row-center)] -translate-y-1/2"
             />
           </div>
         )}
@@ -429,7 +429,8 @@ export function WindowTitlebar({
           />
         )}
         <div
-          className="pointer-events-auto absolute right-1 top-[var(--studio-titlebar-row-center)] flex -translate-y-1/2 items-center gap-0.5"
+          // As far from the top as from the right edge, as on a native titlebar.
+          className="pointer-events-auto absolute top-1 right-1 flex items-center gap-0.5"
           role="toolbar"
           aria-label="Window controls"
         >

@@ -609,12 +609,12 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
 def test_titlebar_navigation_slot_holds_its_buttons_and_leaves_the_band_to_pages():
     source = _ui_source(TITLEBAR)
 
-    # Collapsed, the slot is the three fixed 30px buttons plus their scaled pl-4 and gaps, so it
+    # Collapsed, the slot is the three fixed 30px buttons plus their scaled left-1 and gaps, so it
     # never drops under the buttons and never reaches the page header beside it. Pinned, it spans
     # the sidebar. Matched across whitespace because the formatter wraps the ternary.
     assert re.search(
         r"showSidebarSurface && !pinned\s*\?\s*"
-        r'"calc\(90px \+ 20px \* var\(--ui-space-scale, 1\)\)"'
+        r'"calc\(90px \+ 8px \* var\(--ui-space-scale, 1\)\)"'
         r"\s*:\s*sidebarWidth",
         TITLEBAR.read_text(encoding = "utf-8"),
     ), "the collapsed titlebar navigation slot is no longer its buttons' width"

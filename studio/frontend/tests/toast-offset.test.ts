@@ -43,12 +43,15 @@ test("desktop routes without page headers clear the titlebar", () => {
 });
 
 test("desktop headers share the titlebar band", () => {
-  // The header's controls sit at the same height under both titlebars (y 9-42), as in
-  // the browser, so the toasts do too.
+  // 10px under the header's controls: y 9-42 under macOS, 1-34 under the custom titlebar.
   for (const pathname of ["/chat", "/images", "/video", "/audio"]) {
     assert.deepEqual(getToastOffsets(pathname, true), {
       default: { top: 52, right: 12 },
       mobile: { top: 52, right: 16 },
+    });
+    assert.deepEqual(getToastOffsets(pathname, true, 1, true), {
+      default: { top: 44, right: 12 },
+      mobile: { top: 44, right: 16 },
     });
   }
 });
