@@ -32,16 +32,25 @@ def _fp8_triton_device_context(tensor: torch.Tensor):
     return nullcontext()
 
 
+# Module level: a torch.library.Library deregisters its ops once collected.
+_fp8_library = None
+
+
 def _opaque_under_compile(name, fake):
-    # torch.compile swaps the launcher for one custom op: tracing it breaks the graph (device_count) and recompiles
+    # torch.compile swaps the launcher for one registered op: tracing it breaks the graph (device_count) and recompiles
     # the Triton kernel under dynamic shapes 40-80x slower. Eager calls still run the plain function, at no cost.
+    # torch.library.Library, not custom_op: compiled graphs dispatch it with ~3 us per call instead of ~23 us.
     def decorator(fn):
+        global _fp8_library
         substitute_in_graph = getattr(torch._dynamo, "substitute_in_graph", None)
-        if substitute_in_graph is None or not hasattr(torch.library, "custom_op"):
+        if substitute_in_graph is None or not hasattr(torch.library, "infer_schema"):
             return fn
         try:
-            op = torch.library.custom_op(f"unsloth::{name}", fn, mutates_args = ())
-            op.register_fake(fake)
+            if _fp8_library is None:
+                _fp8_library = torch.library.Library("unsloth", "FRAGMENT")
+            _fp8_library.define(name + torch.library.infer_schema(fn, mutates_args = ()))
+            _fp8_library.impl(name, fn, "CompositeExplicitAutograd")
+            torch.library.register_fake(f"unsloth::{name}", fake, lib = _fp8_library)
             substitute_in_graph(fn)(
                 functools.wraps(fn)(
                     lambda *args, **kwargs: getattr(torch.ops.unsloth, name)(*args, **kwargs)
