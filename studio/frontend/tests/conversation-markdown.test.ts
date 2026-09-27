@@ -228,6 +228,25 @@ test("collapses thinking and leaves prose untouched", () => {
   );
 });
 
+test("an exported MCP tool call is named the way the server names it", () => {
+  const blocks = contentBlocksToMarkdownBlocks([
+    {
+      type: "tool-call",
+      toolName: "mcp__0123456789abcdef__catalog_get-catalog-entity_b9d734f2",
+      provenance: {
+        mcp_server: "Backstage Catalog",
+        mcp_tool: "catalog.get-catalog-entity",
+      },
+    },
+  ]);
+
+  assert.match(
+    renderConversationBlocks(blocks),
+    /Backstage Catalog · catalog\.get-catalog-entity/,
+  );
+  assert.doesNotMatch(renderConversationBlocks(blocks), /b9d734f2/);
+});
+
 test("omits generated image bytes while retaining useful result metadata", () => {
   const blocks = contentBlocksToMarkdownBlocks([
     {

@@ -28,7 +28,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "mcp_argument_echo_server.py"
 def _reset_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
 
 
 def _encode(arguments: list[str]) -> str:

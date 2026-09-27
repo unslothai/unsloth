@@ -11,6 +11,9 @@ import threading
 import time
 from typing import Any, Mapping, Optional
 
+from utils.reasoning_budget import validate_reasoning_budget_message
+from utils.account_context import OWNER, run_as
+
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
 OPENAI_AUTO_DOWNLOAD_SETTING_KEY = "openai_api_auto_download_model"
 AUTO_UNLOAD_IDLE_SETTING_KEY = "openai_api_auto_unload_idle_seconds"
@@ -33,7 +36,7 @@ MIN_AUTO_UNLOAD_IDLE_SECONDS = 60
 
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
-_cache: dict[str, tuple[float, Any]] = {}
+_cache: dict[tuple[str, str], tuple[float, Any]] = {}
 
 
 def _coerce_bool(value: Any) -> bool | None:
@@ -61,25 +64,27 @@ def _apply_idle_floor(seconds: int) -> int:
 
 def _cached_setting(key: str, default: Any) -> Any:
     """Read an app setting, memoized for _CACHE_TTL_S to spare the hot path."""
+    cache_key = (OWNER.account_id, key)
     now = time.monotonic()
     with _cache_lock:
-        hit = _cache.get(key)
+        hit = _cache.get(cache_key)
         if hit is not None and now - hit[0] < _CACHE_TTL_S:
             return hit[1]
     try:
         from storage.studio_db import get_app_setting
-        stored = get_app_setting(key, None)
+        stored = run_as(OWNER, get_app_setting, key, None)
     except Exception:
         stored = None
     value = default if stored is None else stored
     with _cache_lock:
-        _cache[key] = (now, value)
+        _cache[cache_key] = (now, value)
     return value
 
 
 def _invalidate(key: str) -> None:
+    cache_key = (OWNER.account_id, key)
     with _cache_lock:
-        _cache.pop(key, None)
+        _cache.pop(cache_key, None)
 
 
 def get_openai_auto_switch_enabled() -> bool:
@@ -450,6 +455,21 @@ def normalize_model_override(
     if n_parallel:
         entry["n_parallel"] = n_parallel
 
+    reasoning_budget = _bounded_int(
+        payload.get("reasoning_budget"), minimum = -1, maximum = 2_147_483_647
+    )
+    # Keep defaults as tombstones: a qualified override must remain present after resetting a legacy
+    # passthrough flag, or a bare/legacy fallback can revive it.
+    if reasoning_budget is not None:
+        entry["reasoning_budget"] = reasoning_budget
+    reasoning_budget_message = payload.get("reasoning_budget_message")
+    if isinstance(reasoning_budget_message, str):
+        try:
+            entry["reasoning_budget_message"] = validate_reasoning_budget_message(
+                reasoning_budget_message
+            )
+        except ValueError:
+            pass
     for key in ("n_batch", "n_ubatch"):
         parsed = _bounded_int(payload.get(key), minimum = BATCH_SIZE_MIN, maximum = BATCH_SIZE_MAX)
         if parsed:
@@ -564,6 +584,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("mlx_kv_bits", "mlx_kv_bits"),
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
+        ("reasoning_budget", "reasoning_budget"),
+        ("reasoning_budget_message", "reasoning_budget_message"),
         ("tensor_parallel", "tensor_parallel"),
         ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
@@ -609,6 +631,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             strip_cache = "cache_type_kv" in kwargs,
             strip_spec = "speculative_type" in kwargs or "spec_draft_n_max" in kwargs,
             strip_template = "chat_template_override" in kwargs,
+            strip_reasoning_budget = "reasoning_budget" in kwargs,
+            strip_reasoning_budget_message = "reasoning_budget_message" in kwargs,
             # Sent only when on, so it is always the Tensor Parallelism toggle overriding the flag; an override that leaves the toggle off keeps a row/none/layer split mode.
             strip_split_mode = bool(kwargs.get("tensor_parallel")),
             strip_batch = "n_batch" in kwargs,

@@ -3,6 +3,7 @@
 
 import { isTauri } from "@/lib/api-base";
 import {
+  clearAuthTokens,
   hasAuthToken,
   hasRefreshToken,
   mustChangePassword,
@@ -10,11 +11,15 @@ import {
   storeAuthTokens,
 } from "./session";
 import { refreshSession } from "./api";
+import { setLoginMode } from "./login-client";
+import {
+  OWNER_BROWSER_ACCOUNT,
+  transitionBrowserAccount,
+} from "@/lib/account-transition";
 
-type DesktopAuthResponse = {
-  access_token: string;
-  refresh_token: string;
-};
+type DesktopAuthResponse =
+  | { access_token: string; refresh_token: string }
+  | { login_required: true; login_mode: "multi" };
 
 type TauriAutoAuthOptions = {
   force?: boolean;
@@ -24,6 +29,11 @@ type TauriAutoAuthOptions = {
 // without this the first-launch password-change could race with itself.
 let pending: { promise: Promise<boolean>; force: boolean } | null = null;
 let lastTauriAuthFailure: string | null = null;
+let tauriLoginRequired = false;
+
+export function isTauriLoginRequired(): boolean {
+  return tauriLoginRequired;
+}
 
 const TAURI_AUTH_FAILURE_FALLBACK =
   "Desktop authentication failed. Update or repair the managed Unsloth install, then restart Unsloth.";
@@ -73,8 +83,31 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const tokens = await invoke<DesktopAuthResponse>("desktop_auth");
-    storeAuthTokens(tokens.access_token, tokens.refresh_token);
-    setMustChangePassword(false);
+    if ("login_required" in tokens) {
+      tauriLoginRequired = true;
+      // A managed account signs in in the document; do not discard the session it holds.
+      if (hasRefreshToken() && (await refreshSession()) && hasAuthToken()) {
+        clearTauriAuthFailure();
+        if (mustChangePassword()) {
+          const { router } = await import("@/app/router");
+          await router.navigate({ to: "/change-password", replace: true });
+        }
+        return true;
+      }
+      clearAuthTokens();
+      clearTauriAuthFailure();
+      // The forced startup probe must release the startup screen so the login form can mount; ordinary API recovery still returns false.
+      const { router } = await import("@/app/router");
+      await router.navigate({ to: "/login", replace: true });
+      return options.force === true;
+    }
+    tauriLoginRequired = false;
+    // Owner tokens after the last managed account is deleted must not inherit its browser data.
+    await transitionBrowserAccount(OWNER_BROWSER_ACCOUNT, "/chat", () => {
+      storeAuthTokens(tokens.access_token, tokens.refresh_token);
+      setMustChangePassword(false);
+      setLoginMode("single");
+    });
     clearTauriAuthFailure();
     return true;
   } catch (error) {
@@ -84,14 +117,7 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
   }
 }
 
-/**
- * Silently authenticate in Tauri desktop mode.
- *
- * Delegates bootstrap/password handling to Rust and only stores returned tokens.
- *
- * Returns true if authentication succeeded.
- * Concurrent calls are coalesced into a single in-flight attempt.
- */
+/** Silently authenticate in Tauri desktop mode; also true when only a forced startup probe verified the shell. */
 export function tauriAutoAuth(
   options: TauriAutoAuthOptions = {},
 ): Promise<boolean> {
@@ -103,6 +129,12 @@ export function tauriAutoAuth(
       if (pending?.promise === promise) pending = null;
     });
     pending = { promise, force };
+  }
+  if (!force && pending.force) {
+    // An API retry may share the forced probe, but shell readiness alone must not authorize it.
+    return pending.promise.then(
+      (ready) => ready && (!tauriLoginRequired || hasAuthToken()),
+    );
   }
   return pending.promise;
 }

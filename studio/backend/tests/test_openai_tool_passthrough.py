@@ -44,6 +44,7 @@ from core.inference.llama_admission import (
 from routes.inference import (
     _aclose_stream_resources,
     _build_chat_request,
+    _build_external_messages,
     _build_openai_passthrough_body,
     _build_passthrough_payload,
     _clamp_finish_reason,
@@ -93,6 +94,19 @@ _RED_PNG_B64 = (
 _BLUE_PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC"
 )
+
+
+# Wall-clock bound for the cancel-drain tests: sized for a loaded runner, only ever reached when something is genuinely
+# stuck. The worker starts on a thread-pool thread, so a start wait of 1.0s measured scheduling, not the route, and
+# failed as `assert False` on loaded Backend CI shards (on main 8849f481d, and again on #11644). #10008 raised it, but
+# its hunk landed on the tool twin of the test it named, which kept the 1.0s bound along with three others shaped
+# like it.
+_DRAIN_BUDGET_S = 30.0
+
+# How long each stub worker keeps running after it sees the cancel flag. A route that drains its worker waits this out
+# before it raises; one that skips the drain raises first, and `assert released.is_set()` catches it. Without it that
+# catch rests on the assertion running inside the worker's 5 ms poll, which a slow runner need not honour.
+_WORKER_LINGER_S = 0.3
 
 
 @pytest.fixture(autouse = True)
@@ -528,10 +542,10 @@ class TestChatMessageToolRoles:
             ChatMessage(role = "user", content = "Hi", tool_call_id = "call_1")
         assert "tool_call_id" in str(exc_info.value)
 
-    def test_name_on_user_rejected(self):
-        with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role = "user", content = "Hi", name = "get_weather")
-        assert "name" in str(exc_info.value)
+    @pytest.mark.parametrize("role", ["user", "assistant", "system", "developer"])
+    def test_participant_name_accepted_on_every_role(self, role):
+        msg = ChatMessage(role = role, content = "Hi", name = "alice")
+        assert msg.name == "alice"
 
 
 # =====================================================================
@@ -1527,6 +1541,40 @@ class TestChatCompletionRequestToolFields:
         assert "audio or an image in one message" in resp.text
         assert calls == []
         assert monitor.active_count() == 0
+
+    def test_audio_input_carries_participant_names(self, monkeypatch):
+        import numpy as np
+        import routes.inference as inference_route
+
+        calls = []
+        omni = _omni_backend(calls)
+        monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 3))
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), omni)
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "what is said?"},
+                ],
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert calls[0]["system_prompt"].endswith("be brief")
+        assert [(m["role"], m.get("name")) for m in calls[0]["messages"]] == [("user", "alice")]
 
     def test_a_derived_legacy_image_field_does_not_block_a_voice_follow_up(self, monkeypatch):
         """Studio fills image_base64 from anywhere in the thread, so it is not a
@@ -2691,9 +2739,20 @@ class TestBuildPassthroughPayloadToolChoice:
         body = _build_passthrough_payload(**self._args(), tool_choice = "none")
         assert body["tool_choice"] == "none"
 
-    def test_override_tool_choice_named_function(self):
-        tc = {"type": "function", "function": {"name": "f"}}
+    def test_named_function_is_sent_as_its_one_tool_under_required(self):
+        args = self._args()
+        args["openai_tools"].append(
+            {"type": "function", "function": {"name": "g", "parameters": {"type": "object"}}}
+        )
+        tc = {"type": "function", "function": {"name": "g"}}
+        body = _build_passthrough_payload(**args, tool_choice = tc)
+        assert [t["function"]["name"] for t in body["tools"]] == ["g"]
+        assert body["tool_choice"] == "required"
+
+    def test_named_function_missing_from_tools_is_forwarded_unchanged(self):
+        tc = {"type": "function", "function": {"name": "missing"}}
         body = _build_passthrough_payload(**self._args(), tool_choice = tc)
+        assert [t["function"]["name"] for t in body["tools"]] == ["f"]
         assert body["tool_choice"] == tc
 
     def test_llama_incompatible_tool_constraints_are_omitted(self):
@@ -4059,6 +4118,39 @@ class TestDropEmptyAssistantSentinels:
         ]
         assert out[1]["reasoning_content"] == "first trace\n\nsecond trace\n\nfinal trace"
 
+    def test_a_folded_fragment_keeps_only_a_name_both_halves_agree_on(self):
+        def _synthetic_call(call_id: str) -> dict:
+            return {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": "web_search", "arguments": '{"_server_tool": true}'},
+            }
+
+        def _fold(first_name, second_name):
+            messages = [
+                {"role": "user", "content": "Find it."},
+                {
+                    "role": "assistant",
+                    **({"name": first_name} if first_name else {}),
+                    "content": "Searching first.",
+                    "tool_calls": [_synthetic_call("call-1")],
+                },
+                {"role": "tool", "tool_call_id": "call-1", "content": "first result"},
+                {
+                    "role": "assistant",
+                    **({"name": second_name} if second_name else {}),
+                    "content": "Here is the answer.",
+                },
+            ]
+            out = _strip_provider_synthetic_tool_history(messages)
+            assert [m["role"] for m in out] == ["user", "assistant"]
+            return out[1]
+
+        assert _fold("researcher", "researcher").get("name") == "researcher"
+        assert _fold("researcher", "auditor").get("name") is None
+        assert _fold("researcher", None).get("name") is None
+        assert _fold(None, "auditor").get("name") is None
+
     def test_synthetic_reasoning_fragment_before_user_stays_valid(self):
         messages = [
             {"role": "user", "content": "Find it."},
@@ -4218,6 +4310,259 @@ class TestGgufVisionMessages:
         assert _set_or_prepend_system_message(None, "Use tools.") == [
             {"role": "system", "content": "Use tools."}
         ]
+
+    def _mcp_tool_history(self, text = "[1 image returned]"):
+        from core.inference import mcp_images
+        envelope = json.dumps([{"data": self._PNG_B64, "mimeType": "image/png"}])
+        return [
+            {"role": "user", "content": "what does the file look like"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {"name": "mcp__fs__read_media_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_0",
+                "content": text + "\n" + mcp_images.SENTINEL + envelope,
+            },
+            {"role": "assistant", "content": "a blue square"},
+            {"role": "user", "content": "what colour was it again"},
+        ]
+
+    def test_replayed_mcp_images_become_an_image_turn_for_a_vision_model(self):
+        req = ChatCompletionRequest(model = "default", messages = self._mcp_tool_history())
+
+        messages, _ = _openai_messages_for_gguf_chat(req, is_vision = True)
+
+        tool_message = next(m for m in messages if m["role"] == "tool")
+        assert tool_message["content"] == "[1 image returned]"
+        promoted = messages[messages.index(tool_message) + 1]
+        assert promoted["role"] == "user"
+        assert promoted["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    def test_replayed_mcp_images_are_stripped_for_a_text_only_model(self):
+        req = ChatCompletionRequest(model = "default", messages = self._mcp_tool_history())
+
+        messages, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+
+        assert [m["role"] for m in messages] == ["user", "assistant", "tool", "assistant", "user"]
+        assert messages[2]["content"] == "[1 image returned]"
+
+    def test_passthrough_never_relays_the_image_envelope_as_tool_text(self):
+        req = ChatCompletionRequest(model = "default", messages = self._mcp_tool_history())
+
+        messages = _openai_messages_for_passthrough(req)
+
+        assert all("__MCP_IMAGES__" not in str(m.get("content")) for m in messages)
+
+    def test_passthrough_promotes_the_images_for_a_vision_model(self):
+        req = ChatCompletionRequest(model = "default", messages = self._mcp_tool_history())
+
+        messages = _openai_messages_for_passthrough(req, vision = True)
+
+        promoted = messages[3]
+        assert promoted["role"] == "user"
+        assert promoted["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    def test_the_native_path_never_templates_the_image_envelope(self):
+        req = ChatCompletionRequest(model = "default", messages = self._mcp_tool_history())
+
+        _, chat_messages, _ = _extract_content_parts(req.messages)
+
+        # The name is correlated from the call now, so the local path can run the
+        # provenance gate on a result that arrived unnamed.
+        assert chat_messages[2] == {
+            "role": "tool",
+            "content": "[1 image returned]",
+            "name": "mcp__fs__read_media_file",
+        }
+
+    def test_a_replayed_envelope_alone_does_not_demand_a_vision_model(self):
+        """The capability preflight runs before promote_history strips the envelope
+        for a text-only target, so counting history there strands the conversation:
+        the switch is refused for a picture that model would never be shown."""
+        from routes.inference import _request_has_attached_image, _request_has_image
+
+        req = ChatCompletionRequest(model = "default", messages = self._mcp_tool_history())
+
+        assert not _request_has_attached_image(req)
+        # Still an image for the paths that decode one: the work stays off the loop.
+        assert _request_has_image(req)
+
+    def test_an_attached_image_still_demands_a_vision_model(self):
+        from routes.inference import _request_has_attached_image
+
+        history = self._mcp_tool_history()
+        history[-1] = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "and this one"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{self._PNG_B64}"},
+                },
+            ],
+        }
+        req = ChatCompletionRequest(model = "default", messages = history)
+
+        assert _request_has_attached_image(req)
+
+    def test_admission_charges_a_replayed_envelope_as_images_not_text(self):
+        """Admission prices the payload before the chat path promotes the envelope.
+        Left as text it reserves megabytes of prompt for bytes never sent; ignored
+        it charges zero KV for projector images that really are."""
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+
+        estimate, image_parts = _openai_llama_admission_messages_for_estimate(
+            [
+                m.model_dump(exclude_none = True)
+                for m in ChatCompletionRequest(
+                    model = "default", messages = self._mcp_tool_history()
+                ).messages
+            ]
+        )
+
+        assert image_parts == 1
+        assert self._PNG_B64 not in json.dumps(estimate)
+        assert estimate[2]["content"] == "[1 image returned]"
+
+    def test_admission_never_charges_past_the_conversation_cap(self):
+        from core.inference import mcp_images
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+
+        envelope = json.dumps([{"data": self._PNG_B64, "mimeType": "image/png"}] * 4)
+        turns = []
+        for _ in range(6):
+            turns.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": "c",
+                    "content": "[4 images returned]\n" + mcp_images.SENTINEL + envelope,
+                }
+            )
+        _, image_parts = _openai_llama_admission_messages_for_estimate(turns)
+
+        assert image_parts == mcp_images.MAX_TOTAL_MODEL_IMAGES
+
+    def test_the_envelope_cap_never_discounts_really_attached_images(self):
+        """#9842 charges per-image KV so parallel vision chats are admitted
+        honestly. The envelope cap bounds what promotion adds, not what the
+        caller actually sent."""
+        from core.inference import mcp_images
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+
+        attached = {
+            "role": "user",
+            "content": [{"type": "text", "text": "compare these"}]
+            + [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{self._PNG_B64}"},
+                }
+                for _ in range(mcp_images.MAX_TOTAL_MODEL_IMAGES + 4)
+            ],
+        }
+
+        _, image_parts = _openai_llama_admission_messages_for_estimate([attached])
+
+        assert image_parts == mcp_images.MAX_TOTAL_MODEL_IMAGES + 4
+
+    def test_a_replayed_envelope_is_priced_without_its_base64(self):
+        """The count endpoint renders the messages verbatim, so an envelope left in
+        would be priced as thousands of tokens of base64 the completion never sends."""
+        from routes.inference import promote_mcp_history_images
+
+        raw = [
+            m.model_dump(exclude_none = True)
+            for m in ChatCompletionRequest(
+                model = "default", messages = self._mcp_tool_history()
+            ).messages
+        ]
+
+        priced = promote_mcp_history_images(raw, vision = False)
+
+        assert all("__MCP_IMAGES__" not in str(m.get("content")) for m in priced)
+        assert all(self._PNG_B64 not in str(m.get("content")) for m in priced)
+
+    def test_a_mixed_catalog_provider_still_forwards_an_attached_image(self):
+        """openrouter and huggingface are vision-capable for the family and name no
+        model, so the MCP gate says no for every model on them. Passed as the general
+        vision flag it also stripped the picture the caller attached to a chosen
+        vision model, which main forwarded."""
+        from core.inference.providers import get_provider_info
+        from routes.inference import _build_external_messages, _external_takes_mcp_images
+
+        attached = [
+            ChatMessage(
+                role = "user",
+                content = [
+                    {"type": "text", "text": "what colour is this"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{self._PNG_B64}"},
+                    },
+                ],
+            )
+        ]
+
+        for provider, model in (
+            ("openrouter", "openai/gpt-4o"),
+            ("huggingface", "Qwen/Qwen2.5-VL-7B-Instruct"),
+            ("mistral", "pixtral-large-latest"),
+            ("qwen", "qwen-vl-max"),
+        ):
+            info = get_provider_info(provider) or {}
+            vision = info.get("supports_vision", False)
+            gate = _external_takes_mcp_images(provider, vision, model, info)
+            assert gate is False, f"{provider} is expected to gate MCP promotion off"
+
+            built = _build_external_messages(
+                attached,
+                vision,
+                provider_type = provider,
+                promote_mcp_images = gate,
+            )
+
+            parts = built[0]["content"]
+            assert [p["type"] for p in parts] == ["text", "image_url"], provider
+
+            # The shape the regression had: one flag answering both questions.
+            # The image is gone and the lone text part collapses back to a string.
+            conflated = _build_external_messages(attached, gate, provider_type = provider)
+            assert (
+                conflated[0]["content"] == "what colour is this"
+            ), f"{provider}: the two decisions must stay separate"
+
+    def test_the_mcp_gate_still_keeps_an_envelope_off_a_mixed_catalog_provider(self):
+        from core.inference.providers import get_provider_info
+        from routes.inference import _build_external_messages, _external_takes_mcp_images
+
+        history = [ChatMessage(**m) for m in self._mcp_tool_history()]
+        info = get_provider_info("openrouter") or {}
+        vision = info.get("supports_vision", False)
+
+        built = _build_external_messages(
+            history,
+            vision,
+            provider_type = "openrouter",
+            promote_mcp_images = _external_takes_mcp_images(
+                "openrouter", vision, "openai/gpt-4o", info
+            ),
+        )
+
+        assert all("__MCP_IMAGES__" not in str(m.get("content")) for m in built)
+        assert not any(
+            isinstance(m.get("content"), list)
+            and any(p.get("type") == "image_url" for p in m["content"])
+            for m in built
+        )
 
     def test_tool_nudge_system_update_dedupes_non_leading_system(self):
         messages = [
@@ -4879,6 +5224,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -4912,12 +5258,14 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             assert await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
             pending = asyncio.create_task(iterator.__anext__())
-            assert await asyncio.to_thread(started.wait, 1.0)
+            assert await asyncio.to_thread(
+                started.wait, _DRAIN_BUDGET_S
+            ), "the worker never started"
 
             await asyncio.sleep(0)
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(pending, timeout = 1.0)
+                await asyncio.wait_for(pending, timeout = _DRAIN_BUDGET_S)
 
             assert released.is_set()
             [entry] = monitor.snapshot()
@@ -5087,6 +5435,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -5123,12 +5472,14 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             assert await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
             pending = asyncio.create_task(iterator.__anext__())
-            assert await asyncio.to_thread(started.wait, 1.0)
+            assert await asyncio.to_thread(
+                started.wait, _DRAIN_BUDGET_S
+            ), "the worker never started"
 
             await asyncio.sleep(0)
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(pending, timeout = 1.0)
+                await asyncio.wait_for(pending, timeout = _DRAIN_BUDGET_S)
 
             assert released.is_set()
             [entry] = monitor.snapshot()
@@ -5800,6 +6151,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -5835,11 +6187,11 @@ class TestGgufVisionToolRouting:
             # not on this code, and it went red once on a runner busy with the
             # rest of the backend suite. Failing here still takes seconds, and
             # the assertion is unchanged.
-            assert await asyncio.to_thread(started.wait, self._DRAIN_BUDGET_S)
+            assert await asyncio.to_thread(started.wait, _DRAIN_BUDGET_S)
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout = self._DRAIN_BUDGET_S)
+                await asyncio.wait_for(task, timeout = _DRAIN_BUDGET_S)
 
             # Waited on, not sampled. Cancelling the task unblocks the awaiting
             # coroutine; it does not join the worker, which is off polling
@@ -5847,7 +6199,7 @@ class TestGgufVisionToolRouting:
             # instant the await returns is a race that happens to be won on an
             # idle box, and it is the drain itself that matters, not whether it
             # had already finished by the time we looked.
-            assert await asyncio.to_thread(released.wait, self._DRAIN_BUDGET_S)
+            assert await asyncio.to_thread(released.wait, _DRAIN_BUDGET_S)
             assert get_llama_admission_queue("http://llama.tool.test").snapshot().active == 0
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
@@ -5956,11 +6308,6 @@ class TestGgufVisionToolRouting:
         assert json.loads(response.body)["choices"][0]["message"]["content"] == "reply"
         assert captured["perf_callback"] is None
 
-    # Wall-clock bound for the cancel drain. Only ever hit when something is
-    # genuinely stuck, so it is sized for a loaded runner rather than for the
-    # ~5ms this takes when it works.
-    _DRAIN_BUDGET_S = 30.0
-
     def test_non_streaming_gguf_cancel_drains_worker(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():
@@ -5972,6 +6319,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -5995,11 +6343,13 @@ class TestGgufVisionToolRouting:
             task = asyncio.create_task(
                 openai_chat_completions(payload, request = self._Request(), current_subject = "test")
             )
-            assert await asyncio.to_thread(started.wait, 1.0)
+            assert await asyncio.to_thread(
+                started.wait, _DRAIN_BUDGET_S
+            ), "the worker never started"
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout = 1.0)
+                await asyncio.wait_for(task, timeout = _DRAIN_BUDGET_S)
 
             assert released.is_set()
             [entry] = monitor.snapshot()
@@ -8145,11 +8495,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                         break
                     await asyncio.sleep(0.01)
                 body = body_holder["body"]
-                assert await asyncio.to_thread(body.started.wait, 1.0)
+                assert await asyncio.to_thread(
+                    body.started.wait, _DRAIN_BUDGET_S
+                ), "the worker never started"
 
                 pending.cancel()
                 with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(pending, timeout = 1.0)
+                    await asyncio.wait_for(pending, timeout = _DRAIN_BUDGET_S)
             finally:
                 aclose = getattr(iterator, "aclose", None)
                 if aclose is not None:
@@ -9830,6 +10182,45 @@ class TestResponsesChatTemplateKwargs:
         chat_req = _build_chat_request(payload, self._messages, stream = False)
         assert chat_req.enable_thinking is None
 
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_nested_reasoning_controls_reach_llama_server(self, stream):
+        payload = ResponsesRequest(
+            model = "local",
+            input = "hi",
+            chat_template_kwargs = {
+                "reasoning_effort": "none",
+                "preserve_thinking": True,
+            },
+        )
+        chat_req = _build_chat_request(payload, self._messages, stream = stream)
+        body = _build_openai_passthrough_body(
+            chat_req,
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(
+                reasoning_style = "reasoning_effort",
+                supports_preserve_thinking = True,
+            ),
+        )
+
+        assert chat_req.enable_thinking is False
+        assert body["chat_template_kwargs"] == {
+            "reasoning_effort": "none",
+            "preserve_thinking": True,
+        }
+
+    def test_native_responses_effort_wins_over_nested_effort(self):
+        payload = ResponsesRequest(
+            model = "local",
+            input = "hi",
+            reasoning = {"effort": "high"},
+            chat_template_kwargs = {"reasoning_effort": "none"},
+        )
+
+        chat_req = _build_chat_request(payload, self._messages, stream = True)
+
+        assert chat_req.enable_thinking is True
+        assert chat_req.reasoning_effort == "high"
+
     def test_responses_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():
@@ -10021,6 +10412,28 @@ class TestCoalesceConsecutiveUserTurns:
         _coalesce_consecutive_user_turns(msgs)
         assert msgs[0]["content"] == "hi"
 
+    def test_shared_participant_name_survives_merge(self):
+        msgs = [
+            {"role": "user", "name": "alice", "content": "hi"},
+            {"role": "user", "name": "alice", "content": "again"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == [
+            {"role": "user", "name": "alice", "content": "hi\n\nagain"},
+        ]
+
+    @pytest.mark.parametrize(
+        "first, second",
+        [({"name": "alice"}, {"name": "bob"}), ({"name": "alice"}, {}), ({}, {"name": "bob"})],
+    )
+    def test_differing_participant_names_are_dropped_on_merge(self, first, second):
+        msgs = [
+            {"role": "user", **first, "content": "hi"},
+            {"role": "user", **second, "content": "again"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == [
+            {"role": "user", "content": "hi\n\nagain"},
+        ]
+
 
 class TestGgufChatHistoryAlternation:
     def test_empty_assistant_turn_dropped_then_users_coalesced(self):
@@ -10093,6 +10506,97 @@ class TestGgufChatHistoryAlternation:
         roles = [m["role"] for m in rebuilt]
         assert roles == ["system", "user"]
         assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), roles
+
+    def test_participant_names_reach_llama_server(self):
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "default",
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "hi"},
+                    {"role": "assistant", "name": "researcher", "content": "hello"},
+                    {"role": "user", "name": "alice", "content": "again"},
+                ],
+            }
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        assert [m.get("name") for m in out] == ["supervisor", "alice", "researcher", "alice"]
+
+    def test_system_name_survives_the_route_system_rebuild(self):
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "default",
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "hi"},
+                ],
+            }
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        system_prompt, _, _ = _extract_content_parts(req.messages)
+        rebuilt = _set_or_prepend_system_message(out, f"Today is Monday.\n\n{system_prompt}")
+        assert [(m["role"], m.get("name")) for m in rebuilt] == [
+            ("system", "supervisor"),
+            ("user", "alice"),
+        ]
+
+    @pytest.mark.parametrize(
+        "first, second",
+        [({"name": "supervisor"}, {"name": "auditor"}), ({"name": "supervisor"}, {})],
+    )
+    def test_differing_system_names_are_dropped_on_rebuild(self, first, second):
+        messages = [
+            {"role": "system", **first, "content": "be brief"},
+            {"role": "developer", **second, "content": "cite sources"},
+            {"role": "user", "content": "hi"},
+        ]
+        rebuilt = _set_or_prepend_system_message(messages, "be brief\n\ncite sources")
+        assert rebuilt[0] == {"role": "system", "content": "be brief\n\ncite sources"}
+
+    def test_local_backends_receive_participant_names(self):
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "default",
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "hi"},
+                    {"role": "assistant", "name": "researcher", "content": "hello"},
+                    {"role": "user", "content": "again"},
+                ],
+            }
+        )
+        system_prompt, chat_messages, _ = _extract_content_parts(req.messages)
+        assert system_prompt == "be brief"
+        assert chat_messages == [
+            {"role": "user", "name": "alice", "content": "hi"},
+            {"role": "assistant", "name": "researcher", "content": "hello"},
+            {"role": "user", "content": "again"},
+        ]
+
+
+class TestExternalProviderParticipantNames:
+    @pytest.mark.parametrize("provider_type", ["openai", "anthropic", "gemini", "mistral"])
+    def test_only_tool_results_keep_their_name(self, provider_type):
+        messages = [
+            ChatMessage(role = "system", name = "supervisor", content = "be brief"),
+            ChatMessage(role = "user", name = "alice", content = "weather?"),
+            ChatMessage(
+                role = "assistant",
+                name = "researcher",
+                tool_calls = [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{}"},
+                    }
+                ],
+            ),
+            ChatMessage(role = "tool", tool_call_id = "call_1", name = "get_weather", content = "sunny"),
+            ChatMessage(role = "assistant", name = "researcher", content = "It is sunny."),
+        ]
+        out = _build_external_messages(messages, supports_vision = True, provider_type = provider_type)
+        assert [m["role"] for m in out] == ["system", "user", "assistant", "tool", "assistant"]
+        assert [m.get("name") for m in out] == [None, None, None, "get_weather", None]
 
 
 # ── Per-choice seeds on the GGUF drain ──────────────────────────────
@@ -10299,9 +10803,45 @@ class TestPassthroughImageNormalization:
             px = Image.open(BytesIO(out)).getpixel((0, 0))
             assert px == ((77, 77, 77) if mode == "L" else (10, 20, 30)), (mode, px)
 
-    def test_remote_url_is_forwarded_unchanged(self):
+    def test_remote_url_is_fetched_here_and_never_forwarded(self, monkeypatch):
+        from PIL import Image
+        from io import BytesIO
+
+        buf = BytesIO()
+        Image.new("RGB", (2, 2), (4, 5, 6)).save(buf, format = "WEBP")
+        webp_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        import core.inference.external_provider as ep
+
+        monkeypatch.setattr(
+            ep, "safe_fetch_remote_image_sync", lambda *a, **k: ("image/webp", webp_b64)
+        )
+
         messages = _openai_messages_for_passthrough(self._req("https://x.example/a.webp"))
-        assert messages[0]["content"][1]["image_url"]["url"] == "https://x.example/a.webp"
+
+        url = messages[0]["content"][1]["image_url"]["url"]
+        assert url.startswith("data:image/png;base64,")
+
+    def test_remote_url_refused_when_the_fetch_is(self, monkeypatch):
+        import core.inference.external_provider as ep
+
+        monkeypatch.setattr(ep, "safe_fetch_remote_image_sync", lambda *a, **k: None)
+
+        with pytest.raises(HTTPException) as exc:
+            _openai_messages_for_passthrough(self._req("https://x.example/a.webp"))
+        assert exc.value.status_code == 400
+
+    def test_non_https_remote_url_is_refused_without_a_fetch(self, monkeypatch):
+        import core.inference.external_provider as ep
+
+        def _never(*_a, **_k):
+            raise AssertionError("http:// must be refused before any request")
+
+        monkeypatch.setattr(ep, "safe_fetch_remote_image_sync", _never)
+
+        with pytest.raises(HTTPException) as exc:
+            _openai_messages_for_passthrough(self._req("http://169.254.169.254/latest/meta-data/"))
+        assert exc.value.status_code == 400
 
     def test_local_template_caller_leaves_a_payloadless_data_url_alone(self):
         # The safetensors/MLX client-tools path only gets here when the turn has no
@@ -10360,3 +10900,359 @@ class TestPassthroughImageNormalization:
         parts = [p for p in messages[0]["content"] if p.get("type") == "image_url"]
         assert len(parts) == 1
         assert parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+class TestMcpImagesOnTheClientToolPassthrough:
+    """The client-tool passthrough rebuilds its prompt from payload.messages and
+    flattens every content part to text. The MCP payloads survive in gen_kwargs,
+    so the markers have to be put back or the two disagree."""
+
+    def test_one_marker_is_restored_per_retained_payload(self):
+        from core.inference.mcp_images import append_placeholder_turn
+
+        # What the rebuild leaves: plain string content, no parts at all.
+        messages = [
+            {"role": "user", "content": "what does the file look like"},
+            {"role": "tool", "tool_call_id": "call_0", "content": "[2 images returned]"},
+        ]
+        payloads = ["AAAA", "BBBB"]
+
+        append_placeholder_turn(messages, len(payloads), len(payloads))
+
+        markers = [
+            part
+            for message in messages
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+            if part.get("type") == "image"
+        ]
+        assert len(markers) == len(payloads)
+        assert messages[-1]["role"] == "user"
+
+    def test_the_route_restores_them_on_that_branch(self):
+        """Scoped to the client-tool branch, not a character window: the code
+        around it moves with every upstream change, the branch does not."""
+        import inspect
+
+        import routes.inference as inference_route
+
+        body = inspect.getsource(inference_route.produce_openai_chat_completions)
+        branch = body[body.index("if _sf_client_tools:") :]
+        assert "_flatten_content_parts_for_local_template" in branch
+        rebuild = branch.index("_flatten_content_parts_for_local_template")
+        promote = branch.index("_promote_local_mcp_images_async(")
+        assert promote < rebuild, (
+            "the flatten has to run inside the promotion's argument, so the markers "
+            "are put back after the flatten that removed them"
+        )
+        assert (
+            "promote_mcp_images = False" in branch
+        ), "the passthrough must leave the envelopes on for the promotion to find"
+        # One marker per batch at its own position, never one block of them all.
+        assert "mark_mcp_image_turn_local(" not in branch
+        assert "insert_mcp_image_turn_before(" not in branch
+
+
+class TestCodexVisionCapability:
+    def test_an_mcp_run_resolves_the_catalog_before_pinning_the_vision_flag(self):
+        """The flag is fixed once for the whole run. A text-only opening turn on a
+        cold worker would pin it False and discard a picture an MCP tool returns
+        later, on a model the picker offered as vision-capable."""
+        import inspect
+
+        import routes.inference as inference_route
+
+        body = inspect.getsource(inference_route._proxy_to_external_provider)
+        assert "_may_receive_image = (" in body
+        assert "if _may_receive_image and model not in capabilities" in body
+
+    def test_a_replay_only_turn_also_resolves_the_catalog(self):
+        """MCP can be switched off while prior image turns remain. The capability
+        still has to be resolved, or the replay is stripped from a model that
+        could have read it."""
+        import inspect
+
+        import routes.inference as inference_route
+
+        body = inspect.getsource(inference_route._proxy_to_external_provider)
+        start = body.index("_may_receive_image = (")
+        predicate = body[start : body.index("if _may_receive_image", start)]
+        assert "image_requested" in predicate
+        assert "mcp_enabled" in predicate
+        # The promotable form, so a named non-MCP result ending in a valid envelope
+        # does not buy a catalog fetch nothing needs.
+        assert "_request_has_promotable_mcp_images(payload, exact = False)" in predicate
+
+
+_MCP_ADMISSION_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR42mNk"
+    "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+class TestMcpImageAdmissionAndCaps:
+    _PNG = _MCP_ADMISSION_PNG
+
+    def _envelope_turn(
+        self,
+        count = 1,
+        name = "mcp__fs__read_media_file",
+    ):
+        from core.inference import mcp_images
+        images = json.dumps([{"data": self._PNG, "mimeType": "image/png"}] * count)
+        return {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": name,
+            "content": f"[{count} images returned]\n" + mcp_images.SENTINEL + images,
+        }
+
+    def test_a_text_only_backend_is_charged_no_kv_for_replayed_images(self):
+        """Generation calls promote_history(vision=False) and sends no projector
+        images, so charging them here reserves the cache for pixels llama-server
+        never sees and serialises small text-only chats."""
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+
+        turns = [self._envelope_turn(4), self._envelope_turn(4)]
+
+        _, vision_parts = _openai_llama_admission_messages_for_estimate(turns, vision = True)
+        _, text_only_parts = _openai_llama_admission_messages_for_estimate(turns, vision = False)
+
+        assert vision_parts == 8
+        assert text_only_parts == 0
+
+    def test_the_base64_is_stripped_from_the_estimate_either_way(self):
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+        for vision in (True, False):
+            estimate, _ = _openai_llama_admission_messages_for_estimate(
+                [self._envelope_turn()], vision = vision
+            )
+            assert self._PNG not in json.dumps(estimate), vision
+
+    def test_an_attachment_counts_against_the_replay_cap(self):
+        """promote_history_local caps the replay alone; the attachment lands after it.
+        Its marker goes on the newest user turn -- here a placeholder already holding
+        a replay marker -- and a non-GGUF message carries one picture, so the replay
+        marker is displaced and pixels_in_marker_order drops its payload rather than
+        sliding it onto the next marker. Markers and pixels stay in step at the cap."""
+        from core.inference import mcp_images
+
+        conversation = []
+        payloads = []
+        for _ in range(mcp_images.MAX_TOTAL_MODEL_IMAGES):
+            conversation.append(mcp_images.placeholder_turn(1, 1))
+            payloads.append("AAAA")
+        prior = mcp_images.image_marker_parts(conversation)
+        # what the route does when an image is attached on top
+        conversation = mcp_images.mark_last_user_turn(conversation, 1)
+        pixels = mcp_images.pixels_in_marker_order(conversation, prior, payloads, "BBBB")
+        mcp_images.trim_image_turns(conversation, pixels)
+
+        markers = mcp_images.count_image_parts(conversation, "image")
+        assert len(pixels) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+        assert markers == len(pixels)
+        # The attachment is the one that survives on its turn, and it is the newest.
+        assert pixels[-1] == "BBBB"
+        assert pixels.count("AAAA") == mcp_images.MAX_TOTAL_MODEL_IMAGES - 1
+
+    def test_the_route_trims_both_local_paths(self):
+        import inspect
+
+        import routes.inference as inference_route
+
+        body = inspect.getsource(inference_route.produce_openai_chat_completions)
+        assert body.count("trim_mcp_image_turns(") == 3, (
+            "the tool-loop path, the plain path and the client-tool rebuild all have "
+            "to reserve the attachment's slot"
+        )
+
+    def test_the_local_replay_promotion_is_off_the_event_loop(self):
+        import inspect
+
+        import routes.inference as inference_route
+
+        body = inspect.getsource(inference_route.produce_openai_chat_completions)
+        assert "await _promote_local_mcp_images_async(" in body
+        helper = inspect.getsource(inference_route._promote_local_mcp_images_async)
+        assert "asyncio.to_thread" in helper
+
+
+class TestMcpImageProvenanceAndCounting:
+    _PNG = _MCP_ADMISSION_PNG
+
+    def _turn(self, name):
+        from core.inference import mcp_images
+
+        images = json.dumps([{"data": self._PNG, "mimeType": "image/png"}])
+        msg = {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "output\n" + mcp_images.SENTINEL + images,
+        }
+        if name is not None:
+            msg["name"] = name
+        return msg
+
+    def test_admission_strips_a_non_mcp_envelope_but_charges_it_nothing(self):
+        """Generation strips the suffix for everyone, so pricing it as text would
+        over-reserve; and it is never promoted, so charging image KV would reserve
+        the cache for pixels llama-server never sees."""
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+
+        estimate, parts = _openai_llama_admission_messages_for_estimate(
+            [self._turn("bash")], vision = True
+        )
+
+        assert parts == 0
+        assert self._PNG not in json.dumps(estimate)
+
+    def test_admission_still_charges_an_mcp_envelope_as_images(self):
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+
+        estimate, parts = _openai_llama_admission_messages_for_estimate(
+            [self._turn("mcp__fs__read_media_file")], vision = True
+        )
+
+        assert parts == 1
+        assert self._PNG not in json.dumps(estimate)
+
+    def test_the_estimator_and_generation_agree_on_provenance(self):
+        """The two must read the same rule, or the reservation and the prompt
+        disagree in whichever direction the mismatch runs."""
+        from core.inference.mcp_images import promote_history
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+
+        for name, promoted in (("bash", False), ("mcp__fs__read_media_file", True)):
+            turn = self._turn(name)
+            out = promote_history([dict(turn)], vision = True)
+            estimate, parts = _openai_llama_admission_messages_for_estimate(
+                [dict(turn)], vision = True
+            )
+            # Stripped on both sides regardless of provenance...
+            assert out[0]["content"] != turn["content"], name
+            assert self._PNG not in json.dumps(estimate), name
+            # ...and charged exactly where it is promoted.
+            assert (len(out) > 1) is promoted, name
+            assert (parts > 0) is promoted, name
+
+
+class TestMcpReplayDetectorProvenance:
+    _PNG = _MCP_ADMISSION_PNG
+
+    def _req(self, name):
+        from core.inference import mcp_images
+
+        images = json.dumps([{"data": self._PNG, "mimeType": "image/png"}])
+        msg = {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "output\n" + mcp_images.SENTINEL + images,
+        }
+        if name is not None:
+            msg["name"] = name
+        return ChatCompletionRequest(model = "default", messages = [msg])
+
+    def test_only_a_promotable_envelope_counts_as_a_replayed_image(self):
+        """Promotion preserves a named non-MCP result as plain text, so reading its
+        suffix as images refuses a countable prompt and buys a catalog fetch that
+        nothing needs."""
+        from routes.inference import _request_has_promotable_mcp_images
+
+        assert _request_has_promotable_mcp_images(self._req("mcp__fs__read_media_file"))
+        assert not _request_has_promotable_mcp_images(self._req("bash"))
+        # No name is not evidence against it: older stored turns carry none.
+        assert _request_has_promotable_mcp_images(self._req(None))
+
+    def test_the_count_guard_runs_before_the_mlx_dispatch(self):
+        """_mlx_count_chat_tokens returns its own count, so a guard placed after it
+        never sees a resident MLX vision model."""
+        import inspect
+
+        import routes.inference as inference_route
+
+        body = inspect.getsource(inference_route.chat_count_tokens)
+        guard = body.index("_resident_model_reads_images()")
+        dispatch = body.index("_mlx_count_chat_tokens(")
+        assert guard < dispatch, "the replay guard has to run before MLX answers"
+
+    def test_the_capability_probe_asks_both_backends(self):
+        import inspect
+
+        import routes.inference as inference_route
+
+        probe = inspect.getsource(inference_route._resident_model_reads_images)
+        assert "get_llama_cpp_backend()" in probe
+        assert "get_inference_backend" in probe
+        assert 'entry.get("is_vision")' in probe
+
+
+def test_a_text_only_qwen_model_is_never_sent_an_mcp_picture():
+    """qwen reports supports_vision for the family and names no model, and every one
+    of its four registry defaults is a text model -- the DashScope vision line is
+    qwen-vl-*. Appending an image there fails the run upstream rather than degrading."""
+    from core.inference.providers import get_provider_info
+    from routes.inference import _external_takes_mcp_images
+
+    info = get_provider_info("qwen") or {}
+    vision = info.get("supports_vision", False)
+    assert vision is True, "the premise is that the family flag is permissive"
+    assert not (info.get("model_capabilities") or {}), "and that it names no model"
+
+    for model in info.get("default_models") or []:
+        assert _external_takes_mcp_images("qwen", vision, model, info) is False, model
+
+
+def test_kimi_stays_permissive_because_its_allowlist_already_narrowed_it():
+    """The opposite case, so the conservative set does not grow by reflex: kimi's
+    model_id_allowlist admits only the multimodal pair its own entry documents."""
+    from core.inference.providers import get_provider_info
+    from routes.inference import _external_takes_mcp_images
+
+    info = get_provider_info("kimi") or {}
+    vision = info.get("supports_vision", False)
+
+    for model in info.get("default_models") or []:
+        assert _external_takes_mcp_images("kimi", vision, model, info) is True, model
+
+
+def test_admission_prices_replay_against_what_generation_really_sends():
+    """The GGUF paths keep the full replay allowance BESIDE the caller's own picture
+    (only a provider reserves the caller's room), so this request sends nine and is
+    charged nine. Subtracting the attachment admitted a second such request into KV
+    the first had already taken; charging a second full allowance on top of it would
+    over-reserve instead, so the replay is still capped at MAX_TOTAL_MODEL_IMAGES."""
+    import json as _json
+
+    from core.inference import mcp_images
+    from routes.inference import _openai_llama_admission_messages_for_estimate
+
+    _PNG = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR42mNk"
+        "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+    envelope = _json.dumps([{"data": _PNG, "mimeType": "image/png"} for _ in range(4)])
+    history = []
+    for index in range(2):
+        history.append(
+            {
+                "role": "tool",
+                "name": f"mcp__s__shot{index}",
+                "content": "[4 images returned]\n" + mcp_images.SENTINEL + envelope,
+            }
+        )
+    history.append(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "and this one"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_PNG}"}},
+            ],
+        }
+    )
+
+    _, image_parts = _openai_llama_admission_messages_for_estimate(history)
+
+    assert image_parts == mcp_images.MAX_TOTAL_MODEL_IMAGES + 1, (
+        f"reserved {image_parts} image embeddings for a request that sends "
+        f"{mcp_images.MAX_TOTAL_MODEL_IMAGES + 1}"
+    )

@@ -3,6 +3,7 @@
 
 """Unsloth training backend: integrates Unsloth training with the FastAPI backend."""
 
+from utils.account_context import account_thread
 import gc
 import os
 import sys
@@ -35,8 +36,13 @@ from utils.hardware import (
 )
 
 # recompile_limit was removed in some ROCm torch builds; guard for older wheels.
-if hasattr(torch._dynamo.config, "recompile_limit"):
-    torch._dynamo.config.recompile_limit = 64
+# getattr, not `torch._dynamo.config` directly: _dynamo is a LAZY torch submodule, so the bare
+# attribute triggers its import and returns a half-built module if one is already in flight
+# elsewhere in the process, raising at module-import time on a path with no handler. The two
+# inference call sites already read it this way; this one is the last that did not.
+_dynamo_config = getattr(getattr(torch, "_dynamo", None), "config", None)
+if _dynamo_config is not None and hasattr(_dynamo_config, "recompile_limit"):
+    _dynamo_config.recompile_limit = 64
 
 
 # Drop any unsloth/unsloth_zoo namespace-package shadow before importing them.
@@ -51,7 +57,7 @@ import math
 from loggers import get_logger
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable, Union
 from datasets import Dataset
 from core.training.eval_dataset import evaluation_enabled
 from utils.datasets.audio_decode import ensure_audio_decoding
@@ -67,6 +73,7 @@ from utils.third_party_source import (
 
 from utils.models import is_vision_model, detect_audio_type_checked
 from utils.models.model_identity import restore_hf_cache_repo_identity
+from utils.models.unsloth_mirror import unsloth_public_mirror
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
 from utils.datasets.completion_masking import apply_completion_masking
@@ -81,8 +88,10 @@ from utils.paths import (
 )
 from trl import SFTTrainer, SFTConfig
 
+from .resume import session_eta_seconds
 from .training import (
     TrainingProgress,
+    apply_save_strategy,
     create_mlx_trainer_adapter,
     should_use_mlx_training_backend,
 )
@@ -162,6 +171,50 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
             trainer.remove_callback(callback_cls)
         except Exception:  # noqa: BLE001 - not attached, or an incompatible trainer
             pass
+
+
+# Audio types whose load_model branch hardcodes load_in_4bit=False into from_pretrained, so a
+# 4-bit request never reaches the loader and the base is always 16-bit (float32 for bicodec).
+_FORCED_16BIT_AUDIO_TYPES = frozenset({"csm", "whisper", "bicodec", "dac"})
+
+
+def _bitsandbytes_allows_4bit() -> bool:
+    """``loader.ALLOW_BITSANDBYTES``: False when bitsandbytes is absent or its native kernels
+    are unusable, which is the normal state on Studio's Mac, Intel and CPU installs and on
+    some AMD stacks. from_pretrained clears load_in_4bit on that path BEFORE it calls
+    get_model_name (unsloth/models/loader.py, the `if not ALLOW_BITSANDBYTES` block), so a
+    4-bit request resolves the SIXTEEN-bit mapping there. Read it rather than assume it, or
+    the metadata read names a repo the loader never fetches."""
+    try:
+        from unsloth.device_type import ALLOW_BITSANDBYTES
+        return bool(ALLOW_BITSANDBYTES)
+    except Exception:  # noqa: BLE001 -- unreadable means "cannot narrow", so keep the request
+        return True
+
+
+def _metadata_lookup_name(
+    model_name: str,
+    lookup_name: str,
+    local_files_only: bool,
+    model_revision: Optional[str],
+    load_in_4bit: bool,
+) -> str:
+    """Return the repo whose config and tokenizer the loader will read."""
+    if local_files_only or model_revision is not None or lookup_name != model_name:
+        return lookup_name
+    # MLX loads the picked name as given: unsloth_zoo/mlx/loader.py never consults the
+    # upstream-to-Unsloth mapper, so on Apple Silicon there is no mirror to read from.
+    from core.training.training import should_use_mlx_training_backend
+
+    if should_use_mlx_training_backend():
+        return lookup_name
+    mirror = unsloth_public_mirror(model_name, load_in_4bit and _bitsandbytes_allows_4bit())
+    if mirror is None:
+        return lookup_name
+    logger.info(
+        "Reading %s config and tokenizer from %s, the repo Unsloth loads", model_name, mirror
+    )
+    return mirror
 
 
 def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> dict:
@@ -255,6 +308,25 @@ def _dataset_has_audio_column(dataset) -> Optional[bool]:
     return False if saw_a_usable_value else None
 
 
+# Marks an omitted mode, which keeps the loaded one; a literal default would overwrite it.
+_UNSET = object()
+
+
+def normalize_gradient_checkpointing(value) -> Union[str, bool]:
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("", "unsloth"):
+            return "unsloth"
+        if text in ("true", "1", "yes"):
+            return True
+        if text in ("false", "0", "no", "none", "off"):
+            return False
+    elif value in (True, False, "unsloth"):
+        return value
+    logger.warning(f"Invalid gradient_checkpointing value: {value}, defaulting to 'unsloth'")
+    return "unsloth"
+
+
 class UnslothTrainer:
     def __new__(cls, *args, **kwargs):
         if cls is UnslothTrainer and should_use_mlx_training_backend():
@@ -278,6 +350,7 @@ class UnslothTrainer:
         self.is_audio = False
         self.is_audio_vlm = False
         self._audio_type = None
+        self._use_gradient_checkpointing = "unsloth"
         # True until a probe says otherwise, so a path that never probes cannot trip the inconclusive-detection guard.
         self._audio_type_known = True
         self._is_dataset_audio = False
@@ -289,8 +362,11 @@ class UnslothTrainer:
         self.model_load_error = None
         self.dataset_loaded_from_exact_snapshot = False
         self.dataset_snapshot_path = None
+        # A max_steps bound keeps a uniform sample of the rows, so a pass over it is this share of a dataset pass.
+        self._kept_row_fraction = 1.0
 
         self.training_start_time: Optional[float] = None
+        self.session_start_step: int = 0
         self.batch_size: Optional[int] = None
         self.max_seq_length: Optional[int] = None
         self.gradient_accumulation_steps: Optional[int] = None
@@ -308,6 +384,7 @@ class UnslothTrainer:
         model_load_name: Optional[str] = None,
         local_files_only: bool = False,
         model_revision: Optional[str] = None,
+        load_in_4bit: bool = True,
     ) -> None:
         """Lightweight detection and tokenizer load: no model weights, no VRAM. Sets is_vlm,
         _audio_type, is_audio_vlm, model_name and loads a lightweight tokenizer for dataset
@@ -317,7 +394,13 @@ class UnslothTrainer:
         self.model_name = model_name
         self.max_seq_length = max_seq_length
         self.trust_remote_code = trust_remote_code
-        lookup_name = model_load_name or model_name
+        lookup_name = _metadata_lookup_name(
+            model_name,
+            model_load_name or model_name,
+            local_files_only,
+            model_revision,
+            load_in_4bit,
+        )
 
         if hf_token:
             os.environ["HF_TOKEN"] = hf_token
@@ -489,6 +572,9 @@ class UnslothTrainer:
             _eval_last_report = 0.0
 
             def on_train_begin(self, args, state, control, **kwargs):
+                trainer_ref.session_start_step = state.global_step
+                if state.global_step > 0:
+                    trainer_ref.training_start_time = time.time()
                 # on_log reports an empty status, else the UI stays on "Starting training...".
                 if trainer_ref.should_stop:
                     return
@@ -568,23 +654,25 @@ class UnslothTrainer:
                 if trainer_ref.training_start_time is not None:
                     elapsed_seconds = time.time() - trainer_ref.training_start_time
 
-                eta_seconds = None
-                if elapsed_seconds is not None and current_step > 0:
-                    total_steps = trainer_ref.training_progress.total_steps
-                    if total_steps > 0:
-                        steps_remaining = total_steps - current_step
-                        if steps_remaining > 0:
-                            eta_seconds = (elapsed_seconds / current_step) * steps_remaining
+                eta_seconds = session_eta_seconds(
+                    elapsed_seconds,
+                    current_step,
+                    trainer_ref.session_start_step,
+                    trainer_ref.training_progress.total_steps,
+                )
 
                 num_tokens = getattr(state, "num_input_tokens_seen", None)
 
                 trainer_ref._update_progress(
                     step = current_step,
-                    epoch = round(state.epoch, 2) if state.epoch else 0,
+                    epoch = round(state.epoch * trainer_ref._kept_row_fraction, 2)
+                    if state.epoch
+                    else 0,
                     loss = loss_value,
                     learning_rate = logs.get("learning_rate", None),
                     elapsed_seconds = elapsed_seconds,
                     eta_seconds = eta_seconds,
+                    session_start_step = trainer_ref.session_start_step,
                     grad_norm = grad_norm,
                     num_tokens = num_tokens,
                     eval_loss = logs.get("eval_loss", None),
@@ -593,7 +681,9 @@ class UnslothTrainer:
                 )
 
             def on_epoch_end(self, args, state, control, **kwargs):
-                trainer_ref._update_progress(epoch = state.epoch, step = state.global_step)
+                trainer_ref._update_progress(
+                    epoch = state.epoch * trainer_ref._kept_row_fraction, step = state.global_step
+                )
 
             def on_step_end(self, args, state, control, **kwargs):
                 if trainer_ref.should_stop:
@@ -660,10 +750,7 @@ class UnslothTrainer:
         else:
             config["num_train_epochs"] = training_args.get("num_epochs", 3)
 
-        save_steps_val = training_args.get("save_steps", 0)
-        if save_steps_val and save_steps_val > 0:
-            config["save_steps"] = save_steps_val
-            config["save_strategy"] = "steps"
+        apply_save_strategy(config, training_args.get("save_steps", 0))
 
         if extra_args:
             config.update(extra_args)
@@ -772,6 +859,14 @@ class UnslothTrainer:
         elif "speaker_id" in cols:
             speaker_col = "speaker_id"
 
+        if audio_col is None or text_col is None or speaker_col is None:
+            from hub.utils.dataset_format import detect_multimodal_dataset
+
+            detected = detect_multimodal_dataset(dataset)
+            audio_col = audio_col or detected["detected_audio_column"]
+            text_col = text_col or detected["detected_text_column"]
+            speaker_col = speaker_col or detected["detected_speaker_column"]
+
         return {
             "audio_col": audio_col,
             "text_col": text_col,
@@ -793,11 +888,19 @@ class UnslothTrainer:
         local_files_only: bool = False,
         actual_model_repo_id: Optional[str] = None,
         model_revision: Optional[str] = None,
+        use_gradient_checkpointing: Union[str, bool] = "unsloth",
+        on_model_resolved: Optional[Callable[[str], None]] = None,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
         self.load_in_4bit = load_in_4bit
         self.trust_remote_code = trust_remote_code
+        # The loader installs the checkpointing implementation; a full finetune never reinstalls it.
+        use_gradient_checkpointing = normalize_gradient_checkpointing(use_gradient_checkpointing)
+        self._use_gradient_checkpointing = use_gradient_checkpointing
         lookup_name = model_load_name or model_name
+        metadata_name = _metadata_lookup_name(
+            model_name, lookup_name, local_files_only, model_revision, load_in_4bit
+        )
         self.model_load_error = None
         try:
             if self.model is not None:
@@ -833,7 +936,7 @@ class UnslothTrainer:
             # Checked: this reassigns _audio_type, so an unchecked answer would leave the flag describing the previous
             # probe.
             self._audio_type, self._audio_type_known = detect_audio_type_checked(
-                lookup_name,
+                metadata_name,
                 hf_token,
                 local_files_only = local_files_only,
                 revision = model_revision,
@@ -852,7 +955,7 @@ class UnslothTrainer:
 
             vision = (
                 is_vision_model(
-                    lookup_name,
+                    metadata_name,
                     hf_token = hf_token,
                     local_files_only = local_files_only,
                     revision = model_revision,
@@ -890,7 +993,7 @@ class UnslothTrainer:
             if hf_token:
                 os.environ["HF_TOKEN"] = hf_token
 
-            # Proactive gated/private check before from_pretrained; skipped offline (uses cache).
+            # Gate-check the repo Unsloth will fetch, which may be a public mirror of it.
             if "/" in model_name and not local_files_only and not _env_offline():
                 try:
                     from huggingface_hub import model_info as hf_model_info
@@ -898,7 +1001,7 @@ class UnslothTrainer:
                     model_info_kwargs = {"token": hf_token or None}
                     if model_revision:
                         model_info_kwargs["revision"] = model_revision
-                    info = hf_model_info(model_name, **model_info_kwargs)
+                    info = hf_model_info(metadata_name, **model_info_kwargs)
                     # model_info works on gated repos (metadata is public); info.gated flags acceptance.
                     if info.gated and not hf_token:
                         friendly = (
@@ -916,7 +1019,9 @@ class UnslothTrainer:
                         RepositoryNotFoundError,
                     )
                     if isinstance(gate_err, (GatedRepoError, RepositoryNotFoundError)):
-                        friendly = (
+                        from hub.utils.hf_errors import modelscope_missing
+
+                        friendly = modelscope_missing(gate_err) or (
                             f"Access denied for '{model_name}'. This model is gated or private. "
                             f"Please add a Hugging Face token with access and try again."
                         )
@@ -936,6 +1041,13 @@ class UnslothTrainer:
             )
             _auto_dtype = torch.float16 if (_is_rocm and not is_bfloat16_supported()) else None
 
+            # The four branches below pass load_in_4bit=False to from_pretrained whatever was
+            # requested (Spark-TTS goes further and needs float32), so the base really is 16-bit.
+            # _patch_adapter_config saves self.load_in_4bit and Chat reloads the base at exactly
+            # that precision, so record what loaded, not what was asked for.
+            if self._audio_type in _FORCED_16BIT_AUDIO_TYPES:
+                self.load_in_4bit = False
+
             if self._audio_type == "csm":
                 # Whisper: FastModel, auto_model=WhisperForConditionalGeneration, load_in_4bit=False
                 from unsloth import FastModel
@@ -953,6 +1065,8 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 logger.info("Loaded CSM audio model")
 
@@ -973,6 +1087,8 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 self.model.generation_config.language = "<|en|>"
                 self.model.generation_config.task = "transcribe"
@@ -993,6 +1109,8 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 logger.info(f"Loaded {self._audio_type} audio model (FastLanguageModel)")
 
@@ -1013,6 +1131,8 @@ class UnslothTrainer:
                 if local_files_only:
                     repo_path = lookup_name
                 else:
+                    if on_model_resolved is not None:
+                        on_model_resolved(hf_repo)
                     repo_path = snapshot_download(
                         hf_repo,
                         revision = model_revision,
@@ -1030,6 +1150,8 @@ class UnslothTrainer:
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 logger.info("Loaded Spark-TTS (bicodec) model")
 
@@ -1045,6 +1167,8 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 logger.info("Loaded OuteTTS (dac) model (FastModel)")
 
@@ -1061,6 +1185,8 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 logger.info("Loaded audio VLM model (FastModel)")
 
@@ -1076,6 +1202,8 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 logger.info("Loaded vision model")
 
@@ -1103,6 +1231,8 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 logger.info("Loaded text model")
 
@@ -1122,7 +1252,9 @@ class UnslothTrainer:
                 return False
 
             if full_finetuning:
-                self.model.for_training()
+                self.model.for_training(
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                )
 
             self._update_progress(status_message = "Model loaded successfully")
             logger.info("Model loaded successfully")
@@ -1151,6 +1283,8 @@ class UnslothTrainer:
                     local_files_only = local_files_only,
                     actual_model_repo_id = actual_model_repo_id,
                     model_revision = model_revision,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()
@@ -1208,7 +1342,7 @@ class UnslothTrainer:
         lora_r: int = 16,
         lora_alpha: int = 16,
         lora_dropout: float = 0.0,
-        use_gradient_checkpointing: str = "unsloth",
+        use_gradient_checkpointing: Union[str, bool] = _UNSET,
         use_rslora: bool = False,
         use_loftq: bool = False,
         use_dora: bool = False,
@@ -1218,10 +1352,25 @@ class UnslothTrainer:
             if self.model is None:
                 raise ValueError("Model not loaded. Call load_model() first.")
 
+            if use_gradient_checkpointing is _UNSET:
+                use_gradient_checkpointing = self._use_gradient_checkpointing
+            else:
+                use_gradient_checkpointing = normalize_gradient_checkpointing(
+                    use_gradient_checkpointing
+                )
+
             if not use_lora:
+                if use_gradient_checkpointing != self._use_gradient_checkpointing:
+                    logger.warning(
+                        f"Gradient checkpointing {use_gradient_checkpointing} was requested after the "
+                        f"model was loaded with {self._use_gradient_checkpointing}. A full finetune "
+                        f"keeps the loaded mode, so pass it to load_model() instead."
+                    )
                 self._update_progress(status_message = "Full finetuning mode - no LoRA adapters")
                 logger.info("Full finetuning mode - training all parameters\n")
                 return True
+
+            self._use_gradient_checkpointing = use_gradient_checkpointing
 
             # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
             if isinstance(target_modules, list) and "all-linear" in target_modules:
@@ -1241,25 +1390,6 @@ class UnslothTrainer:
                     "up_proj",
                     "down_proj",
                 ]
-
-            if isinstance(use_gradient_checkpointing, str):
-                use_gradient_checkpointing = use_gradient_checkpointing.strip().lower()
-                if use_gradient_checkpointing == "" or use_gradient_checkpointing == "unsloth":
-                    use_gradient_checkpointing = "unsloth"
-                elif use_gradient_checkpointing in ("true", "1", "yes"):
-                    use_gradient_checkpointing = True
-                elif use_gradient_checkpointing in ("false", "0", "no", "none", "off"):
-                    use_gradient_checkpointing = False
-                else:
-                    logger.warning(
-                        f"Invalid gradient_checkpointing value: {use_gradient_checkpointing}, defaulting to 'unsloth'"
-                    )
-                    use_gradient_checkpointing = "unsloth"
-            elif use_gradient_checkpointing not in (True, False, "unsloth"):
-                logger.warning(
-                    f"Invalid gradient_checkpointing type/value: {use_gradient_checkpointing}, defaulting to 'unsloth'"
-                )
-                use_gradient_checkpointing = "unsloth"
 
             if self.model is None:
                 error_msg = "Model is None - model was not loaded properly"
@@ -2319,7 +2449,6 @@ class UnslothTrainer:
         return result_dataset
 
     def _preprocess_audio_eval_split(self, eval_dataset, preprocess, custom_format_mapping):
-        """Preprocess eval data, warning and dropping it on failure."""
         if eval_dataset is None:
             return None
         if self.should_stop:
@@ -2360,7 +2489,6 @@ class UnslothTrainer:
         return formatted
 
     def _audio_eval_config(self, training_args):
-        """Build audio evaluation arguments and return the eval dataset."""
         eval_dataset = training_args.get("eval_dataset", None)
         eval_steps = training_args.get("eval_steps", 0.00)
         if eval_dataset is None:
@@ -2593,6 +2721,7 @@ class UnslothTrainer:
         try:
             self.dataset_loaded_from_exact_snapshot = False
             self.dataset_snapshot_path = None
+            self._kept_row_fraction = 1.0
             dataset = None
             eval_dataset = None
             dataset_attestation_source = None
@@ -3015,6 +3144,7 @@ class UnslothTrainer:
             ):
 
                 def _log_bound(kept, total):
+                    self._kept_row_fraction = kept / total
                     logger.info(
                         f"Bounded dataset to {kept} of {total} rows for a "
                         f"max_steps run (seed {max_train_rows_seed})\n"
@@ -3191,6 +3321,9 @@ class UnslothTrainer:
                 self._update_progress(error = error_msg)
                 return None
 
+            if dataset_info.get("dropped_rows_warning"):
+                self._record_warning(dataset_info["dropped_rows_warning"])
+
             detected = dataset_info.get("detected_format", "unknown")
             final_ds = dataset_info.get("dataset")
             final_n = len(final_ds) if hasattr(final_ds, "__len__") else "?"
@@ -3213,6 +3346,14 @@ class UnslothTrainer:
                     dataset_name = dataset_source,
                     custom_format_mapping = custom_format_mapping,
                 )
+                if not eval_info.get("success", True):
+                    eval_errors = eval_info.get("errors", [])
+                    error_msg = "; ".join(eval_errors) or "Eval dataset formatting failed"
+                    logger.error(f"Eval dataset conversion failed: {error_msg}")
+                    self._update_progress(error = error_msg)
+                    return None
+                if eval_info.get("dropped_rows_warning"):
+                    self._record_warning(f"Eval dataset: {eval_info['dropped_rows_warning']}")
                 eval_dataset = eval_info["dataset"]
                 logger.info("Eval dataset formatted successfully\n")
             elif eval_enabled and not has_separate_eval_source and not dataset_streaming:
@@ -3379,7 +3520,7 @@ class UnslothTrainer:
                 Seq2SeqTrainingArguments as _Seq2SeqTrainingArguments,
             )
 
-        self.training_thread = threading.Thread(
+        self.training_thread = account_thread(
             target = self._train_worker,
             args = (dataset,),
             kwargs = {
@@ -3896,7 +4037,10 @@ class UnslothTrainer:
                     from backend.data_utils import DeepSeekOCRDataCollator
 
                     logger.info("Configuring DeepSeek OCR data collator...\n")
-                    FastVisionModel.for_training(self.model)
+                    FastVisionModel.for_training(
+                        self.model,
+                        use_gradient_checkpointing = self._use_gradient_checkpointing,
+                    )
                     # (image_size, base_size, crop_mode) is a coupled preset: changing image_size alone desyncs the
                     # per-crop grid from num_queries.
                     if training_args.get("vision_image_size") is not None:
@@ -3923,6 +4067,13 @@ class UnslothTrainer:
             elif self.is_audio_vlm and not raw_text_mode:
                 # Audio VLM collator (e.g. Gemma 3N), mirrors the Gemma3N_(4B)-Audio notebook.
                 logger.info("Configuring audio VLM data collator...\n")
+                from unsloth import FastModel
+
+                # The module flags decide whether a layer checkpoints, as in the image VLM branch.
+                FastModel.for_training(
+                    self.model,
+                    use_gradient_checkpointing = self._use_gradient_checkpointing,
+                )
                 processor = self.tokenizer
 
                 audio_col_name = getattr(self, "_audio_vlm_audio_col", "audio")
@@ -3962,7 +4113,10 @@ class UnslothTrainer:
                 logger.info("Using UnslothVisionDataCollator for vision model\n")
                 from unsloth.trainer import UnslothVisionDataCollator
 
-                FastVisionModel.for_training(self.model)
+                FastVisionModel.for_training(
+                    self.model,
+                    use_gradient_checkpointing = self._use_gradient_checkpointing,
+                )
                 vision_image_size = training_args.get("vision_image_size")
                 if vision_image_size is None:
                     data_collator = UnslothVisionDataCollator(self.model, self.tokenizer)
@@ -4006,6 +4160,8 @@ class UnslothTrainer:
                     serial_as_none = False,
                 ),
                 "max_seq_length": training_args.get("max_seq_length", 2048),
+                # TRL defaults this on, and train() re-enables checkpointing from it.
+                "gradient_checkpointing": bool(self._use_gradient_checkpointing),
             }
             if training_args.get("enable_tensorboard", False):
                 config_args["logging_dir"] = str(
@@ -4031,10 +4187,7 @@ class UnslothTrainer:
                 config_args["warmup_steps"] = 5
                 logger.info("Using default warmup_steps: 5\n")
 
-            save_steps_val = training_args.get("save_steps", 0)
-            if save_steps_val and save_steps_val > 0:
-                config_args["save_steps"] = save_steps_val
-                config_args["save_strategy"] = "steps"
+            apply_save_strategy(config_args, training_args.get("save_steps", 0))
 
             max_steps_val = training_args.get("max_steps", 0)
             if max_steps_val and max_steps_val > 0:
@@ -4089,8 +4242,6 @@ class UnslothTrainer:
                     {
                         "optim": optim_value,
                         "lr_scheduler_type": lr_scheduler_type_value,
-                        "gradient_checkpointing": True,
-                        "gradient_checkpointing_kwargs": {"use_reentrant": False},
                         "max_grad_norm": 0.3,
                         "remove_unused_columns": False,
                         "dataset_text_field": "",
@@ -4098,6 +4249,8 @@ class UnslothTrainer:
                         "max_length": training_args.get("max_seq_length", 2048),
                     }
                 )
+                if config_args["gradient_checkpointing"]:
+                    config_args["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
             else:
                 is_cpt = training_args.get("is_cpt", False)
                 self.is_cpt = is_cpt
@@ -4423,8 +4576,13 @@ class UnslothTrainer:
             self.is_training = False
 
     def _patch_adapter_config(self, output_dir: str) -> None:
-        """Patch adapter_config.json with unsloth_training_method. Values: 'qlora', 'lora', 'FT',
-        'CPT', 'DPO', 'GRPO', etc. For LoRA/QLoRA, the distinction comes from load_in_4bit."""
+        """Patch adapter_config.json with unsloth_training_method and unsloth_load_in_4bit. Values:
+        'qlora', 'lora', 'FT', 'CPT', 'DPO', 'GRPO', etc. For LoRA/QLoRA, the distinction comes
+        from load_in_4bit.
+
+        Both keys describe the base the run ACTUALLY trained on, so both read the same effective
+        flag: an install where bitsandbytes cannot run 4-bit trained on a 16-bit base and is a
+        'lora', not a 'qlora' whose recorded precision happens to disagree with its own name."""
         config_path = os.path.join(output_dir, "adapter_config.json")
         if not os.path.exists(config_path):
             logger.info("No adapter_config.json found — skipping training method patch")
@@ -4434,14 +4592,17 @@ class UnslothTrainer:
             with open(config_path, "r", encoding = "utf-8") as f:
                 config = json.load(f)
 
+            trained_in_4bit = bool(self.load_in_4bit) and _bitsandbytes_allows_4bit()
+
             if self.is_cpt:
                 method = "CPT"
-            elif self.load_in_4bit:
+            elif trained_in_4bit:
                 method = "qlora"
             else:
                 method = "lora"
 
             config["unsloth_training_method"] = method
+            config["unsloth_load_in_4bit"] = trained_in_4bit
             logger.info(f"Patching adapter_config.json with unsloth_training_method='{method}'")
 
             with open(config_path, "w", encoding = "utf-8") as f:

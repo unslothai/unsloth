@@ -9,38 +9,37 @@ import { persist } from "zustand/middleware";
 export type PlusMenuItemId =
   | "chatWithFiles"
   | "mcp"
+  | "skills"
   | "savedPrompts"
   | "compareChat"
   | "exportChat"
   | "canvas"
-  | "projects"
-  | "bypassPermissions";
+  | "projects";
 
 // Canonical order used both for the pinned items at the top level and for the items that fall
 // into the "More" overflow submenu.
 export const PLUS_MENU_ORDER: PlusMenuItemId[] = [
   "chatWithFiles",
   "mcp",
+  "skills",
   "savedPrompts",
   "compareChat",
   "exportChat",
   "canvas",
   "projects",
-  "bypassPermissions",
 ];
 
-// Defaults reproduce the historical layout: Chat with Files, MCP and Projects pinned to the top
-// level; everything else under "More".
+// Chat with files, MCP and Skills sit at the top level; everything else lives under "More".
+// Projects is a workspace the user opts into, not a per-message attachment.
 const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
   chatWithFiles: true,
   mcp: true,
-  projects: true,
+  skills: true,
+  projects: false,
   savedPrompts: false,
   compareChat: false,
   exportChat: false,
   canvas: false,
-  // Lives under "More" by default; it is a rarely toggled, dangerous mode.
-  bypassPermissions: false,
 };
 
 export const PLUS_MENU_PINS_STORAGE_KEY = "unsloth_plus_menu_pins";
@@ -74,7 +73,8 @@ export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
     {
       name: PLUS_MENU_PINS_STORAGE_KEY,
       // Backfill any ids added in a later release so persisted state from an older version still
-      // resolves every menu item.
+      // resolves every menu item. A retired id survives the spread but PLUS_MENU_ORDER no
+      // longer names it, so it is inert.
       merge: (persisted, current) => {
         const saved = persisted as Partial<PlusMenuPrefsState> | undefined;
         return {

@@ -22,6 +22,16 @@ from playwright.sync_api import sync_playwright
 from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
 
 
+# `wait_for_smoke_page` proves vite ANSWERS, by fetching the raw HTML. The first navigation
+# is what makes it WORK: vite transforms the page's whole module graph on demand, and the
+# default `wait_until = "load"` waits out every one of those requests. On a cold Windows
+# runner that first goto ran past playwright's 30s default and took the job down with
+# `Page.goto: Timeout 30000ms exceeded`, twice, while the node tests either side of it
+# reported `# fail 0`. Every other driver in this directory that navigates a vite dev page
+# already carries an explicit budget; this one and playwright_queue_localization.py were
+# the two that did not.
+NAV_TIMEOUT_MS = 90_000
+
 MEASURE = """() => [...document.querySelectorAll('button[data-case]')].map(button => {
     const svg = button.querySelector('svg');
     const buttonBox = button.getBoundingClientRect();
@@ -75,7 +85,15 @@ def main() -> None:
                         context = browser.new_context(device_scale_factor = dpr)
                         try:
                             page = context.new_page()
-                            page.goto(f"http://127.0.0.1:{port}/smoke-composer-icons.html")
+                            # The wait_for below is the other half of the same cold start:
+                            # domcontentloaded returns before the module graph has rendered
+                            # the buttons, so the locator inherits this budget too.
+                            page.set_default_timeout(NAV_TIMEOUT_MS)
+                            page.goto(
+                                f"http://127.0.0.1:{port}/smoke-composer-icons.html",
+                                wait_until = "domcontentloaded",
+                                timeout = NAV_TIMEOUT_MS,
+                            )
                             page.locator("button[data-case]").last.wait_for()
                             for font, zoom, dark, direction in itertools.product(
                                 (0.75, 1, 1.25), (0.8, 1, 1.25), (False, True), ("ltr", "rtl")

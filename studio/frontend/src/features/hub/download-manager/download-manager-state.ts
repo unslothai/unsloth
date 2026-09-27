@@ -31,6 +31,7 @@ import {
   downloadInventoryHintKind,
   scopedDownloadInventoryKind,
 } from "./download-manager-types";
+import { presentationForExpectedBytesUpdate } from "./download-presentation";
 import {
   clearRuntimeTimer,
   pruneSuppressedCompletedInventoryHints as pruneRuntimeSuppressedHints,
@@ -54,6 +55,35 @@ function finiteNumber(value: unknown, fallback: number): number {
 
 function nonNegativeNumber(value: unknown, fallback = 0): number {
   return Math.max(0, finiteNumber(value, fallback));
+}
+
+function presentationOfPersisted(value: Record<string, unknown>) {
+  if (!isRecord(value.presentation)) return {};
+  const { label, filename, expectedBytes, cachedPlanPrefixBytes } =
+    value.presentation;
+  if (
+    typeof label !== "string" ||
+    !label.trim() ||
+    typeof filename !== "string" ||
+    !filename.trim() ||
+    typeof expectedBytes !== "number" ||
+    !Number.isFinite(expectedBytes) ||
+    expectedBytes <= 0
+  ) {
+    return {};
+  }
+  return {
+    presentation: {
+      label: label.trim(),
+      filename: filename.trim(),
+      expectedBytes,
+      ...(typeof cachedPlanPrefixBytes === "number" &&
+      Number.isFinite(cachedPlanPrefixBytes) &&
+      cachedPlanPrefixBytes >= 0
+        ? { cachedPlanPrefixBytes }
+        : {}),
+    },
+  };
 }
 
 /**
@@ -105,6 +135,7 @@ function sanitizePersistedJob(
     completedBytes: nonNegativeNumber(value.completedBytes),
     completeOnDisk: false,
     expectedBytes: nonNegativeNumber(value.expectedBytes),
+    ...presentationOfPersisted(value),
     fraction: Math.min(Math.max(finiteNumber(value.fraction, 0), 0), 1),
     bytesPerSec: 0,
     etaSeconds: 0,
@@ -167,6 +198,9 @@ function toPersistedJob(
     downloadedBytes: job.downloadedBytes,
     completedBytes: job.completedBytes,
     expectedBytes: job.expectedBytes,
+    ...(job.presentation !== undefined
+      ? { presentation: job.presentation }
+      : {}),
     fraction: job.fraction,
     error: job.error,
     startedAt: job.startedAt,
@@ -371,6 +405,32 @@ export function findActiveJobForRepo(
   const repoIdentity = normalizeRepoIdentity(repoId);
   for (const job of Object.values(jobs)) {
     if (job.kind !== kind || normalizeRepoIdentity(job.repoId) !== repoIdentity)
+      continue;
+    if (!ACTIVE_STATES.has(job.state)) continue;
+    if (isPreferredRepoActiveJob(job, selected)) {
+      selected = job;
+    }
+  }
+  return selected;
+}
+
+export function findActiveScopedJobForRepo(
+  jobs: Record<string, ManagedDownload>,
+  kind: DownloadKind,
+  repoId: string,
+  inventoryKind?: "model" | "gguf",
+): ManagedDownload | null {
+  let selected: ManagedDownload | null = null;
+  const repoIdentity = normalizeRepoIdentity(repoId);
+  for (const job of Object.values(jobs)) {
+    if (job.kind !== kind || normalizeRepoIdentity(job.repoId) !== repoIdentity)
+      continue;
+    if (!job.variant?.startsWith("@")) continue;
+    if (
+      inventoryKind &&
+      downloadInventoryHintKind(job.kind, job.variant, job.inventoryKind) !==
+        inventoryKind
+    )
       continue;
     if (!ACTIVE_STATES.has(job.state)) continue;
     if (isPreferredRepoActiveJob(job, selected)) {
@@ -657,6 +717,11 @@ export function setExpectedBytesForJob(
   if (!job || job.state !== "running" || bytes <= job.expectedBytes) return;
   patchJob(job.key, {
     expectedBytes: bytes,
+    presentation: presentationForExpectedBytesUpdate(
+      job.presentation,
+      job.expectedBytes,
+      bytes,
+    ),
     // Measured against the old, smaller total, so wrong the moment the total grows.
     etaSeconds: 0,
     fraction:

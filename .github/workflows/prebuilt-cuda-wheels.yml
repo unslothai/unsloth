@@ -1,0 +1,816 @@
+# Prebuilt CUDA 13 wheels for flash-attn, causal-conv1d and mamba-ssm, for the torch minors
+# nobody else builds them for.
+#
+# Upstream publishes prebuilt wheels against torch 2.10 and 2.11. Those load on 2.12 -- measured,
+# see the comment on _PREBUILT_WHEEL_TORCH_MM in studio/backend/utils/wheel_utils.py -- and stop
+# loading at 2.13, because 2.13 changed c10::impl::cow::materialize_cow_storage and the signature
+# of c10::cuda::c10_cuda_check_implementation. 2.14 changed it again. An upstream wheel on either
+# is an `ImportError: undefined symbol` at import time, and the fallback is a source build: about
+# five hours of nvcc for flash-attn, on a machine that has to have the CUDA toolkit installed.
+# So every torch minor from 2.13 on needs its own wheel set, and this is where they come from.
+#
+# Dispatch only, once per torch minor, and `publish: false` is the default: a run then builds,
+# smoke tests and signs, and leaves everything as artifacts to inspect. Nothing here is reachable
+# from a pull request, because the publish job writes a release under our name.
+#
+# What is signed and how, in the same shape release-desktop.yml and woa-wheelhouse.yml sign their
+# binaries: a `release-signing` environment so the job is gateable, and no key material we own.
+# For a Python wheel the mechanism is Sigstore rather than Authenticode -- a .whl is a zip and has
+# no Authenticode subject interface package, and unlike the win_arm64 wheelhouse there are no PE
+# images inside these to sign individually. Sigstore signs with an ephemeral, GitHub-OIDC-issued
+# certificate, so what a consumer verifies is "this workflow, in this repository, produced this
+# file", which is the claim worth making and needs no long-lived private key to make it.
+name: Prebuilt CUDA wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      torch_versions:
+        description: 'torch versions to build for, comma separated (2.13.0, 2.14.0)'
+        type: string
+        default: '2.13.0,2.14.0'
+      python_versions:
+        description: 'interpreters, comma separated (3.11, 3.12, 3.13). Each one is a full extra build'
+        type: string
+        default: '3.13'
+      packages:
+        description: 'packages, comma separated (flash-attn, causal-conv1d, mamba-ssm)'
+        type: string
+        default: 'flash-attn,causal-conv1d,mamba-ssm'
+      release_tag:
+        description: 'release tag to publish under'
+        type: string
+        default: 'prebuilt-wheels-cu13'
+      publish:
+        description: 'upload to the release (otherwise artifacts only)'
+        type: boolean
+        default: false
+      draft:
+        description: 'keep the release a draft (unpublished, visible to maintainers only)'
+        type: boolean
+        default: true
+      gpu_smoke:
+        description: 'also run a real forward pass on the self-hosted GPU runner (slow, optional)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Per repository, not per ref. Two runs would fight over the same release tag and the same
+  # self-hosted GPU runner, and a wheel build is too expensive to cancel a running one for a
+  # newer dispatch, so they queue instead.
+  group: prebuilt-cuda-wheels-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan the matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
+      warm_matrix: ${{ steps.plan.outputs.warm_matrix }}
+      warm_count: ${{ steps.plan.outputs.warm_count }}
+    steps:
+      - name: Harden runner (egress block)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: block
+          disable-sudo: true
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      # Every dispatch input that later reaches a shell command -- the source repository, the
+      # git ref, the build environment -- is resolved here against the allowlist in
+      # prebuilt_wheels.py, and the raw text is never used again. The workflow is gated, but an
+      # input that becomes `git checkout $REF` is a command injection either way.
+      - name: Expand the dispatch inputs into a matrix
+        id: plan
+        env:
+          UW_PACKAGES: ${{ inputs.packages }}
+          UW_TORCH_VERSIONS: ${{ inputs.torch_versions }}
+          UW_PYTHON_VERSIONS: ${{ inputs.python_versions }}
+        run: |
+          set -euo pipefail
+          # --github writes matrix= and count= into $GITHUB_OUTPUT itself. The JSON is full of
+          # quotes and braces and there is no reason to send it through a shell round trip.
+          python3 .github/scripts/prebuilt_wheels.py matrix --github
+
+  warm:
+    name: warm ${{ matrix.label }}
+    needs: plan
+    if: needs.plan.outputs.warm_count != '0'
+    runs-on: ubuntu-22.04
+    # Best effort: the build job compiles whatever a warm job did not.
+    continue-on-error: true
+    timeout-minutes: 340
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix: ${{ fromJSON(needs.plan.outputs.warm_matrix) }}
+    env:
+      # Not a hidden directory: upload-artifact skips those by default.
+      CCACHE_DIR: ${{ github.workspace }}/ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: 'true'
+      CCACHE_MAXSIZE: 20G
+      # torch reads this for the nvcc in build.ninja.
+      PYTORCH_NVCC: ccache /usr/local/cuda-13.0/bin/nvcc
+    steps:
+      - name: Harden runner (audit)
+        # Audit egress because package downloads use changing endpoints.
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout Unsloth (build scripts only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: unsloth
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout ${{ matrix.repo }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          path: src
+          submodules: ${{ matrix.submodules }}
+          persist-credentials: false
+
+      # The CUDA toolkit is ~4 GB installed and the flash-attn build tree is another few, against
+      # ~25 GB free on a fresh runner. These three directories are ~13 GB of preinstalled
+      # toolchains this job never touches.
+      - name: Free up disk space
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android || true
+          df -h /
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      # From NVIDIA's apt repository rather than a third-party setup action: this job installs a
+      # compiler that then produces binaries we sign and publish, so the fewer parties between
+      # NVIDIA and nvcc the better. Bounded and retried through the same helper the rest of the
+      # repository uses, because an unbounded apt step does not fail, it spends the job's whole
+      # budget and is reported as "cancelled" with every later step skipped.
+      - name: Install the CUDA ${{ matrix.cuda_tag }} toolkit
+        timeout-minutes: 25
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '600'
+        run: |
+          set -euo pipefail
+          keyring=cuda-keyring_1.1-1_all.deb
+          curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
+            -o "$keyring" \
+            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/$keyring"
+          sudo dpkg -i "$keyring"
+          bash unsloth/.github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends cuda-toolkit-13-0'
+          echo "/usr/local/cuda-13.0/bin" >> "$GITHUB_PATH"
+          echo "CUDA_HOME=/usr/local/cuda-13.0" >> "$GITHUB_ENV"
+
+      # Cache hits require matching compiler commands and checkout paths in both jobs.
+      - name: Install ccache
+        timeout-minutes: 13
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '300'
+        run: |
+          set -euo pipefail
+          bash unsloth/.github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends ccache'
+          ccache --version | head -1
+          mkdir -p "$CCACHE_DIR"
+
+      # 10 GB of swap. nvcc's peak RSS on the sm_100 flash-attn kernels is the reason MAX_JOBS is
+      # 1; swap is what keeps a single job that briefly exceeds the runner's 16 GB from being
+      # OOM-killed four hours in.
+      - name: Set up swap space
+        run: |
+          set -euo pipefail
+          sudo fallocate -l 10G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
+      - name: Install torch ${{ matrix.torch }}+cu130
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install 'setuptools>=77' wheel ninja packaging
+          python -m pip install --no-cache-dir "torch==${{ matrix.torch }}" \
+            --index-url https://download.pytorch.org/whl/cu130
+          nvcc --version
+          python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cxx11abi', torch._C._GLIBCXX_USE_CXX11_ABI)"
+          python - <<'PY'
+          import os, sys, torch
+          want_torch = os.environ["MATRIX_TORCH"]
+          if torch.__version__.split("+")[0] != want_torch:
+              sys.exit(f"installed torch {torch.__version__}, wanted {want_torch}")
+          if not torch.version.cuda.startswith("13."):
+              sys.exit(f"torch reports CUDA {torch.version.cuda}, wanted 13.x")
+          # Verify the ABI matches the wheel's cxx11abiTRUE tag.
+          if not torch._C._GLIBCXX_USE_CXX11_ABI:
+              sys.exit("torch was built with _GLIBCXX_USE_CXX11_ABI=0; the cxx11abiTRUE tag would be wrong")
+          PY
+        env:
+          MATRIX_TORCH: ${{ matrix.torch }}
+
+      # The one source edit in this workflow, and only for mamba-ssm. Its setup.py compiles the
+      # Mamba-1 selective-scan kernels at -std=c++17; torch 2.13's headers require C++20, and
+      # nvcc stops at the first std::variant it cannot parse. flash-attn already made this change
+      # upstream (Dao-AILab/flash-attention#2899), which is part of why its pin is a commit and
+      # not the last tag. The script asserts on the text it replaces, so an upstream fix fails
+      # this step loudly rather than silently building something else.
+      - name: Patch mamba-ssm for the torch 2.13 C++20 requirement
+        if: matrix.patch == 'cxx20'
+        run: python3 unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
+
+      - name: Restore this slice's ccache from earlier runs
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ccache
+          key: prebuilt-ccache-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}
+          restore-keys: |
+            prebuilt-ccache-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-
+
+      - name: Compile slice ${{ matrix.shard }} of ${{ matrix.shards }}
+        working-directory: src
+        env:
+          MAX_JOBS: ${{ matrix.max_jobs }}
+          NVCC_THREADS: ${{ matrix.nvcc_threads }}
+          BUILD_ENV: ${{ matrix.build_env }}
+          BUILD_TIMEOUT: ${{ matrix.build_timeout }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ matrix.shards }}
+        run: |
+          set -euo pipefail
+          for pair in $BUILD_ENV; do
+            export "${pair?}"
+            echo "export $pair"
+          done
+          ccache -z
+          timeout --signal=INT --kill-after=120 "$BUILD_TIMEOUT" \
+            python ../unsloth/.github/scripts/prebuilt_wheels_shard.py "$SHARD" "$SHARDS"
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s
+
+      - name: Hand the slice to the build job
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ccache-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}
+          path: ccache
+          if-no-files-found: warn
+          # ccache compresses its own entries.
+          compression-level: 0
+          retention-days: 1
+          # A re-run attempt uploads under the same name, which fails without this.
+          overwrite: true
+
+      # Save partial progress after failures. Immutable caches need a key per run attempt.
+      - name: Save this slice's ccache for later runs
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ccache
+          key: prebuilt-ccache-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  build:
+    name: ${{ matrix.label }}
+    needs: [plan, warm]
+    # Run even if warm was skipped or failed; compile any cache misses here.
+    if: ${{ !cancelled() && needs.plan.outputs.count != '0' }}
+    # Keep the glibc floor at 2.35; pip does not check it for linux_x86_64 wheels.
+    runs-on: ubuntu-22.04
+    # Allow cleanup after the build step's timeout, below GitHub's 6-hour limit.
+    timeout-minutes: 340
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: 'true'
+      CCACHE_MAXSIZE: 20G
+      PYTORCH_NVCC: ccache /usr/local/cuda-13.0/bin/nvcc
+    steps:
+      # Keep setup through the mamba patch in sync with warm.
+      - name: Harden runner (audit)
+        # Audit egress because package downloads use changing endpoints.
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout Unsloth (build scripts only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: unsloth
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout ${{ matrix.repo }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          path: src
+          submodules: ${{ matrix.submodules }}
+          persist-credentials: false
+
+      - name: Free up disk space
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android || true
+          df -h /
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install the CUDA ${{ matrix.cuda_tag }} toolkit
+        timeout-minutes: 25
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '600'
+        run: |
+          set -euo pipefail
+          keyring=cuda-keyring_1.1-1_all.deb
+          curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
+            -o "$keyring" \
+            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/$keyring"
+          sudo dpkg -i "$keyring"
+          bash unsloth/.github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends cuda-toolkit-13-0'
+          echo "/usr/local/cuda-13.0/bin" >> "$GITHUB_PATH"
+          echo "CUDA_HOME=/usr/local/cuda-13.0" >> "$GITHUB_ENV"
+
+      - name: Install ccache
+        timeout-minutes: 13
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '300'
+        run: |
+          set -euo pipefail
+          bash unsloth/.github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends ccache'
+          ccache --version | head -1
+          mkdir -p "$CCACHE_DIR"
+
+      - name: Set up swap space
+        run: |
+          set -euo pipefail
+          sudo fallocate -l 10G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
+      - name: Install torch ${{ matrix.torch }}+cu130
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install 'setuptools>=77' wheel ninja packaging
+          python -m pip install --no-cache-dir "torch==${{ matrix.torch }}" \
+            --index-url https://download.pytorch.org/whl/cu130
+          nvcc --version
+          python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cxx11abi', torch._C._GLIBCXX_USE_CXX11_ABI)"
+          python - <<'PY'
+          import os, sys, torch
+          want_torch = os.environ["MATRIX_TORCH"]
+          if torch.__version__.split("+")[0] != want_torch:
+              sys.exit(f"installed torch {torch.__version__}, wanted {want_torch}")
+          if not torch.version.cuda.startswith("13."):
+              sys.exit(f"torch reports CUDA {torch.version.cuda}, wanted 13.x")
+          # Verify the ABI matches the wheel's cxx11abiTRUE tag.
+          if not torch._C._GLIBCXX_USE_CXX11_ABI:
+              sys.exit("torch was built with _GLIBCXX_USE_CXX11_ABI=0; the cxx11abiTRUE tag would be wrong")
+          PY
+        env:
+          MATRIX_TORCH: ${{ matrix.torch }}
+
+      - name: Patch mamba-ssm for the torch 2.13 C++20 requirement
+        if: matrix.patch == 'cxx20'
+        run: python3 unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
+
+      - name: Download the warm slices
+        if: matrix.shards > 0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: ccache-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}-shard*
+          path: ccache-slices
+
+      # The slices are disjoint, so copying them over one another loses nothing.
+      - name: Merge the warm slices into the ccache
+        if: matrix.shards > 0
+        run: |
+          set -euo pipefail
+          for slice in ccache-slices/*/; do
+            [ -d "$slice" ] || continue
+            echo "merging $slice ($(find "$slice" -type f | wc -l) files, $(du -sh "$slice" | cut -f1))"
+            cp -a "$slice." "$CCACHE_DIR/"
+          done
+          rm -rf ccache-slices
+          ccache -z
+
+      - name: Build the wheel
+        id: build
+        working-directory: src
+        env:
+          MAX_JOBS: ${{ matrix.max_jobs }}
+          NVCC_THREADS: ${{ matrix.nvcc_threads }}
+          BUILD_ENV: ${{ matrix.build_env }}
+          BUILD_TIMEOUT: ${{ matrix.build_timeout }}
+        run: |
+          set -euo pipefail
+          # Each entry is NAME=VALUE from the allowlisted table in prebuilt_wheels.py, so this is
+          # exporting constants, not dispatch input.
+          for pair in $BUILD_ENV; do
+            export "${pair?}"
+            echo "export $pair"
+          done
+          echo "MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS timeout=$BUILD_TIMEOUT"
+          timeout --signal=INT --kill-after=120 "$BUILD_TIMEOUT" \
+            python setup.py bdist_wheel --dist-dir=dist
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s
+
+      # Upstream's own naming, reproduced rather than approximated: the local version segment is
+      # what stops pip installing a torch 2.13 wheel into a torch 2.14 environment. Asserting the
+      # pre-rename name first is what makes it honest -- it proves the version that was BUILT is
+      # the version the published name claims, rather than renaming whatever fell out of dist/.
+      - name: Name the wheel the way upstream names it
+        working-directory: src
+        env:
+          DIST: ${{ matrix.dist }}
+          VERSION: ${{ matrix.version }}
+          PYTHON_TAG: ${{ matrix.python_tag }}
+          WHEEL_NAME: ${{ matrix.wheel_name }}
+        run: |
+          set -euo pipefail
+          built="$(ls dist/*.whl)"
+          expected_raw="dist/${DIST}-${VERSION}-${PYTHON_TAG}-${PYTHON_TAG}-linux_x86_64.whl"
+          if [ "$built" != "$expected_raw" ]; then
+            echo "::error::built $built, expected $expected_raw before renaming"
+            exit 1
+          fi
+          mv "$built" "dist/${WHEEL_NAME}"
+          ls -l dist/
+
+      # The whole reason this release exists, so it is a gate and not a report. A fresh venv with
+      # the matching torch, the wheel installed from the file, and the compiled extension
+      # imported out of process. An upstream wheel on torch 2.13 dies exactly here, with
+      # `undefined symbol: _ZN3c104impl3cow21materialize_cow_storageERNS_11StorageImplE`, and a
+      # wheel of ours that is built against the wrong torch would die the same way.
+      #
+      # No GPU on this runner, and none needed: importing a torch C++ extension resolves every
+      # symbol against libtorch and libc10 at dlopen time, which is the entire failure mode. The
+      # tiny forward pass is the gpu-smoke job below.
+      - name: Smoke test the wheel in a fresh venv
+        env:
+          WHEEL_NAME: ${{ matrix.wheel_name }}
+          IMPORT_NAMES: ${{ matrix.import_names }}
+          MATRIX_TORCH: ${{ matrix.torch }}
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/smoke"
+          "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --upgrade pip
+          "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --no-cache-dir \
+            "torch==${MATRIX_TORCH}" --index-url https://download.pytorch.org/whl/cu130
+          # The wheel is installed with --no-deps so nothing can drag a second torch into the
+          # venv; every other runtime dependency the package declares is installed first, read
+          # from the wheel's own metadata rather than from a hand-kept list. The hand-kept list
+          # broke twice: einops was missing, then huggingface_hub (mamba_ssm.modules.mamba2
+          # imports PyTorchModelHubMixin at module load). Excluded on purpose: torch itself and
+          # the two sibling packages built by this same workflow, which pip would otherwise try
+          # to compile from source because no matching wheel exists on PyPI. The constraints
+          # file pins torch and triton to what is already in the venv, so a dependency that
+          # wants a different one fails the step loudly instead of swapping torch under us.
+          "$RUNNER_TEMP/smoke/bin/python" -m pip freeze | grep -E '^(torch|triton)==' \
+            > "$RUNNER_TEMP/smoke-constraints.txt"
+          # tvm-ffi 0.1.12 with tilelang 0.1.8 breaks mamba_ssm imports (import test only).
+          echo 'apache-tvm-ffi==0.1.11' >> "$RUNNER_TEMP/smoke-constraints.txt"
+          cat "$RUNNER_TEMP/smoke-constraints.txt"
+          "$RUNNER_TEMP/smoke/bin/python" - "src/dist/${WHEEL_NAME}" "$RUNNER_TEMP/smoke-constraints.txt" <<'PY'
+          import email.parser, pathlib, re, subprocess, sys, zipfile
+          wheel = pathlib.Path(sys.argv[1])
+          with zipfile.ZipFile(wheel) as zf:
+              meta = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+              headers = email.parser.Parser().parsestr(zf.read(meta).decode())
+          excluded = {"torch", "flash-attn", "flash_attn", "causal-conv1d", "causal_conv1d", "mamba-ssm", "mamba_ssm"}
+          deps = []
+          for req in headers.get_all("Requires-Dist") or []:
+              if ";" in req:  # extras and environment markers: not runtime requirements
+                  continue
+              name = re.split(r"[\s<>=!~\[;]", req.strip(), maxsplit=1)[0].lower()
+              if name in excluded:
+                  continue
+              deps.append(req.strip())
+          deps += ["numpy"]  # torch wants numpy for its tensor conversions and only warns without it
+          print("runtime dependencies from METADATA:", deps)
+          subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "--constraint", sys.argv[2], *deps])
+          PY
+          "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --no-deps \
+            "src/dist/${WHEEL_NAME}"
+          for name in $IMPORT_NAMES; do
+            echo "importing $name"
+            "$RUNNER_TEMP/smoke/bin/python" -c "
+          import importlib, sys, torch
+          module = importlib.import_module('$name')
+          print('  ok:', '$name', getattr(module, '__version__', ''), getattr(module, '__file__', ''))
+          "
+          done
+          "$RUNNER_TEMP/smoke/bin/python" -m pip list | grep -Ei 'torch|flash|mamba|causal'
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: wheel-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}
+          path: src/dist/${{ matrix.wheel_name }}
+          if-no-files-found: error
+          # Already a compressed zip. Recompressing 500 MB of it buys nothing and costs minutes.
+          compression-level: 0
+          retention-days: 7
+
+  # Optional, off by default, and the only job that touches a GPU. The import gate above catches
+  # the ABI failure this release exists to avoid; this catches the rarer one where the wheel
+  # imports but carries no cubin the card can run. It is a separate job because the build runners
+  # have no GPU and the self-hosted one is shared with the Docker smoke tests.
+  gpu-smoke:
+    name: GPU forward pass
+    needs: [plan, build]
+    # A skipped warm (no flash-attn) would otherwise skip every job downstream of build.
+    if: ${{ !cancelled() && inputs.gpu_smoke && needs.build.result == 'success' }}
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: wheel-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}
+          path: dist
+
+      - name: Forward pass on the real card
+        env:
+          WHEEL_NAME: ${{ matrix.wheel_name }}
+          MATRIX_TORCH: ${{ matrix.torch }}
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          nvidia-smi
+          rm -rf gpu-smoke-venv
+          "python${{ matrix.python }}" -m venv gpu-smoke-venv
+          ./gpu-smoke-venv/bin/python -m pip install --quiet --upgrade pip
+          ./gpu-smoke-venv/bin/python -m pip install --quiet --no-cache-dir \
+            "torch==${MATRIX_TORCH}" --index-url https://download.pytorch.org/whl/cu130
+          ./gpu-smoke-venv/bin/python -m pip install --quiet --no-deps "dist/${WHEEL_NAME}"
+          ./gpu-smoke-venv/bin/python .github/scripts/prebuilt_wheels_forward.py "$PACKAGE"
+
+  sign:
+    name: Sign and attest
+    needs: [plan, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Named for the same reason release-desktop.yml and woa-wheelhouse.yml name it: it is what
+    # makes this job gateable. There are no secrets to scope here -- Sigstore uses an ephemeral
+    # certificate issued against the run's OIDC token, which is the point of choosing it -- but
+    # the identity that certificate binds to is ours, so approval belongs in front of it.
+    environment: release-signing
+    permissions:
+      # The OIDC token Sigstore and the attestation both exchange for a short-lived certificate.
+      id-token: write
+      # actions/attest-build-provenance writes the attestation to the repository's attestation
+      # store. It is NOT contents: write; nothing in this job can touch a release.
+      attestations: write
+      contents: read
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: wheels
+
+      # A short matrix leg would otherwise publish a set missing an interpreter or a torch minor,
+      # which reads downstream as "no wheel for you" and sends the user into a source build. The
+      # plan job already counted the cells; this asserts the same number arrived.
+      - name: Every planned wheel arrived
+        env:
+          EXPECTED: ${{ needs.plan.outputs.count }}
+        run: |
+          set -euo pipefail
+          ls -l wheels/
+          actual="$(find wheels -name '*.whl' -type f | wc -l)"
+          if [ "$actual" -ne "$EXPECTED" ]; then
+            echo "::error::expected $EXPECTED wheels, got $actual"
+            exit 1
+          fi
+          echo "$actual wheels"
+
+      - name: SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd wheels
+          sha256sum -- *.whl | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+
+      # Sigstore, with a GitHub OIDC identity: no key of ours exists to be stolen, and what a
+      # consumer verifies is the workflow ref and the issuer, not a fingerprint they have to have
+      # obtained from somewhere trustworthy first. One .sigstore.json bundle per wheel, published
+      # beside it.
+      - name: Sign every wheel with Sigstore
+        uses: sigstore/gh-action-sigstore-python@790bc6befb9d733738f18d8f895854b453640ec9  # v3.5.0
+        with:
+          inputs: ./wheels/*.whl
+          # Verified again immediately, in this job, against the identity the release notes tell
+          # consumers to check. A bundle that only verifies with different arguments than the
+          # documented ones is a bundle nobody can use.
+          verify: true
+          verify-cert-identity: https://github.com/${{ github.repository }}/.github/workflows/prebuilt-cuda-wheels.yml@${{ github.ref }}
+          verify-oidc-issuer: https://token.actions.githubusercontent.com
+          upload-signing-artifacts: false
+          # Only meaningful on a `release` event, which this is not. Set anyway so a future
+          # trigger change cannot quietly start attaching assets from here.
+          release-signing-artifacts: false
+
+      # SLSA provenance, which answers a different question than the signature does: the
+      # signature says we produced it, the provenance says which run, which commit and which
+      # workflow produced it, and `gh attestation verify` checks it with no extra tooling.
+      # subject-checksums takes the whole set in one attestation rather than one per wheel.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-checksums: wheels/SHA256SUMS
+
+      - name: What is about to be published
+        run: |
+          set -euo pipefail
+          ls -l wheels/
+          missing=0
+          for whl in wheels/*.whl; do
+            if [ ! -f "$whl.sigstore.json" ]; then
+              echo "::error::no Sigstore bundle for $(basename "$whl")"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: prebuilt-cuda-wheels-signed
+          path: |
+            wheels/*.whl
+            wheels/*.sigstore.json
+            wheels/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Publish the release
+    needs: sign
+    if: ${{ !cancelled() && inputs.publish && needs.sign.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # The only job in this workflow that can write a release, and it builds nothing.
+      contents: write
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: prebuilt-cuda-wheels-signed
+          path: wheels
+
+      # Created once and then added to. A run for torch 2.14 must not disturb the torch 2.13
+      # wheels already on the tag, so: create if absent, upload with --clobber, and regenerate
+      # the notes from what the release holds AFTERWARDS rather than from what this run built.
+      #
+      # --latest=false on both paths. This tag is a wheelhouse, not a product release, and the
+      # repository's latest release is what the installers and the README resolve to.
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+          DRAFT: ${{ inputs.draft }}
+          TITLE: 'Flash-Attention2, Causal-Conv1D, Mamba_SSM Binaries'
+        run: |
+          set -euo pipefail
+          # A draft release has no tag yet, so it is found by listing, not by tag lookup.
+          # shellcheck disable=SC2016  # $tag is a jq variable, not a shell one
+          existing="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName \
+            --jq --arg tag "$TAG" '.[] | select(.tagName == $tag) | .tagName')"
+          if [ -z "$existing" ]; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" \
+              --latest=false \
+              --draft="$DRAFT" \
+              --notes "Prebuilt CUDA 13 wheels. Release notes are regenerated from the attached assets below."
+          else
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --latest=false --draft="$DRAFT"
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            wheels/*.whl wheels/*.sigstore.json wheels/SHA256SUMS
+
+      # Regenerated from the release's OWN assets, using the digest GitHub reports per asset
+      # rather than the SHA256SUMS this run uploaded. Those agree when nothing went wrong, and
+      # when they disagree the table should describe what a user will actually download. It also
+      # makes the notes correct after a second run that only added half the matrix.
+      - name: Regenerate the release notes from the published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+          # Listed rather than looked up by tag: a draft release has no tag object yet.
+          # shellcheck disable=SC2016  # $tag is a jq variable, not a shell one
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq --arg tag "$TAG" '.[] | select(.tag_name == $tag) | .assets[] | select(.name | endswith(".whl")) | "\(.digest // "sha256:unknown" | sub("^sha256:"; ""))  \(.name)"' \
+            > published.txt
+          sort -k2 -o published.txt published.txt
+          cat published.txt
+          python3 .github/scripts/prebuilt_wheels.py notes \
+            --tag "$TAG" --repo "$GITHUB_REPOSITORY" < published.txt > notes.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md --latest=false --draft="$DRAFT"
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report the release URL
+        env:
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "Published to https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
+          } >> "$GITHUB_STEP_SUMMARY"

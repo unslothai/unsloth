@@ -399,7 +399,8 @@ def test_an_adapter_peft_would_ignore_on_reload_does_not_pass(tmp_path):
     assert failures, "the leg would have passed an adapter that reloads to the base model"
     assert "ignores them silently" in " ".join(failures)
 
-    reloaded = PeftModel.from_pretrained(_base(), str(tmp_path))
+    # Explicit: PEFT's infer_device() believes tests/_zoo_aggressive_cuda_spoof.py.
+    reloaded = PeftModel.from_pretrained(_base(), str(tmp_path), torch_device = "cpu")
     b_matrices = [p for n, p in reloaded.named_parameters() if "lora_B" in n]
     assert b_matrices and all(float(p.abs().sum()) == 0.0 for p in b_matrices), (
         "peft loaded the renamed keys after all, so this test no longer describes "

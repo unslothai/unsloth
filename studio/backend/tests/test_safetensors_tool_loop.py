@@ -10,6 +10,7 @@ calls, tool-result feedback, bad-JSON heal, duplicate-call short-circuit,
 ``__IMAGES__`` sentinel stripping, executor errors, cancel, and the iteration cap.
 """
 
+import copy
 import json
 import threading
 from typing import cast
@@ -25,6 +26,7 @@ from core.inference.safetensors_agentic import (
     strip_tool_markup_streaming,
 )
 from core.inference.tool_call_parser import (
+    BUDGET_EXHAUSTED_NUDGE,
     NUDGE_TOOL_CALLS_STATUS,
     RAG_MAX_SEARCHES_PER_TURN,
     has_tool_signal,
@@ -4087,17 +4089,67 @@ class TestGuardrails:
             '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
             for i in range(n)
         )
-        loop, exec_fn = _make_loop(
-            turns = [[turn], ["final"]],
-            exec_results = ["r"] * n,
+        seen_messages = []
+        turns = iter([turn, "final"])
+
+        def _gen(messages):
+            seen_messages.append(copy.deepcopy(messages))
+            yield next(turns)
+
+        exec_fn = FakeExecuteTool(["r"] * n)
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = exec_fn,
             max_tool_iterations = 2,
         )
-        _collect_events(loop)
+        events = _collect_events(loop)
         assert len(exec_fn.calls) == _MAX_TOOL_CALLS_PER_TURN
         # The first N distinct queries executed, in document order.
         assert [a["query"] for _name, a in exec_fn.calls] == [
             "q%d" % i for i in range(_MAX_TOOL_CALLS_PER_TURN)
         ]
+        assert len([e for e in events if e.get("type") == "tool_start"]) == _MAX_TOOL_CALLS_PER_TURN
+        (notice,) = [m for m in seen_messages[1] if "more tool call(s)" in m.get("content", "")]
+        assert notice["role"] == "user"
+        assert notice["content"].startswith("4 more tool call(s)")
+        for i in range(_MAX_TOOL_CALLS_PER_TURN, n):
+            assert '"q%d"' % i in notice["content"]
+        assert '"q%d"' % (_MAX_TOOL_CALLS_PER_TURN - 1) not in notice["content"]
+
+    def test_over_cap_on_last_turn_does_not_ask_for_retry(self):
+        from core.inference.safetensors_agentic import _MAX_TOOL_CALLS_PER_TURN
+
+        n = _MAX_TOOL_CALLS_PER_TURN + 2
+        turn = "".join(
+            '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
+            for i in range(n)
+        )
+        seen_messages = []
+        turns = iter([turn, "final"])
+
+        def _gen(messages):
+            seen_messages.append(copy.deepcopy(messages))
+            yield next(turns)
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool(["r"] * n),
+            max_tool_iterations = 1,
+        )
+        _collect_events(loop)
+        messages = seen_messages[1]
+        last = messages[-1]
+        assert last["role"] == "user"
+        assert last["content"].startswith("2 more tool call(s)")
+        assert BUDGET_EXHAUSTED_NUDGE in last["content"]
+        assert not any("Call them again" in m.get("content", "") for m in messages)
+        assert not any(
+            a["role"] == "user" and b["role"] == "user" for a, b in zip(messages, messages[1:])
+        )
 
     def test_coerce_string_args_python_uses_code_key(self):
         assert _coerce_arguments("print(1)", heal = True, tool_name = "python") == {"code": "print(1)"}
@@ -5100,6 +5152,343 @@ class TestStreamingDisplayStripStillMatchesTheExportedHelper:
             ), f"diverged at offset {i}"
 
 
+def test_mcp_images_reach_a_vision_model_through_the_sink(monkeypatch):
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+    result = "[1 image returned]\n" + mcp_images.SENTINEL + envelope
+
+    turns = [
+        '<tool_call>{"name": "mcp__fs__read_media_file", "arguments": {}}</tool_call>',
+        "A tabby cat.",
+    ]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    sink: list = []
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "describe the image"}],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__read_media_file"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 2,
+            images_sink = sink,
+        )
+    )
+
+    assert len(sink) == 1
+    assert base64.b64decode(sink[0])[:8] == b"\x89PNG\r\n\x1a\n"
+    second_turn = seen[1]
+    assert "__MCP_IMAGES__" not in json.dumps(second_turn)
+    assert second_turn[-1]["role"] == "user"
+    assert second_turn[-1]["content"][0] == {"type": "image"}
+
+
+def test_mcp_images_are_left_out_without_a_sink(monkeypatch):
+    import json
+
+    from core.inference import mcp_images
+
+    envelope = json.dumps([{"data": "QUJD", "mimeType": "image/png"}])
+    result = "[1 image returned]\n" + mcp_images.SENTINEL + envelope
+    turns = [
+        '<tool_call>{"name": "mcp__fs__read_media_file", "arguments": {}}</tool_call>',
+        "A tabby cat.",
+    ]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "describe the image"}],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__read_media_file"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert seen[1][-1]["role"] == "tool"
+    assert "__MCP_IMAGES__" not in json.dumps(seen[1])
+
+
+def test_mcp_image_markers_merge_into_a_deferred_noop_turn(monkeypatch):
+    """A batch holding both an internal no-op and an image-returning call used to
+    append two role=user turns in a row, which a strict VLM template rejects."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+    result = "[1 image returned]\n" + mcp_images.SENTINEL + envelope
+
+    # One image-returning call plus one call to a tool that is not enabled: the
+    # second is suppressed as an internal no-op and lands as a deferred nudge
+    # after the batch's results, which is the turn the markers must join.
+    real = '{"name": "mcp__fs__read_media_file", "arguments": {}}'
+    bogus = '{"name": "mcp__fs__delete_everything", "arguments": {}}'
+    turns = [
+        f"<tool_call>{real}</tool_call><tool_call>{bogus}</tool_call>",
+        "A tabby cat.",
+    ]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    sink: list = []
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "describe the image"}],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__read_media_file"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 2,
+            images_sink = sink,
+        )
+    )
+
+    second_turn = seen[1]
+    roles = [message["role"] for message in second_turn]
+    # Guard: without a suppressed call there is no nudge and the test proves nothing.
+    assert any(
+        message["role"] == "user" and "not executed" in str(message.get("content"))
+        for message in second_turn
+    ), f"no deferred no-op nudge in {second_turn}"
+    assert not any(
+        roles[i] == "user" and roles[i + 1] == "user" for i in range(len(roles) - 1)
+    ), f"consecutive user turns: {roles}"
+    markers = [
+        part
+        for message in second_turn
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    ]
+    assert len(markers) == len(sink) == 1
+
+
+def test_the_loop_cap_never_evicts_the_caller_s_own_attachment():
+    """The sink is seeded with what the caller attached, and the MCP payloads land
+    around it. A cap that trims from the front deleted that picture and its marker,
+    so a model asked to compare against it was handed screenshots instead."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    def _png(colour):
+        buffer = io.BytesIO()
+        Image.new("RGB", (6, 6), colour).save(buffer, format = "PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
+
+    attachment = _png((255, 0, 0))
+    envelope = json.dumps([{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)])
+    result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
+
+    def _call(n):
+        return '<tool_call>{"name": "mcp__fs__shot", "arguments": {"n": %d}}</tool_call>' % n
+
+    # DISTINCT calls: an identical repeat is suppressed as a no-op. Eight of them,
+    # because a local placeholder turn carries one picture, and the cap has to be
+    # reached for the test to prove anything.
+    turns = [_call(n) for n in range(1, 9)] + ["done."]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    sink = [attachment]
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [{"type": "image"}, {"type": "text", "text": "compare with this"}],
+                }
+            ],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__shot"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 9,
+            images_sink = sink,
+            caller_image_indexes = (0,),
+        )
+    )
+
+    assert attachment in sink, "the caller's attachment was trimmed away"
+    assert (
+        len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    ), "the attachment is spared, but it still counts against the cap"
+    final = seen[-1]
+    assert final[0]["content"][0] == {"type": "image"}, "its marker went with it"
+    markers = sum(
+        1
+        for message in final
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    )
+    assert markers == len(sink), "one marker per pixel, or the processor miscounts"
+
+
+def test_a_resumed_chat_s_replayed_images_still_count_against_the_cap():
+    """Only the caller's own attachment is spared. Sparing the whole seeded sink
+    exempted a resumed chat's replayed pictures too, so the prompt could carry a
+    second full allowance on top of them."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    def _png(colour):
+        buffer = io.BytesIO()
+        Image.new("RGB", (6, 6), colour).save(buffer, format = "PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
+
+    replayed = [_png((0, 200 - index * 10, 0)) for index in range(4)]
+    envelope = json.dumps([{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)])
+    result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
+
+    def _call(n):
+        return '<tool_call>{"name": "mcp__fs__shot", "arguments": {"n": %d}}</tool_call>' % n
+
+    # One picture per batch on a local path, so five batches on four replayed is
+    # nine against a cap of eight.
+    turns = [_call(n) for n in range(1, 6)] + ["done."]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    sink = list(replayed)
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [mcp_images.placeholder_turn(4, 4)],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__shot"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 6,
+            images_sink = sink,
+            # No attachment on this request; every seeded pixel is replay.
+            caller_image_indexes = (),
+        )
+    )
+
+    assert (
+        len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    ), f"replay was exempted from the cap: {len(sink)} images in the prompt"
+    assert replayed[0] not in sink, "the oldest replayed picture should have gone first"
+    final = seen[-1]
+    markers = sum(
+        1
+        for message in final
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    )
+    assert markers == len(sink)
+
+
+def test_the_protected_attachment_index_is_rebased_between_batches():
+    """The index names a position, and trimming earlier entries moves it. Reusing the
+    original across iterations protected the wrong payload and deleted the very
+    attachment the argument exists to keep."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    def _png(colour):
+        buffer = io.BytesIO()
+        Image.new("RGB", (6, 6), colour).save(buffer, format = "PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
+
+    replayed = [_png((0, 200 - index * 12, 0)) for index in range(7)]
+    attachment = _png((255, 0, 0))
+    envelope = json.dumps([{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)])
+    result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
+
+    def _call(n):
+        return '<tool_call>{"name": "mcp__fs__shot", "arguments": {"n": %d}}</tool_call>' % n
+
+    turns = [_call(1), _call(2), _call(3), "done."]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    # Replay first, the caller's attachment last: index 7 on the way in.
+    sink = [*replayed, attachment]
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [
+                mcp_images.placeholder_turn(7, 7),
+                {
+                    "role": "user",
+                    "content": [{"type": "image"}, {"type": "text", "text": "compare with this"}],
+                },
+            ],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__shot"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 4,
+            images_sink = sink,
+            caller_image_indexes = (7,),
+        )
+    )
+
+    assert attachment in sink, "the attachment was deleted by a stale protected index"
+    assert len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    final = seen[-1]
+    markers = sum(
+        1
+        for message in final
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    )
+    assert markers == len(sink), "one marker per pixel"
+
+
 class TestBlockedGemmaChainHold:
     """A promotable Gemma call behind a blocked one must not stream before it is promoted."""
 
@@ -5229,3 +5618,145 @@ def test_call_single_turn_falls_back_to_legacy_signatures():
     assert list(_call_single_turn(no_flag, [], [{"x": 1}], False)) == ["a"]
     assert list(_call_single_turn(bare, [], [{"x": 1}], False)) == ["b"]
     assert seen == [("no_flag", [{"x": 1}]), ("bare", None)]
+
+
+@pytest.mark.parametrize("edit_result", ["Edited notes.txt", "Error: failed after writing"])
+def test_workspace_read_edit_read_in_one_turn(edit_result):
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    turns = iter([read + edit + read, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["before", edit_result, "after"])
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [name for name, _ in executor.calls] == ["terminal", "edit_file", "terminal"]
+    assert [event["result"] for event in events if event["type"] == "tool_end"] == [
+        "before",
+        edit_result,
+        "after",
+    ]
+
+
+def test_repeated_workspace_reads_do_not_crowd_out_a_later_edit():
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    turns = iter([read * 8 + edit + read, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["before", "Edited notes.txt", "after"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [name for name, _ in executor.calls] == ["terminal", "edit_file", "terminal"]
+
+
+def test_an_alternating_workspace_block_does_not_replay_the_edit():
+    """One re-run verifies an edit. A repeating block past that applied the edit twice."""
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    turns = iter([(read + edit) * 2, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["before", "Edited notes.txt", "after", "Edited notes.txt"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [name for name, _ in executor.calls] == ["terminal", "edit_file", "terminal"]
+
+
+def test_an_alternating_workspace_block_does_not_crowd_out_a_later_tool():
+    """The block used to fill the 8-call cap, so the search the model asked for never ran."""
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    search = '<tool_call>{"name":"web_search","arguments":{"query":"gpu prices"}}</tool_call>'
+    turns = iter([(read + edit) * 4 + search, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["before", "Edited notes.txt", "after", "results"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Read, edit, verify, then search"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file", "web_search")
+            ],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [name for name, _ in executor.calls] == [
+        "terminal",
+        "edit_file",
+        "terminal",
+        "web_search",
+    ]
+
+
+def test_every_independent_edit_gets_its_own_verification_rerun():
+    """Two edit-and-verify cycles in one turn: the test after the second edit must run."""
+    test = '<tool_call>{"name":"terminal","arguments":{"command":"pytest -q"}}</tool_call>'
+    edit_a = '<tool_call>{"name":"edit_file","arguments":{"path":"a.py","edits":[]}}</tool_call>'
+    edit_b = '<tool_call>{"name":"edit_file","arguments":{"path":"b.py","edits":[]}}</tool_call>'
+    turns = iter([test + edit_a + test + edit_b + test, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["1 failed", "Edited a.py", "1 failed", "Edited b.py", "1 passed"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Fix the test"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [name for name, _ in executor.calls] == [
+        "terminal",
+        "edit_file",
+        "terminal",
+        "edit_file",
+        "terminal",
+    ]
