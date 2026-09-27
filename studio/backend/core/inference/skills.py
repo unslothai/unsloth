@@ -697,11 +697,20 @@ def _editable_skill(
         raise SkillError(
             f"Skill '{record['name']}' is not in the Agents folder, so it cannot be changed here."
         )
-    root = next(root for source, root in _skill_roots(home) if source == "agents")
+    if home is not None:
+        base, managed = home, False
+    elif is_owner_context():
+        base, managed = _owner_home(), False
+    else:
+        base, managed = workspace_root(), True
     try:
-        entry = root.expanduser().resolve(strict = True) / record["name"]
+        base = base.resolve(strict = True)
     except OSError as exc:
         raise SkillError("Agent Skills directory is missing or unsafe.") from exc
+    # Same ancestors create_skill refuses: a linked root would send the write outside it.
+    ancestors = (base / _MANAGED_SKILLS_DIR,) if managed else (base / ".agents", base / ".agents" / "skills")
+    _require_unlinked_agent_path(base, *ancestors)
+    entry = ancestors[-1] / record["name"]
     if record["linked"] or _is_linked_path(entry) or skill_dir != entry:
         raise SkillError(f"Skill '{record['name']}' is a link, so it cannot be changed here.")
     if identity is not None and not os.path.samestat(

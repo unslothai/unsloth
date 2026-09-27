@@ -1043,6 +1043,7 @@ def test_linked_agents_skill_stays_read_only_in_the_dialog(isolated_skills, tmp_
     try:
         (root / "linked").symlink_to(real, target_is_directory = True)
     except (OSError, NotImplementedError):
+        # Reason: Windows may deny symlink creation without Developer Mode.
         pytest.skip("symlinks are unavailable on this platform")
     listed = skills.list_skills(home = home)[0]
     assert (listed["valid"], listed["linked"]) == (True, True)
@@ -1055,6 +1056,30 @@ def test_linked_agents_skill_stays_read_only_in_the_dialog(isolated_skills, tmp_
     assert (real / "SKILL.md").is_file()
     assert (root / "linked").is_symlink()
 
+
+
+@pytest.mark.parametrize("linked_level", [".agents", "skills"])
+def test_skill_under_a_linked_agents_root_stays_read_only(isolated_skills, tmp_path, linked_level):
+    home, _ = isolated_skills
+    outside = tmp_path / "outside"
+    real = _write_skill(outside, "agents", "rooted").parent.parent
+    try:
+        if linked_level == ".agents":
+            (home / ".agents").symlink_to(real, target_is_directory = True)
+        else:
+            (home / ".agents").mkdir()
+            (home / ".agents" / "skills").symlink_to(real / "skills", target_is_directory = True)
+    except (OSError, NotImplementedError):
+        # Reason: Windows may deny symlink creation without Developer Mode.
+        pytest.skip("symlinks are unavailable on this platform")
+
+    with pytest.raises(skills.SkillError, match = "unsafe"):
+        skills.update_skill("rooted", "Changed", "Changed", home = home)
+    with pytest.raises(skills.SkillError, match = "unsafe"):
+        skills.delete_skill("rooted", home = home)
+    assert (real / "skills" / "rooted" / "SKILL.md").read_text(encoding = "utf-8").endswith(
+        "\n---\nInstructions"
+    )
 
 def test_authenticated_create_read_update_and_delete_routes(isolated_skills, monkeypatch):
     home, _ = isolated_skills
