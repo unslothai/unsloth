@@ -383,7 +383,6 @@ def _zip_members(path: Path) -> str:
 
 
 class _Capped(io.RawIOBase):
-
     def __init__(self, raw: BinaryIO, left: int) -> None:
         self.raw, self.left = raw, left
 
