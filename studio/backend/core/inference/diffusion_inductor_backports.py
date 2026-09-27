@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Backport of PyTorch's symbolic divisibility fix (pytorch/pytorch#184566, first released in torch 2.14.0).
+"""Backport of the symbolic divisibility proof PyTorch first shipped in torch 2.14.0.
 
 Inductor splits a flat iteration range against a kernel group in ``SIMDKernel._split_iteration_ranges`` and raises
 ``CantSplit`` unless ``SizeVarAllocator.statically_known_multiple_of(size, group)`` proves the division exact. For a
 SYMBOLIC group torch <= 2.11 asked ``Eq(numerator % denominator, 0)``, i.e. sympy's own ``Mod``, which cancels
-``(4096*s87 - 4096*s89) % (s87 - s89)`` to 0. pytorch/pytorch#177051 (torch 2.12.0) switched that line to torch's
+``(4096*s87 - 4096*s89) % (s87 - s89)`` to 0. torch 2.12.0 switched that line to torch's
 ``Mod`` (``torch.utils._sympy.functions``), which only proves divisibility through ``(p / q).is_integer``, and sympy
 leaves an Add over an Add unevaluated, so the same expression became unprovable. On 2.12.x and 2.13.x every
 ``torch.compile(dynamic=True)`` of a block holding such a tensor fails to lower (Qwen-Image-2.1 on torchao fp8 /
