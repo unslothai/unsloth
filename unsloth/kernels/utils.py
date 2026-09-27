@@ -525,10 +525,8 @@ if (
         from .nf4_gemv import gemv_nf4, triton_gemv_eager
 
         _USE_NF4_KERNELS = True
-        # The Triton GEMV beats bitsandbytes' from Triton 3.7 on (1.07-1.78x on a B200); older
-        # Triton builds it at 0.5-0.8x, so eager decode keeps bitsandbytes' GEMV there unless
-        # nf4_gemv lists the GPU as measured faster. Compiled code always takes the Triton GEMV,
-        # since the ctypes call cannot be traced.
+        # Eager decode takes the Triton GEMV where it measured faster than bitsandbytes' (see
+        # nf4_gemv.triton_gemv_eager). Compiled code always does, since ctypes cannot be traced.
         _TRITON_GEMV_EAGER = triton_gemv_eager()
     except Exception:
         pass

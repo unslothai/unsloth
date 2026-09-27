@@ -172,18 +172,12 @@ _TRITON_37 = tuple(int(x) for x in triton.__version__.split(".")[:2]) >= (3, 7)
 _FORCE_KERNEL = None
 
 
-# Compute capabilities (major, minor) where the Triton GEMV beats bitsandbytes' in eager decode even
-# before Triton 3.7. Empty until measured there, so eager decode keeps bitsandbytes' GEMV.
-EAGER_BEFORE_TRITON_37 = frozenset()
-
-
 def triton_gemv_eager(device = None):
-    """Whether eager (uncompiled) decode should take the Triton GEMV on this Triton and GPU."""
-    if _TRITON_37:
-        return True
-    if not EAGER_BEFORE_TRITON_37:
-        return False
-    return tuple(torch.cuda.get_device_capability(device)) in EAGER_BEFORE_TRITON_37
+    """Whether eager (uncompiled) decode should take the Triton GEMV. On CUDA it does: with the
+    direct launch (triton_launch.py) it beat bitsandbytes' GEMV in batch-1 decode on T4, L4, A100,
+    RTX PRO 6000 and B200. HIP launches through Triton's own path, which only paid off from
+    Triton 3.7."""
+    return torch.version.hip is None or _TRITON_37
 
 
 def _word_aligned(W):
@@ -196,28 +190,22 @@ def _word_aligned(W):
 def _gemv_config(N: int, K: int, blocksize: int, major: int, words_ok: bool, force):
     """(use the words kernel, grid, BLOCK_N, BLOCK_K, num_warps).
 
-    Timed with CUDA graphs (kernel time only) on a B200 over (4096,4096) (14336,4096)
-    (4096,14336) (1024,4096): Triton 3.7 runs the byte kernel best at BLOCK_K=2048 and 4 warps,
-    Triton 3.6 the words kernel at one row per program. Other GPUs keep the original configs
-    until they are measured."""
-    use_words = words_ok and (force == "words" or (force is None and major == 10 and not _TRITON_37))
+    Kernel time (CUDA graphs) over Llama 1B to 70B shapes: before Triton 3.7 the words kernel at
+    one row per program and one warp beat bitsandbytes on T4, L4, A100, RTX PRO 6000 and B200
+    (1.1x to 2.2x, lower error too); Triton 3.7 compiles the byte kernel better, best at 4 rows, BLOCK_K 2048 and
+    4 warps (measured on B200)."""
+    block_k = max(blocksize, min(2048, triton.next_power_of_2(K)))
+    use_words = words_ok and (force == "words" or (force is None and not _TRITON_37))
     if use_words:
-        block_k = max(blocksize, min(2048, triton.next_power_of_2(K)))
-        block_n, num_warps = 1, 1
-        return True, (-(-N // block_n),), block_n, block_k, num_warps
-    if major == 10 and force is None:
-        block_k = max(blocksize, min(2048, triton.next_power_of_2(K)))
-        block_n, num_warps = 4, 4
-        return False, (-(-N // block_n),), block_n, block_k, num_warps
-    # Swept on a B200 over the shapes above: BLOCK_K=1024 won every shape; few rows per program
-    # for small N, 4 rows and 2 warps for tall N.
+        if major == 7 and N * K >= (1 << 25):
+            # T4: shorter K steps won on the 14336x4096, 4096x14336 and vocab shapes.
+            block_k = max(blocksize, min(512, block_k))
+        return True, (N,), 1, block_k, 1
+    if force is None:
+        return False, (-(-N // 4),), 4, block_k, 4
+    # Forced byte kernel (tests): the pre-3.7 byte config.
     block_k = max(blocksize, min(1024, triton.next_power_of_2(K)))
-    if N <= 2048:
-        block_n, num_warps = 2, 4
-    elif N <= 8192 and K <= 8192:
-        block_n, num_warps = 8, 4
-    else:
-        block_n, num_warps = 4, 2
+    block_n, num_warps = (2, 4) if N <= 2048 else (4, 2)
     return False, (-(-N // block_n),), block_n, block_k, num_warps
 
 
