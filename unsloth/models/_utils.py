@@ -1061,6 +1061,7 @@ def _disable_flash_attention_if_needed(
             disable_reason = disable_reason,
             honor_config_attn_implementation = False,
         )
+
         def _fallback_for(key):
             if isinstance(fallback, dict):
                 return fallback.get(key, fallback.get("", "eager"))
