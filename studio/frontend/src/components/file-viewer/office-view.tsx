@@ -18,6 +18,7 @@ import {
   type Slide,
   type SlideBox,
   columnName,
+  isBoundedImage,
   readDelimited,
   readPptx,
   readXlsx,
@@ -33,9 +34,18 @@ async function parse(file: Blob, kind: DocumentKind, name: string, contentType: 
   if (kind === "docx") {
     const { default: mammoth } = await import("mammoth");
     const repacked = repackDocxPreviewArchive(name, bytes, MAX_DOCX_PARAGRAPHS);
-    const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.archive.buffer as ArrayBuffer });
+    // A picture that could decode past its bound gets no source, which the sanitizer then drops.
+    let dropped = false;
+    const convertImage = mammoth.images.imgElement(async (image) => {
+      if (isBoundedImage(new Uint8Array(await image.readAsArrayBuffer()), image.contentType)) {
+        return { src: `data:${image.contentType};base64,${await image.readAsBase64String()}` };
+      }
+      dropped = true;
+      return { src: "" };
+    });
+    const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.archive.buffer as ArrayBuffer }, { convertImage });
     const { html, truncated } = sanitizeDocxHtml(value);
-    return { kind, html, truncated: truncated || repacked.truncated };
+    return { kind, html, truncated: truncated || repacked.truncated || dropped };
   }
   if (kind === "slides") return { kind, deck: readPptx(bytes) };
   const delimiter = sheetDelimiter(name, contentType);

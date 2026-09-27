@@ -99,6 +99,9 @@ const XML_NAMED_ENTITIES: Record<string, string> = {
  *  the webview. fflate allocates at the declared size and stops, so mammoth is handed a
  *  repack of fflate's output. */
 const MAX_DOCX_UNPACKED_BYTES = 2 * MAX_OPEN_DOCUMENT_ARCHIVE_BYTES;
+// Far past any real document's parts: a directory of empty entries is otherwise walked, and each
+// name kept, in full on every scan.
+const MAX_DOCX_ENTRIES = 100_000;
 const AUDIO_EXTENSION_MIMES: Record<string, string> = {
   wav: "audio/wav",
   mp3: "audio/mpeg",
@@ -656,6 +659,13 @@ function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => bool
 function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = false): DocxArchive {
   const names = new Set<string>();
   const oversized = new Set<string>();
+  let count = 0;
+  unzipSync(bytes, {
+    filter: () => {
+      if (++count > MAX_DOCX_ENTRIES) throw new Error(`DOCX file is too large: ${filename}`);
+      return false;
+    },
+  });
   const images = keepLarge ? docxPreviewImages(bytes) : null;
   let unpacked = 0;
 

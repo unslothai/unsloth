@@ -1435,6 +1435,17 @@ function imagePixels(b: Uint8Array): number | undefined {
   return undefined;
 }
 
+/** Whether a picture is safe to decode: a raster whose size is read and bounded, or an SVG that
+ *  embeds none. An SVG shown as an image loads nothing but data: URLs, so one that holds or could
+ *  spell one (by escape, character reference, entity or a wide encoding) is refused. */
+export function isBoundedImage(bytes: Uint8Array, type: string | undefined): boolean {
+  const pixels = imagePixels(bytes);
+  if (pixels !== undefined) return pixels <= MAX_PICTURE_PIXELS;
+  if (type !== "image/svg+xml" || bytes.includes(0)) return false;
+  const text = new TextDecoder().decode(bytes).replace(/[\t\n\r]/g, "").toLowerCase();
+  return !/data:|\\|&#|<!entity/.test(text);
+}
+
 function boxText(box: SlideBox): number {
   let n = box.caption?.length ?? 0;
   for (const p of box.paragraphs ?? []) n += p.text.length;
@@ -1767,9 +1778,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
         }
         const data = read([target])[target];
         if (!data) return false;
-        // Only a raster whose size is read and bounded, or an SVG, which draws at its frame's size.
-        const pixels = imagePixels(data);
-        if (pixels === undefined ? type !== "image/svg+xml" : pixels > MAX_PICTURE_PIXELS) {
+        if (!isBoundedImage(data, type)) {
           cut = true;
           return false;
         }
