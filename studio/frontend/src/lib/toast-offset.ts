@@ -4,8 +4,8 @@
 const EDGE_OFFSET = 12;
 const MOBILE_EDGE_OFFSET = 16;
 const HEADER_TOP_OFFSET = 52;
-// The custom titlebar's header controls end at 37px, the macOS ones at 42px.
-const CUSTOM_TITLEBAR_HEADER_TOP_OFFSET = 47;
+// The custom titlebar's header controls end at 32px, the macOS ones at 42px.
+const CUSTOM_TITLEBAR_HEADER_TOP_OFFSET = 42;
 const DESKTOP_TITLEBAR_HEIGHT = 34;
 
 const HEADER_ROUTES = new Set(["/chat", "/images", "/video", "/audio"]);

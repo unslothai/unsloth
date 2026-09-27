@@ -3702,7 +3702,7 @@ function VideoGenerator({
               resolveDownloadFootprint={resolveDownloadFootprint}
               onEject={status?.loaded ? handleUnload : undefined}
               variant="ghost"
-              className="!h-[calc(34px*var(--ui-space-scale,1))]"
+              className="!h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))]"
               task={VIDEO_GEN_TASKS}
               catalog={VIDEO_CATALOG}
               hubCapability="diffusion"
@@ -3721,7 +3721,7 @@ function VideoGenerator({
                     variant="outline"
                     size="sm"
                     aria-label="Cancel load"
-                    className="!h-[calc(34px*var(--ui-space-scale,1))] rounded-full text-xs"
+                    className="!h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] rounded-full text-xs"
                     onClick={() => void handleCancelLoad()}
                   >
                     Cancel load

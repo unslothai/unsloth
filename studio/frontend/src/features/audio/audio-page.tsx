@@ -2695,7 +2695,7 @@ export function AudioPage({
               onValueChange={handleModelSelect}
               onEject={busy === null && selectorValue ? handleEject : undefined}
               variant="ghost"
-              className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
+              className="!h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
               triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
               task={HUB_TASKS_BY_MODE[mode]}
               catalog={AUDIO_CATALOG}
@@ -2724,7 +2724,7 @@ export function AudioPage({
                 void navigateSelf({ to: "/studio" });
               }}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
+              className="h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] [&>button]:h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
               tabs={[
                 {
                   value: "create",

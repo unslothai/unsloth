@@ -584,12 +584,15 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-non-chat-content-top-inset": "34px",
   "--studio-non-chat-scroller-top": "34px",
   "--studio-hidden-route-top-inset": "34px",
-  // Same split as the native-mac block: chat chrome scales, window chrome does not. The
-  // header's controls start 4px down, the window controls' margin, clear of the window edge.
-  "--studio-chat-header-height": "calc(43px * var(--ui-space-scale, 1))",
-  "--studio-chat-header-padding-top": "calc(4px * var(--ui-space-scale, 1))",
+  // Same split as the native-mac block: chat chrome scales, window chrome does not. Header
+  // controls take the 30px of the navigation buttons and start 2px down, so they centre on
+  // the window controls' line and clear the window edge.
+  "--studio-chat-header-height": "calc(40px * var(--ui-space-scale, 1))",
+  "--studio-chat-header-padding-top": "calc(2px * var(--ui-space-scale, 1))",
   "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
-  "--studio-chat-control-height": "calc(33px * var(--ui-space-scale, 1))",
+  "--studio-chat-control-height": "calc(30px * var(--ui-space-scale, 1))",
+  // The media headers' 34px model picker, Create/Train toggle and Library link take it too.
+  "--studio-media-control-height": "calc(30px * var(--ui-space-scale, 1))",
   // The row's buttons end 6.5px above the macOS traffic-light row, so the sidebar's brand
   // rises with them and keeps the same gap below.
   "--studio-sidebar-brand-lift": "6.5px",
