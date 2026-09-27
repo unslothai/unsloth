@@ -25,7 +25,6 @@ import torch
 
 
 def _load_functions(*names):
-    # Only torch is needed, so run the functions without importing unsloth (CPU CI has no unsloth_zoo).
     path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "unsloth",
@@ -94,7 +93,6 @@ def test_a_failed_load_decompression_falls_back_outside_inference_mode():
     assert not _decompress_compressed_tensors_model(model)
     with torch.inference_mode():
         model(torch.ones(1, 4))
-    # The lazy hook ran inside `generate`'s inference_mode, yet the weights it made are normal tensors.
     assert compressor.calls == [False, False]
     assert not model.lin.weight.is_inference()
     x = torch.ones(1, 4, requires_grad = True)

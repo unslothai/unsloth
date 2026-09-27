@@ -10554,9 +10554,7 @@ def disable_sentencepiece_on_windows():
     return True
 
 
-# compressed-tensors fake-quantizes W8A8 activations under `@torch.no_grad()`, so a LoRA finetune
-# gets no gradient through a frozen base Linear's input. A straight-through estimator keeps the
-# quantized forward and passes the gradient through as the identity, like Unsloth's FP8 linears.
+# compressed-tensors fake-quantizes W8A8 activations under no_grad; STE so LoRA gets input gradients.
 _CT_FORWARD_MODULE = "compressed_tensors.quantization.lifecycle.forward"
 _CT_BY_NAME_MODULES = (
     "compressed_tensors.modeling.kvcache",
@@ -10570,8 +10568,7 @@ def _compressed_tensors_ste_forward_quantize(original):
     import torch
 
     class _StraightThrough(torch.autograd.Function):
-        # The forward is the quantized tensor exactly: `value + (out - value).detach()` rounds
-        # wherever a static scale saturates. The backward is the identity onto the input.
+        # Not `value + (out - value).detach()`: that rounds where a static scale saturates.
         @staticmethod
         def forward(ctx, value, quantized):
             ctx.value_dtype = value.dtype
@@ -10584,7 +10581,6 @@ def _compressed_tensors_ste_forward_quantize(original):
     @functools.wraps(original)
     def forward_quantize(*args, **kwargs):
         out = original(*args, **kwargs)
-        # Inference runs under no_grad / inference_mode: return before any other check.
         if not torch.is_grad_enabled():
             return out
         value = args[1] if len(args) > 1 else kwargs.get("value")

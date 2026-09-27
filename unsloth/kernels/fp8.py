@@ -132,8 +132,7 @@ def weight_dequant(
     s: torch.Tensor,
     dtype = torch.bfloat16,
 ):
-    # A transposed view (fast_lora backward passes W.t()) keeps its scales in storage order, and a square
-    # weight cannot be told apart by shape, so dequantize the storage layout and transpose the result.
+    # Transposed views keep scales in storage order; square weights can't be told apart by shape.
     if _is_transposed_view(x):
         return weight_dequant(x.t(), s, dtype).t()
     # Per-tensor scale: single value for entire weight matrix
@@ -392,7 +391,6 @@ def _fp8_rowwise_gemv_kernel(
     x_ptr, w_ptr, s_ptr, y_ptr, N, K, stride_wn, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr
 ):
     offs_n = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
-    # Accumulate the whole (BLOCK_N, BLOCK_K) tile and reduce once: one launch, no split-K partials.
     acc = tl.zeros((BLOCK_N, BLOCK_K), dtype = tl.float32)
     for k0 in range(0, K, BLOCK_K):
         offs_k = k0 + tl.arange(0, BLOCK_K)
@@ -414,7 +412,6 @@ def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
         return False
     if weight.dtype != torch.float8_e4m3fn or weight.dim() != 2 or not weight.is_contiguous():
         return False
-    # One row only: every extra row re-reads the weight, and a bf16 matmul wins from four rows on.
     if X.numel() != X.shape[-1] or X.shape[-1] != weight.shape[1]:
         return False
     # Exactly one scale per output row: a block grid can have N elements by coincidence.
@@ -423,21 +420,18 @@ def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
         or weight.shape[0] == 1
     ):
         return False
-    # Forward only: the kernel has no backward.
     if torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad):
         return False
     return not _fp8_kernel_unsupported(weight)
 
 
 def fp8_rowwise_gemv(X, weight, weight_scale):
-    """X @ (weight * weight_scale).T for one token, reading the FP8 weight once instead of building its
-    16-bit copy, which moves three times the bytes at decode. One launch; the result is deterministic."""
+    """X @ (weight * weight_scale).T for one token without a 16-bit weight copy."""
     N, K = weight.shape
     out = torch.empty((*X.shape[:-1], N), device = X.device, dtype = X.dtype)
     if not X.is_contiguous():
         X = X.contiguous()
     scale = weight_scale if weight_scale.is_contiguous() else weight_scale.contiguous()
-    # Narrow layers need BLOCK_N = 1 to fill the GPU; wide ones (MLP, vocab) amortise the x loads.
     block_n = 1 if N <= 4096 else (4 if N <= 32768 else 8)
     with _fp8_triton_device_context(X):
         _fp8_rowwise_gemv_kernel[(triton.cdiv(N, block_n),)](
@@ -623,8 +617,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             output = output.reshape(output_shape)
             del x_quantized, x_scale
         elif weight_scale.shape[0] in (weight.shape[0], weight.shape[1]):
-            # Transposed weight/scale (backward dY@W), a non-divisible-by-8 shape (Qwen 2.5 VL 7B gate proj
-            # 3420x1280), no FBGEMM (compressed-tensors FP8 checkpoints) or a pre-sm89 GPU: dequant.
+            # Transposed, non-divisible-by-8 (Qwen 2.5 VL 7B 3420x1280), no FBGEMM, or pre-sm89: dequant.
             W_deq = weight_dequant(weight, weight_scale).T
             output = torch_matmul(x, W_deq)
             output = output + bias if bias is not None else output

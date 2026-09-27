@@ -14,10 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Gradients pass straight through compressed-tensors' W8A8 activation fake quantization.
-
-Each case runs in a subprocess because the patch changes compressed-tensors module state.
-"""
+"""Each case runs in a subprocess: the patch changes compressed-tensors module state."""
 
 import os
 import subprocess
@@ -105,7 +102,6 @@ def _run(mode, scheme = "dynamic"):
 
 
 def test_without_the_fix_the_input_gradient_is_lost():
-    """The defect itself, so a compressed-tensors release that fixes it upstream shows up here."""
     out = _run("base")
     assert not out["has_grad_fn"]
 
@@ -120,7 +116,6 @@ def test_activation_quantization_passes_the_gradient_straight_through(mode):
 
 
 def test_a_saturating_static_scale_keeps_the_forward_bit_identical():
-    """`x + (q - x).detach()` rounds wherever a static scale clips; the forward must stay `q` exactly."""
     out = _run("eager", "static")
     assert out["patched"]
     assert out["has_grad_fn"]

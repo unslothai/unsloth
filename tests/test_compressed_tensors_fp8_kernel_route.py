@@ -14,11 +14,6 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""compressed-tensors FP8 Linears run on Unsloth's FP8 kernels, stay FP8, and pass the input gradient.
-
-Also covers `weight_dequant` on a transposed per-row FP8 view: fast_lora's backward passes `W.t()`, and
-for a square weight the shape alone cannot say which axis the scale belongs to.
-"""
 
 import types
 
@@ -31,7 +26,6 @@ ct_quant = pytest.importorskip("compressed_tensors.quantization")
 
 @pytest.fixture(autouse = True)
 def _zoo_with_float_only_cast(monkeypatch):
-    # Routing waits for an unsloth_zoo whose compiled LoRA forward never casts inputs to FP8.
     from unsloth.models import loader_utils
     monkeypatch.setattr(loader_utils, "_zoo_peft_forward_keeps_fp8_inputs", lambda: True)
 
@@ -99,7 +93,6 @@ def test_weight_dequant_transposed_row_scale(shape):
 
     Wq, s, ref = _quantize(torch.randn(*shape, device = "cuda") * 0.02, "channel")
     torch.testing.assert_close(weight_dequant(Wq, s, torch.float32), ref)
-    # The square case picked the scale axis by shape and scaled the wrong one.
     torch.testing.assert_close(weight_dequant(Wq.t(), s, torch.float32), ref.t())
 
 
@@ -126,7 +119,6 @@ def test_fp8_modules_route_to_unsloth_kernels(strategy, shape, block, bias):
     y_ref = X.float() @ ref.t() + (lin.bias.float() if bias else 0)
     (dX,) = torch.autograd.grad(y.float().sum(), X)
     dX_ref = torch.ones(2, 5, shape[0], device = "cuda") @ ref
-    # Block / per-tensor kernels quantize activations to FP8 (a few percent); the gradient is exact.
     assert float((y.float() - y_ref).norm() / y_ref.norm()) < 0.05
     assert float((dX.float() - dX_ref).norm() / dX_ref.norm()) < 0.01
 
@@ -161,7 +153,6 @@ def test_decompress_hook_is_removed():
     model.ct_decompress_hook = model.register_forward_pre_hook(lambda module, args: None)
     assert len(model._forward_pre_hooks) == 1
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 1
-    # Left in place, the first forward would decompress every routed weight back to 16 bit.
     assert not hasattr(model, "ct_decompress_hook")
     assert len(model._forward_pre_hooks) == 0
 
@@ -197,8 +188,6 @@ def test_a_model_mixing_fp8_and_other_schemes_is_not_partly_routed():
     model, _ = _ct_model(256, 256, "channel")
     other, _ = _ct_model(256, 256, "channel", weight_type = "int")
     model.other = other.lin
-    # Routing half the model would leave the rest to a whole-model decompression that also rewrites the
-    # routed FP8 weights, so nothing is routed.
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
     assert not hasattr(model.lin, "_unsloth_compressed_tensors_fp8")
 
@@ -232,7 +221,7 @@ def test_decode_gemv_refuses_what_it_cannot_compute():
     W, s = model.lin.weight, model.lin.weight_scale
     X = torch.randn(1, 16384, device = "cuda", dtype = torch.bfloat16)
     with torch.no_grad():
-        # A 128x128 block grid for this weight has 16 * 128 == 2048 == N elements.
+        # 128x128 block grid here has 2048 == N elements.
         assert not can_use_fp8_rowwise_gemv(X, W, torch.ones(16, 128, device = "cuda"))
         assert not can_use_fp8_rowwise_gemv(
             torch.randn(2, 16384, device = "cuda", dtype = torch.bfloat16), W, s
@@ -252,6 +241,5 @@ def test_fp8_weights_off_the_gpu_keep_the_compressed_tensors_path():
 
     model, _ = _ct_model(256, 256, "channel")
     model.cpu()
-    # The FP8 kernels are triton; a CPU (or disk-offloaded) model is decompressed as before.
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
     assert not hasattr(model.lin, "_unsloth_compressed_tensors_fp8")
