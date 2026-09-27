@@ -373,6 +373,7 @@ def apply_speed_optims(
     applied = {
         "channels_last": False,
         "vae_fp16_decode": False,
+        "vae_fused": False,
         "cudnn_benchmark": False,
         "tf32": False,
         "fp16_accum": False,
@@ -395,6 +396,9 @@ def apply_speed_optims(
     applied["channels_last"] = _vae_channels_last(pipe, logger)
     # Near-lossless, not bit-identical, so never on "off" (returned above).
     applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
+    # Near-lossless like the fp16 decode (fp32 statistics, one rounding): Triton-fused norm/SiLU/pad VAE passes.
+    if on_cuda:
+        applied["vae_fused"] = _install_fused_vae(pipe, logger)
 
     if on_cuda:
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
@@ -1018,8 +1022,37 @@ def vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
     return _denoiser_unet(pipe) is None and _vae_decode_compile_allowed(pipe, speed_mode)
 
 
+def _install_fused_vae(pipe: Any, logger: Any) -> bool:
+    """Triton-fused VAE norm passes (diffusion_vae_fused), unless the env forces the VAE decode compile instead."""
+    if os.environ.get(COMPILE_VAE_ENV, "").strip().lower() in _VAE_TRUE_TOKENS:
+        return False
+    try:
+        from . import diffusion_vae_fused  # noqa: PLC0415 - Triton import only on CUDA loads
+
+        return diffusion_vae_fused.install(getattr(pipe, "vae", None), logger) > 0
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "fused vae", exc)
+        return False
+
+
+def _fused_vae_planned(pipe: Any) -> bool:
+    if os.environ.get(COMPILE_VAE_ENV, "").strip().lower() in _VAE_TRUE_TOKENS:
+        return False
+    try:
+        from . import diffusion_vae_fused  # noqa: PLC0415
+
+        return diffusion_vae_fused.will_install(getattr(pipe, "vae", None))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """U-Nets always; a DiT only on ``max`` (it costs a 60-70 s slower first render) or with the env forced on."""
+    """U-Nets always; a DiT only on ``max`` (it costs a 60-70 s slower first render) or with the env forced on.
+
+    Never when the fused eager VAE path engages: AutoencoderKL 1024 decode fused 20 ms vs compiled 25 ms (15-18 s
+    cold), B200, same PSNR against a true-fp32 decode."""
+    if _fused_vae_planned(pipe):
+        return False
     if _denoiser_unet(pipe) is not None:
         return True
     raw = os.environ.get(COMPILE_VAE_ENV, "").strip().lower()

@@ -792,6 +792,7 @@ def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
 
 
 def uninstall(vae: Any) -> None:
+    vae.__dict__.pop("_unsloth_vae_fused_installed", None)
     for attr in ("tiled_decode", "blend_v", "blend_h", "blend_t"):
         if getattr(vae.__dict__.get(attr), "_unsloth_vae_fused", False):
             delattr(vae, attr)
@@ -1359,7 +1360,8 @@ def install_ltx2_vae(vae: Any, logger: Any = None) -> int:
     if vae is None or not runtime_ok():
         return 0
     n = 0
-    for part_name in ("encoder", "decoder"):
+    # decoder only: the causal one-frame encode (i2v conditioning) measured 33 -> 35 ms fused, so it stays stock
+    for part_name in ("decoder",):
         part = getattr(vae, part_name, None)
         if part is None:
             continue
@@ -1428,13 +1430,40 @@ def channels_last_weights(vae: Any) -> int:
     return n
 
 
+SUPPORTED_VAES = frozenset(
+    {
+        "AutoencoderKL",
+        "AutoencoderKLFlux2",
+        "AutoencoderKLWan",
+        "AutoencoderKLQwenImage",
+        "AutoencoderKLQwenImage21",
+        "AutoencoderKLHunyuanVideo15",
+        "AutoencoderKLLTX2Video",
+    }
+)
+
+
+def will_install(vae: Any) -> bool:
+    """Whether :func:`install` would engage on ``vae`` here (class covered, NVIDIA CUDA, usable Triton, not disabled)."""
+    return vae is not None and type(vae).__name__ in SUPPORTED_VAES and runtime_ok()
+
+
 def install(vae: Any, logger: Any = None, level: str = "fused") -> int:
     """Install every fused path that applies to ``vae``'s class. Returns the number of patched modules."""
+    if vae is None or not will_install(vae):
+        return 0
+    done = getattr(vae, "_unsloth_vae_fused_installed", 0)
+    if done:
+        return done  # idempotent: a dual-DiT family runs the speed layer once per expert over the same VAE
     n = _install(vae, logger)
     # measured: HV-1.5 -3%, LTX-2.3 -4%, AutoencoderKL layout-neutral (Studio already sets it); the Wan lineage keeps
     # its own (Qwen-Image's one-frame conv3d is 15% SLOWER on channels-last weights; Wan's fp16 decode sets them)
     if n and type(vae).__name__ in _CL_WEIGHT_VAES and os.environ.get("UNSLOTH_VAE_FUSED_CL_WEIGHTS", "1") != "0":
         channels_last_weights(vae)
+    if n:
+        vae._unsloth_vae_fused_installed = n
+        if logger is not None:
+            logger.info("diffusion.vae_fused: fused %d VAE modules on %s", n, type(vae).__name__)
     return n
 
 
