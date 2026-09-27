@@ -3935,6 +3935,7 @@ def _references_studio_credential_here(
     text: str,
     workdir: "str | None",
     _unescaped: bool = False,
+    _assign_expand_depth: int = 0,
 ) -> bool:
     """`_references_studio_credential`, plus the relative paths *text* would open from *workdir*.
 
@@ -4006,12 +4007,14 @@ def _references_studio_credential_here(
                 return True
     # One level of indirection, `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"`. Same substitution the
     # sensitive-path scan uses, and it only ADDS detections.
-    if "$" in text:
+    if "$" in text and _assign_expand_depth < _MAX_SHELL_ASSIGN_EXPAND_PASSES:
         expanded = _expand_shell_assignments(text)
         # The WHOLE workdir-aware analysis, not only the literal scan: `d=../..; cd "$d"` moves the
         # directory every later relative path opens from, and handing the unexpanded text to the cwd
         # walk read `$d` as a directory name and never moved.
-        if expanded != text and _references_studio_credential_here(expanded, workdir):
+        if expanded != text and _references_studio_credential_here(
+            expanded, workdir, _assign_expand_depth = _assign_expand_depth + 1
+        ):
             return True
     # A `cd` earlier in the command moves where every later relative path opens from.
     if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
@@ -5076,6 +5079,9 @@ _SHELL_PARAM_OP_RE = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+]([^{}]*)\}")
 # path fails closed rather than spending unbounded time. Ordinary commands are far below these bounds.
 _MAX_PATH_SCAN_CHARS = 2048
 _MAX_TERMINAL_SCAN_CHARS = 4096
+# Assignment expansion in the credential scan is a fixed-point pass; cap depth so pathological
+# self-referential captures (echo "A=$A B=$B") cannot recurse without bound while holding the GIL.
+_MAX_SHELL_ASSIGN_EXPAND_PASSES = 4
 # A glob needs one of these to expand into anything but itself; used to skip the glob scans outright.
 _GLOB_META_RE = re.compile(r"[?*\[]")
 # Where the memoised node list is parked on a parsed tree (see _tree_nodes).
@@ -5245,11 +5251,22 @@ def _posix_join(parts) -> str:
     return out
 
 
+def _shell_assign_value_self_references(name: str, value: str) -> bool:
+    """True when *value* expands *name* (VAR=$VAR); such bindings never reach a concrete path here."""
+    return (
+        re.search(rf"\${{{re.escape(name)}}}|\${re.escape(name)}(?!\w)", value) is not None
+    )
+
+
 def _expand_shell_assignments(command: str) -> str:
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path split across an
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
     pattern replacement. Fail-open: only adds detections."""
-    env = dict(_SHELL_ASSIGN_RE.findall(command))
+    env = {
+        var: val
+        for var, val in _SHELL_ASSIGN_RE.findall(command)
+        if not _shell_assign_value_self_references(var, val)
+    }
     if not env:
         return command
 
