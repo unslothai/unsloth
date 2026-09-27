@@ -91,7 +91,9 @@ def test_single_row_decode_passes_no_mask(monkeypatch, flash):
     assert [mask for _, mask in seen] == [None, None]
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a GPU")
+@pytest.mark.skipif(
+    not has_real_cuda(), reason = "loads tiny Gemma checkpoints through FastLanguageModel on CUDA"
+)
 def test_prefill_global_layers_see_past_the_window():
     from unsloth import FastLanguageModel
 
