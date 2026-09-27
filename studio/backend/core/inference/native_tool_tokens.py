@@ -258,6 +258,10 @@ class NativeToolTokenDecoder:
         self._tokenizer = tokenizer
         self._special_ids, self._tool_ids = _special_token_sets(tokenizer, preserved_tokens)
 
+    def dropped_ids(self) -> "frozenset[int] | None":
+        """The special ids this decoder removes, or None when it falls back to dropping all."""
+        return (self._special_ids - self._tool_ids) if self._special_ids else None
+
     def preserves(self, token: str) -> bool:
         """Whether this decoder really keeps ``token``, which the allowlist does not settle:
         with no usable ``all_special_ids`` every decode falls back to

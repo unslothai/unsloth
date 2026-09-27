@@ -51,12 +51,14 @@ export interface PerModelConfig {
      *  to launch with. */
   llamaExtraArgs?: string[] | null;
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs parse. Absent or null
-  // selectedGpuIds means automatic. --tensor-split is not remembered: it follows the GPU set.
+  // selectedGpuIds means automatic.
   gpuMemoryMode?: "auto" | "manual";
   gpuLayers?: number;
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
   selectedGpuIndexKind?: GpuIndexKind | null;
+  /** --tensor-split in picker order, never stored. `undefined` defers to the store, `null` = default. */
+  tensorSplit?: number[] | null;
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
@@ -205,6 +207,7 @@ export function loadedContextFields(resp: {
   context_length_enforced?: boolean | null;
   context_unbounded_when_batched?: boolean;
   parallel_slots?: number | null;
+  mlx_context_budget?: number | null;
 } | null): {
   loadedContextLength: number | null;
   maxContextLength: number | null;
@@ -214,6 +217,7 @@ export function loadedContextFields(resp: {
   loadedContextEnforced: boolean | null;
   loadedContextUnboundedWhenBatched: boolean;
   loadedParallelSlots: number | null;
+  loadedContextBudget: number | null;
 } {
   if (!resp) {
     return {
@@ -225,6 +229,7 @@ export function loadedContextFields(resp: {
       loadedContextEnforced: null,
       loadedContextUnboundedWhenBatched: false,
       loadedParallelSlots: null,
+      loadedContextBudget: null,
     };
   }
   const isGguf = resp.is_gguf ?? false;
@@ -240,6 +245,7 @@ export function loadedContextFields(resp: {
       loadedContextEnforced: null,
       loadedContextUnboundedWhenBatched: false,
       loadedParallelSlots: null,
+      loadedContextBudget: null,
     };
   }
   return {
@@ -259,6 +265,7 @@ export function loadedContextFields(resp: {
       ? false
       : (resp.context_unbounded_when_batched ?? false),
     loadedParallelSlots: resp.parallel_slots ?? null,
+    loadedContextBudget: isGguf ? null : (resp.mlx_context_budget ?? null),
   };
 }
 

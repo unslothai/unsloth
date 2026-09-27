@@ -219,6 +219,10 @@ def test_orchestrator_cmd_carries_all_sampling_params():
     )
     for key, val in _SAMPLING.items():
         assert cmd[key] == val, f"{key} dropped/altered in orchestrator cmd"
+    rf = {"response_format": {"type": "json_object"}, "reasoning_is_extracted": True}
+    with_rf = o._build_generate_cmd("req1", None, messages = [], max_new_tokens = 8, **rf)
+    assert {key: with_rf[key] for key in rf} == rf
+    assert "reasoning_is_extracted" not in cmd
 
 
 def test_worker_forwards_all_sampling_params_to_backend():
@@ -230,8 +234,14 @@ def test_worker_forwards_all_sampling_params_to_backend():
         def __init__(self):
             self.received = None
 
-        def generate_chat_response(self, **kwargs):
-            self.received = kwargs
+        def generate_chat_response(
+            self,
+            *,
+            response_format = None,
+            reasoning_is_extracted = None,
+            **kwargs,
+        ):
+            self.received = dict(kwargs, rf = response_format, rie = reasoning_is_extracted)
             return iter(())  # empty stream -> loop exits, gen_done is sent
 
     class _FakeQueue:
@@ -246,6 +256,8 @@ def test_worker_forwards_all_sampling_params_to_backend():
         "request_id": "r",
         "messages": [{"role": "user", "content": "hi"}],
         "max_new_tokens": 128,
+        "response_format": {"type": "json_object"},
+        "reasoning_is_extracted": True,
         **_SAMPLING,
     }
     backend = _RecordingBackend()
@@ -254,6 +266,8 @@ def test_worker_forwards_all_sampling_params_to_backend():
     assert backend.received is not None
     for key, val in _SAMPLING.items():
         assert backend.received[key] == val, f"{key} dropped/altered in worker gen_kwargs"
+    assert backend.received["rf"] == {"type": "json_object"}
+    assert backend.received["rie"] is True
 
 
 def test_orchestrator_cmd_carries_the_tool_protocol_flag():
@@ -329,9 +343,10 @@ def test_the_mlx_think_prefill_predicate_matches_the_decoder_it_describes():
     from core.inference.mlx_inference import MLXInferenceBackend
 
     src = inspect.getsource(MLXInferenceBackend._generate_text)
-    after = src[src.index("preserves_think_close") :]
+    after = src[src.index("think_close_survives = (") :]
     predicate = after[: after.index("decoder_preserves_token")]
     assert "tool_protocol_active" in predicate, "the prefill predicate ignores unrestricted mode"
+    assert "preserves_think_close = think_close_survives" in src
 
 
 def test_the_mlx_vlm_decoder_survives_a_reasoning_only_request():

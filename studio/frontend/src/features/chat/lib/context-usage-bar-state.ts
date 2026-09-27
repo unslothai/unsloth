@@ -29,6 +29,7 @@ export type ContextUsageBarInput = {
   parallelSlots?: number | null;
   /** context_length_enforced as the load reported it; null where it does not answer. */
   contextEnforced?: boolean | null;
+  contextBudget?: number | null;
 };
 
 /**
@@ -45,6 +46,7 @@ export type ContextLimitAdvice =
   | "stops-at-limit"
   | "mlx-near-limit"
   | "mlx-past-limit"
+  | "mlx-refuses-past-limit"
   | "unenforced-limit";
 
 function contextLimitAdvice(
@@ -54,8 +56,11 @@ function contextLimitAdvice(
   enforced: boolean | null | undefined,
   unboundedWhenBatched: boolean | undefined,
   slots: number | null | undefined,
+  budget: number | null | undefined,
 ): ContextLimitAdvice {
   if ((used / total) * 100 <= 85) return "none";
+  // Budget wins over contextEnforced: the cache is unbounded but requests are refused.
+  if (budget) return "mlx-refuses-past-limit";
   // A window the backend confirmed does not bound the cache is not a limit at all:
   // nothing rotates and nothing stops, so neither of the other two is true of it. An
   // unjudged MLX window says the same thing operationally: the probe could not build a
@@ -95,6 +100,7 @@ export function deriveContextUsageBar({
   contextEnforced,
   contextUnboundedWhenBatched,
   parallelSlots,
+  contextBudget,
 }: ContextUsageBarInput): ContextUsageBarState | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
@@ -146,6 +152,7 @@ export function deriveContextUsageBar({
       contextEnforced,
       contextUnboundedWhenBatched,
       parallelSlots,
+      contextBudget,
     ),
   };
 }
