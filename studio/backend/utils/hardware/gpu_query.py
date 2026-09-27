@@ -276,6 +276,21 @@ def _run_child(flight: _Flight, argv: list, kind: str, kwargs: dict) -> None:
                     )
     except BaseException as exc:  # handed to the waiters, never raised on this thread
         flight.exc = exc
+        if isinstance(
+            exc, subprocess.CalledProcessError
+        ):  # check=True: a failed answer all the same
+            with _lock:
+                existing = _cache.get(flight.key)
+                if flight.epoch == _reset_epoch and (
+                    existing is None or existing.started <= flight.started
+                ):
+                    _cache[flight.key] = _Entry(
+                        result = None,
+                        at = flight.started,
+                        gen = flight.gen,
+                        static_gen = flight.static_gen,
+                        started = flight.started,
+                    )
         if isinstance(exc, subprocess.TimeoutExpired) and flight.epoch == _reset_epoch:
             _mark_slow()
     finally:
@@ -394,17 +409,13 @@ def run_nvidia_smi(
         if entry is not None and _entry_fresh(entry, kind, now):
             _stats.hits += 1
             return _copy(entry.result)
+        # Display only: an expired inventory waits for a new answer, so a detached card is not reported.
         serve_stale = (
             entry is not None
             and entry.result is not None
-            and (
-                (kind == STATIC and entry.static_gen == _static_gen)
-                or (
-                    kind == DISPLAY
-                    and now - entry.at <= _DISPLAY_MAX_STALE_S
-                    and entry.gen == _events.generation()
-                )
-            )
+            and kind == DISPLAY
+            and now - entry.at <= _DISPLAY_MAX_STALE_S
+            and entry.gen == _events.generation()
         )
     if serve_stale:
         with _lock:

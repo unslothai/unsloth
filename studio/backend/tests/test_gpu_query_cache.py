@@ -495,6 +495,37 @@ def test_a_failed_answer_replaces_the_cached_inventory(smi, monkeypatch):
     assert counts[-1] is None, counts
 
 
+def test_an_expired_inventory_is_not_served_after_a_card_goes_away(smi, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GPU_QUERY_STATIC_TTL", "0.2")
+    assert nvidia.get_physical_gpu_count() == 2
+    time.sleep(0.5)
+    smi.state["gpus"] = smi.state["gpus"][:1]  # an eGPU detached
+    smi.save()
+    assert nvidia.get_physical_gpu_count() == 1
+
+
+def test_a_check_true_failure_replaces_the_cached_answer(smi, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GPU_QUERY_DISPLAY_TTL", "0")
+    argv = ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader"]
+
+    def run():
+        with gpu_query.display_reads():
+            return gpu_query.run_nvidia_smi(
+                argv, capture_output = True, text = True, timeout = 5, check = True
+            )
+
+    run()
+    smi.set(exit = 6)
+    for _ in range(20):
+        try:
+            run()
+        except subprocess.CalledProcessError:
+            break
+        time.sleep(0.1)
+    with pytest.raises(subprocess.CalledProcessError):
+        run()
+
+
 def test_an_older_answer_does_not_overwrite_a_newer_empty_one(smi, monkeypatch):
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_DISPLAY_TTL", "3600")
     argv = ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader"]
