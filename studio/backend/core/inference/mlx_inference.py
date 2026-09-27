@@ -2906,6 +2906,28 @@ class _TextBatchRow:
         self.ready_at = None
 
 
+def _row_kwargs(request):
+    """The sampling and render options one batched reply is planned with."""
+    return dict(
+        temperature = request.get("temperature", 0.7),
+        top_p = request.get("top_p", 0.9),
+        top_k = request.get("top_k", 40),
+        min_p = request.get("min_p", 0.0),
+        max_new_tokens = request.get("max_new_tokens", 256),
+        repetition_penalty = request.get("repetition_penalty", 1.0),
+        tools = request.get("tools"),
+        enable_thinking = request.get("enable_thinking"),
+        reasoning_effort = request.get("reasoning_effort"),
+        preserve_thinking = request.get("preserve_thinking"),
+        continue_final_message = request.get("continue_final_message", False),
+        presence_penalty = request.get("presence_penalty", 0.0),
+        seed = request.get("seed"),
+        frequency_penalty = request.get("frequency_penalty", 0.0),
+        logit_bias = request.get("logit_bias"),
+        stop = request.get("stop"),
+    )
+
+
 class _TextBatchSession:
     """mlx-lm's batch with the reply set left open."""
 
@@ -2967,22 +2989,7 @@ class _TextBatchSession:
                 request.get("messages") or [],
                 request.get("system_prompt", ""),
             ),
-            temperature = request.get("temperature", 0.7),
-            top_p = request.get("top_p", 0.9),
-            top_k = request.get("top_k", 40),
-            min_p = request.get("min_p", 0.0),
-            max_new_tokens = request.get("max_new_tokens", 256),
-            repetition_penalty = request.get("repetition_penalty", 1.0),
-            tools = request.get("tools"),
-            enable_thinking = request.get("enable_thinking"),
-            reasoning_effort = request.get("reasoning_effort"),
-            preserve_thinking = request.get("preserve_thinking"),
-            continue_final_message = request.get("continue_final_message", False),
-            presence_penalty = request.get("presence_penalty", 0.0),
-            seed = request.get("seed"),
-            frequency_penalty = request.get("frequency_penalty", 0.0),
-            logit_bias = request.get("logit_bias"),
-            stop = request.get("stop"),
+            **_row_kwargs(request),
         )
         prefix, remainder, cache, cache_key, all_tokens = backend._batch_prompt_row(
             plan.prompt,
@@ -3244,30 +3251,7 @@ class _VisionBatchSession:
         )
 
         backend = self.backend
-        plan = backend._plan_vlm_row(
-            backend._conversation_to_render(
-                request.get("messages") or [],
-                request.get("system_prompt", ""),
-                request.get("image"),
-            ),
-            request.get("image"),
-            temperature = request.get("temperature", 0.7),
-            top_p = request.get("top_p", 0.9),
-            top_k = request.get("top_k", 40),
-            min_p = request.get("min_p", 0.0),
-            max_new_tokens = request.get("max_new_tokens", 256),
-            repetition_penalty = request.get("repetition_penalty", 1.0),
-            tools = request.get("tools"),
-            enable_thinking = request.get("enable_thinking"),
-            reasoning_effort = request.get("reasoning_effort"),
-            preserve_thinking = request.get("preserve_thinking"),
-            continue_final_message = request.get("continue_final_message", False),
-            presence_penalty = request.get("presence_penalty", 0.0),
-            seed = request.get("seed"),
-            frequency_penalty = request.get("frequency_penalty", 0.0),
-            logit_bias = request.get("logit_bias"),
-            stop = request.get("stop"),
-        )
+        plan = backend._plan_vlm_request(request)
         if plan.images:
             backend._release_vlm_snapshots()
         try:
@@ -5005,6 +4989,14 @@ class MLXInferenceBackend:
                 )
         return prompt, chat_target
 
+    def _plan_vlm_request(self, request) -> "_VLMRowPlan":
+        image = request.get("image")
+        messages = request.get("messages") or []
+        conversation = self._conversation_to_render(
+            messages, request.get("system_prompt", ""), image
+        )
+        return self._plan_vlm_row(conversation, image, **_row_kwargs(request))
+
     def _plan_vlm_row(
         self,
         messages,
@@ -5605,33 +5597,7 @@ class MLXInferenceBackend:
             stream_batch,
         )
 
-        plans = [
-            self._plan_vlm_row(
-                self._conversation_to_render(
-                    request.get("messages") or [],
-                    request.get("system_prompt", ""),
-                    request.get("image"),
-                ),
-                request.get("image"),
-                temperature = request.get("temperature", 0.7),
-                top_p = request.get("top_p", 0.9),
-                top_k = request.get("top_k", 40),
-                min_p = request.get("min_p", 0.0),
-                max_new_tokens = request.get("max_new_tokens", 256),
-                repetition_penalty = request.get("repetition_penalty", 1.0),
-                tools = request.get("tools"),
-                enable_thinking = request.get("enable_thinking"),
-                reasoning_effort = request.get("reasoning_effort"),
-                preserve_thinking = request.get("preserve_thinking"),
-                continue_final_message = request.get("continue_final_message", False),
-                presence_penalty = request.get("presence_penalty", 0.0),
-                seed = request.get("seed"),
-                frequency_penalty = request.get("frequency_penalty", 0.0),
-                logit_bias = request.get("logit_bias"),
-                stop = request.get("stop"),
-            )
-            for request in requests
-        ]
+        plans = [self._plan_vlm_request(request) for request in requests]
         batch = [
             GenerationRequest(
                 prompt = plan.prompt,
