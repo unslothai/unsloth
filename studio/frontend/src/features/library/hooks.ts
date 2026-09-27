@@ -74,7 +74,6 @@ export function useLibraryPreviewUrl(
   return { url: current?.url ?? null, error: current?.error ?? null, retry };
 }
 
-/** The item's bytes for a document viewer once `enabled`, or why they cannot be shown. */
 export function useLibraryDocument(
   item: LibraryItem,
   enabled: boolean,
@@ -100,7 +99,6 @@ export function useLibraryDocument(
     return () => {
       cancelled = true;
     };
-    // `key` carries the item's identity and version; the object itself changes on every refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, enabled]);
   if (enabled && tooLarge) return { file: null, error: translate("library.preview.tooLargeToPreview") };
@@ -167,7 +165,6 @@ export function useColumnCount(
     const element = ref.current;
     if (!element) return;
     const measure = () => {
-      // Each column but the last also takes a gap.
       const gap = parseFloat(getComputedStyle(element).columnGap) || 0;
       const fit = Math.floor((element.clientWidth + gap) / (minColumnWidth + gap));
       setColumns(Math.max(2, Math.min(maxColumns, fit)));

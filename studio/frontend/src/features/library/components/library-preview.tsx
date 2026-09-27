@@ -81,7 +81,6 @@ function bodyFor(item: LibraryItem): Body {
   if (hasImagePreview(item)) return "image";
   if (item.textOnly) {
     if (isMarkdown(ownName(item), item.contentType)) return "markdown";
-    // A CSV sent in chat keeps its whole text, so it opens as a grid like an upload.
     return sheetDelimiter(ownName(item), item.contentType) ? "document" : "text";
   }
   if (documentKind(ownName(item), item.contentType)) return "document";
@@ -92,14 +91,11 @@ function bodyFor(item: LibraryItem): Body {
   return isTextPreviewable(item) ? "text" : "none";
 }
 
-/** Rendered bodies whose source can be shown instead: a page's HTML, a note's markdown, a
- *  CSV's text. An uploaded note is edited in that view. */
 function hasSource(item: LibraryItem, body: Body): boolean {
   if (body === "web" || body === "markdown") return true;
   return body === "document" && sheetDelimiter(ownName(item), item.contentType) !== null;
 }
 
-/** What shows: the source, as text, when a rendered body is toggled to its code. */
 function viewFor(item: LibraryItem, showCode: boolean): Body {
   const body = bodyFor(item);
   return showCode && body !== "web" && hasSource(item, body) ? "text" : body;
@@ -187,10 +183,8 @@ function ModelDetails({ item }: { item: LibraryItem }) {
   );
 }
 
-/** Bodies the zoom menu applies to; images and video bring their own. */
 const ZOOMABLE: ReadonlySet<Body> = new Set(["web", "document", "markdown", "text"]);
 
-/** Scales text while still filling the pane. A transform, since CSS zoom % differs by engine. */
 function Zoomed({ scale, children }: { scale: number; children: ReactNode }) {
   return (
     <div className="size-full overflow-hidden">
@@ -304,7 +298,6 @@ function PreviewBody({
     !mediaFailed && (body === "image" || body === "audio" || body === "video") ? body : null;
   const { url, error: urlError, retry } = useLibraryPreviewUrl(item, embedded);
   const doc = useLibraryDocument(item, body === "document");
-  // An unsaved edit to a CSV shows in its grid too, not only in the editor.
   const draftFile = useMemo(() => (draft === null ? null : new Blob([draft])), [draft]);
   const handleMediaError = () => {
     if (!retry()) onMediaError();
@@ -567,7 +560,6 @@ export function LibraryPreview({
     onOpenChange(false);
   }
 
-  // Name the source chat, so it reads apart from a direct upload.
   const meta = item
     ? [
         item.threadId

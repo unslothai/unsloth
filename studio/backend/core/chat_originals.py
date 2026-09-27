@@ -30,21 +30,16 @@ from utils.paths.storage_roots import account_path, ensure_account_dir
 
 logger = get_logger(__name__)
 
-# The documents a chat can show as pages or a grid. Anything else keeps its text alone.
 EXTENSIONS = frozenset({".pdf", ".docx", ".xlsx", ".xlsm", ".pptx"})
-# As the chat's own document ceiling (MAX_OPEN_DOCUMENT_ARCHIVE_BYTES in the frontend).
 MAX_BYTES = 50 * 1024 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SWEEP_GRACE_SECONDS = 3600
 _SWEEP_INTERVAL_SECONDS = 600
 _sweep_lock = threading.Lock()
-# Held while a save publishes a file and while a sweep checks and removes one, so a sweep never
-# removes a file a save has just refreshed.
+# Held across save-publish and sweep check-and-remove, so a sweep never removes a just-refreshed file.
 _file_lock = threading.Lock()
 # Per originals folder: each account has its own, and one account's sweep must not delay another's.
 _last_sweep: dict[Path, float] = {}
-# Later sweeps, per originals folder: when, and in which account's context. One thread serves them
-# all, so many accounts never hold a thread each.
 _due: dict[Path, tuple[float, contextvars.Context]] = {}
 _due_changed = threading.Condition()
 _worker: Optional[threading.Thread] = None
@@ -61,7 +56,6 @@ def originals_dir() -> Path:
 
 
 def attachment_sha256(attachment: object) -> Optional[str]:
-    """The hash an attachment's ``original`` names, when it is a well-formed one."""
     if not isinstance(attachment, dict):
         return None
     original = attachment.get("original")
@@ -76,7 +70,6 @@ def attachment_size(attachment: object) -> Optional[int]:
 
 
 def path_for(attachment: object) -> Optional[Path]:
-    """The stored original of an attachment, if it has one and it is still on disk."""
     sha256 = attachment_sha256(attachment)
     if sha256 is None:
         return None
@@ -102,7 +95,6 @@ def save(chunks: Iterable[bytes]) -> tuple[str, int]:
         final_path = directory / sha256
         with _file_lock:
             if final_path.exists():
-                # Already kept: refresh its age, so a sweep leaves it be.
                 os.utime(final_path)
             else:
                 os.replace(tmp_path, final_path)
@@ -112,15 +104,13 @@ def save(chunks: Iterable[bytes]) -> tuple[str, int]:
 
 
 def sweep(force: bool = False) -> int:
-    """Remove originals no attachment references, older than the grace period. At most once every
-    few minutes unless ``force``. Returns how many were removed."""
-    from storage.studio_db import referenced_chat_original_hashes
+    """Remove unreferenced originals past the grace period, at most every few minutes unless ``force``."""
+    from storage.studio_db import chat_original_unreferenced, referenced_chat_original_hashes
 
     now = time.time()
     try:
         directory = originals_dir()
         if not directory.is_dir():
-            # Nothing kept, or the account is gone.
             return 0
     except (OSError, ValueError):
         return 0
@@ -129,7 +119,6 @@ def sweep(force: bool = False) -> int:
         if not throttled:
             _last_sweep[directory] = now
     if throttled:
-        # A file uploaded now still needs a sweep once it ages past the grace period.
         _schedule(directory)
         return 0
     try:
@@ -143,8 +132,6 @@ def sweep(force: bool = False) -> int:
                     continue
                 if not (is_original or entry.name.endswith(".tmp")):
                     continue
-                # Unreferenced originals, and temp files a crashed upload left behind. Stat afresh
-                # under the lock: a save may have refreshed the file since the scan began.
                 with _file_lock:
                     try:
                         mtime = os.stat(entry.path).st_mtime
@@ -153,7 +140,14 @@ def sweep(force: bool = False) -> int:
                     if now - mtime < _SWEEP_GRACE_SECONDS:
                         waiting = True
                         continue
-                    os.unlink(entry.path)
+                    if not is_original:
+                        os.unlink(entry.path)
+                    else:
+                        # The scan may be stale (fork/import); recheck, blocking new references until removed.
+                        with chat_original_unreferenced(entry.name) as unreferenced:
+                            if not unreferenced:
+                                continue
+                            os.unlink(entry.path)
                 removed += 1
         if waiting:
             _schedule(directory)

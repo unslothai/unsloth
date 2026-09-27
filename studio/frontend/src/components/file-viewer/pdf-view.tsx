@@ -4,8 +4,8 @@
 import { Spinner } from "@/components/ui/spinner";
 import { useT } from "@/i18n";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useState } from "react";
-import { Document, Page, pdfjs } from "react-pdf";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { Document, Page, pdfjs, usePageContext } from "react-pdf";
 import "react-pdf/dist/Page/TextLayer.css";
 import { useWidth } from "./use-width";
 
@@ -17,15 +17,14 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 const MAX_PAGE_WIDTH = 880;
 const PAGE_GAP = 16;
 const EDGE = 24;
-// A page's canvas stays within these, drawn at a lower resolution past them: an extreme MediaBox
-// would otherwise ask for more pixels than a browser holds.
 const MAX_CANVAS_PIXELS = 32 * 1024 * 1024;
 const MAX_CANVAS_SIDE = 16384;
-// Below this resolution a page is too blurred to read, and shows as unpreviewable.
+// PDF.js skips larger images before decoding; a 600dpi letter/A4 scan still fits.
+const PDF_OPTIONS = { maxImageSize: 64 * 1024 * 1024 };
 const MIN_PIXEL_RATIO = 0.1;
-// A page with more text runs than this shows without its text layer: each is a positioned span.
 const MAX_TEXT_ITEMS = 20_000;
-// Layout keeps even an extreme first page to a sane height until each page is measured.
+const MAX_PAGE_OPERATIONS = 1_000_000;
+const MAX_PDF_PAGES = 10_000;
 const clampAspect = (aspect: number) => Math.min(Math.max(aspect, 0.05), 20);
 
 type PdfDocument = {
@@ -35,7 +34,56 @@ type PdfDocument = {
   }>;
 };
 
-/** One page, at its own shape and a resolution its canvas can hold. */
+const overflowed = new WeakMap<object, Set<number>>();
+const PageOverflow = createContext<() => void>(() => {});
+
+function PdfCanvas() {
+  const context = usePageContext();
+  const onOverflow = useContext(PageOverflow);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const page = context?.page;
+  const scale = context?.scale ?? 1;
+  const rotate = context?.rotate ?? 0;
+  const ratio = context?.devicePixelRatio ?? 1;
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!page || !canvas) return;
+    const viewport = page.getViewport({ scale: scale * ratio, rotation: rotate });
+    const shown = page.getViewport({ scale, rotation: rotate });
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    canvas.style.width = `${Math.floor(shown.width)}px`;
+    canvas.style.height = `${Math.floor(shown.height)}px`;
+    let over = false;
+    const task = page.render({
+      canvas,
+      canvasContext: canvas.getContext("2d", { alpha: false })!,
+      viewport,
+      annotationMode: pdfjs.AnnotationMode.ENABLE,
+      operationsFilter: (index) => {
+        if (index < MAX_PAGE_OPERATIONS) return true;
+        if (!over) {
+          over = true;
+          queueMicrotask(() => task.cancel());
+        }
+        return false;
+      },
+    });
+    task.promise.catch(() => {
+      if (!over) return;
+      page.cleanup();
+      onOverflow();
+    });
+    return () => {
+      task.cancel();
+      page.cleanup();
+      canvas.width = 0;
+      canvas.height = 0;
+    };
+  }, [page, scale, rotate, ratio, onOverflow]);
+  return <canvas ref={canvasRef} className="block select-none" />;
+}
+
 function PdfPage({ pdf, index, width, aspect }: { pdf: PdfDocument; index: number; width: number; aspect: number }) {
   const t = useT();
   const [own, setOwn] = useState<{ index: number; aspect: number } | null>(null);
@@ -52,7 +100,6 @@ function PdfPage({ pdf, index, width, aspect }: { pdf: PdfDocument; index: numbe
       live = false;
     };
   }, [pdf, index]);
-  // The page whose text runs were counted and found within the bound: its text layer is added then.
   const [selectable, setSelectable] = useState<number | null>(null);
   useEffect(() => {
     let live = true;
@@ -72,6 +119,12 @@ function PdfPage({ pdf, index, width, aspect }: { pdf: PdfDocument; index: numbe
       live = false;
     };
   }, [pdf, index]);
+  const [tooLong, setTooLong] = useState<number | null>(null);
+  const markOverflow = useCallback(() => {
+    const pages = overflowed.get(pdf) ?? new Set<number>();
+    overflowed.set(pdf, pages.add(index));
+    setTooLong(index);
+  }, [pdf, index]);
   const pageAspect = own?.index === index ? own.aspect : null;
   if (pageAspect === null) return <div style={{ height: width * aspect }} />;
   const height = width * pageAspect;
@@ -81,7 +134,7 @@ function PdfPage({ pdf, index, width, aspect }: { pdf: PdfDocument; index: numbe
     MAX_CANVAS_SIDE / width,
     MAX_CANVAS_SIDE / height,
   );
-  if (!(ratio >= MIN_PIXEL_RATIO)) {
+  if (!(ratio >= MIN_PIXEL_RATIO) || tooLong === index || overflowed.get(pdf)?.has(index)) {
     return (
       <p className="flex items-center justify-center text-sm text-muted-foreground" style={{ height: width * clampAspect(pageAspect) }}>
         {t("library.preview.cannotPreview")}
@@ -89,18 +142,21 @@ function PdfPage({ pdf, index, width, aspect }: { pdf: PdfDocument; index: numbe
     );
   }
   return (
-    <Page
-      pageNumber={index + 1}
-      width={width}
-      devicePixelRatio={ratio}
-      renderAnnotationLayer={false}
-      renderTextLayer={selectable === index}
-      loading={<div style={{ height }} />}
-    />
+    <PageOverflow.Provider value={markOverflow}>
+      <Page
+        pageNumber={index + 1}
+        width={width}
+        devicePixelRatio={ratio}
+        renderMode="custom"
+        customRenderer={PdfCanvas}
+        renderAnnotationLayer={false}
+        renderTextLayer={selectable === index}
+        loading={<div style={{ height }} />}
+      />
+    </PageOverflow.Provider>
   );
 }
 
-/** Only the pages near the viewport are mounted, so a document of many thousands opens as fast as a short one. */
 function PdfPages({
   pdf,
   pages,
@@ -149,7 +205,6 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
   const [pdf, setPdf] = useState<PdfDocument | null>(null);
   const [pages, setPages] = useState(0);
   const [aspect, setAspect] = useState(1.294);
-  // The file that failed, so a different one passed in later gets its own try.
   const [failed, setFailed] = useState<Blob | null>(null);
   const width = Math.max(200, Math.min(available, MAX_PAGE_WIDTH)) * scale;
 
@@ -160,6 +215,7 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
     <div ref={setContainer} className="size-full overflow-auto bg-muted/60">
       <Document
         file={file}
+        options={PDF_OPTIONS}
         onLoadSuccess={(document) => {
           setPdf(document);
           setPages(document.numPages);
@@ -171,16 +227,18 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
         onLoadError={() => setFailed(file)}
         loading={<Spinner className="mx-auto mt-24 size-6" />}
       >
-        {/* Keyed on the size, so the virtualizer measures afresh. */}
         {available > 0 && pdf && (
           <PdfPages
             key={`${width}:${aspect}`}
             pdf={pdf}
-            pages={pages}
+            pages={Math.min(pages, MAX_PDF_PAGES)}
             width={width}
             aspect={aspect}
             scrollElement={container}
           />
+        )}
+        {available > 0 && pdf && pages > MAX_PDF_PAGES && (
+          <p className="pb-6 text-center text-ui-12 text-muted-foreground">{t("library.preview.documentTruncated")}</p>
         )}
       </Document>
     </div>

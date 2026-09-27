@@ -116,7 +116,6 @@ def _item(
         "fileUrl": file_url,
         "threadId": thread_id,
         "threadTitle": thread_title,
-        # Origin links: compare pair, project, or training run.
         "pairId": pair_id,
         "projectId": project_id,
         "runId": run_id,
@@ -424,11 +423,9 @@ def _attachment_items() -> list[dict]:
     from storage.studio_db import list_chat_attachments
 
     items = []
-    # One file on disk however many messages sent it, so disk usage counts each original once.
     counted: set[str] = set()
     for attachment in list_chat_attachments():
         content_type = str(attachment.get("contentType") or "").split(";", 1)[0].strip().lower()
-        # A document sent with its original file (core.chat_originals) serves that file, not text.
         has_bytes = (
             attachment.get("type") in ("image", "audio")
             or content_type.startswith(("image/", "audio/", "video/"))
@@ -450,7 +447,6 @@ def _attachment_items() -> list[dict]:
                 pair_id = attachment.get("pairId"),
             )
         )
-        # Disk usage: the extracted text in the database, plus the original the first time it appears.
         sha256 = attachment.get("originalSha256")
         if sha256:
             text_bytes = attachment.get("textBytes") or 0
@@ -615,6 +611,9 @@ def _training_runs_by_dir() -> dict[str, str]:
     return runs
 
 
+_MAX_EXPORT_METADATA_BYTES = 1024 * 1024
+
+
 def _export_metadata(path: str, root: Path) -> Optional[dict]:
     """The export_metadata.json Studio writes beside an export, from the model up to its top folder."""
     here = Path(path)
@@ -624,7 +623,11 @@ def _export_metadata(path: str, root: Path) -> Optional[dict]:
         meta = here / "export_metadata.json"
         if meta.is_file():
             try:
-                data = json.loads(meta.read_text(encoding = "utf-8-sig"))
+                with open(meta, "rb") as handle:
+                    raw = handle.read(_MAX_EXPORT_METADATA_BYTES + 1)
+                if len(raw) > _MAX_EXPORT_METADATA_BYTES:
+                    return None
+                data = json.loads(raw.decode("utf-8-sig"))
             except (OSError, ValueError):
                 return None
             return data if isinstance(data, dict) else None
@@ -726,7 +729,6 @@ class _SandboxSession(NamedTuple):
 
 
 def _sandbox_sessions() -> list[_SandboxSession]:
-    """Every chat or project that can own a sandbox."""
     from storage.studio_db import get_connection
 
     conn = get_connection()

@@ -76,7 +76,6 @@ export interface LibrarySortMenuProps {
   activity?: boolean;
   /** False where only folders show, which have no size. */
   showSize?: boolean;
-  /** Newest first, for the Last activity order. */
   desc?: boolean;
   onDirectionChange?: (desc: boolean) => void;
 }

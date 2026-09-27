@@ -855,9 +855,6 @@ export async function listChatAttachments(
   };
 }
 
-/** Keeps a document's original file on the server, by content hash, for the attachment to name. */
-/** `epoch`: the auth session the send began in. The upload is refused, and a retry stopped, once it has
- *  changed, so a document never lands in the account switched to. */
 export async function uploadChatAttachmentOriginal(
   file: File,
   epoch = getAuthSessionEpoch(),
@@ -877,7 +874,6 @@ export async function uploadChatAttachmentOriginal(
   return parseJsonOrThrow<{ sha256: string; sizeBytes: number }>(response);
 }
 
-/** Stored attachment content (a document's original file, image bytes or extracted text) as a Blob. */
 export async function fetchChatAttachmentBlob(
   messageId: string,
   attachmentId: string,

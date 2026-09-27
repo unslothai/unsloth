@@ -3,7 +3,6 @@
 
 import { useLayoutEffect, useState } from "react";
 
-/** The element's inner width, kept current as it resizes; 0 until it is mounted. */
 export function useWidth(element: HTMLElement | null): number {
   const [width, setWidth] = useState(0);
   useLayoutEffect(() => {

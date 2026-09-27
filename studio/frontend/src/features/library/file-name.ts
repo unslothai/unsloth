@@ -34,7 +34,6 @@ export function libraryFileName(item: {
   fileName?: string;
   textOnly?: boolean;
 }): string {
-  // A text file chat stores whole (CSV, markdown, code) keeps its extension; extracted text is .txt.
   const own = item.fileName ?? item.name;
   const extension = clean(item.textOnly && !isTextAttachmentName(own) ? "txt" : fileExtension(own));
   let name = clean(item.name) || FALLBACK_STEM;

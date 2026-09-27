@@ -371,7 +371,6 @@ def test_attachment_file_serves_text_parts(tmp_path, monkeypatch):
     }
     _seed(tmp_path, monkeypatch, [attachment])
     response = chat_history.get_attachment_file("msg-1", "att-txt", current_subject = "unsloth")
-    # Served as the file reads, without the wrappers chat adds for the model.
     assert response.body.decode("utf-8") == "first\nsecond\nthird"
     assert response.media_type.startswith("text/plain")
 
@@ -671,3 +670,28 @@ def test_a_sweep_never_creates_the_originals_folder(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     assert chat_originals.sweep(force = True) == 0
     assert not chat_originals.originals_dir().exists()
+
+
+def test_a_sweep_rechecks_a_stale_snapshot_before_removing(tmp_path, monkeypatch):
+    from core import chat_originals
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    sha256, size = chat_originals.save([b"%PDF-1.4 kept"])
+    path = chat_originals.originals_dir() / sha256
+    os.utime(path, (0, 0))
+    studio_db.upsert_chat_thread(_thread())
+    attachment = {
+        "id": "att-1",
+        "type": "document",
+        "name": "a.pdf",
+        "contentType": "application/pdf",
+        "content": [{"type": "text", "text": "x"}],
+        "original": {"sha256": sha256, "sizeBytes": size},
+    }
+    studio_db.upsert_chat_message(_message("msg-1", attachments = [attachment]))
+    monkeypatch.setattr(studio_db, "referenced_chat_original_hashes", lambda: set())
+    assert chat_originals.sweep(force = True) == 0
+    assert path.is_file()
+    studio_db.delete_chat_threads(["thread-1"])
+    assert chat_originals.sweep(force = True) == 1
+    assert not path.exists()

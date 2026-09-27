@@ -127,11 +127,8 @@ export const AttachmentViewer: FC<{
   );
 };
 
-/** `plain`: a sent document's stored text, shown when its original file is gone. `text` and `plain`
- *  are capped for rendering (`truncated`); `blob`, which a download saves, is whole. */
 type Loaded = { blob?: Blob; text?: string; plain?: string; truncated?: boolean; error?: boolean };
 
-/** Rendered markdown, or the document's pages, grid or slides, at `scale`. */
 const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; scale: number }> = ({
   name,
   contentType,
@@ -167,13 +164,11 @@ const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; sca
   return <DocumentView file={loaded.blob} kind={kind} name={name} contentType={contentType} scale={scale} />;
 };
 
-/** Opens a document attachment in the Library's viewer. `load` returns its bytes. */
 const DocumentDialog: FC<
   PropsWithChildren<{
     source: AttachmentSource;
     load: () => Promise<Blob>;
     redactFromReload: boolean;
-    /** A text response is the stored text: the server serves that when the original is gone. */
     textFallback?: boolean;
   }>
 > = ({ children, source, load, redactFromReload, textFallback = false }) => {
@@ -181,7 +176,6 @@ const DocumentDialog: FC<
   const [scale, setScale] = useState(1);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const markdown = isMarkdown(source.name, source.contentType ?? "");
-  // Read on open, so a re-render (e.g. streaming) does not restart the load.
   const loadRef = useRef(load);
   useEffect(() => {
     loadRef.current = load;
@@ -214,7 +208,10 @@ const DocumentDialog: FC<
     <AttachmentViewer
       trigger={children}
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setLoaded(null);
+      }}
       source={source}
       meta={attachmentViewerMeta(source, blob?.size, loaded?.truncated && "preview truncated")}
       media={false}
@@ -240,7 +237,6 @@ const DocumentDialog: FC<
   );
 };
 
-/** A sent document's kept original, fetched by message id. Sent attachments only. */
 const SentOriginalDialog: FC<
   PropsWithChildren<{ source: AttachmentSource; redactFromReload: boolean }>
 > = ({ children, source, redactFromReload }) => {
@@ -269,7 +265,6 @@ export const AttachmentDocumentDialog: FC<
       </DocumentDialog>
     );
   }
-  // A sent CSV or note keeps the whole file as its text, inside the attachment's wrapper.
   if (!source.hasOriginal && text !== undefined) {
     return (
       <DocumentDialog

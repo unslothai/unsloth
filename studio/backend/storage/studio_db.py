@@ -18,11 +18,12 @@ import re
 import shutil
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
 
 from core import chat_originals
@@ -626,13 +627,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
-    # Version 4 filled it in: the stored original of a document sent in chat (core.chat_originals).
     inventory_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(chat_attachment_inventory)")
     }
     if "original_sha256" not in inventory_columns:
         conn.execute("ALTER TABLE chat_attachment_inventory ADD COLUMN original_sha256 TEXT")
-    # Version 5: a kept original's extracted text, stored in the database alongside it.
     if "text_bytes" not in inventory_columns:
         conn.execute("ALTER TABLE chat_attachment_inventory ADD COLUMN text_bytes INTEGER")
     conn.execute(
@@ -4516,7 +4515,6 @@ def list_chat_attachments_page(
 
     has_more = len(rows) > limit
     page_rows = rows[:limit]
-    # Only an original still on disk counts: a restored backup keeps the hash but not the file.
     originals = chat_originals.originals_dir()
     attachments = [
         {
@@ -4552,6 +4550,26 @@ def referenced_chat_original_hashes() -> set[str]:
     finally:
         conn.close()
     return {row[0] for row in rows}
+
+
+@contextmanager
+def chat_original_unreferenced(sha256: str) -> Iterator[bool]:
+    """Whether no attachment references ``sha256``, with the write lock held until the block
+    ends: a message that would reference it waits, so it cannot do so while the file is removed."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_chat_attachment_inventory_current(conn)
+        row = conn.execute(
+            "SELECT 1 FROM chat_attachment_inventory WHERE original_sha256 = ? LIMIT 1", (sha256,)
+        ).fetchone()
+        yield row is None
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def list_chat_attachments() -> list[dict]:

@@ -30,7 +30,6 @@ export type AttachmentSelection = {
   audio: AttachmentAudioPart | undefined;
   video: AttachmentVideoPart | undefined;
   text: string | undefined;
-  /** A sent document whose original file the server kept (features/chat/attachment-originals). */
   hasOriginal: boolean;
 };
 

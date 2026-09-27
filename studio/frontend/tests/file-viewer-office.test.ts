@@ -9,7 +9,6 @@ import { strToU8, zipSync } from "fflate";
 
 import { formatNumber, readPptx, readXlsx } from "../src/components/file-viewer/office.ts";
 
-// xmldom stands in for DOMParser, plus the element traversal it lacks.
 {
   const proto = Object.getPrototypeOf(new DOMParser().parseFromString("<a/>", "application/xml").documentElement);
   const element = (node: Node | null): Element | null => {
@@ -47,7 +46,6 @@ function workbook(sheet: string, extra: Record<string, Uint8Array> = {}): Uint8A
   });
 }
 
-/** Sets an entry's uncompressed size in the central directory, as a zip bomb declares it. */
 function declareHuge(zip: Uint8Array, name: string): Uint8Array {
   const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
   for (let i = 0; i < zip.length - 46; i++) {
@@ -93,7 +91,6 @@ test("xlsx: reads only the parts and rows it keeps", () => {
   const zip = workbook(`<x:worksheet xmlns:x="${MAIN}"><x:sheetData>${rows}</x:sheetData></x:worksheet>`, {
     "customXml/item1.xml": strToU8("<x/>"),
   });
-  // Past the unpacked ceiling: inflating it would refuse the file.
   const [sheet] = readXlsx(declareHuge(zip, "customXml/item1.xml"));
   assert.equal(sheet?.rows.length, 5000);
   assert.equal(sheet?.truncated, true);
@@ -103,13 +100,13 @@ test("xlsx: sheet XML read as text", () => {
   const [sheet] = readXlsx(
     workbook(`<worksheet xmlns="${MAIN}"><cols><col min='2' max='2' hidden='1'/></cols><sheetData>
 <row r="1"><c r="A1" t="inlineStr"><is><r><t>a &amp; &#x42;</t></r><r><t><![CDATA[<c></row>]]></t></r><rPh><t>ruby</t></rPh></is></c><c r="B1"><v>9</v></c></row>
-<row r="2"><c r="A2"><f t="shared" ref="A2:A3" si="0">SUM(b2,C:C,2:2)*2+$C$1+'A1'!A1</f><v>7</v></c></row>
+<row r="2"><c r="A2"><f t="shared" ref="A2:A3" si="0">SUM(b2,C:C,2:2)*2+$C$1+'A1'!A1+T[[#This Row],[Q1]]</f><v>7</v></c></row>
 <row r="3"><c r="A3"><f t="shared" si="0"/></c></row>
 </sheetData></worksheet>`),
   );
   assert.deepEqual(
     sheet?.rows.map((row) => row.map((cell) => cell?.text)),
-    [["a & B<c></row>"], ["7"], ["=SUM(B3,C:C,3:3)*2+$C$1+'A1'!A2"]],
+    [["a & B<c></row>"], ["7"], ["=SUM(B3,C:C,3:3)*2+$C$1+'A1'!A2+T[[#This Row],[Q1]]"]],
   );
 });
 
@@ -137,10 +134,9 @@ test("pptx: tables capped, SmartArt read, pictures as Blobs", () => {
     "ppt/diagrams/data1.xml": strToU8(
       `<dgm:dataModel xmlns:dgm="${DGM}" xmlns:a="${A}"><dgm:ptLst><dgm:pt type="doc">${text("Doc")}</dgm:pt><dgm:pt>${text("Plan")}</dgm:pt></dgm:ptLst></dgm:dataModel>`,
     ),
-    "ppt/media/image1.png": new Uint8Array([137, 80, 78, 71]),
+    "ppt/media/image1.png": new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1]),
     "ppt/media/clip.mp4": new Uint8Array(8),
   });
-  // Video is never inflated.
   const [table, diagram, image] = readPptx(declareHuge(zip, "ppt/media/clip.mp4")).slides[0]!.boxes;
   assert.equal(image?.image?.type, "image/png");
   assert.deepEqual(image?.crop, { l: 0.25, t: 0, r: 0, b: -0.1 });

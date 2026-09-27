@@ -99,6 +99,7 @@ const XML_NAMED_ENTITIES: Record<string, string> = {
  *  the webview. fflate allocates at the declared size and stops, so mammoth is handed a
  *  repack of fflate's output. */
 const MAX_DOCX_UNPACKED_BYTES = 2 * MAX_OPEN_DOCUMENT_ARCHIVE_BYTES;
+const MAX_DOCX_ENTRIES = 100_000;
 const AUDIO_EXTENSION_MIMES: Record<string, string> = {
   wav: "audio/wav",
   mp3: "audio/mpeg",
@@ -605,22 +606,16 @@ type DocxArchive = {
  *  (still marked oversized) for the viewer, which needs large images as well as text. */
 const DOCX_IMAGE_PART = /\.(png|jpe?g|gif|bmp|tiff?|emf|wmf|svg|webp)$/i;
 
-/** The viewer's view of a package's images: which parts are images, as mammoth reads them (their
- *  Override in [Content_Types].xml, else their extension's Default, else their name), and which the
- *  document and its notes and comments point at. Only those are unpacked: an image no part refers
- *  to is never shown. */
 function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => boolean; used: Set<string> } {
   const names = new Set<string>();
-  const parts = unzipSync(bytes, {
-    filter: (entry) => {
-      names.add(entry.name);
-      return (
-        (entry.name === DOCX_CONTENT_TYPES_PART || entry.name.endsWith(".rels")) &&
-        entry.originalSize <= MAX_OPEN_DOCUMENT_XML_BYTES
-      );
-    },
-  });
-  const types = parts[DOCX_CONTENT_TYPES_PART];
+  const read = (name: string) =>
+    unzipSync(bytes, {
+      filter: (entry) => {
+        names.add(entry.name);
+        return entry.name === name && entry.originalSize <= MAX_OPEN_DOCUMENT_XML_BYTES;
+      },
+    })[name];
+  const types = read(DOCX_CONTENT_TYPES_PART);
   const defaults = new Map<string, string>();
   const overrides = new Map<string, string>();
   const markup = types ? strFromU8(types).replace(XML_NON_ELEMENT_RE, "") : "";
@@ -639,9 +634,8 @@ function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => bool
       overrides.get(name.toLowerCase()) ?? (dot === -1 ? undefined : defaults.get(name.slice(dot + 1).toLowerCase()));
     return type ? type.startsWith("image/") : DOCX_IMAGE_PART.test(name);
   };
-  // Each part's targets resolve against its folder, and mammoth opens the first that exists.
   const targetsOf = (path: string) =>
-    readDocxXmlTargets(parts[docxRelationshipsPath(path)], path.slice(0, Math.max(0, path.lastIndexOf("/"))));
+    readDocxXmlTargets(read(docxRelationshipsPath(path)), path.slice(0, Math.max(0, path.lastIndexOf("/"))));
   const resolve = (targets: string[] | undefined, fallback: string) =>
     targets?.find((path) => names.has(path)) ?? fallback;
   const main = resolve(targetsOf("").get(DOCX_MAIN_DOCUMENT_TYPE), DOCX_MAIN_DOCUMENT_FALLBACK);
@@ -657,6 +651,13 @@ function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => bool
 function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = false): DocxArchive {
   const names = new Set<string>();
   const oversized = new Set<string>();
+  let count = 0;
+  unzipSync(bytes, {
+    filter: () => {
+      if (++count > MAX_DOCX_ENTRIES) throw new Error(`DOCX file is too large: ${filename}`);
+      return false;
+    },
+  });
   const images = keepLarge ? docxPreviewImages(bytes) : null;
   let unpacked = 0;
 
@@ -664,11 +665,9 @@ function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = fals
     filter: (entry) => {
       names.add(entry.name);
       const image = images?.isImage(entry.name) ?? false;
-      // The viewer unpacks an image, whatever its size, only when a part points at it.
       if (image && !images!.used.has(entry.name)) return false;
       if (entry.originalSize > MAX_OPEN_DOCUMENT_XML_BYTES) {
         oversized.add(entry.name);
-        // Mammoth reads large media, never large unreferenced XML.
         if (!image) return false;
       }
       unpacked += entry.originalSize;
@@ -737,13 +736,10 @@ export function repackDocxAttachmentArchive(
   return zipSync(archive.entries, { level: 0 });
 }
 
-// A tag, or markup whose text may look like one.
 const XML_TOKEN_RE =
   /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<[?!][\s\S]*?>|<(\/?)([^\s/>]+)(?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*\s*(\/?)>/g;
 const PARAGRAPH_RE = /<(?:[\w.-]+:)?p[\s/>]/;
 
-/** The document cut after its `max`th paragraph (<w:p>, at any depth), each element still open
- *  closed after it; null when it has no more. */
 function cutDocxParagraphs(xml: string, max: number): string | null {
   const open: string[] = [];
   let count = 0;
@@ -765,8 +761,6 @@ function cutDocxParagraphs(xml: string, max: number): string | null {
   return null;
 }
 
-/** repackDocxAttachmentArchive for the viewer: large images kept, and the body cut after
- *  `maxParagraphs`, so mammoth never converts more than is shown. */
 export function repackDocxPreviewArchive(
   filename: string,
   bytes: Uint8Array,
@@ -841,12 +835,10 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
 // A text attachment's limit, in UTF-8 bytes. Cells are not capped, so the total must be.
 const MAX_OFFICE_TEXT_BYTES = MAX_TEXT_ATTACHMENT_BYTES;
 
-/** UTF-8 length of `text` up to `limit`, and where to cut to fit. */
 function utf8Within(text: string, limit: number): { bytes: number; end: number } {
   let bytes = 0;
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i);
-    // A surrogate pair is one four-byte character.
     const pair = code >= 0xd800 && code < 0xdc00 && i + 1 < text.length;
     const size = code < 0x80 ? 1 : code < 0x800 ? 2 : pair ? 4 : 3;
     if (bytes + size > limit) return { bytes, end: i };
@@ -856,7 +848,6 @@ function utf8Within(text: string, limit: number): { bytes: number; end: number }
   return { bytes, end: text.length };
 }
 
-/** Charges each piece of text plus its delimiter to the byte budget. */
 function textBudget(limit: number) {
   let left = limit;
   let cut = false;
@@ -874,7 +865,6 @@ function textBudget(limit: number) {
   };
 }
 
-/** Sheet rows as TSV, or slide text, for the model. Throws if too large or unreadable. */
 export async function extractOfficeAttachmentText(
   file: File,
   label: "XLSX" | "PPTX",
@@ -914,7 +904,6 @@ export async function extractOfficeAttachmentText(
           .trimEnd();
         if (line) lines.push(line);
       }
-      // Said outright, so the model does not answer as if it read the whole sheet.
       if (sheet.truncated) {
         lines.push(
           `[Truncated: only part of the workbook is included, at most ${MAX_SHEET_ROWS} rows and ${MAX_SHEET_COLUMNS} columns per sheet.]`,
@@ -1065,7 +1054,6 @@ export function parseAttachmentText(raw: string): AttachmentText {
   return { label, ...sliceAttachmentBody(raw, start, end) };
 }
 
-/** The whole body parseAttachmentText previews, uncapped: what a download holds. */
 export function attachmentBodyText(raw: string): string {
   const { start, end } = attachmentBodyRange(raw);
   return raw.slice(start, Math.max(start, end));

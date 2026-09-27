@@ -267,7 +267,6 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const threadIds = this.getThreadIds();
     const reservationToken = findPreStreamRunReservation(threadIds);
-    // Read now: extraction can take a while, and the send belongs to the chat and account as they were.
     const { incognito } = useChatRuntimeStore.getState();
     const epoch = getAuthSessionEpoch();
     try {
@@ -585,7 +584,6 @@ const OFFICE_LABELS: Record<string, "XLSX" | "PPTX"> = {
   pptx: "PPTX",
 };
 
-/** Excel workbooks and PowerPoint decks: the model reads their text, the viewer shows the file. */
 class OfficeAttachmentAdapter implements AttachmentAdapter {
   accept = [
     ".xlsx,.xlsm,.pptx",
@@ -594,23 +592,19 @@ class OfficeAttachmentAdapter implements AttachmentAdapter {
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   ].join(",");
 
-  // By extension, or by type for a deck picked without one.
   private label(name: string, type: string): "XLSX" | "PPTX" {
-    // Own keys only, so ".constructor" finds nothing.
     const extension = name.split(".").pop()?.toLowerCase() ?? "";
     const byName = Object.hasOwn(OFFICE_LABELS, extension) ? OFFICE_LABELS[extension] : undefined;
     return byName ?? (type.includes("presentationml") ? "PPTX" : "XLSX");
   }
 
-  // The text send() uses, read at add: the composer lets go of the typed message before send()
-  // runs, so a file that cannot be read is refused here, whichever of its parts is at fault.
+  // Read at add: the composer drops the typed message before send(), so refuse unreadable files here.
   private readonly texts = new Map<string, string>();
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     const label = this.label(file.name, file.type);
     let text: string;
     try {
-      // Extraction also validates size and archive, so the file is read once.
       text = await extractOfficeAttachmentText(file, label);
     } catch (cause) {
       const message = (cause as Error | undefined)?.message;
@@ -858,7 +852,6 @@ function cloneAttachments(
   if (!Array.isArray(attachments)) {
     return [];
   }
-  // A temporary chat's in-memory File has no JSON form; persistAttachmentOriginals uploads it.
   return JSON.parse(JSON.stringify(attachments.map((attachment) => ({ ...attachment, file: undefined }))));
 }
 

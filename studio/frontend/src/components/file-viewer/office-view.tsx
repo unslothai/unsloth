@@ -18,6 +18,7 @@ import {
   type Slide,
   type SlideBox,
   columnName,
+  picturePixels,
   readDelimited,
   readPptx,
   readXlsx,
@@ -33,14 +34,24 @@ async function parse(file: Blob, kind: DocumentKind, name: string, contentType: 
   if (kind === "docx") {
     const { default: mammoth } = await import("mammoth");
     const repacked = repackDocxPreviewArchive(name, bytes, MAX_DOCX_PARAGRAPHS);
-    const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.archive.buffer as ArrayBuffer });
+    let dropped = false;
+    let pixelsLeft = MAX_DOCX_PIXELS;
+    const convertImage = mammoth.images.imgElement(async (image) => {
+      const pixels = picturePixels(new Uint8Array(await image.readAsArrayBuffer()));
+      if (pixels !== undefined && pixels <= pixelsLeft) {
+        pixelsLeft -= pixels;
+        return { src: `data:${image.contentType};base64,${await image.readAsBase64String()}` };
+      }
+      dropped = true;
+      return { src: "" };
+    });
+    const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.archive.buffer as ArrayBuffer }, { convertImage });
     const { html, truncated } = sanitizeDocxHtml(value);
-    return { kind, html, truncated: truncated || repacked.truncated };
+    return { kind, html, truncated: truncated || repacked.truncated || dropped };
   }
   if (kind === "slides") return { kind, deck: readPptx(bytes) };
   const delimiter = sheetDelimiter(name, contentType);
   if (delimiter) {
-    // Excel's "Unicode Text" export is UTF-16 with a byte order mark.
     const encoding =
       bytes[0] === 0xff && bytes[1] === 0xfe
         ? "utf-16le"
@@ -58,24 +69,22 @@ const DOCX_TAGS = new Set(
 );
 const DOCX_ATTRIBUTES = new Set(["href", "src", "alt", "id", "colspan", "rowspan"]);
 
-// Paragraphs past this are cut before conversion, so mammoth and the DOM never see them.
 const MAX_DOCX_PARAGRAPHS = 20_000;
-// Elements past this are dropped: a paragraph can still convert to many.
 const MAX_DOCX_ELEMENTS = 50_000;
+const MAX_DOCX_PIXELS = 128 * 1024 * 1024;
 
-/** mammoth writes a small vocabulary; anything else, and any link that is not a web, mail or
- *  in-document one, is dropped before the markup reaches the page. */
 function sanitizeDocxHtml(html: string): { html: string; truncated: boolean } {
-  const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
-  const elements = doc.body.querySelectorAll("*");
-  const cut = elements[MAX_DOCX_ELEMENTS];
-  if (cut) {
-    // Drop the cut and all that follows it at every level, so one long table keeps its first rows.
-    for (let node: Element = cut; node !== doc.body; node = node.parentElement!) {
-      while (node.nextSibling) node.nextSibling.remove();
+  // Cut before parsing: mammoth escapes each < in text, so every one left is a tag.
+  const opening = /<[a-z]/gi;
+  let cut = -1;
+  for (let count = 0; opening.exec(html); count++) {
+    if (count === MAX_DOCX_ELEMENTS) {
+      cut = opening.lastIndex - 2;
+      break;
     }
-    cut.remove();
   }
+  const kept = cut === -1 ? html : html.slice(0, cut);
+  const doc = new DOMParser().parseFromString(`<body>${kept}</body>`, "text/html");
   for (const element of Array.from(doc.body.querySelectorAll("*"))) {
     if (!DOCX_TAGS.has(element.localName)) {
       element.replaceWith(...Array.from(element.childNodes));
@@ -90,17 +99,14 @@ function sanitizeDocxHtml(html: string): { html: string; truncated: boolean } {
       if (unsafe) element.removeAttribute(attr.name);
     }
   }
-  return { html: doc.body.innerHTML, truncated: Boolean(cut) };
+  return { html: doc.body.innerHTML, truncated: cut !== -1 };
 }
 
-// A Letter page's width at 96 dpi.
 const DOCX_PAGE_WIDTH = 816;
 
 function DocxView({ html, truncated, scale }: { html: string; truncated: boolean; scale: number }) {
   const t = useT();
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
-  // A pixel width, which zoom scales the same way in every engine; a percentage it does not.
-  // 100% is the page, or the pane when that is narrower.
   const pageWidth = Math.max(
     200,
     Math.min(useWidth(container), DOCX_PAGE_WIDTH * useUiSpaceScale()),
@@ -122,7 +128,6 @@ function DocxView({ html, truncated, scale }: { html: string; truncated: boolean
         onClick={onClick}
         style={{ zoom: scale, width: pageWidth }}
         className="mx-auto min-h-full select-text bg-white px-[clamp(24px,8%,80px)] py-16 text-ui-15 leading-relaxed text-neutral-900 shadow-sm ring-1 ring-black/5 [&_a]:text-blue-700 [&_a]:underline [&_h1]:mb-3 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:mt-5 [&_h2]:mb-2 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:mb-2 [&_h3]:text-lg [&_h3]:font-semibold [&_img]:inline-block [&_img]:max-w-full [&_li]:my-1 [&_ol]:mb-3 [&_ol]:list-decimal [&_ol]:pl-7 [&_p]:mb-2.5 [&_table]:my-3 [&_table]:border-collapse [&_td]:border [&_td]:border-neutral-300 [&_td]:px-2 [&_td]:py-1 [&_td]:align-top [&_th]:border [&_th]:border-neutral-300 [&_th]:px-2 [&_th]:py-1 [&_ul]:mb-3 [&_ul]:list-disc [&_ul]:pl-7"
-        // Sanitised above: a fixed set of tags and attributes, with no scripts or handlers.
         dangerouslySetInnerHTML={{ __html: html }}
       />
       {truncated && (
@@ -136,12 +141,9 @@ const ROW_HEIGHT = 28;
 const DEFAULT_COLUMN_WIDTH = 100;
 const ROW_HEADER_WIDTH = 48;
 
-// Plain strings, not cn(): hundreds of cells render per scroll frame.
 const CELL = "h-7 border-r border-b border-border px-2 whitespace-nowrap overflow-hidden text-ellipsis";
 const HEADER = `${CELL} sticky bg-muted font-normal text-muted-foreground text-center`;
 
-/** Columns `start` to `end` of a row, with spacer cells for those scrolled past. Memoized so rows
- *  still in view skip rendering. */
 const SheetRow = memo(function SheetRow({
   r,
   row,
@@ -190,21 +192,17 @@ function SheetGrid({
 }: {
   sheet: Sheet;
   scale: number;
-  /** The UI size setting, which h-7 rows and the text grow with before the zoom applies. */
   uiScale: number;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const rowHeight = ROW_HEIGHT * uiScale * scale;
   const headerWidth = ROW_HEADER_WIDTH * uiScale;
-  // Per sheet, not per scroll frame.
   const { visibleColumns, visibleRows, widths, rowCount } = useMemo(() => {
-    // reduce, not a spread: rows a sheet leaves out are holes, which a spread turns into NaN.
     const columns = Math.max(
       1,
       sheet.rows.reduce((max, row) => Math.max(max, row?.length ?? 0), sheet.widths.length),
     );
     const rowCount = Math.max(sheet.rows.length, 1);
-    // Hidden rows and columns are skipped but keep their labels, as Excel shows them (A, C).
     const visibleColumns = Array.from({ length: columns }, (_, index) => index).filter(
       (index) => !sheet.hidden?.columns.has(index),
     );
@@ -214,24 +212,20 @@ function SheetGrid({
     const widths = visibleColumns.map((index) => (sheet.widths[index] ?? DEFAULT_COLUMN_WIDTH) * uiScale);
     return { visibleColumns, visibleRows, widths, rowCount };
   }, [sheet, uiScale]);
-  // A fixed layout only honours the column widths when the table has a width of its own.
   const tableWidth = useMemo(() => widths.reduce((sum, width) => sum + width, headerWidth), [widths, headerWidth]);
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: visibleRows?.length ?? rowCount,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => rowHeight,
-    // The sticky column header sits above the first row.
     paddingStart: rowHeight,
     overscan: 6,
   });
-  // Only the columns in view are mounted.
   const columnVirtualizer = useVirtualizer({
     horizontal: true,
     count: visibleColumns.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: (index) => widths[index]! * scale,
-    // The sticky row header sits left of the first column.
     paddingStart: headerWidth * scale,
     overscan: 4,
   });
@@ -304,7 +298,6 @@ function SheetView({ sheets, tabs, scale }: { sheets: Sheet[]; tabs: boolean; sc
   if (!sheet) return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.emptyDocument")}</p>;
   return (
     <div className="flex size-full min-h-0 flex-col overflow-hidden border-t border-border">
-      {/* Keyed on everything the row height follows, so the virtualizer measures afresh. */}
       <SheetGrid key={`${active}:${scale}:${uiScale}`} sheet={sheet} scale={scale} uiScale={uiScale} />
       {(tabs || sheet.truncated) && (
         <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-t border-border px-2 py-1.5">
@@ -335,13 +328,10 @@ function SheetView({ sheets, tabs, scale }: { sheets: Sheet[]; tabs: boolean; sc
 
 const TITLE_FRAME = { x: 0.06, y: 0.05, w: 0.88, h: 0.18 };
 const BODY_FRAME = { x: 0.06, y: 0.26, w: 0.88, h: 0.68 };
-// A title slide's placeholders, which take their place from the layout rather than the slide.
 const CENTER_TITLE_FRAME = { x: 0.1, y: 0.26, w: 0.8, h: 0.24 };
 const SUBTITLE_FRAME = { x: 0.15, y: 0.53, w: 0.7, h: 0.2 };
 const TITLES = new Set(["title", "ctrTitle"]);
 
-/** `mirror` for a picture, which a flip mirrors. Text is never mirrored: a vertical flip turns it
- *  upside down, as PowerPoint draws it, and a horizontal one leaves it be. */
 function frameStyle(frame: NonNullable<SlideBox["frame"]>, mirror = false): CSSProperties {
   const turn = (frame.rot ?? 0) + (!mirror && frame.flipV ? 180 : 0);
   const flip = mirror && (frame.flipH || frame.flipV) ? `scale(${frame.flipH ? -1 : 1}, ${frame.flipV ? -1 : 1})` : "";
@@ -395,9 +385,7 @@ function SlideTable({ rows, caption, widthPt }: { rows: string[][]; caption?: st
   );
 }
 
-/** The object URL lives only while the slide is mounted. */
 function SlideImage({ image, crop }: { image: Blob; crop?: SlideBox["crop"] }) {
-  // Stable, or every scroll re-render would remake the URL.
   const attach = useCallback(
     (element: HTMLImageElement | null) => {
       if (!element) return;
@@ -407,7 +395,6 @@ function SlideImage({ image, crop }: { image: Blob; crop?: SlideBox["crop"] }) {
     },
     [image],
   );
-  // Stretched over the frame, as PowerPoint draws it; a crop scales it up and shifts it, the frame clipping the rest.
   const w = crop ? 1 - crop.l - crop.r : 1;
   const h = crop ? 1 - crop.t - crop.b : 1;
   return (
@@ -426,7 +413,6 @@ function SlideImage({ image, crop }: { image: Blob; crop?: SlideBox["crop"] }) {
   );
 }
 
-// Memoized: the list re-renders on every scroll frame.
 const SlideFace = memo(function SlideFace({ slide, index, deck }: { slide: Slide; index: number; deck: Deck }) {
   const flow = slide.boxes.filter((box) => !box.frame && box.paragraphs);
   const titles = flow.filter((box) => TITLES.has(box.placeholder ?? ""));
@@ -476,18 +462,15 @@ const SlideFace = memo(function SlideFace({ slide, index, deck }: { slide: Slide
 const SLIDE_GAP = 24;
 const SLIDE_LABEL = 26;
 
-/** Only the slides near the viewport are mounted, so a deck of thousands opens as fast as a short one. */
 function SlidesView({ deck, scale }: { deck: Deck; scale: number }) {
   const t = useT();
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
-  // 100% fits a slide to the pane's width; a larger zoom overflows it and scrolls sideways.
   const width = Math.max(200, useWidth(container)) * scale;
   if (!deck.slides.length) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.emptyDocument")}</p>;
   }
   return (
     <div ref={setContainer} className="size-full overflow-auto bg-muted/60">
-      {/* Keyed on the width, so the virtualizer measures afresh. */}
       <SlideList key={width} deck={deck} width={width} scrollElement={container} />
       {deck.truncated && (
         <p className="pb-6 text-center text-ui-12 text-muted-foreground">{t("library.preview.documentTruncated")}</p>

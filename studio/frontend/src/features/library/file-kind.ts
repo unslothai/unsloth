@@ -134,7 +134,6 @@ export function fileKind(
   if (type.startsWith("video/")) return "video";
   if (type === "application/pdf") return "pdf";
   if (type === "text/html") return "web";
-  // By MIME type, as the viewer opens it: text/csv is a spreadsheet.
   const viewed = documentKind("", type);
   if (viewed === "sheet") return "spreadsheet";
   if (viewed === "slides") return "presentation";

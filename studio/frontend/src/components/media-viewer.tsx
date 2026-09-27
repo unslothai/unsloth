@@ -127,9 +127,7 @@ export function MediaViewer({
   actions: MediaViewerActions;
   extra?: ReactNode;
   onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
-  /** The body runs to the dialog's edges below the header, for content that pads itself. */
   flush?: boolean;
-  /** Keeps what is shown (an unsent attachment) out of the reload snapshot. */
   redactFromReload?: boolean;
   children: ReactNode;
 }) {
