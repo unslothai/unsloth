@@ -2895,7 +2895,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += check_dr_grpo
 
-    # GRPO on TRL < 0.20 crashes on the first step (no has_images / images / importance_sampling_level, and no path for reference logps).
+    # GRPO on TRL < 0.20 crashes on the first step (no has_images / images, no reference logps path).
     if trainer_file == "grpo_trainer" and trl_version < Version("0.20.0"):
         extra_args += f"raise ImportError('Unsloth: GRPO needs trl >= 0.20.0, but trl=={trl_version} is installed. Please do `pip install --upgrade trl`.')\n"
 

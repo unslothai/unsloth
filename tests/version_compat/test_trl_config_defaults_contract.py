@@ -2,13 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team.
 """Unsloth's generated TRL configs may only move the defaults Unsloth means to move.
 
-Every other field must equal TRL's own default for the installed TRL. A default
-Unsloth writes over the signature silently goes stale when TRL changes its own:
-top_k=None meant "TRL default" until trl#4695 (0.27) made the default 0, after
-which None let transformers 5 fall back to the model's top_k; the `seed` rewrite
-also hit `data_seed`. Both only showed up as different samples and data order.
-
-CPU only, no downloads: builds each config with no arguments.
+A stale override drifts silently when TRL changes its own default (top_k after trl#4695, data_seed via the seed rewrite).
 """
 
 from __future__ import annotations

@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""DPO / KTO / ORPO / CPO rows longer than the model's max_seq_length must not crash.
+"""Preference-trainer rows longer than the model max_seq_length must not crash the log-prob gather.
 
-The fast forward cuts input_ids to model.max_seq_length, while these trainers build
-labels and completion ids at args.max_length (default 1024). A longer row then
-crashes the log-prob gather ("Size does not match at dimension 1"). The KTO-only
-regex guard stopped matching at TRL 1.7, and DPO / ORPO / CPO never had one, so
-rl.py clamps args.max_length to the model limit instead.
+The fast forward cuts input_ids to model.max_seq_length while TRL builds labels at args.max_length.
 """
 
 from __future__ import annotations
