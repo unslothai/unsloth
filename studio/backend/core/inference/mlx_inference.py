@@ -1457,6 +1457,7 @@ MLX_KV_QUANT_NO_REUSE = (
 MLX_KV_QUANT_VLM_CACHE_NOTE = (
     "On vision models, quantization starts once the cache reaches {start} tokens."
 )
+# The cap _configure_memory_limits installs, so a fitted context names a load MLX would allocate.
 MLX_MEMORY_LIMIT_FRACTION = 0.85
 
 MLX_KV_QUANT_FITTED_CONTEXT = (
@@ -1469,6 +1470,7 @@ MLX_KV_QUANT_PINNED_CONTEXT = (
     "mlx-lm cannot quantize a limited cache. Reset it to quantize instead."
 )
 
+# Not asked yet; distinct from None, which means the bound probe could not judge.
 _UNASKED = object()
 
 
@@ -1510,7 +1512,6 @@ def _mlx_rng_key_words():
     before declining."""
     try:
         import mlx.core as mx
-
         words = mx.random.state[0].tolist()
     except Exception:
         return None
@@ -1583,7 +1584,7 @@ def mlx_rng_preserved():
 
 
 def _kv_cache_quant_refusal(entries):
-    """Why this cache shape cannot take a quantized width, from the entries alone, or None:"""
+    """Why this cache shape cannot take a quantized width (``"unconvertible"`` / ``"bounded"``), or None."""
     convertible = [entry for entry in entries if getattr(entry, "to_quantized", None) is not None]
     if not convertible:
         return "unconvertible"

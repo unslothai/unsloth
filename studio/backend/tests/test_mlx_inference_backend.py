@@ -5038,6 +5038,9 @@ def test_the_fit_budget_leaves_the_prompt_history_its_own_room(monkeypatch):
     monkeypatch.setitem(sys.modules, "mlx.core", fake)
     if "mlx" in sys.modules:
         monkeypatch.setattr(sys.modules["mlx"], "core", fake, raising = False)
+    else:
+        # The parent package is imported first, so it must resolve on hosts without MLX.
+        monkeypatch.setitem(sys.modules, "mlx", types.SimpleNamespace(core = fake))
     monkeypatch.delenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", raising = False)
 
     assert mlx_inference.mlx_memory_budget() == 85_000_000_000 - 15_000_000_000
@@ -5311,6 +5314,7 @@ def test_what_tells_an_affordable_window_from_one_nothing_fits(monkeypatch):
 
 def test_the_bound_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
     """The sizing takes the first tower whose forward pass succeeds."""
+    pytest.importorskip("mlx_lm")
     from mlx_lm.models.cache import KVCache, RotatingKVCache
 
     from core.inference import mlx_inference
@@ -5419,6 +5423,8 @@ def test_the_bound_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
     marks = len(rewound)
     assert mlx_inference.mlx_bound_would_be_enforced("/d", 4096) is None
     assert rewound[marks:] == ["held", ("key",)]
+
+
 def _uncopyable_naive_detokenizer(detokenizers):
     """mlx-vlm's naive detokenizer as it behaves BELOW 0.6.0, which is where ``__copy__`` arrived.
 

@@ -3707,7 +3707,6 @@ class TestMlxEstimateKvBits:
         assert ri._mlx_estimate_kv_bits(requested) == expected
 
 
-
 import glob  # noqa: E402
 from dataclasses import replace  # noqa: E402
 
