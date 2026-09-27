@@ -230,6 +230,8 @@ export function SkillMentionPopover({
                   key={item.id}
                   item={item}
                   index={index}
+                  // Keep focus (and the caret) in the textarea so the token replacer sees it.
+                  onMouseDown={(event) => event.preventDefault()}
                   className="flex w-full items-start gap-2.5 rounded-[11px] px-3 py-2 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground data-highlighted:bg-accent data-highlighted:text-accent-foreground"
                 >
                   <HugeiconsIcon
