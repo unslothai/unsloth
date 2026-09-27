@@ -215,7 +215,7 @@ export function StudioPage(): ReactElement {
                   showTrainingView={showTrainingView}
                 />
                 {/* Finished runs land in the Library's Fine-tunes tab. */}
-                <div className="ml-auto flex items-center gap-2 pb-2">
+                <div className="ml-auto flex items-center gap-2">
                   <MediaPageLink
                     to="/library"
                     libraryTab="models"
