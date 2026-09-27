@@ -2744,8 +2744,9 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 4px 14px var(--background);
 	}
 
-	/* Sidebar and account menus: flat, no shadow. Important to beat the shared menu shadow. */
-	:is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
+	/* Sidebar and account menus in dark mode: flat, no shadow. Light mode keeps the shared menu
+	   shadow, which is what lifts the menu off the light sidebar. Important to beat that shadow. */
+	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
 		box-shadow: none !important;
 	}
 

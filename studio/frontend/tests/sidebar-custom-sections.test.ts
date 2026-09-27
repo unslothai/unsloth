@@ -673,8 +673,9 @@ test("the sidebar and account menus share one flat surface and type; other menus
     /\.unsloth-plus-menu\[data-slot\] \{[\s\S]*?box-shadow: 0 2px 8px -2px rgba\(0, 0, 0, 0\.16\);\n\s*\}/,
   );
   const tagged = ":is\\(\\.unsloth-plus-menu, \\.app-user-menu\\)\\.sidebar-menu\\[data-slot\\]";
-  // No shadow, over the shared menu shadow's !important.
-  assert.match(css, new RegExp(`${tagged} \\{\\n\\s*box-shadow: none !important;`));
+  // No shadow in dark mode, over the shared menu shadow's !important. Light mode keeps it.
+  assert.match(css, new RegExp(`\\.dark ${tagged} \\{\\n\\s*box-shadow: none !important;`));
+  assert.doesNotMatch(css, new RegExp(`\\n\\t${tagged} \\{\\n\\s*box-shadow: none`));
   assert.match(
     css,
     new RegExp(
