@@ -17294,6 +17294,12 @@ async def _load_model_impl(
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,
                 audio_device = request.audio_device,
                 cache_environment = cache_environment,
+                mlx_speculative_mode = request.mlx_speculative_mode,
+                mlx_draft_model = request.mlx_draft_model,
+                mlx_draft_block_size = request.mlx_draft_block_size,
+                mlx_speculative_resolved_mode = _mlx_resolution.method,
+                mlx_speculative_resolved_draft_model = _mlx_resolution.draft_model,
+                mlx_speculative_resolution_reason = _mlx_resolution.reason,
                 **anonymous_hf_kw,
                 **speech_codec_kw,
             )
@@ -17301,26 +17307,6 @@ async def _load_model_impl(
             _restore_marker_if_prior_preview_still_resident()
             _restore_alias_if_failed_load_left_the_prior_model(backend, _prior_alias, _prior_active)
             raise
-        success = await asyncio.to_thread(
-            backend.load_model,
-            config = config,
-            max_seq_length = request.max_seq_length,
-            load_in_4bit = load_in_4bit,
-            hf_token = request.hf_token,
-            trust_remote_code = request.trust_remote_code,
-            approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
-            gpu_ids = placement.requested_gpu_ids,
-            subject = current_subject,
-            mlx_kv_bits = request.mlx_kv_bits,
-            chat_template_override = request.chat_template_override,
-            load_cancel_event = load_cancel_event,
-            mlx_speculative_mode = request.mlx_speculative_mode,
-            mlx_draft_model = request.mlx_draft_model,
-            mlx_draft_block_size = request.mlx_draft_block_size,
-            mlx_speculative_resolved_mode = _mlx_resolution.method,
-            mlx_speculative_resolved_draft_model = _mlx_resolution.draft_model,
-            mlx_speculative_resolution_reason = _mlx_resolution.reason,
-        )
 
         if not success:
             _restore_marker_if_prior_preview_still_resident()
