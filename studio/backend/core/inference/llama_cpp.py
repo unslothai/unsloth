@@ -12388,6 +12388,8 @@ class LlamaCppBackend:
                 capture_output = True,
                 text = True,
                 timeout = 5,
+                encoding = "utf-8",
+                errors = "replace",
             )
             cap_bytes = int(probe.stdout.strip()) * 1024 * 1024
         except Exception:
