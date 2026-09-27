@@ -137,7 +137,8 @@ test("pptx: tables capped, SmartArt read, pictures as Blobs", () => {
     "ppt/diagrams/data1.xml": strToU8(
       `<dgm:dataModel xmlns:dgm="${DGM}" xmlns:a="${A}"><dgm:ptLst><dgm:pt type="doc">${text("Doc")}</dgm:pt><dgm:pt>${text("Plan")}</dgm:pt></dgm:ptLst></dgm:dataModel>`,
     ),
-    "ppt/media/image1.png": new Uint8Array([137, 80, 78, 71]),
+    // A 1x1 PNG header: its size is read before it is kept.
+    "ppt/media/image1.png": new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1]),
     "ppt/media/clip.mp4": new Uint8Array(8),
   });
   // Video is never inflated.

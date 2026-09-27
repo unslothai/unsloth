@@ -9,6 +9,8 @@ const MAX_UNPACKED_BYTES = 200 * 1024 * 1024;
 // A part parsed into a DOM (workbook, presentation, slide, chart, relationships) past this is not
 // read, as the ceiling on a Word document's XML: real ones are far smaller.
 const MAX_XML_PART_BYTES = 10 * 1024 * 1024;
+// Far past any real workbook or deck, which holds some thousands of parts.
+const MAX_ZIP_ENTRIES = 100_000;
 export const MAX_SHEET_ROWS = 5000;
 export const MAX_SHEET_COLUMNS = 200;
 // Across every sheet, so a workbook of many sheets reads no more than one full one. Each row also
@@ -62,6 +64,8 @@ function zipIndex(bytes: Uint8Array, view: DataView): Map<string, ZipEntry> | nu
     at = u64(record + 48);
     if (!Number.isSafeInteger(count) || !Number.isSafeInteger(at)) return null;
   }
+  // A ZIP64 directory can list millions of empty entries, each indexed before any other bound applies.
+  if (count > MAX_ZIP_ENTRIES) throw new Error("File is too large to preview.");
   const utf8 = new TextDecoder();
   const index = new Map<string, ZipEntry>();
   for (let i = 0; i < count; i++) {
@@ -188,6 +192,8 @@ export interface Growing {
   data: Uint8Array;
   /** Nothing more to inflate: the part ended, or reached `max`. */
   done: boolean;
+  /** It reached `max` before its end. */
+  cut?: boolean;
   /** Inflates another megabyte or so, unless done. */
   grow(): void;
 }
@@ -200,7 +206,7 @@ function growing(bytes: Uint8Array, view: DataView, entry: ZipEntry, max: number
   if (entry.method === 0) {
     const whole = data.slice(0, max);
     charge(whole.length);
-    return { data: whole, done: true, grow() {} };
+    return { data: whole, done: true, cut: data.length > max, grow() {} };
   }
   if (entry.method !== 8) throw new Error(`Unsupported ZIP compression method ${entry.method}.`);
   let buffer = new Uint8Array(Math.min(max, 1 << 20));
@@ -208,6 +214,7 @@ function growing(bytes: Uint8Array, view: DataView, entry: ZipEntry, max: number
   let from = 0;
   const inflater = new Inflate((chunk) => {
     const room = Math.min(chunk.length, max - length);
+    if (room < chunk.length) part.cut = true;
     if (length + room > buffer.length) {
       const next = new Uint8Array(Math.min(max, Math.max(buffer.length * 2, length + room)));
       next.set(buffer.subarray(0, length));
@@ -1136,7 +1143,8 @@ function findTag(bytes: Uint8Array, from: number, name: string, closing: boolean
  *  and each string decoded alone, so a large or stale table costs little. */
 /** `part` inflates only as far as the highest index asked for: a large tail no cell uses is never
  *  unpacked. */
-function sharedStrings(part: Growing | undefined): (index: number) => string {
+/** A string by index; undefined when it lies past the part's cut. */
+function sharedStrings(part: Growing | undefined): (index: number) => string | undefined {
   // Where each string's XML starts and ends, in flat arrays: a million strings skipped on the way
   // to a high index cost 8 MB, not a million objects.
   let starts = new Uint32Array(1024);
@@ -1163,6 +1171,7 @@ function sharedStrings(part: Growing | undefined): (index: number) => string {
       count++;
       at = close ? close.end : open.end;
     }
+    if (part?.cut && index >= count) return undefined;
     if (!part || !Number.isInteger(index) || index < 0 || index >= count) return "";
     let text = texts.get(index);
     if (text === undefined) {
@@ -1216,8 +1225,14 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
   const stringsPath = partOf("sharedStrings", "xl/sharedStrings.xml");
   const stylesPath = partOf("styles", "xl/styles.xml");
   // Each read when a kept cell first needs it: a workbook can carry a large table no cell uses.
-  let strings: ((index: number) => string) | undefined;
-  const string = (index: number) => (strings ??= sharedStrings(read.open(stringsPath, MAX_SHEET_XML_BYTES)))(index);
+  let strings: ((index: number) => string | undefined) | undefined;
+  // Set when a shown cell's string lies past the table's cut, so its sheet is marked cut.
+  let missed = false;
+  const string = (index: number) => {
+    const text = (strings ??= sharedStrings(read.open(stringsPath, MAX_SHEET_XML_BYTES)))(index);
+    missed ||= text === undefined;
+    return text ?? "";
+  };
   let styles: CellStyle[] | undefined;
   const style = (index: number) =>
     (styles ??= readStyles(styleSections(read([stylesPath], MAX_STYLES_BYTES)[stylesPath])))[index];
@@ -1239,8 +1254,9 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
     if (!part) continue;
     const whole = part.length <= MAX_SHEET_XML_BYTES;
     const { text, cut } = sheetText(part, Math.min(MAX_SHEET_ROWS, budget.cells), whole);
+    missed = false;
     const parsed = readSheet(text, sheet.getAttribute("name") ?? "Sheet", string, style, date1904, budget);
-    if (cut) parsed.truncated = true;
+    if (cut || missed) parsed.truncated = true;
     sheets.push(parsed);
   }
   return sheets;
@@ -1381,6 +1397,43 @@ const MAX_SLIDES = 500;
 const MAX_DECK_TEXT = 8 * 1024 * 1024;
 // Picture bytes kept across a deck; pictures past it are left out, their slides marked cut.
 const MAX_DECK_IMAGE_BYTES = 64 * 1024 * 1024;
+// A picture decodes to its full size whatever its bytes: one past this is left out.
+const MAX_PICTURE_PIXELS = 64 * 1024 * 1024;
+
+/** A raster's width times height, from its header; undefined when not a raster read here. */
+function imagePixels(b: Uint8Array): number | undefined {
+  const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const ascii = (at: number, text: string) => [...text].every((c, i) => b[at + i] === c.charCodeAt(0));
+  if (b.length >= 24 && ascii(1, "PNG")) return view.getUint32(16) * view.getUint32(20);
+  if (b.length >= 10 && ascii(0, "GIF8")) return view.getUint16(6, true) * view.getUint16(8, true);
+  if (b.length >= 26 && ascii(0, "BM")) {
+    // A 12-byte core header holds 16-bit sizes; later ones 32-bit, the height signed.
+    if (view.getUint32(14, true) === 12) return view.getUint16(18, true) * view.getUint16(20, true);
+    return Math.abs(view.getInt32(18, true)) * Math.abs(view.getInt32(22, true));
+  }
+  if (b.length >= 30 && ascii(0, "RIFF") && ascii(8, "WEBP")) {
+    if (ascii(12, "VP8 ")) return (view.getUint16(26, true) & 0x3fff) * (view.getUint16(28, true) & 0x3fff);
+    if (ascii(12, "VP8L")) {
+      const bits = view.getUint32(21, true);
+      return ((bits & 0x3fff) + 1) * (((bits >>> 14) & 0x3fff) + 1);
+    }
+    if (ascii(12, "VP8X")) return ((view.getUint32(24, true) & 0xffffff) + 1) * ((view.getUint32(27, true) & 0xffffff) + 1);
+    return undefined;
+  }
+  if (b[0] === 0xff && b[1] === 0xd8) {
+    // Segments up to the frame header (SOF0 to SOF15, less DHT, JPG and DAC), which holds the size.
+    for (let at = 2; at + 9 <= b.length; ) {
+      if (b[at] !== 0xff) return undefined;
+      const marker = b[at + 1]!;
+      if (marker === 0xff) at++;
+      else if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) at += 2;
+      else if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return view.getUint16(at + 5) * view.getUint16(at + 7);
+      } else at += 2 + view.getUint16(at + 2);
+    }
+  }
+  return undefined;
+}
 
 function boxText(box: SlideBox): number {
   let n = box.caption?.length ?? 0;
@@ -1714,6 +1767,12 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
         }
         const data = read([target])[target];
         if (!data) return false;
+        // Only a raster whose size is read and bounded, or an SVG, which draws at its frame's size.
+        const pixels = imagePixels(data);
+        if (pixels === undefined ? type !== "image/svg+xml" : pixels > MAX_PICTURE_PIXELS) {
+          cut = true;
+          return false;
+        }
         pictureBytes += data.length;
         image = new Blob([data as Uint8Array<ArrayBuffer>], { type });
         pictures.set(target, image);
