@@ -198,19 +198,23 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def dq_swiglu_quant(
-        c_ptr, xs_ptr, ws_ptr, b_ptr, q_ptr, s_ptr, N, G0, V0, stride_c, stride_q,
+        c_ptr, xs_ptr, ws_ptr, b_ptr, h_ptr, q_ptr, s_ptr, N, G0, V0, stride_c, stride_q,
         HAS_BIAS: tl.constexpr, WS_FP32: tl.constexpr, CHUNK: tl.constexpr,
     ):
         # c row = the fused GEMM output; the gate half starts at column G0, the value half at V0 (both N wide).
+        # Two int32 rows per output row make recomputing in pass 2 ALU-bound, so pass 1 parks the bf16 product in a
+        # scratch row (still in L2 when pass 2 reads it back).
         row = tl.program_id(0).to(tl.int64)
         xs = tl.load(xs_ptr + row).to(tl.float32)
         base = tl.arange(0, CHUNK)
         crow = c_ptr + row * stride_c
+        hrow = h_ptr + row * N
         acc = tl.zeros((CHUNK,), dtype = tl.float32)
         for k in range(0, N, CHUNK):
             offs = k + base
             m = offs < N
-            h = _swiglu_val(crow, xs, ws_ptr, b_ptr, G0, V0, offs, m, HAS_BIAS, WS_FP32, "evict_last")
+            h = _swiglu_val(crow, xs, ws_ptr, b_ptr, G0, V0, offs, m, HAS_BIAS, WS_FP32, "evict_first")
+            tl.store(hrow + offs, h.to(tl.bfloat16), mask = m, eviction_policy = "evict_last")
             acc = tl.maximum(acc, tl.where(m, tl.abs(h), 0.0))
         amax = tl.max(acc, axis = 0)
         scale = _rbf16(tl.math.div_rn(amax, 127.5))
@@ -221,7 +225,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         for k in range(0, N, CHUNK):
             offs = k + base
             m = offs < N
-            h = _swiglu_val(crow, xs, ws_ptr, b_ptr, G0, V0, offs, m, HAS_BIAS, WS_FP32, "evict_first")
+            h = tl.load(hrow + offs, mask = m, other = 0.0, eviction_policy = "evict_first").to(tl.float32)
             qi = tl.extra.cuda.libdevice.nearbyint(h * inv)
             qi = tl.minimum(tl.maximum(qi, -128.0), 127.0)
             tl.store(qrow + offs, qi.to(tl.int8), mask = m)
@@ -268,13 +272,14 @@ def _launch_swiglu(c: Any, xs: Any, ws: Any, bias: Any, gate_col: int, value_col
     m_rows = c.shape[0]
     q = torch.empty((m_rows, n), device = c.device, dtype = torch.int8)
     scale = torch.empty((m_rows,), device = c.device, dtype = torch.float32)
+    scratch = torch.empty((m_rows, n), device = c.device, dtype = torch.bfloat16)
     with torch.cuda.device(c.device):
         k.dq_swiglu_quant[(m_rows,)](
-            c, xs, ws, bias if bias is not None else ws, q, scale, n, gate_col, value_col, c.stride(0), q.stride(0),
+            c, xs, ws, bias if bias is not None else ws, scratch, q, scale, n, gate_col, value_col, c.stride(0), q.stride(0),
             HAS_BIAS = bias is not None,
             WS_FP32 = ws.dtype == torch.float32,
-            CHUNK = 1024,
-            num_warps = 4,
+            CHUNK = 2048,
+            num_warps = 8,
             enable_fp_fusion = False,
         )
     return q, scale
