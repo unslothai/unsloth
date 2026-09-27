@@ -452,8 +452,120 @@ LTX23_PREQUANT_SOURCE_FILES = frozenset({"ltx-2.3-22b-distilled.safetensors"})
 LTX23_PREQUANT_RESIDENT_GB = 19.06
 
 
-def ltx23_prequant_eligible(checkpoint_path: Path | str) -> bool:
-    return Path(str(checkpoint_path)).name.lower() in LTX23_PREQUANT_SOURCE_FILES
+# The hosted DiT REPLACES the file's own, so the file has to be the official one, not merely share its name: a fine-tuned
+# DiT saved as ltx-2.3-22b-distilled.safetensors (a local folder, a third-party repo) would otherwise be swapped for the
+# stock weights without a word. Identity from the Hub (Lightricks/LTX-2.3 @ 5948be4ced3a, 2026-09-27). No mirror hosts
+# the bf16 single file (unsloth/LTX-2.3-GGUF carries GGUFs), so the official repo is the only source.
+LTX23_PREQUANT_SOURCE_REPOS = frozenset({"lightricks/ltx-2.3"})
+LTX23_PREQUANT_SOURCE_SIZE = 46_149_345_038
+# The LFS sha256, which is also the blob name the Hub cache links the snapshot entry to: free to check there.
+LTX23_PREQUANT_SOURCE_SHA256 = "14409a4d1337a8ded02fa87fb895b17a91ab2c6588f7cc3352e624ff18a689bf"
+# Outside the Hub cache: sha256 over the safetensors header (the 8-byte length and the JSON, which records this
+# training run's own metadata) and 1 MiB of tensor data at 1/4, 1/2 and 3/4 of the data region and at the end. About
+# 5 MB read instead of hashing 46 GB; taken from the official file with ranged reads.
+LTX23_PREQUANT_SOURCE_FINGERPRINT = "2af533b0abd59f3d0bae1dfbf1a4d22c756cf3ddaccfc3e6e90e6df025cdce0a"
+_LTX23_SAMPLE_BYTES = 1 << 20
+_LTX23_MAX_HEADER_BYTES = 100 << 20
+_LTX23_VERIFIED: dict[tuple[str, int, int], bool] = {}
+
+
+def ltx23_source_fingerprint(path: Path | str) -> Optional[str]:
+    """``LTX23_PREQUANT_SOURCE_FINGERPRINT``'s digest of *path*, or None when it is not a readable safetensors file."""
+    import hashlib
+    import os
+
+    with open(path, "rb") as fh:
+        size = os.fstat(fh.fileno()).st_size
+        prefix = fh.read(8)
+        if len(prefix) != 8:
+            return None
+        header_len = int.from_bytes(prefix, "little")
+        if not 0 < header_len <= _LTX23_MAX_HEADER_BYTES:
+            return None
+        header = fh.read(header_len)
+        if len(header) != header_len:
+            return None
+        digest = hashlib.sha256(prefix + header)
+        data_start = 8 + header_len
+        span = size - data_start
+        if span < _LTX23_SAMPLE_BYTES:
+            return None
+        offsets = [data_start + span * k // 4 for k in (1, 2, 3)] + [size - _LTX23_SAMPLE_BYTES]
+        for offset in offsets:
+            fh.seek(offset)
+            chunk = fh.read(_LTX23_SAMPLE_BYTES)
+            if len(chunk) != _LTX23_SAMPLE_BYTES:
+                return None
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def ltx23_source_file_verified(checkpoint_path: Path | str) -> bool:
+    """Whether the file on disk is the official ``ltx-2.3-22b-distilled.safetensors``: its size, then the Hub cache's
+    content-addressed blob name, else the sampled fingerprint (cached per path, size and mtime). Never raises."""
+    try:
+        path = Path(str(checkpoint_path)).expanduser()
+        if path.name.lower() not in LTX23_PREQUANT_SOURCE_FILES:
+            return False
+        real = path.resolve()
+        stat = real.stat()
+        if stat.st_size != LTX23_PREQUANT_SOURCE_SIZE:
+            return False
+        if real.name == LTX23_PREQUANT_SOURCE_SHA256:
+            return True
+        key = (str(real), stat.st_size, stat.st_mtime_ns)
+        if key not in _LTX23_VERIFIED:
+            _LTX23_VERIFIED[key] = (
+                ltx23_source_fingerprint(real) == LTX23_PREQUANT_SOURCE_FINGERPRINT
+            )
+        return _LTX23_VERIFIED[key]
+    except Exception:  # noqa: BLE001 -- unverifiable is not official
+        return False
+
+
+def _ltx23_hub_cached_file(repo_id: str, filename: str) -> Optional[Path]:
+    """The cached copy of *filename* in *repo_id* under either cache root, network-free; None when not cached."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        from .diffusion import hub_cache_dir
+
+        for cache_dir in dict.fromkeys((None, hub_cache_dir())):
+            hit = try_to_load_from_cache(repo_id, filename, cache_dir = cache_dir)
+            if isinstance(hit, str):
+                return Path(hit)
+    except Exception:  # noqa: BLE001 -- a lookup failure reads as not cached
+        return None
+    return None
+
+
+def ltx23_prequant_eligible(
+    checkpoint_filename: Optional[str],
+    repo_id: Optional[str] = None,
+) -> bool:
+    """Whether the hosted DiT may replace this pick's own: the official file, by name AND identity.
+
+    A local file or folder is verified by content. A Hub id must be the official repo; its cached copy is verified by
+    content too, and before the download the id is the identity (the load re-checks the file it resolved). Anything
+    else, a third-party repo included, is not substituted."""
+    if not checkpoint_filename or not repo_id:
+        return False
+    if Path(str(checkpoint_filename)).name.lower() not in LTX23_PREQUANT_SOURCE_FILES:
+        return False
+    try:
+        root = Path(str(repo_id)).expanduser()
+        if root.is_file():
+            return ltx23_source_file_verified(root)
+        if root.is_dir():
+            from .diffusion_families import resolve_local_gguf_child
+
+            return ltx23_source_file_verified(resolve_local_gguf_child(root, str(checkpoint_filename)))
+    except Exception:  # noqa: BLE001 -- an unresolvable local pick is not verified
+        return False
+    if str(repo_id).strip().lower() not in LTX23_PREQUANT_SOURCE_REPOS:
+        return False
+    cached = _ltx23_hub_cached_file(str(repo_id).strip(), str(checkpoint_filename))
+    return True if cached is None else ltx23_source_file_verified(cached)
 
 
 class _LTX23PrequantConfig:
@@ -493,7 +605,12 @@ def load_ltx23_prequant_transformer(
     """``(transformer, source)`` from the hosted pre-quantized 2.3 distilled DiT, or None (the
     caller keeps the dense DiT). Never raises."""
     try:
-        if not ltx23_prequant_eligible(checkpoint_path):
+        if not ltx23_source_file_verified(checkpoint_path):
+            if logger is not None:
+                logger.warning(
+                    "video.ltx23_prequant: %s is not the official LTX-2.3 distilled file, keeping its own DiT",
+                    checkpoint_path,
+                )
             return None
         from .diffusion_prequant import load_prequantized_transformer, resolve_prequant_source
         from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES

@@ -11446,6 +11446,7 @@ def test_precision_gate_admits_fp8_only_for_the_ltx23_prequant_file(fake_runtime
         model_kind = "single_file",
         transformer_quant = "fp8",
         checkpoint_filename = "ltx-2.3-22b-distilled.safetensors",
+        checkpoint_repo = "Lightricks/LTX-2.3",
     )
     for filename, scheme in (
         ("ltx-2.3-22b-dev.safetensors", "fp8"),
@@ -11459,6 +11460,7 @@ def test_precision_gate_admits_fp8_only_for_the_ltx23_prequant_file(fake_runtime
                 model_kind = "single_file",
                 transformer_quant = scheme,
                 checkpoint_filename = filename,
+                checkpoint_repo = "Lightricks/LTX-2.3",
             )
     # A forced offload cannot carry torchao tensors, prequant or not.
     with pytest.raises(RuntimeError, match = "offload"):
@@ -11468,6 +11470,7 @@ def test_precision_gate_admits_fp8_only_for_the_ltx23_prequant_file(fake_runtime
             transformer_quant = "fp8",
             memory_mode = "low_vram",
             checkpoint_filename = "ltx-2.3-22b-distilled.safetensors",
+            checkpoint_repo = "Lightricks/LTX-2.3",
         )
 
 
@@ -11498,6 +11501,13 @@ def _ltx23_fp8_card(monkeypatch, *, fp8 = True):
     )
 
 
+def _ltx23_official_file(monkeypatch):
+    """Stand-in 1-byte fixtures pass as the official LTX-2.3 distilled file (identity is tested on its own)."""
+    from core.inference import video_ltx2
+
+    monkeypatch.setattr(video_ltx2, "ltx23_source_file_verified", lambda path: True)
+
+
 def _ampere_or_hopper(monkeypatch, *, fp8):
     """A CUDA bf16 card with the dense torchao path, whose explicit fp8 passes only on sm_89+: patched at the smoke
     probe, under the real scheme selector, so the check under test is the one the normal precision path runs."""
@@ -11522,25 +11532,171 @@ def test_ltx23_hosted_fp8_seed_requires_fp8_on_the_card(fake_runtime, monkeypatc
     target = _ampere_or_hopper(monkeypatch, fp8 = fp8)
     fam = types.SimpleNamespace(name = "ltx-2")
     name = "ltx-2.3-22b-distilled.safetensors"
+    repo = "Lightricks/LTX-2.3"
     assert (
         video_mod._ltx23_prequant_serves(
-            fam, "single_file", name, "fp8", target = target, memory_mode = None
+            fam, "single_file", name, "fp8", target = target, memory_mode = None, checkpoint_repo = repo
         )
         is fp8
     )
     monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda **kw: target)
     assert (
         video_mod._ltx23_prequant_serves_on_card(
-            fam, "single_file", name, "fp8", memory_mode = None, gpu_ordinal = None
+            fam, "single_file", name, "fp8", memory_mode = None, gpu_ordinal = None, checkpoint_repo = repo
         )
         is fp8
     )
-    kwargs = dict(model_kind = "single_file", transformer_quant = "fp8", checkpoint_filename = name)
+    kwargs = dict(
+        model_kind = "single_file",
+        transformer_quant = "fp8",
+        checkpoint_filename = name,
+        checkpoint_repo = repo,
+    )
     if fp8:
         video_mod.assert_video_precision_available(fam, **kwargs)
     else:
         with pytest.raises(RuntimeError, match = "fp8"):
             video_mod.assert_video_precision_available(fam, **kwargs)
+
+
+def _ltx23_synthetic_official(monkeypatch, path):
+    """Write a small safetensors-shaped file at *path* and pin the official identity to it, so the real size and
+    fingerprint check runs against bytes the test controls. Returns (size, sampled offsets)."""
+    import hashlib
+
+    from core.inference import video_ltx2
+
+    header = b'{"__metadata__":{"model_version":"2.3.0"}}'
+    blob = len(header).to_bytes(8, "little") + header + bytes(range(256)) * (4096 * 6)
+    path.write_bytes(blob)
+    sample = 1 << 20
+    data = 8 + len(header)
+    offsets = [data + (len(blob) - data) * k // 4 for k in (1, 2, 3)] + [len(blob) - sample]
+    digest = hashlib.sha256(blob[:data])
+    for off in offsets:
+        digest.update(blob[off : off + sample])
+    monkeypatch.setattr(video_ltx2, "LTX23_PREQUANT_SOURCE_SIZE", len(blob))
+    monkeypatch.setattr(video_ltx2, "LTX23_PREQUANT_SOURCE_FINGERPRINT", digest.hexdigest())
+    monkeypatch.setattr(video_ltx2, "_LTX23_VERIFIED", {})
+    return len(blob), offsets
+
+
+def test_ltx23_local_file_is_substituted_only_when_it_is_the_official_one(tmp_path, monkeypatch):
+    # The hosted DiT replaces the file's own, so a same-named fine-tune must not be swapped for the stock weights. Local
+    # files are verified by size and a sampled fingerprint (header plus four 1 MiB samples of the tensor data).
+    from core.inference import video_ltx2
+
+    name = "ltx-2.3-22b-distilled.safetensors"
+    official = tmp_path / "official"
+    official.mkdir()
+    size, offsets = _ltx23_synthetic_official(monkeypatch, official / name)
+    assert video_ltx2.ltx23_prequant_eligible(name, str(official))
+    assert video_ltx2.ltx23_prequant_eligible(name, str(official / name))
+    # Same name and size, different weights in a sampled region / different header: a fine-tune, not served.
+    for where in (offsets[1] + 7, 12):
+        tuned = tmp_path / f"tuned_{where}"
+        tuned.mkdir()
+        blob = bytearray((official / name).read_bytes())
+        blob[where] ^= 0xFF
+        (tuned / name).write_bytes(bytes(blob))
+        assert not video_ltx2.ltx23_prequant_eligible(name, str(tuned)), where
+    # Different size, and a missing file: not served.
+    short = tmp_path / "short"
+    short.mkdir()
+    (short / name).write_bytes(b"w")
+    assert not video_ltx2.ltx23_prequant_eligible(name, str(short))
+    assert not video_ltx2.ltx23_prequant_eligible(name, str(tmp_path / "missing"))
+    assert size == video_ltx2.LTX23_PREQUANT_SOURCE_SIZE
+
+
+def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, monkeypatch):
+    from core.inference import video_ltx2
+
+    name = "ltx-2.3-22b-distilled.safetensors"
+    cached: dict = {"hit": None}
+    monkeypatch.setattr(video_ltx2, "_ltx23_hub_cached_file", lambda repo, filename: cached["hit"])
+    # Official repo, not yet downloaded: the id is the identity (the load re-checks the file it resolves).
+    assert video_ltx2.ltx23_prequant_eligible(name, "Lightricks/LTX-2.3")
+    assert video_ltx2.ltx23_prequant_eligible(f"sub/{name}", "lightricks/ltx-2.3")
+    # A third-party repo with the same file name is never substituted, cached or not.
+    for repo in ("someone/LTX-2.3-finetune", "unsloth/LTX-2.3-GGUF", "Lightricks/LTX-2"):
+        assert not video_ltx2.ltx23_prequant_eligible(name, repo), repo
+    assert not video_ltx2.ltx23_prequant_eligible(name, None)
+    assert not video_ltx2.ltx23_prequant_eligible("ltx-2.3-22b-dev.safetensors", "Lightricks/LTX-2.3")
+    # Cached: a content-addressed blob of the official size is the file; anything else in its place is not.
+    blobs = tmp_path / "blobs"
+    blobs.mkdir()
+    good = blobs / video_ltx2.LTX23_PREQUANT_SOURCE_SHA256
+    with open(good, "wb") as fh:
+        fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)  # sparse
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    (snap / name).symlink_to(good)
+    cached["hit"] = snap / name
+    assert video_ltx2.ltx23_source_file_verified(snap / name)
+    assert video_ltx2.ltx23_prequant_eligible(name, "Lightricks/LTX-2.3")
+    bad = blobs / ("0" * 64)
+    with open(bad, "wb") as fh:
+        fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)  # right size, wrong content (zeros)
+    (snap / name).unlink()
+    (snap / name).symlink_to(bad)
+    monkeypatch.setattr(video_ltx2, "_LTX23_VERIFIED", {})
+    assert not video_ltx2.ltx23_prequant_eligible(name, "Lightricks/LTX-2.3")
+
+
+def test_ltx23_unverified_same_name_pick_is_refused_not_substituted(fake_runtime, tmp_path, monkeypatch):
+    # Official repo: served. A local same-name file with another identity, or a third-party repo: the explicit fp8 is
+    # refused before the load (the pre-substitution behaviour), never silently answered with the stock DiT.
+    from core.inference import video as video_mod, video_ltx2
+
+    target = _ampere_or_hopper(monkeypatch, fp8 = True)
+    monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda **kw: target)
+    monkeypatch.setattr(video_ltx2, "_ltx23_hub_cached_file", lambda repo, filename: None)
+    fam = types.SimpleNamespace(name = "ltx-2")
+    name = "ltx-2.3-22b-distilled.safetensors"
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / name).write_bytes(b"a fine-tuned DiT under the official name")
+
+    def _check(repo):
+        video_mod.assert_video_precision_available(
+            fam,
+            model_kind = "single_file",
+            transformer_quant = "fp8",
+            checkpoint_filename = name,
+            checkpoint_repo = repo,
+        )
+
+    def _serves(repo):
+        return video_mod._ltx23_prequant_serves(
+            fam, "single_file", name, "fp8", target = target, memory_mode = None, checkpoint_repo = repo
+        )
+
+    _check("Lightricks/LTX-2.3")
+    assert _serves("Lightricks/LTX-2.3")
+    for repo in (str(local), "someone/LTX-2.3-finetune"):
+        assert not _serves(repo), repo
+        with pytest.raises(RuntimeError, match = "could not be verified"):
+            _check(repo)
+
+
+def test_ltx23_prequant_loader_keeps_an_unverified_files_own_dit(tmp_path, monkeypatch):
+    from core.inference import diffusion_prequant, video_ltx2
+
+    resolved: list = []
+    monkeypatch.setattr(
+        diffusion_prequant, "resolve_prequant_source", lambda *a, **k: resolved.append(1)
+    )
+    path = tmp_path / "ltx-2.3-22b-distilled.safetensors"
+    path.write_bytes(b"w")
+    fam = types.SimpleNamespace(name = "ltx-2")
+    assert (
+        video_ltx2.load_ltx23_prequant_transformer(
+            fam, "fp8", path, config_repo = "Lightricks/LTX-2", device = "cuda", dtype = None
+        )
+        is None
+    )
+    assert resolved == []
 
 
 def _load_ltx23_single_file_fp8(
@@ -11554,6 +11710,7 @@ def _load_ltx23_single_file_fp8(
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     _ltx23_fp8_card(monkeypatch)
     monkeypatch.setattr(video_ltx2, "is_ltx23_checkpoint", lambda path: True)
+    _ltx23_official_file(monkeypatch)
     calls: dict = {}
 
     def _prequant(fam, scheme, checkpoint_path, **kwargs):
@@ -11817,6 +11974,7 @@ def test_the_ltx23_fp8_load_prefetches_the_hosted_dit_under_its_cancel_event(tmp
         raise _StopAfterPrefetch()
 
     monkeypatch.setattr(video_ltx2, "is_ltx23_checkpoint", lambda path: True)
+    _ltx23_official_file(monkeypatch)
     supported = [True]
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: supported[0])
     _ltx23_fp8_card(monkeypatch)

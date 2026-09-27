@@ -257,6 +257,7 @@ def assert_video_precision_available(
     memory_mode: Optional[str] = None,
     gpu_ordinal: Optional[int] = None,
     checkpoint_filename: Optional[str] = None,
+    checkpoint_repo: Optional[str] = None,
 ) -> None:
     """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -300,13 +301,19 @@ def assert_video_precision_available(
             text_encoder_quant = text_encoder_quant,
             memory_mode = memory_mode,
             checkpoint_filename = checkpoint_filename,
+            checkpoint_repo = checkpoint_repo,
         )
 
 
 def _ltx23_prequant_pick(
-    fam: Any, model_kind: str, checkpoint_filename: Optional[str], pinned: Optional[str]
+    fam: Any,
+    model_kind: str,
+    checkpoint_filename: Optional[str],
+    pinned: Optional[str],
+    checkpoint_repo: Optional[str] = None,
 ) -> bool:
-    """An explicit fp8 on the bf16 LTX-2.3 distilled single file: served by the hosted pre-quantized DiT."""
+    """An explicit fp8 on the OFFICIAL bf16 LTX-2.3 distilled single file (``checkpoint_repo`` is the pick's repo id or
+    local path): served by the hosted pre-quantized DiT. A same-named file of other provenance keeps its own DiT."""
     if (
         getattr(fam, "name", None) != "ltx-2"
         or model_kind != "single_file"
@@ -317,7 +324,7 @@ def _ltx23_prequant_pick(
         return False
     from .video_ltx2 import ltx23_prequant_eligible
 
-    return ltx23_prequant_eligible(checkpoint_filename)
+    return ltx23_prequant_eligible(checkpoint_filename, checkpoint_repo)
 
 
 def _ltx23_prequant_serves(
@@ -328,13 +335,14 @@ def _ltx23_prequant_serves(
     *,
     target: Any,
     memory_mode: Optional[str],
+    checkpoint_repo: Optional[str] = None,
 ) -> bool:
     """``_ltx23_prequant_pick`` on a load that can seed the hosted DiT: a torchao-capable target and a memory request
     that keeps the DiT resident (torchao tensors do not survive the offload hooks). The staging, the download plan, the
     pricing and the injection all read this, so the ~19 GB artifact is never fetched for a load that falls back to bf16
     (UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK). A measured offload is only known inside the load."""
     return (
-        _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned)
+        _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned, checkpoint_repo)
         and not _memory_request_forces_offload(memory_mode, False)
         and bool(dense_transformer_supported(target))
         and _ltx23_prequant_scheme_supported(fam, target, pinned)
@@ -365,10 +373,11 @@ def _ltx23_prequant_serves_on_card(
     *,
     memory_mode: Optional[str],
     gpu_ordinal: Optional[int],
+    checkpoint_repo: Optional[str] = None,
 ) -> bool:
     """``_ltx23_prequant_serves`` before the load, asked of the card it will use. An unanswerable probe keeps the pick."""
     pinned = normalize_transformer_quant(transformer_quant)
-    if not _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned):
+    if not _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned, checkpoint_repo):
         return False
     try:
         # SCOPED, not pinned: a pooled worker thread must not keep this request's card.
@@ -385,6 +394,7 @@ def _ltx23_prequant_serves_on_card(
                 pinned,
                 target = target,
                 memory_mode = memory_mode,
+                checkpoint_repo = checkpoint_repo,
             )
     except Exception:  # noqa: BLE001
         return True
@@ -399,6 +409,7 @@ def _assert_video_precision_for_target(
     text_encoder_quant: Optional[str] = None,
     memory_mode: Optional[str] = None,
     checkpoint_filename: Optional[str] = None,
+    checkpoint_repo: Optional[str] = None,
 ) -> None:
     """The body of ``assert_video_precision_available``, run with the selected card current."""
     pinned = normalize_transformer_quant(transformer_quant)
@@ -412,7 +423,7 @@ def _assert_video_precision_for_target(
     )
     if pinned is not None and pinned != TQ_AUTO:
         reason = None
-        if _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned):
+        if _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned, checkpoint_repo):
             # Served by the hosted pre-quantized torchao DiT, which needs the torchao path and a resident DiT.
             if not dense_transformer_supported(target):
                 reason = dense_transformer_unsupported_reason(target)
@@ -429,6 +440,17 @@ def _assert_video_precision_for_target(
                 f"the dense DiT quant applies to full-pipeline loads only, and this is a "
                 f"'{model_kind}' load, which runs the precision its checkpoint carries"
             )
+            from .video_ltx2 import LTX23_PREQUANT_BASE, LTX23_PREQUANT_SOURCE_FILES
+
+            if (
+                pinned == TQ_FP8
+                and getattr(fam, "name", None) == "ltx-2"
+                and Path(str(checkpoint_filename or "")).name.lower() in LTX23_PREQUANT_SOURCE_FILES
+            ):
+                reason += (
+                    f"; the hosted fp8 DiT replaces only the official {LTX23_PREQUANT_BASE} file, and this "
+                    "one could not be verified as it"
+                )
         elif (
             pinned in NATIVE_QUANT_SCHEMES
             and not getattr(fam, "modular_workflow", None)
@@ -1985,6 +2007,7 @@ class VideoBackend:
             memory_mode = memory_mode,
             gpu_ordinal = gpu_ordinal,
             checkpoint_filename = gguf_filename,
+            checkpoint_repo = repo_id,
         )
         # Resolved out here so the companion claim is published in the SAME locked section as _loading. begin_load
         # returns as soon as the thread is scheduled, and a delete arriving in that gap sees only repo_id and base_repo,
@@ -2012,6 +2035,7 @@ class VideoBackend:
             transformer_quant,
             memory_mode = memory_mode,
             gpu_ordinal = gpu_ordinal,
+            checkpoint_repo = repo_id,
         ):
             from .video_ltx2 import LTX23_PREQUANT_BASE
 
@@ -2303,6 +2327,7 @@ class VideoBackend:
                 kwargs.get("transformer_quant"),
                 memory_mode = kwargs.get("memory_mode"),
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
+                checkpoint_repo = kwargs["repo_id"],
             ):
                 from .video_ltx2 import LTX23_PREQUANT_BASE
 
@@ -3959,6 +3984,7 @@ class VideoBackend:
                 transformer_quant,
                 memory_mode = load_kwargs.get("memory_mode"),
                 gpu_ordinal = load_kwargs.get("gpu_ordinal"),
+                checkpoint_repo = repo_id,
             ):
                 # The LTX-2.3 distilled single file under an explicit fp8 seeds the hosted DiT from its own repo (the
                 # file itself is still read for its connectors / VAEs / vocoder).
@@ -4701,6 +4727,7 @@ class VideoBackend:
             normalize_transformer_quant(transformer_quant),
             target = target,
             memory_mode = memory_mode,
+            checkpoint_repo = repo_id,
         )
         ltx23_dense_transformer_mib = transformer_mib
         if ltx23_prequant_pick:
