@@ -7847,6 +7847,12 @@ if ($TorchCacheDir) {
 
 $PinnedTorchIndexUrl = Get-PinnedTorchIndexUrl
 $TorchIndexPinned = [bool]$PinnedTorchIndexUrl
+# An inconclusive XPU probe keeps the wheel, so keep its dependency route too.
+# Only a definitive no-device answer permits the presence-only CUDA conversion.
+if (-not $TorchIndexPinned -and $script:NvidiaPresenceOnly -and $installedTorchTag -eq "xpu" -and
+    -not (Test-NvidiaPresenceStaleGpuWheel -InstalledTag $installedTorchTag -PythonExe (Join-Path $VenvDir "Scripts\python.exe"))) {
+    $script:PreservedXpuVenv = $true
+}
 if ($PinnedTorchIndexUrl) {
     $CuTag = Get-TorchIndexLeaf $PinnedTorchIndexUrl
 } elseif ($script:PreservedXpuVenv) {
