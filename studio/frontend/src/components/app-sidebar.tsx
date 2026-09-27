@@ -379,6 +379,14 @@ const DROP_CUE_IN_FOLDER = "before:left-[calc(39px*var(--ui-space-scale,1))]";
 // A row dropped onto a folder or section joins it, so the whole target is tinted and outlined,
 // with the same border as the line. Kept inside the box for the same clipping reason.
 const DROP_INTO_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
+// "Move to": the whole submenu stays inside the window, and each group's list scrolls past about
+// seven rows, the next one half showing, so a long list of projects keeps the Sections group, and
+// each group's Remove, in reach. No scrollbar: it would take its width out of the rows' right
+// padding and leave the hover pill off centre.
+const MOVE_TO_MENU =
+  "max-h-[var(--radix-dropdown-menu-content-available-height,var(--radix-context-menu-content-available-height))] overflow-y-auto";
+const MOVE_TO_LIST =
+  "no-scrollbar max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
 // Folder rows match their hover pill.
 const DROP_INTO_ROW_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
 // The menu keeps a 1px gap between rows. A pointer resting on that gap would hit the section
@@ -4109,6 +4117,9 @@ export function AppSidebar() {
     },
   ) {
     const { target } = config;
+    const leaving = config.current
+      ? customSections.find((section) => section.id === config.current)
+      : undefined;
     return (
       <>
         {config.heading && <P.Label>{t("shell.sections.sectionsHeading")}</P.Label>}
@@ -4124,21 +4135,30 @@ export function AppSidebar() {
           <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.sections.newSection")}</span>
         </P.Item>
-        {customSections.map((section) => (
-          <P.Item
-            key={section.id}
-            disabled={config.current === section.id}
-            onSelect={() => fileSectionTarget(target, section.id)}
-          >
-            <HugeiconsIcon icon={LayerIcon} strokeWidth={1.75} className="size-icon" />
-            <span className="truncate">{section.name}</span>
-          </P.Item>
-        ))}
-        {/* An action, so only where there is something to undo: greyed out it read as a label. */}
+        {customSections.length > 0 && (
+          <div className={MOVE_TO_LIST}>
+            {customSections.map((section) => (
+              <P.Item
+                key={section.id}
+                disabled={config.current === section.id}
+                onSelect={() => fileSectionTarget(target, section.id)}
+              >
+                <HugeiconsIcon icon={LayerIcon} strokeWidth={1.75} className="size-icon" />
+                <span className="truncate">{section.name}</span>
+              </P.Item>
+            ))}
+          </div>
+        )}
+        {/* An action, so only where there is something to undo: greyed out it read as a label.
+            It names the section, unless a selection is spread over several. */}
         {config.anyFiled && (
           <P.Item onSelect={() => fileSectionTarget(target, null)}>
             <HugeiconsIcon icon={MinusSignCircleIcon} strokeWidth={1.75} className="size-icon" />
-            <span>{t("shell.sections.removeFromSection")}</span>
+            <span className="truncate">
+              {leaving
+                ? t("shell.sections.removeFrom", { name: leaving.name })
+                : t("shell.sections.removeFromSection")}
+            </span>
           </P.Item>
         )}
       </>
@@ -4163,7 +4183,7 @@ export function AppSidebar() {
         </P.SubTrigger>
         <P.SubContent
           {...sidebarSubmenuOffsets}
-          className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-52"
+          className={cn("unsloth-plus-menu sidebar-row-menu sidebar-menu w-52", MOVE_TO_MENU)}
         >
           {renderSectionItems(P, config)}
         </P.SubContent>
@@ -4392,7 +4412,7 @@ export function AppSidebar() {
               </P.SubTrigger>
               <P.SubContent
                 {...sidebarSubmenuOffsets}
-                className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-52"
+                className={cn("unsloth-plus-menu sidebar-row-menu sidebar-menu w-52", MOVE_TO_MENU)}
               >
                 {/* Two groups, each with its New first and its Remove last. */}
                 <P.Label>{t("shell.navigation.projects")}</P.Label>
@@ -4405,21 +4425,33 @@ export function AppSidebar() {
                   <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
                   <span>New project</span>
                 </P.Item>
-                {projects.map((project) => (
-                  <P.Item
-                    key={project.id}
-                    disabled={item.projectId === project.id}
-                    onSelect={() => void moveChatToProject(item, project.id)}
-                  >
-                    <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                    <span className="truncate">{project.name}</span>
-                  </P.Item>
-                ))}
-                {/* An action, as Remove from section is: only where there is a project to leave. */}
+                {projects.length > 0 && (
+                  <div className={MOVE_TO_LIST}>
+                    {projects.map((project) => (
+                      <P.Item
+                        key={project.id}
+                        disabled={item.projectId === project.id}
+                        onSelect={() => void moveChatToProject(item, project.id)}
+                      >
+                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                        <span className="truncate">{project.name}</span>
+                      </P.Item>
+                    ))}
+                  </div>
+                )}
+                {/* An action, as the section's Remove is: only where there is a project to leave,
+                    and named after it. */}
                 {item.projectId && (
                   <P.Item onSelect={() => void moveChatToProject(item, null)}>
                     <HugeiconsIcon icon={MinusSignCircleIcon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("shell.sections.removeFromProject")}</span>
+                    <span className="truncate">
+                      {(() => {
+                        const leaving = projects.find((project) => project.id === item.projectId);
+                        return leaving
+                          ? t("shell.sections.removeFrom", { name: leaving.name })
+                          : t("shell.sections.removeFromProject");
+                      })()}
+                    </span>
                   </P.Item>
                 )}
                 <P.Separator />

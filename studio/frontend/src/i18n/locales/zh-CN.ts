@@ -261,6 +261,8 @@ export const zhCN = {
       removeFromProject: "从项目中移除",
       newSection: "新建分区",
       removeFromSection: "从分区中移除",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "从{name}中移除",
       // Shown in a section with nothing filed in it yet.
       empty: "将对话或项目拖到此处",
       sectionOptions: "分区选项",

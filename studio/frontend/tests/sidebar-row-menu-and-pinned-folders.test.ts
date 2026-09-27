@@ -408,3 +408,26 @@ test("a pinned folder in one list is a way in, not a second copy of its chats", 
     /const projectChatRowCount = useMemo\(\(\) => \{\n[^\n]*\n\s*if \(organizeBy !== "project"\) return 0;/,
   );
 });
+
+// "Remove from <name>", and lists that scroll: forty projects ran the submenu off the window,
+// taking the Sections group and both Removes out of reach.
+test("Move to names what a row leaves, and its lists scroll inside the window", async () => {
+  assert.match(
+    APP_SIDEBAR,
+    /leaving\n\s*\? t\("shell\.sections\.removeFrom", \{ name: leaving\.name \}\)\n\s*: t\("shell\.sections\.removeFromProject"\);/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /\{leaving\n\s*\? t\("shell\.sections\.removeFrom", \{ name: leaving\.name \}\)\n\s*: t\("shell\.sections\.removeFromSection"\)\}/,
+  );
+  for (const locale of ["en", "de", "ja"]) {
+    const source = await readSrcAsync(`i18n/locales/${locale}.ts`);
+    assert.match(source, /removeFrom: "[^"]*\{name\}[^"]*",/, locale);
+  }
+  // Each group's list scrolls past about seven rows, with no scrollbar to eat the right padding,
+  // and the submenu as a whole stays inside the window.
+  assert.match(APP_SIDEBAR, /const MOVE_TO_LIST =\n\s*"no-scrollbar max-h-\[calc\(260px\*var\(--ui-space-scale,1\)\)\] overflow-y-auto overscroll-contain";/);
+  assert.match(APP_SIDEBAR, /const MOVE_TO_MENU =\n\s*"max-h-\[var\(--radix-dropdown-menu-content-available-height,var\(--radix-context-menu-content-available-height\)\)\] overflow-y-auto";/);
+  assert.equal((APP_SIDEBAR.match(/<div className=\{MOVE_TO_LIST\}>/g) ?? []).length, 2);
+  assert.equal((APP_SIDEBAR.match(/sidebar-menu w-52", MOVE_TO_MENU\)/g) ?? []).length, 2);
+});

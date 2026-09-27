@@ -266,6 +266,8 @@ export const hi = {
       removeFromProject: "प्रोजेक्ट से हटाएँ",
       newSection: "नया सेक्शन",
       removeFromSection: "सेक्शन से हटाएँ",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "{name} से हटाएँ",
       // Shown in a section with nothing filed in it yet.
       empty: "चैट या प्रोजेक्ट यहाँ खींचें",
       sectionOptions: "सेक्शन विकल्प",

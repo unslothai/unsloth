@@ -263,6 +263,8 @@ export const ar = {
       removeFromProject: "إزالة من المشروع",
       newSection: "قسم جديد",
       removeFromSection: "إزالة من القسم",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "إزالة من {name}",
       // Shown in a section with nothing filed in it yet.
       empty: "اسحب المحادثات أو المشاريع إلى هنا",
       sectionOptions: "خيارات القسم",

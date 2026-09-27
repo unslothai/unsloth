@@ -266,6 +266,8 @@ export const fr = {
       removeFromProject: "Retirer du projet",
       newSection: "Nouvelle section",
       removeFromSection: "Retirer de la section",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "Retirer de {name}",
       // Shown in a section with nothing filed in it yet.
       empty: "Faites glisser des discussions ou des projets ici",
       sectionOptions: "Options de la section",

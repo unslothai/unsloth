@@ -265,6 +265,8 @@ export const ptBR = {
       removeFromProject: "Remover do projeto",
       newSection: "Nova seção",
       removeFromSection: "Remover da seção",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "Remover de {name}",
       // Shown in a section with nothing filed in it yet.
       empty: "Arraste conversas ou projetos para cá",
       sectionOptions: "Opções da seção",

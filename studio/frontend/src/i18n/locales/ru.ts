@@ -265,6 +265,8 @@ export const ru = {
       removeFromProject: "Убрать из проекта",
       newSection: "Новый раздел",
       removeFromSection: "Убрать из раздела",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "Убрать из {name}",
       // Shown in a section with nothing filed in it yet.
       empty: "Перетащите сюда чаты или проекты",
       sectionOptions: "Параметры раздела",

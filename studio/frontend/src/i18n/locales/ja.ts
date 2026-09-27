@@ -265,6 +265,8 @@ export const ja = {
       removeFromProject: "プロジェクトから削除",
       newSection: "新しいセクション",
       removeFromSection: "セクションから削除",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "{name}から削除",
       // Shown in a section with nothing filed in it yet.
       empty: "ここにチャットやプロジェクトをドラッグ",
       sectionOptions: "セクションのオプション",

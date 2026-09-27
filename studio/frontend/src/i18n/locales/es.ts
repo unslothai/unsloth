@@ -265,6 +265,8 @@ export const es = {
       removeFromProject: "Quitar del proyecto",
       newSection: "Nueva sección",
       removeFromSection: "Quitar de la sección",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "Quitar de {name}",
       // Shown in a section with nothing filed in it yet.
       empty: "Arrastra chats o proyectos aquí",
       sectionOptions: "Opciones de sección",
