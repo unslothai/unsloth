@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ctypes
 import io
+import ntpath
 import os
 import re
 import sys
@@ -275,11 +276,42 @@ def test_the_output_matches_what_the_powershell_side_parses():
     assert all(re.match(r"^\d+\.\d+$", cap) for cap in parts[3].split(","))
 
 
-def test_the_windows_hint_is_tried_before_the_bare_library_name(monkeypatch):
-    order: list[str] = []
+def _run_windows(monkeypatch, libs, hints, loaded):
     monkeypatch.setattr(os, "name", "nt")
-    _run({}, hints = (r"C:\Windows\System32\nvml.dll", "nvcuda.dll"), loaded = order)
-    monkeypatch.undo()
-    assert order[0] == r"C:\Windows\System32\nvml.dll"
-    assert "nvml.dll" in order
-    assert "nvcuda.dll" in order
+    monkeypatch.setattr(os, "path", ntpath)
+    try:
+        return _run(libs, hints = hints, loaded = loaded)
+    finally:
+        monkeypatch.undo()
+
+
+SYSTEM32_NVML = r"C:\Windows\System32\nvml.dll"
+SYSTEM32_CUDA = r"C:\Windows\System32\nvcuda.dll"
+
+
+def test_windows_loads_only_the_driver_paths_it_is_handed(monkeypatch):
+    order: list[str] = []
+    _run_windows(monkeypatch, {}, (SYSTEM32_NVML, SYSTEM32_CUDA), order)
+    assert order == [SYSTEM32_NVML, SYSTEM32_CUDA]
+
+
+def test_a_cuda_stand_in_beside_python_is_not_an_nvidia_gpu(monkeypatch):
+    # ZLUDA ships nvcuda.dll and nvml.dll that answer as a driver on an AMD host (#11736):
+    # without the driver in System32 the probe must say nothing, not report a GPU.
+    order: list[str] = []
+    stand_in = {"nvml.dll": _nvml(), "nvcuda.dll": _cuda()}
+    assert _run_windows(monkeypatch, stand_in, (SYSTEM32_NVML, SYSTEM32_CUDA), order) == ""
+    assert "nvml.dll" not in order and "nvcuda.dll" not in order
+
+
+def test_a_relative_hint_is_never_loaded(monkeypatch):
+    order: list[str] = []
+    stand_in = {"nvml.dll": _nvml(), "nvcuda.dll": _cuda()}
+    assert _run_windows(monkeypatch, stand_in, ("nvml.dll", "nvcuda.dll"), order) == ""
+    assert order == []
+
+
+def test_the_real_driver_in_system32_still_answers(monkeypatch):
+    order: list[str] = []
+    out = _run_windows(monkeypatch, {SYSTEM32_NVML: None, SYSTEM32_CUDA: _cuda()}, (SYSTEM32_NVML, SYSTEM32_CUDA), order)
+    assert out == CUDA_OUT
