@@ -1790,8 +1790,7 @@ class InferenceOrchestrator:
                     rows = len(rows) if rows else None,
                 )
         finally:
-            # Normally already retired by the dispatcher at gen_done; this covers streams that
-            # end without one (never sent, cancel, disconnect, a dead subprocess).
+            # Covers streams that end without a gen_done (never sent, cancel, disconnect, dead worker).
             self._release_worker(cancel_event)
             with self._mailbox_lock:
                 self._mailboxes.pop(request_id, None)

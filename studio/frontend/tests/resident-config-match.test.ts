@@ -733,10 +733,7 @@ test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
     }),
     false,
   );
-  // And a non-GGUF resident answers only for what the backend acts on: what
-  // _mlx_runtime_settings_match compares, and the reply width the already_loaded path
-  // applies. cache_type_kv is deliberately not among them: it is a llama.cpp flag, and the
-  // non-GGUF branch never reads it.
+  // Non-GGUF matches only what the backend acts on; cache_type_kv is a llama.cpp flag it never reads.
   assert.equal(
     matches({ ...DEFAULTS, is_gguf: false, cache_type_kv: "q8_0" }, BLANK),
     true,

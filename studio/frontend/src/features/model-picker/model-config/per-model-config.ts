@@ -259,8 +259,7 @@ export function loadedContextFields(resp: {
     // llama.cpp allocates what it reports, so GGUF is enforced by construction.
     // Everything else answers for itself, or says nothing.
     loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
-    // Answers for replies decoded together, which the field above does not. Read from
-    // the same response as the other two so the three can never be mixed across loads.
+    // Read from the same response as the other two so the three never mix across loads.
     loadedContextUnboundedWhenBatched: isGguf
       ? false
       : (resp.context_unbounded_when_batched ?? false),
