@@ -622,8 +622,6 @@ def test_peft_merge_densifies_exactly_and_unmerge_restores_the_packed_bytes():
     assert torch.equal(unloaded[0].weight, dense_model.base_model.model[0].base_layer.weight)
 
 
-
-
 def _write_tiny_mxfp4_llama(root):
     from safetensors.torch import save_file
     from transformers import LlamaConfig, LlamaForCausalLM
