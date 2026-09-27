@@ -6306,7 +6306,7 @@ def test_dsh_command_selects_web_only_for_app_arguments(args, expected):
     ],
 )
 def test_dsh_command_places_the_patch_where_dsh_parses_it(args, expected):
-    assert start._dsh_command(args, Path("P")) == expected
+    assert start._dsh_command(args, "P") == expected
 
 
 def test_connect_dsh_no_launch(fake_studio, tmp_path):
@@ -6324,6 +6324,21 @@ def test_connect_dsh_no_launch(fake_studio, tmp_path):
     assert entries["llm-pi-ai"]["config"]["providers"]["unsloth"]["baseURL"] == f"{BASE}/v1"
     # dsh 0.1.7 imports a settings.yaml into the profile only after boot, so none is written.
     assert not (home / "settings.yaml").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_dsh_under_wsl_gets_the_windows_patch_path(fake_studio, monkeypatch):
+    # WSLENV translates DSH_HOME for a Windows dsh, but a path on the command line reaches
+    # the Windows Node process verbatim, where a Linux path does not open.
+    windows_path = r"\\wsl.localhost\Ubuntu\tmp\unsloth.patch.yml"
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    shim = "/mnt/c/Users/x/AppData/Roaming/npm/dsh"
+    monkeypatch.setattr(start.shutil, "which", lambda _: shim)
+    monkeypatch.setattr(start, "is_deepseek_harness_executable", lambda _: True)
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: windows_path)
+    captured = _capture_launch(monkeypatch, ["dsh", "--profile", "headless", "hi"])
+    command = captured["command"]
+    assert command[command.index("--patch") + 1] == windows_path, command
 
 
 def test_dsh_yolo_sets_permission_mode(fake_studio):

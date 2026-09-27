@@ -574,7 +574,7 @@ _DSH_LAUNCHER_ARGS = frozenset(
 _DSH_NO_PROFILE_ARGS = frozenset("-V --version plugin".split())
 
 
-def _dsh_command(args: list[str], patch: Optional[Path] = None) -> list[str]:
+def _dsh_command(args: list[str], patch: Optional[str] = None) -> list[str]:
     head = args[0] if args else ""
     if head in _DSH_LAUNCHER_ARGS or head.startswith(("--profile=", "--patch=")):
         command = ["dsh", *args]
@@ -584,7 +584,7 @@ def _dsh_command(args: list[str], patch: Optional[Path] = None) -> list[str]:
         # `dsh <name>` only expands to `--profile <name>` when the name comes first, so the
         # overlay goes after a bare profile name and ahead of a leading launcher option.
         at = 1 if command[1].startswith("-") else 2
-        command[at:at] = ["--patch", str(patch)]
+        command[at:at] = ["--patch", patch]
     return command
 
 
@@ -5758,7 +5758,8 @@ def dsh(
     with _session_config("dsh", launch, persist = persist) as home:
         patch = home / _DSH_PATCH_FILE
         write_dsh_patch(base, entry, patch)
-        command = _dsh_command(ctx.args, patch)
+        # A Windows dsh under WSL gets DSH_HOME translated through WSLENV, but not argv.
+        command = _dsh_command(ctx.args, _agent_config_path(patch, ["dsh"]))
         env = {
             _DSH_ENV_KEY: key,
             "DSH_HOME": str(home),
