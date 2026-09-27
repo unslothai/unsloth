@@ -11494,9 +11494,187 @@ def test_ltx23_single_file_fp8_seeds_the_hosted_denoiser(fake_runtime, tmp_path,
 
 
 def test_ltx23_single_file_fp8_without_a_checkpoint_is_refused(fake_runtime, tmp_path, monkeypatch):
-    # No usable hosted checkpoint: the explicit pick must not run silently at bf16.
-    with pytest.raises(RuntimeError, match = "full-pipeline loads only"):
+    # No usable hosted checkpoint: the explicit pick must not run silently at bf16, and is refused BEFORE the dense
+    # assembly loads the 44 GB bf16 DiT only for the fail-closed check to throw it away.
+    from core.inference import video_ltx2
+
+    assembled = []
+    monkeypatch.setattr(
+        video_ltx2, "load_ltx23_pipeline", lambda *a, **k: assembled.append(1), raising = False
+    )
+    with pytest.raises(RuntimeError, match = "unsloth/LTX-2.3-FP8"):
         _load_ltx23_single_file_fp8(tmp_path, monkeypatch, None)
+
+
+def _ltx23_fp8_plan_at(monkeypatch, fits_mib):
+    """A card where a DiT priced above ``fits_mib`` (the plan's model size less its companions) offloads; returns the
+    DiT sizes the plans were priced at."""
+    import dataclasses
+
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(video_mod, "estimate_safetensors_dense_mib", lambda size_mib: 44_000)
+    real_plan = video_mod.plan_diffusion_memory
+    priced: list = []
+
+    def _plan(**kwargs):
+        planned = real_plan(**kwargs)
+        dit_mib = (kwargs.get("model_dense_mib") or 0) - (kwargs.get("companion_dense_mib") or 0)
+        priced.append(dit_mib)
+        if dit_mib > fits_mib:
+            return dataclasses.replace(planned, offload_policy = "model")
+        return dataclasses.replace(planned, offload_policy = "none")
+
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", _plan)
+    return priced
+
+
+def test_ltx23_single_file_fp8_is_planned_at_the_hosted_dit_size(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Priced at the 44 GB bf16 file, a card where the fp8 DiT fits resident planned an offload, skipped the seed and
+    # refused the pick after the eviction. The plan is priced at the fp8 DiT, so the seed engages.
+    priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 30_000)
+    seeded_dit = object()
+    source = types.SimpleNamespace(
+        location = "unsloth/LTX-2.3-FP8", kind = "repo", filename = "LTX-2.3-FP8.pt"
+    )
+    backend, calls = _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (seeded_dit, source))
+    assert calls["override"] is seeded_dit
+    assert priced and all(mib < 30_000 for mib in priced)
+    assert backend.status()["transformer_quant"] == "fp8"
+    backend.unload()
+
+
+def test_ltx23_single_file_fp8_that_still_offloads_is_refused_before_the_assembly(
+    fake_runtime, tmp_path, monkeypatch
+):
+    _ltx23_fp8_plan_at(monkeypatch, fits_mib = 1_000)
+    with pytest.raises(RuntimeError, match = "offloads the DiT even at fp8 size"):
+        _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (object(), None))
+
+
+def test_ltx2_distilled_detection_follows_the_selected_checkpoint():
+    # Decided like the generation defaults: the selected file before its repo / folder, so a dev file under a
+    # '...distilled...' path keeps its guidance and the 40-step default agrees with it.
+    from core.inference.video_families import default_video_generation_params
+    from core.inference.video_ltx2 import ltx2_distilled_ids
+
+    cases = [
+        (("ltx-2.3-22b-distilled.safetensors", "Lightricks/LTX-2.3", "Lightricks/LTX-2"), True),
+        (
+            ("distilled-1.1/ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf", "unsloth/LTX-2.3-GGUF", None),
+            True,
+        ),
+        ((None, "someone/LTX-2.3-distilled-diffusers", None), True),
+        (("model.safetensors", "/models/ltx-2.3-distilled", "Lightricks/LTX-2"), True),
+        (
+            ("ltx-2.3-22b-dev.safetensors", "/models/ltx-2.3-distilled-mirror", "Lightricks/LTX-2"),
+            False,
+        ),
+        (("ltx-2.3-22b-dev-Q4_K_M.gguf", "me/ltx-distilled-and-dev", None), False),
+        ((None, "Lightricks/LTX-2", None), False),
+        (("ltx-2-19b-undistilled.safetensors", "org/ltx", None), False),
+    ]
+    for ids, distilled in cases:
+        assert ltx2_distilled_ids(*ids) is distilled, ids
+        assert (default_video_generation_params(*ids) == (8, 1.0)) is distilled, ids
+
+
+def test_download_plan_stages_the_hosted_fp8_dit_for_the_ltx23_distilled_single_file(monkeypatch):
+    # The explicit fp8 pick seeds unsloth/LTX-2.3-FP8, a third repo the plan never listed: the load pulled 19 GB
+    # inline, outside the download manager's progress, cancel and disk preflight.
+    _plan_api(
+        monkeypatch,
+        {
+            "Lightricks/LTX-2.3": [
+                _PlanSibling("ltx-2.3-22b-distilled.safetensors", 46_000_000_000),
+                _PlanSibling("ltx-2.3-22b-dev.safetensors", 46_000_000_000),
+            ],
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "unsloth/LTX-2.3-FP8": [
+                _PlanSibling("LTX-2.3-FP8.pt", 19_057_628_489),
+                _PlanSibling("LTX-2.3-INT8.pt", 19_000_000_000),
+            ],
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+
+    def _plan(filename, quant):
+        return VideoBackend().download_plan(
+            "Lightricks/LTX-2.3",
+            gguf_filename = filename,
+            family_override = "ltx-2",
+            transformer_quant = quant,
+        )
+
+    by_repo = {
+        e["repo_id"]: e for e in _plan("ltx-2.3-22b-distilled.safetensors", "fp8")["entries"]
+    }
+    assert by_repo["unsloth/LTX-2.3-FP8"]["files"] == ["LTX-2.3-FP8.pt"]
+    # The single file is still read for its connectors / VAEs / vocoder.
+    assert "ltx-2.3-22b-distilled.safetensors" in by_repo["Lightricks/LTX-2.3"]["files"]
+    for filename, quant in (
+        ("ltx-2.3-22b-distilled.safetensors", None),
+        ("ltx-2.3-22b-distilled.safetensors", "off"),
+        ("ltx-2.3-22b-dev.safetensors", "fp8"),
+    ):
+        repos = {e["repo_id"] for e in _plan(filename, quant)["entries"]}
+        assert "unsloth/LTX-2.3-FP8" not in repos, (filename, quant)
+
+
+class _StopAfterPrefetch(Exception):
+    pass
+
+
+def test_the_ltx23_fp8_load_prefetches_the_hosted_dit_under_its_cancel_event(tmp_path, monkeypatch):
+    from core.inference import video as video_mod, video_ltx2
+
+    (tmp_path / "ltx-2.3-22b-distilled.safetensors").write_bytes(b"w")
+    backend = VideoBackend()
+    fetched: list = []
+
+    def _fetch(
+        sources,
+        hf_token,
+        *,
+        cancel_event = None,
+        local_files_only = False,
+    ):
+        fetched.append(([src.location for src in sources], cancel_event, local_files_only))
+
+    def _stop(*_a, **_k):
+        raise _StopAfterPrefetch()
+
+    monkeypatch.setattr(video_ltx2, "is_ltx23_checkpoint", lambda path: True)
+    monkeypatch.setattr(backend, "_fetch_denoiser_prequant", _fetch)
+    monkeypatch.setattr(backend, "_estimate_download_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "_predownload_base", _stop)
+    monkeypatch.setattr(video_mod, "clear_gpu_cache", lambda: None)
+    cancel = threading.Event()
+    backend._load_token = 7
+    backend._loading = types.SimpleNamespace(asset_repos = (), base_repo = None, expected_bytes = None)
+    backend._run_load(
+        repo_id = str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled.safetensors",
+        family_override = "ltx-2",
+        transformer_quant = "fp8",
+        local_files_only = True,
+        _load_token = 7,
+        _cancel_event = cancel,
+    )
+    assert fetched == [(["unsloth/LTX-2.3-FP8"], cancel, True)]
+    fetched.clear()
+    backend._load_token = 8
+    backend._run_load(
+        repo_id = str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled.safetensors",
+        family_override = "ltx-2",
+        local_files_only = True,
+        _load_token = 8,
+        _cancel_event = cancel,
+    )
+    assert fetched == []
 
 
 def test_ltx23_selective_read_skips_the_dit(tmp_path):

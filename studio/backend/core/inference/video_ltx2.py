@@ -407,9 +407,13 @@ LTX23_DISTILLED_SIGMAS: tuple[float, ...] = (
 
 
 def ltx2_distilled_ids(*ids: Optional[str]) -> bool:
-    """True when any loaded-checkpoint id names the distilled DiT (same substring the
-    generation-defaults table keys on, so sigmas and the 8-step default stay in lockstep)."""
-    return any("distilled" in str(i or "").lower() for i in ids)
+    """True when the loaded checkpoint is the distilled DiT, decided like the generation defaults (the first id
+    naming a variant wins, the selected file before its repo), so sigmas, guidance and the 8-step default stay in
+    lockstep: a dev file under a repo or folder named '...distilled...' stays dev."""
+    from .video_families import video_generation_variant
+    return (
+        video_generation_variant(*(str(i) if i is not None else None for i in ids)) == "distilled"
+    )
 
 
 # Multimodal-guidance kwargs of LTX2Pipeline.__call__ and the values that switch each term off. diffusers #14447

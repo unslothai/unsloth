@@ -2200,6 +2200,33 @@ class VideoBackend:
                 cancel_event = cancel_event,
                 local_files_only = local_files_only,
             )
+            # The explicit fp8 on the LTX-2.3 distilled single file seeds a hosted DiT from a third repo: fetch it here,
+            # under this load's cancel event, not inline inside the assembly (and claim it against a mid-load delete).
+            if _ltx23_prequant_pick(
+                fam,
+                kind,
+                kwargs.get("gguf_filename"),
+                normalize_transformer_quant(kwargs.get("transformer_quant")),
+            ):
+                from .video_ltx2 import LTX23_PREQUANT_BASE
+
+                ltx23_sources = self._denoiser_prequant_source_list(
+                    fam, TQ_FP8, LTX23_PREQUANT_BASE
+                )
+                with self._lock:
+                    if self._load_token == token and self._loading is not None:
+                        self._loading.asset_repos = tuple(
+                            dict.fromkeys(
+                                self._loading.asset_repos
+                                + tuple(src.location for src in ltx23_sources)
+                            )
+                        )
+                self._fetch_denoiser_prequant(
+                    ltx23_sources,
+                    kwargs.get("hf_token"),
+                    cancel_event = cancel_event,
+                    local_files_only = local_files_only,
+                )
             # The denoiser artifact too: the injection that would fetch it has no cancel event.
             if skip_transformer_weights:
                 self._fetch_denoiser_prequant(
@@ -3829,6 +3856,17 @@ class VideoBackend:
             )
             if dq_repo:
                 total += add(dq_repo, dq_files)
+            elif _ltx23_prequant_pick(
+                fam, kind, gguf_filename, normalize_transformer_quant(transformer_quant)
+            ):
+                # The LTX-2.3 distilled single file under an explicit fp8 seeds the hosted DiT from its own repo (the
+                # file itself is still read for its connectors / VAEs / vocoder).
+                from .video_ltx2 import LTX23_PREQUANT_BASE
+                lq_repo, lq_files = self._denoiser_prequant_hub_files(
+                    fam, TQ_FP8, LTX23_PREQUANT_BASE, api
+                )
+                if lq_repo:
+                    total += add(lq_repo, lq_files)
             # And H3's quantized conditioner, which replaces the base repo's dense text_encoder/. VERIFIED, like the
             # load: this entry both ADDS 27 GB and REMOVES the dense encoder from the base entry below, so a name match
             # that the load will decline gets the plan and the disk preflight wrong in both directions at once -- 27 GB
@@ -4552,6 +4590,19 @@ class VideoBackend:
                 transformer_mib = estimate_safetensors_dense_mib(size_mib)
                 if transformer_mib is not None:
                     transformer_mib = int(transformer_mib * dtype_scale)
+        # An explicit fp8 on the bf16 LTX-2.3 distilled single file is served by the hosted pre-quantized DiT (the 2.3
+        # assembly below seeds it), so price the plan at that DiT: at the bf16 file size a card where fp8 fits resident
+        # plans an offload, skips the seed and refuses the pick only after the eviction.
+        ltx23_prequant_pick = (
+            transformer_mib is not None
+            and _ltx23_prequant_pick(
+                fam, kind, gguf_filename, normalize_transformer_quant(transformer_quant)
+            )
+            and dense_transformer_supported(target)
+        )
+        ltx23_dense_transformer_mib = transformer_mib
+        if ltx23_prequant_pick and _QUANT_STEADY_FACTOR.get(TQ_FP8) is not None:
+            transformer_mib = int(transformer_mib * _QUANT_STEADY_FACTOR[TQ_FP8])
         runtime_mib = estimate_video_runtime_mib(
             width = fam.resolution_presets[0][0],
             height = fam.resolution_presets[0][1],
@@ -4829,12 +4880,8 @@ class VideoBackend:
                 # only (offload hooks move modules with Module.to(), which torchao tensors reject).
                 ltx23_override = None
                 ltx23_scheme = normalize_transformer_quant(transformer_quant)
-                if (
-                    kind == "single_file"
-                    and ltx23_scheme == TQ_FP8
-                    and plan.offload_policy == "none"
-                    and dense_transformer_supported(target)
-                ):
+                seeded = None
+                if ltx23_prequant_pick and plan.offload_policy == "none":
                     from .video_ltx2 import load_ltx23_prequant_transformer
                     seeded = load_ltx23_prequant_transformer(
                         fam,
@@ -4848,11 +4895,37 @@ class VideoBackend:
                         local_files_only = local_files_only,
                         logger = logger,
                     )
-                    if seeded is not None:
-                        ltx23_override, ltx23_source = seeded
-                        denoiser_injected = {"transformer": ltx23_override}
-                        denoiser_seed_scheme = ltx23_scheme
-                        denoiser_seed_sources = {"transformer": ltx23_source}
+                if seeded is not None:
+                    ltx23_override, ltx23_source = seeded
+                    denoiser_injected = {"transformer": ltx23_override}
+                    denoiser_seed_scheme = ltx23_scheme
+                    denoiser_seed_sources = {"transformer": ltx23_source}
+                elif ltx23_prequant_pick:
+                    # Decline BEFORE the dense assembly: it would load the 44 GB bf16 DiT only for the fail-closed check
+                    # below to refuse it.
+                    ltx23_reason = (
+                        f"this GPU's '{plan.offload_policy}' memory plan offloads the DiT even at fp8 size, and "
+                        "torchao quantised tensors cannot be moved by the offload hooks"
+                        if plan.offload_policy != "none"
+                        else "the hosted fp8 DiT (unsloth/LTX-2.3-FP8) could not be loaded"
+                        + (" from the local cache" if local_files_only else "")
+                    )
+                    if not precision_fallback_allowed():
+                        clear_gpu_cache()
+                        raise RuntimeError(
+                            precision_refusal_message(
+                                "transformer_quant",
+                                ltx23_scheme,
+                                ltx23_reason,
+                                off_label = "Off to run the DiT at bf16",
+                            )
+                        )
+                    # The opt-in fallback loads the dense DiT: re-plan at its size.
+                    logger.warning("video.ltx23_prequant: %s; loading the bf16 DiT", ltx23_reason)
+                    transformer_mib = ltx23_dense_transformer_mib
+                    plan, bf16_plan, quant_replanned = _plan_for_te_scale(
+                        settled_te_scale, log = False
+                    )
                 # 2.3 checkpoints need the full assembly: new config flags, key renames the stock converter lacks, and
                 # the 2.3 connectors/VAEs/vocoder.
                 pipe = load_ltx23_pipeline(

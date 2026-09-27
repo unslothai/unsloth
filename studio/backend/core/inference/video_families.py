@@ -800,11 +800,21 @@ def default_video_generation_params(
     beats the family base repo. ``fallback`` is used when no identifier names a variant --
     callers pass the resolved family's own default so a Wan model loaded from an opaque local
     path under an explicit family_override still gets 50/5.0, not the hardcoded LTX 40/4.0."""
+    variant = video_generation_variant(*identifiers)
+    for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
+        if key == variant:
+            return steps, guidance
+    return fallback
+
+
+def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:
+    """The ``_VIDEO_GENERATION_DEFAULTS`` key the first identifier naming one matches, or None; the precedence
+    ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults."""
     for identifier in identifiers:
         needle = (identifier or "").lower()
-        for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
+        for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
             # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
             # "wan".
             if re.search(r"(?<![a-z])" + re.escape(key), needle):
-                return steps, guidance
-    return fallback
+                return key
+    return None
