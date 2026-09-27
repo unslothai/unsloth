@@ -1702,8 +1702,7 @@ def _plan_proves_resident(plan: Any) -> bool:
 
 
 def _auto_keeps_bf16_reason(fam: Any, kind: Optional[str] = "pipeline") -> Optional[str]:
-    """Why AUTO keeps bf16 for ``fam`` when bf16 fits, or None; the seed and load deciders must both read this.
-    The measured rule covers released bf16 weights only: a GGUF load keeps no bf16 transformer."""
+    """Why AUTO keeps bf16 when it fits (measured rule: pipeline loads only), or None; both deciders read this."""
     if not family_compiles_regionally(fam):
         return (
             f"'{getattr(fam, 'name', None)}' cannot be regionally compiled (its transformer declares no "

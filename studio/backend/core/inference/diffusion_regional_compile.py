@@ -39,7 +39,6 @@ def verified_repeated_blocks(class_name: Optional[str]) -> tuple[str, ...]:
 
 
 def ensure_repeated_blocks(model: Any) -> tuple[str, ...]:
-    """The block names ``compile_repeated_blocks`` will use, supplying them for a verified class that declares none."""
     blocks = tuple(getattr(model, "_repeated_blocks", None) or ())
     if not blocks:
         verified = verified_repeated_blocks(type(model).__name__)

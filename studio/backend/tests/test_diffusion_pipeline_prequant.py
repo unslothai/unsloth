@@ -1282,7 +1282,6 @@ def test_the_bf16_rule_names_only_the_measured_families(repo, kept):
     reason = dmod._auto_keeps_bf16_reason(fam)
     assert (reason is not None) is kept
     assert reason is None or "cannot be regionally compiled" not in reason
-    # A GGUF load keeps no bf16 transformer, so the measured bf16 rule never claims it.
     assert dmod._auto_keeps_bf16_reason(fam, "gguf") is None
 
 

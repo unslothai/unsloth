@@ -67,7 +67,6 @@ def _hidream_inputs(batch = 2):
 
 @pytest.mark.parametrize("build", [_tiny_lumina, _tiny_hidream])
 def test_released_class_still_declares_no_repeated_blocks(build):
-    # Drift guard: once Diffusers declares them, ensure_repeated_blocks returns theirs and changes nothing.
     model = build()
     declared = list(type(model)._repeated_blocks or [])
     if declared:
@@ -187,7 +186,6 @@ def test_hidream_blocks_trace_without_graph_breaks(name):
 
 
 def test_hidream_released_moe_loop_breaks_the_graph():
-    # Negative control for the test above: without the traceable experts the block does not trace whole.
     model = _tiny_hidream()
     mod, args, kwargs = _block_calls(model, _hidream_inputs(), "HiDreamImageTransformerBlock")
     torch._dynamo.reset()
