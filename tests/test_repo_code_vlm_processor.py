@@ -150,7 +150,9 @@ def test_automodel_only_vlm_uses_repo_autoprocessor():
 
 def test_sequence_classification_vlm_keeps_tokenizer():
     """Gemma 3 with num_labels: native multimodal config, text classification head."""
-    tok, err, calls = _select(_Processor, auto_model = transformers.AutoModelForSequenceClassification)
+    tok, err, calls = _select(
+        _Processor, auto_model = transformers.AutoModelForSequenceClassification
+    )
     assert isinstance(tok, _Tokenizer)
     assert [c[0] for c in calls] == ["AutoTokenizer"]
 
