@@ -718,22 +718,20 @@
 	--sidebar-surface: var(--background);
 }
 
-/* Neon Cyberpunk light: black outline and a hard cyan offset on the composer;
-   yellow only as a focus edge. */
+/* Neon Cyberpunk light: yellow edge glow on the composer. */
 :root[data-palette="neon-cyberpunk"]:not(.dark)
 	:is(.chat-composer-surface, .unsloth-composer-surface) {
 	box-shadow:
-		0 0 0 1px #0a0a0f,
-		5px 5px 0 0 #00f0ff,
-		5px 5px 0 1px #0a0a0f;
+		0 0 0 1px rgb(230 210 0 / 0.7),
+		0 0 26px -6px rgb(252 238 10 / 0.8),
+		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
 :root[data-palette="neon-cyberpunk"]:not(.dark)
 	:is(.chat-composer-surface, .unsloth-composer-surface):focus-within {
 	box-shadow:
-		0 0 0 1px #0a0a0f,
-		5px 5px 0 0 #00f0ff,
-		5px 5px 0 1px #0a0a0f,
-		-3px -3px 0 0 #fcee0a;
+		0 0 0 1px rgb(230 210 0 / 0.9),
+		0 0 32px -4px rgb(252 238 10 / 0.9),
+		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
 /* Neon Cyberpunk: cyan edge glow on the dark composer. */
 :root[data-palette="neon-cyberpunk"].dark
