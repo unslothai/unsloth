@@ -1249,9 +1249,10 @@ def _fuse_qkv(pipe: Any, logger: Any) -> bool:
                 for m in vae.modules()
             )
             fn()
-            if fused_vae_attn:  # the pipe-level fuse resets every VAE processor to FusedAttnProcessor2_0
+            if (
+                fused_vae_attn
+            ):  # the pipe-level fuse resets every VAE processor to FusedAttnProcessor2_0
                 from . import diffusion_vae_fused  # noqa: PLC0415
-
                 diffusion_vae_fused.install_attention_processors(vae)
             return True
         except Exception as exc:  # noqa: BLE001 - optimisation only

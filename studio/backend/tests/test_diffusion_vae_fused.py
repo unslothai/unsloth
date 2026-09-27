@@ -497,7 +497,9 @@ def test_wan_attention_oom_retries_stock_for_that_call_only(monkeypatch):
     diffusers = pytest.importorskip("diffusers")
     monkeypatch.setattr(F, "runtime_ok", lambda: True)
     torch.manual_seed(0)
-    vae = diffusers.AutoencoderKLWan(base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1).eval()
+    vae = diffusers.AutoencoderKLWan(
+        base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1
+    ).eval()
     F.install_wan_vae(vae)
     block = next(m for m in vae.decoder.modules() if type(m).__name__.endswith("AttentionBlock"))
     x = torch.randn(1, block.norm.gamma.shape[0], 1, 4, 4)

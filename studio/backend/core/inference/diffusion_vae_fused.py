@@ -1020,7 +1020,12 @@ def _is_oom(exc: BaseException) -> bool:
 
 
 def _guard(
-    module: Any, fast: Any, stock: Any, label: str, logger: Any, oom_stock: bool = False
+    module: Any,
+    fast: Any,
+    stock: Any,
+    label: str,
+    logger: Any,
+    oom_stock: bool = False,
 ) -> None:
     """``module.forward = fast`` until it raises something ``stock`` does not; then stock for good.
 
@@ -1048,7 +1053,9 @@ def _guard(
                 return out
             if not oom_stock:
                 raise
-        return stock(*args, **kwargs)  # outside the handler, so the failed call's tensors are freed first
+        return stock(
+            *args, **kwargs
+        )  # outside the handler, so the failed call's tensors are freed first
 
     forward._unsloth_vae_fused = True
     module.forward = forward
