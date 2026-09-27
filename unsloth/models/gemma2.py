@@ -535,12 +535,16 @@ def Gemma2Model_fast_forward_inference(
     seq_len = past_key_values[0][0].shape[-2]
     flash_decode = _flash_decode_usable(self.config, hidden_states, attention_mask)
     leftpad = None
+    if flash_decode and attention_mask is not None:
+        leftpad = (attention_mask.cumsum(-1) == 0).sum(-1, dtype = torch.int32)
+        # cache_leftpad only skips leading zeros; any other masked key needs the manual masks.
+        if not bool(((attention_mask != 0).sum(-1) + leftpad == attention_mask.shape[-1]).all()):
+            flash_decode = False
+            leftpad = None
     if flash_decode:
         # The kernel applies the window itself and skips each row's left padding.
         SWA = None
         GA = None
-        if attention_mask is not None:
-            leftpad = (attention_mask.cumsum(-1) == 0).sum(-1, dtype = torch.int32)
     elif bsz != 1:
         # Decode uses manual attention even when Flash Attention is available.
         SWA = _prepare_4d_causal_attention_mask_for_sdpa(

@@ -24,6 +24,7 @@ def _decode_kwargs(
     flash,
     second_device = "cpu",
     mask_rows = None,
+    mask = None,
 ):
     seen = []
 
@@ -65,6 +66,8 @@ def _decode_kwargs(
     attention_mask = torch.tensor(
         [[1] * (cached + 1), [0, 0] + [1] * (cached - 1), [0] * 4 + [1] * 2]
     )[mask_rows if mask_rows is not None else slice(0, bsz)]
+    if mask is not None:
+        attention_mask = torch.tensor(mask)
     with pytest.raises(_Captured):
         g2.Gemma2Model_fast_forward_inference(
             self,
@@ -94,6 +97,16 @@ def test_flash_decode_leftpad_follows_layer_device(monkeypatch):
     # Pipeline-parallel device maps: flash-attn rejects a cache_leftpad on another GPU.
     seen = _decode_kwargs(monkeypatch, bsz = 3, flash = True, second_device = "meta")
     assert [kw["leftpad"].device.type for kw in seen] == ["cpu", "meta"]
+
+
+@pytest.mark.parametrize("gap_row", [[1, 1, 0, 1, 1, 1], [1, 1, 1, 1, 1, 0]])
+def test_flash_decode_falls_back_for_non_left_padding(monkeypatch, gap_row):
+    # cache_leftpad only skips leading zeros; an interior or trailing masked key needs the manual masks.
+    seen = _decode_kwargs(monkeypatch, bsz = 2, flash = True, mask = [[0, 1, 1, 1, 1, 1], gap_row])
+    for kw in seen:
+        assert kw["flash_decode"] is False
+        assert kw["leftpad"] is None
+        assert isinstance(kw["attention_mask"], torch.Tensor)
 
 
 def test_manual_path_keeps_masks(monkeypatch):
