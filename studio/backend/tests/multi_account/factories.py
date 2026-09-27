@@ -156,6 +156,14 @@ CORE_FACTORIES = {
     "routes.skills:PUT:/{name}/enabled": Factory(
         "skill", {"enabled": False}, fragment = SKILL_NAME, absent = SENTINEL
     ),
+    "routes.skills:GET:/{name}": Factory("skill", fragment = SENTINEL, absent = SENTINEL),
+    "routes.skills:PUT:/{name}": Factory(
+        "skill",
+        {"description": EDITED, "instructions": "Instructions"},
+        fragment = EDITED,
+        absent = SENTINEL,
+    ),
+    "routes.skills:DELETE:/{name}": Factory("skill", success = 204, absent = SENTINEL),
 }
 
 
