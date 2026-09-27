@@ -169,3 +169,18 @@ def test_float_packed_storage_is_read_as_bytes(storage):
     )
     assert q.dtype == storage
     assert _bytes_equal(dequantize_nf4(*_args(q, s)), bnb_functional.dequantize_4bit(q, s))
+
+
+@pytest.mark.parametrize("lut_mode", [0, 1, 2])
+@pytest.mark.parametrize("words", [False, True])
+@pytest.mark.parametrize("evict", [False, True])
+@pytest.mark.parametrize("shape", [(17, 33), (5, 4096), (1024, 4096)], ids = str)
+def test_every_launch_config_is_exact(shape, words, evict, lut_mode, monkeypatch):
+    # The per-GPU launch table only picks speed; every knob combination must stay bit-exact.
+    for dtype in (torch.float16, torch.bfloat16):
+        for blocksize in (64, 128):
+            q, s = _quantize(shape, dtype, blocksize)
+            ref = bnb_functional.dequantize_4bit(q, s)
+            for target in (256, 2048):
+                monkeypatch.setattr(nf4_mod, "_CONFIG_OVERRIDE", (target, 4, words, evict, lut_mode))
+                assert _bytes_equal(dequantize_nf4(*_args(q, s)), ref), (dtype, blocksize, target)

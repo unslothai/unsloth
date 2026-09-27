@@ -7,12 +7,14 @@
 #   out[j] = T(code[nibble(j)] * absmax[j // blocksize])                     (high nibble first)
 
 import contextlib
+import functools
 import math
 from typing import List, Optional
 
 import torch
 import triton
 import triton.language as tl
+from unsloth_zoo.utils import Version
 
 __all__ = [
     "dequantize_nf4",
@@ -21,6 +23,40 @@ __all__ = [
 # PTX mul.rn.f32 is never contracted into an FMA, so the + offset rounds separately as in
 # bitsandbytes. HIP has no PTX: there the launch disables fp fusion instead.
 _HAS_MUL_RN = torch.version.hip is None
+
+
+@triton.jit
+def _nf4_lut(lut_ptr, n, LUT_MODE: tl.constexpr):
+    # n: int32 nibbles. Every mode returns the same fp32 table entry, so the choice is speed only.
+    if LUT_MODE == 0:
+        # A 64-byte table gather stays in L1.
+        return tl.load(lut_ptr + n, eviction_policy = "evict_last")
+    elif LUT_MODE == 1:
+        # Select tree on the nibble bits over table values held as scalars.
+        b0 = (n & 1) != 0
+        b1 = (n & 2) != 0
+        b2 = (n & 4) != 0
+        b3 = (n & 8) != 0
+        a0 = tl.where(b0, tl.load(lut_ptr + 1), tl.load(lut_ptr + 0))
+        a1 = tl.where(b0, tl.load(lut_ptr + 3), tl.load(lut_ptr + 2))
+        a2 = tl.where(b0, tl.load(lut_ptr + 5), tl.load(lut_ptr + 4))
+        a3 = tl.where(b0, tl.load(lut_ptr + 7), tl.load(lut_ptr + 6))
+        a4 = tl.where(b0, tl.load(lut_ptr + 9), tl.load(lut_ptr + 8))
+        a5 = tl.where(b0, tl.load(lut_ptr + 11), tl.load(lut_ptr + 10))
+        a6 = tl.where(b0, tl.load(lut_ptr + 13), tl.load(lut_ptr + 12))
+        a7 = tl.where(b0, tl.load(lut_ptr + 15), tl.load(lut_ptr + 14))
+        c0 = tl.where(b1, a1, a0)
+        c1 = tl.where(b1, a3, a2)
+        c2 = tl.where(b1, a5, a4)
+        c3 = tl.where(b1, a7, a6)
+        d0 = tl.where(b2, c1, c0)
+        d1 = tl.where(b2, c3, c2)
+        return tl.where(b3, d1, d0)
+    else:
+        # Register-resident table, gathered along its only axis.
+        table = tl.load(lut_ptr + tl.arange(0, 16))
+        flat = tl.reshape(n, [n.numel])
+        return tl.reshape(tl.gather(table, flat, 0), n.shape)
 
 
 @triton.jit
@@ -40,6 +76,9 @@ def _nf4_dequant_kernel(
     NESTED: tl.constexpr,
     USE_MUL_RN: tl.constexpr,
     ROWS: tl.constexpr,  # absmax blocks per program
+    WORDS: tl.constexpr,  # load the packed bytes as int32 words (needs n_bytes % 4 == 0)
+    EVICT: tl.constexpr,  # "evict_first" streams the weight and the output past L2, else ""
+    LUT_MODE: tl.constexpr,  # see _nf4_lut
 ):
     # A [ROWS, HALF] tile of packed bytes: each row is one absmax block, so its scale is
     # decoded once per row and broadcast, instead of once per byte.
@@ -50,8 +89,13 @@ def _nf4_dequant_kernel(
     row_mask = rows < n_blocks
     if NESTED:
         a_q = tl.load(absmax_ptr + rows, mask = row_mask, other = 0).to(tl.int32)
-        c2 = tl.load(code2_ptr + a_q, mask = row_mask, other = 0.0)
-        s2 = tl.load(absmax2_ptr + (rows >> BLOCKSIZE2_SHIFT), mask = row_mask, other = 0.0)
+        c2 = tl.load(code2_ptr + a_q, mask = row_mask, other = 0.0, eviction_policy = "evict_last")
+        s2 = tl.load(
+            absmax2_ptr + (rows >> BLOCKSIZE2_SHIFT),
+            mask = row_mask,
+            other = 0.0,
+            eviction_policy = "evict_last",
+        )
         if USE_MUL_RN:
             scale = tl.inline_asm_elementwise(
                 "mul.rn.f32 $0, $1, $2;",
@@ -66,33 +110,76 @@ def _nf4_dequant_kernel(
         scale = scale + tl.load(offset_ptr)
     else:
         scale = tl.load(absmax_ptr + rows, mask = row_mask, other = 0.0)
-
-    cols = tl.arange(0, HALF)
-    byte_offs = rows[:, None] * HALF + cols[None, :]
-    byte_mask = byte_offs < n_bytes
-    q = tl.load(W_ptr + byte_offs, mask = byte_mask, other = 0)
-
     scale = scale[:, None]
-    # A 64-byte table gather stays in L1; a 16-way select chain made the kernel ALU bound
-    # (about 3x slower than bitsandbytes in the rough sweep).
-    v_hi = (tl.load(lut_ptr + (q >> 4).to(tl.int32)) * scale).to(out_ptr.dtype.element_ty)
-    v_lo = (tl.load(lut_ptr + (q & 15).to(tl.int32)) * scale).to(out_ptr.dtype.element_ty)
+    out_ty = out_ptr.dtype.element_ty
 
-    vals = tl.interleave(v_hi, v_lo)  # [ROWS, 2 * HALF], high nibble first
-    out_offs = rows[:, None] * (2 * HALF) + tl.arange(0, 2 * HALF)[None, :]
-    tl.store(out_ptr + out_offs, vals, mask = out_offs < n_elements)
-
-
-def _config_for(n_bytes: int, half: int):
-    # From a sweep on a B200 over 4096x4096 to 128256x4096; small weights use smaller programs
-    # so the grid still fills the GPU.
-    if n_bytes <= (1 << 16):
-        target, num_warps = 256, 2
-    elif n_bytes <= (1 << 20):
-        target, num_warps = 1024, 2
+    if WORDS:
+        # [ROWS, HALF // 4] int32 words; byte j of a word holds elements 2j (high) and 2j + 1.
+        NW: tl.constexpr = HALF // 4
+        w_offs = rows[:, None] * NW + tl.arange(0, NW)[None, :]
+        w = tl.load(
+            W_ptr.to(tl.pointer_type(tl.int32)) + w_offs,
+            mask = w_offs < (n_bytes // 4),
+            other = 0,
+            eviction_policy = EVICT,
+        )
+        i = tl.arange(0, 8)
+        shifts = (i // 2) * 8 + (1 - (i % 2)) * 4
+        nib = (w[:, :, None] >> shifts[None, None, :]) & 15
+        vals = (_nf4_lut(lut_ptr, tl.reshape(nib, [ROWS, 2 * HALF]), LUT_MODE) * scale).to(out_ty)
     else:
-        target, num_warps = 2048, 4
-    return max(1, target // half), num_warps
+        cols = tl.arange(0, HALF)
+        byte_offs = rows[:, None] * HALF + cols[None, :]
+        q = tl.load(W_ptr + byte_offs, mask = byte_offs < n_bytes, other = 0, eviction_policy = EVICT)
+        v_hi = (_nf4_lut(lut_ptr, (q >> 4).to(tl.int32), LUT_MODE) * scale).to(out_ty)
+        v_lo = (_nf4_lut(lut_ptr, (q & 15).to(tl.int32), LUT_MODE) * scale).to(out_ty)
+        vals = tl.interleave(v_hi, v_lo)  # [ROWS, 2 * HALF], high nibble first
+
+    out_offs = rows[:, None] * (2 * HALF) + tl.arange(0, 2 * HALF)[None, :]
+    tl.store(out_ptr + out_offs, vals, mask = out_offs < n_elements, eviction_policy = EVICT)
+
+
+# Launch knobs: bytes per program, num_warps, WORDS, EVICT, LUT_MODE. Every combination is
+# bit-exact; the per-architecture choice is speed only. Keyed by compute capability, with the
+# first matching (capability prefix) entry used; () is the default everywhere else.
+_CONFIGS = {
+    (): (
+        # (max n_bytes, target bytes per program, num_warps, words, evict, lut_mode)
+        (1 << 16, 256, 2, False, False, 0),
+        (1 << 20, 1024, 2, False, False, 0),
+        (None, 2048, 4, False, False, 0),
+    ),
+    # Blackwell datacenter (B200): int32 loads and the register table gather were 1.2x to 1.4x
+    # faster than the default at every Llama 8B / 70B shape on Triton 3.6 and 3.7.
+    (10,): (
+        (1 << 16, 256, 2, True, True, 2),
+        (None, 1024, 2, True, True, 2),
+    ),
+}
+# tl.gather on a register table does not compile on Triton 3.3 (3.6 and 3.7 verified); older
+# Triton uses the L1 table load, which gives identical values.
+_HAS_TL_GATHER = Version(triton.__version__) >= Version("3.6.0")
+# Tests and the sweep script set this to a (target, num_warps, words, evict, lut_mode) tuple.
+_CONFIG_OVERRIDE = None
+
+
+@functools.lru_cache(maxsize = None)
+def _capability(index: int):
+    return torch.cuda.get_device_capability(index)
+
+
+def _config_for(n_bytes: int, half: int, device: torch.device):
+    if _CONFIG_OVERRIDE is not None:
+        target, num_warps, words, evict, lut_mode = _CONFIG_OVERRIDE
+    else:
+        cap = _capability(device.index if device.index is not None else torch.cuda.current_device())
+        table = _CONFIGS.get(cap) or _CONFIGS.get(cap[:1]) or _CONFIGS[()]
+        for limit, target, num_warps, words, evict, lut_mode in table:
+            if limit is None or n_bytes <= limit:
+                break
+    if lut_mode == 2 and not _HAS_TL_GATHER:
+        lut_mode = 0
+    return max(1, target // half), num_warps, words, evict, lut_mode
 
 
 def _is_pow2(x: int) -> bool:
@@ -105,7 +192,9 @@ def _launch(kernel, W, absmax, code2, absmax2, offset, code, blocksize, blocksiz
     n_bytes = (n_elements + 1) // 2
     half = blocksize // 2
     n_blocks = triton.cdiv(n_elements, blocksize)
-    rows, num_warps = _config_for(n_bytes, half)
+    rows, num_warps, words, evict, lut_mode = _config_for(n_bytes, half, W.device)
+    # int32 loads need every row to start on a word and no partial trailing word.
+    words = words and half % 4 == 0 and n_bytes % 4 == 0 and (W.storage_offset() * W.element_size()) % 4 == 0
     # The nested-only pointers are never dereferenced for a flat state; absmax fills the slots.
     kernel[(triton.cdiv(n_blocks, rows),)](
         W,
@@ -123,6 +212,9 @@ def _launch(kernel, W, absmax, code2, absmax2, offset, code, blocksize, blocksiz
         NESTED = nested,
         USE_MUL_RN = _HAS_MUL_RN,
         ROWS = rows,
+        WORDS = words,
+        EVICT = "evict_first" if evict else "",
+        LUT_MODE = lut_mode,
         num_warps = num_warps,
         **({} if fp_fusion else {"enable_fp_fusion": False}),
     )
