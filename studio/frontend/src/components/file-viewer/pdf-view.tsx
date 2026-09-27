@@ -31,6 +31,8 @@ const MAX_TEXT_ITEMS = 20_000;
 // Past this many drawing operations a page shows as unpreviewable: PDF.js holds each one it reads,
 // and a small stream can hold millions.
 const MAX_PAGE_OPERATIONS = 1_000_000;
+// Pages listed: a page tree can claim millions for a few bytes, and the list holds each.
+const MAX_PDF_PAGES = 10_000;
 // Layout keeps even an extreme first page to a sane height until each page is measured.
 const clampAspect = (aspect: number) => Math.min(Math.max(aspect, 0.05), 20);
 
@@ -86,6 +88,9 @@ function PdfCanvas() {
     });
     return () => {
       task.cancel();
+      // A page scrolled away lets go of its operations and decoded images; react-pdf keeps them
+      // until the document closes, so every page viewed would add up.
+      page.cleanup();
       // Zeroed, so the browser lets go of the bitmap at once.
       canvas.width = 0;
       canvas.height = 0;
@@ -246,11 +251,14 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
           <PdfPages
             key={`${width}:${aspect}`}
             pdf={pdf}
-            pages={pages}
+            pages={Math.min(pages, MAX_PDF_PAGES)}
             width={width}
             aspect={aspect}
             scrollElement={container}
           />
+        )}
+        {available > 0 && pdf && pages > MAX_PDF_PAGES && (
+          <p className="pb-6 text-center text-ui-12 text-muted-foreground">{t("library.preview.documentTruncated")}</p>
         )}
       </Document>
     </div>

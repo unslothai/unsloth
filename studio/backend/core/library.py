@@ -615,6 +615,9 @@ def _training_runs_by_dir() -> dict[str, str]:
     return runs
 
 
+_MAX_EXPORT_METADATA_BYTES = 1024 * 1024
+
+
 def _export_metadata(path: str, root: Path) -> Optional[dict]:
     """The export_metadata.json Studio writes beside an export, from the model up to its top folder."""
     here = Path(path)
@@ -624,7 +627,12 @@ def _export_metadata(path: str, root: Path) -> Optional[dict]:
         meta = here / "export_metadata.json"
         if meta.is_file():
             try:
-                data = json.loads(meta.read_text(encoding = "utf-8-sig"))
+                # Studio writes a few hundred bytes; one past the bound is not Studio's.
+                with open(meta, "rb") as handle:
+                    raw = handle.read(_MAX_EXPORT_METADATA_BYTES + 1)
+                if len(raw) > _MAX_EXPORT_METADATA_BYTES:
+                    return None
+                data = json.loads(raw.decode("utf-8-sig"))
             except (OSError, ValueError):
                 return None
             return data if isinstance(data, dict) else None

@@ -365,8 +365,9 @@ function memo<T>(compute: (code: string) => T): (code: string) => T {
   return (code) => {
     let value = cache.get(code);
     if (value === undefined) {
-      // Bounded, as it outlives each file.
-      if (cache.size >= 1000) cache.clear();
+      // Bounded, as it outlives each file: a workbook's own formats (MAX_NUM_FMTS, a few sections
+      // each) all fit, so one never evicts its own.
+      if (cache.size >= 8192) cache.clear();
       value = compute(code);
       cache.set(code, value);
     }
@@ -809,16 +810,22 @@ function localeFormat(id: number): string | undefined {
 /** An OOXML on/off flag (<b/>, <b val="0"/>): on unless its val says otherwise. */
 const isOn = (flag: Element) => !["0", "false", "off"].includes(flag.getAttribute("val") ?? "");
 
-// Excel takes codes of up to 255 characters; this leaves room for other writers.
+// Excel takes codes of up to 255 characters, and some 250 custom formats a workbook; these leave
+// room for other writers.
 const MAX_FORMAT_CODE = 1024;
+const MAX_NUM_FMTS = 1000;
 
-function readStyles(doc: Document | null): CellStyle[] {
-  if (!doc) return [];
+/** The styles, and whether a format was read as General for being past a bound. */
+function readStyles(doc: Document | null): { styles: CellStyle[]; cut: boolean } {
+  if (!doc) return { styles: [], cut: false };
   const formats = new Map<number, string>();
-  for (const fmt of all(doc, "numFmt")) {
+  let cut = false;
+  for (const [index, fmt] of all(doc, "numFmt").entries()) {
     const code = fmt.getAttribute("formatCode") ?? "";
-    // Past Excel's own limit a code is read as General: the formatters cache by code, across files.
-    formats.set(Number(fmt.getAttribute("numFmtId")), code.length > MAX_FORMAT_CODE ? "General" : code);
+    // Past Excel's own limits a format is read as General: the formatters cache by code, across files.
+    const kept = index < MAX_NUM_FMTS && code.length <= MAX_FORMAT_CODE;
+    cut ||= !kept;
+    formats.set(Number(fmt.getAttribute("numFmtId")), kept ? code : "General");
   }
   const fontsNode = first(doc, "fonts");
   const fonts = fontsNode
@@ -828,11 +835,12 @@ function readStyles(doc: Document | null): CellStyle[] {
       }))
     : [];
   const xfs = first(doc, "cellXfs");
-  return (xfs ? children(xfs, "xf") : []).map((xf) => {
+  const styles = (xfs ? children(xfs, "xf") : []).map((xf) => {
     const id = Number(xf.getAttribute("numFmtId") ?? 0);
     const font = fonts[Number(xf.getAttribute("fontId") ?? 0)];
     return { format: formats.get(id) ?? BUILTIN_FORMATS[id] ?? localeFormat(id), ...font };
   });
+  return { styles, cut };
 }
 
 // A cell (B2, $b$2), a whole column (A:A) or a whole row (1:1), after anything but a name's letters.
@@ -1208,6 +1216,8 @@ function grow(array: Uint32Array): Uint32Array<ArrayBuffer> {
 
 // A style section past this is skipped: real ones are far smaller, even at Excel's 64,000 formats.
 const MAX_STYLE_SECTION_BYTES = 16 * 1024 * 1024;
+// And its tags: Excel's 64,000 cell formats, each with a child or two, fit.
+const MAX_STYLE_SECTION_TAGS = 200_000;
 // A styles part past this is not read: its cells show unstyled, their sheets marked cut.
 const MAX_STYLES_BYTES = 3 * MAX_STYLE_SECTION_BYTES;
 
@@ -1224,6 +1234,12 @@ function styleSections(bytes: Uint8Array | undefined): { doc: Document | null; c
     const end = start && !start.empty ? findTag(bytes, start.end, name, true) : null;
     if (!start || !end) return "";
     if (end.end - start.start > MAX_STYLE_SECTION_BYTES) return ((cut = true), "");
+    // Counted before it is parsed: tiny elements would build a DOM far larger than the bytes.
+    let tags = 0;
+    for (let at = start.start; at < end.end && tags <= MAX_STYLE_SECTION_TAGS; at++) {
+      if (bytes[at] === 0x3c) tags++;
+    }
+    if (tags > MAX_STYLE_SECTION_TAGS) return ((cut = true), "");
     return strFromU8(bytes.subarray(start.start, end.end));
   });
   const prefix = /^<([\w.-]+:)?/.exec(open)?.[1] ?? "";
@@ -1256,8 +1272,9 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
   const style = (index: number) => {
     if (!styles) {
       const sections = styleSections(read([stylesPath], MAX_STYLES_BYTES)[stylesPath]);
-      stylesCut = sections.cut || (read.size(stylesPath) ?? 0) > MAX_STYLES_BYTES;
-      styles = readStyles(sections.doc);
+      const table = readStyles(sections.doc);
+      stylesCut = sections.cut || table.cut || (read.size(stylesPath) ?? 0) > MAX_STYLES_BYTES;
+      styles = table.styles;
     }
     missed ||= stylesCut;
     return styles[index];
@@ -1425,6 +1442,8 @@ const MAX_DECK_TEXT = 8 * 1024 * 1024;
 const MAX_DECK_IMAGE_BYTES = 64 * 1024 * 1024;
 // A picture decodes to its full size whatever its bytes: one past this is left out.
 const MAX_PICTURE_PIXELS = 64 * 1024 * 1024;
+// A slide's pictures are all shown at once, so their decoded pixels are bounded together.
+const MAX_SLIDE_PIXELS = 128 * 1024 * 1024;
 
 /** A raster's width times height, from its header; undefined when not a raster read here. */
 function imagePixels(b: Uint8Array): number | undefined {
@@ -1461,15 +1480,12 @@ function imagePixels(b: Uint8Array): number | undefined {
   return undefined;
 }
 
-/** Whether a picture is safe to decode: a raster whose size is read and bounded, or an SVG that
- *  embeds none. An SVG shown as an image loads nothing but data: URLs, so one that holds or could
- *  spell one (by escape, character reference, entity or a wide encoding) is refused. */
-export function isBoundedImage(bytes: Uint8Array, type: string | undefined): boolean {
+/** A picture's decoded pixels, when it is a raster read here and within MAX_PICTURE_PIXELS;
+ *  otherwise undefined, and it is not shown. An SVG is not: Office keeps a PNG of each as the
+ *  picture itself, and an SVG's drawing cost cannot be bounded from its bytes. */
+export function picturePixels(bytes: Uint8Array): number | undefined {
   const pixels = imagePixels(bytes);
-  if (pixels !== undefined) return pixels <= MAX_PICTURE_PIXELS;
-  if (type !== "image/svg+xml" || bytes.includes(0)) return false;
-  const text = new TextDecoder().decode(bytes).replace(/[\t\n\r]/g, "").toLowerCase();
-  return !/data:|\\|&#|<!entity/.test(text);
+  return pixels !== undefined && pixels <= MAX_PICTURE_PIXELS ? pixels : undefined;
 }
 
 function boxText(box: SlideBox): number {
@@ -1676,7 +1692,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   const slidePaths = all(presentation, "sldId").map((id) => rels.get(relId(id, "id") ?? ""));
   const slides: Slide[] = [];
   // One Blob per picture, however many slides use it.
-  const pictures = new Map<string, Blob>();
+  const pictures = new Map<string, { image: Blob; pixels: number }>();
   let pictureBytes = 0;
   // By extension, else as [Content_Types].xml declares the part (read once, when first needed).
   let declared: ((path: string) => string | undefined) | undefined;
@@ -1721,6 +1737,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
     const slideRels = new Map(slideRelList.map((rel) => [rel.id, rel.path]));
     const boxes: SlideBox[] = [];
     let left = MAX_SLIDE_ITEMS;
+    let pixelsLeft = MAX_SLIDE_PIXELS;
     let cut = false;
     // Each box's text is charged as it is kept, so no slide runs far past the deck's text budget.
     const keep = (box: SlideBox): boolean => {
@@ -1796,8 +1813,8 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       const type = target && pictureType(target);
       if (!target || !type) return false;
       if (left <= 0) return (cut = true);
-      let image = pictures.get(target);
-      if (!image) {
+      let picture = pictures.get(target);
+      if (!picture) {
         // Pictures stay with the deck, so their bytes are bounded across it.
         if (pictureBytes + (read.size(target) ?? 0) > MAX_DECK_IMAGE_BYTES) {
           cut = true;
@@ -1805,16 +1822,23 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
         }
         const data = read([target])[target];
         if (!data) return false;
-        if (!isBoundedImage(data, type)) {
+        const pixels = picturePixels(data);
+        if (pixels === undefined) {
           cut = true;
           return false;
         }
         pictureBytes += data.length;
-        image = new Blob([data as Uint8Array<ArrayBuffer>], { type });
-        pictures.set(target, image);
+        picture = { image: new Blob([data as Uint8Array<ArrayBuffer>], { type }), pixels };
+        pictures.set(target, picture);
       }
+      // Each use is its own <img>, decoded apart.
+      if (picture.pixels > pixelsLeft) {
+        cut = true;
+        return false;
+      }
+      pixelsLeft -= picture.pixels;
       left--;
-      boxes.push({ frame: readFrame(pic, cx, cy), image, crop: readCrop(pic) });
+      boxes.push({ frame: readFrame(pic, cx, cy), image: picture.image, crop: readCrop(pic) });
       return false;
     };
     // In document order, as PowerPoint stacks them: a later shape draws over an earlier one.

@@ -18,7 +18,7 @@ import {
   type Slide,
   type SlideBox,
   columnName,
-  isBoundedImage,
+  picturePixels,
   readDelimited,
   readPptx,
   readXlsx,
@@ -34,10 +34,14 @@ async function parse(file: Blob, kind: DocumentKind, name: string, contentType: 
   if (kind === "docx") {
     const { default: mammoth } = await import("mammoth");
     const repacked = repackDocxPreviewArchive(name, bytes, MAX_DOCX_PARAGRAPHS);
-    // A picture that could decode past its bound gets no source, which the sanitizer then drops.
+    // A picture past its own bound, or past what the document's pictures may decode to together,
+    // gets no source, which the sanitizer then drops.
     let dropped = false;
+    let pixelsLeft = MAX_DOCX_PIXELS;
     const convertImage = mammoth.images.imgElement(async (image) => {
-      if (isBoundedImage(new Uint8Array(await image.readAsArrayBuffer()), image.contentType)) {
+      const pixels = picturePixels(new Uint8Array(await image.readAsArrayBuffer()));
+      if (pixels !== undefined && pixels <= pixelsLeft) {
+        pixelsLeft -= pixels;
         return { src: `data:${image.contentType};base64,${await image.readAsBase64String()}` };
       }
       dropped = true;
@@ -72,20 +76,24 @@ const DOCX_ATTRIBUTES = new Set(["href", "src", "alt", "id", "colspan", "rowspan
 const MAX_DOCX_PARAGRAPHS = 20_000;
 // Elements past this are dropped: a paragraph can still convert to many.
 const MAX_DOCX_ELEMENTS = 50_000;
+// Decoded pixels across a document's pictures; the ones past it are left out.
+const MAX_DOCX_PIXELS = 128 * 1024 * 1024;
 
 /** mammoth writes a small vocabulary; anything else, and any link that is not a web, mail or
  *  in-document one, is dropped before the markup reaches the page. */
 function sanitizeDocxHtml(html: string): { html: string; truncated: boolean } {
-  const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
-  const elements = doc.body.querySelectorAll("*");
-  const cut = elements[MAX_DOCX_ELEMENTS];
-  if (cut) {
-    // Drop the cut and all that follows it at every level, so one long table keeps its first rows.
-    for (let node: Element = cut; node !== doc.body; node = node.parentElement!) {
-      while (node.nextSibling) node.nextSibling.remove();
+  // Cut at the tag past the bound before any of it is parsed. mammoth escapes each < in text and
+  // attributes, so every one left opens or closes a tag; the parser closes what the cut leaves open.
+  const opening = /<[a-z]/gi;
+  let cut = -1;
+  for (let count = 0; opening.exec(html); count++) {
+    if (count === MAX_DOCX_ELEMENTS) {
+      cut = opening.lastIndex - 2;
+      break;
     }
-    cut.remove();
   }
+  const kept = cut === -1 ? html : html.slice(0, cut);
+  const doc = new DOMParser().parseFromString(`<body>${kept}</body>`, "text/html");
   for (const element of Array.from(doc.body.querySelectorAll("*"))) {
     if (!DOCX_TAGS.has(element.localName)) {
       element.replaceWith(...Array.from(element.childNodes));
@@ -100,7 +108,7 @@ function sanitizeDocxHtml(html: string): { html: string; truncated: boolean } {
       if (unsafe) element.removeAttribute(attr.name);
     }
   }
-  return { html: doc.body.innerHTML, truncated: Boolean(cut) };
+  return { html: doc.body.innerHTML, truncated: cut !== -1 };
 }
 
 // A Letter page's width at 96 dpi.
