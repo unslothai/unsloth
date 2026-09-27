@@ -6296,6 +6296,13 @@ def test_dsh_command_selects_web_only_for_app_arguments(args, expected):
         ),
         (["--profile=headless", "fix"], ["dsh", "--patch", "P", "--profile=headless", "fix"]),
         (["--dump-config"], ["dsh", "--patch", "P", "--dump-config"]),
+        # --patch repeats and composes in order, so a caller's own overlay lands after ours
+        # and wins only on the keys it sets; the Unsloth provider stays defined.
+        (
+            ["--patch", "mine.yml", "--profile", "headless"],
+            ["dsh", "--patch", "P", "--patch", "mine.yml", "--profile", "headless"],
+        ),
+        (["--patch=mine.yml", "web"], ["dsh", "--patch", "P", "--patch=mine.yml", "web"]),
         # Nothing boots a profile here, so there is nothing for an overlay to apply to.
         (
             ["plugin", "--profile", "web", "add", "x"],
