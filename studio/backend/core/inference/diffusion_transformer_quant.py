@@ -1055,7 +1055,11 @@ def select_transformer_quant_scheme(
     return None
 
 
-def explicit_scheme_cached_ok(target: Any, requested: Optional[str], family: Optional[str] = None) -> bool:
+def explicit_scheme_cached_ok(
+    target: Any,
+    requested: Optional[str],
+    family: Optional[str] = None,
+) -> bool:
     """``select_transformer_quant_scheme(...) == requested`` for an explicit scheme, read from ``_SMOKE_CACHE`` only:
     never spawns the smoke probe, so a caller that must not touch the GPU (training active) can ask. Unprobed counts
     as supported, like ``unproven_ok``; a probed failure does not."""
@@ -1066,6 +1070,7 @@ def explicit_scheme_cached_ok(target: Any, requested: Optional[str], family: Opt
         return False
     card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
     return _SMOKE_CACHE.get((requested, card), True)
+
 
 def dense_quant_host_capable(target: Any) -> bool:
     """Whether an ``auto`` request could engage a dense scheme on this host.

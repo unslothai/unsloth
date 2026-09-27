@@ -1399,7 +1399,9 @@ def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_
     )
     monkeypatch.setattr(video_module, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        video_module, "select_transformer_quant_scheme", lambda target, mode, family = None, **_k: "fp8"
+        video_module,
+        "select_transformer_quant_scheme",
+        lambda target, mode, family = None, **_k: "fp8",
     )
     monkeypatch.setattr(
         video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
@@ -1449,7 +1451,12 @@ def test_video_download_plan_does_not_probe_fp8_while_training(client, monkeypat
     }
 
     class _Api:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             return types.SimpleNamespace(siblings = repos[repo_id])
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
@@ -1495,6 +1502,7 @@ def test_video_download_plan_does_not_probe_fp8_while_training(client, monkeypat
     assert "unsloth/LTX-2.3-FP8" in _staged()
     tq._SMOKE_CACHE[("fp8", "cuda:0")] = False
     assert "unsloth/LTX-2.3-FP8" not in _staged()
+
 
 def test_video_download_plan_forwards_the_h3_partition(client, monkeypatch):
     # h3_task decides WHICH of the two 66.28 GB MiniMax-H3 denoiser folders is staged. It was

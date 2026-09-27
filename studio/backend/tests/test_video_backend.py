@@ -11778,7 +11778,9 @@ def test_ltx23_hosted_fp8_fallback_rechecks_unified_memory(fake_runtime, tmp_pat
     priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 10**9)
     checked: list = []
     monkeypatch.setattr(
-        video_mod, "raise_on_unified_memory_shortfall", lambda plan, **k: checked.append(len(priced))
+        video_mod,
+        "raise_on_unified_memory_shortfall",
+        lambda plan, **k: checked.append(len(priced)),
     )
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     backend, calls = _load_ltx23_single_file_fp8(tmp_path, monkeypatch, None)
