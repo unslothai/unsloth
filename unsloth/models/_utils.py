@@ -1152,8 +1152,7 @@ def _attn_impl_label(impl):
 
 
 def _undeclared_nested_configs(config):
-    """Nested configs held as plain attributes, not in `sub_configs`, so Transformers' recursive
-    `_attn_implementation` setter never reaches them (remote InternVL / Nemotron-Omni `llm_config`)."""
+    """Nested configs outside `sub_configs`, which transformers' attn setter never reaches (Nemotron-Omni `llm_config`)."""
     try:
         from transformers import PretrainedConfig
     except Exception:
@@ -1169,10 +1168,7 @@ def _undeclared_nested_configs(config):
 
 
 def _sync_baked_attn_impl(config, previous, impl):
-    # Remote configs copy their own __init__ default into nested configs at construction (Nemotron-3
-    # -Nano-Omni: llm_config._attn_implementation and vision_config.use_flash_attn = flash_attention_2),
-    # so a later top-level write leaves the decoder on flash. Follow the top value when a nested copy
-    # still holds the old top value or a flash value we are moving away from.
+    # Remote __init__ bakes its flash default into nested configs; follow the top value over stale or flash copies.
     if not isinstance(impl, str):
         return
     for nested in _undeclared_nested_configs(config):
@@ -1189,7 +1185,6 @@ def _sync_baked_attn_impl(config, previous, impl):
             )
         ):
             _write_attn_impl(nested, impl)
-        # InternVL-style towers read a bool the remote __init__ derived from the top value.
         if isinstance(getattr(nested, "use_flash_attn", None), bool):
             nested.use_flash_attn = _is_flash_attention_requested(impl)
 

@@ -1,7 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Remote composite configs (nvidia Nemotron-3-Nano-Omni, InternVL chat) copy their __init__
-# attn_implementation default ("flash_attention_2") into a nested llm_config / vision_config that is
-# not in `sub_configs`, so a later top-level write never reaches the decoder.
 import pytest
 import unsloth  # noqa: F401
 from transformers import PretrainedConfig
@@ -63,6 +60,6 @@ def test_flash_resolution_keeps_the_decoder_on_flash(monkeypatch):
 
 def test_nested_config_with_its_own_choice_is_left_alone():
     config = _OmniLike(attn_implementation = "sdpa")
-    config.llm_config._attn_implementation = "eager"  # deliberately different, not a baked copy
+    config.llm_config._attn_implementation = "eager"
     _utils._set_attn_impl(config, "flex_attention")
     assert config.llm_config._attn_implementation == "eager"
