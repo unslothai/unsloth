@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 // The More flyout ends with a rule and the Customize sidebar row. The rule's
 // vertical margin has to equal the menu's own padding, or the gap above that
@@ -17,10 +18,7 @@ function spacing(classes: string, prefix: string): number {
 }
 
 test("the More flyout's rule sits as far from its rows as the menu's own edge", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/app-sidebar.tsx");
 
   const menu =
     /<DropdownMenuContent\s+side="right"\s+align="start"\s+sideOffset=\{6\}\s+className="([^"]*)"/.exec(

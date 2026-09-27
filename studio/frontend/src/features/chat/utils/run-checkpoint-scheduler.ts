@@ -6,15 +6,11 @@
 /** Quiet time after a checkpoint settles before the next one is taken. */
 export const RUN_CHECKPOINT_INTERVAL_MS = 8_000;
 
-/**
- * How long one thread may be checkpointed before the schedule gives up on it. A run that
- * never terminalises would otherwise checkpoint for the life of the page.
- *
- * Never rearmed, unlike the follow deadline in chat-generation-api.ts. That is safe only
- * because the cap applies to durable runs alone (see `isBounded`), which the server
- * persists; a subscriber-owned stream, whose only persistence IS these saves, is never
- * capped.
- */
+/** How long one thread may be checkpointed before the schedule gives up on it. A run that never
+ *  terminalises would otherwise checkpoint for the life of the page. Never rearmed, unlike the
+ *  follow deadline in chat-generation-api.ts. That is safe only because the cap applies to
+ *  durable runs alone (see `isBounded`), which the server persists; a subscriber-owned stream,
+ *  whose only persistence IS these saves, is never capped. */
 export const RUN_CHECKPOINT_MAX_DURATION_MS = 30 * 60_000;
 
 /** Injectable so a test can drive the schedule without real time passing. */
@@ -32,10 +28,8 @@ export type RunCheckpointScheduler = {
   stop: (threadId: string) => void;
   /** Stop every thread, for unmount. */
   stopAll: () => void;
-  /**
-   * Checkpoint every live thread right now, leaving the schedule untouched. For the page
-   * transitions that precede a renderer going away or being throttled.
-   */
+  /** Checkpoint every live thread right now, leaving the schedule untouched. For the page
+   *  transitions that precede a renderer going away or being throttled. */
   flushAll: () => void;
 };
 
@@ -59,22 +53,16 @@ export function createRunCheckpointScheduler(
   options: {
     intervalMs?: number;
     timers?: RunCheckpointTimers;
-    /**
-     * Whether the thread's run is still going. runEnd is the fast path out, but it only
-     * reaches whichever thread is main, so one that stops being main mid-run would
-     * checkpoint for the life of the page. Omit it to treat every thread as active.
-     */
+    /** Whether the thread's run is still going. runEnd is the fast path out, but it only reaches
+     *  whichever thread is main, so one that stops being main mid-run would checkpoint for the
+     *  life of the page. Omit it to treat every thread as active. */
     isActive?: (threadId: string) => boolean;
-    /**
-     * Wall-clock cap on one thread's schedule. `isActive` cannot serve as one: it reports
-     * the runtime's own `isRunning`, which a run that never terminalises holds true.
-     */
+    /** Wall-clock cap on one thread's schedule. `isActive` cannot serve as one: it reports the
+     *  runtime's own `isRunning`, which a run that never terminalises holds true. */
     maxDurationMs?: number;
-    /**
-     * Whether `maxDurationMs` applies to this thread. A subscriber-owned stream persists
-     * ONLY through these checkpoints, so capping one would lose everything it streamed
-     * after the cap if the page went away before `runEnd`. Omit to cap every thread.
-     */
+    /** Whether `maxDurationMs` applies to this thread. A subscriber-owned stream persists ONLY
+     *  through these checkpoints, so capping one would lose everything it streamed after the cap
+     *  if the page went away before `runEnd`. Omit to cap every thread. */
     isBounded?: (threadId: string) => boolean;
   } = {},
 ): RunCheckpointScheduler {
@@ -125,8 +113,8 @@ export function createRunCheckpointScheduler(
           schedule(threadId, state);
         }
       };
-      // Both exits take a final save: a schedule that ends without one has lost
-      // whatever the last interval produced, exactly as a missed runEnd would.
+      // Both exits take a final save: a schedule that ends without one has lost whatever the last
+      // interval produced, exactly as a missed runEnd would.
       const capped =
         now() - state.startedAt >= maxDurationMs && isBoundedRun(threadId);
       if (!isRunning(threadId) || capped) {

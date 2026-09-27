@@ -155,6 +155,94 @@ def in_flight(base: Optional[dict], treat: Optional[dict]) -> set[int]:
     return out
 
 
+def _latched_fences(capture: dict) -> Optional[int]:
+    """How many code fences this capture found LATCHED, or None when it read no fences at all."""
+    total: Optional[int] = None
+    for m in capture.get("messages") or []:
+        fences = m.get("fences") if isinstance(m, dict) else None
+        if isinstance(fences, list):
+            total = (total or 0) + sum(
+                1 for f in fences if isinstance(f, dict) and f.get("latched")
+            )
+    return total
+
+
+def fence_latch_residue(
+    base: Optional[dict],
+    treat: Optional[dict],
+    skip: Optional[set[int]] = None,
+) -> list[int]:
+    """Messages whose digests differ ONLY in which of their code fences had been scrolled past.
+
+    A CODE FENCE'S HIGHLIGHT STATE IS SCROLL HISTORY. `code-fence-defer.tsx` renders a fence the
+    reader has not come near as a plain shell (`data-unsloth-fence-deferred="true"`) and upgrades it
+    to token spans the first time it comes within a viewport, one way only, for the life of the
+    mount. So the same fence serialises as a shell on an arm whose viewport never passed it and as
+    spans on one whose did, on ONE build. On the r100K fast film `reasoning_toggle` leaves the
+    viewport either near the tail or ~20,000px higher, a coin flip per cell on the same build, and
+    the higher landing latches every fence in msg11/13/15 for the rest of the cell. A null control
+    whose four cells all happened to land low measured every later action stable, and backend-only
+    pull requests failed on `msg15(assistant):1847269->2150610c`.
+
+    THE RULE, per message, and every clause has to hold: the same role; the same number of fences;
+    the message with every fence replaced by a marker (`digest_unfenced`) identical, so anything
+    OUTSIDE a fence is still compared exactly; a fence latched on both arms, or on neither, identical
+    in full, so a highlighting or shell regression on a fence both arms reached is still a
+    difference; and a fence latched on ONE arm only identical in its language and its TEXT, which
+    is read as lines in both forms, so spacing, indentation, string contents and where the lines
+    break all still count. At least one fence must be in that last case, or the difference is not a
+    latch.
+
+    WHAT THIS GIVES UP, said plainly: the token markup of a fence that only ONE arm had latched is not
+    compared, because it has no counterpart on the other arm to compare with. The same fence
+    latched on both arms in another cell, or at the bottom of the thread where every cell latches it
+    at mount, still carries that comparison.
+
+    THE ONE REGRESSION THIS COULD OTHERWISE SWALLOW is a build whose fences never upgrade at all:
+    every one of its fences reads as "not latched" against a base that latched some. So when one arm
+    latched NOTHING anywhere in the thread and the other latched something, nothing is excused.
+
+    A capture recorded before the fence fields existed carries none, and is scored exactly as before.
+    """
+    if not isinstance(base, dict) or not isinstance(treat, dict):
+        return []
+    bl, tl = _latched_fences(base), _latched_fences(treat)
+    if bl is None or tl is None or (bl == 0) != (tl == 0):
+        return []
+    skip = skip or set()
+    bm, tm = _messages(base), _messages(treat)
+    out: list[int] = []
+    for i in sorted(set(bm) & set(tm)):
+        if i in skip:
+            continue
+        b, t = bm[i], tm[i]
+        if b.get("digest") == t.get("digest") or b.get("role") != t.get("role"):
+            continue
+        bf, tf = b.get("fences"), t.get("fences")
+        if not isinstance(bf, list) or not isinstance(tf, list) or not bf or len(bf) != len(tf):
+            continue
+        if b.get("digest_unfenced") is None or b.get("digest_unfenced") != t.get("digest_unfenced"):
+            continue
+        one_arm = False
+        explained = True
+        for x, y in zip(bf, tf):
+            if not isinstance(x, dict) or not isinstance(y, dict) or x.get("lang") != y.get("lang"):
+                explained = False
+                break
+            if bool(x.get("latched")) == bool(y.get("latched")):
+                if x.get("digest") != y.get("digest"):
+                    explained = False
+                    break
+            elif x.get("text") is None or x.get("text") != y.get("text"):
+                explained = False
+                break
+            else:
+                one_arm = True
+        if explained and one_arm:
+            out.append(i)
+    return out
+
+
 def _scaffold(capture: dict) -> tuple[Optional[str], Optional[int]]:
     """The thread with every message elided, falling back to the whole-thread digest.
 
@@ -401,7 +489,8 @@ def compare_styles(base: dict, treat: dict) -> tuple[str, str]:
     # produces. NOT_COMPARABLE AND NOT MATCH: the probe reads ONE aggregate digest, so a genuine CSS
     # difference elsewhere is inside the same number.
     # Over up to `STYLE_CAP` elements.
-    # `streaming` and `queued_idle` are read off the run state, not the composer.
+    # `streaming` and `queued_idle` are a second reading of the same composer subtree and not an
+    # independent signal; see `_run_state_disagrees` for what that does and does not cover.
     if (bs.get("elements") != ts.get("elements") or bs.get("digest") != ts.get("digest")) and (
         generation_disagrees(base, treat) and _run_state_disagrees(base, treat)
     ):
@@ -450,10 +539,15 @@ def _run_state_disagrees(base: dict, treat: dict) -> bool:
     """Do the arms disagree about the run state, read OFF the run state rather than the composer?
 
     `generation_disagrees` reads `composer_control`, which is the composer. Using it alone to
-    excuse a composer difference proves the premise with the conclusion, so this is the second,
-    independent half: `streaming` is `isRunning()` and `queued_idle` is the queue waiting to be
-    dispatched, both taken from the thread's own run state and neither derivable from which button
-    was drawn.
+    excuse a composer difference proves the premise with the conclusion, so this is a second read:
+    `streaming` is `isRunning()` and `queued_idle` is the queue waiting to be dispatched.
+
+    NOT INDEPENDENT OF THE COMPOSER, and the comment on the caller says what that costs.
+    `dom.isRunning()` is `Boolean(stopButton() || queueButton())` and `scene/parity.js` derives
+    `queued_idle` from that value, `stopQueuedButton()` and the prompt queue surface, so all of it
+    comes from the same run-state slot the token names. It separates a control dropped or renamed
+    out of `RUN_STATE_CONTROLS`, which leaves both flags equal, from a genuine Stop-against-Send
+    pair; it cannot separate the latter from a treatment that renders the wrong control.
 
     Captures older than these fields report neither, and two `False`s then read as agreement --
     which is the conservative direction here, since it makes the pair a reported difference rather
@@ -506,6 +600,9 @@ def settled_messages_moved(base: dict, treat: dict) -> list[str]:
     """
     bm, tm = _messages(base), _messages(treat)
     streaming = in_flight(base, treat)
+    # A fence one arm had scrolled past and the other had not is scroll history, not a rendering:
+    # see `fence_latch_residue`.
+    latched = set(fence_latch_residue(base, treat, streaming))
     out: list[str] = []
     for i in sorted(set(bm) & set(tm)):
         b, t = bm[i], tm[i]
@@ -514,7 +611,7 @@ def settled_messages_moved(base: dict, treat: dict) -> list[str]:
             continue
         # Flagged in flight by the arm that COULD place its stream; its digest is a point in a stream on
         # that arm whatever role it carries, so it is withheld like any other.
-        if i in streaming:
+        if i in streaming or i in latched:
             continue
         if b.get("role") == "user" and b.get("digest") != t.get("digest"):
             out.append(f"msg{i}(user):{b.get('chars')}->{t.get('chars')}c")
@@ -649,20 +746,41 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
     # regression inside the streaming message lands as NOT COMPARABLE, and a REORDER past another
     # message of the same role is demoted from DIFFER (10 of 11 injected differences still DIFFER).
     streaming = in_flight(base, treat)
-    # THE COMPOSER IS NOT A RENDERING DIFFERENCE. One arm finished and one still writing has its
-    # MESSAGES withheld correctly, but the dock is inside `.aui-thread-root`, so `digest_scaffold`
-    # carries Stop on one arm and Send on the other and `_any_moved` reported DIFFER while every
-    # settled row was byte-identical. THE NULL BATTERY CANNOT SEE THIS -- one build against itself
-    # has both arms generating and the bias cancels. WITHHELD RATHER THAN IGNORED: if a message or
-    # overlay also moved this never runs. AND THE RUN STATE HAS TO SAY SO INDEPENDENTLY, or the
-    # suppression argues in a circle.
+    # FENCES ONE ARM HAD SCROLLED PAST AND THE OTHER HAD NOT, compared on their text rather than their
+    # token markup (see `fence_latch_residue`). NOT a refusal: everything these messages carry was
+    # compared, and a message is only here when all of it agreed but the latch, so it can reach MATCH.
+    latched = set(fence_latch_residue(base, treat, streaming))
+    skip = streaming | latched
     # ── THE COMPOSER IS NOT A RENDERING DIFFERENCE ──────────────────────────────────────────────
+    #
+    # One arm finished and one still writing has its MESSAGES withheld correctly, but the dock is
+    # inside `.aui-thread-root`, so `digest_scaffold` carries Stop on one arm and Send on the other
+    # and `_any_moved` reported DIFFER on the single claim `thread scaffolding outside any message
+    # (373->381c)` while every settled row was byte-identical. THE NULL BATTERY CANNOT SEE THIS,
+    # which is why it survived a 15-of-15-to-0 null: one build against itself has both arms
+    # generating, so the bias is symmetric and cancels. WITHHELD RATHER THAN IGNORED: if a message
+    # or overlay also moved this never runs.
+    #
+    # AND THE RUN STATE HAS TO CORROBORATE, or the suppression argues in a circle:
+    # `generation_disagrees` reads `composer_control`, the token naming which control was rendered,
+    # so the composer would be excusing itself. A treatment that DROPS the Send button, renames it
+    # or selects the wrong control reaches this branch with every message and overlay agreeing, and
+    # a refusal here is a green run (`report` files NOT COMPARABLE under `blind` and exits on
+    # `stable_bad or one_sided`). `_run_state_disagrees` reads `streaming` and `queued_idle`, and
+    # THAT IS A SECOND READING OF THE SAME SUBTREE RATHER THAN AN INDEPENDENT ONE: `dom.isRunning()`
+    # is `Boolean(stopButton() || queueButton())`, and `scene/parity.js` builds `queued_idle` from
+    # that value, `stopQueuedButton()` and the prompt queue surface. WHAT THE SECOND READING BUYS,
+    # from reading the two predicates: a control DROPPED or RENAMED out of `RUN_STATE_CONTROLS`
+    # moves the token while leaving both flags equal, so this branch does not fire. WHAT IT DOES
+    # NOT RULE OUT: a treatment that renders the WRONG run-state control, since Stop on a settled
+    # thread moves `composer_control` and `streaming` together and is refused here as NOT
+    # COMPARABLE. That case needs a run-state signal read outside the composer subtree.
     if (
         generation_disagrees(base, treat)
         and _run_state_disagrees(base, treat)
         and scaffold_moved(base, treat)
         and not overlays_moved(base, treat)
-        and not _messages_moved(base, treat, streaming)
+        and not _messages_moved(base, treat, skip)
     ):
         bc, tc = _scaffold(base)[1], _scaffold(treat)[1]
         return {
@@ -680,10 +798,11 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
             ),
             "moved": [],
             "in_flight": sorted(streaming),
+            "fence_latch": sorted(latched),
             "style_verdict": style_verdict,
             "style_reason": style_reason,
         }
-    if not _any_moved(base, treat, streaming):
+    if not _any_moved(base, treat, skip):
         bm, tm = _messages(base), _messages(treat)
         unsettled = sorted(
             i
@@ -713,6 +832,7 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
                 ),
                 "moved": [],
                 "in_flight": sorted(streaming),
+                "fence_latch": sorted(latched),
                 "not_digested": unsettled,
                 "style_verdict": style_verdict,
                 "style_reason": style_reason,
@@ -728,14 +848,16 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
             "reason": "",
             "moved": [],
             "in_flight": sorted(streaming),
+            "fence_latch": sorted(latched),
             "style_verdict": style_verdict,
             "style_reason": style_reason,
         }
     return {
         "verdict": DIFFER,
         "reason": "",
-        "moved": localise(base, treat, streaming),
+        "moved": localise(base, treat, skip),
         "in_flight": sorted(streaming),
+        "fence_latch": sorted(latched),
         "style_verdict": style_verdict,
         "style_reason": style_reason,
     }

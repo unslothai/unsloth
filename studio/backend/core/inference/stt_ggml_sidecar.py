@@ -43,6 +43,7 @@ from typing import Iterator, Optional
 
 from loggers import get_logger
 
+from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import normalize_token
 from core.inference.stt_sidecar import (
     STT_KEEP_ALIVE_SECONDS,
@@ -71,12 +72,15 @@ from core.inference.stt_sidecar import (
 from utils.prebuilt.child_env import isolate_home, scrub_env, wsl_system_rocm_lib_dirs
 from utils.prebuilt.runtime_libs import dedupe_existing_dirs
 from utils.prebuilt.whisper_layout import lookup_marker
-from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
+from utils.process_lifetime import (
+    adopt_pid,
+    child_popen_kwargs,
+    forget_pid,
+    is_process_shutting_down,
+)
 
 logger = get_logger(__name__)
 
-# one repo per model; keys match the Transformers sidecar's ids so the frontend reuses one picker, values are the single
-# file inside each repo
 # Curated GGML checkpoints, one repo per model. Keys match the Transformers sidecar's ids so the frontend reuses one
 # picker; values are the single file inside each repo.
 GGML_STT_REPOS: dict[str, str] = {
@@ -117,15 +121,20 @@ def resolve_ggml_model_id(model: Optional[str]) -> str:
 
 
 def _managed_whisper_cpp_dir() -> Path:
-    """`<STUDIO_HOME>/whisper.cpp` in custom mode, else `~/.unsloth/whisper.cpp`.
+    """`<UNSLOTH_HOME>/whisper.cpp` when set, else `<STUDIO_HOME>/whisper.cpp` in custom mode,
+    else `~/.unsloth/whisper.cpp`.
 
     Mirrors `managed_node_dir` / `_find_llama_server_binary` so managed runtimes
     share one parent directory.
     """
     legacy = Path.home() / ".unsloth" / "whisper.cpp"
     try:
-        from utils.paths.storage_roots import studio_root
+        from utils.paths.storage_roots import studio_root, unsloth_home
 
+        # setup.sh installs whisper.cpp at <master root>, beside studio/. No env var bridges it.
+        master = unsloth_home()
+        if master is not None:
+            return master / "whisper.cpp"
         resolved = studio_root()
         legacy_studio = Path.home() / ".unsloth" / "studio"
         try:
@@ -146,14 +155,9 @@ def _managed_whisper_cpp_dir() -> Path:
 
 
 def find_whisper_server_binary() -> Optional[str]:
-    """Locate the whisper-server binary.
-
-    Search order:
-    1. WHISPER_SERVER_PATH environment variable (direct path to binary)
-    2. UNSLOTH_WHISPER_CPP_PATH env var (custom whisper.cpp install dir)
-    3. managed dir: <STUDIO_HOME or ~/.unsloth>/whisper.cpp/{,build/bin/}whisper-server
-    4. whisper-server on PATH
-    """
+    """Locate the whisper-server binary, in order: WHISPER_SERVER_PATH (direct path),
+    UNSLOTH_WHISPER_CPP_PATH (custom install dir), the managed dir <STUDIO_HOME or
+    ~/.unsloth>/whisper.cpp/{,build/bin/}whisper-server, then whisper-server on PATH."""
     binary_name = "whisper-server.exe" if sys.platform == "win32" else "whisper-server"
 
     def _layout_candidates(d: Path) -> list[Path]:
@@ -273,7 +277,6 @@ def slim_runtime_intact(binary: str) -> bool:
     return intact
 
 
-# a runtime that starts, answers GET /, then dies on the first inference
 # A runtime that starts, answers GET /, and then dies on the first actual inference. Reported on Windows with ROCm on
 # gfx1200, where rocBLAS is missing its TensileLibrary: the marker and the linked libraries are all present, so
 # slim_runtime_intact() is happy and is_available() said yes, which meant _resolve_serving_stt_engine never fell back
@@ -337,18 +340,13 @@ def ensure_engine_available() -> str:
     return binary
 
 
-# build the whisper-server env: prepend the binary dir (co-located libs win, and a backstop where the loader ignores the
-# rpath)
-
-# --------------------------------------------------------------------------- whisper-server child-process environment
-# --------------------------------------------------------------------------- Build the whisper-server env: prepend the
-# binary dir (co-located libs win, and a backstop where the loader ignores the rpath) and scrub secret-bearing vars the
-# binary never needs. On WSL2 ROCm the system HIP libs go first, since a bundle's bare-metal HIP cannot drive /dev/dxg.
-# A CUDA bundle ships libggml-cuda.so but not libcudart/libcublas (paired with the user's PyTorch), so add the
-# CUDA-from-PyTorch runtime dirs the selection gated on, else the backend cannot resolve a runtime that lives only in
-# wheels. Mirrors llama's binary_env(); the scrub/WSL/dedupe helpers live in utils.prebuilt.
-# Module-level aliases keep the historical patch points for tests and callers.
-# ---------------------------------------------------------------------------
+# whisper-server child-process environment. Build the env by prepending the binary dir (co-located libs win, and a
+# backstop where the loader ignores the rpath) and scrubbing secret-bearing vars the binary never needs. On WSL2 ROCm
+# the system HIP libs go first, since a bundle's bare-metal HIP cannot drive /dev/dxg. A CUDA bundle ships
+# libggml-cuda.so but not libcudart/libcublas (paired with the user's PyTorch), so add the CUDA-from-PyTorch runtime
+# dirs the selection gated on, else the backend cannot resolve a runtime that lives only in wheels. Mirrors llama's
+# binary_env(); the scrub/WSL/dedupe helpers live in utils.prebuilt, and the module-level aliases keep the historical
+# patch points for tests and callers.
 
 _wsl_system_rocm_lib_dirs = wsl_system_rocm_lib_dirs
 _dedupe_existing_dirs = dedupe_existing_dirs
@@ -359,6 +357,7 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
     repointed at a managed scratch dir (a downloaded binary must not see the real
     home's token caches), co-located libs on the loader path, WSL system HIP first
     on WSL2 ROCm."""
+    binary = str(Path(binary).resolve())
     env = scrub_env(os.environ)
     isolate_home(env, str(_managed_whisper_cpp_dir() / ".child_home"))
     bin_dir = str(Path(binary).parent)
@@ -371,12 +370,28 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
         for pattern in ("libggml-cuda.so*", "ggml-cuda*.dll")
         for path in bundle_dir.glob(pattern)
     )
+    vendored_cuda_dirs: list[str] = []
     if has_cuda_module:
         try:
             from utils.prebuilt.runtime_libs import python_runtime_dirs
             cuda_runtime_dirs = python_runtime_dirs()
         except Exception:
             cuda_runtime_dirs = []
+        try:
+            from utils.llama_cpp_freshness import read_install_marker as read_llama_install_marker
+            from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
+
+            marker = _whisper_install_marker(binary)
+            # Slim bundles hardlink CUDA from their paired llama.cpp install; its marker holds the runtime.
+            linked_from = marker.get("linked_from") if isinstance(marker, dict) else None
+            paired_marker = (
+                read_llama_install_marker(linked_from)
+                if isinstance(linked_from, str) and linked_from
+                else None
+            )
+            vendored_cuda_dirs = vendored_cuda_runtime_dirs(paired_marker or marker)
+        except Exception:
+            vendored_cuda_dirs = []
     if sys.platform == "win32":
         var, lead = "PATH", [bin_dir, *cuda_runtime_dirs]
     elif sys.platform == "darwin":
@@ -388,13 +403,11 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
             lead = [*wsl_rocm, bin_dir, *cuda_runtime_dirs]
             env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
     existing = [p for p in env.get(var, "").split(os.pathsep) if p]
-    env[var] = os.pathsep.join(_dedupe_existing_dirs([*lead, *existing]))
+    env[var] = os.pathsep.join(_dedupe_existing_dirs([*lead, *existing, *vendored_cuda_dirs]))
     return env
 
 
-# --------------------------------------------------------------------------- Model file download (single files;
-# deliberately outside the Model Hub flow) ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
+# Model file download: single files, deliberately outside the Model Hub flow.
 
 
 def _cached_model_path(
@@ -464,7 +477,6 @@ class _GgmlDownloadState:
                 "model": self._model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
-                # "model" goes None once the worker thread stops
                 # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
                 # cancellation was indistinguishable from an unrelated one and a deferred load restarted the whole
                 # download.
@@ -660,12 +672,12 @@ class _GgmlDownloadState:
             detail = (stderr or b"").decode("utf-8", "replace").strip()
             logger.warning("GGUF STT download failed for %s: %s", model_id, detail)
             with self._lock:
-                self._error = f"Download failed for '{model_id}'."
+                self._error = modelscope_missing(detail) or f"Download failed for '{model_id}'."
         except Exception as exc:
             with self._lock:
                 if not self._cancelled:
                     logger.warning("GGUF STT download failed for %s: %s", model_id, exc)
-                    self._error = f"Download failed for '{model_id}'."
+                    self._error = modelscope_missing(exc) or f"Download failed for '{model_id}'."
         finally:
             if registry is not None and owner is not None:
                 registry.release_repository_owner(repo_id, owner)
@@ -686,9 +698,6 @@ def cancel_model_download() -> bool:
     return _download_state.cancel()
 
 
-# ---------------------------------------------------------------------------
-
-
 def _pcm_to_wav_bytes(decoded_audio) -> bytes:
     """Wrap decoded float32 mono 16 kHz PCM into an in-memory 16-bit WAV."""
     import numpy as np
@@ -704,9 +713,6 @@ def _pcm_to_wav_bytes(decoded_audio) -> bytes:
     return buf.getvalue()
 
 
-# ---------------------------------------------------------------------------
-
-
 class GgmlSttSidecar:
     """Owns one whisper-server subprocess and proxies dictation to it."""
 
@@ -716,6 +722,8 @@ class GgmlSttSidecar:
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
         self._model_id: Optional[str] = None
+        # --no-gpu at the user's request, tracked because it varies per request.
+        self._forced_cpu = False
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
         self._keep_alive_seconds = keep_alive_seconds
@@ -733,9 +741,8 @@ class GgmlSttSidecar:
 
     @property
     def loaded_model(self) -> Optional[str]:
-        # lock-free status read: transcribe() holds self._lock for the whole inference call
-        # Lock-free status read (like stt_sidecar.py): transcribe() holds self._lock for the whole inference call (up to
-        # _TRANSCRIBE_TIMEOUT_SECONDS), and status polls plus training admission must not block behind it.
+        # Lock-free status read (like stt_sidecar.py): transcribe() holds self._lock for the whole inference call (up
+        # to _TRANSCRIBE_TIMEOUT_SECONDS), and status polls plus training admission must not block behind it.
         # _process_alive() snapshots self._process before poll(), which subprocess guards with _waitpid_lock, so a
         # concurrent unload is safe.
         return self._model_id if self._process_alive() else None
@@ -757,8 +764,6 @@ class GgmlSttSidecar:
         # otherwise re-read None between the truthiness check and .poll().
         process = self._process
         return process is not None and process.poll() is None
-
-    # -- idle unload ------------------------------------------------------
 
     def _cancel_idle_unload_locked(self) -> None:
         self._idle_generation += 1
@@ -783,14 +788,13 @@ class GgmlSttSidecar:
             logger.info("Unloading idle GGUF STT model %s", self._model_id)
             self._release_locked()
 
-    # -- process lifecycle -------------------------------------------------
-
     def _release_locked(self) -> None:
         self._cancel_idle_unload_locked()
         process = self._process
         self._process = None
         self._port = None
         self._model_id = None
+        self._forced_cpu = False
         if process is not None and process.poll() is None:
             process.terminate()
             try:
@@ -929,8 +933,17 @@ class GgmlSttSidecar:
         self,
         model: Optional[str] = None,
         request_cancel_event: Optional[threading.Event] = None,
+        device: Optional[str] = None,
     ) -> None:
-        """Start (or switch) whisper-server for the requested curated model."""
+        """Start (or switch) whisper-server for the requested curated model.
+
+        ``device`` is the user's audio device preference; ``cpu`` starts the server
+        with ``--no-gpu``, the same flag training and a CPU-only install already use.
+        ``None`` is no opinion: it keeps the running server's placement, so a
+        caller that never sends one cannot restart it onto the other device.
+        """
+        from core.inference.audio_device import audio_device_forces_cpu
+
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         self._raise_if_update_in_progress()
@@ -940,26 +953,22 @@ class GgmlSttSidecar:
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
             self._raise_if_update_in_progress()
             binary = ensure_engine_available()
-            if self._process_alive() and self._model_id == model_id:
+            force_cpu = (
+                self._forced_cpu
+                if device is None and self._process_alive()
+                else audio_device_forces_cpu(device)
+            )
+            if (
+                self._process_alive()
+                and self._model_id == model_id
+                and self._forced_cpu == force_cpu
+            ):
                 self._schedule_idle_unload_locked()
                 return
             model_path = self._ensure_model_downloaded(model_id)
             reservation, port = self._reserve_free_port()
             command = [binary, "-m", model_path, "--host", "127.0.0.1", "--port", str(port)]
             marker = _whisper_install_marker(binary)
-            if _training_active():
-                # Keep whisper.cpp off the accelerator during training (like the Transformers sidecar's CPU choice) so a
-                # mid-training dictation cannot reclaim the VRAM training just freed.
-                command.append("--no-gpu")
-            elif marker is not None and marker.get("backend") == "cpu":
-                # A deliberate CPU install must stay CPU: the slim wiring links every llama ggml backend (including
-                # CUDA/ROCm), so without this flag a cpu-selected install would still grab the GPU.
-                command.append("--no-gpu")
-            logger.info(
-                "Starting whisper-server for STT model %s on 127.0.0.1:%s",
-                model_id,
-                port,
-            )
             cancel_event = (
                 request_cancel_event if request_cancel_event is not None else threading.Event()
             )
@@ -970,9 +979,35 @@ class GgmlSttSidecar:
             try:
                 if cancel_event.is_set():
                     raise SttLoadCancelledError("GGUF STT model loading was cancelled.")
+                # Decided under the loading flag, never before it: the training hook
+                # reads is_loading() without this lock, so an earlier decision is
+                # invisible and it preserves the outgoing model as holding no VRAM.
+                if force_cpu:
+                    # Tracked, so the reuse check above restarts on a change.
+                    command.append("--no-gpu")
+                elif _training_active():
+                    # Off the accelerator during training, so a mid-training dictation
+                    # cannot reclaim the VRAM training just freed.
+                    command.append("--no-gpu")
+                elif marker is not None and marker.get("backend") == "cpu":
+                    # The slim wiring links every ggml backend, so without this flag a
+                    # cpu-selected install would still grab the GPU.
+                    command.append("--no-gpu")
+                logger.info(
+                    "Starting whisper-server for STT model %s on 127.0.0.1:%s",
+                    model_id,
+                    port,
+                )
                 self._release_locked()
                 # release the reservation as late as possible: whisper-server binds the port moments after this close
                 reservation.close()
+                # One flag at every spawn. No _graceful_shutdown step stops this
+                # sidecar, so a load still downloading or in preflight as the app quits
+                # would otherwise start whisper-server after the sweep had run.
+                if is_process_shutting_down():
+                    raise SttLoadCancelledError(
+                        "Unsloth is shutting down; not starting whisper-server."
+                    )
                 process = subprocess.Popen(
                     command,
                     stdout = subprocess.DEVNULL,
@@ -988,6 +1023,18 @@ class GgmlSttSidecar:
                 with self._load_state_lock:
                     self._starting_process = process
                 adopt_pid(process.pid)  # terminate_all backstop for graceful exits
+                # Recheck once the pid is recorded: the latch can be set between the
+                # gate above and this record, and the child would then sit outside a
+                # sweep that has already finished. Adoption runs first either way, so a
+                # child killed here is still in the sweep record.
+                if is_process_shutting_down():
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout = 10)
+                    forget_pid(process.pid)
+                    raise SttLoadCancelledError(
+                        "Unsloth is shutting down; not starting whisper-server."
+                    )
                 try:
                     self._wait_for_server(process, port, cancel_event)
                 except Exception:
@@ -999,6 +1046,7 @@ class GgmlSttSidecar:
                 self._process = process
                 self._port = port
                 self._model_id = model_id
+                self._forced_cpu = force_cpu
                 self._schedule_idle_unload_locked()
             finally:
                 reservation.close()  # no-op when already released before spawn
@@ -1050,8 +1098,6 @@ class GgmlSttSidecar:
         if process.poll() is not None:
             return False
         return b"whisper" in body.lower()
-
-    # -- transcription ------------------------------------------------------
 
     def transcribe(
         self,

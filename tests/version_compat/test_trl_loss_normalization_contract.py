@@ -44,9 +44,8 @@ import pytest
 if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed", allow_module_level = True)
 
-# Unsloth refuses to import without a torch accelerator, so the GPU-less runner
-# needs the same spoof the sibling CPU canaries use. Must precede any unsloth
-# import, which is why it sits at module scope rather than in a fixture.
+# Unsloth refuses to import without a torch accelerator, so the GPU-less runner needs the same spoof the sibling CPU
+# canaries use. Must precede any unsloth import, which is why it sits at module scope rather than in a fixture.
 _SPOOF_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SPOOF_DIR))
 import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
@@ -79,7 +78,11 @@ def test_loss_type_replacement_did_not_leak_to_other_trainers():
     import unsloth  # noqa: F401
     import trl
 
-    expected = {"DPOConfig": ["sigmoid"], "KTOConfig": "kto", "GRPOConfig": "bnpo"}
+    from packaging.version import Version
+
+    # Unsloth follows TRL's GRPO default from 0.22, the first TRL with "dapo".
+    grpo = "dapo" if Version(trl.__version__) >= Version("0.22.0") else "bnpo"
+    expected = {"DPOConfig": ["sigmoid"], "KTOConfig": "kto", "GRPOConfig": grpo}
     for name, want in expected.items():
         cfg_cls = getattr(trl, name, None)
         if cfg_cls is None or not hasattr(cfg_cls, "loss_type"):
@@ -102,14 +105,27 @@ def test_explicit_loss_type_still_wins():
     assert cfg.loss_type == "chunked_nll", "explicit loss_type was clobbered"
 
 
+def test_dr_grpo_turns_off_reward_scaling_by_default():
+    """TRL >= 0.22 defaults scale_rewards to "group" (= True), so dr_grpo must override both."""
+    import unsloth  # noqa: F401
+    import trl
+
+    def scale(**kwargs):
+        return trl.GRPOConfig(output_dir = "unused", loss_type = "dr_grpo", **kwargs).scale_rewards
+
+    for kwargs in ({}, {"scale_rewards": True}, {"scale_rewards": "group"}):
+        assert scale(**kwargs) in (False, "none"), f"dr_grpo with {kwargs} still scales rewards"
+    assert scale(scale_rewards = None) in (True, "group"), "None should keep group scaling"
+    assert scale(scale_rewards = "batch") == "batch", "an explicit batch scaling was clobbered"
+
+
 def _pristine_sft_config_cls():
     """TRL's own SFTConfig, not the generated subclass patching rebinds over it."""
     import trl
 
-    # Go by the marker rather than the name: the generated subclass is renamed
-    # onto TRL's own name so that instances of it keep pickling, so `Unsloth`
-    # no longer appears in `__name__`. `__dict__` rather than `getattr`, so a
-    # user subclass of the generated class does not inherit its way past this.
+    # Go by the marker rather than the name: the generated subclass is renamed onto TRL's own name so that instances
+    # of it keep pickling, so `Unsloth` no longer appears in `__name__`. `__dict__` rather than `getattr`, so a user
+    # subclass of the generated class does not inherit its way past this.
     cls = trl.SFTConfig
     while "_unsloth_patched_rl_config" in cls.__dict__ or cls.__name__.startswith("Unsloth"):
         cls = cls.__mro__[1]
@@ -298,8 +314,8 @@ def test_rl_py_scopes_loss_type_to_sft_trainer():
         keys = [k.value for k in node.value.keys if isinstance(k, ast.Constant)]
         if "loss_type" not in keys:
             continue
-        # A loss_type entry is only legitimate inside an `if trainer_file == ...`
-        # branch. Find the nearest enclosing If and check its test.
+        # A loss_type entry is only legitimate inside an `if trainer_file == ...` branch. Find the nearest enclosing
+        # If and check its test.
         guarded = False
         for parent in ast.walk(tree):
             if not isinstance(parent, ast.If):

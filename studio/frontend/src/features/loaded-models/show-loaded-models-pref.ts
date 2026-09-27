@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Whether the corner indicator may appear. Off by default; only an explicit
-// "true" (Settings -> General -> Notifications) enables it. An older explicit
-// "false" still reads as off, so anyone who already turned it down stays that
-// way. Tri-state on purpose: see setShowLoadedModels.
+// Whether the corner indicator may appear. Off by default; only an explicit "true" (Settings ->
+// General -> Notifications) enables it. An older explicit "false" still reads as off, so anyone who
+// already turned it down stays that way. Tri-state on purpose: see setShowLoadedModels.
 
 import { useSyncExternalStore } from "react";
 
@@ -38,10 +37,9 @@ export function getShowLoadedModels(): boolean {
 
 export function setShowLoadedModels(show: boolean): void {
   try {
-    // Both values written, never removed: "false" is the one an older reader
-    // also treats as off, so a pre-update tab does not flip the card back on
-    // through the storage event. Absent still means off here, so the default
-    // is unaffected.
+    // Both values written, never removed: "false" is the one an older reader also treats as off, so
+    // a pre-update tab does not flip the card back on through the storage event. Absent still means
+    // off here, so the default is unaffected.
     localStorage.setItem(STORAGE_KEY, show ? "true" : "false");
   } catch {
     // storage unavailable
@@ -83,9 +81,8 @@ export function getLoadedModelsDismissed(): boolean {
 }
 
 export function setLoadedModelsDismissed(dismissed: boolean): void {
-  // Nothing to announce when it already reads that way, and the reopen path
-  // runs on every load start, so this would otherwise re-render the app's whole
-  // overlay stack for each one.
+  // Nothing to announce when it already reads that way, and the reopen path runs on every load
+  // start, so this would otherwise re-render the app's whole overlay stack for each one.
   if (getLoadedModelsDismissed() === dismissed) {
     return;
   }

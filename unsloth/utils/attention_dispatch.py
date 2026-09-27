@@ -1,15 +1,12 @@
 # Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
-#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Lesser General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
-#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-#
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
@@ -101,7 +98,6 @@ XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFOR
 # dq_accum = zeros(total_q + 128 * n_seqs, n_heads, round_up(head_dim, 32)) and indexes it with
 # int32, so at 2**31 elements the kernel faults with an illegal memory access and poisons the CUDA
 # context. Forward-only never allocates dq_accum, so the guard requires a backward to be possible.
-# ---- flash-attn 2 varlen backward int32 overflow guard -------------------------------------
 _INT32_ELEMENTS = 2**31
 _VARLEN_INT32_GUARD_DISABLED = os.environ.get(
     "UNSLOTH_DISABLE_VARLEN_INT32_GUARD", "0"
@@ -495,7 +491,6 @@ def run_attention(
         else:
             q_len_local = Q.shape[-2]
             k_len_local = K.shape[-2]
-            # ---- SDPA mask normalization for left padding / 2D masks ----
             if local_mask is not None and isinstance(local_mask, torch.Tensor):
                 local_mask = local_mask.to(device = Q.device)
 

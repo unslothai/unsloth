@@ -15,8 +15,12 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { CopyIcon, EyeIcon, Maximize2Icon, XIcon } from "lucide-react";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import { EyeIcon, XIcon } from "lucide-react";
+import {
+  Copy01Icon,
+  Download01Icon,
+  ExpandIcon,
+} from "@hugeicons/core-free-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -45,9 +49,9 @@ function buildHtmlFence(source: string): string {
   const fence = "`".repeat(longestBacktickRun + 1);
   return `${fence}html\n${source}\n${fence}`;
 }
-// Sandboxed canvas iframes are deliberately outside the overlay focus trap:
-// granting same-origin sandbox privileges would weaken isolation, so reaching
-// interactive canvas content via keyboard is a known sandbox limitation.
+// Sandboxed canvas iframes are deliberately outside the overlay focus trap: granting same-origin
+// sandbox privileges would weaken isolation, so reaching interactive canvas content via keyboard
+// is a known sandbox limitation.
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -199,15 +203,20 @@ export function ArtifactSurface({
           ? "artifact-panel-shell mx-2 mb-8 overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
           : "h-[min(92dvh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
       )}
-      // The chat-model notice is an absolute child of the chat content container, so
-      // it spans this column too, not just the thread pane. Its height is 0 whenever
-      // it is not on screen, which leaves the geometry this panel has always had.
-      // Both edges move, or the panel keeps its height and overflows the bottom.
+      // The chat-model notice is an absolute child of the chat content container, so it spans this
+      // column too, not just the thread pane. Its height is 0 whenever it is off screen, which leaves
+      // the geometry this panel has always had. Both edges move, or the panel overflows the bottom.
       style={
         variant === "panel"
           ? {
-              marginTop: "calc(90px + var(--studio-chat-notice-height, 0px))",
-              height: "calc(100% - 122px - var(--studio-chat-notice-height, 0px))",
+              // 90 above and 32 below, the same 32 the shell's mb-8 draws, so
+              // the three move together with the UI font size. The content
+              // inset inside the 90 is the window's titlebar band, which does
+              // not scale, so only the header and gap above the panel do.
+              marginTop:
+                "calc(var(--studio-content-top-inset, 0px) + (90px - var(--studio-content-top-inset, 0px)) * var(--ui-space-scale, 1) + var(--studio-chat-notice-height, 0px))",
+              height:
+                "calc(100% - var(--studio-content-top-inset, 0px) - (122px - var(--studio-content-top-inset, 0px)) * var(--ui-space-scale, 1) - var(--studio-chat-notice-height, 0px))",
             }
           : undefined
       }
@@ -269,8 +278,8 @@ export function ArtifactSurface({
             className="size-8"
             disabled={isLoadingArtifact || !hasArtifactCode}
             onClick={() => {
-              // Route through the native save dialog on desktop; the plain
-              // blob-anchor download is silently dropped by the Tauri WebView2.
+              // Route through the native save dialog on desktop; the plain blob-anchor download is silently
+              // dropped by the Tauri WebView2.
               void downloadFile(
                 artifact.code,
                 filename,
@@ -297,7 +306,7 @@ export function ArtifactSurface({
             {copied ? (
               <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" />
             ) : (
-              <CopyIcon className="size-4" />
+              <HugeiconsIcon icon={Copy01Icon} className="size-4" />
             )}
           </Button>
           {variant === "panel" && onOpenFullscreen ? (
@@ -309,7 +318,7 @@ export function ArtifactSurface({
               onClick={onOpenFullscreen}
               aria-label="Open canvas fullscreen"
             >
-              <Maximize2Icon className="size-4" />
+              <HugeiconsIcon icon={ExpandIcon} className="size-4" />
             </Button>
           ) : null}
           <Button

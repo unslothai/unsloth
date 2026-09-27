@@ -11,7 +11,9 @@ import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { LocalDatasetInfo } from "./api";
 import {
+  activeDownloadRepoKeys,
   dedupeSameSourceHubCacheRows,
+  markDownloadingRows,
   partialSetFromRows,
 } from "./inventory-dedupe";
 import {
@@ -55,6 +57,7 @@ export interface HubInventory {
   localRows: LocalInventoryRow[];
   availableSet: Set<string>;
   partialSet: Set<string>;
+  downloadingSet: Set<string>;
   downloadedReady: boolean;
   inventorySettled: boolean;
   inventoryError: boolean;
@@ -266,12 +269,6 @@ function liveDownloadInventoryRows(
           inventory_id: cachedInventoryId(modelFormat, job.repoId),
           load_id: job.repoId,
           model_format: modelFormat,
-          runtime:
-            modelFormat === "gguf"
-              ? "llama_cpp"
-              : modelFormat === "safetensors"
-                ? "transformers"
-                : "unknown",
           size_bytes: job.displayBytes,
           // live jobs already use epoch milliseconds
           last_modified: job.startedAt,
@@ -547,7 +544,6 @@ export function useHubInventory(
           isGguf: false,
           loadId: ds.id,
           modelFormat: "unknown" as const,
-          runtime: "unknown" as const,
           formatVariant: null,
           capabilities: defaultCapabilities("unknown"),
           updatedAt: normalizeTimestamp(ds.updated_at),
@@ -574,25 +570,60 @@ export function useHubInventory(
     [cachedDatasetRows, localDatasetRows],
   );
 
-  const cachedRows = isDatasetMode
-    ? dedupedDatasetInventory.cachedRows
-    : dedupedModelInventory.cachedRows;
-  const effectiveLocalRows = isDatasetMode
-    ? dedupedDatasetInventory.localRows
-    : dedupedModelInventory.localRows;
+  const downloadingSet = useMemo(
+    () => activeDownloadRepoKeys(liveInventoryJobs),
+    [liveInventoryJobs],
+  );
+  const cachedRows = useMemo(
+    () =>
+      markDownloadingRows(
+        isDatasetMode
+          ? dedupedDatasetInventory.cachedRows
+          : dedupedModelInventory.cachedRows,
+        (row) => row.repoId,
+        downloadingSet,
+      ),
+    [
+      dedupedDatasetInventory.cachedRows,
+      dedupedModelInventory.cachedRows,
+      downloadingSet,
+      isDatasetMode,
+    ],
+  );
+  const effectiveLocalRows = useMemo(
+    () =>
+      markDownloadingRows(
+        isDatasetMode
+          ? dedupedDatasetInventory.localRows
+          : dedupedModelInventory.localRows,
+        (row) => row.repoId,
+        downloadingSet,
+      ),
+    [
+      dedupedDatasetInventory.localRows,
+      dedupedModelInventory.localRows,
+      downloadingSet,
+      isDatasetMode,
+    ],
+  );
 
   const availableSet = useMemo(() => {
     const set = new Set<string>();
-    for (const row of cachedRows) set.add(row.repoId.toLowerCase());
+    for (const row of cachedRows) {
+      if (!row.companionPrefetch) set.add(row.repoId.toLowerCase());
+    }
     for (const row of effectiveLocalRows) {
-      if (row.repoId) set.add(row.repoId.toLowerCase());
+      if (row.repoId && !row.companionPrefetch) set.add(row.repoId.toLowerCase());
     }
     return set;
   }, [cachedRows, effectiveLocalRows]);
 
   const partialSet = useMemo(() => {
     return partialSetFromRows(
-      [...cachedRows, ...effectiveLocalRows],
+      [
+        ...cachedRows.filter((row) => !row.companionPrefetch),
+        ...effectiveLocalRows.filter((row) => !row.companionPrefetch),
+      ],
       (row) => row.repoId,
     );
   }, [cachedRows, effectiveLocalRows]);
@@ -724,6 +755,7 @@ export function useHubInventory(
     localRows: effectiveLocalRows,
     availableSet,
     partialSet,
+    downloadingSet,
     downloadedReady,
     inventorySettled,
     inventoryError: inventoryFailed,

@@ -61,6 +61,7 @@ test("an MLX response carries a window without a native one", () => {
     loadedIsGguf: false,
     loadedIsMlx: true,
     loadedContextEnforced: null,
+    loadedContextBudget: null,
   });
   // Transformers, which sizes nothing, still contributes no window.
   assert.deepEqual(loadedContextFields({ is_gguf: false, context_length: 2048 }), {
@@ -70,6 +71,7 @@ test("an MLX response carries a window without a native one", () => {
     loadedIsGguf: false,
     loadedIsMlx: null,
     loadedContextEnforced: null,
+    loadedContextBudget: null,
   });
   assert.equal(loadedContextFields(null).loadedIsGguf, null);
 });
@@ -84,6 +86,31 @@ test("the enforcement verdict is a tri-state, and GGUF is true by construction",
   assert.equal(
     loadedContextFields({ ...MLX, context_length_enforced: false }).loadedContextEnforced,
     false,
+  );
+});
+
+test("a limit kept as a per-request budget travels beside the enforcement verdict", () => {
+  const budgeted = loadedContextFields({
+    ...MLX,
+    context_length_enforced: false,
+    mlx_context_budget: 32768,
+  });
+  assert.equal(budgeted.loadedContextBudget, 32768);
+  assert.equal(budgeted.loadedContextEnforced, false);
+  assert.equal(loadedContextFields(MLX).loadedContextBudget, null);
+  assert.equal(loadedContextFields({ ...GGUF, mlx_context_budget: 8192 }).loadedContextBudget, null);
+});
+
+test("a budgeted limit is advised on as a refusal, not as a slowdown or a decoration", () => {
+  const advice = (extra: Record<string, unknown>) =>
+    deriveContextUsageBar({ used: 30000, total: 32768, isMlx: true, ...extra })?.advice;
+
+  assert.equal(advice({ contextEnforced: false, contextBudget: 32768 }), "mlx-refuses-past-limit");
+  assert.equal(advice({ contextEnforced: false }), "unenforced-limit");
+  assert.equal(advice({ contextEnforced: true }), "mlx-near-limit");
+  assert.equal(
+    deriveContextUsageBar({ used: 100, total: 32768, isMlx: true, contextBudget: 32768 })?.advice,
+    "none",
   );
 });
 
@@ -108,7 +135,12 @@ test("MLX is a Mac non-GGUF load, and the reasons that rule it out", () => {
   assert.equal(isServedByMlx(false, "mac", null), true);
   assert.equal(isServedByMlx(true, "mac", null), false);
   assert.equal(isServedByMlx(false, "cuda", null), false);
-  for (const reason of ["mlx_unavailable", "intel_mac", "detection_failed"]) {
+  for (const reason of [
+    "mlx_unavailable",
+    "no_torch",
+    "intel_mac",
+    "detection_failed",
+  ]) {
     assert.equal(isServedByMlx(false, "mac", reason), false, reason);
   }
 });

@@ -40,6 +40,7 @@ from hub.utils.paths import (
 logger = get_logger(__name__)
 
 _OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:"
+_OLLAMA_LINK_DIR_NAMES = frozenset((".studio_links", "ollama_links"))
 _OLLAMA_BLOB_NAME_CHARS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._+-"
 )
@@ -53,7 +54,37 @@ _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES = frozenset(
     }
 )
 
-_OLLAMA_MATERIALIZE_LOCKS: dict[str, threading.Lock] = {}
+# Modelfile metadata nearly every pulled model carries. llama.cpp uses the GGUF's own template
+# and defaults instead, so none of it reaches the load and none of it should hide the row.
+# `image.adapter` is deliberately absent: it changes the weights.
+_OLLAMA_METADATA_LAYER_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.ollama.image.template",
+        "application/vnd.ollama.image.params",
+        "application/vnd.ollama.image.system",
+        "application/vnd.ollama.image.messages",
+        "application/vnd.ollama.image.prompt",
+    }
+)
+
+# Layers the load drops without changing what it returns. `image.draft` only feeds
+# speculative decoding, which is output-equivalent by construction, so losing it costs
+# speed and nothing else; `image.embed` has been deprecated since ollama 0.1.2 and
+# ollama's own load ignores it too.
+_OLLAMA_IGNORABLE_LAYER_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.ollama.image.draft",
+        "application/vnd.ollama.image.embed",
+    }
+)
+
+_OLLAMA_ADMITTED_LAYER_MEDIA_TYPES = (
+    _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES
+    | _OLLAMA_METADATA_LAYER_MEDIA_TYPES
+    | _OLLAMA_IGNORABLE_LAYER_MEDIA_TYPES
+)
+
+_OLLAMA_MATERIALIZE_LOCKS: dict[tuple, threading.Lock] = {}
 _OLLAMA_MATERIALIZE_LOCKS_GUARD = threading.Lock()
 
 
@@ -79,7 +110,7 @@ def is_ollama_manifest_ref(ref: str) -> bool:
 
 
 def _unsupported_ollama_layer_media_types(layers: list[object]) -> tuple[str, ...]:
-    """Layer types whose behavior the direct llama.cpp load cannot preserve."""
+    """Layer types that would make the row describe something the load cannot deliver."""
     unsupported: set[str] = set()
     for layer in layers:
         if not isinstance(layer, dict):
@@ -88,7 +119,7 @@ def _unsupported_ollama_layer_media_types(layers: list[object]) -> tuple[str, ..
         media_type = layer.get("mediaType")
         if not isinstance(media_type, str) or not media_type:
             unsupported.add("<missing mediaType>")
-        elif media_type not in _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES:
+        elif media_type not in _OLLAMA_ADMITTED_LAYER_MEDIA_TYPES:
             unsupported.add(media_type)
     return tuple(sorted(unsupported))
 
@@ -130,9 +161,21 @@ def _contained_link_path(link_dir: Path, link_name: str) -> Optional[Path]:
     return link_path
 
 
-def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
-    """Writable directory for Ollama ``.gguf`` symlinks. Prefers ``<ollama_dir>/.studio_links/`` next to the blobs; falls back to Unsloth's cache (read-only system installs), then the temp dir (sandboxed installs)."""
+def _ollama_links_roots(ollama_dir: Path) -> tuple[Path, ...]:
+    """Where *ollama_dir*'s ``.gguf`` links can live, best first: beside the blobs, then Unsloth's cache (read-only installs), then the temp dir (sandboxed installs)."""
+    # Hashed so two Ollama roots cannot collide. A cache path, not a security boundary.
+    try:
+        digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
+    except (OSError, RuntimeError):
+        digest = "default"
+    return (
+        ollama_dir / ".studio_links",
+        cache_root() / "ollama_links" / digest,
+        tmp_root() / "ollama_links" / digest,
+    )
 
+
+def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
     def _ensure_writable_dir(path: Path) -> Optional[Path]:
         try:
             path.mkdir(parents = True, exist_ok = True)
@@ -144,24 +187,9 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
             logger.debug("Ollama link dir %s is not writable: %s", path, e)
             return None
 
-    primary = ollama_dir / ".studio_links"
-    if _ensure_writable_dir(primary) is not None:
-        return primary
-
-    # Namespace by a hash of the ollama_dir so two different Ollama roots do not collide. A cache path,
-    # not a security boundary.
-    try:
-        digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
-    except (OSError, RuntimeError):
-        digest = "default"
-
-    fallback = cache_root() / "ollama_links" / digest
-    if _ensure_writable_dir(fallback) is not None:
-        return fallback
-
-    tmp_fallback = tmp_root() / "ollama_links" / digest
-    if _ensure_writable_dir(tmp_fallback) is not None:
-        return tmp_fallback
+    for candidate in _ollama_links_roots(ollama_dir):
+        if _ensure_writable_dir(candidate) is not None:
+            return candidate
 
     logger.warning(
         "Could not create a writable Ollama link directory for %s",
@@ -227,6 +255,21 @@ def _make_ollama_blob_link(link_dir: Path, link_name: str, target: Path) -> Opti
         return None
 
 
+def _manifest_rel_path(tag_file: Path, manifests_root: Path) -> Optional[Path]:
+    try:
+        return tag_file.relative_to(manifests_root)
+    except ValueError:
+        # ``manifests`` can be a symlink: a reference carries the canonical path, a scan its own.
+        try:
+            return Path(os.path.realpath(tag_file)).relative_to(os.path.realpath(manifests_root))
+        except (OSError, ValueError):
+            return None
+
+
+def _manifest_stem_hash(rel: Path) -> str:
+    return hashlib.sha256(rel.as_posix().encode()).hexdigest()[:10]
+
+
 def _ollama_model_info_from_manifest(
     ollama_dir: Path,
     tag_file: Path,
@@ -234,13 +277,14 @@ def _ollama_model_info_from_manifest(
     materialize_links: bool = False,
     links_root: Optional[Path] = None,
     reject_unsupported_layers: bool = False,
+    existing_links_only: bool = False,
+    manifest: Optional[dict] = None,
 ) -> Optional[LocalModelInfo]:
     manifests_root = ollama_dir / "manifests"
     blobs_dir = ollama_dir / "blobs"
 
-    try:
-        rel = tag_file.relative_to(manifests_root)
-    except ValueError:
+    rel = _manifest_rel_path(tag_file, manifests_root)
+    if rel is None:
         return None
     parts = rel.parts
     if len(parts) < 3:
@@ -267,10 +311,11 @@ def _ollama_model_info_from_manifest(
         logger.debug("Skipping %s (%s)", tag_file, message)
         return None
 
-    try:
-        manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
-        return invalid_manifest(str(e))
+    if manifest is None:
+        try:
+            manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+            return invalid_manifest(str(e))
     if not isinstance(manifest, dict):
         return invalid_manifest("top level must be a JSON object")
 
@@ -314,8 +359,7 @@ def _ollama_model_info_from_manifest(
     model_blob: Optional[Path] = None
     projector_blob: Optional[Path] = None
     gguf_link_path: Optional[str] = None
-    stem_hash = hashlib.sha256(rel.as_posix().encode()).hexdigest()[:10]
-    model_link_dir = links_root / stem_hash if links_root is not None else None
+    model_link_dir = links_root / _manifest_stem_hash(rel) if links_root is not None else None
     safe_name = repo_name.replace("/", "-")
 
     for layer in layers:
@@ -340,7 +384,16 @@ def _ollama_model_info_from_manifest(
     if model_blob is None:
         return invalid_manifest("model blob is missing")
 
-    if materialize_links:
+    if materialize_links and existing_links_only:
+        link = (
+            _contained_link_path(model_link_dir, f"{safe_name}-{tag}.gguf")
+            if model_link_dir is not None
+            else None
+        )
+        if link is None or not _safe_is_file(link):
+            return None
+        gguf_link_path = str(link)
+    elif materialize_links:
         if model_link_dir is None:
             return invalid_manifest("link directory is unavailable")
         link_name = f"{safe_name}-{tag}.gguf"
@@ -478,12 +531,20 @@ def scan_ollama_dir(
             if not _safe_is_file(tag_file):
                 continue
 
-            info = _ollama_model_info_from_manifest(
-                ollama_dir,
-                tag_file,
-                materialize_links = materialize_links,
-                links_root = links_root,
-            )
+            lock = _materialization_lock(tag_file, ollama_dir) if materialize_links else None
+            # A load holds this tag; its lease keeps the link it made, so report that, never block.
+            leased = lock is not None and not lock.acquire(blocking = False)
+            try:
+                info = _ollama_model_info_from_manifest(
+                    ollama_dir,
+                    tag_file,
+                    materialize_links = materialize_links,
+                    links_root = links_root,
+                    existing_links_only = leased,
+                )
+            finally:
+                if lock is not None and not leased:
+                    lock.release()
             if info is None:
                 continue
             found.append(info)
@@ -494,8 +555,7 @@ def scan_ollama_dir(
     return found
 
 
-def _ollama_dir_for_manifest(tag_file: Path) -> Optional[Path]:
-    """Return a discovered or registered Ollama root containing *tag_file*."""
+def _known_ollama_dirs() -> List[Path]:
     known_dirs = list(ollama_model_dirs())
     try:
         from hub.storage.scan_folders import list_scan_folders
@@ -506,7 +566,36 @@ def _ollama_dir_for_manifest(tag_file: Path) -> Optional[Path]:
         )
     except Exception as e:
         logger.debug("Could not load registered Ollama roots: %s", e)
-    for ollama_dir in known_dirs:
+    return known_dirs
+
+
+def ollama_manifest_ref_for_path(model_path: str) -> Optional[str]:
+    """The manifest reference *model_path* names, or None when it names no Ollama tag."""
+    if is_ollama_manifest_ref(model_path):
+        return model_path
+    link = Path(model_path)
+    if not any(part in _OLLAMA_LINK_DIR_NAMES for part in link.parts):
+        return None
+    for ollama_dir in _known_ollama_dirs():
+        if not any(
+            path_is_same_or_child(link.parent, root) for root in _ollama_links_roots(ollama_dir)
+        ):
+            continue
+        manifests_root = ollama_dir / "manifests"
+        try:
+            for tag_file in manifests_root.rglob("*"):
+                if not _safe_is_file(tag_file):
+                    continue
+                rel = _manifest_rel_path(tag_file, manifests_root)
+                if rel is not None and _manifest_stem_hash(rel) == link.parent.name:
+                    return _ollama_manifest_ref(tag_file)
+        except OSError as e:
+            logger.debug("Could not walk Ollama manifests under %s: %s", manifests_root, e)
+    return None
+
+
+def _ollama_dir_for_manifest(tag_file: Path) -> Optional[Path]:
+    for ollama_dir in _known_ollama_dirs():
         if path_is_same_or_child(tag_file, ollama_dir / "manifests"):
             return ollama_dir
     return None
@@ -529,8 +618,55 @@ def _validated_ollama_manifest_location(ref: str) -> tuple[Path, Path]:
     return tag_file, canonical_ollama_dir
 
 
-def _materialization_lock(tag_file: Path) -> threading.Lock:
-    key = os.path.normcase(str(tag_file))
+def _ollama_model_ref_info(ref: str) -> tuple[Path, dict, LocalModelInfo]:
+    """Ollama root, parsed manifest and model row for *ref*, from a single read: a pull between two
+    reads would pair one version's weights with another's projector. Raises on nothing loadable."""
+    tag_file, ollama_dir = _validated_ollama_manifest_location(ref)
+    try:
+        manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        raise ValueError(f"Could not read Ollama manifest: {e}") from e
+    # A manifest of JSON ``null`` is indistinguishable from passing none below, which re-reads.
+    if not isinstance(manifest, dict):
+        raise ValueError("Invalid Ollama manifest: top level must be a JSON object")
+    info = _ollama_model_info_from_manifest(
+        ollama_dir,
+        tag_file,
+        materialize_links = False,
+        reject_unsupported_layers = True,
+        manifest = manifest,
+    )
+    if info is None:
+        raise ValueError("Could not resolve Ollama model from manifest")
+    return ollama_dir, manifest, info
+
+
+def ollama_model_ref_public_id(ref: str) -> str:
+    """The ``ollama/<repo>:<tag>`` id clients see for *ref*, whose own form is internal."""
+    _, _, info = _ollama_model_ref_info(ref)
+    return info.model_id
+
+
+def ollama_model_ref_files(ref: str) -> tuple[str, Optional[str]]:
+    """``(weights blob, projector blob or None)`` for *ref*: the blobs, not the links a load makes."""
+    ollama_dir, manifest, info = _ollama_model_ref_info(ref)
+    projector = None
+    for layer in manifest.get("layers") or []:
+        if layer.get("mediaType") == "application/vnd.ollama.image.projector":
+            projector = _ollama_blob_path(ollama_dir / "blobs", layer.get("digest"))
+    return info.path, str(projector) if projector is not None else None
+
+
+def _materialization_lock(tag_file: Path, ollama_dir: Path) -> threading.Lock:
+    """Per-tag lock, keyed by the store's inode and the manifest's path inside it. Not by pathname:
+    one store reached through a symlink or spelled in another case would hand out two locks."""
+    try:
+        stat = os.stat(ollama_dir)
+        root: object = (stat.st_dev, stat.st_ino)
+        rel = os.path.relpath(os.path.realpath(str(tag_file)), os.path.realpath(str(ollama_dir)))
+    except (OSError, ValueError):
+        root, rel = None, os.path.realpath(str(tag_file))
+    key = (root, os.path.normcase(rel))
     with _OLLAMA_MATERIALIZE_LOCKS_GUARD:
         return _OLLAMA_MATERIALIZE_LOCKS.setdefault(key, threading.Lock())
 
@@ -555,14 +691,14 @@ def _materialize_ollama_model_ref_unlocked(tag_file: Path, ollama_dir: Path) -> 
 def materialize_ollama_model_ref(ref: str) -> str:
     """Resolve an Ollama ref while serializing updates to its model/projector pair."""
     tag_file, ollama_dir = _validated_ollama_manifest_location(ref)
-    with _materialization_lock(tag_file):
+    with _materialization_lock(tag_file, ollama_dir):
         return _materialize_ollama_model_ref_unlocked(tag_file, ollama_dir)
 
 
 def acquire_ollama_model_ref(ref: str) -> OllamaModelLease:
     """Materialize and keep the pair stable until the caller releases the lease."""
     tag_file, ollama_dir = _validated_ollama_manifest_location(ref)
-    lock = _materialization_lock(tag_file)
+    lock = _materialization_lock(tag_file, ollama_dir)
     lock.acquire()
     try:
         return OllamaModelLease(_materialize_ollama_model_ref_unlocked(tag_file, ollama_dir), lock)

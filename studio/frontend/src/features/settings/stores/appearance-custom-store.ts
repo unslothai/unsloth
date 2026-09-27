@@ -7,6 +7,7 @@ import {
   createJSONStorage,
   persist,
 } from "zustand/middleware";
+import { COLOR_THEMES, type ColorThemeId } from "../lib/color-themes.ts";
 import type { ResolvedTheme } from "./theme-store";
 
 // Best-effort persistence: localStorage can be blocked (private browsing) and
@@ -37,6 +38,9 @@ const guardedLocalStorage: StateStorage = {
 };
 
 export type ReduceMotionSetting = "system" | "on" | "off";
+export type ChatWidthSetting = "standard" | "wide" | "full";
+export type ComposerAttachmentsSetting = "cards" | "compact";
+export type SentAttachmentsSetting = "auto" | "list" | "chips";
 
 export type CustomModeColors = {
   accent: string | null;
@@ -91,6 +95,7 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   // Model hub leads: picking a model comes before the work that uses one.
   "hub",
   "projects",
+  "library",
   "images",
   "notebooks",
   // Video and Audio sit directly under Images: the media tabs read as one group.
@@ -110,13 +115,40 @@ export type SidebarNavItemPref = {
   pinned: boolean;
 };
 
+/** Rows whose placement follows the sidebar's own state until the user decides for them. */
+export const SIDEBAR_NAV_AUTO_ITEM_IDS = ["projects"] as const satisfies
+  readonly SidebarNavItemId[];
+
+/** Where a nav row goes. Projects repeats the Projects section, so while that section lists the
+ *  folders the row steps aside into "More". A toggle in Customize sidebar drops it from `auto`
+ *  and wins from then on. */
+export function sidebarNavRowPinned(
+  item: SidebarNavItemPref,
+  auto: readonly SidebarNavItemId[],
+  context: { projectsSectionShowing: boolean },
+): boolean {
+  if (item.id === "projects" && auto.includes("projects")) {
+    return !context.projectsSectionShowing;
+  }
+  return item.pinned;
+}
+
+/** The list after the user has decided a row's placement themselves. */
+export function sidebarNavAutoAfterChoice(
+  auto: readonly SidebarNavItemId[],
+  id: SidebarNavItemId,
+): SidebarNavItemId[] {
+  return auto.filter((entry) => entry !== id);
+}
+
 // Matches the shipped layout, so an untouched install looks unchanged.
 export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   hub: true,
   projects: true,
+  library: true,
   images: true,
   notebooks: true,
-  video: true,
+  video: false,
   // Under "More" until a user pins it.
   audio: false,
   train: true,
@@ -128,7 +160,7 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
 /** Every previously shipped layout, so a migration can tell an untouched install from one the
  *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects;
  *  v5 put Video back under "More" and later added API before Audio shipped; v6 added Audio;
- *  v7 pins Video under Images again; v8 pins Notebooks under Images. */
+ *  v7 pins Video under Images again; v8 adds Library under Projects and moves Video to "More". */
 const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
   [
     { id: "projects", pinned: true },
@@ -208,6 +240,9 @@ export type AppearanceCustomization = {
   uiFont: string | null;
   headingFont: string | null;
   chatFont: string | null;
+  chatWidth: ChatWidthSetting;
+  composerAttachments: ComposerAttachmentsSetting;
+  sentAttachments: SentAttachmentsSetting;
   codeFont: string | null;
   importedFonts: ImportedFont[];
   /** UI font size in px. null = app default (15). */
@@ -224,6 +259,9 @@ export type AppearanceCustomization = {
   sidebarMenu: SidebarMenuItemPref[];
   /** Order of the sidebar nav rows, and which are pinned vs. under "More". */
   sidebarNav: SidebarNavItemPref[];
+  /** Rows still following their automatic rule instead of a choice made in Customize sidebar.
+   *  Only Projects has one. */
+  sidebarNavAuto: SidebarNavItemId[];
 };
 
 const EMPTY_MODE_COLORS: CustomModeColors = {
@@ -237,6 +275,9 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   uiFont: null,
   headingFont: null,
   chatFont: null,
+  chatWidth: "standard",
+  composerAttachments: "cards",
+  sentAttachments: "auto",
   codeFont: null,
   importedFonts: [],
   uiFontSize: null,
@@ -253,11 +294,37 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
     id,
     pinned: SIDEBAR_NAV_DEFAULT_PINNED[id],
   })),
+  sidebarNavAuto: [...SIDEBAR_NAV_AUTO_ITEM_IDS],
 };
 
 export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 } as const;
 export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 13 } as const;
 const UI_FONT_SIZE_CSS_BASE = 16;
+
+/**
+ * What the contrast slider writes, read by `html[data-contrast-adjust]` in
+ * index.css. Exported so the reload snapshot and the tests name the same
+ * variables.
+ */
+export const CONTRAST_SURFACE_MIX_VAR = "--contrast-surface-mix";
+export const CONTRAST_LINE_MIX_VAR = "--contrast-line-mix";
+/** Control outlines and switch tracks, which fade less far than a divider. */
+export const CONTRAST_CONTROL_MIX_VAR = "--contrast-control-mix";
+/** Chips, secondary buttons and muted hovers, between the planes and the states. */
+export const CONTRAST_FILL_MIX_VAR = "--contrast-fill-mix";
+/** Hover and selection fills, which fade less far than the surface under them. */
+export const CONTRAST_STATE_MIX_VAR = "--contrast-state-mix";
+export const CONTRAST_TEXT_MIX_VAR = "--contrast-text-mix";
+/** Primary ink: how far it heads for pure black/white, or into the page. */
+export const CONTRAST_INK_MIX_VAR = "--contrast-ink-mix";
+export const CONTRAST_INK_TARGET_VAR = "--contrast-ink-target";
+/** Ink on palette surfaces (cards, menus, sidebar), which custom colors keep. */
+export const CONTRAST_PANEL_INK_TARGET_VAR = "--contrast-panel-ink-target";
+/** Surfaces, fills and lines on those palette surfaces. */
+export const CONTRAST_PANEL_TARGET_VAR = "--contrast-panel-target";
+/** Multipliers for the hand-written washes that stand in for those tokens. */
+export const CONTRAST_WASH_GAIN_VAR = "--contrast-wash-gain";
+export const CONTRAST_EDGE_GAIN_VAR = "--contrast-edge-gain";
 
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
@@ -360,6 +427,28 @@ function sanitizeSidebarNav(value: unknown): SidebarNavItemPref[] {
   return items;
 }
 
+/** `undefined` is a payload written before this field. Only an untouched layout never chose a
+ *  placement for Projects, so an arranged one keeps the pin it already carries. */
+function sanitizeSidebarNavAuto(
+  value: unknown,
+  nav: SidebarNavItemPref[],
+): SidebarNavItemId[] {
+  if (value === undefined || value === null) {
+    return isUntouchedSidebarNav(nav) ? [...SIDEBAR_NAV_AUTO_ITEM_IDS] : [];
+  }
+  const seen = new Set<SidebarNavItemId>();
+  for (const entry of Array.isArray(value) ? value : []) {
+    // Only rows that have a rule: anything else would silently pin itself.
+    if (
+      isSidebarNavItemId(entry) &&
+      (SIDEBAR_NAV_AUTO_ITEM_IDS as readonly string[]).includes(entry)
+    ) {
+      seen.add(entry);
+    }
+  }
+  return [...seen];
+}
+
 function sanitizeSidebarMenu(value: unknown): SidebarMenuItemPref[] {
   const items: SidebarMenuItemPref[] = [];
   const seen = new Set<SidebarMenuItemId>();
@@ -369,8 +458,7 @@ function sanitizeSidebarMenu(value: unknown): SidebarMenuItemPref[] {
     seen.add(source.id);
     items.push({ id: source.id, visible: source.visible !== false });
   }
-  // Ids added after the payload was written land at the end with their
-  // default visibility.
+  // Ids added after the payload was written land at the end with their default visibility.
   for (const id of SIDEBAR_MENU_ITEM_IDS) {
     if (!seen.has(id))
       items.push({ id, visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id] });
@@ -391,6 +479,7 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
     typeof source.contrast === "number" && Number.isFinite(source.contrast)
       ? Math.min(100, Math.max(0, Math.round(source.contrast)))
       : DEFAULT_CUSTOMIZATION.contrast;
+  const sidebarNav = sanitizeSidebarNav(source.sidebarNav);
   return {
     colors: {
       light: sanitizeModeColors(source.colors?.light),
@@ -399,6 +488,16 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
     uiFont: sanitizeFont(source.uiFont),
     headingFont: sanitizeFont(source.headingFont),
     chatFont: sanitizeFont(source.chatFont),
+    chatWidth:
+      source.chatWidth === "wide" || source.chatWidth === "full"
+        ? source.chatWidth
+        : "standard",
+    composerAttachments:
+      source.composerAttachments === "compact" ? "compact" : "cards",
+    sentAttachments:
+      source.sentAttachments === "list" || source.sentAttachments === "chips"
+        ? source.sentAttachments
+        : "auto",
     codeFont: sanitizeFont(source.codeFont),
     importedFonts: sanitizeImportedFonts(source.importedFonts),
     uiFontSize: sanitizeSize(source.uiFontSize, UI_FONT_SIZE_RANGE),
@@ -411,8 +510,20 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
         : "system",
     fontSmoothing: source.fontSmoothing !== false,
     sidebarMenu: sanitizeSidebarMenu(source.sidebarMenu),
-    sidebarNav: sanitizeSidebarNav(source.sidebarNav),
+    sidebarNav,
+    sidebarNavAuto: sanitizeSidebarNavAuto(source.sidebarNavAuto, sidebarNav),
   };
+}
+
+/** Whether a nav layout is still one we shipped, rather than one the user arranged. */
+function isUntouchedSidebarNav(nav: SidebarNavItemPref[]): boolean {
+  const stored = JSON.stringify(nav);
+  if (stored === JSON.stringify(DEFAULT_CUSTOMIZATION.sidebarNav)) return true;
+  // Sanitize each layout too: the stored one has since gained any ids added after it was
+  // written, so a raw compare would never match.
+  return SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
+    (layout) => JSON.stringify(sanitizeSidebarNav(layout)) === stored,
+  );
 }
 
 /** Adopt the latest default only when the sidebar still matches one we shipped. */
@@ -424,13 +535,7 @@ export function migrateShippedSidebarNavDefault(
   // Once this migration version has been persisted, the same layout may be a
   // deliberate user choice and must never be adopted again.
   if (storedVersion >= migrationVersion) return customization;
-  const stored = JSON.stringify(customization.sidebarNav);
-  // Sanitize each layout too: the stored one has since gained any ids added
-  // after it was written, so a raw compare would never match.
-  const untouched = SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
-    (layout) => JSON.stringify(sanitizeSidebarNav(layout)) === stored,
-  );
-  return untouched
+  return isUntouchedSidebarNav(customization.sidebarNav)
     ? {
         ...customization,
         sidebarNav: [...DEFAULT_CUSTOMIZATION.sidebarNav],
@@ -601,14 +706,34 @@ function readableForeground(hex: string): string {
   return FOREGROUND_DARK_FALLBACK;
 }
 
+type PaletteSurfaces = { background: string; elevated: readonly string[] };
+
 /** Palette surfaces that custom colors do not replace. */
-const PALETTE_SURFACES: Record<
-  ResolvedTheme,
-  { background: string; elevated: string }
-> = {
-  light: { background: "#ffffff", elevated: "#ffffff" },
-  dark: { background: "#181818", elevated: "#212121" },
+const PALETTE_SURFACES: Record<ResolvedTheme, PaletteSurfaces> = {
+  light: { background: "#ffffff", elevated: ["#ffffff"] },
+  dark: { background: "#181818", elevated: ["#272727"] },
 };
+
+/** Flavor themes bring their own page and cards; light composers stay white. */
+function surfacesFor(
+  palette: ColorThemeId,
+  resolved: ResolvedTheme,
+): PaletteSurfaces {
+  const { background, surface } = COLOR_THEMES[palette][resolved];
+  if (!surface) return PALETTE_SURFACES[resolved];
+  return {
+    background,
+    elevated: resolved === "light" ? [surface, "#ffffff"] : [surface],
+  };
+}
+
+/**
+ * Black for ink darker than its page, white for lighter. Raising pushes ink
+ * away from the surface it sits on, so a mid grey never heads into its page.
+ */
+function inkPole(ink: string, page: string): string {
+  return hexLuminance(ink) <= hexLuminance(page) ? "#000000" : "#ffffff";
+}
 
 function minimumAccentTextContrast(
   accent: string,
@@ -716,9 +841,8 @@ function syncImportedFonts(fonts: ImportedFont[]): void {
   const wanted = new Map(
     (Array.isArray(fonts) ? fonts : []).map((f) => [f.name, f.dataUrl]),
   );
-  // Drop faces whose name is gone OR whose bytes changed: document.fonts is a
-  // set of FontFace objects, not keyed by family, so a stale face must be
-  // deleted before the new bytes are added.
+  // Drop faces whose name is gone OR whose bytes changed: document.fonts is a set of FontFace
+  // objects, not keyed by family, so a stale face must be deleted before the new bytes are added.
   for (const [name, entry] of registeredFontFaces) {
     if (wanted.get(name) !== entry.dataUrl) {
       document.fonts.delete(entry.face);
@@ -770,6 +894,7 @@ const ACCENT_FG_VARS = [
 export function applyCustomizationToDocument(
   c: AppearanceCustomization,
   resolved: ResolvedTheme,
+  palette: ColorThemeId = "standard",
 ): void {
   if (typeof document === "undefined") return;
   const el = document.documentElement;
@@ -781,12 +906,12 @@ export function applyCustomizationToDocument(
   };
 
   const colors = c.colors[resolved];
-  const paletteSurfaces = PALETTE_SURFACES[resolved];
+  const paletteSurfaces = surfacesFor(palette, resolved);
 
   const accent = colors.accent
     ? legibleAccent(colors.accent, [
         colors.background ?? paletteSurfaces.background,
-        paletteSurfaces.elevated,
+        ...paletteSurfaces.elevated,
       ])
     : null;
   for (const name of ACCENT_VARS) setVar(name, accent);
@@ -795,7 +920,28 @@ export function applyCustomizationToDocument(
     setVar(name, accent ? readableForeground(accent) : null);
   }
   setVar("--background", colors.background);
-  setVar("--foreground", colors.foreground);
+  // Written as the base so a custom foreground still follows the contrast curve.
+  setVar("--foreground-base", colors.foreground);
+  // Clear the token older builds wrote inline; it would pin the ink.
+  setVar("--foreground", null);
+  // keep the full-width inset from making narrow panes smaller than wide.
+  setVar(
+    "--custom-chat-max-width",
+    c.chatWidth === "full"
+      ? "max(72rem, calc(100% - 6rem))"
+      : c.chatWidth === "wide"
+        ? "72rem"
+        : null,
+  );
+  // Unset, the composer shell takes the message column's width. Full width's cap
+  // holds a percentage, so the shell gets the same number worked out from its
+  // parent, which is already capped: 72rem, or the pane less 6rem.
+  setVar(
+    "--custom-chat-shell-max-width",
+    c.chatWidth === "full"
+      ? "min(100%, max(calc(72rem - 1.5rem), calc(100% - 1.5rem)))"
+      : null,
+  );
 
   syncImportedFonts(c.importedFonts);
 
@@ -836,21 +982,22 @@ export function applyCustomizationToDocument(
     setVar("--custom-chat-font", null);
   }
 
-  // The UI font size drives a typography scale factor, never the root font
-  // size: rem-based layout geometry must not move with the preference. The
-  // scale reaches text through the --text-* / --text-ui-* / --leading-*
-  // tokens in index.css.
+  // The UI font size drives a typography scale factor, never the root font size: rem-based layout
+  // geometry must not move with the preference. The scale reaches text through the --text-* /
+  // --text-ui-* / --leading-* tokens in index.css.
   const effectiveUiFontSize = c.uiFontSize ?? UI_FONT_SIZE_RANGE.default;
   if (effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default) {
     setVar(
-      "--ui-font-scale",
+      "--ui-font-size-scale",
       String(effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE),
     );
     el.setAttribute("data-ui-font-size", String(effectiveUiFontSize));
   } else {
-    setVar("--ui-font-scale", null);
+    setVar("--ui-font-size-scale", null);
     el.removeAttribute("data-ui-font-size");
   }
+  // index.css derives --ui-font-scale; clear the value older builds wrote.
+  setVar("--ui-font-scale", null);
   // Older builds scaled the root font size directly; clear any stale inline
   // value so layout never scales with the preference again.
   style.removeProperty("font-size");
@@ -864,19 +1011,76 @@ export function applyCustomizationToDocument(
   }
 
   if (c.contrast !== 50) {
-    // Map |contrast - 50| ∈ (0, 50] onto a 0–40% color-mix toward the
-    // foreground (higher contrast) or background (lower contrast).
-    const mix = Math.round(Math.abs(c.contrast - 50) * 0.8);
+    // Distance from the default, then one color-mix percentage per group of
+    // tokens. Everything mixes toward --contrast-target: the foreground above
+    // 50, the background below it.
+    const distance = Math.abs(c.contrast - 50) / 50;
+    const raising = c.contrast > 50;
+    const mix = (ceiling: number) => `${Math.round(distance * ceiling)}%`;
     el.setAttribute("data-contrast-adjust", "");
-    setVar("--contrast-mix", `${mix}%`);
     setVar(
       "--contrast-target",
-      c.contrast > 50 ? "var(--foreground)" : "var(--background)",
+      raising ? "var(--foreground)" : "var(--background)",
     );
+    // Not symmetric. Lowering flattens surfaces most of the way into the page.
+    // Raising only nudges them: a card pushed far toward the foreground reads
+    // as a block. Neither floor reaches the page, so a menu stays findable.
+    setVar(CONTRAST_SURFACE_MIX_VAR, mix(raising ? 4 : 70));
+    setVar(CONTRAST_FILL_MIX_VAR, mix(raising ? 10 : 62));
+    setVar(CONTRAST_LINE_MIX_VAR, mix(raising ? 45 : 80));
+    setVar(CONTRAST_CONTROL_MIX_VAR, mix(raising ? 45 : 55));
+    // Hover and selection: steepest curve when raising, so the step to the lit
+    // row grows; short of the surfaces when lowering, so it never sinks below.
+    setVar(CONTRAST_STATE_MIX_VAR, mix(raising ? 16 : 55));
+    // Secondary text stays readable at both ends.
+    setVar(CONTRAST_TEXT_MIX_VAR, mix(raising ? 40 : 30));
+    // Primary ink heads for pure black/white raising, and into the page
+    // lowering, stopping well short so body copy stays readable at 0.
+    const palettePole = resolved === "light" ? "#000000" : "#ffffff";
+    // Palette surfaces keep their colours under a custom foreground, so they
+    // raise toward the palette pole. Unset, they share --contrast-target.
+    setVar(
+      CONTRAST_PANEL_TARGET_VAR,
+      raising && colors.foreground ? palettePole : null,
+    );
+    setVar(
+      CONTRAST_INK_TARGET_VAR,
+      raising
+        ? colors.foreground
+          ? inkPole(
+              colors.foreground,
+              colors.background ?? paletteSurfaces.background,
+            )
+          : palettePole
+        : "var(--background)",
+    );
+    setVar(
+      CONTRAST_PANEL_INK_TARGET_VAR,
+      raising ? palettePole : "var(--background)",
+    );
+    setVar(CONTRAST_INK_MIX_VAR, mix(raising ? 70 : 30));
+    // Hand-written washes multiply their alpha by these to match the tokens.
+    const gain = (span: number) =>
+      (raising ? 1 + distance * span : 1 - distance * span).toFixed(3);
+    // Lowering keeps most of a wash: tab tracks, chips and filter triggers are
+    // chrome you aim at. Raising doubles it, level with the state tokens.
+    setVar(CONTRAST_WASH_GAIN_VAR, gain(raising ? 1 : 0.4));
+    setVar(CONTRAST_EDGE_GAIN_VAR, gain(raising ? 0.9 : 0.8));
   } else {
     el.removeAttribute("data-contrast-adjust");
-    setVar("--contrast-mix", null);
     setVar("--contrast-target", null);
+    setVar(CONTRAST_SURFACE_MIX_VAR, null);
+    setVar(CONTRAST_FILL_MIX_VAR, null);
+    setVar(CONTRAST_LINE_MIX_VAR, null);
+    setVar(CONTRAST_CONTROL_MIX_VAR, null);
+    setVar(CONTRAST_STATE_MIX_VAR, null);
+    setVar(CONTRAST_TEXT_MIX_VAR, null);
+    setVar(CONTRAST_INK_TARGET_VAR, null);
+    setVar(CONTRAST_PANEL_INK_TARGET_VAR, null);
+    setVar(CONTRAST_PANEL_TARGET_VAR, null);
+    setVar(CONTRAST_INK_MIX_VAR, null);
+    setVar(CONTRAST_WASH_GAIN_VAR, null);
+    setVar(CONTRAST_EDGE_GAIN_VAR, null);
   }
 
   el.classList.toggle("pointer-cursors", c.pointerCursors);

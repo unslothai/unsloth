@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   DEFAULT_CUSTOMIZATION,
@@ -10,6 +9,8 @@ import {
   migrateShippedSidebarNavDefault,
   sanitizeCustomization,
 } from "../src/features/settings/stores/appearance-custom-store.ts";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 const shippedLayouts: SidebarNavItemPref[][] = [
   [
@@ -93,7 +94,7 @@ test("the untouched pre-Audio version-5 sidebar adopts the Audio-aware default",
   );
 });
 
-test("a customized version-5 sidebar keeps its order and only gains later ids", () => {
+test("a customized version-5 sidebar keeps its order and only gains the rows added since", () => {
   const customizedV5: SidebarNavItemPref[] = [
     { id: "projects", pinned: true },
     { id: "hub", pinned: true },
@@ -112,7 +113,7 @@ test("a customized version-5 sidebar keeps its order and only gains later ids", 
   );
   assert.deepEqual(
     customization.sidebarNav.map((item) => item.id),
-    [...customizedV5.map((item) => item.id), "notebooks", "audio"],
+    [...customizedV5.map((item) => item.id), "library", "audio"],
   );
   assert.equal(customization.sidebarNav.at(-1)?.pinned, false);
 });
@@ -129,14 +130,23 @@ test("a user-arranged sidebar survives the migration", () => {
   );
 });
 
-test("an install sitting on the version-6 default picks Video up", () => {
-  // The layout this change replaces. Untouched, so it adopts the new default
-  // rather than being read as a deliberate choice to keep Video under More.
+test("an install sitting on the version-6 default adopts the current layout", () => {
   const customization = sanitizeCustomization({ sidebarNav: shippedLayouts[4] });
   const migrated = migrateShippedSidebarNavDefault(customization, 6, 8);
   assert.deepEqual(migrated.sidebarNav, DEFAULT_CUSTOMIZATION.sidebarNav);
   const ids = migrated.sidebarNav.filter((item) => item.pinned).map((i) => i.id);
-  assert.deepEqual(ids, ["hub", "projects", "images", "notebooks", "video", "train"]);
+  assert.deepEqual(ids, ["hub", "projects", "library", "images", "notebooks", "train"]);
+});
+
+test("an install sitting on the version-7 default gains Library and moves Video to More", () => {
+  const customization = sanitizeCustomization({ sidebarNav: shippedLayouts[5] });
+  const migrated = migrateShippedSidebarNavDefault(customization, 7, 8);
+  assert.deepEqual(migrated.sidebarNav, DEFAULT_CUSTOMIZATION.sidebarNav);
+  assert.deepEqual(
+    migrated.sidebarNav.slice(0, 3).map((item) => item.id),
+    ["hub", "projects", "library"],
+  );
+  assert.equal(migrated.sidebarNav.find((item) => item.id === "video")?.pinned, false);
 });
 
 test("a shipped-looking layout chosen after migration is preserved", () => {
@@ -151,13 +161,7 @@ test("a shipped-looking layout chosen after migration is preserved", () => {
 
 /** The sync module uses path aliases, so read its constant rather than import it. */
 async function personalizationVersion(): Promise<number> {
-  const source = await readFile(
-    new URL(
-      "../src/features/profile/hooks/use-personalization-sync.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/profile/hooks/use-personalization-sync.ts");
   const match = /PERSONALIZATION_VERSION = (\d+)/.exec(source);
   assert.ok(match, "no PERSONALIZATION_VERSION in the sync module");
   return Number(match[1]);
@@ -168,10 +172,10 @@ test("a synced profile picks the layout change up too", async () => {
   // only migrates locally is overwritten by the stored layout on every login.
   // PERSONALIZATION_VERSION has to move with the layout for that migration to
   // run against the remote record.
-  const stored = sanitizeCustomization({ sidebarNav: shippedLayouts[4] });
+  const stored = sanitizeCustomization({ sidebarNav: shippedLayouts[5] });
   const migrated = migrateShippedSidebarNavDefault(
     stored,
-    3,
+    4,
     await personalizationVersion(),
   );
   assert.deepEqual(migrated.sidebarNav, DEFAULT_CUSTOMIZATION.sidebarNav);
