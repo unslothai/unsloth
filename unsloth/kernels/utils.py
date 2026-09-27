@@ -512,15 +512,22 @@ def _scratch(kind, device, numel, dtype):
 # Fused NF4 kernels, traceable by torch.compile and on the live stream by construction.
 # UNSLOTH_BNB_TRITON=0 keeps the bitsandbytes ctypes path.
 _USE_NF4_KERNELS = False
+_TRITON_GEMV_EAGER = False
 if (
     DEVICE_TYPE in ("cuda", "hip")
     and HAS_CUDA_STREAM
     and os.environ.get("UNSLOTH_BNB_TRITON", "1") != "0"
 ):
     try:
+        import triton
         from .nf4 import dequantize_nf4
         from .nf4_gemv import gemv_nf4
+
         _USE_NF4_KERNELS = True
+        # The Triton GEMV beats bitsandbytes' from Triton 3.7 on (1.07-1.78x on a B200); older
+        # Triton builds it at 0.5-0.8x, so eager decode keeps bitsandbytes' GEMV there. Compiled
+        # code always takes the Triton GEMV, since the ctypes call cannot be traced.
+        _TRITON_GEMV_EAGER = Version(triton.__version__) >= Version("3.7.0")
     except Exception:
         pass
 
@@ -1032,7 +1039,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         if shape[1] % blocksize != 0:
             # Both gemv kernels assume each weight row starts a new quantization block.
             return torch_matmul(X, fast_dequantize(W, quant_state).t(), out = out)
-        if not _USE_NF4_KERNELS:
+        if not _USE_NF4_KERNELS or not (_TRITON_GEMV_EAGER or torch.compiler.is_compiling()):
             return _fast_gemv_ctypes(X, W, quant_state, out)
         try:
             return gemv_nf4(

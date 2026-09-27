@@ -48,6 +48,8 @@ def path(request, monkeypatch):
     if use and not _NF4_KERNELS_AVAILABLE:
         pytest.skip("NF4 kernels unavailable or disabled")
     monkeypatch.setattr(U, "_USE_NF4_KERNELS", use)
+    # Exercise the Triton GEMV even where eager decode would keep bitsandbytes' (Triton < 3.7).
+    monkeypatch.setattr(U, "_TRITON_GEMV_EAGER", use)
     U._SCRATCH.clear()
     yield request.param
     U._SCRATCH.clear()
@@ -58,6 +60,7 @@ def nf4_kernels(monkeypatch):
     if not _NF4_KERNELS_AVAILABLE:
         pytest.skip("NF4 kernels unavailable or disabled")
     monkeypatch.setattr(U, "_USE_NF4_KERNELS", True)
+    monkeypatch.setattr(U, "_TRITON_GEMV_EAGER", True)
     torch._dynamo.reset()
     yield
     torch._dynamo.reset()
@@ -473,3 +476,20 @@ def test_fast_linear_forward_compiles_fullgraph(nf4_kernels, bsz):
     # aot_eager: inductor may lower the bsz=1 LoRA addmv differently (one bf16 ulp); the 4bit ops
     # themselves are what this checks.
     _assert_compiled_matches(compiled, eager, backend = "aot_eager")
+
+
+def test_eager_gemv_keeps_bitsandbytes_before_triton_3_7(monkeypatch):
+    """Where Triton builds the GEMV slower than bitsandbytes' (before 3.7), eager decode takes
+    bitsandbytes' GEMV, on the live stream."""
+    if not _NF4_KERNELS_AVAILABLE:
+        pytest.skip("NF4 kernels unavailable or disabled")
+    monkeypatch.setattr(U, "_USE_NF4_KERNELS", True)
+    monkeypatch.setattr(U, "_TRITON_GEMV_EAGER", False)
+    q, s = _quantize((512, 256), torch.bfloat16)
+    X = torch.randn(1, 1, 256, dtype = torch.bfloat16, device = DEVICE)
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        out = U.fast_gemv(X, q, s)
+    stream.synchronize()
+    assert torch.equal(out, U._fast_gemv_ctypes(X, q, s))
