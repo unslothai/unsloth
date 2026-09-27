@@ -3,6 +3,7 @@
 
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
+  cachedRepoConfigId,
   ggufVariantFromStorageKey,
   isStandaloneGgufPath,
   modelIdFromStorageKey,
@@ -50,12 +51,14 @@ export interface PerModelConfig {
      *  to launch with. */
   llamaExtraArgs?: string[] | null;
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs parse. Absent or null
-  // selectedGpuIds means automatic. --tensor-split is not remembered: it follows the GPU set.
+  // selectedGpuIds means automatic.
   gpuMemoryMode?: "auto" | "manual";
   gpuLayers?: number;
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
   selectedGpuIndexKind?: GpuIndexKind | null;
+  /** --tensor-split in picker order, never stored. `undefined` defers to the store, `null` = default. */
+  tensorSplit?: number[] | null;
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
@@ -202,6 +205,7 @@ export function loadedContextFields(resp: {
   native_context_length?: number | null;
   max_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  mlx_context_budget?: number | null;
 } | null): {
   loadedContextLength: number | null;
   maxContextLength: number | null;
@@ -209,6 +213,7 @@ export function loadedContextFields(resp: {
   loadedIsGguf: boolean | null;
   loadedIsMlx: boolean | null;
   loadedContextEnforced: boolean | null;
+  loadedContextBudget: number | null;
 } {
   if (!resp) {
     return {
@@ -218,6 +223,7 @@ export function loadedContextFields(resp: {
       loadedIsGguf: null,
       loadedIsMlx: null,
       loadedContextEnforced: null,
+      loadedContextBudget: null,
     };
   }
   const isGguf = resp.is_gguf ?? false;
@@ -231,6 +237,7 @@ export function loadedContextFields(resp: {
       loadedIsGguf: false,
       loadedIsMlx: resp.is_mlx ?? null,
       loadedContextEnforced: null,
+      loadedContextBudget: null,
     };
   }
   return {
@@ -244,6 +251,7 @@ export function loadedContextFields(resp: {
     // llama.cpp allocates what it reports, so GGUF is enforced by construction.
     // Everything else answers for itself, or says nothing.
     loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
+    loadedContextBudget: isGguf ? null : (resp.mlx_context_budget ?? null),
   };
 }
 
@@ -1466,6 +1474,19 @@ export function resolveInitialConfig(
   return { config: { ...DEFAULT_PER_MODEL_CONFIG }, remembered: false };
 }
 
+/** Moves a record an older build saved under a cached repo's snapshot path to the repo id the
+ *  settings panel keys it by. Returns that repo id, or null when the model is not one. */
+export function adoptCachedRepoConfig(
+  modelId: string,
+  ggufVariant?: string | null,
+): string | null {
+  const repoId = cachedRepoConfigId(modelId, ggufVariant);
+  if (repoId) {
+    adoptLegacyConfigKey(repoId, modelId, null);
+  }
+  return repoId;
+}
+
 /** Remembered settings for the identifier /api/inference/status reports as loaded. An API auto-switch hands the
  *  loader a concrete snapshot path while settings are keyed by repo id, so reading the raw identifier reports the
  *  resident model as unremembered and blanks a control it is running with. Only a namespaced collapse is adopted,
@@ -1474,6 +1495,10 @@ export function resolveResidentInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
 ): ResolvedPerModelConfig {
+  const repoId = adoptCachedRepoConfig(modelId, ggufVariant);
+  if (repoId) {
+    return resolveInitialConfig(repoId, null);
+  }
   // a standalone file's reported quant is a label; its settings are saved without a variant.
   const standalone = isStandaloneGgufPath(modelId);
   const direct = resolveInitialConfig(modelId, standalone ? null : ggufVariant);
