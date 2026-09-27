@@ -126,6 +126,7 @@ from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
 from .diffusion_nvfp4_install import nvfp4_backend_fields as _nvfp4_backend_fields
 from .diffusion_transformer_quant import (
     TQ_AUTO,
+    TQ_FP8,
     TQ_INT8,
     dense_transformer_supported,
     dense_transformer_unsupported_reason,
@@ -255,6 +256,7 @@ def assert_video_precision_available(
     text_encoder_quant: Optional[str] = None,
     memory_mode: Optional[str] = None,
     gpu_ordinal: Optional[int] = None,
+    checkpoint_filename: Optional[str] = None,
 ) -> None:
     """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -297,7 +299,20 @@ def assert_video_precision_available(
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
             memory_mode = memory_mode,
+            checkpoint_filename = checkpoint_filename,
         )
+
+
+def _ltx23_prequant_pick(
+    fam: Any, model_kind: str, checkpoint_filename: Optional[str], pinned: Optional[str]
+) -> bool:
+    """An explicit fp8 on the bf16 LTX-2.3 distilled single file: served by the hosted pre-quantized DiT."""
+    if getattr(fam, "name", None) != "ltx-2" or model_kind != "single_file" or not checkpoint_filename:
+        return False
+    if pinned != TQ_FP8:
+        return False
+    from .video_ltx2 import ltx23_prequant_eligible
+    return ltx23_prequant_eligible(checkpoint_filename)
 
 
 def _assert_video_precision_for_target(
@@ -308,6 +323,7 @@ def _assert_video_precision_for_target(
     transformer_quant: Optional[str] = None,
     text_encoder_quant: Optional[str] = None,
     memory_mode: Optional[str] = None,
+    checkpoint_filename: Optional[str] = None,
 ) -> None:
     """The body of ``assert_video_precision_available``, run with the selected card current."""
     pinned = normalize_transformer_quant(transformer_quant)
@@ -321,7 +337,16 @@ def _assert_video_precision_for_target(
     )
     if pinned is not None and pinned != TQ_AUTO:
         reason = None
-        if model_kind != "pipeline":
+        if _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned):
+            # Served by the hosted pre-quantized torchao DiT, which needs the torchao path and a resident DiT.
+            if not dense_transformer_supported(target):
+                reason = dense_transformer_unsupported_reason(target)
+            elif forces_offload:
+                reason = (
+                    f"'{normalize_memory_mode(memory_mode)}' memory places the DiT under CPU "
+                    "offload, and torchao quantised tensors cannot be moved by the offload hooks"
+                )
+        elif model_kind != "pipeline":
             reason = (
                 f"the dense DiT quant applies to full-pipeline loads only, and this is a "
                 f"'{model_kind}' load, which runs the precision its checkpoint carries"
@@ -1875,6 +1900,7 @@ class VideoBackend:
             text_encoder_quant = text_encoder_quant,
             memory_mode = memory_mode,
             gpu_ordinal = gpu_ordinal,
+            checkpoint_filename = gguf_filename,
         )
         # Resolved out here so the companion claim is published in the SAME locked section as _loading. begin_load
         # returns as soon as the thread is scheduled, and a delete arriving in that gap sees only repo_id and base_repo,
@@ -4793,6 +4819,36 @@ class VideoBackend:
             from .video_ltx2 import is_ltx23_checkpoint, load_ltx23_pipeline
 
             if fam.name == "ltx-2" and is_ltx23_checkpoint(checkpoint_path):
+                # An explicit fp8 on the bf16 distilled single file takes the hosted pre-quantized DiT (#742): the
+                # dense quant below is pipeline-kind only, so without this the pick silently ran bf16. Resident plans
+                # only (offload hooks move modules with Module.to(), which torchao tensors reject).
+                ltx23_override = None
+                ltx23_scheme = normalize_transformer_quant(transformer_quant)
+                if (
+                    kind == "single_file"
+                    and ltx23_scheme == TQ_FP8
+                    and plan.offload_policy == "none"
+                    and dense_transformer_supported(target)
+                ):
+                    from .video_ltx2 import load_ltx23_prequant_transformer
+
+                    seeded = load_ltx23_prequant_transformer(
+                        fam,
+                        ltx23_scheme,
+                        checkpoint_path,
+                        config_repo = base,
+                        device = device,
+                        dtype = dtype,
+                        hf_token = hf_token,
+                        cache_dir = hub_cache_dir(),
+                        local_files_only = local_files_only,
+                        logger = logger,
+                    )
+                    if seeded is not None:
+                        ltx23_override, ltx23_source = seeded
+                        denoiser_injected = {"transformer": ltx23_override}
+                        denoiser_seed_scheme = ltx23_scheme
+                        denoiser_seed_sources = {"transformer": ltx23_source}
                 # 2.3 checkpoints need the full assembly: new config flags, key renames the stock converter lacks, and
                 # the 2.3 connectors/VAEs/vocoder.
                 pipe = load_ltx23_pipeline(
@@ -4808,6 +4864,7 @@ class VideoBackend:
                     # the one path that does not read them. There is no staged snapshot to fall back on either --
                     # _base_local_dir is None for 2.3 by design -- so every component below resolves the hub id.
                     local_files_only = local_files_only,
+                    transformer_override = ltx23_override,
                 )
             else:
                 transformer = transformer_cls.from_single_file(str(checkpoint_path), **sf_kwargs)
@@ -4883,7 +4940,7 @@ class VideoBackend:
             transformer_quant_decline = (
                 "auto: the bf16 DiT fits resident, where int8 costs accuracy for little or no speed"
             )
-        if transformer_quant_pinned is not None and kind != "pipeline":
+        if transformer_quant_pinned is not None and kind != "pipeline" and not denoiser_injected:
             transformer_quant_decline = (
                 f"the dense DiT quant applies to full-pipeline loads only, and this is a "
                 f"'{kind}' load, which runs the precision its checkpoint carries"

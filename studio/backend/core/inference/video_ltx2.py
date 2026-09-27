@@ -320,18 +320,35 @@ def _split_checkpoint(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
         "vocoder": {},
     }
     for key, value in state.items():
-        bare = key[len(_DIT_PREFIX) :] if key.startswith(_DIT_PREFIX) else key
-        if bare.startswith("vae."):
-            groups["vae"][bare[len("vae.") :]] = value
-        elif bare.startswith("audio_vae."):
-            groups["audio_vae"][bare[len("audio_vae.") :]] = value
-        elif bare.startswith("vocoder."):
-            groups["vocoder"][bare[len("vocoder.") :]] = value
-        elif bare.startswith(_CONNECTOR_KEY_PREFIXES):
-            groups["connectors"][bare] = value
-        else:
-            groups["dit"][bare] = value
+        group, name = _checkpoint_group(key)
+        groups[group][name] = value
     return groups
+
+
+def _checkpoint_group(key: str) -> tuple[str, str]:
+    """(component group, key within it) for one combined-checkpoint key; see ``_split_checkpoint``."""
+    bare = key[len(_DIT_PREFIX) :] if key.startswith(_DIT_PREFIX) else key
+    for prefix, group in (("vae.", "vae"), ("audio_vae.", "audio_vae"), ("vocoder.", "vocoder")):
+        if bare.startswith(prefix):
+            return group, bare[len(prefix) :]
+    if bare.startswith(_CONNECTOR_KEY_PREFIXES):
+        return "connectors", bare
+    return "dit", bare
+
+
+def _load_checkpoint_without_dit(checkpoint_path: Path | str) -> Optional[dict[str, Any]]:
+    """The non-DiT tensors of a combined safetensors checkpoint, read selectively (the DiT is ~44 GB of
+    the 46 GB file); None when the file is not safetensors, so the caller reads it whole."""
+    if not str(checkpoint_path).lower().endswith(".safetensors"):
+        return None
+    from safetensors import safe_open
+
+    with safe_open(str(checkpoint_path), framework = "pt", device = "cpu") as handle:
+        return {
+            key: handle.get_tensor(key)
+            for key in handle.keys()
+            if _checkpoint_group(key)[0] != "dit"
+        }
 
 
 def _load_extras_file(
@@ -420,6 +437,82 @@ def ltx2_distilled_guidance_kwargs(call_params: Any, guidance: Optional[float]) 
         # Pre-#14447 semantics (audio_guidance_scale or guidance_scale): audio follows the video CFG.
         kwargs["audio_guidance_scale"] = float(guidance if guidance is not None else 1.0)
     return kwargs
+
+
+# The base id the hosted 2.3 checkpoints were validated against, and the only single file they were baked from: the
+# distilled-1.1 refresh retrained the DiT and the dev DiT is a different model, so neither may take them.
+LTX23_PREQUANT_BASE = "Lightricks/LTX-2.3"
+LTX23_PREQUANT_SOURCE_FILES = frozenset({"ltx-2.3-22b-distilled.safetensors"})
+
+
+def ltx23_prequant_eligible(checkpoint_path: Path | str) -> bool:
+    return Path(str(checkpoint_path)).name.lower() in LTX23_PREQUANT_SOURCE_FILES
+
+
+class _LTX23PrequantConfig:
+    """The transformer "class" handed to ``load_prequantized_transformer``: builds the 2.3 config
+    (2.0 base config + the 2.3 overrides, identical to the checkpoint's recorded config) instead
+    of reading ``<base>/transformer``, which the single-file 2.3 repo does not have."""
+
+    def __init__(self, config_repo: str):
+        self.config_repo = config_repo
+
+    def load_config(self, _base: str, **kwargs: Any) -> dict[str, Any]:
+        from diffusers import LTX2VideoTransformer3DModel
+
+        config = dict(LTX2VideoTransformer3DModel.load_config(self.config_repo, **kwargs))
+        config.update(LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES)
+        return config
+
+    @staticmethod
+    def from_config(config: Any) -> Any:
+        from diffusers import LTX2VideoTransformer3DModel
+
+        return LTX2VideoTransformer3DModel.from_config(config)
+
+
+def load_ltx23_prequant_transformer(
+    fam: Any,
+    scheme: str,
+    checkpoint_path: Path | str,
+    *,
+    config_repo: str,
+    device: str,
+    dtype: Any,
+    hf_token: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+    local_files_only: bool = False,
+    logger: Any = None,
+) -> Optional[tuple[Any, Any]]:
+    """``(transformer, source)`` from the hosted pre-quantized 2.3 distilled DiT, or None (the
+    caller keeps the dense DiT). Never raises."""
+    try:
+        if not ltx23_prequant_eligible(checkpoint_path):
+            return None
+        from .diffusion_prequant import load_prequantized_transformer, resolve_prequant_source
+        from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
+
+        source = resolve_prequant_source(fam, scheme, base_repo = LTX23_PREQUANT_BASE)
+        if source is None:
+            return None
+        module = load_prequantized_transformer(
+            _LTX23PrequantConfig(config_repo),
+            LTX23_PREQUANT_BASE,
+            source,
+            device = device,
+            dtype = dtype,
+            hf_token = hf_token,
+            scheme = scheme,
+            min_features = DEFAULT_MIN_LINEAR_FEATURES,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+            logger = logger,
+        )
+        return None if module is None else (module, source)
+    except Exception as exc:  # noqa: BLE001 -- a hosted checkpoint is an optimisation, never a blocker
+        if logger is not None:
+            logger.warning("video.ltx23_prequant: %s failed, keeping the dense DiT: %s", scheme, exc)
+        return None
 
 
 def install_stg_compile_adapter(transformer: Any) -> int:
@@ -639,6 +732,7 @@ def load_ltx23_pipeline(
     hf_token: Optional[str] = None,
     text_encoder: Optional[Any] = None,
     local_files_only: bool = False,
+    transformer_override: Optional[Any] = None,
 ) -> Any:
     """Full LTX-2.3 pipeline from a single-file/GGUF checkpoint. Assembled per-component
     (constructor, not from_pretrained) because the base model_index pins LTX2Vocoder while 2.3
@@ -665,7 +759,11 @@ def load_ltx23_pipeline(
         is_gguf,
         LTX23_EXTRAS_REPO,
     )
-    state = load_single_file_checkpoint(str(checkpoint_path))
+    state = None
+    if transformer_override is not None and not is_gguf:
+        state = _load_checkpoint_without_dit(checkpoint_path)
+    if state is None:
+        state = load_single_file_checkpoint(str(checkpoint_path))
     groups = _split_checkpoint(state)
     del state
 
@@ -679,14 +777,20 @@ def load_ltx23_pipeline(
             "instead (Q8_0 for the highest fidelity) or the official bf16 checkpoint."
         )
 
-    transformer = load_ltx23_transformer(
-        groups["dit"],
-        base_repo = base_repo,
-        torch_dtype = torch_dtype,
-        is_gguf = is_gguf,
-        hf_token = hf_token,
-        local_files_only = local_files_only,
-    )
+    if transformer_override is not None:
+        # A pre-built DiT (a hosted pre-quantized checkpoint): the file contributes only the
+        # connectors / VAEs / vocoder groups.
+        transformer = transformer_override
+        groups.pop("dit", None)
+    else:
+        transformer = load_ltx23_transformer(
+            groups["dit"],
+            base_repo = base_repo,
+            torch_dtype = torch_dtype,
+            is_gguf = is_gguf,
+            hf_token = hf_token,
+            local_files_only = local_files_only,
+        )
     connectors = load_ltx23_connectors(
         groups["connectors"],
         variant = variant,

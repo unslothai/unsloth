@@ -210,6 +210,7 @@ async def video_download_plan(
                 memory_mode = request.memory_mode,
                 # Judged on the card this pick would load on, as the loader does.
                 gpu_ordinal = gpu_ordinal,
+                checkpoint_filename = request.gguf_filename,
             )
         plan = await asyncio.to_thread(
             backend.download_plan,
@@ -370,6 +371,7 @@ async def load_video_model_gated(
             # anything is measured, and an offloaded DiT or encoder skips the torchao build.
             memory_mode = request.memory_mode,
             gpu_ordinal = gpu_ordinal,
+            checkpoint_filename = request.gguf_filename,
         )
         # Same bar again, for a speech GGUF picked out of a mixed video repo. The backend's own assertion runs on the
         # load worker, INSIDE acquire_for, so a refusal there arrives having already evicted the chat model.

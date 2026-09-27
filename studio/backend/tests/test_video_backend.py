@@ -11304,3 +11304,127 @@ def test_stg_compile_adapter_hands_the_block_a_python_bool():
     assert wrapped(all_perturbed = torch.tensor(True)) == "out"
     assert wrapped(all_perturbed = False) == "out"
     assert seen == [True, False] and type(seen[0]) is bool
+
+
+def test_precision_gate_admits_fp8_only_for_the_ltx23_prequant_file(fake_runtime, monkeypatch):
+    # #742: an explicit fp8 on the bf16 LTX-2.3 distilled single file is served by the hosted pre-quantized DiT, so the
+    # route must not refuse it as a "full-pipeline only" dense quant. Every other single file / scheme still is.
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    fam = types.SimpleNamespace(name = "ltx-2")
+    video_mod.assert_video_precision_available(
+        fam,
+        model_kind = "single_file",
+        transformer_quant = "fp8",
+        checkpoint_filename = "ltx-2.3-22b-distilled.safetensors",
+    )
+    for filename, scheme in (
+        ("ltx-2.3-22b-dev.safetensors", "fp8"),
+        ("ltx-2.3-22b-distilled-1.1.safetensors", "fp8"),
+        ("ltx-2.3-22b-distilled.safetensors", "int8"),
+        (None, "fp8"),
+    ):
+        with pytest.raises(RuntimeError, match = "full-pipeline loads only"):
+            video_mod.assert_video_precision_available(
+                fam,
+                model_kind = "single_file",
+                transformer_quant = scheme,
+                checkpoint_filename = filename,
+            )
+    # A forced offload cannot carry torchao tensors, prequant or not.
+    with pytest.raises(RuntimeError, match = "offload"):
+        video_mod.assert_video_precision_available(
+            fam,
+            model_kind = "single_file",
+            transformer_quant = "fp8",
+            memory_mode = "low_vram",
+            checkpoint_filename = "ltx-2.3-22b-distilled.safetensors",
+        )
+
+
+def test_ltx23_prequant_source_resolves_the_hosted_fp8_only():
+    from core.inference.diffusion_prequant import resolve_prequant_source
+    from core.inference.video_families import detect_video_family
+    from core.inference.video_ltx2 import LTX23_PREQUANT_BASE
+
+    fam = detect_video_family("Lightricks/LTX-2.3")
+    source = resolve_prequant_source(fam, "fp8", base_repo = LTX23_PREQUANT_BASE)
+    assert source is not None and source.location == "unsloth/LTX-2.3-FP8"
+    from core.inference.diffusion_prequant import candidate_filenames_of
+
+    assert "LTX-2.3-FP8.pt" in candidate_filenames_of(source)  # the artifact the repo actually hosts
+    assert resolve_prequant_source(fam, "int8", base_repo = LTX23_PREQUANT_BASE) is None
+    # The LTX-2 base pipeline has no hosted denoiser wired.
+    assert resolve_prequant_source(fam, "fp8", base_repo = "Lightricks/LTX-2") is None
+
+
+def _load_ltx23_single_file_fp8(tmp_path, monkeypatch, seeded):
+    from core.inference import video as video_mod, video_ltx2
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(video_ltx2, "is_ltx23_checkpoint", lambda path: True)
+    calls: dict = {}
+
+    def _prequant(fam, scheme, checkpoint_path, **kwargs):
+        calls["prequant"] = (scheme, str(checkpoint_path), kwargs.get("config_repo"))
+        return seeded
+
+    def _assemble(checkpoint_path, **kwargs):
+        calls["override"] = kwargs.get("transformer_override")
+        return _FakePipeline.from_pretrained("Lightricks/LTX-2")
+
+    monkeypatch.setattr(video_ltx2, "load_ltx23_prequant_transformer", _prequant)
+    monkeypatch.setattr(video_ltx2, "load_ltx23_pipeline", _assemble)
+    (tmp_path / "ltx-2.3-22b-distilled.safetensors").write_bytes(b"w")
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled.safetensors",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+        transformer_quant = "fp8",
+    )
+    return backend, calls
+
+
+def test_ltx23_single_file_fp8_seeds_the_hosted_denoiser(fake_runtime, tmp_path, monkeypatch):
+    seeded_dit = object()
+    source = types.SimpleNamespace(location = "unsloth/LTX-2.3-FP8", kind = "repo", filename = "LTX-2.3-FP8.pt")
+    backend, calls = _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (seeded_dit, source))
+    assert calls["prequant"][0] == "fp8" and calls["prequant"][2] == "Lightricks/LTX-2"
+    assert calls["override"] is seeded_dit
+    status = backend.status()
+    assert status["transformer_quant"] == "fp8"
+    assert "unsloth/LTX-2.3-FP8" in str(status["resolved"]["transformer_quant"])
+    backend.unload()
+
+
+def test_ltx23_single_file_fp8_without_a_checkpoint_is_refused(fake_runtime, tmp_path, monkeypatch):
+    # No usable hosted checkpoint: the explicit pick must not run silently at bf16.
+    with pytest.raises(RuntimeError, match = "full-pipeline loads only"):
+        _load_ltx23_single_file_fp8(tmp_path, monkeypatch, None)
+
+
+def test_ltx23_selective_read_skips_the_dit(tmp_path):
+    torch = pytest.importorskip("torch")
+    safetensors_torch = pytest.importorskip("safetensors.torch")
+    if not hasattr(torch, "zeros"):
+        pytest.skip("real torch required")
+    from core.inference.video_ltx2 import _load_checkpoint_without_dit, _split_checkpoint
+
+    state = {
+        "model.diffusion_model.transformer_blocks.0.attn1.to_q.weight": torch.zeros(2, 2),
+        "model.diffusion_model.video_embeddings_connector.x": torch.ones(1),
+        "vae.decoder.conv_in.weight": torch.ones(2),
+        "audio_vae.decoder.w": torch.ones(3),
+        "vocoder.w": torch.ones(4),
+    }
+    path = tmp_path / "ltx.safetensors"
+    safetensors_torch.save_file(state, str(path))
+    partial = _load_checkpoint_without_dit(path)
+    assert "model.diffusion_model.transformer_blocks.0.attn1.to_q.weight" not in partial
+    groups = _split_checkpoint(partial)
+    assert groups["dit"] == {} and set(groups["connectors"]) == {"video_embeddings_connector.x"}
+    assert list(groups["vae"]) == ["decoder.conv_in.weight"] and list(groups["vocoder"]) == ["w"]
+    assert _load_checkpoint_without_dit(tmp_path / "ltx.gguf") is None
