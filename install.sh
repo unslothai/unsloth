@@ -5573,6 +5573,8 @@ print('cp{}{}'.format(sys.version_info.major, sys.version_info.minor))
 '
         _radeon_http=${_RADEON_LISTING##*"$_radeon_nl"}
         _RADEON_LISTING=${_RADEON_LISTING%"$_radeon_nl"*}
+        # Re-strip trailing newlines as a plain $(curl) did, so a newline-only body still fails over to X.Y.
+        _RADEON_LISTING=$(printf '%s' "$_RADEON_LISTING")
     elif command -v wget >/dev/null 2>&1; then
         _RADEON_LISTING=$(wget -qO- --timeout=20 "$_RADEON_BASE_URL" 2>/dev/null) || true
     fi

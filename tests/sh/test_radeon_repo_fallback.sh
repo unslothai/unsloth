@@ -62,6 +62,23 @@ assert_eq "connection refused -> inconclusive" \
 assert_eq "timeout -> inconclusive" \
     "fail answered=inconclusive" "$(run_fetch 28 000)"
 
+# A newline-only 200 body stays a failed fetch, as before -w, so the X.Y retry still runs.
+_curl_dir=$(mktemp -d)
+cat > "$_curl_dir/curl" <<'STUB'
+#!/bin/sh
+printf '\n\n\n200'
+STUB
+chmod +x "$_curl_dir/curl"
+_result=$(PATH="$_curl_dir:$PATH" bash -c "
+    . '$_FUNC_FILE'
+    _VENV_PY='$_STUB_DIR/fakepy'
+    _RADEON_LISTING=''
+    _RADEON_HOST_ANSWERED=false
+    if _radeon_fetch_listing 'https://repo.radeon.com/rocm/manylinux/rocm-rel-7.14.0/'; then echo ok; else echo fail; fi
+")
+rm -rf "$_curl_dir"
+assert_eq "HTTP 200 with a newline-only body -> fetch fails" "fail" "$_result"
+
 _curl_dir=$(mktemp -d)
 cat > "$_curl_dir/curl" <<'STUB'
 #!/bin/sh
