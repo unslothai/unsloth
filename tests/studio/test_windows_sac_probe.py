@@ -320,7 +320,14 @@ def test_the_scenario_loads_with_the_variant_field_and_unloads_by_model_path(
 def test_a_timed_out_read_that_returns_early_is_still_abandoned(s, monkeypatch):
     """Windows timer granularity can end a timed-out read a few ms before the timeout."""
 
-    def early(base_url, method, path, payload = None, token = None, timeout = 900):
+    def early(
+        base_url,
+        method,
+        path,
+        payload = None,
+        token = None,
+        timeout = 900,
+    ):
         threading.Event().wait(timeout * 0.5)
         return 0, "<urlopen error timed out>"
 
