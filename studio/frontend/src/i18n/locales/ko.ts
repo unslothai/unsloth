@@ -1284,19 +1284,20 @@ export const ko = {
       title: "외관",
       description: "이 기기에서 Unsloth가 표시되는 방식입니다.",
       theme: {
-        title: "테마",
-        label: "색상 구성",
+        title: "시각 스타일",
+        label: "모드",
         description: "라이트, 다크 또는 시스템 설정을 따릅니다.",
         system: "시스템",
         light: "라이트",
         dark: "다크",
       },
       palette: {
-        label: "색상 팔레트",
+        label: "테마",
         description: "라이트 모드와 다크 모드에서 Unsloth 전반에 쓰이는 색상입니다.",
         standard: "표준",
         classic: "클래식",
         minimal: "미니멀",
+        moreThemes: "더 많은 테마",
       },
       custom: {
         chatWidth: {
@@ -1310,8 +1311,6 @@ export const ko = {
         resetAll: "사용자 지정 초기화",
         preferencesTitle: "환경설정",
         colors: {
-          lightGroup: "라이트 테마",
-          darkGroup: "다크 테마",
           accent: "강조색",
           background: "배경",
           foreground: "전경",
