@@ -589,30 +589,38 @@ def test_int8_flux_under_fbcache_renders_through_the_fused_kernel():
     from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
 
     torch.manual_seed(0)
-    model = tf.FluxTransformer2DModel(
-        patch_size = 1,
-        in_channels = 16,
-        num_layers = 1,
-        num_single_layers = 2,
-        attention_head_dim = 64,
-        num_attention_heads = 4,
-        joint_attention_dim = 64,
-        pooled_projection_dim = 64,
-        axes_dims_rope = (16, 24, 24),
-    ).cuda().to(torch.bfloat16).eval()
+    model = (
+        tf.FluxTransformer2DModel(
+            patch_size = 1,
+            in_channels = 16,
+            num_layers = 1,
+            num_single_layers = 2,
+            attention_head_dim = 64,
+            num_attention_heads = 4,
+            joint_attention_dim = 64,
+            pooled_projection_dim = 64,
+            axes_dims_rope = (16, 24, 24),
+        )
+        .cuda()
+        .to(torch.bfloat16)
+        .eval()
+    )
     for p in model.parameters():
         p.data.normal_(0, 0.05)
     quantize_(
         model,
         Int8DynamicActivationInt8WeightConfig(),
-        filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and "single_transformer_blocks" in fqn
+        filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear)
+        and "single_transformer_blocks" in fqn
         and "norm" not in fqn,
     )
     ref_model = copy.deepcopy(model)
     g = torch.Generator(device = "cuda").manual_seed(1)
     kwargs = dict(
         hidden_states = torch.randn(1, 256, 16, device = "cuda", dtype = torch.bfloat16, generator = g),
-        encoder_hidden_states = torch.randn(1, 64, 64, device = "cuda", dtype = torch.bfloat16, generator = g),
+        encoder_hidden_states = torch.randn(
+            1, 64, 64, device = "cuda", dtype = torch.bfloat16, generator = g
+        ),
         pooled_projections = torch.randn(1, 64, device = "cuda", dtype = torch.bfloat16, generator = g),
         timestep = torch.tensor([1.0], device = "cuda"),
         img_ids = torch.zeros(256, 3, device = "cuda"),
