@@ -11428,3 +11428,16 @@ def test_ltx23_selective_read_skips_the_dit(tmp_path):
     assert groups["dit"] == {} and set(groups["connectors"]) == {"video_embeddings_connector.x"}
     assert list(groups["vae"]) == ["decoder.conv_in.weight"] and list(groups["vocoder"]) == ["w"]
     assert _load_checkpoint_without_dit(tmp_path / "ltx.gguf") is None
+
+
+def test_ltx2_regional_compile_is_static(fake_runtime, tmp_path, monkeypatch):
+    # Dynamic shapes make the LTX block's QK-norm + RoPE + attention-layout kernels ~3x slower; its token counts only
+    # move with the output shape, so the load asks compile_dynamic for static kernels.
+    from core.inference.diffusion_speed import compile_dynamic
+
+    dit = types.SimpleNamespace()
+    monkeypatch.setattr(_FakePipe, "transformer", dit, raising = False)
+    _load_ltx23_from_dir(tmp_path)
+    assert getattr(dit, "_unsloth_compile_static", False) is True
+    assert compile_dynamic(dit, True) is False
+    assert compile_dynamic(types.SimpleNamespace(), True) is True

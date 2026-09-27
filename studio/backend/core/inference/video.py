@@ -5229,6 +5229,15 @@ class VideoBackend:
                 # quadratic math backend.
                 target = types.SimpleNamespace(device = target.device, dtype = dtype),
             )
+            if fam.name == "ltx-2":
+                # Token counts depend only on (width, height, frames) (the connector pads text to a fixed length), so a
+                # static compile costs one recompile per new shape and runs ~1.3x faster than dynamic kernels.
+                ltx_dit = getattr(view, fam.denoiser_attr, None)
+                if ltx_dit is not None:
+                    try:
+                        ltx_dit._unsloth_compile_static = True
+                    except Exception:  # noqa: BLE001 -- not a settable module (tests/fakes)
+                        pass
             applied = apply_speed_optims(
                 view,
                 target,
