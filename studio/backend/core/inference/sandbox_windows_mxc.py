@@ -61,6 +61,9 @@ def capability_snapshot(
             remediation = "Select a supported native Windows runtime.",
             limitations = ("unsupported_execution_kind",),
         )
+    if not (mxc_policy.dacl_fallback_enabled() and mxc_read_grants.enabled()):
+        # Here too: a host with only the DACL tier stops at this capability and never builds a launch.
+        mxc_read_grants.revoke_recorded()
     available, reason = mxc_probe.probe(
         selected_executable,
         execution_kind = execution_kind,

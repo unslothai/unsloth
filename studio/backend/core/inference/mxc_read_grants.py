@@ -11,12 +11,14 @@ folders Studio owns lets every later launch skip the walk. Read and execute only
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import logging
 import os
 from pathlib import Path
 import subprocess
 import threading
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -24,16 +26,24 @@ PERSISTENT_GRANTS_ENV = "UNSLOTH_MXC_PERSISTENT_READ_GRANTS"
 ALL_APPLICATION_PACKAGES = "S-1-15-2-1"
 # FILE_GENERIC_READ | FILE_GENERIC_EXECUTE: wxc-exec's readonly mask and icacls (RX).
 READ_EXECUTE_MASK = 0x1200A9
-# A folder holding one of these is never opened to every AppContainer on the machine.
+# A tree holding one of these anywhere is never opened to every AppContainer on the machine.
 CREDENTIAL_FILES = frozenset(
     {"pip.ini", "pip.conf", "uv.toml", ".pypirc", ".netrc", "_netrc", ".env"}
 )
 GRANT_TIMEOUT_SECONDS = 900
+LOCK_TIMEOUT_SECONDS = GRANT_TIMEOUT_SECONDS + 60
 
 _OBJECT_INHERIT = 0x1
 _CONTAINER_INHERIT = 0x2
 _INHERIT_ONLY = 0x8
+_INHERITED = 0x10
 _lock = threading.Lock()
+# Roots whose whole tree passed the credential scan in this process; a new process scans again.
+_scanned: set[str] = set()
+
+
+class ReadGrantError(RuntimeError):
+    """A persistent grant is in an unknown state, so this launch must not rely on it."""
 
 
 def _on_windows() -> bool:
@@ -49,7 +59,28 @@ def record_path() -> Path:
     return Path(os.path.abspath(_studio_root() / "mxc-runtime" / "persistent-read-grants.json"))
 
 
-def _load_record() -> dict[str, str]:
+@contextmanager
+def _transaction():
+    """Serialize the record across threads and Studio processes; yields None when it cannot be locked."""
+    from filelock import FileLock, Timeout
+
+    path = record_path()
+    with _lock:
+        try:
+            path.parent.mkdir(parents = True, exist_ok = True)
+            lock = FileLock(str(path) + ".lock", timeout = LOCK_TIMEOUT_SECONDS)
+            lock.acquire()
+        except (OSError, Timeout) as exc:
+            logger.warning("Could not lock the MXC read-grant record: %s", exc)
+            yield None
+            return
+        try:
+            yield _load_record()
+        finally:
+            lock.release()
+
+
+def _load_record() -> dict[str, dict]:
     try:
         data = json.loads(record_path().read_text(encoding = "utf-8"))
     except (OSError, ValueError):
@@ -57,15 +88,25 @@ def _load_record() -> dict[str, str]:
     grants = data.get("grants") if isinstance(data, dict) else None
     if not isinstance(grants, dict):
         return {}
-    return {str(k): str(v) for k, v in grants.items() if v in {"pending", "complete"}}
+    return {
+        str(key): value
+        for key, value in grants.items()
+        if isinstance(value, dict) and value.get("state") in {"pending", "complete"}
+    }
 
 
-def _save_record(grants: dict[str, str]) -> None:
+def _save_record(grants: dict[str, dict]) -> None:
     path = record_path()
     path.parent.mkdir(parents = True, exist_ok = True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"grants": grants}, indent = 2, sort_keys = True), encoding = "utf-8")
-    os.replace(temporary, path)
+    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps({"grants": grants}, indent = 2, sort_keys = True), encoding = "utf-8"
+        )
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _within(path: str, root: str) -> bool:
@@ -82,7 +123,34 @@ def _protected_paths() -> list[str]:
     return [os.path.realpath(p) for p in paths if p]
 
 
-def ineligible_reason(root: str) -> str | None:
+def _is_reparse(entry: os.DirEntry) -> bool:
+    try:
+        attributes = getattr(entry.stat(follow_symlinks = False), "st_file_attributes", 0)
+    except OSError:
+        return True
+    return entry.is_symlink() or bool(attributes & 0x400)
+
+
+def _tree_problem(root: str, *, deep: bool) -> str | None:
+    """A credential file or reparse point in the tree the inheritable grant would reach."""
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if _is_reparse(entry):
+                        return f"it contains a reparse point ({entry.path})"
+                    if entry.name.casefold() in CREDENTIAL_FILES:
+                        return f"it holds a credential file ({entry.path})"
+                    if deep and entry.is_dir(follow_symlinks = False):
+                        pending.append(entry.path)
+        except OSError as exc:
+            return f"it cannot be inspected ({exc})"
+    return None
+
+
+def ineligible_reason(root: str, *, deep: bool = True) -> str | None:
     """Why ``root`` must keep MXC's per-launch grant instead of a persistent one, or None."""
     _drive, tail = os.path.splitdrive(root)
     if not tail.strip("\\/"):
@@ -94,18 +162,25 @@ def ineligible_reason(root: str) -> str | None:
         # Only a grant ABOVE protected state exposes it; a runtime folder below the Studio home is fine.
         if _within(protected, root):
             return f"it contains {protected}"
+    return _tree_problem(root, deep = deep)
+
+
+def _identity(root: str) -> dict[str, int] | None:
+    from .mxc_policy import MxcPolicyError, _object_identity, _safe_canonical_path
     try:
-        names = {entry.name.casefold() for entry in os.scandir(root)}
-    except OSError as exc:
-        return f"it cannot be listed ({exc})"
-    found = sorted(names & CREDENTIAL_FILES)
-    if found:
-        return f"it holds a credential file ({', '.join(found)})"
-    return None
+        if os.path.normcase(_safe_canonical_path(root, directory = True)) != os.path.normcase(root):
+            return None
+        return _object_identity(root, directory = True)
+    except (MxcPolicyError, OSError):
+        return None
 
 
-def _dacl_grants_read(path: str) -> bool:
-    """True when the folder's own DACL gives ALL APPLICATION PACKAGES inheritable read and execute."""
+def _package_aces(path: str) -> tuple[bool, bool]:
+    """(covers, explicit) for ALL APPLICATION PACKAGES on the folder's own DACL.
+
+    covers: inheritable read and execute is granted. explicit: the folder carries its own ACE for
+    that SID. Raises OSError when the DACL cannot be read, so an unknown ACL is never modified.
+    """
     import ctypes
     from ctypes import wintypes
 
@@ -156,39 +231,42 @@ def _dacl_grants_read(path: str) -> bool:
     dacl = ctypes.POINTER(Acl)()
     descriptor = ctypes.c_void_p()
     # SE_FILE_OBJECT = 1, DACL_SECURITY_INFORMATION = 4
-    if get_info(path, 1, 4, None, None, ctypes.byref(dacl), None, ctypes.byref(descriptor)) != 0:
-        return False
+    status = get_info(path, 1, 4, None, None, ctypes.byref(dacl), None, ctypes.byref(descriptor))
+    if status != 0:
+        raise OSError(status, f"GetNamedSecurityInfoW failed for {path}")
     try:
         if not dacl:
-            return False
-        allowed = 0
+            # A NULL DACL already grants everyone, AppContainers included: nothing to add.
+            return True, False
+        allowed, explicit = 0, False
+        inheritable = _OBJECT_INHERIT | _CONTAINER_INHERIT
         for index in range(dacl.contents.AceCount):
             raw = ctypes.c_void_p()
             if not get_ace(dacl, index, ctypes.byref(raw)):
-                continue
+                raise OSError(ctypes.get_last_error(), f"GetAce failed for {path}")
             ace = ctypes.cast(raw, ctypes.POINTER(AccessAllowedAce)).contents
-            # ACCESS_ALLOWED_ACE_TYPE = 0, ACCESS_DENIED_ACE_TYPE = 1; object and callback ACEs are ignored.
+            # ACCESS_ALLOWED_ACE_TYPE = 0 and ACCESS_DENIED_ACE_TYPE = 1 share this layout.
             if ace.Header.AceType not in (0, 1):
                 continue
             sid_text = wintypes.LPWSTR()
             sid = ctypes.c_void_p(raw.value + AccessAllowedAce.SidStart.offset)
             if not sid_to_string(sid, ctypes.byref(sid_text)):
-                continue
+                raise OSError(ctypes.get_last_error(), f"ConvertSidToStringSidW failed for {path}")
             try:
                 matches = sid_text.value == ALL_APPLICATION_PACKAGES
             finally:
                 local_free(ctypes.cast(sid_text, ctypes.c_void_p))
             if not matches:
                 continue
-            if ace.Header.AceType == 1:
-                return False
             flags = ace.Header.AceFlags
-            if flags & _INHERIT_ONLY or (flags & (_OBJECT_INHERIT | _CONTAINER_INHERIT)) != (
-                _OBJECT_INHERIT | _CONTAINER_INHERIT
-            ):
+            if not flags & _INHERITED:
+                explicit = True
+            if ace.Header.AceType == 1:
+                return False, explicit
+            if flags & _INHERIT_ONLY or (flags & inheritable) != inheritable:
                 continue
             allowed |= ace.Mask
-        return (allowed & READ_EXECUTE_MASK) == READ_EXECUTE_MASK
+        return (allowed & READ_EXECUTE_MASK) == READ_EXECUTE_MASK, explicit
     finally:
         local_free(descriptor)
 
@@ -218,10 +296,105 @@ def _revoke(root: str) -> tuple[bool, str]:
     return _icacls(root, "/remove:g", f"*{ALL_APPLICATION_PACKAGES}")
 
 
-def ensure(roots: list[str]) -> tuple[str, ...]:
-    """Give ``roots`` a persistent read grant where eligible; returns the roots that have one.
+def _revoke_recorded_root(record: dict, key: str) -> str:
+    """Take back one recorded grant: "revoked", "dropped" (nothing of Studio's left there), or "failed"."""
+    if not os.path.isdir(key):
+        record.pop(key)
+        return "dropped"
+    if _identity(key) != record[key].get("identity"):
+        # Moved, replaced, or reached through a new junction: revoking would edit a folder Studio never touched.
+        logger.warning(
+            "Not revoking the MXC read grant on %s: it is no longer the folder Studio granted", key
+        )
+        record.pop(key)
+        return "dropped"
+    ok, output = _revoke(key)
+    if ok:
+        record.pop(key)
+        _scanned.discard(key)
+        return "revoked"
+    logger.warning("Could not remove the persistent MXC read grant from %s: %s", key, output)
+    return "failed"
 
-    Never raises: a root that cannot be granted keeps MXC's per-launch grant, which is only slower.
+
+def _ensure_root(record: dict, root: str) -> bool:
+    """Grant one root if it is eligible; True when wxc-exec will skip it. Saves the record as it goes."""
+    key = os.path.normcase(root)
+    entry = record.get(key)
+    pending = entry is not None and entry.get("state") == "pending"
+    reason = ineligible_reason(root, deep = key not in _scanned)
+    if reason is not None:
+        _scanned.discard(key)
+        if entry is not None:
+            # A folder Studio granted gained a credential file or a link: take the grant back.
+            outcome = _revoke_recorded_root(record, key)
+            _save_record(record)
+            if outcome == "failed":
+                raise ReadGrantError(f"could not revoke the MXC read grant on {root} ({reason})")
+        logger.info("Keeping the per-launch MXC grant for %s: %s", root, reason)
+        return False
+    _scanned.add(key)
+    try:
+        covers, explicit = _package_aces(root)
+    except OSError as exc:
+        logger.info("Keeping the per-launch MXC grant for %s: %s", root, exc)
+        return False
+    if covers and not pending:
+        return True
+    if explicit and entry is None:
+        # Someone else set an entry for that group here; /remove:g on opt-out would take theirs too.
+        logger.info(
+            "Keeping the per-launch MXC grant for %s: it already has its own entry for that group",
+            root,
+        )
+        return False
+    identity = _identity(root)
+    if identity is None:
+        logger.info("Keeping the per-launch MXC grant for %s: its identity could not be read", root)
+        return False
+    record[key] = {"state": "pending", "identity": identity}
+    try:
+        _save_record(record)
+    except OSError as exc:
+        if pending:
+            raise ReadGrantError(
+                f"could not record the retried MXC read grant on {root}: {exc}"
+            ) from exc
+        record.pop(key, None)
+        logger.warning(
+            "Keeping the per-launch MXC grant for %s: the grant record is not writable (%s)",
+            root,
+            exc,
+        )
+        return False
+    ok, output = _grant(root)
+    if ok:
+        record[key] = {"state": "complete", "identity": identity}
+        try:
+            _save_record(record)
+        except OSError as exc:
+            # The pending entry stays on disk, so the next launch redoes the grant.
+            logger.warning("Could not mark the MXC read grant on %s complete: %s", root, exc)
+        logger.info("Granted ALL APPLICATION PACKAGES read access to %s once", root)
+        return True
+    # A partly propagated grant would let wxc-exec skip files the container cannot read.
+    restored, restore_output = _revoke(root)
+    if not restored:
+        # The pending entry stays on disk, so the next launch retries the whole grant.
+        raise ReadGrantError(
+            f"the MXC read grant on {root} failed ({output}) and could not be rolled back ({restore_output})"
+        )
+    record.pop(key, None)
+    _save_record(record)
+    logger.warning("Could not add the persistent MXC read grant to %s: %s", root, output)
+    return False
+
+
+def ensure(roots: list[str]) -> tuple[str, ...]:
+    """Give ``roots`` a persistent read grant where eligible; returns the roots wxc-exec will skip.
+
+    A root that cannot be granted keeps MXC's per-launch grant, which is only slower. Raises
+    ReadGrantError only when a grant is left in an unknown state.
     """
     if not _on_windows():
         return ()
@@ -229,59 +402,28 @@ def ensure(roots: list[str]) -> tuple[str, ...]:
         revoke_recorded()
         return ()
     covered: list[str] = []
-    with _lock:
-        record = _load_record()
+    with _transaction() as record:
+        if record is None:
+            return ()
         for root in roots:
-            key = os.path.normcase(root)
-            pending = record.get(key) == "pending"
-            try:
-                if not pending and _dacl_grants_read(root):
-                    covered.append(root)
-                    continue
-            except Exception as exc:  # noqa: BLE001 - the check only decides whether to grant
-                logger.info("Could not read the DACL of %s: %s", root, exc)
-            reason = ineligible_reason(root)
-            if reason is not None:
-                logger.info("Keeping the per-launch MXC grant for %s: %s", root, reason)
-                continue
-            record[key] = "pending"
-            _save_record(record)
-            ok, output = _grant(root)
-            if ok:
-                record[key] = "complete"
+            if _ensure_root(record, root):
                 covered.append(root)
-                logger.info("Granted ALL APPLICATION PACKAGES read access to %s once", root)
-            else:
-                # A partly propagated grant would let wxc-exec skip files the container cannot read.
-                _revoke(root)
-                record.pop(key, None)
-                logger.warning(
-                    "Could not add the persistent MXC read grant to %s: %s", root, output
-                )
-            _save_record(record)
     return tuple(covered)
 
 
 def revoke_recorded() -> tuple[str, ...]:
     """Remove every grant Studio recorded; returns the roots that were restored."""
-    if not _on_windows():
+    if not _on_windows() or not record_path().exists():
         return ()
     restored: list[str] = []
-    with _lock:
-        record = _load_record()
+    with _transaction() as record:
         if not record:
             return ()
         for key in list(record):
-            if not os.path.isdir(key):
-                record.pop(key)
-                continue
-            ok, output = _revoke(key)
-            if ok:
-                record.pop(key)
+            if _revoke_recorded_root(record, key) == "revoked":
                 restored.append(key)
-            else:
-                logger.warning(
-                    "Could not remove the persistent MXC read grant from %s: %s", key, output
-                )
-        _save_record(record)
+        try:
+            _save_record(record)
+        except OSError as exc:
+            logger.warning("Could not update the MXC read-grant record: %s", exc)
     return tuple(restored)
