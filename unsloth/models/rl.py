@@ -2775,11 +2775,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         y = f"{k} = {y},\n"
         arguments = re.sub(x, y, arguments)
 
-    # GRPO beta default is 0.001: TRL used 0.04 and now 0.00. See huggingface/trl#3516 and the verl docs.
     if trainer_file == "grpo_trainer":
         replacements = {
-            "loss_type": "bnpo",  # TRL <= 0.21 default; the GRPO paper objective is "grpo"
-            "beta": 0.001,  # Recommended as seen in verl
+            # None = unset: resolved below to TRL's default "dapo" (huggingface/trl#3938, TRL >= 0.22; older TRL passes no num_items_in_batch for it, so "bnpo").
+            "loss_type": None,
+            # None = unset: resolved below to 0.0 for dapo / dr_grpo, else 0.001 (verl's recommendation; TRL used 0.04, now 0.0, huggingface/trl#3516).
+            "beta": None,
             "auto_find_batch_size": False,  # Cannot work on GRPO
             # See fengyao.notion.site/off-policy-rl and huggingface/trl#3867.
             "vllm_importance_sampling_correction": False,
@@ -2868,6 +2869,30 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += pad_to_multiple_of
 
+    # Resolve the None loss_type / beta sentinels before any check reads them.
+    if trainer_file == "grpo_trainer" and "loss_type" in call_args:
+        _default_loss_type = "dapo" if trl_version >= Version("0.22.0") else "bnpo"
+        extra_args += (
+            "_unsloth_default_loss_type = loss_type is None\n"
+            "if _unsloth_default_loss_type:\n"
+            f"    loss_type = '{_default_loss_type}'\n"
+        )
+        if _default_loss_type == "dapo" and "beta" in call_args:
+            extra_args += (
+                "    if beta is None:\n"
+                "        print(\"Unsloth: GRPO now defaults to TRL's loss_type = 'dapo' with beta = 0.0. Set loss_type = 'bnpo', beta = 0.001 for Unsloth's previous default.\")\n"
+            )
+    if trainer_file == "grpo_trainer" and "beta" in call_args:
+        extra_args += (
+            "if beta is None:\n"
+            + (
+                "    beta = 0.0 if str(loss_type).lower() in ('dapo', 'dr_grpo') else 0.001\n"
+                if "loss_type" in call_args
+                else "    beta = 0.001\n"
+            )
+            + "\n"
+        )
+
     # Check for loss_type = dr_grpo and scale_rewards for GRPO; DAPO uses per-token loss, so BNPO loss is used. See huggingface/trl#3130 (comment 2746947835).
     # TRL >= 0.22 defaults scale_rewards to "group" (= True).
     if "loss_type" in call_args and "scale_rewards" in call_args:
@@ -2882,7 +2907,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    elif scale_rewards == True or scale_rewards == 'group':\n"
             "        print('Unsloth: The Dr GRPO paper recommends setting `scale_rewards` to False! Will override. Set it to `None` to keep scaling.')\n"
             "        scale_rewards = False\n"
-            "elif loss_type.lower() == 'dapo':\n"
+            # Only an explicit dapo gets the paper's settings; the default keeps TRL's (masking every truncated row zeroes the update when all are).
+            "elif loss_type.lower() == 'dapo' and not _unsloth_default_loss_type:\n"
             "    if mask_truncated_completions is None:\n"
             "        print('Unsloth: The DAPO paper recommends `mask_truncated_completions = True` - we will set it.')\n"
             "        mask_truncated_completions = True\n"
@@ -2891,10 +2917,20 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "        epsilon_high = 0.28\n"
             "    if beta != 0.0:\n"
             "        print(f'[WARNING] Unsloth: The DAPO paper recommends setting `beta = 0.0` to remove the KL term - You have set it to {beta}.')\n"
+            # TRL clamps the CISPO IS weight at epsilon_high itself (not 1 + epsilon_high), so the 0.2 fallback would cap every weight below 1.
+            "elif loss_type.lower() == 'cispo':\n"
+            "    loss_type = 'cispo'\n"
+            "    if epsilon_high is None:\n"
+            "        print('Unsloth: CISPO caps the importance sampling weight at `epsilon_high`; the ScaleRL paper recommends `epsilon_high = 5.0` - we will set it.')\n"
+            "        epsilon_high = 5.0\n"
+            "    elif epsilon_high < 1.0:\n"
+            "        print(f'[WARNING] Unsloth: CISPO caps the importance sampling weight at `epsilon_high` itself, not 1 + epsilon_high, so {epsilon_high} caps every weight below 1. The ScaleRL paper uses 4 to 8.')\n"
             "if mask_truncated_completions is None:\n"
             "    mask_truncated_completions = False\n"
             "\n"
         )
+        if trainer_file != "grpo_trainer":
+            check_dr_grpo = "_unsloth_default_loss_type = False\n" + check_dr_grpo
         extra_args += check_dr_grpo
 
     # GRPO on TRL < 0.20 crashes on the first step (no has_images / images, no reference logps path).
