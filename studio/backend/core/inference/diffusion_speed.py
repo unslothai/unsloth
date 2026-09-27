@@ -752,6 +752,12 @@ def _compile_repeated_blocks(
             install_int8_fused(transformer, logger, offload_active = offload_active)
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused mlp", exc)
+        if type(transformer).__name__ == "QwenImageTransformer2DModel":
+            try:
+                from .diffusion_qwenimage_rope import install as install_qwen_real_rope
+                install_qwen_real_rope(transformer, logger)
+            except Exception as exc:  # noqa: BLE001 - optimisation only
+                _warn(logger, "qwen-image real rope", exc)
         if type(transformer).__name__ == "ZImageTransformer2DModel":
             try:
                 from .diffusion_zimage_fused import install as install_zimage_fused
