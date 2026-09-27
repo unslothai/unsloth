@@ -5253,9 +5253,7 @@ def _posix_join(parts) -> str:
 
 def _shell_assign_value_self_references(name: str, value: str) -> bool:
     """True when *value* expands *name* (VAR=$VAR); such bindings never reach a concrete path here."""
-    return (
-        re.search(rf"\${{{re.escape(name)}}}|\${re.escape(name)}(?!\w)", value) is not None
-    )
+    return re.search(rf"\${{{re.escape(name)}}}|\${re.escape(name)}(?!\w)", value) is not None
 
 
 def _expand_shell_assignments(command: str) -> str:
