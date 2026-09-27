@@ -1229,11 +1229,17 @@ def _video_auto_denoiser_scheme(
     try:
         if getattr(fam, "modular_workflow", None):
             return None
-        # Registry before the smoke probe: a scheme with no hosted row can never seed, so it must not spawn probes.
-        hosted = video_family_prequant_schemes(fam)
+        # Registry before the smoke probe: a scheme with no hosted row can never seed, so it must not spawn probes. The
+        # row has to resolve for THIS base: ltx-2's hosted fp8 is the 2.3 distilled DiT, which no LTX-2 pipeline seeds.
+        from .video_denoiser_prequant import denoiser_prequant_sources
+
+        hosted = tuple(
+            s
+            for s in video_family_prequant_schemes(fam)
+            if denoiser_prequant_sources(fam, s, base_repo) is not None
+        )
         if not hosted or (not auto and normalize_transformer_quant(requested) not in hosted):
             return None
-        from .video_denoiser_prequant import denoiser_prequant_sources
 
         scheme = select_transformer_quant_scheme(
             target,
