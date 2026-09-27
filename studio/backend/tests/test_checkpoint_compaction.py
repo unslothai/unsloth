@@ -4085,3 +4085,79 @@ def test_a_rescued_reset_still_offers_recall_but_is_never_replayed(monkeypatch, 
 
     assert inference_routes._thread_has_checkpoint("t1", branch) is admitted
     assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+
+
+CONTRACT = "1. The seller delivers the goods within thirty days of the order. " * 900
+SANDBOX_NOTE = (
+    "[contract.pdf: its text is below, so answer from it. For calculations, the python tool has the file at "
+    'path = ".unsloth_attachments/0123456789ab/contract.pdf"; fitz.open(path)]'
+)
+
+
+@pytest.mark.parametrize(
+    "attachment",
+    [
+        "[PDF: contract.pdf]\n" + CONTRACT,
+        "[DOCX: contract.docx]\n" + CONTRACT,
+        "[XLSX: prices.xlsx]\n[Sheet: Q3]\n" + CONTRACT,
+        "<attachment name=contract.txt>\n" + CONTRACT + "\n</attachment>",
+        "<pasted_text name=contract.txt bytes=60300>\n" + CONTRACT + "\n</pasted_text>",
+        SANDBOX_NOTE + "\n[PDF: contract.pdf]\n" + CONTRACT,
+        "[PDF: a.pdf]\n" + CONTRACT + "\n<attachment name=b.txt>\n" + CONTRACT + "\n</attachment>",
+    ],
+)
+def test_an_instruction_typed_with_a_document_is_carried_without_it(attachment):
+    turn = {"role": "user", "content": INSTRUCTION + "\n" + attachment}
+
+    assert carried_forward_items([turn], max_tokens = 1024) == [INSTRUCTION]
+
+
+def test_a_small_document_is_not_quoted_into_the_block():
+    turn = {
+        "role": "user",
+        "content": INSTRUCTION + "\n[PDF: memo.pdf]\nThe buyer pays for shipping.",
+    }
+
+    assert carried_forward_items([turn], max_tokens = 1024) == [INSTRUCTION]
+
+
+def test_a_document_sent_without_typed_words_carries_nothing():
+    turn = {"role": "user", "content": "[PDF: memo.pdf]\nThe buyer pays for shipping."}
+
+    assert carried_forward_items([turn], max_tokens = 1024) == []
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        "Answer in this shape:\n[Summary: one line]\nthen the details, always in Spanish.",
+        "Review [PDF: contract.pdf] as the buyer's lawyer and answer in Spanish.",
+        "Treat <attachment name=x> as a literal tag in every answer from now on.",
+    ],
+)
+def test_bracketed_text_the_user_typed_is_carried_whole(typed):
+    assert carried_forward_items([{"role": "user", "content": typed}], max_tokens = 1024) == [typed]
+
+
+def test_a_thread_opened_with_a_document_still_names_its_task_after_a_reset():
+    messages = [
+        {"role": "system", "content": "you are helpful"},
+        {"role": "user", "content": INSTRUCTION + "\n[PDF: contract.pdf]\n" + CONTRACT},
+        {"role": "assistant", "content": "Understood."},
+    ]
+    for question in (
+        "What is the delivery deadline?",
+        "Who pays for shipping?",
+        "Can the buyer terminate early?",
+    ):
+        messages += [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": "It is in clause 1."},
+        ]
+    messages += [{"role": "user", "content": "And what about returns?"}]
+
+    fitted, truncation = _fit(messages, context_length = 16384, max_tokens = 2048)
+
+    assert truncation["checkpoint_started"] is True
+    assert INSTRUCTION in fitted[0]["content"]
+    assert "thirty days" not in fitted[0]["content"]
