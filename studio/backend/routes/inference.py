@@ -804,8 +804,7 @@ def _openai_stream_error_chunk(exc) -> dict:
 
 
 def _context_budget_http_error(exc) -> "HTTPException":
-    """A context refusal as the 400 its llama.cpp counterpart already returns. Raised before any
-    token, so unlike a mid-stream failure the status is still the response's to set."""
+    """Context refusal as the same 400 llama.cpp returns (raised before any token)."""
     return HTTPException(
         status_code = 400,
         detail = openai_error_body(
@@ -1575,7 +1574,6 @@ def _classify_llama_generation_error(exc: Exception) -> Optional[bool]:
     # explanation says "context window" while making the point that the window is
     # SHARED, so the heuristic below would read it as an overflow and set the
     # client compacting a conversation that was never too long.
-    # An explicit type rather than a substring, so classification cannot drift with the message.
     if isinstance(exc, context_refusal.ContextBudgetExceeded):
         return True
     if isinstance(exc, LlamaStreamError):

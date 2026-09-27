@@ -27,7 +27,6 @@ export type ContextUsageBarInput = {
   isMlx?: boolean;
   /** context_length_enforced as the load reported it; null where it does not answer. */
   contextEnforced?: boolean | null;
-  /** mlx_context_budget: set where the limit refuses the request instead of bounding the cache. */
   contextBudget?: number | null;
 };
 
@@ -56,8 +55,7 @@ function contextLimitAdvice(
   budget: number | null | undefined,
 ): ContextLimitAdvice {
   if ((used / total) * 100 <= 85) return "none";
-  // A budget outranks the enforced flag, which answers for the cache: unbounded here, yet the
-  // limit is real because the request is refused at it.
+  // Budget wins over contextEnforced: the cache is unbounded but requests are refused.
   if (budget) return "mlx-refuses-past-limit";
   // A window the backend confirmed does not bound the cache is not a limit at all:
   // nothing rotates and nothing stops, so neither of the other two is true of it. An

@@ -535,14 +535,13 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             _entry = (
                 _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
             )
-            # The whole group: the parent reports all of them and can recompute none
-            # once the worker holds the model.
+            # The whole group: the parent reports all four and can recompute none of
+            # them once the worker holds the model.
             for _ctx_field in (
                 "context_length",
                 "native_context_length",
                 "max_context_length",
                 "requested_context_length",
-                # Set where the limit refuses the request instead of bounding the cache.
                 "mlx_context_budget",
             ):
                 try:
@@ -1047,8 +1046,7 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
 
 
 def _generation_error_payload(request_id, exc) -> dict:
-    """A context refusal's counts ride along so the parent can rebuild it; seeing only text, it
-    would report a fixable request as an internal failure."""
+    """Carries a context refusal's counts so the parent can rebuild the typed error."""
     payload = {
         "type": "gen_error",
         "request_id": request_id,

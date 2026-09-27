@@ -2653,13 +2653,8 @@ class MLXInferenceBackend:
         videos = None,
         cap = None,
     ):
-        """The output limit for this request, refusing it first if the context cannot hold it.
-        Sizing and admission count the same prompt, so they take it once: fed separately, a caller
-        can hand the media to one and not the other. `cap` covers a count known to be short."""
         budget = getattr(self, "_kv_context_budget", None)
-        # Max Tokens at the whole window is how the UI spells "no cap", so admitting that request
-        # against the budget would refuse every prompt. Size it to the free context like an unset one.
-        # Only at the window: above it the caller asked for more than fits and is told so.
+        # Max Tokens == window is the UI's "no cap"; admitting it as-is would refuse every prompt.
         if budget and max_new_tokens is not None and int(max_new_tokens) == int(budget):
             max_new_tokens = None
         if max_new_tokens is None:
@@ -2691,9 +2686,7 @@ class MLXInferenceBackend:
         audio = None,
         videos = None,
     ):
-        """Refuse a request the pinned context cannot hold; unset where a bounded cache rotates
-        instead. Counted here because the caller holds the prompt as text, not as tokens. An
-        uncountable prompt is admitted rather than refused on a number nobody could produce."""
+        """Refuse a request over the budget; an uncountable prompt is admitted."""
         budget = getattr(self, "_kv_context_budget", None)
         if not budget:
             return
@@ -2735,10 +2728,7 @@ class MLXInferenceBackend:
         audio = None,
         videos = None,
     ):
-        """The prompt as the processor expands it, or None where it cannot be prepared. A
-        placeholder is one token where the processor makes hundreds -- 582 for a 672x672 image on
-        Qwen2.5-VL -- and every family counts differently, so this prepares the inputs generation
-        will use, as mlx-vlm's own server does against its context limit."""
+        """Prompt length as the processor expands media (as mlx-vlm's server does), else None."""
         if not (images or audio or videos):
             return None
         try:
@@ -2754,8 +2744,7 @@ class MLXInferenceBackend:
             if audio:
                 kwargs["audio"] = audio
             if videos:
-                # Sampled the way generation samples it, so a clip throttled to fit the frame
-                # budget is not counted at the processor's own rate.
+                # Same fps as generation, not the processor's default rate.
                 kwargs["videos"] = videos
                 fps = _video_frame_rate(videos[0], self._processor)
                 if fps is not None:
@@ -2862,15 +2851,12 @@ class MLXInferenceBackend:
     def _resolve_kv_policy(self, is_vlm, kv_bits, max_seq_length, served):
         """The quantization status, cache window and per-request budget this load will run with.
 
-        A bounded cache rotates rather than refusing, and neither runtime converts a rotating entry,
-        so the two cannot coexist: a requested width takes the cache and an enforceable pin becomes
-        an admission budget instead. Without a width the pin bounds the cache as before."""
+        A rotating cache cannot be quantized, so with kv_bits an enforceable pin becomes a budget."""
         pinned = _positive_int(max_seq_length) is not None
         # Tri-state: True bounded, False confirmed unbounded, None unjudgeable. Only True installs a bound; the other
         # two stay apart so a client can tell them apart.
         confirmed = self._kv_cache_window_enforceable(served)
         enforceable = confirmed is True
-        # A width granted here becomes a budget, which starts quantizing at the first token.
         quant = _kv_quant_status(
             _normalize_mlx_kv_bits(kv_bits),
             self._model,
@@ -3094,7 +3080,6 @@ class MLXInferenceBackend:
             # unbounded, None nothing could be built to judge. Without it the API reports a limit a client cannot tell
             # from an enforced one.
             "context_length_enforced": _ctx_enforced,
-            # Set only where the pin became an admission limit rather than a cache bound.
             "mlx_context_budget": self._kv_context_budget,
             "mlx_kv_bits": self._kv_quant["kv_bits"],
             "mlx_kv_bits_requested": self._kv_quant["requested_kv_bits"],
@@ -3956,9 +3941,7 @@ class MLXInferenceBackend:
         # Matched on the sampled text, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
         stopped = False
-        # Counted from a file: the base64 the route sends expands to nothing the processor can read.
-        # Discarded here rather than handed on, since setup below can raise before the stream's
-        # cleanup is entered; generation writes its own copy under that cleanup.
+        # Counted from a temp file (base64 is unreadable to the processor), discarded here.
         counted_clip = _write_video_clip(video) if video is not None else None
         try:
             max_new_tokens = self._generation_limit(

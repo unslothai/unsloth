@@ -4549,8 +4549,7 @@ def test_the_load_policy_bounds_a_pin_only_where_the_bound_can_be_enforced(monke
     unreadable = SimpleNamespace(layers = [object()], make_cache = lambda: None)
     assert policy(unreadable, None, 8192) == (None, None, None, None)
 
-    # A budget caps every request, so on a vision model mlx-vlm's own later start is never reached:
-    # quantization starts at the first token, and the load does not claim the later start.
+    # Under a budget quantization starts at the first token, not mlx-vlm's later start.
     backend = MLXInferenceBackend()
     backend._model = honours
     budgeted, _, _, budget = backend._resolve_kv_policy(True, 4, 4096, 4096)
@@ -4650,8 +4649,7 @@ def _vision_backend(budget = 1024, window = 1024):
 
 
 def test_the_context_budget_counts_the_request_in_tokens_the_processor_would_produce(monkeypatch):
-    """Counted from the text alone the limit is no limit at all for a request carrying an image:
-    measured at 7 tokens against 582 for one 672x672 image on Qwen2.5-VL-3B."""
+    """Media must be counted expanded: text alone is 7 tokens vs 582 for one image."""
     from core.inference import context_refusal
     from core.inference.mlx_inference import MLXInferenceBackend
 
@@ -4669,23 +4667,18 @@ def test_the_context_budget_counts_the_request_in_tokens_the_processor_would_pro
         backend._check_context_budget(prompt, 16, images = [object(), object()])
     with pytest.raises(context_refusal.ContextBudgetExceeded):
         backend._check_context_budget(prompt, 16, audio = [object(), object()])
-    # A clip expands like the rest: counted from the placeholder alone the budget bounds nothing,
-    # and the cache it guards no longer rotates. The rate lookup needs a readable clip.
     monkeypatch.setattr("core.inference.mlx_inference._video_frame_rate", lambda *_a: 1.5)
     with pytest.raises(context_refusal.ContextBudgetExceeded):
         backend._check_context_budget(prompt, 16, videos = ["a.mp4", "b.mp4"])
-    # A turn carrying both is counted for both, not for whichever kind is looked at first.
     with pytest.raises(context_refusal.ContextBudgetExceeded):
         backend._check_context_budget(prompt, 16, images = [object()], videos = ["a.mp4"])
-    # Sampled as generation samples it: a clip throttled to fit the frame budget decodes to fewer
-    # frames than the processor's own rate, and counting it at that rate refuses a request that fits.
+    # Counted at generation's fps, not the processor's default rate.
     backend._check_context_budget(prompt, 16, videos = ["a.mp4"])
     assert utils.seen["fps"] == 1.5
 
     sized = backend._generation_limit(prompt, None, images = [object()])
     assert sized == 1024 - 524
     backend._generation_limit(prompt, sized, images = [object()])
-    # Both decisions inside it read the media, not just the one that sized the allowance.
     with pytest.raises(context_refusal.ContextBudgetExceeded):
         backend._generation_limit(prompt, 16, images = [object(), object()])
     with pytest.raises(context_refusal.ContextBudgetExceeded):
@@ -4700,8 +4693,7 @@ def test_the_context_budget_counts_the_request_in_tokens_the_processor_would_pro
 
 
 def test_the_vlm_entry_point_hands_the_limit_a_clip_the_processor_can_read(monkeypatch):
-    """The budget bounds a cache that no longer rotates, and the base64 the route sends expands to
-    nothing: counted from it the clip is worth its placeholder and the limit admits anything."""
+    """A video is counted from a readable file, not the route's base64."""
     import base64
     import os
 
@@ -4718,8 +4710,7 @@ def test_the_vlm_entry_point_hands_the_limit_a_clip_the_processor_can_read(monke
 
     monkeypatch.setattr(backend, "_generation_limit", _limit)
     clip = base64.b64encode(b"not a readable clip").decode()
-    # Everything past the limit needs a real decoder, which a stub path cannot carry: the failure
-    # that follows is the setup raising before the stream's own cleanup is entered.
+    # Past the limit a stub path fails setup; the counted clip must still be discarded.
     with contextlib.suppress(Exception):
         _drive_vlm_generation(backend, monkeypatch, video = clip)
     assert seen["videos"] != [clip]
@@ -4728,8 +4719,7 @@ def test_the_vlm_entry_point_hands_the_limit_a_clip_the_processor_can_read(monke
 
 
 def test_a_max_tokens_at_the_whole_window_is_the_chat_saying_no_cap(monkeypatch):
-    """The chat always sends Max Tokens and clamps the control to the context length, so a cap at
-    the window means "as much as fits" and must not be admitted as a request for that many."""
+    """Max Tokens at the window means "as much as fits", not a request for that many."""
     from core.inference import context_refusal
 
     _stub_prepare_inputs(monkeypatch)
@@ -4739,8 +4729,6 @@ def test_a_max_tokens_at_the_whole_window_is_the_chat_saying_no_cap(monkeypatch)
     assert backend._generation_limit(prompt, 1024) == 1024 - 4
     assert backend._generation_limit(prompt, 1024, images = [object()]) == 1024 - 524
     assert backend._generation_limit(prompt, 16) == 16
-    # Above the window it is a request rather than the spelling, and asking for more than fits is
-    # answered the way every other explicit limit is.
     with pytest.raises(context_refusal.ContextBudgetExceeded):
         backend._generation_limit(prompt, 2048)
 

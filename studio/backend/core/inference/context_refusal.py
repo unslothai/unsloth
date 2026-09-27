@@ -325,8 +325,7 @@ def describe_unservable_tool_call(
 
 
 class ContextBudgetExceeded(ValueError):
-    """A prompt refused before generation because the loaded context limit cannot hold it. Carries
-    the counts as well as the message, so nothing downstream parses prose back into a reason."""
+    """Prompt refused before generation; carries the counts so nothing parses the message."""
 
     def __init__(self, request_tokens: int, context_tokens: int):
         self.request_tokens = int(request_tokens)

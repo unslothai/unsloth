@@ -249,7 +249,6 @@ export function loadedContextFields(resp: {
     // llama.cpp allocates what it reports, so GGUF is enforced by construction.
     // Everything else answers for itself, or says nothing.
     loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
-    // Set only where the limit refuses a request instead of bounding the cache.
     loadedContextBudget: isGguf ? null : (resp.mlx_context_budget ?? null),
   };
 }
