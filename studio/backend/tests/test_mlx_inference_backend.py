@@ -5440,20 +5440,44 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
 
 
 def test_the_width_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
-    """The sizing takes the first tower whose forward pass succeeds."""
-    pytest.importorskip("mlx_lm")
-    from mlx_lm.models.cache import KVCache, RotatingKVCache
-
+    """The load's eligibility rule, asked of the first tower that runs, and never evaluated."""
     from core.inference import mlx_inference
+
+    fake_mx = types.SimpleNamespace(
+        array = lambda value: value,
+        zeros = lambda *_a, **_k: None,
+        int32 = None,
+        eval = lambda *_a: pytest.fail("a weightless tower must never be evaluated"),
+    )
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_mx)
+    if "mlx" in sys.modules:
+        monkeypatch.setattr(sys.modules["mlx"], "core", fake_mx, raising = False)
+    else:
+        monkeypatch.setitem(sys.modules, "mlx", types.SimpleNamespace(core = fake_mx))
+
+    class Quantized:
+        keys, state, nbytes = "k", (), 1
+
+    class Entry:
+        keys, state, window_size = "k", (), None
+
+        def __init__(
+            self,
+            max_size = None,
+            converts = True,
+        ):
+            self.max_size = max_size
+            if converts:
+                self.to_quantized = lambda **_kw: Quantized()
 
     class Tower:
         def __init__(
             self,
-            kind,
+            *entries,
             runs = True,
+            attends_quantized = True,
         ):
-            self.kind, self.runs = kind, runs
-            self.selected_with = None
+            self.entries, self.runs, self.attends_quantized = entries, runs, attends_quantized
 
         def __call__(
             self,
@@ -5461,24 +5485,14 @@ def test_the_width_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
             cache = None,
             **_k,
         ):
-            self.selected_with = cache
             if not self.runs:
                 raise ValueError("this tower cannot run")
+            if not self.attends_quantized and any(isinstance(e, Quantized) for e in cache):
+                raise TypeError("shared KV takes arrays only")
 
-        @property
-        def make_cache(self):
-            if self.kind == "plain":
-                raise AttributeError("make_cache")
-            entries = {"bounded": [RotatingKVCache(1024)], "unbounded": [KVCache()], "empty": []}
-            return lambda: entries[self.kind]
+    rewound = []
 
-    def make_prompt_cache(model, max_kv_size = None):
-        builder = getattr(model, "make_cache", None)
-        if builder is not None:
-            return builder()
-        return [RotatingKVCache(max_kv_size)] if max_kv_size else [KVCache()]
-
-    def offering(*towers):
+    def refused(*towers):
         monkeypatch.setitem(
             sys.modules,
             "core.inference.mlx_memory",
@@ -5487,40 +5501,36 @@ def test_the_width_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
                 _runtime_dtype = lambda: None,
                 _snapshot_config = lambda _d: {"model_type": "x"},
                 _probe_models = lambda *_a: iter(
-                    [
-                        (lambda t = t: rewound.append("built") or t, make_prompt_cache, None)
-                        for t in towers
-                    ]
+                    [(lambda t = t: t, lambda tower: list(tower.entries), None) for t in towers]
                 ),
             ),
         )
+        marks = len(rewound)
+        answer = mlx_inference.mlx_kv_quant_is_refused("/d", 4)
+        assert rewound[marks] == "held" and rewound[-1] == ("key",)
+        return answer
 
-    rewound = []
     monkeypatch.setattr(
         mlx_inference, "_mlx_rng_key_words", lambda: rewound.append("held") or ("key",)
     )
     monkeypatch.setattr(mlx_inference, "_restore_mlx_rng_key", rewound.append)
 
-    monkeypatch.setattr(
-        mlx_inference,
-        "_kv_quant_eligibility",
-        lambda *_a: pytest.fail("the estimate must not exercise the model to price a width"),
-    )
+    assert refused(Tower(Entry())) is False
+    # Sliding-window layers keep their ring and the rest convert: partial, still quantized.
+    assert refused(Tower(Entry(), Entry(max_size = 512))) is False
+    assert refused(Tower(Entry(max_size = 512))) is True
+    assert refused(Tower(Entry(converts = False))) is True
+    assert refused(Tower()) is True
+    # Gemma 4 E2B / E4B: the conversion succeeds, attending over it does not.
+    assert refused(Tower(Entry(), Entry(max_size = 512), attends_quantized = False)) is True
+    broken = Entry()
+    broken.to_quantized = lambda **_kw: (_ for _ in ()).throw(ValueError("group size"))
+    assert refused(Tower(broken)) is True
+    assert refused(Tower(Entry(max_size = 512), runs = False), Tower(Entry())) is False
+    assert refused(Tower(Entry(), runs = False), Tower(Entry(max_size = 512))) is True
+    # Nothing that runs to ask: priced as requested, as the load would try it.
+    assert refused(Tower(Entry(max_size = 512), runs = False)) is False
 
-    def refused(*towers):
-        offering(*towers)
-        return mlx_inference.mlx_kv_quant_is_refused("/d")
-
-    assert refused(Tower("unbounded")) is False
-    assert refused(Tower("plain")) is False
-    assert refused(Tower("bounded")) is True
-    assert refused(Tower("empty")) is True
-    assert refused(Tower("unbounded", runs = False), Tower("bounded")) is True
-    assert refused(Tower("bounded", runs = False), Tower("unbounded")) is False
-    assert refused(Tower("bounded", runs = False)) is False
-    marks = len(rewound)
-    assert refused(Tower("bounded")) is True
-    assert rewound[marks:] == ["held", "built", ("key",)]
     monkeypatch.setitem(
         sys.modules,
         "core.inference.mlx_memory",
@@ -5529,7 +5539,7 @@ def test_the_width_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
         ),
     )
     marks = len(rewound)
-    assert mlx_inference.mlx_kv_quant_is_refused("/d") is False
+    assert mlx_inference.mlx_kv_quant_is_refused("/d", 4) is False
     assert rewound[marks:] == ["held", ("key",)]
 
 

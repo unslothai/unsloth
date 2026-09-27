@@ -1588,7 +1588,6 @@ MLX_KV_BITS_CHOICES = (8, 6, 5, 4, 3, 2)
 # Quantization group size; a head dim that is not a multiple makes mx.quantize raise.
 MLX_KV_GROUP_SIZE = 64
 MLX_PREFILL_CHUNK_FALLBACK = 2048
-MLX_KV_GROUP_SIZE_FALLBACK = 64
 
 
 def _generation_step(*, vision: bool, drafted: bool):
@@ -1651,13 +1650,6 @@ def mlx_prefill_chunk(
         return vlm_prefill_step()
     return _generation_default(
         "prefill_step_size", MLX_PREFILL_CHUNK_FALLBACK, vision = vision, drafted = drafted
-    )
-
-
-def mlx_kv_group_size(*, vision: bool = False, drafted: bool = False) -> int:
-    """Elements a quantized cache shares one scale and bias across."""
-    return _generation_default(
-        "kv_group_size", MLX_KV_GROUP_SIZE_FALLBACK, vision = vision, drafted = drafted
     )
 
 
@@ -1779,20 +1771,6 @@ def mlx_rng_preserved():
         _restore_mlx_rng_key(rng_key)
 
 
-def _kv_cache_quant_refusal(entries):
-    """Why this cache shape cannot take a quantized width (``"unconvertible"`` / ``"bounded"``), or None."""
-    convertible = [entry for entry in entries if getattr(entry, "to_quantized", None) is not None]
-    if not convertible:
-        return "unconvertible"
-    if any(
-        getattr(entry, name, None) is not None
-        for entry in convertible
-        for name in ("max_size", "window_size")
-    ):
-        return "bounded"
-    return None
-
-
 def _kv_entry_windowed(entry):
     return any(getattr(entry, name, None) is not None for name in ("max_size", "window_size"))
 
@@ -1835,10 +1813,18 @@ def _quantize_kv_entries(entries, bits):
     return entries
 
 
-def _kv_quant_probe(language_model, entries, bits):
+def _kv_quant_probe(
+    language_model,
+    entries,
+    bits,
+    evaluate = True,
+):
     """``(converted, skipped, failure, retainable)``; runs a real second token over the converted cache,
-    since static proxies (declared head_dim, window spelling) proved wrong both ways."""
+    since static proxies (declared head_dim, window spelling) proved wrong both ways. Unevaluated,
+    the same graph is only built, which is what a weightless tower affords."""
     import mlx.core as mx
+
+    settle = mx.eval if evaluate else (lambda _arrays: None)
 
     targets = [
         index
@@ -1855,21 +1841,21 @@ def _kv_quant_probe(language_model, entries, bits):
     try:
         try:
             language_model(mx.array([[0]]), cache = entries)
-            mx.eval([getattr(entry, "state", None) for entry in entries])
+            settle([getattr(entry, "state", None) for entry in entries])
         except Exception as exc:
             if is_metal_queue_dead(exc):
                 raise
             return 0, 0, f"its cache could not be exercised ({type(exc).__name__})", True
         try:
             _quantize_kv_entries(entries, bits)
-            mx.eval([entries[index].state for index in targets])
+            settle([entries[index].state for index in targets])
         except Exception as exc:
             if is_metal_queue_dead(exc):
                 raise
             return 0, 0, f"MLX cannot quantize it ({type(exc).__name__})", True
         try:
             language_model(mx.array([[0]]), cache = entries)
-            mx.eval([getattr(entry, "state", None) for entry in entries])
+            settle([getattr(entry, "state", None) for entry in entries])
         except Exception as exc:
             if is_metal_queue_dead(exc):
                 raise
@@ -2421,17 +2407,18 @@ def _asking_the_architecture(model_dir, question):
         return None
 
 
-def mlx_kv_quant_is_refused(model_dir) -> bool:
-    """Whether this checkpoint's cache refuses a quantized width outright, from its shape alone."""
-    return (
-        _asking_the_architecture(
-            model_dir,
-            lambda model, make_prompt_cache: bool(
-                _kv_cache_quant_refusal(make_prompt_cache(model))
-            ),
+def mlx_kv_quant_is_refused(model_dir, bits) -> bool:
+    """Whether a load would keep this checkpoint's cache at full width despite *bits*, by the
+    eligibility probe's own rule (nothing to convert, or a converted cache the model cannot
+    attend over)."""
+
+    def refused(model, make_prompt_cache):
+        converted, _skipped, failure, _retainable = _kv_quant_probe(
+            model, make_prompt_cache(model), bits, evaluate = False
         )
-        is True
-    )
+        return failure is not None or not converted
+
+    return _asking_the_architecture(model_dir, refused) is True
 
 
 def _kv_quant_status(

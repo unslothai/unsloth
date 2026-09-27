@@ -18962,7 +18962,7 @@ async def estimate_memory(
             mlx_load_in_4bit = _mlx_estimate_load_in_4bit(config, request)
             mlx_kv_bits = _mlx_estimate_kv_bits(request.mlx_kv_bits)
             # A width the cache takes applies under a pin or a fit alike: the window is then a budget.
-            if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir):
+            if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir, mlx_kv_bits):
                 mlx_kv_bits = None
             mlx_named_ctx = request.max_seq_length or 0
             mlx_fitted_ctx = None

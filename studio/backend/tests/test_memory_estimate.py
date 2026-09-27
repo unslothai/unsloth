@@ -1217,7 +1217,7 @@ class TestEstimateMemoryRoute:
         # The width the cache takes is priced into the fit, and the fitted window is a budget.
         resp = _estimate(model_path = "org/model", n_ctx = 32_768, mlx_kv_bits = 4)
         assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (24_576, 4, 24_576)
-        assert widths == [(str(tmp_path),)]
+        assert widths == [(str(tmp_path), 4)]
         assert asked == {
             "ceiling": 262_144,
             "retains_history": True,
@@ -3802,11 +3802,11 @@ class TestKvBytes:
         assert mm._declines_to_chunk(object, type("T", (), {"no_chunked_prefill": True})())
         assert not mm._declines_to_chunk(object, object())
 
-    def test_only_an_entry_that_converts_is_charged_both_widths(self):
-        held = mm._held_tokens(_GROWING, 2048, 2048, decoding = False)
-        both = int(_GROWING["slope"] * held + _GROWING["quant_slope"] * held)
-        assert mm._crossover_bytes([_GROWING], 2048, 2048) == both
-        assert mm._crossover_bytes([_RECURRENT], 2048, 2048) == _RECURRENT["const"]
+    def test_a_cache_converted_before_prefill_is_never_charged_at_full_width(self):
+        plan = [_GROWING, _RECURRENT]
+        quantized = mm._line_bytes(plan, 32768, 2048, quantized = True)
+        assert mm._kv_bytes(plan, 32768, 0, 2048) == (quantized, 0)
+        assert mm._kv_bytes(plan, 2048, 0, 2048)[0] == mm._line_bytes(plan, 2048, 2048, True)
 
     def test_one_failed_conversion_refuses_the_whole_request(self):
         def _entry(converts):
@@ -3820,7 +3820,25 @@ class TestKvBytes:
                 },
             )()
 
-        assert mm._quantize_like_runtime([_entry(True), _entry(False)], 4, 64) is None
+        assert mm._quantize_like_runtime([_entry(True), _entry(False)], 4) is None
+
+    def test_a_windowed_entry_keeps_its_width_while_the_rest_convert(self):
+        from core.inference.mlx_inference import MLX_KV_GROUP_SIZE
+
+        def _entry(**window):
+            attrs = {"max_size": None, "window_size": None, **window}
+            attrs["to_quantized"] = lambda self, **kw: ("converted", kw)
+            return type("Entry", (), attrs)()
+
+        full, ring, window = _entry(), _entry(max_size = 512), _entry(window_size = 512)
+        converted = mm._quantize_like_runtime([full, ring, window], 4)
+        assert converted == [
+            ("converted", {"group_size": MLX_KV_GROUP_SIZE, "bits": 4}),
+            ring,
+            window,
+        ]
+        assert mm._quantize_like_runtime([ring, window], 4) is None
+        assert mm._quantize_like_runtime([full], None) is None
 
     @pytest.mark.skipif(not _HAVE_MLX, reason = "drives a real cache class")
     def test_a_bounded_window_leaves_the_request_full_width(self):
@@ -3828,7 +3846,7 @@ class TestKvBytes:
 
         entry = RingSlidingKVCache(512)
         assert entry.to_quantized(group_size = 64, bits = 4) is not None
-        assert mm._quantize_like_runtime([entry], 4, 64) is None
+        assert mm._quantize_like_runtime([entry], 4) is None
 
 
 class TestComputeBytes:
@@ -3928,21 +3946,6 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         assert mm._config_widths(config)[3:] == expected
         assert mm._tower_widths(SimpleNamespace(args = SimpleNamespace(**config)))[3:] == expected
 
-    def test_the_group_size_the_load_resolved_reaches_the_route(self):
-        _on_bfloat16_chip()
-        snapshot = _local_snapshot("unsloth/Qwen3-4B-Thinking-2507")
-        priced = {
-            group: mm.mlx_memory_breakdown(
-                snapshot, n_ctx = 32768, load_in_4bit = True, kv_bits = 4, kv_group_size = group
-            )
-            for group in (32, 128)
-        }
-        charged = {group: breakdown.compute_bytes for group, breakdown in priced.items()}
-        assert charged[32] - charged[128] == 32768 * (
-            mm._dequantized_row_bytes((2560, 9728, 32, 8, 128, 0), 2, 4, 32, 2048)
-            - mm._dequantized_row_bytes((2560, 9728, 32, 8, 128, 0), 2, 4, 128, 2048)
-        )
-
     def test_a_tower_whose_values_are_narrower_keeps_the_scores(self):
         assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 128, 64), 2, 4, 64, 2048) is None
         assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 192, 128), 2, 4, 64, 2048) is None
@@ -4030,13 +4033,9 @@ class TestGenerationSettingsComeFromTheLoader:
         monkeypatch.setattr(mi, "mlx_vlm_snapshot_store_available", lambda: False)
         for vision, drafted in ((False, False), (True, False), (False, True), (True, True)):
             step = mi._generation_step(vision = vision, drafted = drafted)
-            for setting, ask in (
-                ("prefill_step_size", mi.mlx_prefill_chunk),
-                ("kv_group_size", mi.mlx_kv_group_size),
-            ):
-                assert ask(vision = vision, drafted = drafted) == (
-                    inspect.signature(step).parameters[setting].default
-                )
+            assert mi.mlx_prefill_chunk(vision = vision, drafted = drafted) == (
+                inspect.signature(step).parameters["prefill_step_size"].default
+            )
         assert mi._generation_step(vision = True, drafted = False).__module__.startswith("mlx_vlm")
         assert mi._generation_step(vision = False, drafted = False).__module__.startswith("mlx_lm")
         assert mi.mlx_prefill_chunk(drafted = True) != mi.mlx_prefill_chunk()
@@ -4057,7 +4056,6 @@ class TestGenerationSettingsComeFromTheLoader:
             monkeypatch.setattr(mi, "mlx_vlm_snapshot_store_available", lambda p = store: p)
             assert mi.mlx_prefill_chunk(vision = True, config = config) == expected
             assert mi.mlx_prefill_chunk(config = media) == mi.MLX_PREFILL_CHUNK_FALLBACK
-            assert mi.mlx_kv_group_size(vision = True) == mi.MLX_KV_GROUP_SIZE_FALLBACK
 
     def test_the_step_priced_and_the_store_that_pins_it_answer_together(self, monkeypatch):
         """The estimate is only right while these two read the same capability."""
@@ -4082,73 +4080,26 @@ class TestGenerationSettingsComeFromTheLoader:
             assert mlx_vlm_snapshot_store_available() is built
             assert (backend._vlm_prompt_cache_store() is not None) is built
 
-    @pytest.mark.parametrize("chunk, group", [(None, 0), (True, "64")])
-    def test_a_runtime_that_states_no_usable_value_falls_back(self, monkeypatch, chunk, group):
+    @pytest.mark.parametrize("chunk", [None, 0, True, "2048"])
+    def test_a_runtime_that_states_no_usable_value_falls_back(self, monkeypatch, chunk):
         from core.inference import mlx_inference as mi
 
         def _stated(**kw):
-            return lambda prefill_step_size = chunk, kv_group_size = group: None
+            return lambda prefill_step_size = chunk: None
 
         monkeypatch.setattr(mi, "_generation_step", _stated)
         assert mi.mlx_prefill_chunk() == mi.MLX_PREFILL_CHUNK_FALLBACK
-        assert mi.mlx_kv_group_size() == mi.MLX_KV_GROUP_SIZE_FALLBACK
-
-    def test_the_eligibility_probe_converts_at_the_width_generation_would(self, monkeypatch):
-        import mlx.core as mx
-
-        from core.inference import mlx_inference as mi
-
-        asked = []
-
-        class _Entry:
-            state = mx.zeros((1,))
-
-            def to_quantized(self, group_size, bits):
-                asked.append((group_size, bits))
-                return self
-
-        seen = []
-        monkeypatch.setattr(
-            mi, "mlx_kv_group_size", lambda **kw: seen.append(kw.get("vision")) or 32
-        )
-        monkeypatch.setattr(mi, "_kv_entry_nbytes", lambda entry: 1)
-        mi._kv_quant_probe(lambda *a, **kw: None, [_Entry()], 4, vision = True)
-        assert asked == [(32, 4)]
-        assert seen == [True]
-
-    @pytest.mark.parametrize("is_vlm", [True, False])
-    def test_eligibility_tells_the_probe_which_runtime_it_is_probing(self, monkeypatch, is_vlm):
-        from mlx_lm.models import cache as lm_cache
-        from mlx_vlm.models import cache as vlm_cache
-
-        from core.inference import mlx_inference as mi
-
-        told = []
-        for module in (vlm_cache, lm_cache):
-            monkeypatch.setattr(module, "make_prompt_cache", lambda model: [object()])
-        monkeypatch.setattr(
-            mi,
-            "_kv_quant_probe",
-            lambda *a, vision = False, **kw: told.append(vision) or (1, 0, None, True),
-        )
-        mi._kv_quant_eligibility(SimpleNamespace(language_model = object()), is_vlm)
-        assert told == [is_vlm]
 
     def test_the_estimator_tells_the_loader_which_package_would_load_it(self, monkeypatch):
         from core.inference import mlx_inference as mi
 
         seen = []
         monkeypatch.setattr(mi, "mlx_prefill_chunk", lambda **kw: seen.append(kw["vision"]) or 2048)
-        monkeypatch.setattr(mi, "mlx_kv_group_size", lambda **kw: 64)
-        mm._generation_settings({"model_type": "kimi_vl", "vision_config": {"depth": 2}})
-        mm._generation_settings({"model_type": "qwen3"})
+        vision = mm._generation_settings({"model_type": "kimi_vl", "vision_config": {"depth": 2}})
+        assert mm._generation_settings({"model_type": "qwen3"}) == vision == (2048, 64)
         assert seen == [True, False]
 
-    def test_the_quantization_start_follows_the_loader_too(self, monkeypatch):
-        from core.inference import mlx_inference as mi
-
-        monkeypatch.setattr(mi, "_vlm_quantized_kv_start", lambda: 1234)
-        assert mm._vlm_quant_start() == 1234
+    def test_every_loader_quantizes_a_converted_cache_from_the_first_token(self, monkeypatch):
         entry = {
             "bytes": 1,
             "quant_bytes": 1,
@@ -4165,9 +4116,11 @@ class TestGenerationSettingsComeFromTheLoader:
             "widths": (1, 1, 1),
         }
         monkeypatch.setattr(mm, "_probe", lambda *a, **kw: probe)
-        for vision, expected in ((True, 1234), (False, 0)):
+        for vision in (True, False):
             monkeypatch.setattr(mm, "_loads_as_vision", lambda _c, v = vision: v)
-            assert mm._cache_plan({}, None, 4, 64)[1] == expected
+            assert mm._cache_plan({}, None, 4)[1] == 0
+        probe["quantized"] = False
+        assert mm._cache_plan({}, None, 4)[1] is None
 
     def test_a_host_without_the_loader_prices_the_fallback(self, monkeypatch):
         import builtins
@@ -4181,7 +4134,6 @@ class TestGenerationSettingsComeFromTheLoader:
 
         monkeypatch.setattr(builtins, "__import__", _no_loader)
         assert mm._generation_settings({"model_type": "llama"}) == (mm.MLX_PREFILL_CHUNK, 64)
-        assert mm._vlm_quant_start() == mm._VLM_QUANT_START
 
 
 @_NEEDS_MLX
@@ -4277,23 +4229,6 @@ class TestDiffusionRouting:
             mm._routes_to_diffusion({"model_type": "whatever"})
         with pytest.raises(RuntimeError):
             mm._generation_settings({"model_type": "whatever", "vision_config": {"depth": 2}})
-
-
-@_NEEDS_MLX
-@pytest.mark.parametrize("reported, explicit", [(32, None), (64, 32)])
-def test_the_estimate_prices_the_group_size_it_is_given(monkeypatch, reported, explicit):
-    _on_bfloat16_chip()
-    from core.inference import mlx_inference as mi
-
-    monkeypatch.setattr(mi, "mlx_kv_group_size", lambda **kw: reported)
-    breakdown = mm.mlx_memory_breakdown(
-        _local_snapshot("unsloth/Qwen3-4B-Thinking-2507"),
-        n_ctx = 32768,
-        load_in_4bit = True,
-        kv_bits = 4,
-        kv_group_size = explicit,
-    )
-    assert breakdown is not None and breakdown.kv_bytes == 1_521_745_920
 
 
 @pytest.mark.skipif(not _HAVE_MLX, reason = "drives real cache classes")
@@ -4561,7 +4496,6 @@ class TestShardsTheLoaderReads:
             "bf16",
         ),
         ("unsloth/gemma-3-270m-it", 8192, None, 392_058_112, 65_258_496, 725_729_935, 18, "bf16"),
-        ("unsloth/gemma-3-270m-it", 8192, 4, 392_058_112, 65_258_496, 725_729_935, 18, "bf16"),
         (
             "mlx-community/deepseek-vl2-tiny-4bit",
             4096,
@@ -4587,7 +4521,7 @@ class TestShardsTheLoaderReads:
             5001,
             4,
             3_520_856_064,
-            241_827_840,
+            53_084_160,
             717_152_431,
             36,
             "4-bit",
@@ -4597,7 +4531,7 @@ class TestShardsTheLoaderReads:
             5000,
             4,
             3_520_856_064,
-            241_827_840,
+            53_084_160,
             717_151_119,
             36,
             "4-bit",
@@ -4723,7 +4657,7 @@ def test_a_real_checkpoint_is_fitted_to_the_byte(budget_gib, fitted):
     ],
 )
 def test_the_total_never_falls_as_the_context_grows(repo, kv_bits, whole_prompt):
-    sizing = mm._size_load(_local_snapshot(repo), kv_bits, None, None, True)
+    sizing = mm._size_load(_local_snapshot(repo), kv_bits, None, True)
     if whole_prompt:
         forced = replace(sizing, facts = {**sizing.facts, "whole_prompt": True})
         assert mm._priced_at(forced, 32_768).total_bytes > mm._priced_at(sizing, 32_768).total_bytes

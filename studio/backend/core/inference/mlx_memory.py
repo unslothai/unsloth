@@ -50,8 +50,6 @@ _WIDTH_NAMES = {"float64": "f64", "float32": "f32", "bfloat16": "bf16", "float16
 
 _CACHE_BOUND_ATTRS = ("max_size", "chunk_size")
 
-_VLM_QUANT_START = 5000
-
 _MAX_SAFETENSORS_HEADER = 100_000_000
 
 
@@ -271,9 +269,9 @@ def _runtime_dtype():
 
 
 def _generation_settings(config: dict) -> tuple:
-    """``(prefill chunk, kv group size)`` the package that would load this model runs at."""
+    """``(prefill chunk, kv group size)`` a load of this model runs at."""
     try:
-        from core.inference.mlx_inference import mlx_kv_group_size, mlx_prefill_chunk
+        from core.inference.mlx_inference import MLX_KV_GROUP_SIZE, mlx_prefill_chunk
     except Exception as exc:
         logger.debug("MLX estimate cannot reach the loader's generation settings: %s", exc)
         return MLX_PREFILL_CHUNK, _KV_GROUP_SIZE
@@ -282,18 +280,8 @@ def _generation_settings(config: dict) -> tuple:
         raise ValueError("mlx-vlm would divert this to a diffusion generator")
     return (
         mlx_prefill_chunk(vision = vision, config = config if vision else None),
-        mlx_kv_group_size(vision = vision),
+        MLX_KV_GROUP_SIZE,
     )
-
-
-def _vlm_quant_start() -> int:
-    """Token offset mlx-vlm begins quantizing at, asked of the loader like the prefill chunk is."""
-    try:
-        from core.inference.mlx_inference import _vlm_quantized_kv_start
-    except Exception as exc:
-        logger.debug("MLX estimate cannot reach the loader's quantization start: %s", exc)
-        return _VLM_QUANT_START
-    return _vlm_quantized_kv_start()
 
 
 def _loads_as_vision(config: dict) -> bool:
@@ -445,30 +433,17 @@ def _probe_models(config: dict, dtype):
     yield prepared(_whole_tower), make_prompt_cache, getattr(arch, "Model", None)
 
 
-def _quantize_like_runtime(cache, kv_bits: Optional[int], kv_group_size: int):
-    """The converted cache a load ends up with, or None if it refuses."""
+def _quantize_like_runtime(cache, kv_bits: Optional[int]):
+    """The converted cache a load ends up with, or None if nothing in it converts."""
     if not kv_bits:
         return None
-    convertible = [entry for entry in cache if getattr(entry, "to_quantized", None) is not None]
-    if not convertible:
+    from core.inference.mlx_inference import _quantize_kv_entries
+
+    try:
+        converted = _quantize_kv_entries(list(cache), kv_bits)
+    except Exception:
         return None
-    if any(
-        getattr(entry, name, None) is not None
-        for entry in convertible
-        for name in ("max_size", "window_size")
-    ):
-        return None
-    converted = []
-    for entry in cache:
-        convert = getattr(entry, "to_quantized", None)
-        if convert is None:
-            converted.append(entry)
-            continue
-        try:
-            converted.append(convert(group_size = kv_group_size, bits = kv_bits))
-        except Exception:
-            return None
-    return converted
+    return converted if any(new is not old for new, old in zip(converted, cache)) else None
 
 
 def _sub_caches(entry):
@@ -600,7 +575,7 @@ def _config_widths(config: dict):
     )
 
 
-def _probe(config: dict, dtype, n_tokens: int, kv_bits, kv_group_size):
+def _probe(config: dict, dtype, n_tokens: int, kv_bits):
     import mlx.core as mx
 
     cache = None
@@ -622,10 +597,10 @@ def _probe(config: dict, dtype, n_tokens: int, kv_bits, kv_group_size):
         break
     if cache is None:
         raise failure
-    quantized = _quantize_like_runtime(cache, kv_bits, kv_group_size)
+    quantized = _quantize_like_runtime(cache, kv_bits)
     entries = []
-    for entry in cache:
-        converts = hasattr(entry, "to_quantized")
+    for index, entry in enumerate(cache):
+        converts = quantized is not None and quantized[index] is not entry
         for leaf in _sub_caches(entry):
             entries.append(
                 {
@@ -651,10 +626,10 @@ def _probe(config: dict, dtype, n_tokens: int, kv_bits, kv_group_size):
     }
 
 
-def _cache_plan(config: dict, dtype, kv_bits, kv_group_size):
+def _cache_plan(config: dict, dtype, kv_bits):
     """Per-entry ``const + slope * T``, solved from two lazy probes."""
-    near = _probe(config, dtype, _PROBE_SHORT, kv_bits, kv_group_size)
-    far = _probe(config, dtype, _PROBE_LONG, kv_bits, kv_group_size)
+    near = _probe(config, dtype, _PROBE_SHORT, kv_bits)
+    far = _probe(config, dtype, _PROBE_LONG, kv_bits)
     if not near["entries"] or len(near["entries"]) != len(far["entries"]):
         raise ValueError("cache probe returned no comparable entries")
     span = _PROBE_LONG - _PROBE_SHORT
@@ -681,12 +656,9 @@ def _cache_plan(config: dict, dtype, kv_bits, kv_group_size):
                 "converts": slot["converts"] and near["quantized"],
             }
         )
-    quant_start = None
-    if near["quantized"]:
-        quant_start = _vlm_quant_start() if _loads_as_vision(config) else 0
     return (
         plan,
-        quant_start,
+        0 if near["quantized"] else None,
         {
             "whole_prompt": near["whole_prompt"],
             "layers": near["layers"],
@@ -760,54 +732,12 @@ def _line_bytes(
     )
 
 
-def _crossover_bytes(plan, boundary: int, prefill_chunk: int) -> int:
-    total = 0.0
-    for entry in plan:
-        held = _held_tokens(entry, boundary, prefill_chunk, decoding = False)
-        wide = entry["const"] + entry["slope"] * held
-        total += wide
-        if entry.get("converts"):
-            total += entry["quant_const"] + entry["quant_slope"] * held
-    return int(total)
-
-
-def _quant_boundary(
-    quant_start: int,
-    prefill_chunk: int,
-    n_ctx: int,
-    whole_prompt: bool = False,
-) -> Optional[int]:
-    if n_ctx < 1:
-        return None
-    start = max(quant_start, 0)
-    if whole_prompt:
-        return n_ctx if n_ctx >= start else None
-    full = (n_ctx - 1) // prefill_chunk
-    if full >= 1:
-        step = max(1, -(-start // prefill_chunk))
-        if step <= full:
-            return step * prefill_chunk
-    for offset in (n_ctx - 1, n_ctx):
-        if offset >= 1 and offset >= start:
-            return offset
-    return None
-
-
-def _kv_bytes(
-    plan,
-    n_ctx: int,
-    quant_start,
-    prefill_chunk: int,
-    whole_prompt: bool = False,
-):
-    """Peak cache bytes across the run, not the bytes it settles at."""
+def _kv_bytes(plan, n_ctx: int, quant_start, prefill_chunk: int):
+    """Peak cache bytes across the run, and where the cache is quantized from."""
     if quant_start is None:
         return _line_bytes(plan, n_ctx, prefill_chunk, quantized = False), None
-    boundary = _quant_boundary(quant_start, prefill_chunk, n_ctx, whole_prompt)
-    if boundary is None:
-        return _line_bytes(plan, n_ctx, prefill_chunk, quantized = False), None
-    crossover = _crossover_bytes(plan, boundary, prefill_chunk)
-    return max(crossover, _line_bytes(plan, n_ctx, prefill_chunk, quantized = True)), boundary
+    # The load converts the cache before prefill, so no full-width copy is ever held.
+    return _line_bytes(plan, n_ctx, prefill_chunk, quantized = True), quant_start
 
 
 def _config_width(value) -> int:
@@ -1043,11 +973,7 @@ class _MlxSizing:
 
 
 def _size_load(
-    model_dir: str,
-    kv_bits: Optional[int],
-    kv_group_size: Optional[int],
-    prefill_chunk: Optional[int],
-    load_in_4bit: bool,
+    model_dir: str, kv_bits: Optional[int], prefill_chunk: Optional[int], load_in_4bit: bool
 ) -> Optional[_MlxSizing]:
     """Everything about a load that does not move with the context, or None if it cannot be sized."""
     config = _snapshot_config(model_dir)
@@ -1067,9 +993,7 @@ def _size_load(
     try:
         dtype = _runtime_dtype()
         loaded_chunk, loaded_group = _generation_settings(config)
-        plan, quant_start, facts = _cache_plan(
-            config, dtype, kv_bits, kv_group_size or loaded_group
-        )
+        plan, quant_start, facts = _cache_plan(config, dtype, kv_bits)
         widths = tuple(
             tower or checkpoint
             for tower, checkpoint in zip(facts["widths"], _config_widths(config))
@@ -1089,7 +1013,7 @@ def _size_load(
         widths = widths,
         chunk = chunk,
         kv_bits = kv_bits,
-        kv_group_size = kv_group_size or loaded_group,
+        kv_group_size = loaded_group,
     )
 
 
@@ -1098,9 +1022,7 @@ def _priced_at(sizing: _MlxSizing, n_ctx: int) -> Optional[MlxMemoryBreakdown]:
         context = max(int(n_ctx or 0), 1)
         whole_prompt = sizing.facts["whole_prompt"]
         chunk = context if whole_prompt else sizing.chunk
-        kv, quant_boundary = _kv_bytes(
-            sizing.plan, context, sizing.quant_start, chunk, whole_prompt
-        )
+        kv, quant_boundary = _kv_bytes(sizing.plan, context, sizing.quant_start, chunk)
         compute = _compute_bytes(
             sizing.widths,
             sizing.dtype.size,
@@ -1139,12 +1061,11 @@ def mlx_memory_breakdown(
     *,
     n_ctx: int,
     kv_bits: Optional[int] = None,
-    kv_group_size: Optional[int] = None,
     prefill_chunk: Optional[int] = None,
     load_in_4bit: bool = False,
 ) -> Optional[MlxMemoryBreakdown]:
     """Price an MLX load, or None when it cannot honestly be sized."""
-    sizing = _size_load(model_dir, kv_bits, kv_group_size, prefill_chunk, load_in_4bit)
+    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit)
     return None if sizing is None else _priced_at(sizing, n_ctx)
 
 
@@ -1155,12 +1076,11 @@ def mlx_fit_context(
     max_ctx: int,
     min_ctx: int = MLX_FIT_MIN_CONTEXT,
     kv_bits: Optional[int] = None,
-    kv_group_size: Optional[int] = None,
     prefill_chunk: Optional[int] = None,
     load_in_4bit: bool = False,
 ) -> Optional[int]:
     """Largest context whose estimated footprint stays inside ``budget_bytes``."""
-    sizing = _size_load(model_dir, kv_bits, kv_group_size, prefill_chunk, load_in_4bit)
+    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit)
     if sizing is None:
         return None
     ceiling = max(int(max_ctx or 0), MLX_KV_BLOCK)
