@@ -534,9 +534,14 @@ if (
 
 def _nf4_kernels_failed(error):
     """A Triton compile failure on an untested GPU switches to the bitsandbytes kernels for good.
-    False (re-raise) while tracing and for out-of-memory, which the fallback would not fix."""
+    False (re-raise) while tracing, for Dynamo's own exceptions (a graph break is not a kernel
+    failure) and for out-of-memory, which the fallback would not fix."""
     global _USE_NF4_KERNELS
-    if torch.compiler.is_compiling() or isinstance(error, torch.cuda.OutOfMemoryError):
+    if (
+        torch.compiler.is_compiling()
+        or isinstance(error, torch.cuda.OutOfMemoryError)
+        or type(error).__module__.startswith("torch._dynamo")
+    ):
         return False
     _USE_NF4_KERNELS = False
     print(

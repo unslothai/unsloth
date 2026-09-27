@@ -493,3 +493,17 @@ def test_eager_gemv_keeps_bitsandbytes_before_triton_3_7(monkeypatch):
         out = U.fast_gemv(X, q, s)
     stream.synchronize()
     assert torch.equal(out, U._fast_gemv_ctypes(X, q, s))
+
+
+def test_graph_break_is_not_mistaken_for_a_kernel_failure(nf4_kernels, monkeypatch):
+    """A Dynamo exception surfacing through fast_dequantize (e.g. an older Dynamo tracing the
+    fallback's try/except) must re-raise, not switch the kernels off for the process."""
+    q, s = _quantize((512, 256), torch.bfloat16)
+
+    def unsupported(*args, **kwargs):
+        raise torch._dynamo.exc.Unsupported("Data-dependent branching")
+
+    monkeypatch.setattr(U, "dequantize_nf4", unsupported)
+    with pytest.raises(torch._dynamo.exc.Unsupported):
+        U.fast_dequantize(q, s)
+    assert U._USE_NF4_KERNELS is True
