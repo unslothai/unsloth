@@ -48,6 +48,13 @@ _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
     "MiniMaxH3Transformer3DModel": _MINIMAX_H3_SOURCES,
 }
 
+# Sources compiled UNBACKED instead: a backed symbol still specialises a size of 1. H3's temb has one row per distinct
+# timestep, 1 on the first step and 2 after it, so every first render compiled MiniMaxH3TransformerBlock twice
+# (7.5 of 18.7 s). Unbacked never specialises 0/1: one graph for 1, 2 and 3 rows.
+_FAMILY_UNBACKED: dict[str, tuple[str, ...]] = {
+    "MiniMaxH3Transformer3DModel": ("L['temb']",),
+}
+
 
 def _compiler_config() -> Any:
     try:
@@ -69,8 +76,29 @@ def supported() -> bool:
     return _compiler_config() is not None
 
 
+def unbacked_supported() -> bool:
+    cfg = _compiler_config()
+    if cfg is None:
+        return False
+    try:
+        from torch._dynamo.variables import builder  # noqa: PLC0415
+
+        getattr(cfg, "unbacked_sources")
+    except Exception:  # noqa: BLE001 - knob absent on this build
+        return False
+    return callable(getattr(builder, "is_unbacked_source", None))
+
+
+def unbacked_sources_for(transformer: Any) -> tuple[str, ...]:
+    if not unbacked_supported():
+        return ()
+    return _FAMILY_UNBACKED.get(type(transformer).__name__, ())
+
+
 def sources_for(transformer: Any) -> tuple[str, ...]:
-    return _FAMILY_SOURCES.get(type(transformer).__name__, ())
+    # A source is dynamic OR unbacked; without the unbacked knob it stays on the dynamic list.
+    unbacked = set(unbacked_sources_for(transformer))
+    return tuple(s for s in _FAMILY_SOURCES.get(type(transformer).__name__, ()) if s not in unbacked)
 
 
 def fingerprint(transformer: Any, dynamic: Any) -> Optional[str]:
@@ -79,7 +107,8 @@ def fingerprint(transformer: Any, dynamic: Any) -> Optional[str]:
     sources = sources_for(transformer)
     if not sources or not supported():
         return None
-    return ",".join(sources)
+    unbacked = unbacked_sources_for(transformer)
+    return ",".join(sources) + (";unbacked:" + ",".join(unbacked) if unbacked else "")
 
 
 def _merge(current: str, extra: tuple[str, ...]) -> str:
@@ -94,19 +123,26 @@ def install(transformer: Any, logger: Any = None) -> bool:
     if getattr(transformer, "_unsloth_dynamic_text", None) is not None:
         return True
     sources = sources_for(transformer)
+    unbacked = unbacked_sources_for(transformer)
     cfg = _compiler_config()
     if not sources or cfg is None:
         return False
-    saved: list[Optional[str]] = []
+    saved: list[tuple[Optional[str], Optional[str]]] = []
 
     def _enter(module: Any, args: Any) -> None:
         prev = cfg.dynamic_sources
-        saved.append(prev)
+        prev_unbacked = cfg.unbacked_sources if unbacked else None
+        saved.append((prev, prev_unbacked))
         cfg.dynamic_sources = _merge(prev, sources)
+        if unbacked:
+            cfg.unbacked_sources = _merge(prev_unbacked, unbacked)
 
     def _exit(module: Any, args: Any, output: Any) -> None:
         if saved:
-            cfg.dynamic_sources = saved.pop()
+            prev, prev_unbacked = saved.pop()
+            cfg.dynamic_sources = prev
+            if unbacked:
+                cfg.unbacked_sources = prev_unbacked
 
     try:
         pre = transformer.register_forward_pre_hook(_enter)

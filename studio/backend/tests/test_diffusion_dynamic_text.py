@@ -227,6 +227,7 @@ class MiniMaxH3Transformer3DModel(torch.nn.Module):
 
     def forward(self, seq_len, n_timesteps):
         self.seen = _cfg().dynamic_sources
+        self.seen_unbacked = getattr(_cfg(), "unbacked_sources", "")
         hidden_states = torch.randn(1, seq_len, 8)
         temb = torch.randn(n_timesteps, 8)
         adaln_indices = torch.arange(seq_len) % n_timesteps
@@ -244,10 +245,16 @@ def test_minimax_h3_packed_length_is_armed():
         "L['adaln_indices']",
         "L['rotary_emb'][0]",
         "L['rotary_emb'][1]",
-        "L['temb']",
     ):
         assert name in seen
+    # temb is unbacked where torch has the knob, else dynamic: never both, never neither
+    unbacked = [s for s in (m.seen_unbacked or "").split(",") if s]
+    assert ("L['temb']" in seen) != ("L['temb']" in unbacked)
+    assert ("L['temb']" in unbacked) == dt.unbacked_supported()
     dt.uninstall(m)
+    assert _cfg().dynamic_sources == "" or "L['temb']" not in _cfg().dynamic_sources
+    if dt.unbacked_supported():
+        assert "L['temb']" not in _cfg().unbacked_sources
 
 
 def test_minimax_h3_new_caption_and_i2v_reuse_the_first_graphs():
@@ -270,3 +277,48 @@ def test_minimax_h3_new_caption_and_i2v_reuse_the_first_graphs():
 
     assert graphs_per_render(False)[2:] != [0, 0, 0]
     assert graphs_per_render(True)[2:] == [0, 0, 0]
+
+
+@pytest.mark.skipif(not dt.unbacked_supported(), reason = "torch lacks compiler.config.unbacked_sources")
+def test_minimax_h3_first_render_compiles_the_block_once():
+    """temb has 1 row on the first step and 2 after it: a backed symbol specialises the 1 and compiles twice."""
+    from torch._dynamo.utils import counters
+
+    torch._dynamo.reset()
+    counters.clear()
+    m = MiniMaxH3Transformer3DModel()
+    assert dt.install(m)
+    try:
+        for render in ((100, 1), (100, 2), (104, 1), (130, 3)):
+            m(*render)
+        assert counters["stats"]["unique_graphs"] == 1
+    finally:
+        dt.uninstall(m)
+        torch._dynamo.reset()
+
+
+def test_unbacked_list_is_restored_after_forward():
+    if not dt.unbacked_supported():
+        pytest.skip("torch lacks compiler.config.unbacked_sources")
+    cfg = _cfg()
+    before = cfg.unbacked_sources
+    try:
+        cfg.unbacked_sources = "L['user_thing']"
+        m = MiniMaxH3Transformer3DModel()
+        dt.install(m)
+        m(12, 1)
+        assert m.seen_unbacked.split(",") == ["L['user_thing']", "L['temb']"]
+        assert cfg.unbacked_sources == "L['user_thing']"
+        dt.uninstall(m)
+    finally:
+        cfg.unbacked_sources = before
+
+
+def test_fingerprint_keys_on_the_unbacked_list(monkeypatch):
+    m = MiniMaxH3Transformer3DModel()
+    fp = dt.fingerprint(m, None)
+    assert fp
+    assert ("unbacked:L['temb']" in fp) == dt.unbacked_supported()
+    monkeypatch.setattr(dt, "unbacked_supported", lambda: False)
+    fp_old = dt.fingerprint(m, None)
+    assert "unbacked" not in fp_old and "L['temb']" in fp_old
