@@ -516,9 +516,12 @@ def test_a_timeout_in_the_polling_loop_kills_the_running_formatters(tmp_path, mo
     assert all(proc.poll() is not None for proc in started), "a formatter outlived the timeout"
     grandchild = _read_pid(pid_file)
     assert grandchild is not None, "the batch never started its child"
-    for _ in range(100):
-        if not _alive(grandchild):
-            break
+    # SIGKILL is sent at once, but the process only dies once it is next scheduled, and a
+    # grandchild still in Python's startup can sit in uninterruptible I/O on a loaded runner.
+    # Five seconds was not always enough under xdist (Repo tests (CPU, rest) on #12060), so wait
+    # as long as the launch above may take. A group kill that missed it still fails, just later.
+    deadline = real_monotonic() + 30
+    while _alive(grandchild) and real_monotonic() < deadline:
         real_sleep(0.05)
     assert not _alive(grandchild), "the formatter's own child outlived the timeout"
 
