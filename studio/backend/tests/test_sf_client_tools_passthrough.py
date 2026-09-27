@@ -1356,7 +1356,6 @@ def test_legacy_image_field_keeps_the_client_tool_catalog(monkeypatch):
     assert backend.calls[0]["image"] is not None
 
 
-
 _RF_SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
 _RF_FORMAT = {"type": "json_schema", "json_schema": {"name": "c", "schema": _RF_SCHEMA}}
 _MARKUP_DOC = '{"city":"<think>Paris</think>"}'
@@ -1373,7 +1372,6 @@ _MARKUP_DOC = '{"city":"<think>Paris</think>"}'
     ],
 )
 def test_markers_inside_a_constrained_document_stay_in_it(chunked, prefix, prefilled, reasoning):
-    """A document may legitimately contain the text the reasoning protocol uses."""
     from routes.inference import _ResponsesReasoningExtractor
 
     extractor = _ResponsesReasoningExtractor(
@@ -1394,8 +1392,6 @@ def test_markers_inside_a_constrained_document_stay_in_it(chunked, prefix, prefi
 
 @pytest.mark.parametrize("reasoning", [False, True], ids = ["plain", "reasoning"])
 def test_the_contract_reaches_the_backend_and_its_reply_comes_back_whole(monkeypatch, reasoning):
-    """The contract travels with the route's own answer to whether reasoning is separated, so
-    the grammar leaves room for a block exactly where one is taken back out."""
     pytest.importorskip("llguidance.mlx")
     backend = _ScriptedBackend(_fixed(_MARKUP_DOC))
     backend.models["sf-model"]["is_mlx"] = True

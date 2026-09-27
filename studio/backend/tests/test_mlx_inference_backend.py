@@ -4903,9 +4903,6 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
 
 
-# Against a synthetic character-level tokenizer, so real llguidance masks without a
-# downloaded checkpoint; the engine being optional, these cases skip where it is absent.
-
 import numpy as np  # noqa: E402
 
 from core.inference import grammar_constraint as gc
@@ -4926,7 +4923,6 @@ JSON_SCHEMA_FORMAT = {"type": "json_schema", "schema": SCHEMA}
 
 
 def _char_tokenizer(*extra_specials, markers_are_special = False):
-    """A character-level fast tokenizer with ``</think>`` as an added token."""
     if not gc.LLGUIDANCE_AVAILABLE:
         pytest.skip("llguidance.mlx did not import")
     tk = pytest.importorskip("tokenizers")
@@ -4937,7 +4933,6 @@ def _char_tokenizer(*extra_specials, markers_are_special = False):
     backend.pre_tokenizer = tk.pre_tokenizers.ByteLevel(add_prefix_space = False, use_regex = False)
     backend.decoder = tk.decoders.ByteLevel()
     backend.add_special_tokens([tk.AddedToken("<eos>", special = True)])
-    # Qwen3's shape: <...> excludes them from llguidance's lexer; added-not-special keeps them.
     markers = [tk.AddedToken(t, special = markers_are_special) for t in ("</think>", *extra_specials)]
     if markers_are_special:
         backend.add_special_tokens(markers)
@@ -4954,7 +4949,6 @@ def tiny_tokenizer():
 
 
 def _metal_mx():
-    """mlx.core where Metal runs: llguidance.mlx applies its bitmask with a Metal kernel."""
     mx = pytest.importorskip("mlx.core")
     if not mx.metal.is_available():
         pytest.skip("llguidance.mlx masks with a Metal kernel")
@@ -4962,7 +4956,6 @@ def _metal_mx():
 
 
 def _allowed(constraint, width):
-    """Token ids the constraint permits at the current step, over a logits row that wide."""
     mx = _metal_mx()
     masked = np.asarray(constraint.mask_logits(mx.zeros((width,), dtype = mx.float32)))
     return set(np.nonzero(~np.isneginf(masked))[0].tolist())
@@ -4981,7 +4974,6 @@ def test_every_spelling_of_a_supplied_schema_agrees_and_a_non_schema_is_refused(
     for supplied in (False, True, "nonsense", [1, 2]):
         with pytest.raises(ResponseFormatError):
             constraint_spec_from_response_format({"type": "json_object", "schema": supplied})
-    # json_object's own promise; a json_schema `{}` keeps its spec meaning of any value.
     plain = constraint_spec_from_response_format({"type": "json_object"}).grammar
     for spelling in (
         {"type": "json_object", "schema": None},
@@ -4989,7 +4981,6 @@ def test_every_spelling_of_a_supplied_schema_agrees_and_a_non_schema_is_refused(
         {"type": "json_schema", "schema": {"type": "object"}},
     ):
         assert constraint_spec_from_response_format(spelling).grammar == plain
-    # Behaviour, not the compiled string: a `{}` root admits a scalar, the promise does not.
     digit = tiny_tokenizer.encode("4", add_special_tokens = False)[0]
     width = len(tiny_tokenizer)
     any_value = build_constraint({"type": "json_schema", "schema": {}}, tiny_tokenizer, "p")
@@ -5000,7 +4991,6 @@ def test_every_spelling_of_a_supplied_schema_agrees_and_a_non_schema_is_refused(
 
 
 def test_the_schema_itself_constrains_not_merely_json_syntax(tiny_tokenizer):
-    """Property names and value types come from the schema, not from being JSON."""
     constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
     _allowed(constraint, len(tiny_tokenizer))
     for token_id in tiny_tokenizer.encode('{"', add_special_tokens = False):
@@ -5015,7 +5005,6 @@ def test_the_schema_itself_constrains_not_merely_json_syntax(tiny_tokenizer):
 
 
 def test_advance_raises_on_a_token_the_grammar_rejects(tiny_tokenizer):
-    """A token the mask never offered is a decode-loop fault, not the schema's doing."""
     constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
     _allowed(constraint, len(tiny_tokenizer))
     illegal = tiny_tokenizer.encode("]", add_special_tokens = False)[0]
@@ -5025,7 +5014,6 @@ def test_advance_raises_on_a_token_the_grammar_rejects(tiny_tokenizer):
 
 
 def test_binding_waits_for_the_logits_width_a_padded_lm_head_widens(tiny_tokenizer):
-    """A padded lm_head is wider than the vocabulary, so the row decides."""
     gc._TOKENIZER_CACHE.clear()
     constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
     padded = len(tiny_tokenizer) + 16
@@ -5046,7 +5034,6 @@ def test_prelude_is_bounded_so_an_unclosed_think_block_cannot_eat_the_budget(
         constraint.advance(int(token_id))
     close_id = tiny_tokenizer.encode("</think>", add_special_tokens = False)[0]
     assert _allowed(constraint, len(tiny_tokenizer)) == {close_id}
-    # Closing the block does not release the contract: the document is still owed.
     constraint.advance(int(close_id))
     assert _allowed(constraint, len(tiny_tokenizer)) == set(
         tiny_tokenizer.encode("{", add_special_tokens = False)
@@ -5055,7 +5042,6 @@ def test_prelude_is_bounded_so_an_unclosed_think_block_cannot_eat_the_budget(
 
 @pytest.mark.parametrize("reply_keeps_special_tokens", [False, True])
 def test_a_close_marker_is_refused_only_where_the_reply_would_lose_it(reply_keeps_special_tokens):
-    """Whether the marker reaches the caller is the path's property, not the tokenizer's."""
     tokenizer = _char_tokenizer(markers_are_special = True)
     ids = tokenizer.encode("</think>", add_special_tokens = False)
     assert (
@@ -5083,8 +5069,6 @@ def test_a_close_marker_is_refused_only_where_the_reply_would_lose_it(reply_keep
 
 
 class _Recorder:
-    """Stands in for a bound matcher, recording what the processor commits."""
-
     def __init__(self):
         self.advanced = []
 
@@ -5096,7 +5080,6 @@ class _Recorder:
 
 
 def test_the_grammar_mask_runs_first_and_its_inf_survives_every_knob():
-    """The mask leads the chain, and nothing below it can restore a masked token."""
     mx = pytest.importorskip("mlx.core")
     pytest.importorskip("mlx_lm")
     from core.inference.mlx_inference import _mlx_sampling_processors
@@ -5133,7 +5116,6 @@ def test_the_grammar_mask_runs_first_and_its_inf_survives_every_knob():
 
 
 def _two_stop_tokenizer():
-    """A tokenizer naming one end token while a runtime may stop on another."""
     tokenizer = _char_tokenizer("<end_of_text>", markers_are_special = True)
     tokenizer.chat_template = "{{ messages[0].content }}"
     runtime_stop = tokenizer.convert_tokens_to_ids("<end_of_text>")
@@ -5142,7 +5124,6 @@ def _two_stop_tokenizer():
 
 
 def _stop_offered_after_the_document(target, tokenizer):
-    """The ids the mask still allows once the document is complete."""
     constraint = build_constraint(JSON_SCHEMA_FORMAT, target, "prompt")
     for token_id in tokenizer.encode('{"a":1}', add_special_tokens = False):
         _allowed(constraint, len(tokenizer))
@@ -5152,7 +5133,6 @@ def _stop_offered_after_the_document(target, tokenizer):
 
 
 def test_the_grammar_stops_on_the_token_the_decode_loop_stops_on():
-    """End on the token the loop stops for, or a finished document burns max_tokens."""
     mlx_lm = pytest.importorskip("mlx_lm")
     from mlx_lm.tokenizer_utils import TokenizerWrapper
 
@@ -5163,12 +5143,9 @@ def test_the_grammar_stops_on_the_token_the_decode_loop_stops_on():
 
 
 def test_a_schema_forced_through_a_stop_token_is_refused_while_it_can_still_be_reported():
-    """A stop token offered as content never reaches ``advance``, so the mask is the last
-    place to refuse a document the loop would truncate the instant one is sampled."""
     pytest.importorskip("mlx_lm")
     from mlx_lm.tokenizer_utils import TokenizerWrapper
 
-    # The runtime's stop token, not the tokenizer's: reading the wrong one keeps the truncation.
     tokenizer, runtime_stop = _two_stop_tokenizer()
     wrapped = TokenizerWrapper(tokenizer, eos_token_ids = [runtime_stop])
 
@@ -5186,8 +5163,6 @@ def test_a_schema_forced_through_a_stop_token_is_refused_while_it_can_still_be_r
 
 
 def test_a_scalar_end_token_does_not_hide_the_runtime_stop_set():
-    """transformers answers ``eos_token_ids`` with the scalar end token, which must not shadow
-    the set the criteria names -- hung off the processor's tokenizer, so both are asked."""
     pytest.importorskip("mlx_vlm")
     from mlx_vlm.utils import StoppingCriteria
 
@@ -5200,17 +5175,12 @@ def test_a_scalar_end_token_does_not_hide_the_runtime_stop_set():
 
 
 def test_advance_before_the_first_mask_raises_rather_than_dropping_the_token(tiny_tokenizer):
-    """Advancing before the first mask is this loop's fault, not a refusal naming a field."""
     constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
     with pytest.raises(gc.GrammarDesyncError, match = "before the grammar was bound"):
         constraint.advance(tiny_tokenizer.encode("{", add_special_tokens = False)[0])
 
 
 def test_mlx_vlm_recovers_native_tool_tokens_like_the_text_path(monkeypatch):
-    """mlx-vlm's ``response.text`` has already dropped the native tool controls. Without recovering
-    them the wrapper never reaches the parser, so a genuine
-    ``<|tool_call>call:terminal{..}<tool_call|>`` arrives markerless and the execution guard
-    refuses it. Text-only requests on a model classified as a VLM use this route too."""
     from core.inference import mlx_inference
 
 

@@ -11905,9 +11905,7 @@ def install_python_stack() -> int:
     #      rather than no install.
     _diffusers_main_step()
 
-    # 11d. Apple Silicon: the grammar engine the MLX chat paths decode response_format with.
-    #      Outside the skip_base branch, which install.sh always takes and which left a fresh
-    #      install refusing every json_schema request for a missing engine.
+    # 11d. Apple Silicon grammar engine, outside skip_base: install.sh always takes that branch, leaving fresh installs without it.
     if IS_MAC_ARM:
         _progress("MLX grammar engine")
         pip_install(

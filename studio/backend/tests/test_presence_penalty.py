@@ -215,7 +215,6 @@ def test_orchestrator_cmd_carries_all_sampling_params():
     )
     for key, val in _SAMPLING.items():
         assert cmd[key] == val, f"{key} dropped/altered in orchestrator cmd"
-    # A decoding contract and the reply's reasoning split ride together, and only together.
     rf = {"response_format": {"type": "json_object"}, "reasoning_is_extracted": True}
     with_rf = o._build_generate_cmd("req1", None, messages = [], max_new_tokens = 8, **rf)
     assert {key: with_rf[key] for key in rf} == rf

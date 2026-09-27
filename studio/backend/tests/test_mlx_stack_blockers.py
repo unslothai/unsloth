@@ -385,10 +385,7 @@ def test_uv_missing_never_marks_the_environment(monkeypatch):
 
 
 def test_a_missing_grammar_engine_names_the_package_instead_of_ignoring_the_schema(monkeypatch):
-    """Here rather than beside the grammar tests, which skip whole on the very install --
-    llguidance absent -- that this refusal exists for."""
     from core.inference import grammar_constraint as gc
-
     monkeypatch.setattr(gc, "LLGUIDANCE_AVAILABLE", False)
     with pytest.raises(gc.ResponseFormatError, match = "llguidance"):
         gc.constraint_spec_from_response_format({"type": "json_object"})

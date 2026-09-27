@@ -1633,30 +1633,21 @@ class TestClientToolSchemaTyping:
         assert _healed_arguments(call % ("Grep", "pattern")) == {"pattern": "x", "timeout": 30}
 
 
-# Here rather than beside the route tests, which skip whole without llguidance.
-
 _SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
 _CONTRACT = {"type": "json_schema", "json_schema": {"name": "c", "schema": _SCHEMA}}
 
 
 def test_a_contract_withdraws_both_post_decode_reinterpreters():
-    """A grammar has already fixed what the reply means: a schema value spelling call markup
-    would be promoted away, and a complete document re-asked would gain a second one."""
     tools = [{"type": "function", "function": {"name": "lookup"}}]
     assert heal_gate(True, tools) == {"lookup"}
     assert heal_gate(True, tools, response_format = {"type": "text"}) == {"lookup"}
     assert nudge_enabled(True, response_format = {"type": "text"}) is True
-    # A coerced contract withdraws healing rather than reading as absence.
     for constraining in (_CONTRACT, {"type": "json_object"}, {"type": "text", "x": 1}, True, "x"):
         assert heal_gate(True, tools, response_format = constraining) is None, constraining
         assert nudge_enabled(True, response_format = constraining) is False, constraining
 
 
 def test_every_post_decode_reinterpreter_is_handed_the_request_s_own_contract():
-    """Source shape, deliberately: a behavioural test only covers the sites it reaches. Every
-    site must forward one of the two vetted readings of the request's own field, so one that
-    forgets it or fills it from another member fails here. The local tool loops, taking no
-    ``response_format``, are excluded by their signatures."""
     import ast
     from pathlib import Path
 

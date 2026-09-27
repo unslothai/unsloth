@@ -2312,8 +2312,6 @@ def _make_mlx_logit_bias_processor(logit_bias: dict):
 
 
 def _vlm_generation_is_diffusion(model) -> bool:
-    """Whether mlx_vlm routes this model to its diffusion generator, which produces the
-    sequence as a whole and so takes no logits processors for a grammar to act on."""
     try:
         from mlx_vlm.generate.diffusion import is_diffusion_model
     except Exception:
@@ -2360,13 +2358,6 @@ def _mlx_sampling_processors(
     logit_bias = None,
     grammar_constraint = None,
 ):
-    """Logits processors for the sampling knobs, or ``None`` when all are inert. A guided-decoding
-    mask runs first so its ``-inf`` survives every shaping step below and the sampler after, the
-    knobs only ever adding finite amounts. Bias then runs before the penalties, matching
-    llama-server's sampler order. mlx_lm supplies only the repetition penalty here: its presence and
-    frequency processors window the last 20 tokens *including the prompt*, while the penalties below
-    score the whole completion and exclude it, so using them would make the same request sample
-    differently depending on the backend."""
     processors = []
     if grammar_constraint is not None:
         from core.inference.grammar_constraint import make_grammar_logits_processor
@@ -3489,8 +3480,6 @@ class MLXInferenceBackend:
             reply_keeps_special_tokens = preserve_native_channels,
         )
         if constraint is not None and not constraint.allows_reasoning:
-            # Neither the prompt's opener nor the normalizer may put a block into a reply
-            # whose grammar forbids one.
             think_prefix = ""
             preserve_native_channels = False
         if seed is None:
@@ -3901,8 +3890,6 @@ class MLXInferenceBackend:
 
         # Detected once: the decoder keeps the delimiters the normalizer below consumes.
         vlm_reasoning_markers = detect_reasoning_channel_markers(chat_target, tools = tools)
-        # Re-emit an open <think> prefill from the prompt (see _generate_text), unless a grammar
-        # forbids the block it would open.
         prefill = detect_think_prefill(
             prompt,
             getattr(chat_target, "all_special_tokens", None),
@@ -3966,13 +3953,10 @@ class MLXInferenceBackend:
             reasoning_is_extracted = reasoning_is_extracted,
             reply_keeps_special_tokens = True,
         )
-        # As above: a grammar holding the reply to the document alone forbids a block.
         document_only = constraint is not None and not constraint.allows_reasoning
         if document_only:
             prefill = ""
         if constraint is not None and _vlm_generation_is_diffusion(self._model):
-            # mlx_vlm raises on logits_processors too, but a build that ignored them
-            # would answer text ignoring the schema.
             from core.inference.grammar_constraint import ResponseFormatError
             raise ResponseFormatError(
                 "response_format is not supported on this model: it generates by "

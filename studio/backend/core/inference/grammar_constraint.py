@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Grammar-constrained decoding for the MLX paths, through llguidance token bitmasks.
-
-Spec parsing is split from the matcher so a route can 400 a bad schema without a model, and
-the mask writes ``-inf``, which survives every later shaping step. llguidance is optional:
-only a request naming a constraining format reaches this module.
-"""
+"""Grammar-constrained decoding for the MLX paths, through llguidance token bitmasks."""
 
 import hashlib
 import json
@@ -40,7 +35,6 @@ MISSING_ENGINE_MESSAGE = (
 # json_object promises an object, not any JSON value; spelled canonically to share a grammar.
 _JSON_OBJECT_SCHEMA = '{"type":"object"}'
 
-# Unbounded, a model that never closes its think block never reaches the document.
 _PRELUDE_MAX_CHARS = 4000
 
 _THINK_MARKERS = ("<think>", "</think>")
@@ -59,9 +53,7 @@ class GrammarDesyncError(RuntimeError):
 
 @dataclass(frozen = True)
 class ConstraintSpec:
-    """A validated document grammar for one request, not yet bound to a tokenizer. ``grammar``
-    is the plain document, compiled here because compiling also validates the schema;
-    :meth:`build` compiles the variant that first closes a block the prompt opened."""
+    """A validated document grammar for one request, not yet bound to a tokenizer."""
 
     grammar: str
     schema_json: Optional[str] = None
@@ -100,12 +92,7 @@ def build_constraint(
     reasoning_is_extracted: bool = False,
     reply_keeps_special_tokens: bool = False,
 ) -> Optional["GrammarConstraint"]:
-    """The constraint one rendered prompt decodes under, or None for no contract.
-
-    A reasoning block is allowed only where the prompt opened one and the caller reports the
-    reply's reasoning as separated; otherwise it arrives as content the schema does not
-    describe. That answer, like ``reply_keeps_special_tokens``, is the caller's to give.
-    """
+    """The constraint one rendered prompt decodes under, or None for no contract."""
     markers = _reasoning_markers(tokenizer, reasoning_markers, tools)
     spec = constraint_spec_from_response_format(
         response_format,
@@ -130,9 +117,7 @@ def constraint_spec_from_response_format(
     reasoning_markers = None,
     reply_keeps_special_tokens: bool = False,
 ) -> Optional[ConstraintSpec]:
-    """Validate a request's ``response_format`` into a :class:`ConstraintSpec`, or None where
-    nothing is constrained. ``tokenizer`` is optional so a route can validate without a model,
-    and only spells the markers a caller supplies; a refusal here becomes the caller's 400."""
+    """Validate a request's ``response_format`` into a :class:`ConstraintSpec`, or None."""
     if response_format is None:
         return None
     if not isinstance(response_format, dict):
@@ -144,7 +129,6 @@ def constraint_spec_from_response_format(
             + ", ".join(SUPPORTED_RESPONSE_FORMAT_TYPES)
         )
     if format_type == "text":
-        # Dropping unknown members would serve text under a contract believed kept.
         if response_format != {"type": "text"}:
             raise ResponseFormatError(
                 "unsupported members on a text response_format: "
@@ -155,7 +139,6 @@ def constraint_spec_from_response_format(
         raise ResponseFormatError(MISSING_ENGINE_MESSAGE)
 
     if format_type == "json_object":
-        # llama-server builds its GBNF from a `schema` member here; both backends agree.
         supplied = response_format.get("schema")
         if supplied is not None:
             supplied = _require_schema_object(
@@ -163,8 +146,7 @@ def constraint_spec_from_response_format(
                 "response_format type 'json_object' requires a 'schema' member to be a "
                 "JSON Schema object",
             )
-        # Absent, null and empty all mean this format's own promise, not the any-JSON value
-        # llguidance reads. Only here: elsewhere `{}` keeps its JSON Schema meaning.
+        # Absent, null and empty mean this format's own object promise, not llguidance's any-JSON `{}`.
         schema_json = _JSON_OBJECT_SCHEMA if not supplied else _canonical_schema_json(supplied)
     else:
         schema_json = _canonical_schema_json(_json_schema_from_response_format(response_format))
@@ -183,7 +165,6 @@ def constraint_spec_from_response_format(
 
 
 def _json_schema_from_response_format(response_format: dict) -> dict:
-    """The schema in a ``json_schema`` response_format: clients send both spellings."""
     wrapper = response_format.get("json_schema")
     if isinstance(wrapper, dict):
         schema = wrapper.get("schema")
@@ -199,7 +180,6 @@ def _json_schema_from_response_format(response_format: dict) -> dict:
 
 
 def _require_schema_object(schema, message: str) -> dict:
-    """A supplied schema as an object, or a 400: dropping one would decode laxly."""
     if not isinstance(schema, dict):
         raise ResponseFormatError(message)
     return schema
@@ -217,10 +197,6 @@ def _reasoning_markers(
     markers = None,
     tools = None,
 ) -> Optional[tuple]:
-    """The reasoning markers the rendered template spells, falling back to ``<think>``, which
-    claims no protocol because a prompt that opened no block gets none either way. Callers that
-    rendered a prompt pass the renderer's answer; the rest must supply the request's tools, a
-    ``tool_use`` variant opening channels the default one does not."""
     if markers:
         return tuple(markers)
     if tokenizer is None:
@@ -234,10 +210,6 @@ def _reasoning_markers(
 
 
 def _marker_reference(tokenizer, marker: str, *, reply_keeps_special_tokens: bool) -> Optional[str]:
-    """``marker`` as a grammar reference, or None when it cannot be one. llguidance keeps an
-    added token spelled ``<...>`` out of its byte lexer, and a greedy free-text terminal
-    swallows a quoted terminator, so the marker must appear bare in a rule; a multi-token one
-    has no such form, and one the reply drops closes nothing the caller sees."""
     if tokenizer is None:
         return None
     inner = _unwrap_hf_tokenizer(tokenizer)
@@ -254,8 +226,7 @@ def _marker_reference(tokenizer, marker: str, *, reply_keeps_special_tokens: boo
 
 
 class GrammarConstraint:
-    """One generation's matcher: mask each logits row, advance on each token. Binding waits for
-    the first mask, the logit width being the model's rather than the tokenizer's vocab."""
+    """One generation's matcher: mask each logits row, advance on each token."""
 
     def __init__(
         self,
@@ -292,15 +263,12 @@ class GrammarConstraint:
         return masked.reshape(logits.shape)
 
     def _stop_offered_as_text(self) -> Optional[int]:
-        """A runtime stop id this mask offers to spell content with, if any: the loop ends the
-        moment one is sampled, so only an unfinished document makes it a fault."""
         if not self._stop_ids or self._matcher.is_stopped() or self._matcher.is_accepting():
             return None
         return next((i for i in self._stop_ids if self._mask_allowed(i)), None)
 
     def advance(self, token_id: int) -> None:
-        """Commit a sampled token, raising when it desyncs. A stopped matcher already accepted
-        a complete document, so consuming the loop's extra token would error for no reason."""
+        """Commit a sampled token, raising when it desyncs."""
         if self._matcher is None:
             raise GrammarDesyncError("guided decoding advanced before the grammar was bound")
         if self._matcher.is_stopped():
@@ -308,9 +276,6 @@ class GrammarConstraint:
         self._matcher.consume_token(int(token_id))
         error = self._matcher.get_error()
         if error:
-            # consume_token records the violation instead of raising. A token the mask itself
-            # offered is the schema asking for text llguidance reserves and cannot spell, which
-            # the caller can act on; one it never offered is this loop's fault.
             if self._mask_allowed(int(token_id)):
                 raise ResponseFormatError(self._desync_message(int(token_id)))
             raise GrammarDesyncError(f"guided decoding desynced on token {int(token_id)}: {error}")
@@ -324,8 +289,6 @@ class GrammarConstraint:
         return bool(word >> (token_id % 32) & 1)
 
     def _desync_message(self, token_id: int) -> str:
-        """Name the reserved text the document has been left with no way past: where the reply
-        got to, not what the schema demands, the value being possibly on an optional branch."""
         reserved = _reserved_token_text(self._tokenizer, token_id)
         return (
             f"response_format could not be honored: the reply reached a point where the "
@@ -336,9 +299,7 @@ class GrammarConstraint:
 
 
 def make_grammar_logits_processor(constraint: GrammarConstraint):
-    """``(tokens, logits) -> logits`` masking each step through *constraint*. mlx_lm and
-    mlx_vlm pass the running sequence, so the constraint advances itself from the tokens since
-    the previous call; the first carries the prompt, whose length is latched."""
+    """``(tokens, logits) -> logits`` masking each step through *constraint*."""
     state = {"seen": None}
 
     def _processor(tokens, logits):
@@ -354,12 +315,10 @@ def make_grammar_logits_processor(constraint: GrammarConstraint):
     return _processor
 
 
-# The llguidance tokenizer wrap costs most of a second. Both caches hold strong references
-# and are bounded, so a recycled id() cannot alias a live entry.
+# Bounded, strong-reference caches, so a recycled id() cannot alias a live entry.
 
 _GRAMMAR_CACHE: "OrderedDict[str, str]" = OrderedDict()
 _GRAMMAR_CACHE_MAX = 64
-# Counting entries alone would let 64 client-sized schemas retain hundreds of megabytes.
 _GRAMMAR_CACHE_MAX_BYTES = 8 << 20
 _TOKENIZER_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
 _TOKENIZER_CACHE_MAX = 4
@@ -374,7 +333,6 @@ def _canonical_schema_json(schema: dict) -> str:
 
 
 def _cached_grammar(schema_json: str, *, prelude_close: Optional[str]) -> str:
-    # Keyed by digest: the key would otherwise hold a second copy of every schema cached.
     digest = hashlib.sha256(schema_json.encode("utf-8")).hexdigest()
     key = f"{LLGUIDANCE_VERSION}:{prelude_close or ''}:" f"{_PRELUDE_MAX_CHARS}:{digest}"
     with _CACHE_LOCK:
@@ -415,7 +373,6 @@ def _compile_grammar(schema_json: str, prelude_close: Optional[str]) -> str:
 
 
 def _unwrap_hf_tokenizer(tokenizer):
-    """The fast tokenizer llguidance requires; mlx_lm's wrapper fails its isinstance check."""
     import transformers
 
     if isinstance(tokenizer, transformers.PreTrainedTokenizerFast):
@@ -430,10 +387,6 @@ def _unwrap_hf_tokenizer(tokenizer):
 
 
 def _runtime_stop_ids(tokenizer, n_vocab: int) -> Optional[tuple]:
-    """The ids this decode loop ends a turn on, or None where it does not say. A checkpoint may
-    name different end ids in its config than in its tokenizer, whose answer llguidance takes by
-    default, leaving a finished document held to a token nothing stops for. Read at bind time,
-    once both runtimes have settled their stop set."""
     for obj in (tokenizer, getattr(tokenizer, "tokenizer", None)):
         if obj is None:
             continue
@@ -444,7 +397,6 @@ def _runtime_stop_ids(tokenizer, n_vocab: int) -> Optional[tuple]:
             try:
                 found = tuple(sorted({int(i) for i in ids if 0 <= int(i) < int(n_vocab)}))
             except Exception:
-                # transformers answers this name with the scalar end token, not a set.
                 continue
             if found:
                 return found

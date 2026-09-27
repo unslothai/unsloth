@@ -61,16 +61,12 @@ _NUDGE_DEFAULT = os.environ.get("UNSLOTH_TOOL_CALL_NUDGE", "0") == "1"
 
 
 def response_format_constrains_decoding(response_format: Any) -> bool:
-    """Whether a ``response_format`` shapes the reply with a grammar. ``{"type": "text"}`` is
-    the default spelled out; anything else is a contract. Only ``None`` reads as absence, so a
-    coerced value withdraws healing -- the safe way to be wrong."""
+    """Whether a ``response_format`` shapes the reply with a grammar."""
     return response_format is not None and response_format != {"type": "text"}
 
 
 def nudge_enabled(request_flag: Optional[bool], *, response_format: Any = None) -> bool:
-    """Whether a turn that asked for no tool gets one re-ask to actually call one. A contract
-    withdraws it: the grammar closed a whole document, a second turn appends another, and a
-    schema-valid ``{"city": "Let me check"}`` reads as unfinished intent."""
+    """Whether a turn that asked for no tool gets one re-ask to actually call one."""
     if response_format_constrains_decoding(response_format):
         return False
     return _NUDGE_DEFAULT if request_flag is None else bool(request_flag)

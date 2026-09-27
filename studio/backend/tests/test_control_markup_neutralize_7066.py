@@ -4803,7 +4803,6 @@ def test_safetensors_healing_is_gated_on_the_sanitized_catalog():
     )
     assert "_sf_renderable_tools," in source and "asyncio.to_thread(" in source
     packed = " ".join(source.split()).replace("( ", "(")
-    # Third argument pinned too: the reconciled choice the payload carries, not the caller's.
     gate = "heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice"
     assert packed.count(gate + ",") + packed.count(gate + ")") == 1
     for call in (
