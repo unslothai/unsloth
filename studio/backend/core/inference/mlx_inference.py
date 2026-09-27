@@ -4,6 +4,7 @@ interface, using mlx-lm/mlx-vlm instead of torch/transformers for model loading 
 
 import copy
 import difflib
+import functools
 import hashlib
 import importlib
 import os
@@ -1491,11 +1492,43 @@ def _kv_entry_windowed(entry):
     return any(getattr(entry, name, None) is not None for name in ("max_size", "window_size"))
 
 
+def _allocate_empty_quantized_exactly(cls):
+    """mlx-lm and mlx-vlm size an empty QuantizedKVCache as ``dim // (32 // bits)`` words, one too
+    many at 3/5/6 bits (128-dim heads at 5 or 6), so the first decode raises a broadcast error.
+    Allocate the first block at mx.quantize's real ``dim * bits // 32``; upstream then only grows it."""
+    original = cls.update_and_fetch
+    if getattr(original, "_unsloth_exact_empty_alloc", False):
+        return
+
+    @functools.wraps(original)
+    def update_and_fetch(self, keys, values):
+        if self.keys is None:
+            import mlx.core as mx
+
+            batch, heads, steps, _ = keys.shape
+            shape = (batch, heads, (self.step + steps - 1) // self.step * self.step)
+
+            def block(dim):
+                return (
+                    mx.zeros((*shape, dim * self.bits // 32), dtype = mx.uint32),
+                    mx.zeros((*shape, dim // self.group_size), dtype = keys.dtype),
+                    mx.zeros((*shape, dim // self.group_size), dtype = keys.dtype),
+                )
+
+            self.keys, self.values = block(keys.shape[-1]), block(values.shape[-1])
+        return original(self, keys, values)
+
+    update_and_fetch._unsloth_exact_empty_alloc = True
+    cls.update_and_fetch = update_and_fetch
+
+
 def _quantize_kv_entries(entries, bits):
     for index, entry in enumerate(entries):
         convert = getattr(entry, "to_quantized", None)
         if convert is not None and not _kv_entry_windowed(entry):
             entries[index] = convert(group_size = MLX_KV_GROUP_SIZE, bits = bits)
+            if getattr(entry, "keys", True) is None:
+                _allocate_empty_quantized_exactly(type(entries[index]))
     return entries
 
 
@@ -1521,16 +1554,22 @@ def _kv_quant_probe(language_model, entries, bits):
             language_model(mx.array([[0]]), cache = entries)
             mx.eval([getattr(entry, "state", None) for entry in entries])
         except Exception as exc:
+            if is_metal_queue_dead(exc):
+                raise
             return 0, 0, f"its cache could not be exercised ({type(exc).__name__})", True
         try:
             _quantize_kv_entries(entries, bits)
             mx.eval([entries[index].state for index in targets])
         except Exception as exc:
+            if is_metal_queue_dead(exc):
+                raise
             return 0, 0, f"MLX cannot quantize it ({type(exc).__name__})", True
         try:
             language_model(mx.array([[0]]), cache = entries)
             mx.eval([getattr(entry, "state", None) for entry in entries])
         except Exception as exc:
+            if is_metal_queue_dead(exc):
+                raise
             return 0, 0, f"it cannot attend over a quantized cache ({type(exc).__name__})", True
         # Same helper insertion uses, so the caveat matches what insertion sees.
         retainable = all(_kv_entry_nbytes(entries[index]) is not None for index in targets)
