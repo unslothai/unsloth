@@ -3667,6 +3667,38 @@ def test_an_entry_the_upstream_lru_cannot_size_is_not_retainable(monkeypatch):
     assert probe(SimpleNamespace(state = (), nbytes = 128))[3] is True
 
 
+def test_kv_quant_probe_raises_a_dead_metal_queue(monkeypatch):
+    """The orchestrator retires a worker on this marker; a refusal would keep it serving on a dead queue."""
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    mx = sys.modules["mlx.core"]
+    mx.random = SimpleNamespace(state = [0])
+    mx.array = lambda v: v
+    mx.eval = lambda *a: None
+    calls = []
+
+    def language_model(*args, **kwargs):
+        calls.append(None)
+        if len(calls) > 1:
+            raise RuntimeError(f"[METAL] Command buffer execution failed: {message}")
+
+    entry = SimpleNamespace(
+        to_quantized = lambda group_size, bits: SimpleNamespace(state = (), nbytes = 1),
+        max_size = None,
+        window_size = None,
+        state = (),
+    )
+    message = "GPU Timeout Error"
+    with pytest.raises(RuntimeError, match = "GPU Timeout"):
+        mlx_inference._kv_quant_probe(language_model, [entry], 8)
+
+    calls.clear()
+    message = "Insufficient Memory"
+    failure = mlx_inference._kv_quant_probe(language_model, [entry], 8)[2]
+    assert failure == "it cannot attend over a quantized cache (RuntimeError)"
+
+
 class _SentinelRandomState:
     """``mx.random.state`` as mlx >= 0.32.1 exposes it: readable, not writable."""
 
@@ -7095,3 +7127,22 @@ def test_single_image_replay_notes_describe_only_retained_pixels(monkeypatch, me
     else:
         assert calls[-1]["prompt"].count(IMAGE_TURN_TEXT) == 1
     assert len(image_marker_parts(history)) == 2
+
+
+@pytest.mark.parametrize("module", ["mlx_lm.models.cache", "mlx_vlm.models.cache"])
+@pytest.mark.parametrize(
+    "bits, head_dim", [(5, 128), (6, 128), (3, 256), (5, 256), (6, 256), (8, 128)]
+)
+def test_an_empty_cache_converted_before_generation_decodes_at_every_width(module, bits, head_dim):
+    # Upstream sizes an empty QuantizedKVCache one packed word too wide at these widths.
+    mx = pytest.importorskip("mlx.core")
+    cache_module = pytest.importorskip(module)
+    from core.inference.mlx_inference import _quantize_kv_entries
+
+    (cache,) = _quantize_kv_entries([cache_module.KVCache()], bits)
+    for _ in range(300):
+        token = mx.random.normal((1, 2, 1, head_dim))
+        keys, _values = cache.update_and_fetch(token, token)
+        restored = mx.dequantize(*keys, group_size = 64, bits = bits)
+        mx.eval(restored)
+    assert restored.shape == (1, 2, 300, head_dim)
