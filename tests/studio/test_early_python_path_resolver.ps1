@@ -18,7 +18,7 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 foreach ($name in @(
-    "Get-StudioEarlyPython", "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython",
+    "Get-ElevationState", "Get-StudioEarlyPython", "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo"
@@ -34,6 +34,24 @@ foreach ($name in @(
 function Initialize-StudioFinalPathNativeType { return $false }
 function Get-StudioNativeFinalPath { param([string]$Path) return $null }
 function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
+
+# Candidate execution happens before the install lock and destination ownership guard.
+$savedElevation = ${function:Get-ElevationState}
+function Get-ElevationState { return "true" }
+$script:StudioEarlyPythonProbed = $false
+$script:StudioEarlyPython = $null
+$script:StudioEarlyPythonProbedWithoutVenv = $false
+try {
+    Check "an elevated run declines the unvalidated early interpreter" ($null -eq (Get-StudioEarlyPython))
+} finally {
+    ${function:Get-ElevationState} = $savedElevation
+    $script:StudioEarlyPythonProbed = $false
+    $script:StudioEarlyPython = $null
+    $script:StudioEarlyPythonProbedWithoutVenv = $false
+}
+
+# The remaining cases model a normal user even on an elevated Windows CI runner.
+function Get-ElevationState { return "false" }
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("earlypy-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
