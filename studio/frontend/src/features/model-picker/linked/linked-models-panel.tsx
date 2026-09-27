@@ -289,9 +289,11 @@ export function LinkedModelsPanel({
     repoId: string,
     meta: string | null,
     downloaded: boolean,
-    extra?: { loadId?: string | null; bytes?: number },
+    extra?: { loadId?: string | null; bytes?: number; onDevice?: boolean },
   ) => {
     const gguf = isGgufRepo(repoId);
+    // On Device rows take the local list's layout: size on the right, no Hub chips.
+    const onDevice = extra?.onDevice === true;
     const open = expanded === repoId;
     return (
       <div key={repoId}>
@@ -299,8 +301,8 @@ export function LinkedModelsPanel({
           label={repoId}
           meta={meta}
           selected={!open && isSelected(repoId)}
-          downloaded={downloaded}
-          alignMeta="hub"
+          downloaded={onDevice ? undefined : downloaded}
+          alignMeta={onDevice ? "device" : "hub"}
           vramStatus={gguf ? null : fitOn(vramGb, extra?.bytes)}
           gpuGb={vramGb ?? undefined}
           onClick={() =>
@@ -313,7 +315,7 @@ export function LinkedModelsPanel({
                   expectedBytes: extra?.bytes,
                 })
           }
-          tags={gguf ? ["GGUF"] : undefined}
+          tags={gguf && !onDevice ? ["GGUF"] : undefined}
         />
         {gguf && open ? (
           <VariantRows
@@ -435,11 +437,16 @@ export function LinkedModelsPanel({
         </Note>
       ) : (
         <>
-          {gguf.map((r) => chatRepo(r.repo_id, formatSize(r.size_bytes), true))}
+          {gguf.map((r) =>
+            chatRepo(r.repo_id, `GGUF · ${formatBytes(r.size_bytes)}`, true, {
+              onDevice: true,
+            }),
+          )}
           {models.map((r) =>
-            chatRepo(r.repo_id, formatSize(r.size_bytes), !r.partial, {
+            chatRepo(r.repo_id, formatBytes(r.size_bytes), !r.partial, {
               loadId: r.load_id,
               bytes: r.size_bytes,
+              onDevice: true,
             }),
           )}
         </>
