@@ -52,6 +52,11 @@ export function markThreadIncognito(threadId: string): void {
   incognitoThreadIds.add(threadId);
 }
 
+/** Saving a temporary chat: from here on it persists like any other thread. */
+export function unmarkThreadIncognito(threadId: string): void {
+  incognitoThreadIds.delete(threadId);
+}
+
 /** True for a temporary-session thread, which is deliberately never persisted. */
 export function isThreadIncognito(threadId: string): boolean {
   return incognitoThreadIds.has(threadId);

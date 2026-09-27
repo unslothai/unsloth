@@ -77,14 +77,16 @@
 			rgb(from var(--sidebar-surface) r g b / 0)
 		);
 	}
-	/* Model picker list: once scrolled, the top edge fades so rows dissolve as
-	   they pass under the pinned search / tab bar. */
-	.model-list-scroll.is-scrolled {
+	/* Model picker list and the Settings tab rail: once scrolled, the top edge fades so
+	   rows dissolve as they pass under the pinned search / tab bar or title. */
+	.model-list-scroll.is-scrolled,
+	.settings-rail-fade.is-scrolled {
 		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
 		mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
 	}
 	/* Bottom edge fades while more rows sit below the fold. */
-	.model-list-scroll.is-bottom-faded {
+	.model-list-scroll.is-bottom-faded,
+	.settings-rail-fade.is-bottom-faded {
 		-webkit-mask-image: linear-gradient(
 			to bottom,
 			#000 calc(100% - 16px),
@@ -93,7 +95,8 @@
 		mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
 	}
 	/* Both edges fade when scrolled with rows above and below. */
-	.model-list-scroll.is-scrolled.is-bottom-faded {
+	.model-list-scroll.is-scrolled.is-bottom-faded,
+	.settings-rail-fade.is-scrolled.is-bottom-faded {
 		-webkit-mask-image: linear-gradient(
 			to bottom,
 			transparent 0,
@@ -1440,11 +1443,12 @@ html[data-chat-font] .aui-root {
 		color: #fff;
 	}
 
-	/* pr-3, not pr-4: header actions end where a hovered row's "…" does (right-0
+	/* pl: the list's px-1.5 plus a row's pl-3 = 18px, so labels start where row content does.
+	   pr-3, not pr-4: header actions end where a hovered row's "…" does (right-0
 	   + pr-1.5 inside a pill the list inset by px-1.5 = 12px). The desktop
 	   titlebar insets by 5px, so those headers override this in app-sidebar.tsx. */
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[calc(8px*var(--ui-space-scale,1))] pl-[calc(16px*var(--ui-space-scale,1))] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[calc(8px*var(--ui-space-scale,1))] pl-[calc(18px*var(--ui-space-scale,1))] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. Follows the contrast slider. */
@@ -1455,10 +1459,8 @@ html[data-chat-font] .aui-root {
 	   Tailwind emits utility classes before this components block, so putting
 	   pr-[calc(11px*var(--ui-space-scale,1))]/pr-[calc(13px*var(--ui-space-scale,1))] on the element would lose the cascade. */
 	.sidebar-sticky-label.sidebar-sticky-label-desktop {
+		padding-left: calc(17px * var(--ui-space-scale, 1));
 		padding-right: calc(11px * var(--ui-space-scale, 1));
-	}
-	.sidebar-sticky-label.sidebar-sticky-label-desktop-recents {
-		padding-right: calc(13px * var(--ui-space-scale, 1));
 	}
 	.sidebar-sticky-label-following {
 		@apply pt-[calc(21px*var(--ui-space-scale,1))];
@@ -2019,6 +2021,23 @@ html[data-chat-font] .aui-root {
 		);
 	}
 
+	/* A hair between menu rows, as ChatGPT has. Block margins collapse, so neighbours sit 2px apart. */
+	:is(
+			[data-slot="dropdown-menu-content"],
+			[data-slot="dropdown-menu-sub-content"],
+			[data-slot="context-menu-content"],
+			[data-slot="context-menu-sub-content"],
+			[data-slot="menubar-content"],
+			[data-slot="menubar-sub-content"]
+		)
+		:is(
+			[role="menuitem"],
+			[role="menuitemcheckbox"],
+			[role="menuitemradio"]
+		) {
+		margin-block: 2px;
+	}
+
 	/* List menus: one radius in both themes, slightly tighter than --radius-lg
 	   and matching the sidebar buttons. !important beats per-menu rounded-*. */
 	[data-slot="dropdown-menu-content"],
@@ -2053,6 +2072,13 @@ html[data-chat-font] .aui-root {
 	.dark [data-slot="combobox-content"],
 	.dark [data-slot="popover-content"] {
 		box-shadow: 0 8px 28px -6px var(--background) !important;
+	}
+
+	/* Library card menus: match the card menu button so they stand off the cards. */
+	.dark [data-slot="dropdown-menu-content"].library-actions-menu,
+	.dark [data-slot="dropdown-menu-sub-content"].library-actions-menu {
+		--accent: var(--color-neutral-600);
+		background-color: var(--color-neutral-700);
 	}
 
 	/* Model selector: tighter than the menus above so it lifts off the
@@ -2091,7 +2117,8 @@ html[data-chat-font] .aui-root {
 
 	.dark .chat-composer-surface {
 		background-color: var(--card);
-		box-shadow: none;
+		/* Page-coloured shadow, like the + menu: sets the composer off the messages behind it. */
+		box-shadow: 0 4px 20px 4px var(--background);
 	}
 
 	.composer-pill-btn {
@@ -2250,7 +2277,8 @@ html[data-chat-font] .aui-root {
 
 	.dark .unsloth-composer-surface {
 		background-color: var(--card);
-		box-shadow: none;
+		/* Page-coloured shadow, like the + menu: sets the composer off the messages behind it. */
+		box-shadow: 0 4px 20px 4px var(--background);
 	}
 
 	/* Keep the expand/collapse width swap instant. A transition on width (e.g.
@@ -2718,6 +2746,73 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 4px 14px var(--background);
 	}
 
+	/* Sidebar and account menus in dark mode: flat, no shadow. Light mode keeps the shared menu
+	   shadow, which is what lifts the menu off the light sidebar. Important to beat that shadow. */
+	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
+		box-shadow: none !important;
+	}
+
+	/* System font at 14px, scaled with the UI font size. */
+	:is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
+		font-family: ui-sans-serif, -apple-system, system-ui, "Segoe UI", Helvetica, "Apple Color Emoji", Arial, sans-serif;
+		--icon-size: calc(1.125rem * var(--ui-font-scale, 1));
+	}
+
+	/* Both classes, to outrank the compact sizing .sidebar-row-menu gives every row further down. */
+	.unsloth-plus-menu.sidebar-row-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="dropdown-menu-checkbox-item"],
+			[data-slot="dropdown-menu-radio-item"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
+		) {
+		@apply py-2 text-ui-14;
+		font-weight: 400;
+		line-height: calc(1.25rem * var(--ui-font-scale, 1));
+	}
+
+	.app-user-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		) {
+		@apply text-ui-14;
+		font-weight: 400;
+		color: inherit;
+	}
+
+	/* Dark: a step above the sidebar, from the palette so other themes keep their hue, with the
+	   rows in full white. Muted labels and shortcuts keep their own color. */
+	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
+		background-color: color-mix(in srgb, var(--card), white 7%);
+		color: #fff;
+		--destructive: #ed716a;
+	}
+
+	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu :is(
+			[data-slot="dropdown-menu-separator"],
+			[data-slot="context-menu-separator"]
+		) {
+		background-color: color-mix(in srgb, var(--card), white 16%);
+	}
+
+	/* The account menu's own hover is the accent with foreground text; here it takes the same
+	   overlay and white as the sidebar menus beside it. */
+	.dark .app-user-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:focus, [data-state="open"]) {
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
+		color: #fff;
+	}
+
+	.dark .app-user-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:focus, [data-state="open"]) *:not([data-slot="dropdown-menu-shortcut"]) {
+		color: #fff !important;
+	}
+
 	/* Compact items; also applied to portaled sub-content. */
 	.unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
@@ -2762,11 +2857,67 @@ html[data-chat-font] .aui-root {
 		border-radius: 10px;
 	}
 
+	/* A heading opens its group: more room above it than below, so it reads with the rows under it
+	   rather than the rule or edge over it. */
 	.unsloth-plus-menu.sidebar-row-menu :is(
 			[data-slot="dropdown-menu-label"],
 			[data-slot="context-menu-label"]
 		) {
-		@apply pl-2.5 pr-2.5 py-1 text-ui-11;
+		@apply pl-2.5 pr-2.5 pt-2 pb-1 text-ui-11;
+	}
+
+	/* Checkbox and radio rows (a sidebar header menu's Show toggles and sorts) shaped like the rows
+	   beside them, their tick kept clear on the right. */
+	.unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-checkbox-item"],
+			[data-slot="dropdown-menu-radio-item"]
+		) {
+		@apply gap-2.5 pl-2.5 pr-9;
+		border-radius: 10px;
+	}
+
+	/* Tick rows hover like the rows beside them, not with the component's accent. */
+	.unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-checkbox-item"],
+			[data-slot="dropdown-menu-radio-item"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted]) {
+		background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1))) !important;
+	}
+
+	.dark .unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-checkbox-item"],
+			[data-slot="dropdown-menu-radio-item"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted]) {
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1))) !important;
+	}
+
+	.unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-checkbox-item"],
+			[data-slot="dropdown-menu-radio-item"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted]),
+	.unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-checkbox-item"],
+			[data-slot="dropdown-menu-radio-item"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted]) * {
+		color: inherit !important;
+	}
+
+	/* The tick's box sits on the row's right padding, the same 2.5 as its left: the tick is
+	   drawn inset like a leading icon (MenuTickIcon), so the two inks land level. */
+	.unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-checkbox-item-indicator"],
+			[data-slot="dropdown-menu-radio-item-indicator"]
+		) {
+		@apply right-2.5;
+	}
+
+	.unsloth-plus-menu.sidebar-menu :is(
+			[data-slot="dropdown-menu-checkbox-item"],
+			[data-slot="dropdown-menu-radio-item"]
+		)
+		svg {
+		width: var(--icon-size) !important;
+		height: var(--icon-size) !important;
 	}
 
 	/* Active (green) items keep their primary text and icon color on hover. */
@@ -3524,13 +3675,107 @@ html[data-chat-font] .aui-root {
 	cursor: pointer;
 }
 
-/* A sidebar row is being carried. The gesture is a pointer drag, not a native one, so the
-   selection it would otherwise sweep up and the cursor off the row are ours to hold. */
-body.sidebar-row-dragging,
-body.sidebar-row-dragging * {
+/* A sidebar row or section, or a pinned model, is being carried. The gesture is a pointer drag, not
+   a native one, so the selection it would otherwise sweep up and the cursor off the row are ours to
+   hold. Set on the box the drag is in (markDragging in use-sidebar-drag.ts), never the body: a class
+   or inherited style changed there restyles every element on the page, which a long chat made a
+   visible hitch as a drag started and again as it ended. Selection past the box is refused as it
+   starts. */
+.pointer-dragging,
+.pointer-dragging * {
 	-webkit-user-select: none;
 	user-select: none;
 	cursor: grabbing !important;
+}
+
+/* The row it came from stays pressed while the button is held: it dims, bare, as a carried
+   section does, and the raised copy alone reads as the row in hand. */
+.pointer-dragging [data-sidebar="menu-button"]:active {
+	background-color: transparent;
+}
+
+/* A sidebar section carried by its header: it stays in place, dimmed, while a raised copy of the
+   header follows the pointer and one line marks the gap it would land in. */
+[data-sidebar-section][data-section-dragging] {
+	opacity: 0.4;
+	transition: opacity 120ms ease-out;
+}
+
+/* A carried section header or row: a raised copy under the pointer, over the list it came from. */
+.sidebar-section-ghost,
+/* The layer drag visuals are drawn in (dragLayer). Its children are fixed to the window. */
+#pointer-drag-layer {
+	position: fixed;
+	top: 0;
+	left: 0;
+	width: 0;
+	height: 0;
+	z-index: 60;
+	pointer-events: none;
+}
+
+.sidebar-row-ghost {
+	position: fixed;
+	top: 0;
+	z-index: 60;
+	display: flex;
+	align-items: center;
+	border-radius: 10px;
+	background: var(--sidebar-accent);
+	box-shadow:
+		0 0 0 1px color-mix(in oklab, var(--foreground) 8%, transparent),
+		0 8px 24px -8px rgb(0 0 0 / 0.35);
+	pointer-events: none;
+	will-change: transform;
+}
+
+.sidebar-section-ghost > *,
+.sidebar-row-ghost * {
+	pointer-events: none;
+}
+
+/* The drop cue under a carried row's copy, drawn again above it (use-sidebar-drag.ts). */
+.sidebar-drop-cue-overlay {
+	position: fixed;
+	z-index: 61;
+	display: none;
+	box-sizing: border-box;
+	pointer-events: none;
+}
+
+/* A row's copy is its face as drawn, lit like a hovered row but never like the open chat. */
+.sidebar-row-ghost > [data-sidebar="menu-button"] {
+	width: 100%;
+	height: 100%;
+	background: transparent;
+}
+
+/* The name alone: the header's fold chevron means nothing on a header in flight. */
+.sidebar-section-ghost svg {
+	display: none;
+}
+
+/* Placed by `top`, not a transform from the top of the window: shown and placed in one style
+   change, it cannot be painted at the top for a frame before its transform lands. */
+.sidebar-section-drop-line {
+	position: fixed;
+	z-index: 60;
+	height: 0;
+	border-top: 1.5px solid var(--primary);
+	border-radius: 1px;
+	opacity: 0;
+	pointer-events: none;
+	transition: top 90ms ease-out;
+}
+
+html.force-reduced-motion .sidebar-section-drop-line {
+	transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	html:not(.force-motion) .sidebar-section-drop-line {
+		transition: none;
+	}
 }
 
 /* Flat scrollbar chrome */
@@ -3639,36 +3884,42 @@ body.sidebar-row-dragging * {
    the area is hovered, so the rail never sits visible over content. */
 .sidebar-scroll-fade,
 .run-settings-scroll,
+.aui-thread-viewport,
 .hover-scrollbar {
 	scrollbar-color: transparent transparent;
 }
 
 .sidebar-scroll-fade::-webkit-scrollbar-thumb,
 .run-settings-scroll::-webkit-scrollbar-thumb,
+.aui-thread-viewport::-webkit-scrollbar-thumb,
 .hover-scrollbar::-webkit-scrollbar-thumb {
 	background: transparent;
 }
 
 .sidebar-scroll-fade:hover,
 .run-settings-scroll:hover,
+.aui-thread-viewport:hover,
 .hover-scrollbar:hover {
 	scrollbar-color: oklch(0.5 0 0 / 0.4) transparent;
 }
 
 .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
 .run-settings-scroll:hover::-webkit-scrollbar-thumb,
+.aui-thread-viewport:hover::-webkit-scrollbar-thumb,
 .hover-scrollbar:hover::-webkit-scrollbar-thumb {
 	background: oklch(0.5 0 0 / 0.4);
 }
 
 .dark .sidebar-scroll-fade:hover,
 .dark .run-settings-scroll:hover,
+.dark .aui-thread-viewport:hover,
 .dark .hover-scrollbar:hover {
 	scrollbar-color: oklch(0.72 0 0 / 0.4) transparent;
 }
 
 .dark .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
 .dark .run-settings-scroll:hover::-webkit-scrollbar-thumb,
+.dark .aui-thread-viewport:hover::-webkit-scrollbar-thumb,
 .dark .hover-scrollbar:hover::-webkit-scrollbar-thumb {
 	background: oklch(0.72 0 0 / 0.4);
 }
@@ -3680,6 +3931,8 @@ body.sidebar-row-dragging * {
 	:root.client-windows .sidebar-scroll-fade:hover,
 	:root.client-windows .run-settings-scroll,
 	:root.client-windows .run-settings-scroll:hover,
+	:root.client-windows .aui-thread-viewport,
+	:root.client-windows .aui-thread-viewport:hover,
 	:root.client-windows .hover-scrollbar,
 	:root.client-windows .hover-scrollbar:hover {
 		scrollbar-width: auto;
@@ -3698,10 +3951,8 @@ body.sidebar-row-dragging * {
 	padding-right: var(--overlay-scrollbar-gutter, 0px);
 }
 
-/* Chat viewport: solid track matching sidebar so the scrollbar reads as a
-   full-height rail flush to the right edge, without a separate decorative strip. */
+/* Chat viewport: scrollbar styled with Run settings above, so no track to clip at the corner. */
 .aui-thread-viewport {
-	scrollbar-color: oklch(0.5 0 0 / 0.54) var(--sidebar);
 	/* Reserve scrollbar space always so absolute-positioned overlays (topbar)
 	   can stop flush with the gutter edge without covering the scrollbar.
 	   both-edges: a one-sided gutter pushes the centred column off-centre by
@@ -3752,21 +4003,6 @@ body.sidebar-row-dragging * {
 	padding-bottom: var(--aui-scroll-stabilizer, 0px);
 }
 
-.dark .aui-thread-viewport {
-	scrollbar-color: oklch(0.72 0 0 / 0.25) #23252a;
-}
-
-.dark .aui-thread-viewport::-webkit-scrollbar-thumb {
-	background: oklch(0.72 0 0 / 0.25);
-}
-
-.aui-thread-viewport::-webkit-scrollbar-track {
-	background: var(--sidebar);
-}
-
-.dark .aui-thread-viewport::-webkit-scrollbar-track {
-	background: #23252a;
-}
 
 
 /* Search list: re-enable the native scrollbar (CommandList defaults to no-scrollbar). */

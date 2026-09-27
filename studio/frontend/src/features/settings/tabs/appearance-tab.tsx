@@ -65,6 +65,22 @@ export function AppearanceTab() {
         </p>
       </header>
 
+      <SettingsSection title={t("settings.appearance.theme.title")}>
+        <SettingsRow
+          label={t("settings.appearance.theme.label")}
+          description={t("settings.appearance.theme.description")}
+        >
+          <ThemeSegmented />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.palette.label")}
+          description={t("settings.appearance.palette.description")}
+          className="flex-col items-stretch gap-3"
+        >
+          <PaletteCards />
+        </SettingsRow>
+      </SettingsSection>
+
       <SettingsSection title={t("settings.appearance.custom.preferencesTitle")}>
         <SettingsRow label={t("settings.appearance.custom.uiFont.label")}>
           <UiFontRow />
@@ -127,22 +143,6 @@ export function AppearanceTab() {
           )}
         >
           <Switch checked={pinned} onCheckedChange={setPinned} />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.appearance.theme.title")}>
-        <SettingsRow
-          label={t("settings.appearance.theme.label")}
-          description={t("settings.appearance.theme.description")}
-        >
-          <ThemeSegmented />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.palette.label")}
-          description={t("settings.appearance.palette.description")}
-          className="flex-col items-stretch gap-3"
-        >
-          <PaletteCards />
         </SettingsRow>
       </SettingsSection>
 
