@@ -3,7 +3,8 @@
 
 "use client";
 
-import { useAuiEvent } from "@assistant-ui/react";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+import { useAui, useAuiEvent } from "@assistant-ui/react";
 import {
   type ReactNode,
   type RefCallback,
@@ -34,6 +35,8 @@ import {
  *   - Detect user intent (wheel up, swipe up, scroll direction) to detach.
  *     While detached, resize/mutation don't extend the deadline. Re-attach
  *     when the user scrolls down within 24px of the bottom.
+ *   - "Auto-scroll while generating" off: a run started here gets only the
+ *     send pin, then detaches so the response grows below the reader.
  */
 
 // 2px, not 1: HiDPI subpixel rounding can leave a fractional gap that a
@@ -140,10 +143,13 @@ export function useIntentAwareAutoScroll(): {
   ref: RefCallback<HTMLElement>;
   context: AutoScrollContextValue;
 } {
+  const aui = useAui();
   const cleanupRef = useRef<(() => void) | null>(null);
 
   const userDetachedRef = useRef(false);
   const followUntilRef = useRef(0);
+  // Set by a run started while on screen. Opening a chat mid-stream still follows.
+  const runStartedHereRef = useRef(false);
 
   const isAtBottomRef = useRef(true);
   const listenersRef = useRef<Set<() => void>>(new Set());
@@ -262,6 +268,12 @@ export function useIntentAwareAutoScroll(): {
         }
         followUntilRef.current = performance.now() + FOLLOW_SETTLE_MS;
       };
+
+      // Auto-scroll is off and a run started here is streaming. Read per call so a mid-run toggle applies.
+      const holdStill = (): boolean =>
+        runStartedHereRef.current &&
+        !useChatPreferencesStore.getState().autoScrollWhileGenerating &&
+        aui.thread().getState().isRunning;
 
       const clearSettleCheck = (): void => {
         if (settleTimer !== null) {
@@ -440,7 +452,8 @@ export function useIntentAwareAutoScroll(): {
           upwardAccumulator = 0;
           if (
             userDetachedRef.current &&
-            distanceNow <= RE_ATTACH_THRESHOLD_PX
+            distanceNow <= RE_ATTACH_THRESHOLD_PX &&
+            !holdStill()
           ) {
             userDetachedRef.current = false;
             extendFollow();
@@ -536,7 +549,15 @@ export function useIntentAwareAutoScroll(): {
       // pinning so we scroll to the post-adjustment scrollHeight.
       const onLayoutChange = (): void => {
         layoutChanged = true;
-        extendFollow();
+        if (!holdStill()) {
+          extendFollow();
+        } else if (
+          !userDetachedRef.current &&
+          performance.now() >= followUntilRef.current
+        ) {
+          // Send pin settled. Detach, or the run's last layout change would re-pin.
+          detach();
+        }
         const scrollHeight = stabilize();
         pinIfFollowing(scrollHeight);
         requestTick();
@@ -616,7 +637,7 @@ export function useIntentAwareAutoScroll(): {
         };
       };
     },
-    [setIsAtBottom],
+    [aui, setIsAtBottom],
   );
 
   // Thread lifecycle moments that always pin, regardless of detach state.
@@ -627,9 +648,18 @@ export function useIntentAwareAutoScroll(): {
     scrollImplRef.current(behavior);
   }, []);
 
-  useAuiEvent("thread.runStart", () => pinToBottom("auto"));
-  useAuiEvent("thread.initialize", () => pinToBottom("instant"));
-  useAuiEvent("threadListItem.switchedTo", () => pinToBottom("instant"));
+  useAuiEvent("thread.runStart", () => {
+    runStartedHereRef.current = true;
+    pinToBottom("auto");
+  });
+  useAuiEvent("thread.initialize", () => {
+    runStartedHereRef.current = false;
+    pinToBottom("instant");
+  });
+  useAuiEvent("threadListItem.switchedTo", () => {
+    runStartedHereRef.current = false;
+    pinToBottom("instant");
+  });
 
   const lastElRef = useRef<HTMLElement | null>(null);
   const ref = useCallback<RefCallback<HTMLElement>>(

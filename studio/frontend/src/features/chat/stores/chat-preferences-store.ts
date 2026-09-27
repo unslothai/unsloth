@@ -27,7 +27,7 @@ import {
 // until its thinking block is opened, and has no effect while toolVisibility is "expanded".
 // pastedTextMinChars: paste length that becomes a .txt attachment; 0 is off.
 // showInlineReadAloud / showInlineEditResponse: on keeps that action in each response's action bar
-// instead of its More menu.
+// instead of its More menu. autoScrollWhileGenerating: on follows a streaming response down.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
@@ -57,6 +57,8 @@ export interface ChatPreferencesState {
   setFoldToolActivityIntoThinking: (value: boolean) => void;
   pastedTextMinChars: number;
   setPastedTextMinChars: (value: number) => void;
+  autoScrollWhileGenerating: boolean;
+  setAutoScrollWhileGenerating: (value: boolean) => void;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -107,6 +109,10 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       pastedTextMinChars: PASTED_TEXT_DEFAULT_MIN_CHARS,
       setPastedTextMinChars: (pastedTextMinChars) =>
         set({ pastedTextMinChars }),
+      // Off by default so a response can be read from the top while it streams.
+      autoScrollWhileGenerating: false,
+      setAutoScrollWhileGenerating: (autoScrollWhileGenerating) =>
+        set({ autoScrollWhileGenerating }),
     }),
     {
       name: "unsloth_chat_preferences",
@@ -143,6 +149,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           pastedTextMinChars: normalisePastedTextMinChars(
             saved?.pastedTextMinChars,
           ),
+          autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? false,
         };
       },
     },

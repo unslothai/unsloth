@@ -248,6 +248,12 @@ export function ChatTab() {
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
   );
+  const autoScrollWhileGenerating = useChatPreferencesStore(
+    (state) => state.autoScrollWhileGenerating,
+  );
+  const setAutoScrollWhileGenerating = useChatPreferencesStore(
+    (state) => state.setAutoScrollWhileGenerating,
+  );
   const thinkingVisibility = useChatPreferencesStore(
     (state) => state.thinkingVisibility,
   );
@@ -535,6 +541,16 @@ export function ChatTab() {
             checked={foldToolActivityIntoThinking && !foldBlockedByAlwaysExpanded}
             disabled={foldBlockedByAlwaysExpanded}
             onCheckedChange={setFoldToolActivityIntoThinking}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.autoScroll")}
+          description={t("settings.chat.autoScrollDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.autoScroll")}
+            checked={autoScrollWhileGenerating}
+            onCheckedChange={setAutoScrollWhileGenerating}
           />
         </SettingsRow>
         <SettingsRow

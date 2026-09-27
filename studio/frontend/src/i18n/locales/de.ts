@@ -1846,6 +1846,11 @@ export const de = {
       pastedTextThresholdDescription:
         "Mit {shortcut} direkt in das Nachrichtenfeld einfügen.",
       pastedTextThresholdOff: "Aus",
+      autoScroll: "Beim Generieren automatisch scrollen",
+      autoScrollDescription:
+        "Folgt einer Antwort beim Streamen nach unten. Aus: Die Ansicht bleibt stehen, sodass Sie von oben lesen können.",
+      autoScrollKeywords:
+        "scrollen automatisch mitscrollen folgen unten springen Streaming generieren Ansicht sperren scroll autoscroll follow",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",

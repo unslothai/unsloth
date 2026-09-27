@@ -1804,6 +1804,11 @@ export const en = {
       pastedTextThreshold: "Condense long pastes",
       pastedTextThresholdDescription: "Press {shortcut} to paste directly into the message box.",
       pastedTextThresholdOff: "Off",
+      autoScroll: "Auto-scroll while generating",
+      autoScrollDescription:
+        "Follow a response to the bottom as it streams. Off keeps your place so you can read from the top.",
+      autoScrollKeywords:
+        "scroll autoscroll auto-scroll follow stick bottom jump streaming generating viewport lock",
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",

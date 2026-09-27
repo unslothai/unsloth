@@ -1837,6 +1837,11 @@ export const es = {
       pastedTextThresholdDescription:
         "Pulsa {shortcut} para pegar directamente en el cuadro de mensaje.",
       pastedTextThresholdOff: "Desactivado",
+      autoScroll: "Desplazamiento automático al generar",
+      autoScrollDescription:
+        "Sigue la respuesta hasta el final mientras se transmite. Desactivado, mantiene tu posición para leer desde el principio.",
+      autoScrollKeywords:
+        "desplazamiento desplazar automático seguir abajo saltar transmisión generar vista bloquear scroll autoscroll follow",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
         "Muestra los metadatos del modelo en las respuestas del asistente.",
