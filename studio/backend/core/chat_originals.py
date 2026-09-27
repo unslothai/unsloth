@@ -114,7 +114,7 @@ def save(chunks: Iterable[bytes]) -> tuple[str, int]:
 def sweep(force: bool = False) -> int:
     """Remove originals no attachment references, older than the grace period. At most once every
     few minutes unless ``force``. Returns how many were removed."""
-    from storage.studio_db import referenced_chat_original_hashes
+    from storage.studio_db import chat_original_unreferenced, referenced_chat_original_hashes
 
     now = time.time()
     try:
@@ -153,7 +153,15 @@ def sweep(force: bool = False) -> int:
                     if now - mtime < _SWEEP_GRACE_SECONDS:
                         waiting = True
                         continue
-                    os.unlink(entry.path)
+                    if not is_original:
+                        os.unlink(entry.path)
+                    else:
+                        # The scan's snapshot may be stale: a fork or import can have committed
+                        # a reference since. Checked again, holding off any new one until removed.
+                        with chat_original_unreferenced(entry.name) as unreferenced:
+                            if not unreferenced:
+                                continue
+                            os.unlink(entry.path)
                 removed += 1
         if waiting:
             _schedule(directory)

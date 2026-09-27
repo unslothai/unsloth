@@ -809,11 +809,16 @@ function localeFormat(id: number): string | undefined {
 /** An OOXML on/off flag (<b/>, <b val="0"/>): on unless its val says otherwise. */
 const isOn = (flag: Element) => !["0", "false", "off"].includes(flag.getAttribute("val") ?? "");
 
+// Excel takes codes of up to 255 characters; this leaves room for other writers.
+const MAX_FORMAT_CODE = 1024;
+
 function readStyles(doc: Document | null): CellStyle[] {
   if (!doc) return [];
   const formats = new Map<number, string>();
   for (const fmt of all(doc, "numFmt")) {
-    formats.set(Number(fmt.getAttribute("numFmtId")), fmt.getAttribute("formatCode") ?? "");
+    const code = fmt.getAttribute("formatCode") ?? "";
+    // Past Excel's own limit a code is read as General: the formatters cache by code, across files.
+    formats.set(Number(fmt.getAttribute("numFmtId")), code.length > MAX_FORMAT_CODE ? "General" : code);
   }
   const fontsNode = first(doc, "fonts");
   const fonts = fontsNode
@@ -840,9 +845,10 @@ function shiftFormula(formula: string, rows: number, columns: number): string {
   const column = (abs: string, name: string) =>
     abs + (abs ? name.toUpperCase() : columnName(columnIndex(name.toUpperCase()) + columns));
   const row = (abs: string, n: string) => abs + (abs ? n : String(Number(n) + rows));
-  // Quoted text and quoted sheet names ('A1'!B2) are left as they are.
+  // Quoted text, quoted sheet names ('A1'!B2) and bracketed names, as a table's columns
+  // (Table1[Q1], Table1[[#This Row],[Q1]], ' escaping a bracket) or a linked book ([1]), stay.
   return formula
-    .split(/("(?:[^"]|"")*"|'(?:[^']|'')*')/)
+    .split(/("(?:[^"]|"")*"|'(?:[^']|'')*'|\[(?:[^[\]']|'.|\[(?:[^[\]']|'.)*\])*\])/)
     .map((part, index) =>
       index % 2
         ? part
@@ -1149,6 +1155,10 @@ function findTag(bytes: Uint8Array, from: number, name: string, closing: boolean
  *  and each string decoded alone, so a large or stale table costs little. */
 /** `part` inflates only as far as the highest index asked for: a large tail no cell uses is never
  *  unpacked. */
+// Strings indexed on the way to a high one; one past this reads as cut. A real table rarely holds
+// more, and each costs 8 bytes of offsets.
+const MAX_SHARED_STRINGS = 2_000_000;
+
 /** A string by index; undefined when it lies past the part's cut. */
 function sharedStrings(part: Growing | undefined): (index: number) => string | undefined {
   // Where each string's XML starts and ends, in flat arrays: a million strings skipped on the way
@@ -1159,7 +1169,7 @@ function sharedStrings(part: Growing | undefined): (index: number) => string | u
   const texts = new Map<number, string>();
   let at = part ? 0 : -1;
   return (index) => {
-    while (part && at !== -1 && count <= index) {
+    while (part && at !== -1 && count <= index && count < MAX_SHARED_STRINGS) {
       const open = findTag(part.data, at, "si", false);
       const close = open && !open.empty ? findTag(part.data, open.end, "si", true) : null;
       if (!open || (!open.empty && !close)) {
@@ -1177,7 +1187,7 @@ function sharedStrings(part: Growing | undefined): (index: number) => string | u
       count++;
       at = close ? close.end : open.end;
     }
-    if (part?.cut && index >= count) return undefined;
+    if ((part?.cut || count >= MAX_SHARED_STRINGS) && index >= count) return undefined;
     if (!part || !Number.isInteger(index) || index < 0 || index >= count) return "";
     let text = texts.get(index);
     if (text === undefined) {
