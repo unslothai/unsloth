@@ -3647,6 +3647,7 @@ def test_begin_load_publishes_the_hosted_ltx23_fp8_claim_with_the_loading_state(
     from core.inference import video as video_mod
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    _ltx23_fp8_card(monkeypatch)
     monkeypatch.setattr(
         video_mod, "assert_video_precision_available", lambda fam, **kw: None, raising = False
     )
@@ -11438,6 +11439,7 @@ def test_precision_gate_admits_fp8_only_for_the_ltx23_prequant_file(fake_runtime
     import core.inference.video as video_mod
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    _ltx23_fp8_card(monkeypatch)
     fam = types.SimpleNamespace(name = "ltx-2")
     video_mod.assert_video_precision_available(
         fam,
@@ -11487,6 +11489,60 @@ def test_ltx23_prequant_source_resolves_the_hosted_fp8_only():
     assert resolve_prequant_source(fam, "fp8", base_repo = "Lightricks/LTX-2") is None
 
 
+def _ltx23_fp8_card(monkeypatch, *, fp8 = True):
+    """The explicit fp8 scheme check on the card the load uses: sm_89+ runs fp8, Ampere (sm_80/86) only int8."""
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(
+        video_mod, "_ltx23_prequant_scheme_supported", lambda fam, target, pinned: fp8
+    )
+
+
+def _ampere_or_hopper(monkeypatch, *, fp8):
+    """A CUDA bf16 card with the dense torchao path, whose explicit fp8 passes only on sm_89+: patched at the smoke
+    probe, under the real scheme selector, so the check under test is the one the normal precision path runs."""
+    from core.inference import diffusion_transformer_quant as tq, video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        tq,
+        "_scheme_supported",
+        lambda scheme, device, unproven_ok = False: scheme != "fp8" or fp8,
+    )
+    return types.SimpleNamespace(device = "cuda", dtype = "bfloat16")
+
+
+@pytest.mark.parametrize("fp8", [False, True], ids = ["sm80", "sm90"])
+def test_ltx23_hosted_fp8_seed_requires_fp8_on_the_card(fake_runtime, monkeypatch, fp8):
+    # Ampere runs the dense torchao path (int8) but not fp8. The hosted DiT is torchao fp8, so an explicit fp8 there
+    # used to pass the preflight, stage and price the 19 GB artifact, evict the resident model, and fail at the seed.
+    from core.inference import video as video_mod
+
+    target = _ampere_or_hopper(monkeypatch, fp8 = fp8)
+    fam = types.SimpleNamespace(name = "ltx-2")
+    name = "ltx-2.3-22b-distilled.safetensors"
+    assert (
+        video_mod._ltx23_prequant_serves(
+            fam, "single_file", name, "fp8", target = target, memory_mode = None
+        )
+        is fp8
+    )
+    monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda **kw: target)
+    assert (
+        video_mod._ltx23_prequant_serves_on_card(
+            fam, "single_file", name, "fp8", memory_mode = None, gpu_ordinal = None
+        )
+        is fp8
+    )
+    kwargs = dict(model_kind = "single_file", transformer_quant = "fp8", checkpoint_filename = name)
+    if fp8:
+        video_mod.assert_video_precision_available(fam, **kwargs)
+    else:
+        with pytest.raises(RuntimeError, match = "fp8"):
+            video_mod.assert_video_precision_available(fam, **kwargs)
+
+
 def _load_ltx23_single_file_fp8(
     tmp_path,
     monkeypatch,
@@ -11496,6 +11552,7 @@ def _load_ltx23_single_file_fp8(
     from core.inference import video as video_mod, video_ltx2
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    _ltx23_fp8_card(monkeypatch)
     monkeypatch.setattr(video_ltx2, "is_ltx23_checkpoint", lambda path: True)
     calls: dict = {}
 
@@ -11673,6 +11730,7 @@ def test_download_plan_stages_the_hosted_fp8_dit_for_the_ltx23_distilled_single_
 
     supported = [True]
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: supported[0])
+    _ltx23_fp8_card(monkeypatch)
 
     def _plan(
         filename,
@@ -11712,6 +11770,29 @@ def test_download_plan_stages_the_hosted_fp8_dit_for_the_ltx23_distilled_single_
     assert "unsloth/LTX-2.3-FP8" not in repos
 
 
+@pytest.mark.parametrize("fp8", [False, True], ids = ["sm80", "sm90"])
+def test_download_plan_stages_the_hosted_fp8_dit_only_on_an_fp8_card(monkeypatch, fp8):
+    _plan_api(
+        monkeypatch,
+        {
+            "Lightricks/LTX-2.3": [
+                _PlanSibling("ltx-2.3-22b-distilled.safetensors", 46_149_345_038)
+            ],
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "unsloth/LTX-2.3-FP8": [_PlanSibling("LTX-2.3-FP8.pt", 19_057_628_489)],
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+    _ampere_or_hopper(monkeypatch, fp8 = fp8)
+    plan = VideoBackend().download_plan(
+        "Lightricks/LTX-2.3",
+        gguf_filename = "ltx-2.3-22b-distilled.safetensors",
+        family_override = "ltx-2",
+        transformer_quant = "fp8",
+    )
+    assert ("unsloth/LTX-2.3-FP8" in {e["repo_id"] for e in plan["entries"]}) is fp8
+
+
 class _StopAfterPrefetch(Exception):
     pass
 
@@ -11738,6 +11819,7 @@ def test_the_ltx23_fp8_load_prefetches_the_hosted_dit_under_its_cancel_event(tmp
     monkeypatch.setattr(video_ltx2, "is_ltx23_checkpoint", lambda path: True)
     supported = [True]
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: supported[0])
+    _ltx23_fp8_card(monkeypatch)
     monkeypatch.setattr(backend, "_fetch_denoiser_prequant", _fetch)
     monkeypatch.setattr(backend, "_estimate_download_bytes", lambda *a, **k: None)
     monkeypatch.setattr(backend, "_predownload_base", _stop)

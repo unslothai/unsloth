@@ -337,7 +337,24 @@ def _ltx23_prequant_serves(
         _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned)
         and not _memory_request_forces_offload(memory_mode, False)
         and bool(dense_transformer_supported(target))
+        and _ltx23_prequant_scheme_supported(fam, target, pinned)
     )
+
+
+def _ltx23_prequant_scheme_supported(fam: Any, target: Any, pinned: Optional[str]) -> bool:
+    """Whether ``target`` runs ``pinned`` at all, by the check an explicit scheme gets on the normal precision path. The
+    hosted DiT is a torchao fp8 checkpoint, so a card with the dense torchao path but no fp8 kernels (Ampere: int8 only)
+    must not stage, claim, price or seed it. ``unproven_ok`` as at the pre-eviction gate: an out-of-memory smoke probe
+    is the resident model, not the scheme."""
+    try:
+        return (
+            select_transformer_quant_scheme(
+                target, pinned, family = getattr(fam, "name", None), unproven_ok = True
+            )
+            == pinned
+        )
+    except Exception:  # noqa: BLE001 -- unanswerable reads as unsupported, which keeps the refusal
+        return False
 
 
 def _ltx23_prequant_serves_on_card(
@@ -404,6 +421,9 @@ def _assert_video_precision_for_target(
                     f"'{normalize_memory_mode(memory_mode)}' memory places the DiT under CPU "
                     "offload, and torchao quantised tensors cannot be moved by the offload hooks"
                 )
+            elif not _ltx23_prequant_scheme_supported(fam, target, pinned):
+                # The hosted DiT's own scheme: without it the seed fails only after the eviction and the 19 GB pull.
+                reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
         elif model_kind != "pipeline":
             reason = (
                 f"the dense DiT quant applies to full-pipeline loads only, and this is a "
