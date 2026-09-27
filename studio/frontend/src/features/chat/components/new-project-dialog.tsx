@@ -98,8 +98,9 @@ export function NewProjectDialog({
     try {
       const project = await createChatProject(trimmed);
       // Upload before closing so the Sources panel lists them on first fetch.
-      await uploadStagedSources(project.id, staged);
+      // Folders first: their leases expire in minutes, and uploads can be slow.
       await linkStagedFolders(project.id, folders);
+      await uploadStagedSources(project.id, staged);
       if (!mounted.current) return;
       const stayedOnRoute = currentRoute() === origin;
       onOpenChange(false);

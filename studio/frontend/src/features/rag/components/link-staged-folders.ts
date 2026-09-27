@@ -10,8 +10,25 @@ import {
   watchProjectFolderJob,
 } from "../api/rag-api";
 import { markProjectSourcesPending } from "./project-source-dropzone";
+import { EXPIRY_GRACE_MS } from "./staged-source";
 
-export type StagedFolder = NativeDocumentFolderSelection;
+/** The picker returns a signed lease, valid for LEASE_TTL in native_backend_lease.rs. */
+const FOLDER_LEASE_TTL_MS = 2 * 60_000;
+
+export type StagedFolder = NativeDocumentFolderSelection & {
+  expiresAtMs: number;
+};
+
+export function stageFolder(
+  selected: NativeDocumentFolderSelection,
+): StagedFolder {
+  return { ...selected, expiresAtMs: Date.now() + FOLDER_LEASE_TTL_MS };
+}
+
+/** Expired, or too close to it to survive the request. */
+export function isFolderExpired(folder: StagedFolder, now: number): boolean {
+  return folder.expiresAtMs - EXPIRY_GRACE_MS <= now;
+}
 
 /** Link folders picked before the project existed. A failed link toasts and never blocks creation. */
 export async function linkStagedFolders(
@@ -24,6 +41,11 @@ export async function linkStagedFolders(
   try {
     for (const folder of folders) {
       try {
+        if (isFolderExpired(folder, Date.now())) {
+          throw new Error(
+            "The selection expired. Link it again from the project.",
+          );
+        }
         const { job } = await createLinkedFolder(
           { type: "project", id: projectId },
           folder.token,

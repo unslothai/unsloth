@@ -24,7 +24,12 @@ import {
   useState,
 } from "react";
 import { FOLDER_CARD_CLASS, FOLDER_ROW_CLASS } from "./linked-folders-manager";
-import type { StagedFolder } from "./link-staged-folders";
+import { EXPIRY_GRACE_MS } from "./staged-source";
+import {
+  isFolderExpired,
+  type StagedFolder,
+  stageFolder,
+} from "./link-staged-folders";
 
 /** Folders to link once the project is created, in the edit dialog's card layout. */
 export function ProjectFolderPicker({
@@ -47,6 +52,27 @@ export function ProjectFolderPicker({
     };
   }, []);
 
+  // Leases are short-lived: drop folders before they expire, as the dropzone does for drops.
+  useEffect(() => {
+    if (folders.length === 0) return;
+    const soonest = Math.min(...folders.map((f) => f.expiresAtMs));
+    const timer = setTimeout(
+      () => {
+        const expired = folders.filter((f) => isFolderExpired(f, Date.now()));
+        if (expired.length === 0) return;
+        onChange((current) => current.filter((f) => !expired.includes(f)));
+        toast.info(
+          expired.length === 1
+            ? "A picked folder expired"
+            : `${expired.length} picked folders expired`,
+          { description: "Add them again to link them." },
+        );
+      },
+      Math.max(0, soonest - EXPIRY_GRACE_MS - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [folders, onChange]);
+
   async function add() {
     if (!supported || picking || disabled) return;
     setPicking(true);
@@ -54,7 +80,7 @@ export function ProjectFolderPicker({
       const selected = await pickNativeDocumentFolder();
       // Closing the dialog unmounts this, so a late pick is dropped.
       if (!selected || !mounted.current) return;
-      onChange((current) => [...current, selected]);
+      onChange((current) => [...current, stageFolder(selected)]);
     } catch (error) {
       toast.error("Could not add folder", {
         description: error instanceof Error ? error.message : String(error),
