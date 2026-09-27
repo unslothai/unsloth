@@ -2402,7 +2402,7 @@ const ThreadComposerDock: FC<{
       className={cn(
         // Inset both sides, not just the right: the offset keeps the bottom
         // fade off the scrollbar, and a one-sided one also moves the centre.
-        "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:left-[calc(10px*var(--ui-space-scale,1))] md:right-[calc(10px*var(--ui-space-scale,1))]",
+        "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:left-[var(--thread-scrollbar-gutter,10px)] md:right-[var(--thread-scrollbar-gutter,10px)]",
         overlay ? "z-40" : "z-20",
       )}
     >

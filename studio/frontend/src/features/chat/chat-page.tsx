@@ -4112,7 +4112,7 @@ export function ChatPage({
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="chat-header-fade pointer-events-none absolute left-0 right-[calc(10px*var(--ui-space-scale,1))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-0 right-[var(--thread-scrollbar-gutter,10px)] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
@@ -4123,7 +4123,7 @@ export function ChatPage({
               : undefined
           }
           className={cn(
-            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[calc(10px*var(--ui-space-scale,1))] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[var(--thread-scrollbar-gutter,10px)] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile
               ? "pl-12"
               : pinned
@@ -4132,7 +4132,7 @@ export function ChatPage({
                   ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
                   : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
-              "right-[calc(10px*var(--ui-space-scale,1))] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+              "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
           <div className="pointer-events-auto flex items-center gap-1">

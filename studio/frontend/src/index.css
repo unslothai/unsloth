@@ -4906,6 +4906,11 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	:root.client-windows .no-scrollbar::-webkit-scrollbar {
 		display: block;
 	}
+
+	/* The ::-webkit-scrollbar width, which the reset lets through. */
+	:root.client-windows {
+		--thread-scrollbar-gutter: 8px;
+	}
 }
 
 /* The chat header overlays the thread, and the window controls share its row: start
@@ -4923,6 +4928,12 @@ html.force-reduced-motion .sidebar-section-drop-line {
 /* Reserve the measured overlay strip; classic scrollbars already take space. */
 .overlay-scrollbar-gutter {
 	padding-right: var(--overlay-scrollbar-gutter, 0px);
+}
+
+/* The thread's gutter, which the header, fades, model notice and composer dock stop at:
+   Chromium's thin scrollbar. Scrollbars ignore the UI scale, so this does too. */
+:root {
+	--thread-scrollbar-gutter: 10px;
 }
 
 /* Chat viewport: scrollbar styled with Run settings above, so no track to clip at the corner. */
