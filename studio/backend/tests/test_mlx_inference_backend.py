@@ -5089,7 +5089,7 @@ metal_only = pytest.mark.skipif(not _METAL, reason = "requires Apple Silicon Met
 
 BATCH_MODEL = "mlx-community/SmolLM2-135M-Instruct"
 BATCH_PROMPT = [{"role": "user", "content": "Name a colour and explain why."}]
-BATCH_VLM_MODEL = "mlx-community/SmolVLM-256M-Instruct-4bit"
+BATCH_VLM_MODEL = "mlx-community/Qwen3.5-0.8B-4bit"
 
 
 @pytest.fixture(scope = "module")
