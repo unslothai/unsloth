@@ -1151,10 +1151,55 @@ def _attn_impl_label(impl):
     return impl
 
 
+def _undeclared_nested_configs(config):
+    """Nested configs held as plain attributes, not in `sub_configs`, so Transformers' recursive
+    `_attn_implementation` setter never reaches them (remote InternVL / Nemotron-Omni `llm_config`)."""
+    try:
+        from transformers import PretrainedConfig
+    except Exception:
+        return []
+    if not isinstance(config, PretrainedConfig):
+        return []
+    declared = set(getattr(type(config), "sub_configs", None) or ())
+    return [
+        value
+        for name, value in vars(config).items()
+        if name not in declared and value is not config and isinstance(value, PretrainedConfig)
+    ]
+
+
+def _sync_baked_attn_impl(config, previous, impl):
+    # Remote configs copy their own __init__ default into nested configs at construction (Nemotron-3
+    # -Nano-Omni: llm_config._attn_implementation and vision_config.use_flash_attn = flash_attention_2),
+    # so a later top-level write leaves the decoder on flash. Follow the top value when a nested copy
+    # still holds the old top value or a flash value we are moving away from.
+    if not isinstance(impl, str):
+        return
+    for nested in _undeclared_nested_configs(config):
+        current = getattr(nested, "_attn_implementation", None)
+        if (
+            current is not None
+            and current != impl
+            and (
+                current == previous
+                or (
+                    _is_flash_attention_requested(current)
+                    and not _is_flash_attention_requested(impl)
+                )
+            )
+        ):
+            _write_attn_impl(nested, impl)
+        # InternVL-style towers read a bool the remote __init__ derived from the top value.
+        if isinstance(getattr(nested, "use_flash_attn", None), bool):
+            nested.use_flash_attn = _is_flash_attention_requested(impl)
+
+
 def _write_attn_impl(config, impl):
+    previous = _config_get(config, "_attn_implementation", None)
     _config_set(config, "_attn_implementation", impl)
     if isinstance(config, dict) or hasattr(config, "attn_implementation"):
         _config_set(config, "attn_implementation", impl)
+    _sync_baked_attn_impl(config, previous, impl)
 
 
 def _set_attn_impl(config, impl):
