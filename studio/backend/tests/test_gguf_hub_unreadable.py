@@ -230,3 +230,14 @@ def test_gguf_named_repo_with_a_cached_config_keeps_the_transformers_route(monke
     monkeypatch.setattr(huggingface_hub, "model_info", _hub(TimeoutError("read timed out")))
     config = ModelConfig.from_identifier(REPO)
     assert config is not None and not config.is_gguf
+
+
+@pytest.mark.parametrize("partial", ["mmproj-F16.gguf", "README.md"])
+def test_offline_partial_snapshot_without_a_main_gguf_raises_clear_error(
+    monkeypatch, _isolated, partial
+):
+    _cache(_isolated, REPO, partial)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(huggingface_hub, "model_info", _hub(AssertionError("no API offline")))
+    with pytest.raises(GgufRepoUnreadableError, match = "offline"):
+        ModelConfig.from_identifier(REPO)

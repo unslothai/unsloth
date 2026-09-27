@@ -3383,8 +3383,12 @@ _GGUF_REPO_NAME_RE = _re.compile(r"(?:^|[-_.])gguf(?:$|[-_.])", _re.IGNORECASE)
 
 
 def _looks_like_gguf_repo(repo_id: str, gguf_variant: Optional[str] = None) -> bool:
-    # A cached Transformers checkpoint can still load through Transformers from that cache.
-    if any((snap / "config.json").is_file() for snap in _iter_hf_cache_snapshots(repo_id)):
+    # A cached Transformers, diffusers or adapter checkpoint can still load from that cache.
+    if any(
+        (snap / name).is_file()
+        for snap in _iter_hf_cache_snapshots(repo_id)
+        for name in ("config.json", "model_index.json", "adapter_config.json")
+    ):
         return False
     return bool(gguf_variant) or bool(
         _GGUF_REPO_NAME_RE.search(repo_id.rstrip("/").rsplit("/", 1)[-1])
@@ -4360,10 +4364,7 @@ class ModelConfig:
                     raise GgufRepoUnreadableError(
                         _gguf_repo_unreadable_message(identifier, detect_failures[-1])
                     ) from None
-                if (
-                    _env_offline()
-                    and next(iter(_iter_hf_cache_snapshots(identifier)), None) is None
-                ):
+                if _env_offline():
                     raise GgufRepoUnreadableError(_gguf_repo_unreadable_message(identifier, None))
             if gguf_filename:
                 # Preflight: verify the llama-server binary exists before a multi-GB download.
