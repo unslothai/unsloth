@@ -244,7 +244,10 @@ def install(
 ) -> dict:
     """Patch the Z-Image attention processor class now; probe the card and fuse each block's QKV once the weights are
     on the GPU (immediately if they already are, else right before the first forward). Before the first compile."""
-    if zimage_fused_disabled() or type(transformer).__name__ != "ZImageTransformer2DModel":
+    if zimage_fused_disabled():
+        uninstall()  # a previous load may have patched the process-global processor class
+        return {"real_rope": False, "fused_qkv": 0}
+    if type(transformer).__name__ != "ZImageTransformer2DModel":
         return {"real_rope": False, "fused_qkv": 0}
     if not _patch_class(logger):
         return {"real_rope": False, "fused_qkv": 0}
@@ -335,18 +338,20 @@ def install_modules(
 
 
 def uninstall(transformer: Any = None) -> None:
-    """Restore the stock processor class method; drop the fused Linears (the per-row views stay valid)."""
+    """Restore the stock processor class method; drop the fused Linears (the per-row views stay valid) and
+    ``transformer``'s pending first-forward install."""
+    if transformer is not None:
+        from .diffusion_int8_fused import cancel_first_call
+        cancel_first_call(transformer, "zimage_fused")
     with _LOCK:
-        try:
-            import importlib
-            cls = importlib.import_module(_MODULE).ZSingleStreamAttnProcessor
-            if (
-                getattr(cls.__dict__.get("__call__"), "__unsloth_zimage_fused__", False)
-                and "stock" in _STATE
-            ):
-                cls.__call__ = _STATE.pop("stock")
-        except Exception:  # noqa: BLE001
-            pass
+        if "stock" in _STATE:  # else nothing was patched: skip importing the diffusers module
+            try:
+                import importlib
+                cls = importlib.import_module(_MODULE).ZSingleStreamAttnProcessor
+                if getattr(cls.__dict__.get("__call__"), "__unsloth_zimage_fused__", False):
+                    cls.__call__ = _STATE.pop("stock")
+            except Exception:  # noqa: BLE001
+                pass
         if transformer is not None:
             for module in transformer.modules():
                 module.__dict__.pop(_QKV_ATTR, None)

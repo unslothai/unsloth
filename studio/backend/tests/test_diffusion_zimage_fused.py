@@ -137,3 +137,61 @@ def test_wrapped_projection_falls_back_to_stock_projections():
     assert zf._qkv_intact(attn) is not None
     attn.to_k = torch.nn.Sequential(attn.to_k)  # stand-in for a LoRA wrapper
     assert zf._qkv_intact(attn) is None
+
+
+class ZImageTransformer2DModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = torch.nn.Linear(4, 4)
+
+    def forward(self, x):
+        return self.lin(x)
+
+
+def test_kill_switch_on_a_later_load_restores_the_processor(monkeypatch):
+    cls = zmod.ZSingleStreamAttnProcessor
+    stock = cls.__dict__["__call__"]
+    zf.install(ZImageTransformer2DModel())  # CPU weights: class patched now, modules at the first forward
+    assert getattr(cls.__dict__["__call__"], "__unsloth_zimage_fused__", False)
+    monkeypatch.setenv(zf.ZIMAGE_FUSED_ENV, "0")
+    assert zf.install(ZImageTransformer2DModel()) == {"real_rope": False, "fused_qkv": 0}
+    assert cls.__dict__["__call__"] is stock
+
+
+def test_model_unload_restores_the_process_global_patches(monkeypatch):
+    from core.inference import diffusion
+    from core.inference import diffusion_qwenimage21_rope as q21
+    from core.inference import diffusion_qwenimage_rope as qr
+
+    qmod = pytest.importorskip("diffusers.models.transformers.transformer_qwenimage")
+    monkeypatch.setattr(q21, "inductor_addcmul_is_fma", lambda: True)
+    monkeypatch.setattr(q21, "_addcmul_lowering", lambda: (True, False))
+    monkeypatch.setattr(q21, "_FUSION", {})
+    monkeypatch.setattr(q21, "probe_fusion", lambda dev: ("x", "x"))
+    rope_stock = qmod.ROPE_PER_DEVICE["cuda"]
+    call_stock = zmod.ZSingleStreamAttnProcessor.__dict__["__call__"]
+    try:
+        assert qr._patch_table(0) and zf._patch_class()
+        assert qmod.ROPE_PER_DEVICE["cuda"] is not rope_stock
+        assert zmod.ZSingleStreamAttnProcessor.__dict__["__call__"] is not call_stock
+        for name in ("clear_gpu_cache", "release_pinned_host_memory", "reclaim_host_memory"):
+            monkeypatch.setattr(diffusion, name, lambda *a, **k: None)
+        backend = diffusion.DiffusionBackend()
+        backend._state = diffusion._LoadState(object(), None, "r", "b", "cpu", "float32", False)
+        backend._unload_locked()
+        assert backend._state is None
+        assert qmod.ROPE_PER_DEVICE["cuda"] is rope_stock
+        assert zmod.ZSingleStreamAttnProcessor.__dict__["__call__"] is call_stock
+    finally:
+        qr.uninstall()
+
+
+def test_uninstall_cancels_the_deferred_module_install(monkeypatch):
+    fired = []
+    monkeypatch.setattr(zf, "install_modules", lambda t, *a, **k: fired.append(t))
+    model = ZImageTransformer2DModel()
+    zf.install(model)
+    assert "zimage_fused" in model.__dict__["_unsloth_first_call_hooks"]
+    zf.uninstall(model)
+    model(torch.randn(2, 4))
+    assert fired == [] and not model._forward_pre_hooks
