@@ -119,3 +119,15 @@ def test_an_older_probe_does_not_bring_back_a_gpu_a_newer_one_ruled_out(monkeypa
         hw, "_probe_backend_visible_gpu_info", lambda d: dict(empty, probe_failed = True)
     )
     assert hw.get_backend_visible_gpu_info()["available"] is False
+
+
+@pytest.mark.parametrize("rocm, device", [(True, "CUDA"), (False, "XPU")])
+def test_non_nvidia_hosts_keep_mains_behaviour(monkeypatch, rocm, device):
+    monkeypatch.setattr(hw, "IS_ROCM", rocm)
+    monkeypatch.setattr(hw, "get_device", lambda: getattr(hw.DeviceType, device))
+    found = {"available": True, "devices": [dict(B200)], "index_kind": "physical"}
+    monkeypatch.setattr(hw, "_probe_backend_visible_gpu_info", lambda d: dict(found))
+    assert hw.get_backend_visible_gpu_info()["available"]
+    empty = {"available": False, "devices": [], "index_kind": "physical"}
+    monkeypatch.setattr(hw, "_probe_backend_visible_gpu_info", lambda d: dict(empty))
+    assert hw.get_backend_visible_gpu_info()["available"] is False

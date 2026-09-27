@@ -5879,6 +5879,9 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
             if prior is None or prior[0] <= started:
                 _last_good_visible_info[key] = (started, copy.deepcopy(info) if found else None)
         return info
+    # NVIDIA only: elsewhere no probe can prove a device went away, and those paths keep main's behaviour.
+    if device != DeviceType.CUDA or IS_ROCM:
+        return info
     with _last_good_visible_lock:
         last = (_last_good_visible_info.get(key) or (0.0, None))[1]
     if last is None:
