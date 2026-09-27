@@ -191,6 +191,22 @@ try {
         else { $env:UNSLOTH_EARLY_PYTHON_PROBE = $savedProbe }
     }
 
+    # Elevated, the venv interpreter runs only once the destination guard has passed: --shortcuts-only never gets there.
+    function Get-ElevationState { return "true" }
+    $script:RunnerCalls = 0
+    Check "an elevated run before the destination guard refuses the interpreter" (
+        (Invoke-StudioPythonShellIconRefresh -Paths $links -Exe "C:\Studio\venv\Scripts\python.exe") -eq $false -and
+        $script:RunnerCalls -eq 0)
+    Check "control: an elevated full install past the guard still refreshes" (
+        (Invoke-StudioPythonShellIconRefresh -Paths $links -Exe "C:\Studio\venv\Scripts\python.exe" -DestinationValidated) -eq $true -and
+        $script:RunnerCalls -eq 1)
+    function Get-ElevationState { return "false" }
+    $installText = Get-Content -LiteralPath $installPs1 -Raw
+    Check "only the full install's call vouches for the destination" (
+        ($installText -match 'New-StudioShortcuts -ManagedPythonPath \$VenvPython -DestinationValidated') -and
+        ($installText -match 'New-StudioShortcuts -ManagedPythonPath \$ShortcutPython\r?\n') -and
+        ($shortcutFn -match '-DestinationValidated:\$DestinationValidated'))
+
     $env:OS = "Linux"
     $script:RunnerCalls = 0
     Check "off Windows the rung declines: there is no shell32 there" (
