@@ -144,7 +144,7 @@ def test_a_credential_file_anywhere_in_the_tree_keeps_the_per_launch_grant(host,
     assert host.calls == []
 
 
-def test_a_link_inside_the_tree_keeps_the_per_launch_grant(host, tmp_path):
+def test_a_link_out_of_the_tree_keeps_the_per_launch_grant(host, tmp_path):
     venv = _runtime(host)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -155,6 +155,29 @@ def test_a_link_inside_the_tree_keeps_the_per_launch_grant(host, tmp_path):
     assert "reparse point" in mxc_read_grants.ineligible_reason(venv)
     assert mxc_read_grants.ensure([venv]) == ()
     assert host.calls == []
+
+
+def test_a_link_to_a_file_in_the_same_tree_is_granted(host):
+    venv = _runtime(host)
+    Path(venv, "python.exe").write_bytes(b"")
+    try:
+        os.symlink(Path(venv, "python.exe"), Path(venv, "python3.exe"))
+    except OSError:
+        pytest.skip("symlinks are not available")
+    assert mxc_read_grants.ineligible_reason(venv) is None
+    assert mxc_read_grants.ensure([venv]) == (venv,)
+
+
+def test_a_link_that_leaves_the_tree_through_an_inner_link_is_refused(host, tmp_path):
+    venv = _runtime(host)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    try:
+        os.symlink(elsewhere, Path(venv, "Lib", "outer"), target_is_directory = True)
+        os.symlink(Path(venv, "Lib", "outer"), Path(venv, "inner"), target_is_directory = True)
+    except OSError:
+        pytest.skip("symlinks are not available")
+    assert "reparse point" in mxc_read_grants.ineligible_reason(venv)
 
 
 def test_a_credential_file_added_after_the_grant_takes_it_back(host):

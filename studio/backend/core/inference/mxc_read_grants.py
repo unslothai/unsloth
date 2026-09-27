@@ -138,8 +138,18 @@ def _is_reparse(entry: os.DirEntry) -> bool:
     return entry.is_symlink() or bool(attributes & 0x400)
 
 
+def _links_within(path: str, real_root: str) -> bool:
+    """A symlink or junction whose final target stays inside the granted tree."""
+    try:
+        os.readlink(path)  # only symlinks and junctions; other reparse tags raise
+        return _within(os.path.realpath(path), real_root)
+    except (OSError, ValueError):
+        return False
+
+
 def _tree_problem(root: str, *, deep: bool) -> str | None:
     """A credential file or reparse point in the tree the inheritable grant would reach."""
+    real_root = os.path.realpath(root)
     pending = [root]
     while pending:
         directory = pending.pop()
@@ -147,6 +157,8 @@ def _tree_problem(root: str, *, deep: bool) -> str | None:
             with os.scandir(directory) as entries:
                 for entry in entries:
                     if _is_reparse(entry):
+                        if _links_within(entry.path, real_root):
+                            continue  # e.g. setup-python's python3.exe -> python.exe; the target is scanned anyway
                         return f"it contains a reparse point ({entry.path})"
                     if entry.name.casefold() in CREDENTIAL_FILES:
                         return f"it holds a credential file ({entry.path})"
