@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import {
   classifiedAttachmentFile,
   needsAttachmentTrackInspection,
@@ -60,10 +60,12 @@ import {
   TEXT_ATTACHMENT_ACCEPT,
   extractDocxAttachmentText,
   extractHtmlAttachmentText,
+  extractOfficeAttachmentText,
   extractPdfAttachmentText,
   getDocumentAttachmentSizeError,
   getDocxAttachmentError,
 } from "./attachment-content";
+import { persistAttachmentOriginals, withAttachmentOriginal } from "./attachment-originals";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
   isBinaryPropertyList,
@@ -265,8 +267,10 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const threadIds = this.getThreadIds();
     const reservationToken = findPreStreamRunReservation(threadIds);
+    const { incognito } = useChatRuntimeStore.getState();
+    const epoch = getAuthSessionEpoch();
     try {
-      return await this.delegate.send(attachment);
+      return await withAttachmentOriginal(attachment, await this.delegate.send(attachment), incognito, epoch);
     } catch (error) {
       if (
         reservationToken &&
@@ -570,6 +574,76 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
+const OFFICE_LABELS: Record<string, "XLSX" | "PPTX"> = {
+  xlsx: "XLSX",
+  xlsm: "XLSX",
+  pptx: "PPTX",
+};
+
+class OfficeAttachmentAdapter implements AttachmentAdapter {
+  accept = [
+    ".xlsx,.xlsm,.pptx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel.sheet.macroEnabled.12",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ].join(",");
+
+  private label(name: string, type: string): "XLSX" | "PPTX" {
+    const extension = name.split(".").pop()?.toLowerCase() ?? "";
+    const byName = Object.hasOwn(OFFICE_LABELS, extension) ? OFFICE_LABELS[extension] : undefined;
+    return byName ?? (type.includes("presentationml") ? "PPTX" : "XLSX");
+  }
+
+  // Read at add: the composer drops the typed message before send(), so refuse unreadable files here.
+  private readonly texts = new Map<string, string>();
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    const label = this.label(file.name, file.type);
+    let text: string;
+    try {
+      text = await extractOfficeAttachmentText(file, label);
+    } catch (cause) {
+      const message = (cause as Error | undefined)?.message;
+      const tooLarge = `${label} file is too large: ${file.name}`;
+      const error =
+        message === tooLarge || message === "File is too large to preview."
+          ? tooLarge
+          : `${label} file could not be read: ${file.name}`;
+      toast.error(error);
+      throw new Error(error);
+    }
+    const id = crypto.randomUUID();
+    this.texts.set(id, text);
+    return {
+      id,
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const label = this.label(attachment.name, attachment.contentType ?? "");
+    const text = this.texts.get(attachment.id) ?? (await extractOfficeAttachmentText(attachment.file, label));
+    this.texts.delete(attachment.id);
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text: `[${label}: ${attachment.name}]\n${text}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    this.texts.delete(attachment.id);
+    return Promise.resolve();
+  }
+}
+
 class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
   private readonly active = new Set<string>();
   private readonly sending = new Set<string>();
@@ -774,7 +848,7 @@ function cloneAttachments(
   if (!Array.isArray(attachments)) {
     return [];
   }
-  return JSON.parse(JSON.stringify(attachments));
+  return JSON.parse(JSON.stringify(attachments.map((attachment) => ({ ...attachment, file: undefined }))));
 }
 
 function toThreadMessage(m: MessageRecord): ThreadMessage {
@@ -1398,9 +1472,13 @@ export async function persistTemporaryThread({
       createdAt:
         creation?.createdAt ?? (times.length > 0 ? Math.min(...times) : Date.now()),
     });
-    const records: MessageRecord[] = parentsFirst(messages).map(({ parentId, message }) => {
+    const epoch = getAuthSessionEpoch();
+    const records: MessageRecord[] = await Promise.all(parentsFirst(messages).map(async ({ parentId, message }) => {
+      // Documents kept in memory are uploaded now, before the File is lost to JSON.
       const attachments =
-        message.role === "user" ? cloneAttachments(message.attachments) : [];
+        message.role === "user"
+          ? cloneAttachments(await persistAttachmentOriginals(message.attachments, epoch))
+          : [];
       const metadata = message.metadata?.custom as
         | Record<string, unknown>
         | undefined;
@@ -1414,7 +1492,7 @@ export async function persistTemporaryThread({
         ...(metadata && { metadata }),
         createdAt: message.createdAt?.getTime?.() ?? Date.now(),
       };
-    });
+    }));
     await syncStoredChatMessages(threadId, records, { pruneMissing: false });
     temporaryThreadCreation.delete(threadId);
   } catch (error) {
@@ -2415,6 +2493,7 @@ function useStudioRuntimeAdapters(
           new HtmlAttachmentAdapter(),
           new PDFAttachmentAdapter(),
           new DocxAttachmentAdapter(),
+          new OfficeAttachmentAdapter(),
           new OpenDocumentAttachmentAdapter(),
         ]),
         () => {

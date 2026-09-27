@@ -3,6 +3,7 @@
 
 "use client";
 
+import { AttachmentDocumentDialog } from "@/components/assistant-ui/attachment-document-dialog";
 import { AudioPlayer } from "@/components/assistant-ui/audio-player";
 import {
   type AttachmentSource,
@@ -358,6 +359,14 @@ export const AttachmentPreviewDialog: FC<
       </AttachmentAudioDialog>
     ) : (
       children
+    );
+  }
+
+  if (source.kind === "document") {
+    return (
+      <AttachmentDocumentDialog source={source} redactFromReload={redactFromReload}>
+        {children}
+      </AttachmentDocumentDialog>
     );
   }
 
