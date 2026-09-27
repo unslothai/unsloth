@@ -337,7 +337,8 @@ def test_studio_load_unload_and_training_methods_invalidate():
     from core.inference import diffusion, inference, orchestrator, video
     from core.inference import native_audio, sd_cpp_backend
     from core.rag import embed_llama_server
-    from core.training import training
+    from core.inference import stt_registry
+    from core.training import diffusion_training_service, training
 
     methods = [
         LlamaCppBackend.load_model,
@@ -359,6 +360,10 @@ def test_studio_load_unload_and_training_methods_invalidate():
         inference.InferenceBackend.unload_model,
         native_audio.NativeAudioBackend.load_model,
         native_audio.NativeAudioBackend.unload_model,
+        stt_registry.load,
+        stt_registry.unload,
+        diffusion_training_service.DiffusionTrainingService.start,
+        diffusion_training_service.DiffusionTrainingService.stop,
     ]
     for method in methods:
         code = method.__code__

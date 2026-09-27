@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 import utils.hardware.hardware as hw
@@ -90,3 +92,30 @@ def test_nvidia_marks_failure_and_absence_apart(monkeypatch):
     _smi(monkeypatch, [])
     empty = nvidia.get_backend_visible_gpu_info([0], "0")
     assert empty["available"] is False and "probe_failed" not in empty and "smi_absent" not in empty
+
+
+def test_an_older_probe_does_not_bring_back_a_gpu_a_newer_one_ruled_out(monkeypatch):
+    import threading
+
+    release = threading.Event()
+    found = {"available": True, "devices": [dict(B200)], "index_kind": "physical"}
+    empty = {"available": False, "devices": [], "index_kind": "physical"}
+
+    def slow_probe(device):
+        release.wait(5)
+        return dict(found, devices = [dict(B200)])
+
+    monkeypatch.setattr(hw, "_probe_backend_visible_gpu_info", slow_probe)
+    older = threading.Thread(target = hw.get_backend_visible_gpu_info)
+    older.start()
+    time.sleep(0.2)
+    monkeypatch.setattr(
+        hw, "_probe_backend_visible_gpu_info", lambda d: dict(empty, _confirmed_empty = True)
+    )
+    assert hw.get_backend_visible_gpu_info()["available"] is False
+    release.set()
+    older.join(5)
+    monkeypatch.setattr(
+        hw, "_probe_backend_visible_gpu_info", lambda d: dict(empty, probe_failed = True)
+    )
+    assert hw.get_backend_visible_gpu_info()["available"] is False

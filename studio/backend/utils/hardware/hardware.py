@@ -5852,7 +5852,8 @@ def _repair_smi_visible_devices(
 
 
 # Last inventory that found devices, per (device type, mask): a failing probe must not mean "no GPU".
-_last_good_visible_info: Dict[tuple, Dict[str, Any]] = {}
+# Values are (probe start, info or None for a confirmed empty); an older probe never overwrites a newer one.
+_last_good_visible_info: Dict[tuple, tuple] = {}
 _last_good_visible_lock = threading.Lock()
 
 
@@ -5866,20 +5867,20 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
         os.environ.get("ROCR_VISIBLE_DEVICES"),
         os.environ.get("ZE_AFFINITY_MASK"),
     )
+    started = time.monotonic()
     info = _probe_backend_visible_gpu_info(device)
     confirmed_empty = info.pop("_confirmed_empty", False)
     info.pop("probe_failed", None)
     info.pop("smi_absent", None)
-    if info.get("available") and info.get("devices"):
+    found = bool(info.get("available") and info.get("devices"))
+    if found or confirmed_empty:
         with _last_good_visible_lock:
-            _last_good_visible_info[key] = copy.deepcopy(info)
-        return info
-    if confirmed_empty:
-        with _last_good_visible_lock:
-            _last_good_visible_info.pop(key, None)
+            prior = _last_good_visible_info.get(key)
+            if prior is None or prior[0] <= started:
+                _last_good_visible_info[key] = (started, copy.deepcopy(info) if found else None)
         return info
     with _last_good_visible_lock:
-        last = _last_good_visible_info.get(key)
+        last = (_last_good_visible_info.get(key) or (0.0, None))[1]
     if last is None:
         return info
     logger.warning(
