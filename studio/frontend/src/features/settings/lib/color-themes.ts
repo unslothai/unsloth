@@ -19,6 +19,7 @@ export const FLAVOR_THEME_IDS = [
   "taro",
   "espresso",
   "butterfly-pea",
+  "pina-paraiso",
   "macaron",
   "wasabi",
   "earl-grey",
@@ -229,6 +230,21 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       background: "#0f1520",
       foreground: "#dcebf8",
       surface: "#141c2a",
+    },
+  },
+  "pina-paraiso": {
+    name: "Piña Paraíso",
+    light: {
+      accent: "#f2b800",
+      background: "#fffcf0",
+      foreground: "#2c2410",
+      surface: "#fbf5df",
+    },
+    dark: {
+      accent: "#ffd23f",
+      background: "#17150c",
+      foreground: "#f6efd6",
+      surface: "#201d11",
     },
   },
   macaron: {

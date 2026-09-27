@@ -4002,6 +4002,7 @@ class PersonalizationAppearance(BaseModel):
         "neon-cyberpunk",
         "oat-milk",
         "peach",
+        "pina-paraiso",
         "plum",
         "tangerine",
         "taro",

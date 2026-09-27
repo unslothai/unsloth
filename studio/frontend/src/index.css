@@ -653,7 +653,7 @@
    Flavor themes (Theme > More themes). Each sets --th-* seeds per mode; the
    block below maps them onto the --*-base tokens, so contrast and custom
    colors still apply. */
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette] {
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette] {
 	--background: var(--th-bg);
 	--foreground-base: var(--th-fg);
 	--card-base: var(--th-surface);
@@ -702,18 +702,18 @@
 }
 
 /* Attribute specificity only, so html[data-contrast-adjust] still wins. */
-[data-palette]:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"]) {
+[data-palette]:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"]) {
 	--muted-foreground: var(--th-muted);
 }
 
 /* Lift the dark composer slightly; flavor cards sit close to the page. */
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette].dark
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette].dark
 	:is(.chat-composer-surface, .unsloth-composer-surface) {
 	background-color: color-mix(in srgb, var(--card), var(--th-fg) 4%);
 }
 
 /* Collapsed rail takes the page color, as it does in dark mode. */
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette]:not(.dark)
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette]:not(.dark)
 	[data-collapsible="icon"] [data-sidebar="sidebar"] {
 	--sidebar-surface: var(--background);
 }
@@ -1317,6 +1317,42 @@
 	--th-chart-3: #8fd0b0;
 	--th-chart-4: #7fb0e8;
 	--th-chart-5: #d69ae0;
+}
+
+/* Piña Paraíso */
+:root[data-palette="pina-paraiso"]:not(.dark) {
+	--th-bg: #fffcf0;
+	--th-surface: #fbf5df;
+	--th-raised: #f5edcf;
+	--th-hover: #eee4c0;
+	--th-border: #e7dab0;
+	--th-fg: #2c2410;
+	--th-muted: #675a36;
+	--th-subtle: #a29466;
+	--th-accent: #f2b800;
+	--th-accent-fg: #2b1d00;
+	--th-chart-1: #e0a800;
+	--th-chart-2: #1f9e8a;
+	--th-chart-3: #e0663a;
+	--th-chart-4: #7a9a1f;
+	--th-chart-5: #c2508c;
+}
+:root[data-palette="pina-paraiso"].dark {
+	--th-bg: #17150c;
+	--th-surface: #201d11;
+	--th-raised: #2a2616;
+	--th-hover: #34301c;
+	--th-border: #3d3822;
+	--th-fg: #f6efd6;
+	--th-muted: #c2b690;
+	--th-subtle: #8c8262;
+	--th-accent: #ffd23f;
+	--th-accent-fg: #1c1606;
+	--th-chart-1: #ffd23f;
+	--th-chart-2: #4fd1b3;
+	--th-chart-3: #ff8a5c;
+	--th-chart-4: #b5d65a;
+	--th-chart-5: #e88ab8;
 }
 
 /* Plum Praline */

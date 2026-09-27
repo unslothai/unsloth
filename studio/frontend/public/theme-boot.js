@@ -25,7 +25,8 @@ try {
     "classic", "minimal", "blueberry", "butterfly-pea", "cherry",
     "cinnamon", "cotton-candy", "dragon-fruit", "earl-grey", "espresso",
     "honey", "licorice", "macaron", "matcha", "mint", "neon-cyberpunk",
-    "oat-milk", "peach", "plum", "tangerine", "taro", "wasabi", "yuzu",
+    "oat-milk", "peach", "pina-paraiso", "plum", "tangerine", "taro",
+    "wasabi", "yuzu",
   ];
   if (palettes.indexOf(palette) !== -1) {
     root.setAttribute("data-palette", palette);
