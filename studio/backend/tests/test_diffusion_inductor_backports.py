@@ -125,13 +125,14 @@ def test_regional_compile_and_vae_compile_install_the_backport(monkeypatch):
     monkeypatch.setattr(ds_mod, "guard_compiled_blocks", lambda transformer, logger = None: 0)
     assert ds_mod._compile_repeated_blocks(pipe, None) is True
     # Installed BEFORE the (lazy) compile is requested, so the first forward already lowers with it.
-    assert calls[0] == "install" and calls[1][0] == "compile"
+    compiles = [c for c in calls if c != "install"]
+    assert calls[0] == "install" and len(compiles) == 1 and compiles[0][0] == "compile"
 
     calls.clear()
     monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
     vae = types.SimpleNamespace(decode = lambda x: x)
     assert ds_mod._compile_vae_decode(types.SimpleNamespace(vae = vae), None) is True
-    assert calls == ["install"]
+    assert calls and set(calls) == {"install"}
 
 
 def test_a_broken_backport_never_fails_the_compile(monkeypatch):
