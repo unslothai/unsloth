@@ -529,6 +529,37 @@ def disable_cudnn_benchmark() -> bool:
         return False
 
 
+# One graph per (shape, guidance variant) under static compile: 1 per shape unguided, 4 guided (CFG batch, the STG block,
+# the modality pass). Dynamo's default limit of 8 fails the third guided resolution of a load.
+LTX2_RECOMPILE_LIMIT = 64
+
+
+def ensure_recompile_limit(limit: int = LTX2_RECOMPILE_LIMIT) -> None:
+    """Raise dynamo's recompile limit in the CALLING thread's context, before a render.
+
+    diffusion_speed raises it at load, but torch >= 2.12 keeps config writes per thread context,
+    so the render thread (a copy of the generate caller's context) still sees the default 8."""
+    try:
+        import torch._dynamo.config as dynamo_cfg
+    except Exception:  # noqa: BLE001 -- no dynamo, nothing compiled
+        return
+    for attr in ("recompile_limit", "cache_size_limit"):  # name varies by torch version
+        try:
+            if hasattr(dynamo_cfg, attr) and (getattr(dynamo_cfg, attr) or 0) < limit:
+                setattr(dynamo_cfg, attr, limit)
+        except Exception:  # noqa: BLE001 -- optimisation only
+            pass
+
+
+def _recompile_limit_hit(exc: BaseException) -> bool:
+    try:
+        import torch
+        kind = getattr(torch._dynamo.exc, "FailOnRecompileLimitHit", None)
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(kind, type) and isinstance(exc, kind)
+
+
 def install_stg_compile_adapter(transformer: Any) -> int:
     """Make a regionally compiled LTX-2 block tolerate the STG pass.
 
@@ -537,8 +568,9 @@ def install_stg_compile_adapter(transformer: Any) -> int:
     that fails a fullgraph compile, after which the compile guard drops the whole DiT to eager.
     Wrapping the compiled call converts the tensor to a Python bool BEFORE entering the graph
     (one host sync, only on the STG call; dynamo specialises the bool). Installed outermost
-    over the guard, carrying its marker so ``guard_compiled_blocks`` stays idempotent. Returns
-    the number of blocks adapted."""
+    over the guard, carrying its marker so ``guard_compiled_blocks`` stays idempotent. A new
+    shape past the recompile limit drops the DiT to eager through the same guard instead of
+    failing the render. Returns the number of blocks adapted."""
     try:
         import torch
     except Exception:  # noqa: BLE001
@@ -551,18 +583,29 @@ def install_stg_compile_adapter(transformer: Any) -> int:
         if inner is None or getattr(inner, "_unsloth_stg_adapter", False):
             continue
 
+        guard = getattr(inner, "_unsloth_compile_guard", None)
+
         def adapted(
             *args: Any,
             _inner: Any = inner,
+            _guard: Any = guard,
             **kwargs: Any,
         ) -> Any:
             flag = kwargs.get("all_perturbed")
             if isinstance(flag, torch.Tensor):
                 kwargs["all_perturbed"] = bool(flag)
-            return _inner(*args, **kwargs)
+            try:
+                return _inner(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 -- reraised unless the recompile limit was hit
+                if _guard is None or _guard.error is not None or not _recompile_limit_hit(exc):
+                    raise
+                # A new shape past dynamo's recompile limit: under fullgraph dynamo raises before anything ran, and the
+                # guard does not classify it, so the render would fail. Drop this DiT to eager, as for a failed build.
+                _guard.fail(exc, transformer)
+                exc.__traceback__ = None
+                return _inner(*args, **kwargs)
 
         adapted._unsloth_stg_adapter = True
-        guard = getattr(inner, "_unsloth_compile_guard", None)
         if guard is not None:
             adapted._unsloth_compile_guard = guard
         module._compiled_call_impl = adapted

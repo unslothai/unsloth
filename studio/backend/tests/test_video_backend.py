@@ -11326,6 +11326,75 @@ def test_stg_compile_adapter_hands_the_block_a_python_bool():
     assert seen == [True, False] and type(seen[0]) is bool
 
 
+def test_stg_compile_adapter_drops_to_eager_past_the_recompile_limit():
+    # A static-shape LTX DiT compiles a graph per (shape, guidance variant); past dynamo's recompile limit fullgraph
+    # raises FailOnRecompileLimitHit, which the compile guard does not classify, so the render failed. The adapter
+    # routes it through the guard: this DiT runs eager from then on, and any other error still propagates.
+    torch = pytest.importorskip("torch")
+    limit_hit = getattr(
+        getattr(getattr(torch, "_dynamo", None), "exc", None), "FailOnRecompileLimitHit", None
+    )
+    if not hasattr(torch, "nn") or not isinstance(limit_hit, type):
+        pytest.skip("real torch with FailOnRecompileLimitHit required")
+    from core.inference.diffusion_speed import compile_fallback_error, guard_compiled_blocks
+    from core.inference.video_ltx2 import install_stg_compile_adapter
+
+    raised = {"exc": limit_hit("Hard failure due to fullgraph=True")}
+
+    class LTX2VideoTransformerBlock(torch.nn.Module):
+        def forward(self, all_perturbed = False):
+            return "eager"
+
+    def compiled(*args, **kwargs):
+        raise raised["exc"]
+
+    block = LTX2VideoTransformerBlock()
+    block._compiled_call_impl = compiled
+    root = torch.nn.ModuleList([block])
+    assert guard_compiled_blocks(root) == 1
+    assert install_stg_compile_adapter(root) == 1
+    raised["exc"] = ValueError("a kernel error, not a compile failure")
+    with pytest.raises(ValueError):
+        block(all_perturbed = torch.tensor(False))
+    assert compile_fallback_error(types.SimpleNamespace(transformer = root)) is None
+    raised["exc"] = limit_hit("Hard failure due to fullgraph=True")
+    assert block(all_perturbed = torch.tensor(True)) == "eager"
+    assert "FailOnRecompileLimitHit" in compile_fallback_error(
+        types.SimpleNamespace(transformer = root)
+    )
+    assert block._compiled_call_impl is None  # the whole DiT runs eager for the rest of the load
+    assert block(all_perturbed = False) == "eager"
+
+
+def test_ltx2_recompile_limit_reaches_the_render_thread():
+    # torch >= 2.12 keeps dynamo config writes per thread context, so the load thread's raise never reached the render
+    # thread (default 8: the third guided LTX resolution failed). The render copies the generate caller's context.
+    pytest.importorskip("torch")
+    try:
+        import torch._dynamo.config as dynamo_cfg
+    except Exception:  # noqa: BLE001
+        pytest.skip("real torch._dynamo required")
+    import contextvars
+
+    from core.inference.video_ltx2 import LTX2_RECOMPILE_LIMIT, ensure_recompile_limit
+
+    seen = {}
+
+    def caller():
+        ensure_recompile_limit()
+        ctx = contextvars.copy_context()
+        worker = threading.Thread(
+            target = lambda: ctx.run(lambda: seen.update(limit = dynamo_cfg.recompile_limit))
+        )
+        worker.start()
+        worker.join()
+
+    thread = threading.Thread(target = caller)
+    thread.start()
+    thread.join()
+    assert seen["limit"] >= LTX2_RECOMPILE_LIMIT
+
+
 def test_precision_gate_admits_fp8_only_for_the_ltx23_prequant_file(fake_runtime, monkeypatch):
     # #742: an explicit fp8 on the bf16 LTX-2.3 distilled single file is served by the hosted pre-quantized DiT, so the
     # route must not refuse it as a "full-pipeline only" dense quant. Every other single file / scheme still is.

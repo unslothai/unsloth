@@ -6932,11 +6932,17 @@ class VideoBackend:
                         kwargs["sigmas"] = list(LTX23_DISTILLED_SIGMAS)
                         sigma_ctx = ltx23_verbatim_sigmas(pipe)
                 if fam.name == "ltx-2":
-                    from .video_ltx2 import ltx2_distilled_guidance_kwargs, ltx2_distilled_ids
+                    from .video_ltx2 import (
+                        ensure_recompile_limit,
+                        ltx2_distilled_guidance_kwargs,
+                        ltx2_distilled_ids,
+                    )
 
                     # A distilled DiT is sampled unguided; newer diffusers defaults would add STG + modality passes.
                     if ltx2_distilled_ids(state.gguf_filename, state.repo_id, state.base_repo):
                         kwargs.update(ltx2_distilled_guidance_kwargs(call_params, guidance))
+                    # The static-shape DiT compiles per resolution; the render thread copies this thread's context.
+                    ensure_recompile_limit()
                 if not fam.supports_cfg:
                     pass
                 elif fam.guidance_via_guider:
