@@ -543,7 +543,6 @@ def _ltx23_in_hub_cache_root(root: Path) -> bool:
     """Whether *root* is one of the Hugging Face hub caches Studio downloads into (a look-alike tree elsewhere is not)."""
     try:
         from hub.utils.hf_cache_state import hf_cache_roots
-
         return any(root == Path(r).resolve() for r in hf_cache_roots())
     except Exception:  # noqa: BLE001 - unknown roots: hash instead
         return False
