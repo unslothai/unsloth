@@ -1110,6 +1110,18 @@ def _pin_pristine_sft_loss_type(config_cls):
 
 _UNSLOTH_KBIT_PREP_GUARD_FLAG = "_unsloth_skips_kbit_prep_for_peft_models"
 
+# Appended after TRL's __init__. Dense only when every expert-count key the config has is 0, so real MoE keeps its aux loss.
+_DENSE_ROUTER_AUX_LOSS_OFF = (
+    "if getattr(self, 'aux_loss_enabled', False) and hasattr(getattr(self, 'model', None), 'config'):\n"
+    "    _text_config = self.model.config\n"
+    "    if hasattr(_text_config, 'get_text_config'): _text_config = _text_config.get_text_config()\n"
+    "    _n_experts = [getattr(_text_config, _k) for _k in ('num_local_experts', 'num_experts', 'n_routed_experts', 'moe_num_experts') if isinstance(getattr(_text_config, _k, None), int)]\n"
+    "    if _n_experts and all(_n == 0 for _n in _n_experts):\n"
+    "        self.aux_loss_enabled = False\n"
+    "        _text_config.output_router_logits = False\n"
+    "pass\n"
+)
+
 # The one assignment of `self.aux_loss_enabled` in TRL's GRPOTrainer.__init__, whatever its right-hand
 # side. TRL 1.7.0 wrote `is_moe and args.router_aux_loss_coef != 0.0`; TRL main (#7248) reads the
 # coefficient from the model config when it is None. Anchoring on the exact expression lost the
@@ -2671,6 +2683,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "pass\n"
         )
         RLTrainer_post += vllm_chat_template_sync
+
+    # TRL >= 1.7 treats any config with output_router_logits as MoE; a dense one (0 experts, e.g. granite-4.0-h) returns no router logits, so its aux loss is int 0 and `.to` crashes.
+    if "model" in call_args:
+        RLTrainer_post += _DENSE_ROUTER_AUX_LOSS_OFF
 
     # TRL >= 1.7 writes router_aux_loss_coef to the config after MoE CausalLMs cached it at init; nll loss reads the stale copy.
     if trainer_file == "sft_trainer":
