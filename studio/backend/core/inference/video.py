@@ -5155,6 +5155,12 @@ class VideoBackend:
         # Sets a flag the pipelines read when they first build their frequency tables, so it need only happen before
         # generation, not before placement.
         force_float32_rope(pipe, target, logger = logger)
+        # HunyuanVideo-1.5 VAE only: same mask values, so bit-identical, but held off on SPEED_OFF like the trim above.
+        hv15_mask_engaged = False
+        if effective_speed != SPEED_OFF:
+            from .video_hv15_vae import install_vectorised_causal_mask
+
+            hv15_mask_engaged = install_vectorised_causal_mask(pipe, logger = logger) > 0
         speed_optims: tuple = ()
         for view in views:
             # Both helpers act on ``view.transformer``; call once per view (engaged values match, so record the first).
@@ -5189,6 +5195,8 @@ class VideoBackend:
                 speed_optims = tuple(k for k, v in applied.items() if v)
                 if attention_trim_engaged:
                     speed_optims += ("hunyuan_attn_trim",)
+                if hv15_mask_engaged:
+                    speed_optims += ("hv15_vae_vector_mask",)
         with self._generate_lock:
             # A cancelled/superseded load must not place weights on a GPU the arbiter may have reassigned; recheck
             # before placement.
