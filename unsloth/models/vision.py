@@ -2067,6 +2067,7 @@ class FastBaseModel:
             check_and_disable_bitsandbytes_loading,
             sync_unsloth_model_name_bnb_flags,
         )
+        from .fp8_to_nf4 import fp8_to_nf4_planner_quantization_config
 
         load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
             auto_config,
@@ -2076,6 +2077,8 @@ class FastBaseModel:
             token = token,
             model_name = model_name,
             revision = _revision,
+            # vLLM reads the checkpoint itself, so it cannot take the in-process fp8 -> 4bit route.
+            allow_fp8_to_nf4 = not (fast_inference and is_vLLM_available()),
             hub_kwargs = {
                 "cache_dir": kwargs.get("cache_dir"),
                 "subfolder": kwargs.get("subfolder"),
@@ -2104,6 +2107,13 @@ class FastBaseModel:
             load_in_4bit = False
             load_in_8bit = False
             load_in_16bit = False
+        from .fp8_to_nf4 import disarm_fp8_to_nf4, requests_bnb_4bit
+
+        if not load_in_4bit or (
+            user_quantization_config is not None and not requests_bnb_4bit(user_quantization_config)
+        ):
+            # An fp8 -> 4bit load parked the checkpoint's fp8 config; give it back.
+            disarm_fp8_to_nf4(auto_config)
 
         # text_only builds the bare decoder; from model_name the planner would plan the whole VLM.
         _planner_skip_reason = None
@@ -2157,7 +2167,10 @@ class FastBaseModel:
                     auto_config, dequantize = load_in_16bit
                 )
                 if _modelopt_rewritten
-                else None,
+                else fp8_to_nf4_planner_quantization_config(
+                    auto_config,
+                    SKIP_QUANTIZATION_MODULES + _architecture_skip_modules(model_types),
+                ),
                 extra_skip_modules = _architecture_skip_modules(model_types) or None,
             ),
         )
@@ -2364,14 +2377,18 @@ class FastBaseModel:
                         or kwargs.get("quantization_config") is not None
                     )
                 ):
-                    model = auto_model.from_pretrained(
-                        model_name,
-                        config = model_config,
-                        device_map = device_map,
-                        token = token,
-                        trust_remote_code = trust_remote_code,
-                        **kwargs,
-                    )
+                    try:
+                        model = auto_model.from_pretrained(
+                            model_name,
+                            config = model_config,
+                            device_map = device_map,
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            **kwargs,
+                        )
+                    finally:
+                        # The load deep-copied the config; give the caller's object its fp8 block back.
+                        disarm_fp8_to_nf4(model_config)
                 model = _text_trainable_core(
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )

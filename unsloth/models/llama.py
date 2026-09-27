@@ -2609,6 +2609,8 @@ class FastLlamaModel:
             token = token,
             model_name = model_name,
             revision = revision,
+            # vLLM reads the checkpoint itself, so it cannot take the in-process fp8 -> 4bit route.
+            allow_fp8_to_nf4 = not _vllm_will_load_weights(fast_inference, num_labels),
             hub_kwargs = {
                 "cache_dir": kwargs.get("cache_dir"),
                 "subfolder": kwargs.get("subfolder"),
@@ -2624,6 +2626,14 @@ class FastLlamaModel:
             pop_modelopt_key_mapping,
         )
 
+        from .fp8_to_nf4 import (
+            disarm_fp8_to_nf4,
+            fp8_to_nf4_armed,
+            fp8_to_nf4_planner_quantization_config,
+        )
+
+        # The fp8 config was parked on model_config, so the load must be handed this config.
+        _fp8_to_nf4 = fp8_to_nf4_armed(model_config)
         _modelopt_rewritten = modelopt_rewritten(model_config)
         if _modelopt_rewritten:
             verify_fp8_support_if_applicable(model_config)
@@ -2698,7 +2708,10 @@ class FastLlamaModel:
                 quantization_config = kwargs.get("quantization_config", None),
                 rewritten_quantization_config = modelopt_planner_quantization_config(model_config)
                 if _modelopt_rewritten
-                else None,
+                else fp8_to_nf4_planner_quantization_config(
+                    model_config,
+                    SKIP_QUANTIZATION_MODULES + (["out_proj"] if IS_FALCON_H1 else []),
+                ),
                 # The same extra the bnb config below adds.
                 extra_skip_modules = ["out_proj"] if IS_FALCON_H1 else None,
             ),
@@ -2765,16 +2778,19 @@ class FastLlamaModel:
                             set_task_config_attr(model_config, _cfg_key, _cfg_val)
                         else:
                             setattr(model_config, _cfg_key, _cfg_val)
-                model = AutoModelForSequenceClassification.from_pretrained(
-                    model_name,
-                    config = model_config,
-                    device_map = device_map,
-                    token = token,
-                    trust_remote_code = trust_remote_code,
-                    attn_implementation = preferred_attn_impl,
-                    revision = revision,
-                    **kwargs,
-                )
+                try:
+                    model = AutoModelForSequenceClassification.from_pretrained(
+                        model_name,
+                        config = model_config,
+                        device_map = device_map,
+                        token = token,
+                        trust_remote_code = trust_remote_code,
+                        attn_implementation = preferred_attn_impl,
+                        revision = revision,
+                        **kwargs,
+                    )
+                finally:
+                    disarm_fp8_to_nf4(model_config)
                 # Defensive: ensure the task head is in a floating dtype, guarding against any path leaving it
                 # as integer storage (#5027).
                 for _head_name in ("score", "classifier", "qa_outputs"):
@@ -2820,7 +2836,7 @@ class FastLlamaModel:
                 )
                 _prepare_compressed_tensors_model(model)
             elif not fast_inference:
-                if user_config is not None or _modelopt_rewritten:
+                if user_config is not None or _modelopt_rewritten or _fp8_to_nf4:
                     # Transformers 5.x @strict model init rejects extra kwargs next to config=, so set the override
                     # on the config and pass the single config object through.
                     if max_position_embeddings is not None:
@@ -2828,18 +2844,22 @@ class FastLlamaModel:
                     _rope_scaling = kwargs.pop("rope_scaling", None)
                     if _rope_scaling is not None:
                         model_config.rope_scaling = _rope_scaling
-                    if _modelopt_rewritten and user_config is None:
+                    if (_modelopt_rewritten or _fp8_to_nf4) and user_config is None:
                         move_config_overrides_onto_config(model_config, kwargs)
-                    model = AutoModelForCausalLM.from_pretrained(
-                        model_name,
-                        config = model_config,
-                        device_map = device_map,
-                        token = token,
-                        trust_remote_code = trust_remote_code,
-                        attn_implementation = preferred_attn_impl,
-                        revision = revision,
-                        **kwargs,
-                    )
+                    try:
+                        model = AutoModelForCausalLM.from_pretrained(
+                            model_name,
+                            config = model_config,
+                            device_map = device_map,
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            attn_implementation = preferred_attn_impl,
+                            revision = revision,
+                            **kwargs,
+                        )
+                    finally:
+                        # The load deep-copied the config; give the caller's object its fp8 block back.
+                        disarm_fp8_to_nf4(model_config)
                 else:
                     model = AutoModelForCausalLM.from_pretrained(
                         model_name,
