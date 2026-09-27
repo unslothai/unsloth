@@ -13714,7 +13714,9 @@ def _local_mlx_model_dir(config: ModelConfig) -> Optional[str]:
             named = {shard for shard in weight_map.values() if isinstance(shard, str)}
         except (ValueError, OSError, AttributeError):
             return True
-        here = {str(path.relative_to(directory)) for path in directory.glob("**/*.safetensors")}
+        here = {
+            path.relative_to(directory).as_posix() for path in directory.glob("**/*.safetensors")
+        }
         return not (named & here) or named <= here
 
     def _usable(path) -> bool:
