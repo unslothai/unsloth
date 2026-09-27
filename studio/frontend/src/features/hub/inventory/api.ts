@@ -118,6 +118,8 @@ export interface LocalModelInfo {
   partial_transport?: string | null;
   /** This partial can be continued byte for byte. */
   partial_resumable?: boolean;
+  /** Pipeline repo holding only a GGUF load's VAE / text encoder: not a download to continue. */
+  companion_prefetch?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
   audio_type?: string | null;

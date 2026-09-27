@@ -3369,6 +3369,7 @@ class AnthropicToolResultBlock(BaseModel):
     type: Literal["tool_result"]
     tool_use_id: str
     content: Union[str, list] = ""
+    is_error: Optional[bool] = None
 
     @field_validator("content", mode = "before")
     @classmethod
@@ -4371,6 +4372,9 @@ class DiffusionGenerateProgressResponse(BaseModel):
     total_steps: int = Field(0, description = "Total denoising steps for this run")
     fraction: float = Field(0.0, description = "step / total_steps, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+    phase: Optional[str] = Field(
+        None, description = "denoise | decode; null from engines that report no phase (sd.cpp)"
+    )
 
 
 class DiffusionLoadProgressResponse(BaseModel):
