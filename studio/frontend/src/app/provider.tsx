@@ -584,18 +584,17 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-non-chat-content-top-inset": "34px",
   "--studio-non-chat-scroller-top": "34px",
   "--studio-hidden-route-top-inset": "34px",
-  // Same split as the native-mac block: chat chrome scales, window chrome does not. The row
-  // starts 1px down, so its centre meets the window controls, which sit 4px from the top.
-  "--studio-chat-header-height": "calc(40px * var(--ui-space-scale, 1))",
-  "--studio-chat-header-padding-top": "calc(1px * var(--ui-space-scale, 1))",
+  // Same split as the native-mac block: chat chrome scales, window chrome does not. The
+  // header's controls start 4px down, the window controls' margin, clear of the window edge.
+  "--studio-chat-header-height": "calc(43px * var(--ui-space-scale, 1))",
+  "--studio-chat-header-padding-top": "calc(4px * var(--ui-space-scale, 1))",
   "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
   "--studio-chat-control-height": "calc(33px * var(--ui-space-scale, 1))",
   // The row's buttons end 6.5px above the macOS traffic-light row, so the sidebar's brand
   // rises with them and keeps the same gap below.
   "--studio-sidebar-brand-lift": "6.5px",
-  // Window chrome centres on the header's controls, so the whole row shares one line.
-  "--studio-titlebar-row-center":
-    "calc(var(--studio-chat-header-padding-top) + var(--studio-chat-control-height) / 2)",
+  // The navigation centres on the 26px window controls, which sit top-1 (4px) down.
+  "--studio-titlebar-row-center": "calc(13px + 4px * var(--ui-space-scale, 1))",
   // Min, max and close: three 26px buttons, two gap-0.5 and right-1, which mirrors the
   // navigation's left-1 so both corners hold the same margin.
   "--studio-window-control-inset":
