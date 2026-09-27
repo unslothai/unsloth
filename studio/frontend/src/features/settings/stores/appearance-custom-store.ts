@@ -7,6 +7,7 @@ import {
   createJSONStorage,
   persist,
 } from "zustand/middleware";
+import { COLOR_THEMES, type ColorThemeId } from "../lib/color-themes.ts";
 import type { ResolvedTheme } from "./theme-store";
 
 // Best-effort persistence: localStorage can be blocked (private browsing) and
@@ -92,6 +93,7 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   // Model hub leads: picking a model comes before the work that uses one.
   "hub",
   "projects",
+  "library",
   "images",
   // Video and Audio sit directly under Images: the media tabs read as one group.
   "video",
@@ -140,9 +142,9 @@ export function sidebarNavAutoAfterChoice(
 export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   hub: true,
   projects: true,
+  library: true,
   images: true,
-  video: true,
-  // Under "More" until a user pins it.
+  video: false,
   audio: false,
   train: true,
   recipes: false,
@@ -153,7 +155,7 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
 /** Every previously shipped layout, so a migration can tell an untouched install from one the
  *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects;
  *  v5 put Video back under "More" and later added API before Audio shipped; v6 added Audio;
- *  v7 pins Video under Images again. */
+ *  v7 pins Video under Images again; v8 adds Library under Projects and moves Video to "More". */
 const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
   [
     { id: "projects", pinned: true },
@@ -197,6 +199,17 @@ const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
     { id: "projects", pinned: true },
     { id: "images", pinned: true },
     { id: "video", pinned: false },
+    { id: "audio", pinned: false },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+    { id: "api", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
     { id: "audio", pinned: false },
     { id: "train", pinned: true },
     { id: "recipes", pinned: false },
@@ -589,14 +602,14 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 7,
+      version: 8,
       storage: createJSONStorage(() => guardedLocalStorage),
       migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
         const customization = migrateShippedSidebarNavDefault(
           sanitizeCustomization(state.customization),
           version,
-          7,
+          8,
         );
         return { customization } as AppearanceCustomState;
       },
@@ -678,14 +691,26 @@ function readableForeground(hex: string): string {
   return FOREGROUND_DARK_FALLBACK;
 }
 
+type PaletteSurfaces = { background: string; elevated: readonly string[] };
+
 /** Palette surfaces that custom colors do not replace. */
-const PALETTE_SURFACES: Record<
-  ResolvedTheme,
-  { background: string; elevated: string }
-> = {
-  light: { background: "#ffffff", elevated: "#ffffff" },
-  dark: { background: "#181818", elevated: "#272727" },
+const PALETTE_SURFACES: Record<ResolvedTheme, PaletteSurfaces> = {
+  light: { background: "#ffffff", elevated: ["#ffffff"] },
+  dark: { background: "#181818", elevated: ["#272727"] },
 };
+
+/** Flavor themes bring their own page and cards; light composers stay white. */
+function surfacesFor(
+  palette: ColorThemeId,
+  resolved: ResolvedTheme,
+): PaletteSurfaces {
+  const { background, surface } = COLOR_THEMES[palette][resolved];
+  if (!surface) return PALETTE_SURFACES[resolved];
+  return {
+    background,
+    elevated: resolved === "light" ? [surface, "#ffffff"] : [surface],
+  };
+}
 
 /**
  * Black for ink darker than its page, white for lighter. Raising pushes ink
@@ -854,6 +879,7 @@ const ACCENT_FG_VARS = [
 export function applyCustomizationToDocument(
   c: AppearanceCustomization,
   resolved: ResolvedTheme,
+  palette: ColorThemeId = "standard",
 ): void {
   if (typeof document === "undefined") return;
   const el = document.documentElement;
@@ -865,12 +891,12 @@ export function applyCustomizationToDocument(
   };
 
   const colors = c.colors[resolved];
-  const paletteSurfaces = PALETTE_SURFACES[resolved];
+  const paletteSurfaces = surfacesFor(palette, resolved);
 
   const accent = colors.accent
     ? legibleAccent(colors.accent, [
         colors.background ?? paletteSurfaces.background,
-        paletteSurfaces.elevated,
+        ...paletteSurfaces.elevated,
       ])
     : null;
   for (const name of ACCENT_VARS) setVar(name, accent);

@@ -7,6 +7,8 @@ Like auth/storage.py (module-level functions, raw sqlite3, per-function connecti
 and PRAGMA foreign_keys = ON for CASCADE deletes.
 """
 
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -31,6 +33,7 @@ from utils.paths import (
     studio_db_path,
 )
 from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
+from utils.paths.path_utils import macos_volume_ignores_case
 from utils.paths.scan_folder_health import is_readable_dir
 from utils.paths.sensitive import (
     contains_sensitive_path_component as _shared_contains_sensitive_path_component,
@@ -80,9 +83,24 @@ def is_denied_system_path(path: str) -> bool:
     keeps Linux removable-media mounts browseable. Expects an already-resolved (realpath) path so
     symlinks cannot escape into a denied subtree.
     """
-    is_win = platform.system() == "Windows"
-    check = os.path.normcase(path) if is_win else path
+    system = platform.system()
+    fold = system == "Darwin" and macos_volume_ignores_case(path)
+    if system == "Windows":
+        check = os.path.normcase(path)
+        # realpath() keeps an extended-length prefix: \\?\C:\Windows is C:\Windows, and
+        # \\?\UNC\server\share is \\server\share. Self-contained: tests lift this function out.
+        for extended, plain in (("\\\\?\\unc\\", "\\\\"), ("\\\\?\\", "")):
+            if check.startswith(extended):
+                check = plain + check[len(extended) :]
+                break
+    elif fold:
+        # APFS and HFS+ ignore case unless formatted case-sensitive: /LIBRARY is /Library.
+        check = path.casefold()
+    else:
+        check = path
     for prefix in _denied_path_prefixes():
+        if fold:
+            prefix = prefix.casefold()
         if check == prefix or check.startswith(prefix + os.sep):
             if prefix == "/run" and is_linux_run_media_path(check):
                 continue
@@ -102,7 +120,7 @@ _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
-_CHAT_ATTACHMENT_INVENTORY_VERSION = 1
+_CHAT_ATTACHMENT_INVENTORY_VERSION = 3
 
 
 def _project_slug(name: str) -> str:
@@ -3016,6 +3034,17 @@ def _research_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
     }
 
 
+def _research_assistant_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
+    return {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT assistant_message_id FROM research_runs "
+            "WHERE thread_id = ? AND assistant_message_id IS NOT NULL",
+            (thread_id,),
+        ).fetchall()
+    }
+
+
 def _generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
     return {
         str(message_id)
@@ -3257,9 +3286,17 @@ def _guard_server_managed_messages(
     allow_research_update: bool = False,
 ) -> None:
     generation = _generation_message_ids(conn, thread_id)
-    protected = set(generation)
-    if not allow_research_update:
-        protected.update(_research_message_ids(conn, thread_id))
+    if allow_research_update:
+        # A deep research run is handed off from a chat generation and reports into that
+        # generation's assistant message. Once the generation has settled, the research run
+        # is the message's only writer, so its authorized updates must not be held to the
+        # generation's monotonic-update rules.
+        generation -= _research_assistant_message_ids(
+            conn, thread_id
+        ) & _terminal_generation_message_ids(conn, thread_id)
+        protected = set(generation)
+    else:
+        protected = generation | _research_message_ids(conn, thread_id)
     if not protected:
         return
     for message in messages:
@@ -3273,6 +3310,33 @@ def _guard_server_managed_messages(
             and _research_message_would_change(conn, thread_id, message, pruned)
         ):
             raise ChatMessageProtectedError("server-managed generation messages cannot be edited")
+
+
+def _settle_handed_off_generation(conn: sqlite3.Connection, message: dict) -> dict:
+    # The live tab hands off before settling, so an unsettled row would be replayed by generation
+    # recovery on the next load and its settle write would replace the research report.
+    metadata = message.get("metadata")
+    if not isinstance(metadata, dict):
+        return message
+    row = conn.execute(
+        """SELECT id, status, last_event_seq FROM chat_generation_runs
+           WHERE thread_id = ? AND assistant_message_id = ?
+             AND status IN ('cancelled', 'completed', 'failed')""",
+        (message["threadId"], str(message["id"])),
+    ).fetchone()
+    if row is None or metadata.get("generationRunId") != row["id"]:
+        return message
+    # The research status now reports the outcome, not the acknowledgement's length/interrupt mark.
+    metadata = {key: value for key, value in metadata.items() if key != "incomplete"}
+    return {
+        **message,
+        "metadata": {
+            **metadata,
+            "generationStatus": row["status"],
+            "generationSeq": int(row["last_event_seq"]),
+            "generationSettled": True,
+        },
+    }
 
 
 def _detach_terminal_generation_for_edit(
@@ -3621,6 +3685,8 @@ def upsert_chat_message(
             [message],
             allow_research_update = allow_research_update,
         )
+        if allow_research_update:
+            message = _settle_handed_off_generation(conn, message)
         _raise_if_chat_message_thread_conflicts(
             conn,
             message["threadId"],
@@ -4326,6 +4392,9 @@ def _blob_part_base64_len(part: dict) -> int:
         data = audio.get("data")
         if isinstance(data, str) and _is_locally_stored_blob(data):
             return len(data)
+    data = part.get("data")
+    if part.get("type") == "file" and isinstance(data, str) and _is_locally_stored_blob(data):
+        return len(data.rsplit(",", 1)[-1])
     return 0
 
 
@@ -4337,9 +4406,9 @@ def _attachment_content_parts(attachment: dict) -> list[dict]:
 
 
 def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
-    """Approximate stored size of one attachment's content parts. Image and audio parts hold base64
-    payloads (decoded bytes ~= 3/4 of the encoded length); text parts count their character length.
-    None when there is no sizable content."""
+    """Approximate stored size of one attachment's content parts. Image, audio and file (video)
+    parts hold base64 payloads (decoded bytes ~= 3/4 of the encoded length); text parts count their
+    character length. None when there is no sizable content."""
     total = 0
     found = False
     for part in _attachment_content_parts(attachment):
@@ -4353,6 +4422,46 @@ def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
             total += len(text.encode("utf-8", errors = "ignore"))
             found = True
     return total if found else None
+
+
+_AUDIO_FORMAT_TYPES = {
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "ogg": "audio/ogg",
+    "flac": "audio/flac",
+}
+
+
+def _content_part_audio_type(audio: Any) -> Optional[str]:
+    """An audio part's type: its data URL's, its format's, or else its bytes' own header, since a
+    compare chat stores bare base64 with neither."""
+    data = audio
+    if isinstance(audio, dict):
+        known = _AUDIO_FORMAT_TYPES.get(str(audio.get("format") or "").lower())
+        if known:
+            return known
+        data = audio.get("data")
+    if not isinstance(data, str):
+        return None
+    data = data.strip()
+    if data[:5].lower() == "data:":
+        header, _, data = data.partition(",")
+        declared = header[5:].split(";", 1)[0].strip().lower()
+        if declared.startswith("audio/"):
+            return declared
+    try:
+        head = base64.b64decode(data[:16])
+    except (binascii.Error, ValueError):
+        return None
+    if head.startswith(b"RIFF") and head[8:12] == b"WAVE":
+        return "audio/wav"
+    if head.startswith(b"ID3") or (len(head) > 1 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0):
+        return "audio/mpeg"
+    if head.startswith(b"OggS"):
+        return "audio/ogg"
+    if head.startswith(b"fLaC"):
+        return "audio/flac"
+    return None
 
 
 def _content_part_attachments(content_json: Optional[str]) -> list[dict]:
@@ -4375,7 +4484,9 @@ def _content_part_attachments(content_json: Optional[str]) -> list[dict]:
         kind, value = payload
         content_type = None
         part_name = part.get("name")
-        if isinstance(value, str) and value[:5].lower() == "data:":
+        if kind == "audio":
+            content_type = _content_part_audio_type(value)
+        elif isinstance(value, str) and value[:5].lower() == "data:":
             content_type = value[5:].split(";", 1)[0].split(",", 1)[0] or None
         out.append(
             {

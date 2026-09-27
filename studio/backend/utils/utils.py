@@ -11,10 +11,11 @@ import time
 from loggers import get_logger
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 import shutil
 import tempfile
 from utils.paths.path_utils import is_appledouble_metadata
+from hub.utils.hf_errors import modelscope_missing
 from . import auth_safe
 
 AuthSafeRedirectHandler = auth_safe.AuthSafeRedirectHandler
@@ -756,6 +757,16 @@ def snapshot_is_loadable(snapshot, model_name: str) -> bool:
 
 
 # ── Client-safe error helpers ───────────────────────────────────
+_METAL_QUEUE_DEAD_MARKERS = ("gpu timeout", "submissionsignored")
+
+
+def is_metal_queue_dead(error: Union[Exception, str]) -> bool:
+    """Watchdog kill or the refusal after it; not mlx's ``Command buffer execution failed:``
+    wrapper, which also carries a recoverable ``Insufficient Memory``."""
+    text = str(error).lower()
+    return any(marker in text for marker in _METAL_QUEUE_DEAD_MARKERS)
+
+
 # Never return raw exception text to clients; log server-side, return generic.
 def safe_error_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
     """Map an exception to a generic, client-safe message (never raw ``str(error)``, which can leak paths). Log the real exception server-side."""
@@ -767,6 +778,16 @@ def safe_error_detail(error: Exception, fallback: str = "An internal error occur
     except Exception:  # noqa: BLE001 -- fall through to the generic mapping below
         pass
     text = str(error).lower()
+    # Before the connection test, which "GPU Timeout Error" would match.
+    if is_metal_queue_dead(error):
+        return "The GPU stopped responding. Reload the model to recover."
+    if (
+        "out of memory" in text
+        or "cuda error" in text
+        or "unable to allocate" in text
+        or "insufficient memory" in text
+    ):
+        return "Ran out of memory. Try a smaller model or shorter input."
     if (
         isinstance(error, (ConnectionError, TimeoutError))
         or "connection" in text
@@ -774,8 +795,6 @@ def safe_error_detail(error: Exception, fallback: str = "An internal error occur
         or "timeout" in text
     ):
         return "Could not reach an upstream service. Please try again."
-    if "out of memory" in text or "cuda error" in text:
-        return "Ran out of memory. Try a smaller model or shorter input."
     return fallback
 
 
@@ -891,6 +910,10 @@ def format_error_message(error: Exception, model_name: str) -> str:
         error: The exception that occurred
         model_name: Name of the model being loaded
     """
+    missing = modelscope_missing(error)
+    if missing:
+        return missing
+
     error_str = str(error).lower()
     model_short = model_name.split("/")[-1] if "/" in model_name else model_name
 

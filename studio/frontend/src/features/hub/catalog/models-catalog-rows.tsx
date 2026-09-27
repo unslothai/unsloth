@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isChatGgufTask, reconcileGgufPinsAfterDelete } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
+
 import {
   Tooltip,
   TooltipContent,
@@ -619,16 +621,17 @@ export const InventoryRow = memo(function InventoryRow({
         ? row.repoId
         : null;
   const canDelete = cacheDeletableRepoId !== null;
-  const partialRepoId = row.partial
-    ? row.kind === "cache"
-      ? row.repoId
-      : (row.repoId ?? row.loadId)
-    : undefined;
+  const partialRepoId =
+    row.partial && !row.companionPrefetch
+      ? row.kind === "cache"
+        ? row.repoId
+        : (row.repoId ?? row.loadId)
+      : undefined;
   const downloading = Boolean(partialRepoId && row.downloading);
   const tooltip = buildRowStatusTooltip({
     isGguf: showFormatDot && row.isGguf,
     isAdapter: showFormatDot && row.modelFormat === "adapter",
-    isAvailableOnDevice: !partialRepoId,
+    isAvailableOnDevice: !row.partial,
     partialRepoId,
     downloading,
     unsupported,
@@ -684,7 +687,7 @@ export const InventoryRow = memo(function InventoryRow({
       )}
       {partialRepoId ? (
         <PartialStatusDot downloading={downloading} />
-      ) : (
+      ) : row.companionPrefetch ? null : (
         <StatusDot tone="success" label="On device" />
       )}
       {unsupported && (
@@ -776,9 +779,14 @@ export const InventoryRow = memo(function InventoryRow({
                 undefined,
                 rowCachePath,
               );
-              // Deleted repos can't stay pinned: drop the repo pin and any of
-              // its per-quant pins so stale rows don't linger up top.
-              usePinnedModelsStore.getState().unpinRepo(deletableRepoId);
+              if (row.isGguf && isChatGgufTask(row.pipelineTag)) {
+                await reconcileGgufPinsAfterDelete(
+                  deletableRepoId,
+                  useHfTokenStore.getState().token || undefined,
+                );
+              } else {
+                usePinnedModelsStore.getState().unpinRepo(deletableRepoId);
+              }
             }
           },
           onDeleted: onChange,
