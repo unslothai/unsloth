@@ -21,6 +21,7 @@ import ast
 import os
 import types
 
+import pytest
 import torch
 
 
@@ -48,9 +49,10 @@ class _Status:
 
 
 class _Compressor:
-    def __init__(self, fail_first = False):
+    def __init__(self, fail_first = False, removes_hook = True):
         self.calls = []
         self.fail_first = fail_first
+        self.removes_hook = removes_hook
 
     def decompress_model(self, model):
         self.calls.append(torch.is_inference_mode_enabled())
@@ -61,7 +63,7 @@ class _Compressor:
             torch.ones_like(lin.weight, dtype = torch.float32), requires_grad = False
         )
         lin.quantization_status = None
-        if hasattr(model, "ct_decompress_hook"):
+        if self.removes_hook and hasattr(model, "ct_decompress_hook"):
             model.ct_decompress_hook.remove()
             delattr(model, "ct_decompress_hook")
 
@@ -97,6 +99,17 @@ def test_a_failed_load_decompression_falls_back_outside_inference_mode():
     assert not model.lin.weight.is_inference()
     x = torch.ones(1, 4, requires_grad = True)
     torch.nn.functional.linear(x, model.lin.weight).sum().backward()
+
+
+@pytest.mark.parametrize("fail_first", [False, True])
+def test_the_lazy_hook_is_dropped_when_compressed_tensors_keeps_it(fail_first):
+    compressor = _Compressor(fail_first = fail_first, removes_hook = False)
+    model = _model(compressor)
+    assert _decompress_compressed_tensors_model(model) is not fail_first
+    model(torch.ones(1, 4))
+    model(torch.ones(1, 4))
+    assert len(compressor.calls) == (2 if fail_first else 1)
+    assert not hasattr(model, "ct_decompress_hook") and not model._forward_pre_hooks
 
 
 def test_non_compressed_tensors_models_are_left_alone():

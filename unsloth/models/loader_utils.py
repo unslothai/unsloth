@@ -1744,6 +1744,14 @@ def _decompress_compressed_tensors_model(model):
         with torch.inference_mode(False), torch.no_grad():
             compressor.decompress_model(module)
         _remove_same_device_compressed_tensors_offload(module)
+        # Some compressed-tensors releases (0.19.0) leave the hook in place: drop it, also after a retry.
+        hook = getattr(model, "ct_decompress_hook", None)
+        if hook is not None:
+            hook.remove()
+            try:
+                delattr(model, "ct_decompress_hook")
+            except AttributeError:
+                pass
 
     # Swap the hook first: decompress_model removes it by name.
     hook = getattr(model, "ct_decompress_hook", None)
@@ -1755,14 +1763,6 @@ def _decompress_compressed_tensors_model(model):
     except Exception as e:
         print(f"Unsloth: could not decompress the compressed-tensors checkpoint after load: {e}")
         return False
-    # Older compressed-tensors has no hook removal inside decompress_model.
-    hook = getattr(model, "ct_decompress_hook", None)
-    if hook is not None:
-        hook.remove()
-        try:
-            delattr(model, "ct_decompress_hook")
-        except AttributeError:
-            pass
     return True
 
 
