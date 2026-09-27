@@ -50,6 +50,7 @@ from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_err
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
     PERSONALIZATION_VERSION,
+    drop_unknown_palette,
     get_personalization,
     set_personalization,
 )
@@ -3922,6 +3923,8 @@ class PersonalizationCustomization(BaseModel):
     uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
     codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
     chatWidth: Literal["standard", "wide", "full"] = "standard"
+    composerAttachments: Literal["cards", "compact"] = "cards"
+    sentAttachments: Literal["auto", "list", "chips"] = "auto"
     contrast: int = Field(50, ge = 0, le = 100)
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
@@ -3982,11 +3985,40 @@ class PersonalizationAppearance(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
     theme: Literal["light", "dark", "system"] = "system"
-    palette: Literal["standard", "classic", "minimal"] = "standard"
+    palette: Literal[
+        "standard",
+        "classic",
+        "minimal",
+        "blueberry",
+        "butterfly-pea",
+        "cherry",
+        "cinnamon",
+        "cotton-candy",
+        "dragon-fruit",
+        "earl-grey",
+        "espresso",
+        "honey",
+        "licorice",
+        "macaron",
+        "matcha",
+        "mint",
+        "neon-cyberpunk",
+        "oat-milk",
+        "peach",
+        "pina-paraiso",
+        "plum",
+        "tangerine",
+        "taro",
+        "wasabi",
+        "yuzu",
+    ] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
     customization: PersonalizationCustomization = Field(
         default_factory = PersonalizationCustomization
     )
+
+
+_PALETTE_IDS = frozenset(get_args(PersonalizationAppearance.model_fields["palette"].annotation))
 
 
 class PersonalizationPayload(BaseModel):
@@ -4003,6 +4035,8 @@ class PersonalizationResponse(PersonalizationPayload):
     # overrides instead of treating a server-filled default as an explicit value.
     customizationSaved: bool = False
     chatWidthSaved: bool = False
+    composerAttachmentsSaved: bool = False
+    sentAttachmentsSaved: bool = False
     paletteSaved: bool = False
     greetingSlothSaved: bool = False
 
@@ -4011,7 +4045,7 @@ class PersonalizationResponse(PersonalizationPayload):
 def get_personalization_settings(
     current_subject: str = Depends(get_current_subject),
 ) -> PersonalizationResponse:
-    stored = get_personalization()
+    stored = drop_unknown_palette(get_personalization(), _PALETTE_IDS)
     response = PersonalizationResponse.model_validate(stored or {})
     response.saved = bool(stored)
     appearance = stored.get("appearance") if isinstance(stored, dict) else None
@@ -4019,6 +4053,12 @@ def get_personalization_settings(
     profile = stored.get("profile") if isinstance(stored, dict) else None
     response.customizationSaved = isinstance(appearance, dict) and "customization" in appearance
     response.chatWidthSaved = isinstance(customization, dict) and "chatWidth" in customization
+    response.composerAttachmentsSaved = (
+        isinstance(customization, dict) and "composerAttachments" in customization
+    )
+    response.sentAttachmentsSaved = (
+        isinstance(customization, dict) and "sentAttachments" in customization
+    )
     response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
     response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
     return response
@@ -4056,8 +4096,10 @@ def update_personalization_settings(
             log = logger,
         ) from exc
     # Return the stored record, not the defaults-filled request, so the response
-    # matches storage (and the next GET) for fields the client omitted.
-    return PersonalizationPayload.model_validate(merged)
+    # matches storage (and the next GET) for fields the client omitted. An unknown
+    # stored palette is filtered like GET does; clients send a palette with every
+    # save, so the next save replaces it.
+    return PersonalizationPayload.model_validate(drop_unknown_palette(merged, _PALETTE_IDS))
 
 
 # Backs Settings > Logs: the session log always existed, but its path was only printed to a console

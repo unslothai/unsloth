@@ -2561,7 +2561,7 @@ function Install-UnslothStudio {
                 }
             }
             if ("$candidate" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]') { continue }
-            # Probe the interpreter's own directory: $PSScriptRoot is empty under `irm | iex`.
+            # Probe the interpreter's own directory: $PSScriptRoot is empty when the script runs from memory.
             $probeDir = $null
             try { $probeDir = [System.IO.Path]::GetDirectoryName($candidate) } catch {}
             if ([string]::IsNullOrWhiteSpace($probeDir)) { continue }
@@ -8738,8 +8738,7 @@ exit 0
     }
 
     # ── BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) ──
-    # nvml.dll sits in System32 with current drivers and under NVSMI with older ones; a bare
-    # name reaches only the former, so name the file, as studio/nvidia_probe.py does.
+    # Full paths only: a bare name searches PATH, where ZLUDA's nvcuda.dll and nvml.dll pass for NVIDIA.
     function Get-NvidiaNvmlLibraryPath {
         $dirs = @()
         if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
@@ -8748,7 +8747,12 @@ exit 0
             $candidate = Join-Path $dir "nvml.dll"
             if (Test-Path -LiteralPath $candidate) { return $candidate }
         }
-        return "nvml.dll"
+        return (Join-Path (Get-NvidiaSystem32Dir) "nvml.dll")
+    }
+
+    function Get-NvidiaSystem32Dir {
+        $root = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
+        return (Join-Path $root "System32")
     }
 
 
@@ -8768,7 +8772,7 @@ exit 0
         if (-not $exe) { return "" }
         $windows = ($env:OS -eq "Windows_NT")
         $nvmlHint = if ($windows) { Get-NvidiaNvmlLibraryPath } else { "libnvidia-ml.so.1" }
-        $cudaHint = if ($windows) { "nvcuda.dll" } else { "libcuda.so.1" }
+        $cudaHint = if ($windows) { Join-Path (Get-NvidiaSystem32Dir) "nvcuda.dll" } else { "libcuda.so.1" }
         # Kept byte-identical with studio/nvidia_probe.py's readers by
         # tests/studio/test_nvidia_python_probe_parity.ps1. Column 0 on purpose: this is Python.
         $probeSource = @'
@@ -8777,9 +8781,9 @@ import ctypes, os, sys
 
 def _names(kind, hint):
     if os.name == "nt":
-        if kind == "nvml":
-            return [hint, "nvml.dll"]
-        return [hint, "nvcuda.dll"]
+        # The driver's full path only: a bare name also finds a CUDA stand-in such as ZLUDA
+        # beside the interpreter, and that is not an NVIDIA GPU (#11736).
+        return [hint] if hint and os.path.isabs(hint) else []
     if kind == "nvml":
         return ["libnvidia-ml.so.1", "libnvidia-ml.so"]
     return ["libcuda.so.1", "libcuda.so"]

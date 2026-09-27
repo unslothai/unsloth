@@ -1178,6 +1178,45 @@ def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
     return True
 
 
+# Skipping the search measured <= 1.4% slower here; a T4 / L4 still gain 17-19% / 2-8% from it, so they keep it.
+_AUDIO_VAE_NO_SEARCH_CAPABILITIES = frozenset({(8, 0), (10, 0), (12, 0)})
+
+
+def _audio_vae_search_gains_nothing() -> bool:
+    try:
+        import torch
+        return tuple(torch.cuda.get_device_capability()) in _AUDIO_VAE_NO_SEARCH_CAPABILITIES
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def install_audio_vae_without_cudnn_benchmark(audio_vae: Any) -> bool:
+    """Hold ``cudnn.benchmark`` off for the audio VAE (host seconds + huge workspaces per new shape). Idempotent."""
+    if audio_vae is None or getattr(audio_vae, "_unsloth_no_cudnn_benchmark", False):
+        return False
+    if not _audio_vae_search_gains_nothing():
+        return False
+
+    from .diffusion_speed import cudnn_benchmark_scope
+
+    def _held_off(stock: Any) -> Any:
+        def call(self, *args, **kwargs):
+            with cudnn_benchmark_scope(False):
+                return stock(*args, **kwargs)
+
+        return call
+
+    wrapped = False
+    for name in ("decode", "encode"):
+        stock = getattr(audio_vae, name, None)
+        if callable(stock):
+            setattr(audio_vae, name, types.MethodType(_held_off(stock), audio_vae))
+            wrapped = True
+    if wrapped:
+        audio_vae._unsloth_no_cudnn_benchmark = True
+    return wrapped
+
+
 @lru_cache(maxsize = 4)
 def _triton_version_ok(version: Optional[str] = None) -> bool:
     if version is None:

@@ -63,7 +63,7 @@ $setupPs1 = Join-Path $root "studio\setup.ps1"
 
 Write-Host ""
 Write-Host "=== shared inventory helper ==="
-$blockNames = @("New-StudioChildScriptDirectory", "Get-NvidiaNvmlLibraryPath", "Read-NvidiaLibraryRawViaPython", "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory", "Test-StudioChildScriptDirectoryElevated")
+$blockNames = @("New-StudioChildScriptDirectory", "Get-NvidiaNvmlLibraryPath", "Read-NvidiaLibraryRawViaPython", "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory", "Test-StudioChildScriptDirectoryElevated", "Get-NvidiaSystem32Dir")
 $installParts = @(Get-HelperSources $installPs1 $blockNames)
 $setupParts = @(Get-HelperSources $setupPs1 $blockNames)
 $installBlock = $installParts[4]
@@ -91,7 +91,10 @@ Check "the inventory emits nothing" ($joined -notmatch 'New-StudioEmittedNativeT
 Check "the apparatus it used to need is gone from the file entirely" (
     ([System.IO.File]::ReadAllText($setupPs1) -notmatch 'New-StudioEmittedNativeType|Test-StudioCanDefineNativeTypes'))
 Check "the reader goes through the Python rung" ($setupParts[2] -match 'Read-NvidiaLibraryRawViaPython')
+Check "nvcuda.dll is handed to the probe by its System32 path" ($viaPythonBlock -match '\$cudaHint = if \(\$windows\) \{ Join-Path \(Get-NvidiaSystem32Dir\) "nvcuda\.dll" \}')
+Invoke-Expression $setupParts[6]
 Invoke-Expression $setupPath
+Invoke-Expression $setupParts[4]
 $pathRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-nvml-" + [guid]::NewGuid().ToString("N"))
 $sys32 = Join-Path (Join-Path $pathRoot "root") "System32"
 $nvsmi = Join-Path (Join-Path $pathRoot "pf") "NVIDIA Corporation\NVSMI"
@@ -99,7 +102,7 @@ New-Item -ItemType Directory -Path $sys32, $nvsmi -Force | Out-Null
 $savedRoot = $env:SystemRoot; $savedPf = $env:ProgramFiles
 try {
     $env:SystemRoot = Join-Path $pathRoot "root"; $env:ProgramFiles = Join-Path $pathRoot "pf"
-    Check "no nvml.dll on disk keeps the bare name" ((Get-NvidiaNvmlLibraryPath) -eq "nvml.dll")
+    Check "no nvml.dll on disk still names the System32 path" ((Get-NvidiaNvmlLibraryPath) -eq (Join-Path $sys32 "nvml.dll"))
     Set-Content -Path (Join-Path $nvsmi "nvml.dll") -Value ""
     Check "an NVSMI-only nvml.dll is named by its path" ((Get-NvidiaNvmlLibraryPath) -eq (Join-Path $nvsmi "nvml.dll"))
     Set-Content -Path (Join-Path $sys32 "nvml.dll") -Value ""
