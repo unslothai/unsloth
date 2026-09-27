@@ -121,6 +121,21 @@ def _decode(part: dict):
     return Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1])))
 
 
+def test_png_data_url_accepts_a_data_uri_payload():
+    raw = _png()
+    wrapped = f"data:image/png;base64,{raw}"
+    url = mcp_images._png_data_url(wrapped)
+    assert url and url.startswith("data:image/png;base64,")
+    assert base64.b64decode(url.split(",", 1)[1])[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_png_data_url_accepts_base64_with_transport_whitespace():
+    raw = _png()
+    wrapped = raw[:16] + "\n" + raw[16:]
+    url = mcp_images._png_data_url(wrapped)
+    assert url and url.startswith("data:image/png;base64,")
+
+
 def test_split_returns_text_and_images():
     text, images = split_images(_envelope("a screenshot", _image()))
 

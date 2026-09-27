@@ -88,6 +88,28 @@ def _mime_is_bounded(image: Any) -> bool:
     return not (isinstance(mime, str) and len(mime) > MAX_MCP_IMAGE_MIME_CHARS)
 
 
+def normalize_mcp_image_b64(data: str) -> str:
+    """Return raw base64 without a data-URL prefix or transport whitespace.
+
+    MCP servers sometimes put a full ``data:<mime>;base64,<payload>`` string in the
+    ``data`` field, or wrap base64 across lines. The chat UI can still render those,
+    but strict decoders and llama-server reject them unless the payload is peeled and
+    compacted first.
+    """
+    if not isinstance(data, str):
+        return ""
+    stripped = data.strip()
+    if not stripped:
+        return ""
+    if stripped.lower().startswith("data:"):
+        comma = stripped.find(",")
+        if comma < 0:
+            return ""
+        stripped = stripped[comma + 1 :]
+    # Whitespace is transport-only; the base64 alphabet has none.
+    return "".join(stripped.split())
+
+
 def probably_decodable(image: Any) -> bool:
     """Whether this entry could become a picture.
 
@@ -95,8 +117,8 @@ def probably_decodable(image: Any) -> bool:
     price them. Answers True unless the payload is plainly not an image, so a
     format Pillow can open is never charged nothing.
     """
-    data = image.get("data") if isinstance(image, dict) else None
-    if not isinstance(data, str) or not data:
+    data = normalize_mcp_image_b64(image.get("data") if isinstance(image, dict) else "")
+    if not data:
         return False
     if not _mime_is_bounded(image):
         return False
@@ -350,6 +372,10 @@ def flattened_rgb(image):
 def _png_data_url(data: str) -> str | None:
     # PNG regardless of what the server sent: llama-server's stb_image reads only
     # a few formats, and MCP servers commonly answer with WebP.
+    data = normalize_mcp_image_b64(data)
+    if not data:
+        logger.debug("MCP image payload is empty after normalization")
+        return None
     try:
         raw = base64.b64decode(data, validate = True)
     except (binascii.Error, ValueError, TypeError):

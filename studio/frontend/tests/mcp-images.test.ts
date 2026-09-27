@@ -14,7 +14,9 @@ import {
   planMcpImageBound,
   MCP_IMAGES_MARKER,
   boundMcpImageEnvelopes,
+  mcpImageDataUrl,
   mcpImagesEnvelope,
+  normalizeMcpImageB64,
   splitMcpImages,
   stripMcpImageEnvelopes,
 } from "../src/features/chat/api/mcp-images.ts";
@@ -35,6 +37,17 @@ test("a valid envelope splits into the text and its images", () => {
     text: "[1 image returned]",
     images: IMAGES,
   });
+});
+
+test("normalizeMcpImageB64 peels a data URI and whitespace", () => {
+  assert.equal(normalizeMcpImageB64("data:image/png;base64,QUJD\nDE="), "QUJDDE=");
+});
+
+test("mcpImageDataUrl does not double-wrap a data URI", () => {
+  assert.equal(
+    mcpImageDataUrl({ data: "data:image/png;base64,QUJD", mimeType: "image/png" }),
+    "data:image/png;base64,QUJD",
+  );
 });
 
 test("text that only mentions the marker is left whole", () => {

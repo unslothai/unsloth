@@ -527,6 +527,13 @@ def test_data_uri_still_resolves_its_own_type():
     )
     payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
     assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+
+def test_image_block_data_uri_is_stored_as_raw_base64():
+    wrapped = f"data:image/png;base64,{PNG_B64}"
+    flat = _flatten_result(_result(_image(data = wrapped)))
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
     assert (
         _flatten_result(
             _result(_blob_resource(mime = None, uri = "data:application/pdf;base64,JVBERi0="))

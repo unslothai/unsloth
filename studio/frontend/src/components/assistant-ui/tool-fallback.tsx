@@ -42,6 +42,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { mcpImageDataUrl } from "@/features/chat/api/mcp-images";
 import {
   isToolCallCancelled,
   isToolCallRunning,
@@ -376,7 +377,7 @@ function ToolFallbackResult({
             {imageResult.images.map((img, i) => (
               <img
                 key={i}
-                src={`data:${img.mimeType};base64,${img.data}`}
+                src={mcpImageDataUrl(img)}
                 alt={`Tool result ${i + 1}`}
                 loading="lazy"
                 className="max-w-full rounded border border-border"

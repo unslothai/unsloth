@@ -34525,6 +34525,8 @@ def _normalize_openai_image_parts_for_llama(openai_messages: list[dict], on_imag
     Calls ``on_image`` before processing each image. Returns whether any image was
     seen; raises HTTP 400 if fetching or decoding fails.
     """
+    from core.inference.mcp_images import normalize_mcp_image_b64
+
     has_image = False
     fetches = _RemoteImageFetches()
     for msg in openai_messages:
@@ -34543,14 +34545,22 @@ def _normalize_openai_image_parts_for_llama(openai_messages: list[dict], on_imag
             url = image_url.get("url", "")
             if not url.startswith("data:"):
                 url = fetches.inline(url)
-                if not url.startswith("data:"):
-                    # llama-server also accepts bare base64 payloads.
-                    continue
+            if not url.startswith("data:"):
+                cleaned = normalize_mcp_image_b64(url)
+                if not cleaned:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = "Failed to process image.",
+                    )
+                url = f"data:application/octet-stream;base64,{cleaned}"
                 image_url["url"] = url
 
             try:
                 _, b64data = url.split(",", 1)
-                raw = base64.b64decode(b64data)
+                b64data = normalize_mcp_image_b64(b64data)
+                if not b64data:
+                    raise ValueError("empty image payload")
+                raw = base64.b64decode(b64data, validate = True)
                 data_url = _llama_image_data_url(raw)
             except Exception:
                 raise HTTPException(

@@ -14,6 +14,22 @@ export interface McpImage {
   returned?: number;
 }
 
+/** Peel a data-URL prefix and transport whitespace from MCP image bytes. */
+export function normalizeMcpImageB64(data: string): string {
+  let stripped = data.trim();
+  if (!stripped) return "";
+  if (stripped.toLowerCase().startsWith("data:")) {
+    const comma = stripped.indexOf(",");
+    if (comma < 0) return "";
+    stripped = stripped.slice(comma + 1);
+  }
+  return stripped.replace(/[\t\n\r ]+/g, "");
+}
+
+export function mcpImageDataUrl(image: McpImage): string {
+  return `data:${image.mimeType};base64,${normalizeMcpImageB64(image.data)}`;
+}
+
 export function isMcpImageArray(value: unknown): value is McpImage[] {
   return (
     Array.isArray(value) &&
