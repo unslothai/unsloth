@@ -1845,16 +1845,17 @@ function Read-NvidiaLibraryRaw {
     if ($native) { return $native }
     $remainingMs = [int]($deadline - (Get-Date)).TotalMilliseconds
     # Not worth a child process we cannot wait out; the emitted rung already spent the budget.
-    if ($remainingMs -lt 2000) { return "" }
-    # Each child gets at most one per-reader bound, compared by hand: CLM refuses [math].
-    $childMs = $remainingMs; if ($childMs -gt $TimeoutMs) { $childMs = $TimeoutMs }
+    if ($remainingMs -lt 3000) { return "" }
+    # Each child gets at most one per-reader bound, compared by hand: CLM refuses [math]. 2 s of
+# every child's share is kept back for reaping it if it hangs, so the pair ends inside the deadline.
+    $childMs = $remainingMs - 2000; if ($childMs -gt $TimeoutMs) { $childMs = $TimeoutMs }
     $raw = ""
     try { $raw = Read-NvidiaLibraryRawViaPython -TimeoutMs $childMs } catch { return "" }
     # Only a first child killed at its bound (a hung NVML) earns a CUDA-only child, with what is left.
     if (-not $script:NvidiaPythonProbeTimedOut) { return $raw }
     $remainingMs = [int]($deadline - (Get-Date)).TotalMilliseconds
-    if ($remainingMs -lt 2000) { return "" }
-    $childMs = $remainingMs; if ($childMs -gt $TimeoutMs) { $childMs = $TimeoutMs }
+    if ($remainingMs -lt 3000) { return "" }
+    $childMs = $remainingMs - 2000; if ($childMs -gt $TimeoutMs) { $childMs = $TimeoutMs }
     try { return (Read-NvidiaLibraryRawViaPython -TimeoutMs $childMs -SkipNvml) } catch { return "" }
 }
 
