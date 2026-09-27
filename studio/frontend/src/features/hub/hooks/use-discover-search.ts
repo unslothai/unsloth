@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef } from "react";
+import { useHubName } from "@/lib/hf-endpoint";
 import { toast } from "@/lib/toast";
 import { clearRemoteBackoff, type HubFailure } from "@/features/hub/lib/network";
 import { useHubAvailability } from "./use-online-status";
@@ -75,16 +76,16 @@ function classifyDiscoverError(
   return "unknown";
 }
 
-function discoverErrorTitle(kind: DiscoverErrorKind): string {
+function discoverErrorTitle(kind: DiscoverErrorKind, hub: string): string {
   switch (kind) {
     case "offline":
-      return "Can't reach Hugging Face";
+      return `Can't reach ${hub}`;
     case "auth":
-      return "Hugging Face auth failed";
+      return `${hub} auth failed`;
     case "rate-limited":
-      return "Hugging Face rate limit";
+      return `${hub} rate limit`;
     default:
-      return "Couldn't reach Hugging Face";
+      return `Couldn't reach ${hub}`;
   }
 }
 
@@ -108,6 +109,7 @@ export function useDiscoverSearch({
   ownerScope: "unsloth" | "all";
 }): DiscoverSearch {
   const { phase, failure } = useHubAvailability();
+  const hub = useHubName();
   // "probing" counts: a lapsed backoff is exactly when the next request should
   // be allowed to test the network. Only a live backoff ("unavailable") holds it.
   const canProbe = phase !== "unavailable";
@@ -194,13 +196,13 @@ export function useDiscoverSearch({
     const errorKind = classifyDiscoverError(searchError, online);
     if (lastErrorRef.current === errorKind) return;
     lastErrorRef.current = errorKind;
-    toast.error(discoverErrorTitle(errorKind), {
+    toast.error(discoverErrorTitle(errorKind, hub), {
       // The classified failure names the cause; the raw message covers HTTP
       // errors that never reach the network layer.
       description: searchFailure?.message ?? searchError,
       action: { label: "Retry", onClick: handleRetrySearch },
     });
-  }, [isDiscoverTab, searchError, searchFailure, online, handleRetrySearch]);
+  }, [isDiscoverTab, searchError, searchFailure, online, handleRetrySearch, hub]);
 
   // Driven by a successful request, never a lapsed timer. Announcing recovery
   // on TTL expiry produced a permanent offline/back-online loop.

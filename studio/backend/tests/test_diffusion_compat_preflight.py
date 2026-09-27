@@ -1724,4 +1724,6 @@ def test_qwen_image_2_1_takes_the_dynamic_4bit_text_encoder():
             "Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf",
             "llm",
         ),
+        # The vision projector native editing needs, pinned by name for the same reason.
+        ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision"),
     )

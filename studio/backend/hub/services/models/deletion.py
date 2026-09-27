@@ -9,8 +9,19 @@ from hub.services.models import account_access
 
 import asyncio
 import errno
+import inspect
 from pathlib import Path
 from typing import Optional
+
+try:
+    from huggingface_hub.utils._shared_blobs import shared_blob_target, sweep_shared_blob
+
+    # Private huggingface_hub API: a release that keeps the names but changes the arguments would raise TypeError mid-delete, after the snapshot links are gone, so fall back to the plain unlink instead.
+    inspect.signature(shared_blob_target).bind(Path(), Path())
+    inspect.signature(sweep_shared_blob).bind(Path(), cache_dir = Path())
+except (ImportError, TypeError, ValueError):
+    shared_blob_target = None
+    sweep_shared_blob = None
 
 from fastapi import HTTPException
 from loggers import get_logger
@@ -80,6 +91,25 @@ def _blob_hash_from_path(blob: Path) -> Optional[str]:
     if not name or name.endswith(INCOMPLETE_SUFFIX):
         return None
     return name
+
+
+def _unlink_variant_blob(blob: Path, cache_dir: Optional[Path]) -> int:
+    shared_target = None
+    if shared_blob_target is not None:
+        # huggingface_hub matches paths lexically, so try the cache root in the blob's own form first: a resolved root misses a symlinked cache or a Windows 8.3 short name and would leak the payload.
+        for root in dict.fromkeys(
+            r for r in (blob.parent.parent.parent, cache_dir) if r is not None
+        ):
+            shared_target = shared_blob_target(blob, root)
+            if shared_target is not None:
+                cache_dir = root
+                break
+    if shared_target is None:
+        freed = blob.stat().st_size
+        blob.unlink()
+        return freed
+    blob.unlink()
+    return sweep_shared_blob(shared_target, cache_dir = cache_dir)
 
 
 def _path_exists_or_symlink(path: Path) -> bool:
@@ -279,6 +309,9 @@ def _delete_gguf_variant_from_repos(
                     failures.append(f"{name}: {e}")
 
         ref_counts = _snapshot_blob_reference_counts(repo_dir)
+        cache_dir = root
+        if cache_dir is None and repo_dir is not None:
+            cache_dir = repo_dir.parent
         seen_blobs: set[Path] = set()
         for _snap, blob, name in [*matched, *companion_matches]:
             if blob is None:
@@ -297,8 +330,7 @@ def _delete_gguf_variant_from_repos(
                 continue
             try:
                 if blob.exists():
-                    deleted_bytes += blob.stat().st_size
-                    blob.unlink()
+                    deleted_bytes += _unlink_variant_blob(blob, cache_dir)
                     deleted_blobs += 1
             except OSError as e:
                 failures.append(f"{name}: {e}")
@@ -503,8 +535,7 @@ def reclaim_replaced_gguf_variant(
                 continue
             try:
                 if blob.exists():
-                    deleted_bytes += blob.stat().st_size
-                    blob.unlink()
+                    deleted_bytes += _unlink_variant_blob(blob, target_hub_cache)
                     deleted_blobs += 1
             except OSError as e:
                 failures.append(f"{name}: {e}")
@@ -906,7 +937,11 @@ def _delete_cached_model_blocking(
     *,
     only_if_orphan: bool = False,
 ) -> dict:
-    # Free up space's list can be minutes old, and a background download finishing turns that orphan into an installed checkpoint neither guard below catches.
+    from hub.utils.gguf_sources import cached_gguf_action_path
+
+    cache_path = cached_gguf_action_path(repo_id, variant, cache_path)
+    # Free up space's list can be minutes old, and a background download finishing turns that orphan
+    # into an installed checkpoint neither guard below catches.
     if only_if_orphan:
         from hub.services.models import companion_cleanup
         from hub.utils import companion_assets

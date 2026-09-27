@@ -434,6 +434,74 @@ RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
 
+# Unsloth's training forward drops the 2D mask, so right-align Online DPO rows (GRPO's left_pack_padding) before scoring.
+_ONLINE_DPO_MODEL_CALL = re.compile(
+    r"^(?P<indent>[ \t]*)output = model\(prompt_completion_ids, "
+    r"(?P<kwargs>attention_mask=prompt_completion_mask|\*\*model_kwargs)\)[ \t]*$",
+    flags = re.MULTILINE,
+)
+_ONLINE_DPO_LOGITS_SLICE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<line>logits = output\.logits\[:, start_idx:(?:end_idx|-1)\])[ \t]*$",
+    flags = re.MULTILINE,
+)
+
+
+def online_dpo_trainer__forward(function_name, function):
+    if function_name != "_forward" or "_unsloth_left_pad" in function:
+        return function
+    call = _ONLINE_DPO_MODEL_CALL.search(function)
+    logits_slice = _ONLINE_DPO_LOGITS_SLICE.search(function)
+    if call is None or logits_slice is None:
+        _warn_once(
+            "online_dpo_trainer._forward",
+            "Unsloth: Online DPO's _forward changed upstream, so left-padded prompts are scored "
+            "without right-aligning them. Please file a bug report.",
+        )
+        return function
+    i = call.group("indent")
+    # Vision rows keep TRL's layout: image tokens are placed by position.
+    has_vision = call.group("kwargs") == "**model_kwargs"
+    pack = (
+        f"{i}_unsloth_left_pad = None\n"
+        f"{i}if {'not vision_inputs' if has_vision else 'True'}:\n"
+        f"{i}    _unsloth_left_pad = (prompt_mask == 0).sum(dim = 1)\n"
+        f"{i}    _unsloth_order = torch.argsort(prompt_completion_mask != 0, dim = 1, descending = True, stable = True)\n"
+        f"{i}    prompt_completion_ids = prompt_completion_ids.gather(1, _unsloth_order)\n"
+        f"{i}    prompt_completion_mask = prompt_completion_mask.gather(1, _unsloth_order)\n"
+        + (
+            f'{i}    model_kwargs["attention_mask"] = prompt_completion_mask\n'
+            if has_vision
+            else ""
+        )
+        + call.group(0)
+    )
+    j = logits_slice.group("indent")
+    gather = (
+        f"{j}if _unsloth_left_pad is not None:\n"
+        f"{j}    _unsloth_index = (start_idx - _unsloth_left_pad).unsqueeze(1) + torch.arange(\n"
+        f"{j}        completion_ids.size(1), device = completion_ids.device\n"
+        f"{j}    ).unsqueeze(0)\n"
+        f"{j}    _unsloth_index = _unsloth_index.clamp(0, output.logits.size(1) - 1)\n"
+        # index_select: advanced indexing is ~40% slower, take_along_dim keeps a [B, C, V] int64 index.
+        f"{j}    _unsloth_rows, _unsloth_len = output.logits.shape[:2]\n"
+        f"{j}    _unsloth_index = _unsloth_index + _unsloth_len * torch.arange(\n"
+        f"{j}        _unsloth_rows, device = _unsloth_index.device\n"
+        f"{j}    ).unsqueeze(1)\n"
+        f"{j}    logits = output.logits.reshape(_unsloth_rows * _unsloth_len, -1).index_select(\n"
+        f"{j}        0, _unsloth_index.reshape(-1)\n"
+        f"{j}    ).view(_unsloth_rows, -1, output.logits.size(-1))\n"
+        # Drop [B, L, V] before log_softmax, else the copy above raises peak memory.
+        f"{j}    output = None\n"
+        f"{j}else:\n"
+        f"{j}    {logits_slice.group('line')}"
+    )
+    function = function[: logits_slice.start()] + gather + function[logits_slice.end() :]
+    return function[: call.start()] + pack + function[call.end() :]
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__forward)
+
+
 _WRAPPED_PACKING_SETUP = (
     "    import inspect as _inspect\n"
     "    try:\n"
@@ -1927,7 +1995,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
 
-            lm_head = self.model.get_output_embeddings().weight
+            lm_head = unwrapped_model.get_output_embeddings().weight
 
             # Size on the dtype the forward actually runs in: with autocast off that is the model's own dtype.
             forward_dtype = (
@@ -2747,11 +2815,46 @@ def _patch_grpo_accumulated_loss_hidden_states_dispatch(function):
     return source
 
 
+def grpo_update_SamplingParams(
+    SamplingParams,
+    generation_kwargs,
+    vllm_sampling_params = None,
+):
+    good_sampling_params_keys = inspect.signature(SamplingParams).parameters.keys()
+
+    new_generation_kwargs = {}
+    for key in generation_kwargs.keys():
+        if key in good_sampling_params_keys:
+            new_generation_kwargs[key] = generation_kwargs[key]
+    generation_kwargs = new_generation_kwargs
+
+    if vllm_sampling_params is not None:
+        overwrites = getattr(vllm_sampling_params, "_set_kwargs", None)
+        if overwrites is None:
+            default_sampling_params = SamplingParams()
+            overwrites = {}
+            for key in good_sampling_params_keys:
+                if key.startswith("_") or not hasattr(vllm_sampling_params, key):
+                    continue
+                overwrited_key = getattr(vllm_sampling_params, key)
+                if overwrited_key != getattr(default_sampling_params, key, None):
+                    overwrites[key] = overwrited_key
+        for key, overwrited_key in overwrites.items():
+            if key in good_sampling_params_keys and key not in (
+                "seed",
+                "n",
+                "temperature",
+                "max_tokens",
+                "logprobs",
+            ):
+                generation_kwargs[key] = overwrited_key
+    return generation_kwargs
+
+
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
-grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
@@ -3586,9 +3689,28 @@ def vllm_generation_init_patch():
             override("generate", wrap_generation_call)
             override("chat", wrap_generation_call)
             override("collective_rpc", wrap_collective_rpc)
+            # TRL >= 0.28 builds `SamplingParams(**generation_kwargs)` inside this call, the one site the older-TRL source replacement in rl.py targets; route it through the same helper for this call only.
+            user_sampling_params = getattr(self, "_unsloth_vllm_sampling_params", None)
+            original_sampling_params = vllm_generation.__dict__.get("SamplingParams", None)
+            if user_sampling_params is not None and original_sampling_params is not None:
+
+                def unsloth_sampling_params(*sp_args, **sp_kwargs):
+                    if sp_args:
+                        return original_sampling_params(*sp_args, **sp_kwargs)
+                    return original_sampling_params(
+                        **grpo_update_SamplingParams(
+                            original_sampling_params, sp_kwargs, user_sampling_params
+                        )
+                    )
+
+                vllm_generation.SamplingParams = unsloth_sampling_params
+            else:
+                original_sampling_params = None
             try:
                 return original_generate(self, *args, **kwargs)
             finally:
+                if original_sampling_params is not None:
+                    vllm_generation.SamplingParams = original_sampling_params
                 for name, had_own, bound in reversed(saved):
                     try:
                         if had_own:

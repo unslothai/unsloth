@@ -252,5 +252,38 @@ def test_called_from_gpu_init():
     assert "\ndel fix_peft_stale_torchao_import_error\n" in src, "not cleaned up"
 
 
+def test_the_patched_probe_keeps_the_lru_cache_api(peft_env):
+    """peft's is_torchao_available is an lru_cache, and callers reset it with cache_clear()
+    after torchao changes. functools.wraps does not carry the cache methods across, so without
+    forwarding them the first cache_clear() after unsloth patched peft raised AttributeError."""
+    import functools
+
+    calls = []
+
+    @functools.lru_cache
+    def is_torchao_available():
+        calls.append(None)
+        return True
+
+    import_utils, consumer = peft_env(is_torchao_available)
+    assert FIX() is True
+    patched = import_utils.is_torchao_available
+    assert patched is not is_torchao_available
+
+    assert patched() is True and patched() is True
+    assert len(calls) == 1, "the cache still answers the second call"
+    assert patched.cache_info().hits == 1
+    patched.cache_clear()
+    assert patched() is True
+    assert len(calls) == 2, "cache_clear on the patch must reach peft's own cache"
+    assert consumer.is_torchao_available is patched
+
+
+def test_a_probe_without_a_cache_gets_no_cache_api(peft_env):
+    import_utils, _ = peft_env(lambda: True)
+    assert FIX() is True
+    assert not hasattr(import_utils.is_torchao_available, "cache_clear")
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

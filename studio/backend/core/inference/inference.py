@@ -200,7 +200,8 @@ class HarmonyTextStreamer:
 
         gen_ids = self._token_ids[self._prompt_len :]
         raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
-        self._process_incremental(raw)
+        # A trailing U+FFFD may be a character whose bytes are still arriving; end() emits it.
+        self._process_incremental(raw.rstrip("\ufffd"))
 
     def end(self):
         gen_ids = self._token_ids[self._prompt_len :]

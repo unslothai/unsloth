@@ -444,9 +444,13 @@ def test_a_real_no_such_column_error_is_not_swallowed(clock, monkeypatch):
     """The degradations key on the lease columns by name, not on the error class.
 
     A `no such column` naming anything else is a genuine schema fault and must surface.
+
+    The fault goes in at _connect, the handle get_progress actually uses. Since #11525 a warm
+    thread reuses its pooled connection without calling get_connection, and _seed() has just
+    pooled one, so a fault injected there was never reached when this test ran on its own.
     """
     _seed()
-    real_get = runs_db.get_connection
+    real_connect = runs_db._connect
 
     class _Boom:
         def __init__(self, inner):
@@ -460,7 +464,7 @@ def test_a_real_no_such_column_error_is_not_swallowed(clock, monkeypatch):
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-    monkeypatch.setattr(runs_db, "get_connection", lambda **kw: _Boom(real_get(**kw)))
+    monkeypatch.setattr(runs_db, "_connect", lambda: _Boom(real_connect()))
     with pytest.raises(sqlite3.OperationalError, match = "some_other_column"):
         runs_db.get_progress("run-1")
 

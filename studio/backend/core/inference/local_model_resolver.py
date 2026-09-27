@@ -22,7 +22,14 @@ from typing import Optional
 
 from core.inference.model_ids import public_model_id
 from loggers import get_logger
-from utils.account_context import account_thread, current_account_id, is_owner_context
+from utils.account_context import (
+    AccountContext,
+    account_thread,
+    current_account,
+    current_account_id,
+    is_owner_context,
+    run_as,
+)
 
 logger = get_logger(__name__)
 
@@ -74,9 +81,40 @@ _warming = False
 # is rebuilt off the request path. Callers still pair invalidate_index() with warm_index_soon() for the case where it
 # has retired.
 _warm_pending = False
+_warm_accounts: dict[Optional[str], AccountContext] = {}
+_warm_active_account: Optional[AccountContext] = None
+_warm_retry_scopes: set[Optional[str]] = set()
 _last_scan_s = 0.0
+_managed_last_scan_s: dict[str, float] = {}
 # rescan at most a tenth of the time: on the TTL alone a slow scan would run continuously
 _WARM_DUTY = 10.0
+
+
+def _scope_for_account(account: AccountContext) -> Optional[str]:
+    return None if account.is_owner else account.account_id
+
+
+def _account_scope() -> Optional[str]:
+    return _scope_for_account(current_account())
+
+
+def _account_duty_window(account_id: Optional[str]) -> float:
+    scan_s = _last_scan_s if account_id is None else _managed_last_scan_s.get(account_id, 0.0)
+    return max(_CACHE_TTL_S, scan_s * _WARM_DUTY)
+
+
+def _duty_window() -> float:
+    """Minimum snapshot age for a background rescan."""
+    return _account_duty_window(_account_scope())
+
+
+def _record_scan_duration(duration: float) -> None:
+    global _last_scan_s
+    account_id = _account_scope()
+    if account_id is None:
+        _last_scan_s = duration
+    else:
+        _managed_last_scan_s[account_id] = duration
 
 
 def _is_abs_path_id(value: str) -> bool:
@@ -958,7 +996,12 @@ def recently_downloaded(repo_id: str) -> bool:
     return repo_id.strip().lower() in _just_downloaded
 
 
-def _snapshot_is_trusted(timestamp: float, now: float) -> bool:
+def _snapshot_is_trusted(
+    timestamp: float,
+    now: float,
+    *,
+    duty_window: Optional[float] = None,
+) -> bool:
     """Whether a snapshot stamped *timestamp* may answer a model switch at *now*.
 
     Positive is an ordinary scan, trusted for the TTL. Negative is when an
@@ -969,13 +1012,20 @@ def _snapshot_is_trusted(timestamp: float, now: float) -> bool:
     if timestamp > 0.0:
         return now - timestamp < _CACHE_TTL_S
     if timestamp < 0.0:
-        return now + timestamp < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY)
+        return now + timestamp < (duty_window if duty_window is not None else _duty_window())
     return False
 
 
 # Bumped by every invalidate_index() call. A cache built on top of this index can key on it and be dropped by the same
 # call that drops the index, rather than each new invalidation site having to remember one more cache to clear.
 _generation = 0
+
+
+# Confirmed misses keyed by account and name, valid for the recorded invalidation generation.
+_misses: dict[tuple[Optional[str], str], int] = {}
+_MAX_MISSES = 256
+# Request bodies may be hundreds of MB; longer names are not retained.
+_MAX_MISS_NAME = 4096
 
 
 def index_generation() -> int:
@@ -996,21 +1046,31 @@ def invalidate_index(*, additions_only: bool = False) -> None:
         now = time.monotonic()
         _generation += 1
 
-        def _invalidated(snapshot):
+        def _invalidated(snapshot, account_id):
             timestamp, retained = snapshot
             # Entries and trust state publish together: a lock-free reader never sees a fresh
             # timestamp paired with revoked trust.
-            stamp = -now if additions_only and _snapshot_is_trusted(timestamp, now) else 0.0
+            stamp = (
+                -now
+                if additions_only
+                and _snapshot_is_trusted(
+                    timestamp,
+                    now,
+                    duty_window = _account_duty_window(account_id),
+                )
+                else 0.0
+            )
             return (stamp, retained)
 
         # Every account's snapshot: what changed on disk is not scoped to whoever noticed.
-        _scan = _invalidated(_scan)
+        _scan = _invalidated(_scan, None)
         for account_id, snapshot in list(_managed_scans.items()):
-            _managed_scans[account_id] = _invalidated(snapshot)
+            _managed_scans[account_id] = _invalidated(snapshot, account_id)
     # This may have waited out a scan on _lock, so the warmer that just published can still own the slot with a snapshot
     # that is stale again. See _warm_pending.
     with _warm_lock:
-        if _warming:
+        if _warm_active_account is not None:
+            _warm_retry_scopes.add(_scope_for_account(_warm_active_account))
             _warm_pending = True
 
 
@@ -1024,7 +1084,11 @@ def _index() -> dict[str, _LocalGgufEntry]:
         # would serve what was just revoked
         if ts > 0.0 and now - ts < _CACHE_TTL_S:
             return cached
-        fresh = _build_index()
+        # Request scans also set the background rescan interval.
+        try:
+            fresh = _build_index()
+        finally:
+            _record_scan_duration(time.monotonic() - now)
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on an install with many local models
         # can itself exceed the TTL, which would store the cache already expired and make every request rebuild the
         # index.
@@ -1080,40 +1144,108 @@ def warm_index_soon() -> None:
     """
     global _warming, _warm_pending
     stamp = _snapshot()[0]
-    if stamp > 0.0 and time.monotonic() - stamp < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY):
+    if stamp > 0.0 and time.monotonic() - stamp < _duty_window():
         return
+    account = current_account()
+    scope = _scope_for_account(account)
     with _warm_lock:
+        if (
+            _warm_active_account is not None and scope == _scope_for_account(_warm_active_account)
+        ) or scope in _warm_accounts:
+            return
+        _warm_accounts[scope] = account
         if _warming:
             return
         _warming = True
         _warm_pending = False
 
     def _run() -> None:
-        global _warming, _warm_pending, _last_scan_s
+        global _warm_active_account, _warming, _warm_pending
         released = False
         try:
             while True:
-                started = time.monotonic()
+                with _warm_lock:
+                    if not _warm_accounts:
+                        _warming, _warm_pending, released = False, False, True
+                        return
+                    scope, account = next(iter(_warm_accounts.items()))
+                    del _warm_accounts[scope]
+                    _warm_active_account = account
                 try:
-                    _index()
+                    run_as(account, _index)
                 except Exception:
                     pass
-                _last_scan_s = time.monotonic() - started
                 with _warm_lock:
-                    if _warm_pending:
-                        _warm_pending = False
-                        continue
-                    _warming, released = False, True
-                    return
+                    _warm_active_account = None
+                    if scope in _warm_retry_scopes:
+                        _warm_retry_scopes.discard(scope)
+                        _warm_accounts[scope] = account
+                    _warm_pending = bool(_warm_retry_scopes)
         finally:
-            # Only on a BaseException: leaving the slot held would kill background warming for the life of the process
-            # and put scans back on requests.
+            # Only on a BaseException: leaving scopes queued without a worker would kill background warming for the
+            # life of the process and put scans back on requests.
             if not released:
                 with _warm_lock:
+                    _warm_accounts.clear()
+                    _warm_retry_scopes.clear()
+                    _warm_active_account = None
                     _warming = _warm_pending = False
 
-    # Pinned to the caller's account, or the rebuild would publish under the owner's scope.
+    # Capture a real account context for the thread; queued scans rebind to their own account above.
     account_thread(target = _run, name = "local-model-index-warm", daemon = True).start()
+
+
+def _miss_scope() -> Optional[str]:
+    return _account_scope()
+
+
+def _scope_is_warming(scope: Optional[str]) -> bool:
+    with _warm_lock:
+        return scope in _warm_accounts or (
+            _warm_active_account is not None and _scope_for_account(_warm_active_account) == scope
+        )
+
+
+def resolve_local_gguf_for_switch(
+    requested: str, *, include_companion_scope: bool = False
+) -> Optional[tuple]:
+    """Resolve an auto-switch target without repeatedly scanning for known misses.
+
+    Reuse misses until invalidation or two duty windows of snapshot age. After one
+    window, requests trigger a background scan; the second allows time to finish.
+    New names and newly indexed hits use the normal resolver freshness checks.
+    """
+    if not isinstance(requested, str) or not requested.strip():
+        return None
+    requested = requested.strip()
+    key = (_miss_scope(), requested)
+    generation = _generation
+    started = time.monotonic()
+    ts, index = _snapshot()
+    if (
+        _misses.get(key) == generation
+        and ts > 0.0
+        and (started - ts < 2 * _duty_window() or _scope_is_warming(key[0]))
+        and _resolve_from_index(requested, index) is None
+    ):
+        warm_index_soon()
+        return None
+    resolved = resolve_local_gguf(requested, include_companion_scope = include_companion_scope)
+    if resolved is None:
+        ts, index = _snapshot()
+        # Require a scan fresh at call start or completed since, with no intervening invalidation.
+        # Failed rebuilds leave an older snapshot that cannot prove a miss.
+        if (
+            len(requested) <= _MAX_MISS_NAME
+            and ts > 0.0
+            and started - ts < _CACHE_TTL_S
+            and generation == _generation
+            and _resolve_from_index(requested, index) is None
+        ):
+            if len(_misses) >= _MAX_MISSES:
+                _misses.clear()
+            _misses[key] = generation
+    return resolved
 
 
 def resolve_local_gguf(

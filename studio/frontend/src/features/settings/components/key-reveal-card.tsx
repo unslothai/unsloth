@@ -11,8 +11,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 
 function selectToken(input: HTMLInputElement | null) {
-  input?.focus();
-  input?.select();
+  if (!input) return;
+  input.focus();
+  input.select();
+  // select() scrolls to the end; keep the sk-unsloth- start in view.
+  input.scrollLeft = 0;
 }
 
 export function KeyRevealCard({
@@ -63,7 +66,7 @@ export function KeyRevealCard({
           type="text"
           readOnly={true}
           value={rawKey}
-          onFocus={(event) => event.currentTarget.select()}
+          onFocus={(event) => selectToken(event.currentTarget)}
           aria-label={t("settings.apiKeys.newTokenCreated")}
           className="min-w-0 flex-1 bg-transparent text-foreground outline-none"
           data-reload-snapshot-sensitive={true}

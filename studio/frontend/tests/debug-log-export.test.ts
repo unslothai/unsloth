@@ -280,12 +280,26 @@ test("the browser export fetches the route and never reaches for Tauri", async (
   assert.equal(world.tauriImports(), 0);
 });
 
-test("openLogsFolder falls back to open_logs_dir when nothing is selected", async () => {
+test("openLogsFolder falls back to open_logs_dir when no logs root is reported", async () => {
   const world = makeWorld({ isTauri: true });
 
   await world.api.openLogsFolder();
   assert.deepEqual(world.invokes, [
     { command: "open_logs_dir", args: undefined },
+  ]);
+});
+
+test("openLogsFolder preserves the selected path with an older backend", async () => {
+  const unix = makeWorld({ isTauri: true });
+  await unix.api.openLogsFolder(null, "/srv/studio-home/logs/server/current.log");
+  assert.deepEqual(unix.invokes, [
+    { command: "open_models_dir", args: { path: "/srv/studio-home/logs/server" } },
+  ]);
+
+  const windows = makeWorld({ isTauri: true });
+  await windows.api.openLogsFolder(null, "C:\\studio-home\\logs\\server\\current.log");
+  assert.deepEqual(windows.invokes, [
+    { command: "open_models_dir", args: { path: "C:\\studio-home\\logs\\server" } },
   ]);
 });
 
@@ -356,45 +370,13 @@ test("a failure that is not a 401 never reaches for the refresh token", async ()
   assert.equal(world.invokes.length, 1);
 });
 
-test("openLogsFolder uses the reported root when no source is selected", async () => {
-  // The custom-home case with nothing readable in it: realpath stays null and
-  // open_logs_dir would send the user to a hard-coded ~/.unsloth/studio.
+test("openLogsFolder opens the reported logs root", async () => {
+  // the backend resolves a custom studio home, which open_logs_dir cannot
   const world = makeWorld({ isTauri: true });
 
-  await world.api.openLogsFolder(null, "/srv/studio-home");
+  await world.api.openLogsFolder("/srv/studio-home/logs", "/other/logs/server/current.log");
   assert.deepEqual(world.invokes, [
-    { command: "open_models_dir", args: { path: "/srv/studio-home" } },
-  ]);
-});
-
-test("a selected log still beats the reported root", async () => {
-  const world = makeWorld({ isTauri: true });
-
-  await world.api.openLogsFolder("/srv/other/logs/server/s.log", "/srv/studio-home");
-  assert.deepEqual(world.invokes, [
-    { command: "open_models_dir", args: { path: "/srv/other/logs/server" } },
-  ]);
-});
-
-test("openLogsFolder opens the CONFIGURED home, not the hard-coded one", async () => {
-  // `open_logs_dir` resolves ~/.unsloth/studio and nothing else, while the
-  // picker honours UNSLOTH_STUDIO_HOME and STUDIO_HOME. On a custom home the
-  // button would open an unrelated directory, or error on one that does not
-  // exist. The selected log's own realpath is what makes them agree.
-  const world = makeWorld({ isTauri: true });
-
-  await world.api.openLogsFolder("/srv/studio-home/logs/server/server-1.log");
-  assert.deepEqual(world.invokes, [
-    { command: "open_models_dir", args: { path: "/srv/studio-home/logs/server" } },
-  ]);
-});
-
-test("openLogsFolder handles a Windows realpath", async () => {
-  const world = makeWorld({ isTauri: true });
-
-  await world.api.openLogsFolder("C:\\studio\\logs\\server\\server-1.log");
-  assert.deepEqual(world.invokes, [
-    { command: "open_models_dir", args: { path: "C:\\studio\\logs\\server" } },
+    { command: "open_models_dir", args: { path: "/srv/studio-home/logs" } },
   ]);
 });
 

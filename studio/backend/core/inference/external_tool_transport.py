@@ -62,6 +62,9 @@ class OAICompatTransport:
         self._model = model
         self._continue_final_message = continue_final_message
         self._request_kwargs = request_kwargs
+        self.preserves_reasoning = (
+            client.provider_type == "llama_cpp" and request_kwargs.get("preserve_thinking") is True
+        )
 
     def stream(
         self,

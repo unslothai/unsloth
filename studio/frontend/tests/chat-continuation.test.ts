@@ -31,6 +31,7 @@ const {
   isRestart,
   joinContinuation,
   modeAllowsContinuation,
+  noteRunStartedThisSession,
   readContinuationRequest,
   readIncompleteInfo,
   readTextThoughtSignature,
@@ -40,6 +41,7 @@ const {
   recordAutoContinue,
   rejectsAssistantPrefill,
   resetAutoContinue,
+  runStartedThisSession,
   wasAutoContinued,
   shouldAutoContinue,
   shouldAutoContinueMessage,
@@ -733,6 +735,7 @@ test("a claim is reported and cleared by a full reset", async () => {
 
 test("a message already claimed stops reporting itself as continuing", async () => {
   resetAutoContinue();
+  noteRunStartedThisSession("m1");
   // The turn that fires it: nothing has claimed the message yet.
   assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), true);
   await claimAutoContinue("m1", PANE);
@@ -750,17 +753,66 @@ test("a claim on one message does not silence another", async () => {
   await claimAutoContinue("m1", PANE);
   // The next round of the same turn is a new message with budget left, and continues.
   recordAutoContinue("parent-1");
+  noteRunStartedThisSession("m2");
   assert.equal(shouldAutoContinueMessage("m2", "length", "parent-1"), true);
 });
 
 test("a claimed message still honours the gates the turn itself fails", () => {
   resetAutoContinue();
+  noteRunStartedThisSession("m1");
+  noteRunStartedThisSession("m2");
   // Nothing about the claim resurrects a cut that was never automatic in the first place.
   assert.equal(shouldAutoContinueMessage("m1", "cancelled", "parent-1"), false);
   assert.equal(
     shouldAutoContinueMessage("m2", "length", "parent-1", { fits: false }),
     false,
   );
+});
+
+// --- history ---------------------------------------------------------------------------
+// Opening a saved chat must not auto-continue its Max Tokens cut.
+
+test("a Max Tokens cut loaded from history is left to the Continue button", () => {
+  resetAutoContinue();
+  assert.equal(runStartedThisSession("saved-reply"), false);
+  assert.equal(shouldAutoContinueMessage("saved-reply", "length", "parent-1"), false);
+  // The manual button still offers it.
+  assert.equal(shouldAutoContinue("length", "parent-1"), true);
+  assert.equal(autoContinueCount("parent-1"), 0);
+});
+
+test("a Max Tokens cut from a run this page started still continues on its own", () => {
+  resetAutoContinue();
+  noteRunStartedThisSession("live-reply");
+  assert.equal(shouldAutoContinueMessage("live-reply", "length", "parent-1"), true);
+  // Each round is a new sibling, noted as it starts.
+  recordAutoContinue("parent-1");
+  noteRunStartedThisSession("round-2");
+  assert.equal(shouldAutoContinueMessage("round-2", "length", "parent-1"), true);
+});
+
+test("a missing message id never counts as started", () => {
+  resetAutoContinue();
+  noteRunStartedThisSession(undefined);
+  noteRunStartedThisSession(null);
+  noteRunStartedThisSession("");
+  assert.equal(runStartedThisSession(undefined), false);
+  assert.equal(runStartedThisSession(""), false);
+});
+
+test("a full reset forgets which runs this page started", () => {
+  noteRunStartedThisSession("live-reply");
+  resetAutoContinue();
+  assert.equal(runStartedThisSession("live-reply"), false);
+});
+
+test("every adapter run records its assistant message before it starts", () => {
+  const start = CHAT_ADAPTER.indexOf("  return {\n    async *run(args) {");
+  assert.ok(start >= 0);
+  const wrapper = CHAT_ADAPTER.slice(start);
+  const noted = wrapper.indexOf("noteRunStartedThisSession(args.unstable_assistantMessageId)");
+  const delegated = wrapper.indexOf("yield* adapter.run(args)");
+  assert.ok(noted >= 0 && delegated >= 0 && noted < delegated);
 });
 
 // --- cross-tab claim ------------------------------------------------------------------

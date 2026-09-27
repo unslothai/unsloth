@@ -22,6 +22,7 @@ on its version number: on a build that leaks they prove the fix removes the leak
 build that does not leak they prove the fix leaves it alone.
 """
 
+import os
 import sys
 
 import pytest
@@ -31,7 +32,9 @@ pytest.importorskip("transformers")
 
 from unsloth.import_fixes import (  # noqa: E402
     _COMPOSITE_PREFIX_RENAMING_FLAG,
+    _composite_prefix_renaming_repaired,
     _leaked_submodule_prefix_renamings,
+    _next_in_wrapper_chain,
     _prefixed_pattern,
     _renaming_destroys_keys,
     _renaming_signature,
@@ -42,12 +45,27 @@ from unsloth.import_fixes import (  # noqa: E402
 )
 
 
+def _skip_a_stand_in(module):
+    """transformers 4.x has neither module, and importing unsloth fills the gap with inert
+    stand-ins so peft can import (`_make_peft_stub_module` in unsloth/import_fixes.py). Their
+    WeightRenaming stores its patterns and renames nothing, and their mapping function returns
+    nothing, so a test run against them measures the stand-in rather than transformers. A real
+    module is a file on disk; a stand-in's `__file__` is `<unsloth stub: ...>`."""
+    path = getattr(module, "__file__", None)
+    if not os.path.isfile(path or ""):
+        pytest.skip(
+            f"{module.__name__} is a stand-in ({path!r}), not a module this transformers ships"
+        )
+
+
 def _weight_renaming():
     """transformers 4.x has no `core_model_loading`, and so no pathology to test."""
     try:
+        from transformers import core_model_loading
         from transformers.core_model_loading import WeightRenaming
     except Exception:
         pytest.skip("this transformers has no core_model_loading.WeightRenaming")
+    _skip_a_stand_in(core_model_loading)
     return WeightRenaming
 
 
@@ -56,6 +74,7 @@ def _conversion_mapping():
         from transformers import conversion_mapping
     except Exception:
         pytest.skip("this transformers has no conversion_mapping module")
+    _skip_a_stand_in(conversion_mapping)
     if not hasattr(conversion_mapping, "get_model_conversion_mapping"):
         pytest.skip("this transformers has no get_model_conversion_mapping")
     return conversion_mapping
@@ -360,6 +379,26 @@ def forced_install(monkeypatch):
         if isinstance(getattr(module, "__dict__", None), dict)
         and "get_model_conversion_mapping" in module.__dict__
     ]
+    # Start from upstream's own function, not from whatever importing unsloth left live. Inside
+    # the 5.4.0 to 5.5.4 window the import has already installed this repair and unsloth_zoo's
+    # MoE wrapper has gone on top of it, so an install measured from `live` finds the repair in
+    # the chain and declines, and the wrapper on top publishes no `__wrapped__`. Every test
+    # here was written against a bare upstream function; this states that instead of
+    # inheriting it from whichever release the lane happens to pin.
+    chain = []
+    function = live
+    while function is not None and len(chain) < 8:
+        chain.append(function)
+        function = _next_in_wrapper_chain(function)
+    upstream = chain[-1]
+    assert not getattr(upstream, _COMPOSITE_PREFIX_RENAMING_FLAG, False)
+    # Through monkeypatch, not by assignment: a test that also monkeypatches the function saves
+    # `upstream` as the value to restore, and its undo runs after this fixture's `finally`.
+    # Registered here, this swap's own undo runs last and leaves `live` in place.
+    monkeypatch.setattr(conversion_mapping, "get_model_conversion_mapping", upstream)
+    for module, binding in holders:
+        if any(binding is link for link in chain):
+            monkeypatch.setattr(module, "get_model_conversion_mapping", upstream)
     monkeypatch.setattr(
         import_fixes, "_transformers_rescopes_submodule_prefix_renamings", lambda: False
     )
@@ -372,12 +411,14 @@ def forced_install(monkeypatch):
 
 
 def test_installation_is_gated_on_the_probe():
-    conversion_mapping = _conversion_mapping()
+    _conversion_mapping()
     fix_transformers_composite_prefix_renaming()
-    installed = getattr(
-        conversion_mapping.get_model_conversion_mapping, _COMPOSITE_PREFIX_RENAMING_FLAG, False
+    # The whole chain, by either link and either package's mark: inside the defect window
+    # unsloth_zoo's MoE wrapper sits on top of the repair, so the top object alone reads a
+    # live repair as missing.
+    assert _composite_prefix_renaming_repaired() == (
+        not _transformers_rescopes_submodule_prefix_renamings()
     )
-    assert installed == (not _transformers_rescopes_submodule_prefix_renamings())
 
 
 def test_the_patch_is_idempotent_and_undoable(forced_install):
