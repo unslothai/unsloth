@@ -230,6 +230,11 @@ async def video_download_plan(
             # And the MiniMax-H3 partition: the two denoisers live in separate 66.28 GB subfolders, so a ref2va load opens
             # transformer_ref/, which the plan would otherwise miss while staging the fl2va transformer/.
             h3_task = request.h3_task,
+            # And the memory / speed policy, as /images/download-plan passes them: the auto denoiser scheme reads both,
+            # and an explicit fp8 LTX-2.3 pick under balanced / low_vram loads the bf16 DiT (precision fallback), so
+            # without them the plan staged the ~19 GB hosted FP8 DiT that load never opens.
+            memory_mode = request.memory_mode,
+            speed_mode = request.speed_mode,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:

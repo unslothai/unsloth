@@ -1341,6 +1341,82 @@ def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
     assert seen["transformer_quant"] == "int8"
 
 
+def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_load(client, monkeypatch):
+    # With precision fallback on, an explicit fp8 on the LTX-2.3 distilled single file under balanced / low_vram loads
+    # the bf16 DiT from the file itself, so the ~19 GB unsloth/LTX-2.3-FP8 artifact must not be staged. The plan only
+    # knows that if the route forwards the memory policy: the real download_plan runs here, only the Hub is stubbed.
+    import types
+
+    import core.inference.diffusion_device as devmod
+    from core.inference.diffusion import DiffusionBackend
+
+    class _Sibling:
+        def __init__(self, rfilename, size):
+            self.rfilename = rfilename
+            self.size = size
+
+    repos = {
+        "Lightricks/LTX-2.3": [
+            _Sibling("ltx-2.3-22b-distilled.safetensors", 46_000_000_000),
+            _Sibling("ltx-2.3-22b-dev.safetensors", 46_000_000_000),
+        ],
+        "unsloth/LTX-2.3-FP8": [_Sibling("LTX-2.3-FP8.pt", 19_057_628_489)],
+        "unsloth/LTX-2.3-GGUF": [
+            _Sibling("vae/ltx-2.3-22b-distilled_video_vae.safetensors", 2_400_000_000),
+            _Sibling("vae/ltx-2.3-22b-distilled_audio_vae.safetensors", 200_000_000),
+            _Sibling(
+                "text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors", 900_000_000
+            ),
+        ],
+        "Lightricks/LTX-2": [
+            _Sibling("model_index.json", 1000),
+            _Sibling("tokenizer/tokenizer.json", 5_000_000),
+            _Sibling("text_encoder/model-00001-of-00005.safetensors", 10_000_000_000),
+            _Sibling("transformer/diffusion_pytorch_model.safetensors", 37_800_000_000),
+        ],
+    }
+
+    class _Api:
+        def model_info(self, repo_id, files_metadata = False, token = None):
+            return types.SimpleNamespace(siblings = repos[repo_id])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None, **kwargs: False),
+    )
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda **kw: types.SimpleNamespace(device = "cuda")
+    )
+    monkeypatch.setattr(video_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
+    )
+    monkeypatch.setattr(video_routes, "_training_is_active", lambda: False)
+
+    def _staged(memory_mode):
+        body = {
+            "model_path": "Lightricks/LTX-2.3",
+            "gguf_filename": "ltx-2.3-22b-distilled.safetensors",
+            "model_kind": "single_file",
+            "family_override": "ltx-2",
+            "transformer_quant": "fp8",
+        }
+        if memory_mode is not None:
+            body["memory_mode"] = memory_mode
+        resp = client.post("/api/inference/video/download-plan", json = body)
+        assert resp.status_code == 200, resp.text
+        return {e["repo_id"] for e in resp.json()["entries"]}
+
+    # The resident load does seed the hosted DiT, so the plan stages it.
+    assert "unsloth/LTX-2.3-FP8" in _staged(None)
+    assert "unsloth/LTX-2.3-FP8" in _staged("fast")
+    for memory_mode in ("balanced", "low_vram"):
+        assert "unsloth/LTX-2.3-FP8" not in _staged(memory_mode), memory_mode
+
+
 def test_video_download_plan_forwards_the_h3_partition(client, monkeypatch):
     # h3_task decides WHICH of the two 66.28 GB MiniMax-H3 denoiser folders is staged. It was
     # swallowed by **load_kwargs, so a ref2va plan staged the fl2va partition and the one the load
