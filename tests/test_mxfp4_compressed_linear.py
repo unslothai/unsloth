@@ -43,14 +43,20 @@ try:
         # compressed-tensors < 0.16 (the newest on torch 2.6) has the format but its decompress raises.
         from compressed_tensors.compressors import BaseCompressor
         from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme
-
         BaseCompressor.get_value_from_registry("mxfp4-pack-quantized").decompress(
-            {"weight_packed": torch.zeros(1, 16, dtype = torch.uint8), "weight_scale": torch.full((1, 1), 127, dtype = torch.uint8)},
+            {
+                "weight_packed": torch.zeros(1, 16, dtype = torch.uint8),
+                "weight_scale": torch.full((1, 1), 127, dtype = torch.uint8),
+            },
             QuantizationScheme(
                 targets = ["Linear"],
                 weights = QuantizationArgs(
-                    num_bits = 4, type = "float", strategy = "group", group_size = 32,
-                    symmetric = True, scale_dtype = torch.uint8,
+                    num_bits = 4,
+                    type = "float",
+                    strategy = "group",
+                    group_size = 32,
+                    symmetric = True,
+                    scale_dtype = torch.uint8,
                 ),
                 format = "mxfp4-pack-quantized",
             ),
