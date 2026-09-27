@@ -627,6 +627,35 @@ cu130onlytorch2121 = [
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
+# torch 2.13 / 2.14 also ship on cu126/cu130 only; torchaudio stops at 2.11.0.
+cu126onlytorch2130 = [
+    "torch==2.13.0+cu126",
+    "torchvision==0.28.0+cu126",
+    "torchaudio==2.11.0+cu126",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu130onlytorch2130 = [
+    "torch==2.13.0+cu130",
+    "torchvision==0.28.0+cu130",
+    "torchaudio==2.11.0+cu130",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu126onlytorch2140 = [
+    "torch==2.14.0+cu126",
+    "torchvision==0.29.0+cu126",
+    "torchaudio==2.11.0+cu126",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu130onlytorch2140 = [
+    "torch==2.14.0+cu130",
+    "torchvision==0.29.0+cu130",
+    "torchaudio==2.11.0+cu130",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
 cu118 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
@@ -869,6 +898,26 @@ cu130-torch2121 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch2121]",
+]
+cu126-torch2130 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2130]",
+]
+cu130-torch2130 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2130]",
+]
+cu126-torch2140 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2140]",
+]
+cu130-torch2140 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2140]",
 ]
 kaggle = [
     "unsloth[huggingface]",
@@ -1206,6 +1255,26 @@ cu130-ampere-torch2121 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch2121]",
+]
+cu126-ampere-torch2130 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2130]",
+]
+cu130-ampere-torch2130 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2130]",
+]
+cu126-ampere-torch2140 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2140]",
+]
+cu130-ampere-torch2140 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2140]",
 ]
 flashattentiontorch260abiFALSEcu12x = [
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp39-cp39-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.9'",
