@@ -268,15 +268,22 @@ jobs:
           $policyBare = "$env:SAC_POLICY_ID".Trim('{', '}').ToLowerInvariant()
           $fromPolicy = {
             param($e)
+            $named = $false
+            $otherId = $false
             try {
               foreach ($node in ([xml] $e.ToXml()).Event.EventData.Data) {
                 $v = [string] $node.'#text'
                 if (-not $v) { continue }
                 if ($policyBare -and $v.ToLowerInvariant().Contains($policyBare)) { return $true }
-                if ($node.Name -like 'PolicyName*' -and $v -like '*AuditNoISG*') { return $true }
+                if ($node.Name -like 'PolicyName*') {
+                  if ($v -like '*AuditNoISG*') { $named = $true }
+                } elseif ($node.Name -like 'Policy*' -and $v -match '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}') {
+                  $otherId = $true
+                }
               }
             } catch { }
-            return $false
+            # The name is a fallback for events without a policy ID; an ID naming another policy wins.
+            return ($named -and -not $otherId)
           }
           $since = [datetime]::Parse($env:AUDIT_START).ToUniversalTime()
           $events = @()
@@ -366,15 +373,22 @@ jobs:
           $policyBare = "$env:SAC_POLICY_ID".Trim('{', '}').ToLowerInvariant()
           $fromPolicy = {
             param($e)
+            $named = $false
+            $otherId = $false
             try {
               foreach ($node in ([xml] $e.ToXml()).Event.EventData.Data) {
                 $v = [string] $node.'#text'
                 if (-not $v) { continue }
                 if ($policyBare -and $v.ToLowerInvariant().Contains($policyBare)) { return $true }
-                if ($node.Name -like 'PolicyName*' -and $v -like '*AuditNoISG*') { return $true }
+                if ($node.Name -like 'PolicyName*') {
+                  if ($v -like '*AuditNoISG*') { $named = $true }
+                } elseif ($node.Name -like 'Policy*' -and $v -match '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}') {
+                  $otherId = $true
+                }
               }
             } catch { }
-            return $false
+            # The name is a fallback for events without a policy ID; an ID naming another policy wins.
+            return ($named -and -not $otherId)
           }
           $events = @()
           $ours = @()

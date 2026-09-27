@@ -649,13 +649,20 @@ function Test-EventFromPolicy($record, [string] $Guid, [string] $NamePattern = '
 function Test-EventDataFromPolicy($data, [string] $Guid, [string] $NamePattern = '*AuditNoISG*') {
     if ($null -eq $data) { return $false }
     $bare = $Guid.Trim('{', '}').ToLowerInvariant()
+    $named = $false
+    $otherId = $false
     foreach ($key in @($data.Keys)) {
         $value = [string] $data[$key]
         if (-not $value) { continue }
         if ($value.ToLowerInvariant().Contains($bare)) { return $true }
-        if ($key -like 'PolicyName*' -and $NamePattern -and $value -like $NamePattern) { return $true }
+        if ($key -like 'PolicyName*') {
+            if ($NamePattern -and $value -like $NamePattern) { $named = $true }
+        } elseif ($key -like 'Policy*' -and $value -match '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}') {
+            $otherId = $true
+        }
     }
-    return $false
+    # The name is a fallback for events without a policy ID; an ID naming another policy wins.
+    return ($named -and -not $otherId)
 }
 
 function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077), [string] $FromPolicy = $null) {
@@ -986,9 +993,12 @@ function Invoke-Prepare {
             } finally {
                 Dismount-Efi $mounted
             }
-            $stillActive = if ($baseline.AuditPolicyPreexisting) { $false } else { Test-PolicyActive $NOISG_GUID }
+            $stillActive = Test-PolicyActive $NOISG_GUID
+            if ($baseline.AuditPolicyPreexisting -and $null -ne $stillActive) { $stillActive = -not $stillActive }
             if ($null -eq $stillActive) {
-                Write-Warning "the audit policy $NOISG_GUID was removed but CiTool could not list the policies to confirm it; run .\sac-probe.ps1 -Stage revert -Label $Label"
+                Write-Warning "the audit policy $NOISG_GUID was rolled back but CiTool could not list the policies to confirm it; run .\sac-probe.ps1 -Stage revert -Label $Label"
+            } elseif ($stillActive -and $baseline.AuditPolicyPreexisting) {
+                Write-Warning "the pre-existing audit policy $NOISG_GUID was restored but is not active until Windows restarts; restart, then run .\sac-probe.ps1 -Stage revert -Label $Label"
             } elseif ($stillActive) {
                 Write-Warning "the audit policy $NOISG_GUID was removed but is still active until Windows restarts; restart, then run .\sac-probe.ps1 -Stage revert -Label $Label"
             } else {
@@ -1614,7 +1624,17 @@ function Invoke-Revert {
             Dismount-Efi $mounted
         }
         # Before Windows 11 24H2 a removed policy can stay active until a restart.
-        $stillActive = if ($baseline.AuditPolicyPreexisting) { $false } else { Test-PolicyActive $NOISG_GUID }
+        $stillActive = Test-PolicyActive $NOISG_GUID
+        if ($baseline.AuditPolicyPreexisting) {
+            # A restored policy has to be back in force, not merely copied into place.
+            if ($null -eq $stillActive) {
+                throw "the pre-existing audit policy $NOISG_GUID was restored and refreshed but CiTool could not list the policies to confirm it is active; run .\sac-probe.ps1 -Stage revert -Label $Label again once CiTool -lp works"
+            }
+            if (-not $stillActive) {
+                throw "the pre-existing audit policy $NOISG_GUID was restored and refreshed but is not active; restart Windows, then run .\sac-probe.ps1 -Stage revert -Label $Label again"
+            }
+            $stillActive = $false
+        }
         if ($null -eq $stillActive) {
             throw "the audit policy $NOISG_GUID was removed and refreshed but CiTool could not list the policies to confirm it is gone; run .\sac-probe.ps1 -Stage revert -Label $Label again once CiTool -lp works"
         }

@@ -1802,6 +1802,9 @@ if ($true -ne (Test-EventDataFromPolicy $ours $NOISG)) { exit 51 }
 if ($true -ne (Test-EventDataFromPolicy $byName $NOISG)) { exit 52 }
 if ($true -eq (Test-EventDataFromPolicy $other $NOISG)) { exit 53 }
 if ($true -eq (Test-EventDataFromPolicy $null $NOISG)) { exit 54 }
+# Another policy with a matching name but its own ID is not ours: the name only stands in for a missing ID.
+$lookalike = [ordered]@{ 'File Name' = 'C:\s\llama.cpp\ggml.dll'; PolicyGUID = '{11111111-2222-3333-4444-555555555555}'; PolicyNameBuffer = 'OtherAuditNoISG' }
+if ($true -eq (Test-EventDataFromPolicy $lookalike $NOISG)) { exit 55 }
 """
     body += (
         predicate
@@ -2204,6 +2207,32 @@ $global:listed = $false
 Invoke-Revert
 $b = Read-Baseline 'r'
 if (-not $b.RevertCompletedAt -or $false -ne $b.AuditPolicyApplied) { exit 54 }
+exit 0
+""",
+    )
+
+
+def test_revert_keeps_the_baseline_pending_until_a_restored_policy_is_active(tmp_path):
+    """Restoring an administrator's policy under the same GUID was recorded as done without checking it took effect."""
+    _drive_stages(
+        tmp_path,
+        r"""
+$global:listed = $false
+function Get-SacState { [pscustomobject]@{ Policies = @(if ($global:listed) { [pscustomobject]@{ PolicyID = '{aaaa}'; FriendlyName = 'AuditNoISG' } }) } }
+$Label = 'r'
+New-Item -ItemType Directory -Force -Path (Split-Path $NOISG_DEST), (Join-Path $Work 'r/rollback') | Out-Null
+'probe policy' | Set-Content -LiteralPath $NOISG_DEST
+'admin policy' | Set-Content -LiteralPath (Get-RollbackPolicyPath (Join-Path $Work 'r'))
+Save-ProbeBaseline ([pscustomobject]@{ AuditPolicyApplied = $true; AuditPolicyPreexisting = $true; RevertCompletedAt = $null }) (Join-Path $Work 'r/baseline.json')
+try { Invoke-Revert; exit 51 } catch { if ("$_" -notlike '*restored and refreshed but is not active*restart*revert -Label r again*') { Write-Host "$_"; exit 52 } }
+$b = Read-Baseline 'r'
+if ($b.RevertCompletedAt -or $true -ne $b.AuditPolicyApplied) { exit 53 }
+if ((Get-Content -LiteralPath $NOISG_DEST -Raw).Trim() -ne 'admin policy') { exit 54 }
+# Once it is in force again the same baseline completes.
+$global:listed = $true
+Invoke-Revert
+$b = Read-Baseline 'r'
+if (-not $b.RevertCompletedAt -or $false -ne $b.AuditPolicyApplied) { exit 55 }
 exit 0
 """,
     )
