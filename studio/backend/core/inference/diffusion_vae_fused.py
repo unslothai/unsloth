@@ -324,9 +324,33 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         o_off = (bf.to(tl.int64) * (4 * H * W) + p.to(tl.int64))[:, None] * c + ci[None, :]
         tl.store(out_ptr + o_off, (v + xv).to(out_ptr.dtype.element_ty), mask = m)
 
+    @triton.jit
+    def _softmax_rows(s_ptr, p_ptr, S, P_STRIDE, scale, BLOCK: tl.constexpr):
+        # p = softmax(s * scale) per row: fp32 scores in, half-precision probabilities out (online max / sum)
+        row = tl.program_id(0).to(tl.int64)
+        base = s_ptr + row * P_STRIDE
+        m = tl.full([BLOCK], float("-inf"), tl.float32)
+        l = tl.zeros([BLOCK], tl.float32)
+        for k0 in range(0, S, BLOCK):
+            cols = k0 + tl.arange(0, BLOCK)
+            x = tl.load(base + cols, mask = cols < S, other = float("-inf")) * scale
+            m_new = tl.maximum(m, x)
+            alpha = tl.where(m_new == float("-inf"), 0.0, tl.exp(m - m_new))
+            l = l * alpha + tl.where(x == float("-inf"), 0.0, tl.exp(x - m_new))
+            m = m_new
+        m_row = tl.max(m, axis = 0)
+        l_row = tl.sum(l * tl.where(m == float("-inf"), 0.0, tl.exp(m - m_row)), axis = 0)
+        inv = 1.0 / l_row
+        for k0 in range(0, P_STRIDE, BLOCK):
+            cols = k0 + tl.arange(0, BLOCK)
+            x = tl.load(base + cols, mask = cols < S, other = float("-inf")) * scale
+            p = tl.where(cols < S, tl.exp(x - m_row) * inv, 0.0)
+            tl.store(p_ptr + row * P_STRIDE + cols, p.to(p_ptr.dtype.element_ty), mask = cols < P_STRIDE)
+
     return types.SimpleNamespace(
         gn_partials = _gn_partials, gn_combine = _gn_combine, gn_apply = _gn_apply, rms_act = _rms_act,
         bias_residual = _bias_residual, dcae_up_add = _dcae_up_add,
+        softmax_rows = _softmax_rows,
     )
 
 
@@ -628,6 +652,124 @@ def causal_conv(
 
 
 # ----------------------------------------------------------------------------------------------------------------
+# Single-head VAE attention (head_dim 384 / 512 / 1024): no flash / cuDNN kernel takes head_dim > 256, so SDPA falls
+# to the sm80 memory-efficient kernel. Two cuBLAS GEMMs with fp32 scores (``out_dtype``) + an fp32 softmax are 2.3x
+# faster (B200, L=16384 d=512: 1.57 vs 3.60 ms; L=65536: 25 vs 48 ms) at the same error against float64.
+
+_ATTN_SCORE_BYTES = 256 * 2**20
+
+
+def single_head_attention(q: Any, k: Any, v: Any) -> Any:
+    """softmax(q k^T / sqrt(d)) v for (B, L, D) half-precision q/k/v, query-chunked to bound the fp32 scores."""
+    torch = _torch()
+    b, length, d = q.shape
+    s_len = k.shape[1]
+    scale = d**-0.5
+    # keys / values zero-padded to a multiple of 64: cuBLAS takes a slow path on odd GEMM extents (L=27556 7.2 ms vs
+    # 3.1 padded); the padded keys get probability exactly 0 (the softmax masks them), so the result is unchanged
+    s_pad = (s_len + 63) // 64 * 64
+    if s_pad != s_len:
+        kp = torch.zeros((b, s_pad, d), dtype = k.dtype, device = k.device)
+        vp = torch.zeros((b, s_pad, v.shape[-1]), dtype = v.dtype, device = v.device)
+        kp[:, :s_len] = k
+        vp[:, :s_len] = v
+        k, v = kp, vp
+    rows = int(max(64, min(length, _ATTN_SCORE_BYTES // max(1, b * s_pad * 4))) // 64 * 64)
+    kt = k.transpose(1, 2)
+    out = torch.empty((b, length, v.shape[-1]), dtype = v.dtype, device = v.device)
+    kern = _kernels()
+    for i in range(0, length, rows):
+        scores = torch.bmm(q[:, i : i + rows], kt, out_dtype = torch.float32)
+        r = scores.shape[1]
+        probs = torch.empty((b, r, s_pad), dtype = v.dtype, device = v.device)
+        # one read-scale-exp-normalise-cast pass instead of mul_ + softmax + .to (28 -> 12 bytes moved per score)
+        kern.softmax_rows[(b * r,)](scores, probs, s_len, s_pad, scale, BLOCK = 2048, num_warps = 8)
+        del scores
+        torch.bmm(probs, v, out = out[:, i : i + rows])
+    return out
+
+
+def _mm_attention_ok(q: Any) -> bool:
+    torch = _torch()
+    return q.is_cuda and q.dtype in (torch.float16, torch.bfloat16) and q.shape[-1] > 256
+
+
+class FusedSingleHeadProcessor:
+    """``AttnProcessor2_0`` for a VAE's single-head self-attention, with :func:`single_head_attention` in place of
+    SDPA. Anything else (heads > 1, masks, cross-attention, spatial norm, q/k norms, fp32) goes to ``fallback``."""
+
+    def __init__(self, fallback: Any):
+        self.fallback = fallback
+
+    def __call__(self, attn: Any, hidden_states: Any, encoder_hidden_states: Any = None, attention_mask: Any = None,
+                 temb: Any = None, *args: Any, **kwargs: Any) -> Any:  # fmt: skip
+        if (
+            args
+            or kwargs
+            or encoder_hidden_states is not None
+            or attention_mask is not None
+            or attn.heads != 1
+            or attn.spatial_norm is not None
+            or attn.norm_q is not None
+            or attn.norm_k is not None
+            or hidden_states.ndim != 4
+            or getattr(attn, "_unsloth_vae_fused_failed", False)
+        ):
+            return self.fallback(attn, hidden_states, encoder_hidden_states, attention_mask, temb, *args, **kwargs)
+        try:
+            residual = hidden_states
+            b, c, h, w = hidden_states.shape
+            x = hidden_states.view(b, c, h * w).transpose(1, 2)
+            if attn.group_norm is not None:
+                x = attn.group_norm(x.transpose(1, 2)).transpose(1, 2)
+            q, k, v = attn.to_q(x), attn.to_k(x), attn.to_v(x)
+            if not _mm_attention_ok(q):
+                raise TypeError("not a half-precision wide head")
+            o = single_head_attention(q, k, v)
+            o = attn.to_out[1](attn.to_out[0](o))
+            o = o.transpose(-1, -2).reshape(b, c, h, w)
+            if attn.residual_connection:
+                o = o + residual
+            return o / attn.rescale_output_factor
+        except TypeError:
+            return self.fallback(attn, hidden_states, encoder_hidden_states, attention_mask, temb)
+        except Exception:  # noqa: BLE001
+            attn._unsloth_vae_fused_failed = True
+            return self.fallback(attn, hidden_states, encoder_hidden_states, attention_mask, temb)
+
+
+def install_attention_processors(part: Any) -> int:
+    n = 0
+    for m in part.modules():
+        if type(m).__name__ == "Attention" and getattr(m, "heads", None) == 1 and callable(getattr(m, "processor", None)):
+            if not isinstance(m.processor, FusedSingleHeadProcessor):
+                m.processor = FusedSingleHeadProcessor(m.processor)
+                n += 1
+    return n
+
+
+def _fast_wan_attention(block: Any) -> Any:
+    import torch.nn.functional as F
+
+    def fast(x: Any) -> Any:
+        identity = x
+        b, c, t, h, w = x.shape
+        y = rms_norm_act(x, block.norm, False)  # (b, c, t, h, w) channels-last_3d: (b, t, h, w, c) in memory
+        y = y.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)  # a channels-last view, no copy
+        qkv = F.conv2d(y, block.to_qkv.weight, block.to_qkv.bias)
+        qkv = qkv.permute(0, 2, 3, 1).reshape(b * t, h * w, 3 * c)
+        q, k, v = qkv[..., :c], qkv[..., c : 2 * c], qkv[..., 2 * c :]
+        if not _mm_attention_ok(q):
+            return _stock_forward(block)(x)
+        o = single_head_attention(q, k, v)  # (b*t, hw, c)
+        o = F.linear(o, block.proj.weight.view(c, c), block.proj.bias)
+        o = o.view(b, t, h, w, c).permute(0, 4, 1, 2, 3)
+        return add_bias_residual(o.contiguous(memory_format = _torch().channels_last_3d), None, identity)
+
+    return fast
+
+
+# ----------------------------------------------------------------------------------------------------------------
 # Conv without its bias (the bias rides into the next fused pass) and the fused bias + residual epilogue
 
 
@@ -760,6 +902,7 @@ def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
         part = getattr(vae, part_name, None)
         if part is None:
             continue
+        n += install_attention_processors(part)
         norm_out = getattr(part, "conv_norm_out", None)
         act = getattr(part, "conv_act", None)
         if isinstance(norm_out, torch.nn.GroupNorm) and isinstance(act, torch.nn.SiLU):
@@ -793,6 +936,9 @@ def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
 
 def uninstall(vae: Any) -> None:
     vae.__dict__.pop("_unsloth_vae_fused_installed", None)
+    for m in vae.modules():
+        if isinstance(getattr(m, "processor", None), FusedSingleHeadProcessor):
+            m.processor = m.processor.fallback
     for attr in ("tiled_decode", "blend_v", "blend_h", "blend_t"):
         if getattr(vae.__dict__.get(attr), "_unsloth_vae_fused", False):
             delattr(vae, attr)
@@ -908,8 +1054,17 @@ def install_wan_vae(vae: Any, logger: Any = None) -> int:
         for module in part.modules():
             if "forward" in module.__dict__:
                 continue  # already patched (by us or another speed path)
-            if type(module).__name__.endswith("ResidualBlock") and _wan_resblock_fusable(module):
+            name = type(module).__name__
+            if name.endswith("ResidualBlock") and _wan_resblock_fusable(module):
                 _guard(module, _fast_wan_resblock(module), _stock_forward(module), "residual block", logger)
+                n += 1
+            elif (
+                name.endswith("AttentionBlock")
+                and _is_rms(getattr(module, "norm", None))
+                and isinstance(getattr(module, "to_qkv", None), torch.nn.Conv2d)
+                and isinstance(getattr(module, "proj", None), torch.nn.Conv2d)
+            ):
+                _guard(module, _fast_wan_attention(module), _stock_forward(module), "attention", logger)
                 n += 1
         for module in part.modules():
             if "forward" in module.__dict__:
