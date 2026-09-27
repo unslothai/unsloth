@@ -304,10 +304,15 @@ def _start_or_join(key: tuple, argv: list, kind: str, kwargs: dict, timeout: flo
     """Never joins a child started before the last invalidation of its kind."""
     with _lock:
         flight = _inflight.get(key)
-        if flight is not None and (
-            flight.static_gen == _static_gen
-            if kind == STATIC
-            else flight.gen == _events.generation()
+        # A child already running longer than this caller may wait is presumed hung: start another.
+        if (
+            flight is not None
+            and time.monotonic() - flight.started <= timeout
+            and (
+                flight.static_gen == _static_gen
+                if kind == STATIC
+                else flight.gen == _events.generation()
+            )
         ):
             _stats.coalesced += 1
             return flight

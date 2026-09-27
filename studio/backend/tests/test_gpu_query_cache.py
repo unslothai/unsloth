@@ -526,6 +526,32 @@ def test_a_check_true_failure_replaces_the_cached_answer(smi, monkeypatch):
         run()
 
 
+@pytest.mark.parametrize("code, failed", [(6, False), (9, True)])
+def test_no_devices_found_is_an_answer_not_a_failure(smi, code, failed):
+    assert nvidia.get_backend_visible_gpu_info([0, 1], "0,1")["available"]
+    smi.set(exit = code)  # 6: "No devices were found"; 9: driver not loaded
+    gpu_query.invalidate_static("redetect")
+    out = nvidia.get_backend_visible_gpu_info([0, 1], "0,1")
+    assert out["available"] is False
+    assert bool(out.get("probe_failed")) is failed
+
+
+def test_a_read_after_a_hung_child_does_not_wait_on_it(smi, monkeypatch):
+    argv = ["nvidia-smi", "--query-gpu=index,compute_cap", "--format=csv,noheader"]
+
+    def run(timeout):
+        return gpu_query.run_nvidia_smi(argv, capture_output = True, text = True, timeout = timeout)
+
+    monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 10.0)
+    smi.set(delay = 8.0)
+    with pytest.raises(subprocess.TimeoutExpired):
+        run(0.5)
+    smi.set(delay = 0)  # the driver recovered; the first child is still running
+    t0 = time.monotonic()
+    assert run(0.5).stdout.split()[0] == "0,"
+    assert time.monotonic() - t0 < 1.0
+
+
 def test_an_older_answer_does_not_overwrite_a_newer_empty_one(smi, monkeypatch):
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_DISPLAY_TTL", "3600")
     argv = ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader"]

@@ -5,6 +5,7 @@ import os
 import platform
 import shutil
 import subprocess
+import threading
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -263,6 +264,10 @@ def _nvidia_smi_executable() -> str:
 NVIDIA_SMI_ABSENT = object()
 
 
+# This thread's last inventory exit code: exit 6 is nvidia-smi's own "No devices were found".
+_inventory_exit = threading.local()
+
+
 def _query_gpu_inventory(caller: str) -> Any:
     """``[{index, name, memory_total_gb}]`` for every GPU nvidia-smi enumerates.
 
@@ -293,6 +298,7 @@ def _query_gpu_inventory(caller: str) -> Any:
         # Past this point an nvidia-smi WAS found, so a failure is a real fault on this host.
         logger.warning("nvidia-smi query failed in %s: %s", caller, e)
         return None
+    _inventory_exit.code = result.returncode
     if result.returncode != 0:
         return None
 
@@ -393,6 +399,7 @@ def get_backend_visible_gpu_info(
             "index_kind": "unresolved",
         }
     visible_ordinals = _visible_ordinal_map(parent_visible_ids)
+    _inventory_exit.code = None
     rows = _query_gpu_inventory("get_backend_visible_gpu_info")
     if rows is None or rows is NVIDIA_SMI_ABSENT:
         out = {
@@ -402,11 +409,12 @@ def get_backend_visible_gpu_info(
             "devices": [],
             "index_kind": "physical",
         }
-        if rows is None:
-            # No answer is unknown, not "no cards": the caller keeps its last good inventory.
-            out["probe_failed"] = True
-        else:
+        if rows is NVIDIA_SMI_ABSENT:
             out["smi_absent"] = True
+        elif getattr(_inventory_exit, "code", None) != 6:
+            # No answer is unknown, not "no cards": the caller keeps its last good inventory.
+            # Exit 6 ("No devices were found") is an answer, so that inventory is dropped.
+            out["probe_failed"] = True
         return out
 
     devices = []
