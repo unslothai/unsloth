@@ -593,6 +593,9 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-chat-control-height": "calc(30px * var(--ui-space-scale, 1))",
   // The media headers' 34px model picker, Create/Train toggle and Library link take it too.
   "--studio-media-control-height": "calc(30px * var(--ui-space-scale, 1))",
+  // The model picker that opens each page header, and the media pages' Create/Train toggle,
+  // sit 3px lower, set apart from the window chrome.
+  "--studio-model-picker-offset": "3px",
   // The row's buttons end 6.5px above the macOS traffic-light row, so the sidebar's brand
   // rises with them and keeps the same gap below.
   "--studio-sidebar-brand-lift": "6.5px",

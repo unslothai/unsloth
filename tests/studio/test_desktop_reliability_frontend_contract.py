@@ -2387,7 +2387,8 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "@[50rem]:border-r" in header
     assert (
         'className="!h-[var(--studio-media-control-height,34px)] max-w-full gap-1 overflow-hidden pl-3 pr-1 '
-        '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
+        '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2 translate-y-[var(--studio-model-picker-offset,0px)]"'
+        in header
     )
     assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
     assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
@@ -2546,7 +2547,8 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in header
     assert (
         'className="!h-[var(--studio-media-control-height,34px)] max-w-full gap-1 overflow-hidden pl-3 pr-1 '
-        '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
+        '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2 translate-y-[var(--studio-model-picker-offset,0px)]"'
+        in header
     )
     assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
     assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header

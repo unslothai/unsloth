@@ -4596,7 +4596,7 @@ export function ImagesPage({
                 resolveDownloadFootprint={resolveDownloadFootprint}
                 onEject={status?.loaded ? handleUnload : undefined}
                 variant="ghost"
-                className="!h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
+                className="!h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2 translate-y-[var(--studio-model-picker-offset,0px)]"
                 triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
@@ -4633,7 +4633,7 @@ export function ImagesPage({
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] [&>button]:h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
+              className="translate-y-[var(--studio-model-picker-offset,0px)] h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] [&>button]:h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
