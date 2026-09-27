@@ -26,9 +26,25 @@ def _axpy(x_ptr, y_ptr, out_ptr, n, scale, BLOCK: tl.constexpr, ADD: tl.constexp
     tl.store(out_ptr + i, v, mask = m)
 
 
-def _run(x, y, out, n, scale, add, block = 128):
+def _run(
+    x,
+    y,
+    out,
+    n,
+    scale,
+    add,
+    block = 128,
+):
     grid = (-(-n // block),)
-    triton_launch.launch(_axpy, grid, (x, y, out, n, scale), 3, dict(BLOCK = block, ADD = add), x.device.index, num_warps = 4)
+    triton_launch.launch(
+        _axpy,
+        grid,
+        (x, y, out, n, scale),
+        3,
+        dict(BLOCK = block, ADD = add),
+        x.device.index,
+        num_warps = 4,
+    )
     return out
 
 

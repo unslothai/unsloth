@@ -197,7 +197,12 @@ def _launch(kernel, W, absmax, code2, absmax2, offset, code, blocksize, blocksiz
     n_blocks = -(-n_elements // blocksize)
     rows, num_warps, words, evict, lut_mode = _config_for(n_bytes, half, W.device)
     # int32 loads need every row to start on a word and no partial trailing word.
-    words = words and half % 4 == 0 and n_bytes % 4 == 0 and (W.storage_offset() * W.element_size()) % 4 == 0
+    words = (
+        words
+        and half % 4 == 0
+        and n_bytes % 4 == 0
+        and (W.storage_offset() * W.element_size()) % 4 == 0
+    )
     # The nested-only pointers are never dereferenced for a flat state; absmax fills the slots.
     args = (
         W,
@@ -222,7 +227,11 @@ def _launch(kernel, W, absmax, code2, absmax2, offset, code, blocksize, blocksiz
         LUT_MODE = lut_mode,
     )
     grid = (-(-n_blocks // rows),)
-    options = {"num_warps": num_warps} if fp_fusion else {"num_warps": num_warps, "enable_fp_fusion": False}
+    options = (
+        {"num_warps": num_warps}
+        if fp_fusion
+        else {"num_warps": num_warps, "enable_fp_fusion": False}
+    )
     if kernel is _nf4_dequant_kernel:
         launch(kernel, grid, args, 7, constexprs, W.device.index, **options)
     else:

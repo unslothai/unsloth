@@ -37,7 +37,6 @@ def _hooks_set():
         runtime = _knobs.runtime
         return _active(runtime.launch_enter_hook) or _active(runtime.launch_exit_hook)
     from triton.compiler import CompiledKernel
-
     return _active(getattr(CompiledKernel, "launch_enter_hook", None)) or _active(
         getattr(CompiledKernel, "launch_exit_hook", None)
     )

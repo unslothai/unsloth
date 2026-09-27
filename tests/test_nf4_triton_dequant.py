@@ -182,5 +182,7 @@ def test_every_launch_config_is_exact(shape, words, evict, lut_mode, monkeypatch
             q, s = _quantize(shape, dtype, blocksize)
             ref = bnb_functional.dequantize_4bit(q, s)
             for target in (256, 2048):
-                monkeypatch.setattr(nf4_mod, "_CONFIG_OVERRIDE", (target, 4, words, evict, lut_mode))
+                monkeypatch.setattr(
+                    nf4_mod, "_CONFIG_OVERRIDE", (target, 4, words, evict, lut_mode)
+                )
                 assert _bytes_equal(dequantize_nf4(*_args(q, s)), ref), (dtype, blocksize, target)
