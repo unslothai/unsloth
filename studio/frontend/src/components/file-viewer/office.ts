@@ -516,7 +516,10 @@ function placeDigits(number: number, format: string): string {
   if (/e/i.test(intDigits)) return generalText(number);
   const significant = intDigits === "0" ? "" : intDigits;
   let integer: string;
-  if (grouped) {
+  // No whole-number placeholders (".00"): Excel still shows the integer, just left of the point.
+  if (first === -1) {
+    integer = `${whole.map(literalText).join("")}${significant}`;
+  } else if (grouped) {
     integer = `${before}${significant.padStart(zeros, "0").replace(/\B(?=(\d{3})+$)/g, ",")}${after}`;
   } else {
     let left = significant;
@@ -689,7 +692,7 @@ function formatText(text: string, rawCode: string | undefined): string {
 function columnIndex(ref: string): number {
   let index = 0;
   for (const char of ref) {
-    const code = char.charCodeAt(0);
+    const code = char.charCodeAt(0) & ~32;
     if (code < 65 || code > 90) break;
     index = index * 26 + (code - 64);
   }

@@ -79,6 +79,9 @@ test("number formats", () => {
     [0.01, "0%%", "100%%"],
     [12345, "##0.0E+0", "12.3E+3"],
     [0.00123, "##0.0E+0", "1.2E-3"],
+    [12.345, ".00", "12.35"],
+    [0.5, ".00", ".50"],
+    [3.5, '"$".00', "$3.50"],
   ];
   for (const [value, format, expected] of cases) assert.equal(formatNumber(value, format), expected, format);
 });
@@ -108,6 +111,13 @@ test("xlsx: sheet XML read as text", () => {
     sheet?.rows.map((row) => row.map((cell) => cell?.text)),
     [["a & B<c></row>"], ["7"], ["=SUM(B3,C:C,3:3)*2+$C$1+'A1'!A2+T[[#This Row],[Q1]]"]],
   );
+});
+
+test("xlsx: lowercase cell references land in their columns", () => {
+  const [sheet] = readXlsx(
+    workbook(`<worksheet xmlns="${MAIN}"><sheetData><row r="1"><c r="a1"><v>1</v></c><c r="c1"><v>3</v></c></row></sheetData></worksheet>`),
+  );
+  assert.deepEqual(sheet?.rows.map((row) => Array.from(row, (cell) => cell?.text)), [["1", undefined, "3"]]);
 });
 
 test("pptx: tables capped, SmartArt read, pictures as Blobs", () => {

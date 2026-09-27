@@ -45,7 +45,7 @@ async function parse(file: Blob, kind: DocumentKind, name: string, contentType: 
       dropped = true;
       return { src: "" };
     });
-    const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.archive.buffer as ArrayBuffer }, { convertImage });
+    const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.archive.buffer as ArrayBuffer }, { convertImage, idPrefix: "docx-" });
     const { html, truncated } = sanitizeDocxHtml(value);
     return { kind, html, truncated: truncated || repacked.truncated || dropped };
   }
