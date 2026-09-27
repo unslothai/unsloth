@@ -3643,6 +3643,12 @@ class MLXInferenceBackend:
                             sampled = self._tokenizer.decode(
                                 token_ids,
                                 skip_special_tokens = True,
+                                # Cleanup would rewrite " ." inside a grammar-approved string.
+                                **(
+                                    {"clean_up_tokenization_spaces": False}
+                                    if constraint is not None
+                                    else {}
+                                ),
                             )
                         if not sequences:
                             yield think_prefix + sampled
