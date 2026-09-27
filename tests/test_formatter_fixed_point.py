@@ -341,6 +341,8 @@ def test_the_formatter_invocation_fits_in_a_windows_command_line():
 # Each batch is run_ruff_format.py, which itself runs ruff and the spacing pass as children, so
 # stopping a batch has to stop its whole tree: killing the wrapper alone would leave the child it
 # was waiting on running, still using the runner and still writing to the copies.
+_HAS_PROC = os.path.isdir("/proc/self")
+
 _OWN_GROUP = (
     {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     if os.name == "nt"
@@ -529,7 +531,7 @@ def test_a_timeout_in_the_polling_loop_kills_the_running_formatters(tmp_path, mo
     assert not alive, "the formatter's own child outlived the timeout"
 
 
-@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason = "reads Linux /proc")
+@pytest.mark.skipif(not _HAS_PROC, reason = "reads Linux /proc")
 def test_a_pid_reaped_between_the_two_probes_is_not_alive(monkeypatch):
     """The signal probe can see a zombie that is reaped before /proc/<pid>/stat is opened.
 
@@ -542,6 +544,20 @@ def test_a_pid_reaped_between_the_two_probes_is_not_alive(monkeypatch):
     # Stand in for the probe that ran while the process was still a zombie.
     monkeypatch.setattr(os, "kill", lambda pid, sig: None)
     assert _alive(child.pid) is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX signal probe")
+def test_without_proc_a_pid_the_signal_probe_finds_is_alive(monkeypatch):
+    """Where /proc is not mounted (macOS), a missing /proc entry proves nothing.
+
+    Reading it as death would pass the timeout test above even if the group kill missed.
+    """
+    # A pid with no /proc entry, as every pid has on macOS, that the signal probe still finds.
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    monkeypatch.setattr(sys.modules[__name__], "_HAS_PROC", False)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+    assert _alive(child.pid) is True
 
 
 def _read_pid(path: Path) -> int | None:
@@ -561,6 +577,9 @@ def _alive(pid: int) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
+    # macOS has no /proc, so the signal probe is the only answer there.
+    if not _HAS_PROC:
+        return True
     # A killed child of an exited wrapper is reparented and reaped; until then it is a zombie.
     # The reaper can finish between the signal probe above and this read, and a pid with no
     # /proc entry left is gone, not alive.
