@@ -422,6 +422,60 @@ def _align_root_hook_with_input_embeddings(model):
     return target
 
 
+def _hook_no_placement_ancestors(model):
+    """Hook the modules above a CPU-kept `_no_placement_params` table on a split model.
+
+    The table's owner is left off the device map, so the map splits its ancestors (a
+    Qwen4Exp decoder layer, its PLE block, the n-gram module) into their children and none
+    of them keeps a dispatch hook. Their forward inputs then arrive on whatever card the
+    previous layer ran on: the n-gram ids met `layer_multipliers` on another card
+    ("found at least two devices, cuda:0 and cuda:2"). Each such ancestor whose placed
+    tensors sit on ONE card gets an input-aligning hook to that card; the table module
+    itself stays unhooked (it gathers on CPU). No-op on one device."""
+    from .loader_utils import no_placement_tensor_names
+    unplaced = no_placement_tensor_names(model)
+    if not unplaced:
+        return 0
+    try:
+        from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    except ImportError:
+        return 0
+    placed_devices = {
+        p.device for n, p in model.named_parameters() if n not in unplaced and p.device.type != "cpu"
+    }
+    if len(placed_devices) < 2:
+        return 0
+    names = getattr(model, "_no_placement_params", None) or []
+    owners = {
+        n.rsplit(".", 1)[0] for n in unplaced if any(n == x or n.endswith("." + x) for x in names)
+    }
+    skip_keys = getattr(model, "_skip_keys_device_placement", None)
+    hooked = 0
+    for owner in owners:
+        parts = owner.split(".")
+        for depth in range(1, len(parts)):
+            path = ".".join(parts[:depth])
+            module = model.get_submodule(path)
+            if hasattr(module, "_hf_hook"):
+                continue
+            devices = {
+                t.device
+                for n, t in list(module.named_parameters(prefix = path)) + list(module.named_buffers(prefix = path))
+                if n not in unplaced
+            }
+            if len(devices) != 1:
+                continue
+            device = next(iter(devices))
+            if device.type == "cpu":
+                continue
+            add_hook_to_module(
+                module,
+                AlignDevicesHook(execution_device = device, io_same_device = False, skip_keys = skip_keys),
+            )
+            hooked += 1
+    return hooked
+
+
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
@@ -2431,6 +2485,12 @@ class FastBaseModel:
                     offload_embedding = offload_embedding,
                     fast_inference = fast_inference,
                 )
+                _no_placement_hooked = _hook_no_placement_ancestors(model)
+                if _no_placement_hooked:
+                    logger.info(
+                        f"Unsloth: hooked {_no_placement_hooked} module(s) above the CPU-kept "
+                        "no-placement table so their inputs follow the map."
+                    )
                 _aligned_root_device = _align_root_hook_with_input_embeddings(model)
                 if _aligned_root_device is not None:
                     logger.info(

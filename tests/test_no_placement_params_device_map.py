@@ -141,3 +141,33 @@ def test_bnb_hooks_leave_the_cpu_table_alone():
     _attach_bnb_multidevice_hooks(model, True, False, False, False)
     assert not any(hasattr(m, "_hf_hook") for m in model.modules())
     assert table.weight.device.type == "cpu"
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="needs 2 CUDA devices")
+def test_split_ancestors_get_input_hooks():
+    """A split model: the table's ancestors lost their dispatch hooks, so ids from cuda:0 met
+    a buffer on cuda:1 inside the n-gram module (Qwen3.8-Flash-Next vision cell)."""
+    from unsloth.models.vision import _hook_no_placement_ancestors
+
+    class HashTable(Table):
+        def forward(self, ids):
+            mixed = ids * self.offsets[:1]
+            return self.ngram_embedding(mixed.to(self.ngram_embedding.weight.device)).to(ids.device)
+
+    model = Model()
+    model.model.layers[1].ple.ple_embedding = HashTable()
+    model.model.embed_tokens.to("cuda:0")
+    model.model.layers[0].to("cuda:0")
+    model.model.layers[1].to("cuda:1")
+    model.model.layers[2].to("cuda:1")
+    model.lm_head.to("cuda:1")
+    table = model.model.layers[1].ple.ple_embedding
+    table.ngram_embedding.to("cpu")
+    ids = torch.ones(1, 4, dtype = torch.long, device = "cuda:0")
+    with pytest.raises(RuntimeError):
+        table(ids)
+    assert _hook_no_placement_ancestors(model) == 3  # layer 1, its ple, the n-gram module
+    assert not hasattr(table.ngram_embedding, "_hf_hook")
+    out = table(ids)
+    assert out.device == torch.device("cuda:1")
+    assert _hook_no_placement_ancestors(model) == 0  # idempotent
