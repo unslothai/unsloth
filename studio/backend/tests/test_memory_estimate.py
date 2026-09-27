@@ -3753,8 +3753,10 @@ from dataclasses import replace  # noqa: E402
 from core.inference import mlx_memory as mm  # noqa: E402
 
 try:
-    import mlx.core as _mx  # noqa: F401
-    import mlx_lm  # noqa: F401
+    import importlib
+
+    importlib.import_module("mlx.core")
+    importlib.import_module("mlx_lm")
     _HAVE_MLX = True
 except Exception:
     _HAVE_MLX = False
