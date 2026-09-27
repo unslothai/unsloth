@@ -44,6 +44,46 @@ def test_disabled_by_env(monkeypatch):
     assert F.will_install(object()) is False
 
 
+def test_rocm_and_old_triton_keep_stock(monkeypatch):
+    # the #11801 kernels are gated off on ROCm (missing add_rn / rint, wrong fp16 GroupNorm on gfx1151): same here
+    monkeypatch.delenv(F.VAE_FUSED_ENV, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", "6.4.0", raising = False)
+    assert F.runtime_ok() is False
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    F._triton_version_ok.cache_clear()
+    import triton
+
+    monkeypatch.setattr(triton, "__version__", "3.2.0")
+    try:
+        assert F.runtime_ok() is False
+    finally:
+        F._triton_version_ok.cache_clear()
+
+
+def test_windows_without_msvc_keeps_stock(monkeypatch):
+    monkeypatch.setattr(F.sys, "platform", "win32")
+    F._toolchain_ok.cache_clear()
+    import core._msvc_env as msvc
+
+    monkeypatch.setattr(msvc, "crt_headers_reachable", lambda: False)
+    try:
+        assert F._toolchain_ok() is False
+    finally:
+        F._toolchain_ok.cache_clear()
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_blend_seam_4d_matches_autoencoder_kl(dtype):
+    diffusers = pytest.importorskip("diffusers")
+    akl = diffusers.AutoencoderKL
+    g = torch.Generator().manual_seed(1)
+    a = torch.randn(1, 3, 40, 44, generator = g).to(dtype)
+    b = torch.randn(1, 3, 40, 44, generator = g).to(dtype)
+    assert torch.equal(akl.blend_v(None, a, b.clone(), 16), F.blend_seam(a, b.clone(), 16, -2))
+    assert torch.equal(akl.blend_h(None, a, b.clone(), 16), F.blend_seam(a, b.clone(), 16, -1))
+
+
 def test_install_is_noop_without_runtime(monkeypatch):
     monkeypatch.setattr(F, "runtime_ok", lambda: False)
 

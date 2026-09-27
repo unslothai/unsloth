@@ -1798,9 +1798,11 @@ def install(vae: Any, logger: Any = None, level: str = "fused") -> int:
 def _install(vae: Any, logger: Any = None) -> int:
     name = type(vae).__name__
     if name in ("AutoencoderKL", "AutoencoderKLFlux2"):
-        return install_group_norm_vae(vae, logger)
+        n = install_group_norm_vae(vae, logger)
+        return n + (install_vectorised_blend(vae) if n else 0)
     if name in _WAN_VAES:
-        return install_wan_vae(vae, logger)
+        n = install_wan_vae(vae, logger)
+        return n + (install_vectorised_blend(vae) if n else 0)
     if name == "AutoencoderKLHunyuanVideo15":
         n = install_hv15_vae(vae, logger)
         return n + (install_vectorised_blend(vae) if n else 0)
