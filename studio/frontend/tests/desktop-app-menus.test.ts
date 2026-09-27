@@ -298,8 +298,9 @@ test("menu chords follow the user's bindings and never steal a web shortcut's ch
   // The list matches what the native menu actually holds: Tauri's default items plus our Quit.
   assert.match(MAIN_RS, /MenuItemBuilder::with_id\(APP_QUIT_MENU_ID, "Quit Unsloth"\)\s*\.accelerator\("CmdOrCtrl\+Q"\)/);
   const { MENU_CHORDS, NATIVE_MENU_CHORDS } = await import("../src/app/app-menu-chords.ts");
+  // An item with no chord (Go > Library) has nothing to collide with.
   for (const { chord } of Object.values(MENU_CHORDS)) {
-    assert.ok(!NATIVE_MENU_CHORDS.has(chord), `${chord} is not a native chord`);
+    if (chord) assert.ok(!NATIVE_MENU_CHORDS.has(chord), `${chord} is not a native chord`);
   }
   // A chord without Cmd or Ctrl never reaches the menu, which would take it from text fields.
   assert.equal(
@@ -326,4 +327,27 @@ test("Back and Forward follow page history, and zoom steps the interface scale",
   assert.match(ROOT, /"zoom-in": zoomBy\(1\)/);
   assert.match(ROOT, /"zoom-out": zoomBy\(-1\)/);
   assert.match(ROOT, /"actual-size": \(\) => useInterfaceScaleStore\.getState\(\)\.reset\(\)/);
+});
+
+test("Help items reuse the icon of the Settings tab they open", () => {
+  const dialog = readSrc("features/settings/settings-dialog.tsx");
+  const tabIcon = (id: string) =>
+    dialog.match(new RegExp(`id: "${id}",\\s*labelKey: "[^"]+",\\s*icon: (\\w+)`))?.[1];
+  const helpIcon = (action: string) => HELP.match(new RegExp(`"${action}": \\{[^}]*icon: (\\w+)`))?.[1];
+  for (const [action, tab] of [
+    ["help-keyboard-shortcuts", "keyboard-shortcuts"],
+    ["help-troubleshooting", "debugging"],
+    ["help-system-status", "resources"],
+  ]) {
+    // Both sides must be found: two misses would compare equal and pass.
+    const icon = tabIcon(tab);
+    assert.ok(icon, `the ${tab} tab's icon`);
+    assert.equal(helpIcon(action), icon, action);
+  }
+});
+
+test("About Unsloth uses the info icon Studio uses everywhere else", () => {
+  const sidebar = readSrc("components/app-sidebar.tsx");
+  const about = sidebar.slice(0, sidebar.indexOf('{t("shell.helpMenu.about")}'));
+  assert.match(about.slice(about.lastIndexOf("<HugeiconsIcon")), /^<HugeiconsIcon icon=\{InformationCircleIcon\}/);
 });
