@@ -337,9 +337,10 @@ def test_the_mlx_think_prefill_predicate_matches_the_decoder_it_describes():
     from core.inference.mlx_inference import MLXInferenceBackend
 
     src = inspect.getsource(MLXInferenceBackend._generate_text)
-    after = src[src.index("preserves_think_close") :]
+    after = src[src.index("think_close_survives = (") :]
     predicate = after[: after.index("decoder_preserves_token")]
     assert "tool_protocol_active" in predicate, "the prefill predicate ignores unrestricted mode"
+    assert "preserves_think_close = think_close_survives" in src
 
 
 def test_the_mlx_vlm_decoder_survives_a_reasoning_only_request():

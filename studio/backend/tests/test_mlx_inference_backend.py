@@ -7132,3 +7132,49 @@ def test_an_allowed_vlm_reasoning_block_keeps_its_opener_when_the_closer_is_spec
         specials = ("</think>",),
     )
     assert snapshots[-1] == '<think>\nx</think>{"a":1}'
+
+
+def test_the_text_grammar_is_told_a_closer_survives_whenever_the_prefill_is(monkeypatch):
+    """Client tools run the native decoder, which keeps a special </think>: the prefill then
+    re-emits the opener, so the grammar must allow the close rather than refuse the request."""
+    from core.inference import mlx_inference
+
+    mlx_lm = types.ModuleType("mlx_lm")
+    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    sample_utils.make_sampler = lambda **_k: object()
+    mlx_lm.sample_utils = sample_utils
+    mlx_lm.stream_generate = lambda *_a, **_k: iter([_Resp("ok", 1)])
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_k: None)
+    monkeypatch.setattr(mlx_inference, "decoder_preserves_token", lambda *_a, **_k: True)
+    seen = {}
+
+    def _capture(*_a, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(mlx_inference, "_build_grammar_constraint", _capture)
+    backend = _budget_backend(monkeypatch)
+    monkeypatch.setattr(
+        backend,
+        "_render_text_prompt",
+        lambda *_a, **_k: SimpleNamespace(prompt = "P<think>", reasoning_channel_markers = None),
+        raising = False,
+    )
+    list(
+        backend._generate_text(
+            _TEXT_TURN,
+            0.0,
+            1.0,
+            0,
+            0.0,
+            8,
+            1.0,
+            None,
+            tools = [{"type": "function", "function": {"name": "f"}}],
+            response_format = {"type": "json_object"},
+            reasoning_is_extracted = True,
+        )
+    )
+    assert seen["reply_keeps_special_tokens"] is True

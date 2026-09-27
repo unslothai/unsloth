@@ -3459,17 +3459,17 @@ class MLXInferenceBackend:
         preserve_native_channels = reasoning_channel_markers is not None
         # An open <think> prefilled by the template lives in the prompt, not the generated tokens; re-emit it so the
         # frontend renders the block.
+        # Matches native_token_decoder below: when it runs </think> survives, so the
+        # prefilled opener has to be re-emitted with it.
+        think_close_survives = (
+            bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
+        ) and decoder_preserves_token(
+            self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
+        )
         think_prefix = detect_think_prefill(
             prompt,
             getattr(self._tokenizer, "all_special_tokens", None),
-            # Matches native_token_decoder below: when it runs </think> survives, so the
-            # prefilled opener has to be re-emitted with it.
-            preserves_think_close = (
-                bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
-            )
-            and decoder_preserves_token(
-                self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
-            ),
+            preserves_think_close = think_close_survives,
         )
         constraint = _build_grammar_constraint(
             response_format,
@@ -3477,7 +3477,8 @@ class MLXInferenceBackend:
             prompt,
             reasoning_markers = reasoning_channel_markers,
             reasoning_is_extracted = reasoning_is_extracted,
-            reply_keeps_special_tokens = preserve_native_channels,
+            # The same answer the prefill got, or a closer it re-emits for is refused here.
+            reply_keeps_special_tokens = preserve_native_channels or think_close_survives,
         )
         if constraint is not None and not constraint.allows_reasoning:
             think_prefix = ""
