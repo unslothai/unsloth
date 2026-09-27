@@ -97,7 +97,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   tangerine: {
-    name: "Tangerine",
+    name: "Tangerine Dreams",
     light: {
       accent: "#e36a00",
       background: "#fdf8f3",
@@ -112,7 +112,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   plum: {
-    name: "Plum",
+    name: "Plum Praline",
     light: {
       accent: "#8b3fd1",
       background: "#fbf7fd",
@@ -142,7 +142,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   cherry: {
-    name: "Cherry",
+    name: "Cherry Cola",
     light: {
       accent: "#c8102e",
       background: "#fdf6f6",
@@ -187,7 +187,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   taro: {
-    name: "Taro",
+    name: "Ube Chiffon",
     light: {
       accent: "#7b5fc4",
       background: "#f9f7fc",
@@ -202,7 +202,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   espresso: {
-    name: "Espresso",
+    name: "Espresso Amore",
     light: {
       accent: "#8a5a33",
       background: "#faf6f2",
@@ -307,7 +307,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   yuzu: {
-    name: "Yuzu",
+    name: "Yuzu Citrus",
     light: {
       accent: "#d4c400",
       background: "#fcfcf2",
@@ -352,7 +352,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   cinnamon: {
-    name: "Cinnamon",
+    name: "Cinnamon Roll",
     light: {
       accent: "#a8461f",
       background: "#fcf7f4",

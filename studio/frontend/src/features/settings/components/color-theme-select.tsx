@@ -77,10 +77,6 @@ export function ColorThemeSelect() {
     </DropdownMenuItem>
   );
 
-  const flavorActive = (FLAVOR_THEME_IDS as readonly string[]).includes(
-    palette,
-  );
-
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild={true}>
@@ -100,7 +96,7 @@ export function ColorThemeSelect() {
           />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" sideOffset={6} className="w-64">
+      <DropdownMenuContent align="end" sideOffset={6} className="w-52">
         {UNSLOTH_THEME_IDS.map(renderItem)}
         <DropdownMenuSeparator />
         <DropdownMenuSub>
@@ -109,12 +105,6 @@ export function ColorThemeSelect() {
             <span className="flex-1 whitespace-nowrap">
               {t("settings.appearance.palette.moreThemes")}
             </span>
-            {/* Truncate the theme name, not the label. */}
-            {flavorActive ? (
-              <span className="min-w-0 truncate text-xs text-muted-foreground">
-                {nameOf(palette)}
-              </span>
-            ) : null}
           </DropdownMenuSubTrigger>
           {/* Cap height and scroll an inner viewport to keep rounded corners. */}
           <DropdownMenuSubContent className="flex max-h-[min(--spacing(112),var(--radix-dropdown-menu-content-available-height))] w-56 flex-col">

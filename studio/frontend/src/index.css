@@ -807,7 +807,7 @@
 	--th-chart-5: #b08cff;
 }
 
-/* Cherry */
+/* Cherry Cola */
 :root[data-palette="cherry"]:not(.dark) {
 	--th-bg: #fdf6f6;
 	--th-surface: #f9ebeb;
@@ -843,7 +843,7 @@
 	--th-chart-5: #d99af0;
 }
 
-/* Cinnamon */
+/* Cinnamon Roll */
 :root[data-palette="cinnamon"]:not(.dark) {
 	--th-bg: #fcf7f4;
 	--th-surface: #f6ece6;
@@ -987,7 +987,7 @@
 	--th-chart-5: #e0a3ab;
 }
 
-/* Espresso */
+/* Espresso Amore */
 :root[data-palette="espresso"]:not(.dark) {
 	--th-bg: #faf6f2;
 	--th-surface: #f3ece5;
@@ -1319,7 +1319,7 @@
 	--th-chart-5: #d69ae0;
 }
 
-/* Plum */
+/* Plum Praline */
 :root[data-palette="plum"]:not(.dark) {
 	--th-bg: #fbf7fd;
 	--th-surface: #f4ecf8;
@@ -1355,7 +1355,7 @@
 	--th-chart-5: #7aa7ff;
 }
 
-/* Tangerine */
+/* Tangerine Dreams */
 :root[data-palette="tangerine"]:not(.dark) {
 	--th-bg: #fdf8f3;
 	--th-surface: #f9efe5;
@@ -1391,7 +1391,7 @@
 	--th-chart-5: #e889b0;
 }
 
-/* Taro */
+/* Ube Chiffon */
 :root[data-palette="taro"]:not(.dark) {
 	--th-bg: #f9f7fc;
 	--th-surface: #f1edf8;
@@ -1463,7 +1463,7 @@
 	--th-chart-5: #ff8f6b;
 }
 
-/* Yuzu */
+/* Yuzu Citrus */
 :root[data-palette="yuzu"]:not(.dark) {
 	--th-bg: #fcfcf2;
 	--th-surface: #f5f6e4;
