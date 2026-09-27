@@ -395,6 +395,70 @@ def ltx2_distilled_ids(*ids: Optional[str]) -> bool:
     return any("distilled" in str(i or "").lower() for i in ids)
 
 
+# Multimodal-guidance kwargs of LTX2Pipeline.__call__ and the values that switch each term off. diffusers #14447
+# (2026-08-11) moved the defaults to the dev recipe (stg 1.0, modality 3.0, rescale 0.7, audio CFG 7.0, ...), so a caller
+# that passes only guidance_scale now runs CFG batch-2 + an STG pass + a modality-isolation pass per step.
+_LTX2_GUIDANCE_OFF: dict[str, float] = {
+    "stg_scale": 0.0,
+    "modality_scale": 1.0,
+    "guidance_rescale": 0.0,
+    "audio_stg_scale": 0.0,
+    "audio_modality_scale": 1.0,
+    "audio_guidance_rescale": 0.0,
+}
+
+
+def ltx2_distilled_guidance_kwargs(call_params: Any, guidance: Optional[float]) -> dict[str, float]:
+    """Explicit guidance kwargs for a DISTILLED LTX-2/2.3 DiT: STG, modality isolation and
+    rescale off, audio CFG tied to the video CFG. The distilled DiT is sampled with a single
+    unguided forward per step (Lightricks' distilled pipeline); at the default guidance 1.0 this
+    is one batch-1 forward per step instead of four forward-equivalents. Only kwargs the
+    installed pipeline accepts are returned, so an older diffusers (whose defaults are already
+    off) gets the same call it always did."""
+    kwargs = {k: v for k, v in _LTX2_GUIDANCE_OFF.items() if k in call_params}
+    if "audio_guidance_scale" in call_params:
+        # Pre-#14447 semantics (audio_guidance_scale or guidance_scale): audio follows the video CFG.
+        kwargs["audio_guidance_scale"] = float(guidance if guidance is not None else 1.0)
+    return kwargs
+
+
+def install_stg_compile_adapter(transformer: Any) -> int:
+    """Make a regionally compiled LTX-2 block tolerate the STG pass.
+
+    The transformer hands the perturbed block ``all_perturbed = torch.all(mask == 0)``, a 0-d
+    tensor, and LTX2Attention branches on it (``if all_perturbed:``): a data-dependent branch
+    that fails a fullgraph compile, after which the compile guard drops the whole DiT to eager.
+    Wrapping the compiled call converts the tensor to a Python bool BEFORE entering the graph
+    (one host sync, only on the STG call; dynamo specialises the bool). Installed outermost
+    over the guard, carrying its marker so ``guard_compiled_blocks`` stays idempotent. Returns
+    the number of blocks adapted."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return 0
+    count = 0
+    for module in getattr(transformer, "modules", lambda: ())():
+        if type(module).__name__ != "LTX2VideoTransformerBlock":
+            continue
+        inner = getattr(module, "_compiled_call_impl", None)
+        if inner is None or getattr(inner, "_unsloth_stg_adapter", False):
+            continue
+
+        def adapted(*args: Any, _inner: Any = inner, **kwargs: Any) -> Any:
+            flag = kwargs.get("all_perturbed")
+            if isinstance(flag, torch.Tensor):
+                kwargs["all_perturbed"] = bool(flag)
+            return _inner(*args, **kwargs)
+
+        adapted._unsloth_stg_adapter = True
+        guard = getattr(inner, "_unsloth_compile_guard", None)
+        if guard is not None:
+            adapted._unsloth_compile_guard = guard
+        module._compiled_call_impl = adapted
+        count += 1
+    return count
+
+
 def ltx23_verbatim_sigmas(pipe: Any) -> Any:
     """Context manager neutralising the scheduler transforms that re-shape even explicit
     ``sigmas`` (FlowMatchEulerDiscreteScheduler applies dynamic time-shift and the

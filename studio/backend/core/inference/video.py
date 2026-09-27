@@ -5184,6 +5184,9 @@ class VideoBackend:
                 offload_active = plan.offload_policy != "none",
                 cuda_graph_default = False,
             )
+            if fam.name == "ltx-2" and applied.get("compiled"):
+                from .video_ltx2 import install_stg_compile_adapter
+                install_stg_compile_adapter(getattr(view, fam.denoiser_attr, None))
             if view is pipe:
                 attention_engaged = engaged
                 speed_optims = tuple(k for k, v in applied.items() if v)
@@ -6851,6 +6854,11 @@ class VideoBackend:
                     ):
                         kwargs["sigmas"] = list(LTX23_DISTILLED_SIGMAS)
                         sigma_ctx = ltx23_verbatim_sigmas(pipe)
+                if fam.name == "ltx-2":
+                    from .video_ltx2 import ltx2_distilled_guidance_kwargs, ltx2_distilled_ids
+                    # A distilled DiT is sampled unguided; newer diffusers defaults would add STG + modality passes.
+                    if ltx2_distilled_ids(state.gguf_filename, state.repo_id, state.base_repo):
+                        kwargs.update(ltx2_distilled_guidance_kwargs(call_params, guidance))
                 if not fam.supports_cfg:
                     pass
                 elif fam.guidance_via_guider:

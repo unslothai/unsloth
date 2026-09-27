@@ -10,6 +10,7 @@ import builtins
 import contextlib
 import dataclasses
 import functools
+import inspect
 import sys
 import threading
 import time
@@ -11188,3 +11189,118 @@ def test_video_auto_quant_still_engages_when_the_budget_is_unknown(fake_runtime,
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "default"
     )
     assert calls == ["auto"]
+
+
+def _guided_ltx_call(monkeypatch, pipe):
+    """Give the fake pipeline the multimodal-guidance kwargs of LTX2Pipeline.__call__ (diffusers main)."""
+    original = type(pipe).__call__
+
+    def __call__(
+        self,
+        *,
+        stg_scale = 1.0,
+        modality_scale = 3.0,
+        guidance_rescale = 0.7,
+        audio_guidance_scale = 7.0,
+        audio_stg_scale = 1.0,
+        audio_modality_scale = 3.0,
+        audio_guidance_rescale = 0.7,
+        **kwargs,
+    ):
+        out = original(self, **kwargs)
+        self.last_kwargs.update(
+            stg_scale = stg_scale,
+            modality_scale = modality_scale,
+            guidance_rescale = guidance_rescale,
+            audio_guidance_scale = audio_guidance_scale,
+            audio_stg_scale = audio_stg_scale,
+            audio_modality_scale = audio_modality_scale,
+            audio_guidance_rescale = audio_guidance_rescale,
+        )
+        return out
+
+    __call__.__signature__ = inspect.Signature(
+        [inspect.Parameter("self", inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+        + [
+            inspect.Parameter(name, inspect.Parameter.KEYWORD_ONLY, default = None)
+            for name in (
+                "prompt", "negative_prompt", "num_inference_steps", "guidance_scale", "width", "height",
+                "num_frames", "frame_rate", "generator", "sigmas", "callback_on_step_end", "stg_scale",
+                "modality_scale", "guidance_rescale", "audio_guidance_scale", "audio_stg_scale",
+                "audio_modality_scale", "audio_guidance_rescale",
+            )
+        ]
+    )
+    monkeypatch.setattr(type(pipe), "__call__", __call__)
+
+
+def test_generate_distilled_turns_multimodal_guidance_off(fake_runtime, tmp_path, monkeypatch):
+    # diffusers #14447 moved LTX2Pipeline's defaults to the dev recipe (STG 1.0, modality 3.0, audio CFG 7.0); a distilled
+    # DiT is sampled unguided, so every term must be switched off explicitly or each step runs four DiT forwards.
+    backend = _load_ltx23_from_dir(tmp_path)
+    _guided_ltx_call(monkeypatch, backend._state.pipe)
+    backend.generate(prompt = "a sloth")
+    call = backend._state.pipe.last_kwargs
+    assert call["guidance_scale"] == 1.0
+    assert call["stg_scale"] == 0.0 and call["audio_stg_scale"] == 0.0
+    assert call["modality_scale"] == 1.0 and call["audio_modality_scale"] == 1.0
+    assert call["guidance_rescale"] == 0.0 and call["audio_guidance_rescale"] == 0.0
+    # Audio CFG follows the video CFG (the pre-#14447 ``audio_guidance_scale or guidance_scale``).
+    assert call["audio_guidance_scale"] == 1.0
+    backend.generate(prompt = "a sloth", guidance = 2.5)
+    assert backend._state.pipe.last_kwargs["audio_guidance_scale"] == 2.5
+
+
+def test_generate_dev_keeps_pipeline_guidance_defaults(fake_runtime, tmp_path, monkeypatch):
+    # The dev DiT is trained for guided sampling; its multimodal guidance is left to the pipeline.
+    (tmp_path / "ltx-2.3-22b-dev-Q4_K_M.gguf").write_bytes(b"w")
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-dev-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    _guided_ltx_call(monkeypatch, backend._state.pipe)
+    backend.generate(prompt = "a sloth")
+    call = backend._state.pipe.last_kwargs
+    assert call["stg_scale"] == 1.0 and call["audio_guidance_scale"] == 7.0
+
+
+def test_ltx2_distilled_guidance_kwargs_follow_the_signature():
+    from core.inference.video_ltx2 import ltx2_distilled_guidance_kwargs
+
+    # An older diffusers without the multimodal kwargs gets exactly the call it always did.
+    assert ltx2_distilled_guidance_kwargs({"prompt": None, "guidance_scale": None}, 1.0) == {}
+    full = ltx2_distilled_guidance_kwargs(
+        {"stg_scale": 0, "modality_scale": 0, "audio_guidance_scale": 0, "guidance_rescale": 0}, None
+    )
+    assert full == {"stg_scale": 0.0, "modality_scale": 1.0, "guidance_rescale": 0.0, "audio_guidance_scale": 1.0}
+
+
+def test_stg_compile_adapter_hands_the_block_a_python_bool():
+    torch = pytest.importorskip("torch")
+    if not hasattr(torch, "nn") or not hasattr(torch, "all"):
+        pytest.skip("real torch required")
+    from core.inference.video_ltx2 import install_stg_compile_adapter
+
+    seen = []
+
+    def compiled(*args, **kwargs):
+        seen.append(kwargs.get("all_perturbed"))
+        return "out"
+
+    compiled._unsloth_compile_guard = "guard"
+    block = type("LTX2VideoTransformerBlock", (torch.nn.Module,), {})()
+    block._compiled_call_impl = compiled
+    other = torch.nn.Linear(1, 1)
+    other._compiled_call_impl = compiled
+    root = torch.nn.ModuleList([block, other])
+    assert install_stg_compile_adapter(root) == 1
+    assert install_stg_compile_adapter(root) == 0  # idempotent
+    assert other._compiled_call_impl is compiled  # only LTX-2 blocks
+    wrapped = block._compiled_call_impl
+    assert wrapped._unsloth_compile_guard == "guard"  # guard_compiled_blocks stays idempotent
+    assert wrapped(all_perturbed = torch.tensor(True)) == "out"
+    assert wrapped(all_perturbed = False) == "out"
+    assert seen == [True, False] and type(seen[0]) is bool
