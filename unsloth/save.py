@@ -4579,13 +4579,19 @@ def unsloth_push_to_hub_gguf(
                 CommitOperationAdd(path_in_repo = "Modelfile", path_or_fileobj = modelfile_location)
             )
 
+        if isinstance(datasets, str):
+            datasets = [datasets]
+        # In the README so it lands in the same commit, not a second one on main.
+        datasets_yaml = "".join(f"- {json.dumps(d)}\n" for d in datasets or [])
+        if datasets_yaml:
+            datasets_yaml = "datasets:\n" + datasets_yaml
         readme_content = f"""---
 tags:
 - gguf
 - llama.cpp
 - unsloth
 {"- vision-language-model" if is_vlm else ""}
----
+{datasets_yaml}---
 
 # {repo_id.split("/")[-1]} : GGUF
 
@@ -4669,15 +4675,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
             )
         except:
             pass
-
-        if datasets:
-            try:
-                from huggingface_hub import metadata_update
-                metadata_update(full_repo_id, {"datasets": datasets}, overwrite = True, token = token)
-            except Exception as e:
-                logger.warning_once(
-                    f"Unsloth: Could not update datasets metadata for {full_repo_id}: {e}"
-                )
 
     except Exception as e:
         raise RuntimeError(f"Failed to upload to Hugging Face Hub: {_describe_exception(e)}") from e

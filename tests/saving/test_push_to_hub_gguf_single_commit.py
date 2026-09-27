@@ -18,6 +18,9 @@ class _RecordingApi:
 
     def __getattr__(self, name):
         def record(*args, **kwargs):
+            if name == "create_commit":
+                readme = next(op for op in kwargs["operations"] if op.path_in_repo == "README.md")
+                kwargs["readme"] = open(readme.path_or_fileobj, encoding = "utf-8").read()
             _RecordingApi.calls.append((name, kwargs))
             if name == "create_commit" and kwargs.get("create_pr"):
                 return SimpleNamespace(pr_url = "https://huggingface.co/u/my-model/discussions/1")
@@ -104,3 +107,17 @@ def test_no_branch_is_created_without_a_new_revision(push, kwargs):
 def test_printed_destination_encodes_the_branch(push, capsys, revision, expected):
     push(revision = revision)
     assert f"https://huggingface.co/u/my-model{expected}\n" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("datasets", [["org/data", "other"], "org/data"])
+def test_datasets_go_in_the_same_commit(push, monkeypatch, datasets):
+    def fail(*args, **kwargs):
+        raise AssertionError("datasets must not be written in a separate commit")
+
+    monkeypatch.setattr(huggingface_hub, "metadata_update", fail)
+    calls = push(create_pr = True, datasets = datasets)
+    readme = next(kw for name, kw in calls if name == "create_commit")["readme"]
+    card = huggingface_hub.ModelCard(readme)
+    expected = [datasets] if isinstance(datasets, str) else datasets
+    assert card.data.datasets == expected
+    assert "gguf" in card.data.tags
