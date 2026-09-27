@@ -1312,6 +1312,21 @@ export const en = {
           wide: "Wide",
           full: "Full width",
         },
+        composerAttachments: {
+          label: "Attachments in the composer",
+          description:
+            "Large cards that grow the message box, or a compact row of tiles.",
+          cards: "Large cards",
+          compact: "Compact tiles",
+        },
+        sentAttachments: {
+          label: "Attachments in sent messages",
+          description:
+            "A list with each file's type, or small chips. Auto switches to chips past six files.",
+          auto: "Auto",
+          list: "List",
+          chips: "Chips",
+        },
         reset: "Reset",
         resetAll: "Reset customization",
         preferencesTitle: "Preferences",
@@ -3075,6 +3090,8 @@ export const en = {
       sortName: "Name",
       sortModified: "Modified",
       sortSize: "Size",
+      sortAscending: "Ascending",
+      sortDescending: "Descending",
     },
     // Entries of the New menu.
     create: {
@@ -3141,10 +3158,16 @@ export const en = {
     preview: {
       code: "Code",
       preview: "Preview",
+      fromChat: "From chat",
       viewOriginalChat: "View original chat",
       viewInImages: "View in Images",
       viewInVideo: "View in Video",
       viewInAudio: "View in Audio",
+      viewOriginalProject: "View original project",
+      viewTrainingRun: "View training run",
+      sheetTruncated: "Showing part of this sheet",
+      documentTruncated: "Showing the start of this document",
+      emptyDocument: "This file is empty.",
       cannotPreview: "This file can't be previewed here. Download it to open it.",
       noPreview: "No preview for this file type.",
       tooLargeToPreview: "This file is too large to preview here. Download it to open it.",
