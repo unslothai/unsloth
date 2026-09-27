@@ -33,9 +33,19 @@ _QWEN_IMAGE_SOURCES: tuple[str, ...] = (
     r".*\['image_rotary_emb'\]\[1\]$",
 )
 
+# MiniMax-H3: packed length S (transformer block), caption length (refiner block), timestep count (temb; i2v adds one).
+_MINIMAX_H3_SOURCES: tuple[str, ...] = (
+    "L['hidden_states']",
+    "L['adaln_indices']",
+    "L['rotary_emb'][0]",
+    "L['rotary_emb'][1]",
+    "L['temb']",
+)
+
 _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
     "QwenImage21Transformer2DModel": _QWEN_IMAGE_21_SOURCES,
     "QwenImageTransformer2DModel": _QWEN_IMAGE_SOURCES,
+    "MiniMaxH3Transformer3DModel": _MINIMAX_H3_SOURCES,
 }
 
 

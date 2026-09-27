@@ -128,7 +128,12 @@ class PadToMinM(nn.Module):
             # quantized 1472 -> 2048 Linear maps [0, 1472] to [0, 1472]), which then breaks a downstream
             # width-sensitive add, so synthesise the empty result at the right width instead of calling through.
             return x.new_empty((*lead, self.inner.out_features))
-        if m < self.pad_to:
+        if torch.compiler.is_compiling():
+            # Branch-free: `m < pad_to` guards a dynamic row count, so an H3 i2v caption past it recompiles.
+            # Arithmetic max: dynamo <= 2.8 rejects torch.sym_max on a concrete m; max() left an `m <= pad_to` guard.
+            rows = torch.arange((m + self.pad_to + abs(m - self.pad_to)) // 2, device = flat.device)
+            out = self.inner(flat.index_select(0, torch.where(rows < m, rows, 0)))[:m]
+        elif m < self.pad_to:
             # Everything below pad_to normalises to pad_to, not just what is below min_m. Clearing the floor takes only
             # the latter, but pinning ONE row count means one inductor graph covers every prompt length in the range
             # instead of one per length, and the extra rows are free at these sizes (measured on H3's 13 modules: 1.57
