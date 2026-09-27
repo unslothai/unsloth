@@ -120,6 +120,9 @@ def test_reload_or_non_redirect_refresh_returns_the_page(monkeypatch, content):
         "<template>{meta}</template>",
         "<textarea>{meta}</textarea>",
         "<style>/* {meta} */</style>",
+        "<noframes>{meta}</noframes>",
+        "<iframe>{meta}</iframe>",
+        "<noembed>{meta}</noembed>",
     ],
 )
 def test_meta_refresh_inside_inert_markup_is_ignored(monkeypatch, wrapper):
@@ -128,6 +131,11 @@ def test_meta_refresh_inside_inert_markup_is_ignored(monkeypatch, wrapper):
     requested = _serve(monkeypatch, {"example.com/page": body.encode()})
     assert "STUB_MARKER" in tools._fetch_page_text("https://example.com/page", timeout = 5)
     assert requested == ["example.com/page"]
+
+
+def test_meta_refresh_after_plaintext_is_ignored():
+    body = b'<plaintext></plaintext><meta http-equiv="refresh" content="0; url=/elsewhere">'
+    assert tools._meta_refresh_target(body, "https://example.com/page") is None
 
 
 def test_meta_refresh_resolves_against_a_preceding_base_href(monkeypatch):

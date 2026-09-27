@@ -13848,8 +13848,21 @@ _META_REFRESH_CONTENT_RE = re.compile(
 )
 # Browsers leave an unterminated named reference in an attribute alone, so "&section=" stays literal instead of "§ion=".
 _ATTR_CHAR_REF_RE = re.compile(r"&(?:#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[A-Za-z][A-Za-z0-9]*;)")
+# <plaintext> has no end tag: everything after it is text.
 _META_REFRESH_INERT_TAGS = frozenset(
-    (b"noscript", b"script", b"style", b"template", b"textarea", b"title", b"xmp")
+    (
+        b"iframe",
+        b"noembed",
+        b"noframes",
+        b"noscript",
+        b"plaintext",
+        b"script",
+        b"style",
+        b"template",
+        b"textarea",
+        b"title",
+        b"xmp",
+    )
 )
 # A comment or whole tag, quoted attribute values included, so markup inside them is never read as <meta>. As in the
 # browser prescan, an unterminated tag ends the scan.
@@ -14018,7 +14031,7 @@ def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
     for tag in _HTML_TAG_RE.finditer(body[:_META_REFRESH_SCAN_BYTES]):
         name = (tag.group(1) or b"").lower()
         if inert is not None:
-            if tag.group(0)[: len(inert) + 2].lower() == b"</" + inert:
+            if inert != b"plaintext" and tag.group(0)[: len(inert) + 2].lower() == b"</" + inert:
                 inert = None
         elif name in _META_REFRESH_INERT_TAGS:
             inert = name
