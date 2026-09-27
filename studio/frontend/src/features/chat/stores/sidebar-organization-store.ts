@@ -108,11 +108,20 @@ function newSectionId(): string {
 }
 
 /** The assignments left once every one `drop` answers true for is gone. */
+/** A row id to section id map with no prototype. Row ids are any string, and on a plain object an
+ *  unfiled row named "constructor" or "toString" would read as filed in whatever it inherits, and
+ *  drop out of every list. Every map the store holds is made here. */
+export function assignmentMap(from?: Record<string, string>): Record<string, string> {
+  const map = Object.create(null) as Record<string, string>;
+  if (from) for (const [rowId, sectionId] of Object.entries(from)) map[rowId] = sectionId;
+  return map;
+}
+
 function withoutSection(
   map: Record<string, string>,
   drop: (sectionId: string) => boolean,
 ): Record<string, string> {
-  const next: Record<string, string> = {};
+  const next = assignmentMap();
   for (const [rowId, sectionId] of Object.entries(map)) {
     if (!drop(sectionId)) next[rowId] = sectionId;
   }
@@ -336,7 +345,7 @@ export function mergePersistedOrganization(
   }
   // An assignment to a section that no longer exists is dropped, so its row comes back.
   const readAssignments = (value: unknown): Record<string, string> => {
-    const out: Record<string, string> = {};
+    const out = assignmentMap();
     if (!value || typeof value !== "object") return out;
     for (const [rowId, sectionId] of Object.entries(value)) {
       if (typeof sectionId === "string" && seen.has(sectionId)) {
@@ -388,8 +397,8 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
       projectSort: "manual",
       manualOrder: {},
       customSections: [],
-      sectionByChatId: {},
-      sectionByProjectId: {},
+      sectionByChatId: assignmentMap(),
+      sectionByProjectId: assignmentMap(),
       hiddenSections: [],
       sectionOrder: [],
       pendingNewChatSection: null,
@@ -465,7 +474,7 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
           if (sectionId && !state.customSections.some((s) => s.id === sectionId)) {
             return state;
           }
-          const next = { ...state.sectionByChatId };
+          const next = assignmentMap(state.sectionByChatId);
           for (const id of chatIds) {
             if (sectionId) next[id] = sectionId;
             else delete next[id];
@@ -477,7 +486,7 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
           if (sectionId && !state.customSections.some((s) => s.id === sectionId)) {
             return state;
           }
-          const next = { ...state.sectionByProjectId };
+          const next = assignmentMap(state.sectionByProjectId);
           for (const id of projectIds) {
             if (sectionId) next[id] = sectionId;
             else delete next[id];

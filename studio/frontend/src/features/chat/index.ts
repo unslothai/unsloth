@@ -175,6 +175,7 @@ export {
   PINNED_SECTION_KEY,
   inSectionOrder,
   resolveSectionOrder,
+  assignmentMap,
 } from "./stores/sidebar-organization-store";
 export type {
   SidebarCustomSection,

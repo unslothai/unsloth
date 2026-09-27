@@ -65,8 +65,8 @@ function resetStore() {
 test("a new sidebar has no custom sections and hides nothing", () => {
   const fresh = useSidebarOrganizationStore.getInitialState();
   assert.deepEqual(fresh.customSections, []);
-  assert.deepEqual(fresh.sectionByChatId, {});
-  assert.deepEqual(fresh.sectionByProjectId, {});
+  assert.deepEqual({ ...fresh.sectionByChatId }, {});
+  assert.deepEqual({ ...fresh.sectionByProjectId }, {});
   assert.deepEqual(fresh.hiddenSections, []);
 });
 
@@ -107,11 +107,11 @@ test("rows file into a section, move between sections, and come back out", () =>
   store.setProjectsSection(["p1"], a);
   store.setChatsSection(["c2"], b);
   let state = useSidebarOrganizationStore.getState();
-  assert.deepEqual(state.sectionByChatId, { c1: a, c2: b });
-  assert.deepEqual(state.sectionByProjectId, { p1: a });
+  assert.deepEqual({ ...state.sectionByChatId }, { c1: a, c2: b });
+  assert.deepEqual({ ...state.sectionByProjectId }, { p1: a });
   store.setChatsSection(["c1"], null);
   state = useSidebarOrganizationStore.getState();
-  assert.deepEqual(state.sectionByChatId, { c2: b });
+  assert.deepEqual({ ...state.sectionByChatId }, { c2: b });
   // Filing into a section that does not exist is refused rather than stranding the row.
   store.setChatsSection(["c3"], "missing");
   assert.equal(useSidebarOrganizationStore.getState().sectionByChatId.c3, undefined);
@@ -130,8 +130,8 @@ test("deleting a section returns its rows and forgets its order and visibility",
   store.deleteCustomSection(gone);
   const state = useSidebarOrganizationStore.getState();
   assert.deepEqual(state.customSections.map((section) => section.id), [kept]);
-  assert.deepEqual(state.sectionByChatId, { c2: kept });
-  assert.deepEqual(state.sectionByProjectId, {});
+  assert.deepEqual({ ...state.sectionByChatId }, { c2: kept });
+  assert.deepEqual({ ...state.sectionByProjectId }, {});
   assert.equal(state.manualOrder[customSectionScope(gone)], undefined);
   assert.ok(!state.hiddenSections.includes(gone));
 });
@@ -272,8 +272,8 @@ test("a saved payload keeps only well-formed sections and assignments to them", 
     { id: "s1", name: "Reading", sort: "updated" },
     { id: "s3", name: "Loose", sort: "manual" },
   ]);
-  assert.deepEqual(merged.sectionByChatId, { c1: "s1" });
-  assert.deepEqual(merged.sectionByProjectId, { p1: "s3" });
+  assert.deepEqual({ ...merged.sectionByChatId }, { c1: "s1" });
+  assert.deepEqual({ ...merged.sectionByProjectId }, { p1: "s3" });
   // Pinned always shows, so an old "hide Pinned" is dropped with the rest.
   assert.deepEqual(merged.hiddenSections, ["s3"]);
   // Reset-all already clears the key everything above lives under.
@@ -756,6 +756,57 @@ test("the section name dialog keeps its mode while it closes", async () => {
 
 // Review follow-ups: a payload can name a section after a built-in, and an older one can carry a
 // project sort that no control can change any more.
+// Row ids are any string. On a plain object an unfiled "constructor" or "toString" reads as filed
+// in what it inherits, and the row drops out of Recents and its folder without landing anywhere.
+test("a row id named like an object built-in is unfiled until it is filed", () => {
+  resetStore();
+  const ids = ["constructor", "toString", "hasOwnProperty", "__proto__"];
+  const views = () => {
+    const state = useSidebarOrganizationStore.getState();
+    return [state.sectionByChatId, state.sectionByProjectId];
+  };
+  for (const map of views()) for (const id of ids) assert.equal(map[id], undefined);
+  const store = useSidebarOrganizationStore.getState();
+  const a = store.createCustomSection("A")!;
+  store.setChatsSection(ids, a);
+  store.setProjectsSection(ids, a);
+  for (const map of views()) for (const id of ids) assert.equal(map[id], a);
+  assert.deepEqual(Object.keys(views()[0]).sort(), [...ids].sort());
+  store.setChatsSection(ids, null);
+  for (const id of ids) assert.equal(views()[0][id], undefined);
+  // Filings of these ids survive a reload, and an unfiled one reads as unfiled after one too.
+  const merged = mergePersistedOrganization(
+    JSON.parse(
+      '{"customSections":[{"id":"s","name":"S","sort":"manual"}],"sectionByChatId":{"__proto__":"s","toString":"s"},"sectionByProjectId":{}}',
+    ),
+    useSidebarOrganizationStore.getInitialState(),
+  );
+  assert.equal(merged.sectionByChatId["__proto__"], "s");
+  assert.equal(merged.sectionByChatId.toString, "s" as unknown);
+  assert.equal(merged.sectionByChatId.constructor, undefined);
+  assert.equal(merged.sectionByProjectId.hasOwnProperty, undefined);
+  // Deleting the section drops them all.
+  store.deleteCustomSection(a);
+  for (const map of views()) for (const id of ids) assert.equal(map[id], undefined);
+  resetStore();
+});
+
+// A project picked from a chat's "Move to" is where the chat is meant to show, as a drop on the
+// folder is, so a section it is filed in lets it go once the move lands.
+test("a chat moved into a project from its menu leaves its section, as a drop does", () => {
+  const fn = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("async function moveChatToProjectFromMenu("));
+  assert.match(fn, /if \(!\(await moveChatToProject\(item, projectId\)\) \|\| filedSince\) return;/);
+  // Not when it was filed again while the move was in flight: that is the newer intent.
+  assert.match(fn, /filedSince \|\|= now\.sectionByChatId\[item\.id\] !== before\.sectionByChatId\[item\.id\];/);
+  // Only where a folder draws it: not pinned, and not all in one list.
+  assert.match(fn, /now\.organizeBy === "project" &&\n\s*!usePinnedChatsStore\.getState\(\)\.pinnedIds\.includes\(item\.id\)\n\s*\) \{\n\s*setChatsSection\(\[item\.id\], null\);/);
+  assert.match(fn, /\} finally \{\n\s*stopWatching\(\);/);
+  // Both ways in from the menu: an existing project, and a new one.
+  assert.match(APP_SIDEBAR, /onSelect=\{\(\) => void moveChatToProjectFromMenu\(item, project\.id\)\}/);
+  assert.match(APP_SIDEBAR, /await moveChatToProjectFromMenu\(moveTarget, project\.id\);/);
+  assert.doesNotMatch(APP_SIDEBAR, /onSelect=\{\(\) => void moveChatToProject\(item, project\.id\)\}/);
+});
+
 test("a saved section keyed like Pinned or Projects is dropped, and so are its rows' filings", () => {
   const merged = mergePersistedOrganization(
     {
@@ -771,8 +822,8 @@ test("a saved section keyed like Pinned or Projects is dropped, and so are its r
   );
   assert.deepEqual(merged.customSections.map((section) => section.id), ["real"]);
   // The rows filed in them come back to their normal lists.
-  assert.deepEqual(merged.sectionByChatId, { c2: "real" });
-  assert.deepEqual(merged.sectionByProjectId, {});
+  assert.deepEqual({ ...merged.sectionByChatId }, { c2: "real" });
+  assert.deepEqual({ ...merged.sectionByProjectId }, {});
 });
 
 test("a saved automatic project sort, no longer offered, falls back to Manual", () => {

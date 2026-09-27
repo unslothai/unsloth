@@ -193,6 +193,7 @@ import {
   PINNED_SECTION_KEY,
   inSectionOrder,
   resolveSectionOrder,
+  assignmentMap,
   type SidebarChatSort,
   type SidebarCustomSection,
   type SidebarOrganizeBy,
@@ -3115,15 +3116,33 @@ export function AppSidebar() {
       if (stayedOnRoute) openProject(project.id);
       return;
     }
+    // As a project picked from the list is, so a filed chat leaves its section for the folder.
+    await moveChatToProjectFromMenu(moveTarget, project.id);
+  }
+
+  /** A project picked from a chat's "Move to". The chat is meant to show in that project's folder,
+   *  so the section it is filed in lets it go once the move lands, as it does on a drop on the
+   *  folder; a section would otherwise keep drawing it. Not when it was filed again meanwhile,
+   *  which is the newer intent, nor while it is pinned or drawn in one list, where no folder
+   *  draws it. */
+  async function moveChatToProjectFromMenu(item: SidebarItem, projectId: string) {
+    const store = useSidebarOrganizationStore;
+    let filedSince = false;
+    const stopWatching = store.subscribe((now, before) => {
+      filedSince ||= now.sectionByChatId[item.id] !== before.sectionByChatId[item.id];
+    });
     try {
-      await moveChatItemToProject(moveTarget, project.id);
-      if (activeThreadId === moveTarget.id) {
-        useChatRuntimeStore.getState().setActiveProjectId(project.id);
+      if (!(await moveChatToProject(item, projectId)) || filedSince) return;
+      const now = store.getState();
+      if (
+        now.sectionByChatId[item.id] &&
+        now.organizeBy === "project" &&
+        !usePinnedChatsStore.getState().pinnedIds.includes(item.id)
+      ) {
+        setChatsSection([item.id], null);
       }
-    } catch (err) {
-      toast.error("Failed to move chat to the new project", {
-        description: err instanceof Error ? err.message : undefined,
-      });
+    } finally {
+      stopWatching();
     }
   }
 
@@ -3502,9 +3521,9 @@ export function AppSidebar() {
             if (now.customSections.some((s) => s.id === section.id)) return now;
             const restored = [...now.customSections];
             restored.splice(Math.min(index, restored.length), 0, section);
-            const sectionByChatId = { ...now.sectionByChatId };
+            const sectionByChatId = assignmentMap(now.sectionByChatId);
             for (const id of chatIds) sectionByChatId[id] ??= section.id;
-            const sectionByProjectId = { ...now.sectionByProjectId };
+            const sectionByProjectId = assignmentMap(now.sectionByProjectId);
             for (const id of projectIds) sectionByProjectId[id] ??= section.id;
             const sectionOrder = resolveSectionOrder(now.sectionOrder, now.customSections);
             const follower = followers.find((key) => sectionOrder.includes(key));
@@ -4433,7 +4452,7 @@ export function AppSidebar() {
                     {projects.filter((project) => project.id !== item.projectId).map((project) => (
                       <P.Item
                         key={project.id}
-                        onSelect={() => void moveChatToProject(item, project.id)}
+                        onSelect={() => void moveChatToProjectFromMenu(item, project.id)}
                       >
                         <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
                         <span className="truncate">{project.name}</span>
