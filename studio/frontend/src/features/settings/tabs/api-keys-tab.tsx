@@ -101,7 +101,7 @@ export function ApiKeysTab() {
   };
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-6">
+    <div className="settings-page">
       <header className="flex min-w-0 flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.apiKeys.title")}

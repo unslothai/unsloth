@@ -55,7 +55,7 @@ export function AppearanceTab() {
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.appearance.title")}

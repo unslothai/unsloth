@@ -1893,9 +1893,14 @@ html[data-chat-font] .aui-root {
 		background-color: var(--card);
 	}
 
-	/* Settings section headings: muted, so they read apart from the row labels. */
+	/* Root of every settings page: one gap between the header and each section. */
+	.settings-page {
+		@apply flex min-w-0 max-w-full flex-col gap-8;
+	}
+
+	/* Settings section headings: muted, eased toward the page, so they read apart from the row labels. */
 	.settings-heading {
-		color: var(--muted-foreground);
+		color: color-mix(in oklab, var(--muted-foreground), var(--background) 15%);
 	}
 
 	/* App-wide: every clickable control shows the hand cursor. Disabled ones

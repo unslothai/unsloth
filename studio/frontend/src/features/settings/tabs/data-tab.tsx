@@ -596,7 +596,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
 
   if (subpage === "manage") {
     return (
-      <div className="flex flex-col gap-6">
+      <div className="settings-page">
         <header className="flex items-center gap-2">
           <button
             type="button"
@@ -625,7 +625,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
 
   if (subpage === "archived") {
     return (
-      <div className="flex flex-col gap-6">
+      <div className="settings-page">
         <header className="flex items-center gap-2">
           <button
             type="button"
@@ -698,7 +698,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       audio: t("settings.data.archivedAudioDescription"),
     }[kind];
     return (
-      <div className="flex flex-col gap-6">
+      <div className="settings-page">
         <header className="flex items-center gap-2">
           <button
             type="button"
@@ -726,7 +726,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
 
   if (subpage === "files") {
     return (
-      <div className="flex flex-col gap-6">
+      <div className="settings-page">
         <header className="flex items-center gap-2">
           <button
             type="button"
@@ -754,7 +754,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.data.title")}
