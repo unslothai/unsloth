@@ -826,6 +826,24 @@ def _declares_flex_support(model_class):
     return None
 
 
+def _declares_no_sdpa(model_class):
+    """True when the architecture's own class sets `_supports_sdpa = False` (for example
+    MiMoV2FlashForCausalLM, whose sinks have no SDPA path). transformers raises on an sdpa
+    request for such a class, so a source-level guess of SDPA support must not override it."""
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        return False
+    for klass in getattr(model_class, "__mro__", ()):
+        if klass is PreTrainedModel:
+            break
+        if not isinstance(klass, type):
+            continue
+        if "_supports_sdpa" in vars(klass):
+            return vars(klass)["_supports_sdpa"] is False
+    return False
+
+
 def _model_class_supports_flash_attention(model_class):
     """Whether installed transformers lets this class dispatch flash attention."""
     if model_class is None:
@@ -2111,7 +2129,7 @@ def resolve_attention_implementation(
     model_type = model_type_name.lower()
     if supports_sdpa is None:
         supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
-    if _is_sdpa_excluded(model_type):
+    if _is_sdpa_excluded(model_type) or _declares_no_sdpa(model_class):
         supports_sdpa = False
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
