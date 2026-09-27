@@ -9617,10 +9617,8 @@ async def _no_model_loaded_error(
     """
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
     from core.inference.local_model_resolver import resolve_local_gguf
-    from core.inference.npu_backend import peek_npu_backend
 
-    _npu = peek_npu_backend()
-    _npu_model = _npu.loaded_model if _npu is not None else None
+    _npu_model = _resident_npu_model()
     if _npu_model is not None:
         return 400, (
             f"The loaded NPU model ({_npu_model.model_path}) serves "
@@ -9798,9 +9796,12 @@ def _resident_id_is_namespaced() -> bool:
 
 
 def _resident_npu_model():
-    """The NPU model serving chat, or None. It answers to its own names only."""
+    """The NPU model serving chat, or None. It answers to its own names only, and holds the
+    primary's seat: a request routed to a model kept alongside is not the NPU's."""
     from core.inference.npu_backend import peek_npu_backend
 
+    if routed_slot.get() is not None:
+        return None
     npu = peek_npu_backend()
     return npu.loaded_model if npu is not None else None
 
@@ -11231,10 +11232,7 @@ def _loaded_slot_ident() -> Optional[str]:
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded and llama_backend.model_identifier:
         return str(llama_backend.model_identifier)
-    from core.inference.npu_backend import peek_npu_backend
-
-    npu = peek_npu_backend()
-    npu_model = npu.loaded_model if npu is not None else None
+    npu_model = _resident_npu_model()
     return npu_model.model_path if npu_model is not None else None
 
 
@@ -20369,7 +20367,7 @@ async def _slot_status(current_subject: str):
         from core.inference.npu_backend import peek_npu_backend
 
         _npu = peek_npu_backend()
-        _npu_resident = _npu.resident() if _npu is not None else None
+        _npu_resident = _npu.resident() if _npu is not None and routed_slot.get() is None else None
         if _npu_resident is not None:
             _npu_model = _npu_resident.model
             return InferenceStatusResponse(
@@ -26503,7 +26501,7 @@ async def produce_openai_chat_completions(
     from core.inference.npu_backend import peek_npu_backend
 
     _npu = peek_npu_backend()
-    if _npu is not None and _npu.is_loaded:
+    if _npu is not None and _npu.is_loaded and routed_slot.get() is None:
         return await _npu_chat_completions(payload, request, current_subject)
 
     llama_backend = get_llama_cpp_backend()
@@ -36093,7 +36091,7 @@ async def chat_count_tokens(
     from core.inference.npu_backend import peek_npu_backend
 
     _npu = peek_npu_backend()
-    if _npu is not None and _npu.is_loaded:
+    if _npu is not None and _npu.is_loaded and routed_slot.get() is None:
         # FastFlowLM has no tokenizer endpoint; each reply's usage still reports the prompt size.
         raise HTTPException(
             status_code = 503,

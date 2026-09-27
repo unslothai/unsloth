@@ -1139,3 +1139,22 @@ def test_a_repo_still_filling_a_slot_cannot_be_deleted(backends, monkeypatch):
     assert not deletion._llama_cpp_blocks_delete("org/D-GGUF", "Q4_K_M")
     starting.orchestrator.loading_models = {"org/E"}
     assert deletion._inference_backend_blocks_delete("org/E")
+
+
+def test_a_resident_npu_model_keeps_to_the_primarys_seat(backends, monkeypatch):
+    from types import SimpleNamespace
+
+    import core.inference.npu_backend as npu_backend
+
+    primary, extra = backends
+    primary.unload_model()
+    npu_model = SimpleNamespace(model_path = "lemonade:qwen3-0.6b-FLM", id = "qwen3-0.6b-FLM")
+    npu = SimpleNamespace(is_loaded = True, loaded_model = npu_model, resident = lambda: None)
+    monkeypatch.setattr(npu_backend, "peek_npu_backend", lambda: npu)
+
+    async def route(model):
+        slot = await inf._route_to_extra_slot(model)
+        return slot, inf._resident_npu_model(), inf._loaded_slot_ident()
+
+    assert asyncio.run(route("org/B-GGUF")) == (extra, None, "org/B-GGUF")
+    assert asyncio.run(route("qwen3-0.6b-FLM")) == (None, npu_model, npu_model.model_path)
