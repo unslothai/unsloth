@@ -186,6 +186,9 @@ export const zhCN = {
       noChats: "无对话",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "所有项目均已置顶",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "所有项目均已置顶或归入分区",
+      noProjects: "暂无项目",
       showMore: "显示更多",
       showLess: "显示更少",
       settings: "设置",
@@ -231,14 +234,42 @@ export const zhCN = {
       byProject: "按项目",
       inOneList: "合并为一个列表",
       sortChatsBy: "对话排序方式",
-      sortPinnedBy: "置顶排序方式",
-      priority: "优先级",
       lastUpdated: "最近更新",
       manualOrder: "手动排序",
       switchedToManual: "已改为手动排序，拖动行即可重新排序",
       organizeChats: "整理对话",
       organizeProjects: "整理项目",
       sortPinnedChats: "对置顶对话排序",
+      // Header of the menu's section-visibility toggles.
+      show: "显示",
+      newSection: "新建分区",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "新建分区",
+      createDescription: "按你的喜好对对话和项目进行分组",
+      namePlaceholder: "分区名称",
+      create: "创建分区",
+      renameTitle: "重命名分区",
+      renameDescription: "为此分区取一个新名称",
+      edit: "编辑",
+      remove: "移除分区",
+      markAllRead: "全部标为已读",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "移动到",
+      section: "分区",
+      sectionsHeading: "分区",
+      removeFromProject: "从项目中移除",
+      newSection: "新建分区",
+      removeFromSection: "从分区中移除",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "从{name}中移除",
+      // Shown in a section with nothing filed in it yet.
+      empty: "将对话或项目拖到此处",
+      sectionOptions: "分区选项",
+      newChatInSection: "在 {name} 中新建聊天",
+      deleted: "已删除分区“{name}”",
+      undo: "撤销",
     },
     dialog: {
       deleteChat: {
@@ -1240,19 +1271,20 @@ export const zhCN = {
         autoDetect: "自动检测",
       },
       theme: {
-        title: "主题",
-        label: "颜色主题",
+        title: "视觉样式",
+        label: "模式",
         description: "选择浅色、深色，或跟随系统。",
         system: "跟随系统",
         light: "浅色",
         dark: "深色",
       },
       palette: {
-        label: "调色板",
+        label: "主题",
         description: "Unsloth 全局使用的配色，支持浅色和深色模式。",
         standard: "标准",
         classic: "经典",
         minimal: "极简",
+        moreThemes: "更多主题",
       },
       custom: {
         chatWidth: {
@@ -1266,8 +1298,6 @@ export const zhCN = {
         resetAll: "重置自定义",
         preferencesTitle: "偏好设置",
         colors: {
-          lightGroup: "浅色主题",
-          darkGroup: "深色主题",
           accent: "强调色",
           background: "背景",
           foreground: "前景",

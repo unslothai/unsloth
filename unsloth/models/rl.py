@@ -2571,6 +2571,19 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "        args.padding_free = False\n"
                 )
             extra_args += max_length_check
+        elif trainer_file in ("dpo_trainer", "kto_trainer", "orpo_trainer", "cpo_trainer"):
+            # The fast forward cuts input_ids to model.max_seq_length but these trainers build labels at args.max_length, so a longer row crashes the logps gather.
+            extra_args += (
+                "_unsloth_model_msl = getattr(model, 'max_seq_length', None)\n"
+                "if isinstance(_unsloth_model_msl, int) and _unsloth_model_msl > 0 and hasattr(args, 'max_length'):\n"
+                "    if args.max_length is None or args.max_length > _unsloth_model_msl:\n"
+                "        print('Unsloth: `max_length = ' + str(args.max_length) + '` exceeds the model max_seq_length of ' + str(_unsloth_model_msl) + ', so it is reduced to ' + str(_unsloth_model_msl) + '.')\n"
+                "        args.max_length = _unsloth_model_msl\n"
+                # ORPO / CPO / KTO resolve a None prompt limit to 128, which must stay below max_length.
+                "        _unsloth_mpl = getattr(args, 'max_prompt_length', 0)\n"
+                "        if (_unsloth_mpl is None and args.max_length <= 128) or (_unsloth_mpl is not None and _unsloth_mpl >= args.max_length):\n"
+                "            args.max_prompt_length = args.max_length // 2\n"
+            )
 
     if "model" in call_args:
         training_check = (
@@ -2740,7 +2753,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "num_generations": 8,
         # "steps_per_generation": 1,     # Otherwise defaults to ga_steps, which is wrong
         # "generation_batch_size": None, # Useless. If steps_per_generation is set, generation_batch_size clashes
-        "top_k": None,
         "vllm_mode": "colocate",
         "generation_kwargs": {},
         "bf16": False,
@@ -2758,7 +2770,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         replacements["warmup_ratio"] = 0.1
 
     for k, v in replacements.items():
-        x = f"{k}( = [^,\n]{{1,}})?,\n"
+        x = rf"\b{k}( = [^,\n]{{1,}})?,\n"
         y = f"'{v}'" if type(v) is str else f"{v}"
         y = f"{k} = {y},\n"
         arguments = re.sub(x, y, arguments)
@@ -2766,16 +2778,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     # GRPO beta default is 0.001: TRL used 0.04 and now 0.00. See huggingface/trl#3516 and the verl docs.
     if trainer_file == "grpo_trainer":
         replacements = {
-            "loss_type": "bnpo",  # Default GRPO paper
+            "loss_type": "bnpo",  # TRL <= 0.21 default; the GRPO paper objective is "grpo"
             "beta": 0.001,  # Recommended as seen in verl
             "auto_find_batch_size": False,  # Cannot work on GRPO
             # See fengyao.notion.site/off-policy-rl and huggingface/trl#3867.
             "vllm_importance_sampling_correction": False,
-            # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001), but the optimized GRPO forward does not compute it, so default it off; opt in via router_aux_loss_coef > 0.
+            # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001), but the optimized GRPO forward does not compute it, so default it off.
             "router_aux_loss_coef": 0.0,
+            # None = unset, so the dapo check below can tell it from an explicit False.
+            "mask_truncated_completions": None,
         }
         for k, v in replacements.items():
-            x = f"{k}( = [^,\n]{{1,}})?,\n"
+            x = rf"\b{k}( = [^,\n]{{1,}})?,\n"
             y = f"'{v}'" if type(v) is str else f"{v}"
             y = f"{k} = {y},\n"
             arguments = re.sub(x, y, arguments)
@@ -2784,7 +2798,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if trainer_file == "sft_trainer":
         replacements = {"loss_type": "nll"}
         for k, v in replacements.items():
-            x = f"{k}( = [^,\n]{{1,}})?,\n"
+            x = rf"\b{k}( = [^,\n]{{1,}})?,\n"
             y = f"'{v}'" if type(v) is str else f"{v}"
             y = f"{k} = {y},\n"
             arguments = re.sub(x, y, arguments)
@@ -2855,6 +2869,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += pad_to_multiple_of
 
     # Check for loss_type = dr_grpo and scale_rewards for GRPO; DAPO uses per-token loss, so BNPO loss is used. See huggingface/trl#3130 (comment 2746947835).
+    # TRL >= 0.22 defaults scale_rewards to "group" (= True).
     if "loss_type" in call_args and "scale_rewards" in call_args:
         check_dr_grpo = (
             "if loss_type.lower() == 'dr_grpo':\n"
@@ -2864,21 +2879,27 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "if loss_type.lower() == 'dr_grpo':\n"
             "    if scale_rewards == None:\n"
             "        scale_rewards = True\n"
-            "    elif scale_rewards == True:\n"
-            "        print('Unsloth: The Dr GRPO paper recommends setting `scale_rewards` to False! Will override. Set it to `None` to force False.')\n"
+            "    elif scale_rewards == True or scale_rewards == 'group':\n"
+            "        print('Unsloth: The Dr GRPO paper recommends setting `scale_rewards` to False! Will override. Set it to `None` to keep scaling.')\n"
             "        scale_rewards = False\n"
             "elif loss_type.lower() == 'dapo':\n"
-            "    if mask_truncated_completions != True:\n"
+            "    if mask_truncated_completions is None:\n"
             "        print('Unsloth: The DAPO paper recommends `mask_truncated_completions = True` - we will set it.')\n"
-            "    if epsilon_high != 0.28:\n"
+            "        mask_truncated_completions = True\n"
+            "    if epsilon_high is None:\n"
             "        print('Unsloth: The DAPO paper recommends `epsilon_high = 0.28` - we will set it.')\n"
+            "        epsilon_high = 0.28\n"
             "    if beta != 0.0:\n"
             "        print(f'[WARNING] Unsloth: The DAPO paper recommends setting `beta = 0.0` to remove the KL term - You have set it to {beta}.')\n"
-            "    mask_truncated_completions = True\n"
-            "    epsilon_high = 0.28\n"
+            "if mask_truncated_completions is None:\n"
+            "    mask_truncated_completions = False\n"
             "\n"
         )
         extra_args += check_dr_grpo
+
+    # GRPO on TRL < 0.20 crashes on the first step (no has_images / images, no reference logps path).
+    if trainer_file == "grpo_trainer" and trl_version < Version("0.20.0"):
+        extra_args += f"raise ImportError('Unsloth: GRPO needs trl >= 0.20.0, but trl=={trl_version} is installed. Please do `pip install --upgrade trl`.')\n"
 
     if (
         "per_device_train_batch_size" in call_args

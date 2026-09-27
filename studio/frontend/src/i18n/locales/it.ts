@@ -151,6 +151,9 @@ export const it = {
       noChats: "Nessuna chat",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Tutti i progetti fissati",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "Tutti i progetti sono fissati o in sezioni",
+      noProjects: "Nessun progetto",
       showMore: "Mostra altro",
       showLess: "Mostra meno",
       settings: "Impostazioni",
@@ -196,14 +199,42 @@ export const it = {
       byProject: "Per progetto",
       inOneList: "In un solo elenco",
       sortChatsBy: "Ordina le chat per",
-      sortPinnedBy: "Ordina i fissati per",
-      priority: "Priorità",
       lastUpdated: "Ultimo aggiornamento",
       manualOrder: "Ordine manuale",
       switchedToManual: "Ordinamento manuale: trascina le righe per riordinarle",
       organizeChats: "Organizza le chat",
       organizeProjects: "Organizza i progetti",
       sortPinnedChats: "Ordina le chat fissate",
+      // Header of the menu's section-visibility toggles.
+      show: "Mostra",
+      newSection: "Nuova sezione",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "Nuova sezione",
+      createDescription: "Raggruppa chat e progetti come preferisci",
+      namePlaceholder: "Nome della sezione",
+      create: "Crea sezione",
+      renameTitle: "Rinomina sezione",
+      renameDescription: "Assegna un nuovo nome a questa sezione",
+      edit: "Modifica",
+      remove: "Rimuovi sezione",
+      markAllRead: "Segna tutto come letto",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "Sposta in",
+      section: "Sezione",
+      sectionsHeading: "Sezioni",
+      removeFromProject: "Rimuovi dal progetto",
+      newSection: "Nuova sezione",
+      removeFromSection: "Rimuovi dalla sezione",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "Rimuovi da {name}",
+      // Shown in a section with nothing filed in it yet.
+      empty: "Trascina qui chat o progetti",
+      sectionOptions: "Opzioni della sezione",
+      newChatInSection: "Nuova chat in {name}",
+      deleted: "Sezione «{name}» eliminata",
+      undo: "Annulla",
     },
     dialog: {
       deleteChat: {
@@ -1243,19 +1274,20 @@ export const it = {
       title: "Aspetto",
       description: "Come si presenta Unsloth su questo dispositivo.",
       theme: {
-        title: "Tema",
-        label: "Combinazione di colori",
+        title: "Stile visivo",
+        label: "Modalità",
         description: "Chiaro, scuro o in base alle impostazioni di sistema.",
         system: "Sistema",
         light: "Chiaro",
         dark: "Scuro",
       },
       palette: {
-        label: "Tavolozza dei colori",
+        label: "Tema",
         description: "Colori usati in Unsloth, nei temi chiaro e scuro.",
         standard: "Standard",
         classic: "Classica",
         minimal: "Minimale",
+        moreThemes: "Altri temi",
       },
       custom: {
         chatWidth: {
@@ -1269,8 +1301,6 @@ export const it = {
         resetAll: "Ripristina la personalizzazione",
         preferencesTitle: "Preferenze",
         colors: {
-          lightGroup: "Tema chiaro",
-          darkGroup: "Tema scuro",
           accent: "Accento",
           background: "Sfondo",
           foreground: "Primo piano",

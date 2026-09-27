@@ -190,6 +190,9 @@ export const ru = {
       noChats: "Нет чатов",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Все проекты закреплены",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "Все проекты закреплены или находятся в разделах",
+      noProjects: "Нет проектов",
       showMore: "Показать больше",
       showLess: "Показать меньше",
       settings: "Настройки",
@@ -235,14 +238,42 @@ export const ru = {
       byProject: "По проектам",
       inOneList: "Одним списком",
       sortChatsBy: "Сортировать чаты по",
-      sortPinnedBy: "Сортировать закреплённые по",
-      priority: "Приоритету",
       lastUpdated: "Последнему обновлению",
       manualOrder: "Вручную",
       switchedToManual: "Ручной порядок: перетащите строки, чтобы изменить порядок",
       organizeChats: "Настроить чаты",
       organizeProjects: "Настроить проекты",
       sortPinnedChats: "Сортировать закреплённые чаты",
+      // Header of the menu's section-visibility toggles.
+      show: "Показывать",
+      newSection: "Новый раздел",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "Новый раздел",
+      createDescription: "Группируйте чаты и проекты как угодно",
+      namePlaceholder: "Название раздела",
+      create: "Создать раздел",
+      renameTitle: "Переименовать раздел",
+      renameDescription: "Дайте этому разделу новое название",
+      edit: "Изменить",
+      remove: "Удалить раздел",
+      markAllRead: "Отметить все как прочитанные",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "Переместить в",
+      section: "Раздел",
+      sectionsHeading: "Разделы",
+      removeFromProject: "Убрать из проекта",
+      newSection: "Новый раздел",
+      removeFromSection: "Убрать из раздела",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "Убрать из {name}",
+      // Shown in a section with nothing filed in it yet.
+      empty: "Перетащите сюда чаты или проекты",
+      sectionOptions: "Параметры раздела",
+      newChatInSection: "Новый чат в «{name}»",
+      deleted: "Раздел «{name}» удалён",
+      undo: "Отменить",
     },
     dialog: {
       deleteChat: {
@@ -1262,19 +1293,20 @@ export const ru = {
       title: "Оформление",
       description: "Как Unsloth выглядит на этом устройстве.",
       theme: {
-        title: "Тема",
-        label: "Цветовая схема",
+        title: "Внешний вид",
+        label: "Режим",
         description: "Светлая, тёмная или как в системе.",
         system: "Системная",
         light: "Светлая",
         dark: "Тёмная",
       },
       palette: {
-        label: "Цветовая палитра",
+        label: "Тема",
         description: "Цвета, используемые в Unsloth в светлой и тёмной теме.",
         standard: "Стандартная",
         classic: "Классическая",
         minimal: "Минималистичная",
+        moreThemes: "Другие темы",
       },
       custom: {
         chatWidth: {
@@ -1288,8 +1320,6 @@ export const ru = {
         resetAll: "Сбросить настройки оформления",
         preferencesTitle: "Параметры",
         colors: {
-          lightGroup: "Светлая тема",
-          darkGroup: "Тёмная тема",
           accent: "Акцент",
           background: "Фон",
           foreground: "Текст",

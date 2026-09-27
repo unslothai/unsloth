@@ -190,6 +190,9 @@ export const ja = {
       noChats: "チャットなし",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "すべてのプロジェクトをピン留め済み",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "すべてのプロジェクトがピン留め済みまたはセクション内にあります",
+      noProjects: "プロジェクトはありません",
       showMore: "もっと見る",
       showLess: "表示を減らす",
       settings: "設定",
@@ -235,14 +238,42 @@ export const ja = {
       byProject: "プロジェクト別",
       inOneList: "1つのリストで",
       sortChatsBy: "チャットの並び順",
-      sortPinnedBy: "ピン留めの並び順",
-      priority: "優先度",
       lastUpdated: "最終更新",
       manualOrder: "手動で並べ替え",
       switchedToManual: "手動の並び順に切り替えました。行をドラッグして並べ替えます",
       organizeChats: "チャットを整理",
       organizeProjects: "プロジェクトを整理",
       sortPinnedChats: "ピン留めチャットを並べ替え",
+      // Header of the menu's section-visibility toggles.
+      show: "表示",
+      newSection: "新しいセクション",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "新しいセクション",
+      createDescription: "チャットやプロジェクトを自由にグループ化できます",
+      namePlaceholder: "セクション名",
+      create: "セクションを作成",
+      renameTitle: "セクション名を変更",
+      renameDescription: "このセクションに新しい名前を付けます",
+      edit: "編集",
+      remove: "セクションを削除",
+      markAllRead: "すべて既読にする",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "移動先",
+      section: "セクション",
+      sectionsHeading: "セクション",
+      removeFromProject: "プロジェクトから削除",
+      newSection: "新しいセクション",
+      removeFromSection: "セクションから削除",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "{name}から削除",
+      // Shown in a section with nothing filed in it yet.
+      empty: "ここにチャットやプロジェクトをドラッグ",
+      sectionOptions: "セクションのオプション",
+      newChatInSection: "{name} に新しいチャット",
+      deleted: "セクション「{name}」を削除しました",
+      undo: "元に戻す",
     },
     dialog: {
       deleteChat: {
@@ -1239,19 +1270,20 @@ export const ja = {
       title: "外観",
       description: "このデバイスでの Unsloth の見た目。",
       theme: {
-        title: "テーマ",
-        label: "カラー構成",
+        title: "表示スタイル",
+        label: "モード",
         description: "ライト、ダーク、またはシステム設定に従います。",
         system: "システム",
         light: "ライト",
         dark: "ダーク",
       },
       palette: {
-        label: "カラーパレット",
+        label: "テーマ",
         description: "Unsloth 全体で使用される配色。ライト・ダーク両対応。",
         standard: "スタンダード",
         classic: "クラシック",
         minimal: "ミニマル",
+        moreThemes: "その他のテーマ",
       },
       custom: {
         chatWidth: {
@@ -1265,8 +1297,6 @@ export const ja = {
         resetAll: "カスタマイズをリセット",
         preferencesTitle: "環境設定",
         colors: {
-          lightGroup: "ライトテーマ",
-          darkGroup: "ダークテーマ",
           accent: "アクセント",
           background: "背景",
           foreground: "文字色",

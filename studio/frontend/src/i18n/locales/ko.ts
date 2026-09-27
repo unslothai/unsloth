@@ -188,6 +188,9 @@ export const ko = {
       noChats: "채팅 없음",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "모든 프로젝트가 고정됨",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "모든 프로젝트가 고정되었거나 섹션에 있음",
+      noProjects: "프로젝트 없음",
       showMore: "더 보기",
       showLess: "간략히 보기",
       settings: "설정",
@@ -233,14 +236,42 @@ export const ko = {
       byProject: "프로젝트별",
       inOneList: "하나의 목록으로",
       sortChatsBy: "채팅 정렬 기준",
-      sortPinnedBy: "고정됨 정렬 기준",
-      priority: "우선순위",
       lastUpdated: "최근 업데이트",
       manualOrder: "수동 정렬",
       switchedToManual: "수동 정렬로 전환됨: 행을 끌어 순서를 바꾸세요",
       organizeChats: "채팅 정리",
       organizeProjects: "프로젝트 정리",
       sortPinnedChats: "고정된 채팅 정렬",
+      // Header of the menu's section-visibility toggles.
+      show: "표시",
+      newSection: "새 섹션",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "새 섹션",
+      createDescription: "채팅과 프로젝트를 원하는 대로 묶어 보세요",
+      namePlaceholder: "섹션 이름",
+      create: "섹션 만들기",
+      renameTitle: "섹션 이름 변경",
+      renameDescription: "이 섹션에 새 이름을 지정하세요",
+      edit: "편집",
+      remove: "섹션 제거",
+      markAllRead: "모두 읽음으로 표시",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "이동",
+      section: "섹션",
+      sectionsHeading: "섹션",
+      removeFromProject: "프로젝트에서 제거",
+      newSection: "새 섹션",
+      removeFromSection: "섹션에서 제거",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "{name}에서 제거",
+      // Shown in a section with nothing filed in it yet.
+      empty: "채팅이나 프로젝트를 여기로 드래그하세요",
+      sectionOptions: "섹션 옵션",
+      newChatInSection: "{name}에 새 채팅",
+      deleted: "“{name}” 섹션 삭제됨",
+      undo: "실행 취소",
     },
     dialog: {
       deleteChat: {
@@ -1253,19 +1284,20 @@ export const ko = {
       title: "외관",
       description: "이 기기에서 Unsloth가 표시되는 방식입니다.",
       theme: {
-        title: "테마",
-        label: "색상 구성",
+        title: "시각 스타일",
+        label: "모드",
         description: "라이트, 다크 또는 시스템 설정을 따릅니다.",
         system: "시스템",
         light: "라이트",
         dark: "다크",
       },
       palette: {
-        label: "색상 팔레트",
+        label: "테마",
         description: "라이트 모드와 다크 모드에서 Unsloth 전반에 쓰이는 색상입니다.",
         standard: "표준",
         classic: "클래식",
         minimal: "미니멀",
+        moreThemes: "더 많은 테마",
       },
       custom: {
         chatWidth: {
@@ -1279,8 +1311,6 @@ export const ko = {
         resetAll: "사용자 지정 초기화",
         preferencesTitle: "환경설정",
         colors: {
-          lightGroup: "라이트 테마",
-          darkGroup: "다크 테마",
           accent: "강조색",
           background: "배경",
           foreground: "전경",
