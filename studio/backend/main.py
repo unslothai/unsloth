@@ -2121,8 +2121,7 @@ def _get_cached_system_gpu_info(
 
             from utils.hardware import gpu_query
 
-            # Already behind a 10 s cache, so no stale-while-revalidate on top: a miss waits for a
-            # new (shared) reading; only a hung CLI falls back to the last good one.
+            # Already behind a 10 s cache: no stale-while-revalidate on top.
             with (
                 contextlib.nullcontext() if refresh_memory else gpu_query.display_reads(max_stale = 0)
             ):

@@ -412,8 +412,7 @@ def get_backend_visible_gpu_info(
         if rows is NVIDIA_SMI_ABSENT:
             out["smi_absent"] = True
         elif getattr(_inventory_exit, "code", None) != 6:
-            # No answer is unknown, not "no cards": the caller keeps its last good inventory.
-            # Exit 6 ("No devices were found") is an answer, so that inventory is dropped.
+            # No answer is unknown, not "no cards"; exit 6 ("No devices were found") is an answer.
             out["probe_failed"] = True
         return out
 

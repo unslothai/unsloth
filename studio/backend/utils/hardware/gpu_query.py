@@ -262,8 +262,7 @@ def _run_child(flight: _Flight, argv: list, kind: str, kwargs: dict) -> None:
         flight.result = result
         stdout = getattr(result, "stdout", None)
         if isinstance(stdout, str):
-            # A non-zero exit or no rows (e.g. "No devices were found", exit 6) is never served, but
-            # replaces any older answer so a card that went away is not reported from the cache.
+            # Failed / empty answers (exit 6: no devices) are never served but replace older ones.
             good = getattr(result, "returncode", None) == 0 and bool(stdout.strip())
             with _lock:
                 if flight.epoch != _reset_epoch:

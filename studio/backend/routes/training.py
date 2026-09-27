@@ -1328,7 +1328,7 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
     from utils.hardware import get_visible_gpu_utilization, gpu_query
 
     # Off the event loop: the ROCm fallbacks shell out (Windows perf counters, sysfs) and the System view polls this
-    # route. A display poll, so a reading a few seconds old is fine.
+    # route.
     with gpu_query.display_reads():
         return await asyncio.to_thread(get_visible_gpu_utilization)
 

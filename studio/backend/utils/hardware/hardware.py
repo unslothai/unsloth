@@ -5851,8 +5851,7 @@ def _repair_smi_visible_devices(
     return all(dev.get("memory_total_gb") is not None for dev in devices)
 
 
-# Last inventory that found devices, per (device type, mask): a failing probe must not mean "no GPU".
-# Values are (probe start, info or None for a confirmed empty); an older probe never overwrites a newer one.
+# (probe start, inventory or None once confirmed empty) per (device, mask); newer wins.
 _last_good_visible_info: Dict[tuple, tuple] = {}
 _last_good_visible_lock = threading.Lock()
 
