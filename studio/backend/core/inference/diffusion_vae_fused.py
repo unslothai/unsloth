@@ -1408,8 +1408,37 @@ def install_vectorised_blend(vae: Any) -> int:
     return n
 
 
+_CL_WEIGHT_VAES = frozenset({"AutoencoderKL", "AutoencoderKLFlux2", "AutoencoderKLHunyuanVideo15", "AutoencoderKLLTX2Video"})
+
+
+def channels_last_weights(vae: Any) -> int:
+    """The fused passes hand cuDNN channels-last activations; contiguous weights would be re-laid-out on every call."""
+    torch = _torch()
+    n = 0
+    for part in (getattr(vae, "encoder", None), getattr(vae, "decoder", None)):
+        if part is None:
+            continue
+        for m in part.modules():
+            w = getattr(m, "weight", None)
+            if isinstance(m, (torch.nn.Conv2d, torch.nn.Conv3d)) and isinstance(w, torch.Tensor) and w.dim() in (4, 5):
+                fmt = torch.channels_last if w.dim() == 4 else torch.channels_last_3d
+                if not w.is_contiguous(memory_format = fmt):
+                    w.data = w.data.contiguous(memory_format = fmt)
+                    n += 1
+    return n
+
+
 def install(vae: Any, logger: Any = None, level: str = "fused") -> int:
     """Install every fused path that applies to ``vae``'s class. Returns the number of patched modules."""
+    n = _install(vae, logger)
+    # measured: HV-1.5 -3%, LTX-2.3 -4%, AutoencoderKL layout-neutral (Studio already sets it); the Wan lineage keeps
+    # its own (Qwen-Image's one-frame conv3d is 15% SLOWER on channels-last weights; Wan's fp16 decode sets them)
+    if n and type(vae).__name__ in _CL_WEIGHT_VAES and os.environ.get("UNSLOTH_VAE_FUSED_CL_WEIGHTS", "1") != "0":
+        channels_last_weights(vae)
+    return n
+
+
+def _install(vae: Any, logger: Any = None) -> int:
     name = type(vae).__name__
     if name in ("AutoencoderKL", "AutoencoderKLFlux2"):
         return install_group_norm_vae(vae, logger)
