@@ -67,7 +67,8 @@ $blockNames = @(
     "Get-NvidiaLibraryProbeType",
     "Read-NvidiaLibraryRawViaPython",
     "Read-NvidiaLibraryRaw",
-    "Get-NvidiaLibraryInventory"
+    "Get-NvidiaLibraryInventory",
+    "Get-NvidiaSystem32Dir"
 )
 $installParts = @(Get-HelperSources $installPs1 $blockNames)
 $setupParts = @(Get-HelperSources $setupPs1 $blockNames)
@@ -291,6 +292,7 @@ Write-Host ""
 Write-Host "=== behaviour, driven through the real functions ==="
 
 Invoke-Expression ($setupParts[0])   # Get-NvidiaNvmlLibraryPath
+Invoke-Expression ($setupParts[5])   # Get-NvidiaSystem32Dir: Windows names the driver libraries under it
 Invoke-Expression ($setupParts[2])   # Read-NvidiaLibraryRawViaPython
 Invoke-Expression ($setupParts[3])   # Read-NvidiaLibraryRaw
 Invoke-Expression ($setupParts[4])   # Get-NvidiaLibraryInventory
