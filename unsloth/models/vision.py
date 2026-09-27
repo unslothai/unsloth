@@ -1289,6 +1289,38 @@ def _architecture_skip_modules(model_types):
     return skip
 
 
+def _with_architecture_skip_modules(quantization_config, model_types):
+    """A caller's bitsandbytes config with the architecture skip list merged in, on a copy; anything else is returned as is. Unsloth's own 4bit / 8bit config already carries the list, but a config the caller passes (the loader's advice for a -bf16 repo) did not, so Nemotron-H's mixer.out_proj was quantized and the fused Mamba kernel then crashed on the packed weight at the first training step."""
+    extra = _architecture_skip_modules(model_types)
+    if quantization_config is None or not extra:
+        return quantization_config
+    is_dict = isinstance(quantization_config, dict)
+
+    def get(key, default = None):
+        if is_dict:
+            return quantization_config.get(key, default)
+        return getattr(quantization_config, key, default)
+
+    method = get("quant_method", "")
+    method = str(getattr(method, "value", method) or "").lower()
+    is_bnb = "bitsandbytes" in method or type(quantization_config).__name__ == "BitsAndBytesConfig"
+    if not is_bnb or not (get("load_in_4bit", False) or get("load_in_8bit", False)):
+        return quantization_config
+    current = get("llm_int8_skip_modules", None)
+    # None means "transformers' defaults"; an explicit list replaces them, so start from the list Unsloth's own config uses.
+    merged = list(SKIP_QUANTIZATION_MODULES) if current is None else list(current)
+    missing = [m for m in extra if m not in merged]
+    if current is not None and not missing:
+        return quantization_config
+    merged += missing
+    # A new object, never the caller's. A pre-quantized bnb checkpoint's own config still wins in transformers, so this only reaches on-the-fly quantization.
+    if is_dict:
+        return {**quantization_config, "llm_int8_skip_modules": merged}
+    runtime_config = copy.deepcopy(quantization_config)
+    runtime_config.llm_int8_skip_modules = merged
+    return runtime_config
+
+
 def _cast_unquantized_floats(model, dtype):
     """Cast every floating parameter and buffer that is not a quantized weight."""
     for tensor in list(model.parameters()) + list(model.buffers()):
@@ -2060,7 +2092,11 @@ class FastBaseModel:
         kwargs["attn_implementation"] = attn_impl
 
         bnb_config = None
-        user_quantization_config = kwargs.get("quantization_config", None)
+        user_quantization_config = _with_architecture_skip_modules(
+            kwargs.get("quantization_config", None), model_types
+        )
+        if user_quantization_config is not None:
+            kwargs["quantization_config"] = user_quantization_config
 
         from .loader_utils import (
             check_and_disable_bitsandbytes_loading,
