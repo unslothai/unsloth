@@ -58,7 +58,6 @@ def _isolated(tmp_path, monkeypatch):
             True,
         ),
     )
-    # The Transformers fall-through, so a misroute returns a config instead of hanging.
     monkeypatch.setattr(mc, "is_vision_model", lambda *a, **k: False)
     monkeypatch.setattr(mc, "detect_audio_type", lambda *a, **k: None)
     monkeypatch.setattr(mc, "is_model_cached", lambda *a, **k: False)
@@ -193,7 +192,6 @@ def test_slow_link_recovers_on_a_longer_bound(monkeypatch):
     monkeypatch.setattr(huggingface_hub, "model_info", model_info)
     config = ModelConfig.from_identifier(REPO)
     assert config.is_gguf
-    # The retry after a timeout is not the same 15s read that just failed (#10230).
     assert timeouts[:2] == [15.0, 30.0]
 
 

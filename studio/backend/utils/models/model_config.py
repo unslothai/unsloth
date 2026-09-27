@@ -4357,8 +4357,7 @@ class ModelConfig:
                 gguf_filename = detect_gguf_model_remote(identifier, hf_token = hf_token)
             finally:
                 _gguf_remote_detect_failure.reset(failure_token)
-            # A failed listing is not "no GGUF": the fall-through ends in Transformers' config.json
-            # error (#11551). A refused repo is still never served from cache.
+            # A failed listing is not "no GGUF"; a refused repo is never served from cache (#11551).
             if not gguf_filename and _looks_like_gguf_repo(identifier, gguf_variant):
                 if detect_failures:
                     raise GgufRepoUnreadableError(

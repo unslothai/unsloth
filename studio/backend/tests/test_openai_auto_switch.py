@@ -11718,8 +11718,7 @@ def test_a_stale_idle_reload_stash_diverts_a_refusal_into_a_reload(monkeypatch):
         )(),
     )
     kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
-    # The stashed repo is fictional and the Hub is blocked: answer the GGUF probe as "no GGUF",
-    # since an unreadable GGUF repo is now refused before any load (#11551).
+    # Fictional repo, blocked Hub: answer "no GGUF" so resolution still reaches the double (#11551).
     import utils.models.model_config as model_config
 
     monkeypatch.setattr(
