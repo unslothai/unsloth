@@ -411,6 +411,12 @@ class ChatPresetLoadConfig(BaseModel):
     maxSeqLength: Optional[float] = None
     kvCacheDtype: Optional[str] = None
     mlxKvBits: Optional[Literal[8, 6, 5, 4, 3, 2]] = None
+    # Emitted on every preset (null included) by normalizePresetLoadConfig; same forbid trap as nBatch.
+    mlxSpeculativeMode: Optional[
+        Literal["off", "auto", "mtp", "dflash", "dspark", "dflash2", "eagle3"]
+    ] = None
+    mlxDraftModel: Optional[str] = None
+    mlxDraftBlockSize: NotABoolean = Field(default = None, ge = 2, le = 16)
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
     nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)
