@@ -18,7 +18,13 @@ class _Captured(Exception):
     pass
 
 
-def _decode_kwargs(monkeypatch, bsz, flash):
+def _decode_kwargs(
+    monkeypatch,
+    bsz,
+    flash,
+    second_device = "cpu",
+    mask_rows = None,
+):
     seen = []
 
     def attention(self, hidden_states, past_key_value, position_ids, attention_mask, **kw):
@@ -33,10 +39,13 @@ def _decode_kwargs(monkeypatch, bsz, flash):
     monkeypatch.setattr(g2, "fast_rms_layernorm_inference_gemma", lambda ln, x, w: x)
     monkeypatch.setattr(g2, "fast_geglu_inference", lambda mlp, x: x)
     # No per-device fp32 buffers on CPU; the stubbed norms never read them.
-    monkeypatch.setattr(g2, "per_layer_device", lambda layer: (torch.device("cpu"), slice(None)))
+    monkeypatch.setattr(
+        g2, "per_layer_device", lambda layer: (torch.device(layer.device), slice(None))
+    )
 
     hidden, cached = 8, 5
     layer = types.SimpleNamespace(
+        device = "cpu",
         input_layernorm = types.SimpleNamespace(weight = torch.ones(hidden)),
         post_attention_layernorm = None,
         pre_feedforward_layernorm = None,
@@ -48,13 +57,14 @@ def _decode_kwargs(monkeypatch, bsz, flash):
         hidden_size = hidden, sliding_window = 4096, torch_dtype = torch.float32
     )
     model = types.SimpleNamespace(
-        layers = [layer, layer], embed_tokens = lambda ids: torch.zeros(*ids.shape, hidden)
+        layers = [layer, types.SimpleNamespace(**{**vars(layer), "device": second_device})],
+        embed_tokens = lambda ids: torch.zeros(*ids.shape, hidden),
     )
     self = types.SimpleNamespace(model = model, config = config, max_seq_length = 64)
     past = [(torch.zeros(bsz, 1, cached, 4), torch.zeros(bsz, 1, cached, 4))] * 2
     attention_mask = torch.tensor(
         [[1] * (cached + 1), [0, 0] + [1] * (cached - 1), [0] * 4 + [1] * 2]
-    )[:bsz]
+    )[mask_rows if mask_rows is not None else slice(0, bsz)]
     with pytest.raises(_Captured):
         g2.Gemma2Model_fast_forward_inference(
             self,
@@ -75,11 +85,15 @@ def test_flash_decode_passes_left_padding_not_masks(monkeypatch):
         assert kw["leftpad"].tolist() == [0, 2, 4]
 
 
-def test_flash_decode_single_row_has_no_leftpad(monkeypatch):
-    seen = _decode_kwargs(monkeypatch, bsz = 1, flash = True)
-    assert [(kw["flash_decode"], kw["leftpad"], kw["attention_mask"]) for kw in seen] == [
-        (True, None, None)
-    ] * 2
+def test_flash_decode_single_padded_row_keeps_leftpad(monkeypatch):
+    seen = _decode_kwargs(monkeypatch, bsz = 1, flash = True, mask_rows = [1])
+    assert [(kw["attention_mask"], kw["leftpad"].tolist()) for kw in seen] == [(None, [2])] * 2
+
+
+def test_flash_decode_leftpad_follows_layer_device(monkeypatch):
+    # Pipeline-parallel device maps: flash-attn rejects a cache_leftpad on another GPU.
+    seen = _decode_kwargs(monkeypatch, bsz = 3, flash = True, second_device = "meta")
+    assert [kw["leftpad"].device.type for kw in seen] == ["cpu", "meta"]
 
 
 def test_manual_path_keeps_masks(monkeypatch):

@@ -539,7 +539,7 @@ def Gemma2Model_fast_forward_inference(
         # The kernel applies the window itself and skips each row's left padding.
         SWA = None
         GA = None
-        if bsz != 1 and attention_mask is not None:
+        if attention_mask is not None:
             leftpad = (attention_mask.cumsum(-1) == 0).sum(-1, dtype = torch.int32)
     elif bsz != 1:
         # Decode uses manual attention even when Flash Attention is available.
@@ -569,6 +569,8 @@ def Gemma2Model_fast_forward_inference(
             SWA = move_to_device(layer_device, SWA)
         if GA is not None:
             GA = move_to_device(layer_device, GA)
+        if leftpad is not None:
+            leftpad = move_to_device(layer_device, leftpad)
 
         use_sliding_window = idx % 2 == 0
 
