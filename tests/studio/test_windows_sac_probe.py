@@ -2429,7 +2429,7 @@ function Test-Quantize { QUANTIZE }
 """.replace("QUANTIZE", quantize)
     script = tmp_path / "exercise.ps1"
     script.write_text(prelude + exercise, encoding = "utf-8")
-    ran = subprocess.run(
+    ran = run_pwsh(
         ["pwsh", "-NoProfile", "-File", str(script)], env = env, capture_output = True, text = True
     )
     assert (ran.returncode != 0) == (quantize_mode == "start-failure"), ran.stdout + ran.stderr
@@ -2440,7 +2440,7 @@ function Test-Quantize { QUANTIZE }
     script.write_text(
         "function Start-Sleep { }\nfunction Get-WinEvent { }\n" + verdict, encoding = "utf-8"
     )
-    ran = subprocess.run(
+    ran = run_pwsh(
         ["pwsh", "-NoProfile", "-File", str(script)], env = env, capture_output = True, text = True
     )
     refuse = quantize_mode in ("start-failure", "loader-failure")
