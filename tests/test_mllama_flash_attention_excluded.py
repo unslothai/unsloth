@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Mllama declares flash support, but MllamaVisionAttention and MllamaTextCrossAttention have no
-# is_causal, which Transformers' flash path reads, so a flash-attn install broke Llama 3.2 Vision.
 import pytest
 import torch
 import unsloth  # noqa: F401
