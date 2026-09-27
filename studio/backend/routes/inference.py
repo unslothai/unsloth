@@ -3778,7 +3778,11 @@ import base64
 import zlib
 
 from utils.current_date_prompt_settings import (
+    CURRENT_DATE_PROMPT_LINE_RE,
+    CURRENT_DATE_PROMPT_PREFIX,
+    CURRENT_DATE_UPDATE_PREFIX,
     contains_current_date_prompt_line,
+    conversation_start_date,
     current_date_prompt_line,
     replace_current_date_prompt_lines,
 )
@@ -6031,21 +6035,128 @@ def _wants_current_date(request: Any) -> bool:
     return not _request_has_api_key(request)
 
 
+def _current_date_parts(request: Any, thread_id: Any) -> tuple[str, str]:
+    """(system line, user-turn note); a thread keeps its start date so its cached prefix survives."""
+    date_line = current_date_prompt_line(request = request)
+    if not date_line or not thread_id or request is None or not _wants_current_date(request):
+        return date_line, ""
+    today = CURRENT_DATE_PROMPT_LINE_RE.fullmatch(date_line)
+    started = conversation_start_date(thread_id, request) if today else None
+    if started is None:
+        return date_line, ""
+    today_iso = date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1]
+    # a browser clock running ahead can stamp a future creation day; never state a later "start".
+    if started.isoformat() >= today_iso:
+        return date_line, ""
+    return (
+        f"{CURRENT_DATE_PROMPT_PREFIX}{started.isoformat()}.",
+        f"{CURRENT_DATE_UPDATE_PREFIX}{today_iso}]",
+    )
+
+
+def _date_gate_blocks(request: Any, include_api_key: bool) -> bool:
+    if request is not None and not _wants_current_date(request):
+        return not include_api_key or _request_is_internal_workflow(request)
+    return False
+
+
+def _is_folded_tool_json(text: Any) -> bool:
+    if not isinstance(text, str) or not text.lstrip().startswith("{"):
+        return False
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(parsed, dict) and "tool_response" in parsed
+
+
+def _is_folded_tool_result(content: Any) -> bool:
+    # only a turn that is ALL folded result: a follow-up coalesced onto one is the user's text.
+    if isinstance(content, list):
+        texts = [
+            p.get("text")
+            for p in content
+            if isinstance(p, dict) and isinstance(p.get("text"), str) and p["text"].strip()
+        ]
+        return bool(texts) and all(_is_folded_tool_json(t) for t in texts)
+    return _is_folded_tool_json(content)
+
+
+def _append_current_date_note(
+    messages: list[dict],
+    request: Any = None,
+    *,
+    include_api_key: bool = False,
+    thread_id: Any = None,
+    note: str | None = None,
+) -> list[dict]:
+    """Lead the newest user turn with the date-change note; earlier turns keep their own bytes."""
+    if note is None:
+        if _date_gate_blocks(request, include_api_key):
+            return messages
+        note = _current_date_parts(request, thread_id)[1]
+    if not note:
+        return messages
+    for index in range(len(messages) - 1, -1, -1):
+        msg = messages[index]
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if _is_folded_tool_result(content):
+            continue
+        if isinstance(content, str):
+            if content.startswith(note):
+                return messages
+            new_content: Any = f"{note}\n\n{content}"
+            has_text = bool(content.strip())
+        elif isinstance(content, list):
+            if content and all(
+                isinstance(p, dict) and p.get("type") == "tool_result" for p in content
+            ):
+                continue
+            first = next(
+                (
+                    i
+                    for i, p in enumerate(content)
+                    if isinstance(p, dict) and isinstance(p.get("text"), str) and p["text"].strip()
+                ),
+                None,
+            )
+            has_text = first is not None
+            if has_text and content[first]["text"].startswith(note):
+                return messages
+            new_content = list(content)
+            if has_text:
+                new_content[first] = {
+                    **content[first],
+                    "text": f"{note}\n\n{content[first]['text']}",
+                }
+        else:
+            continue
+        # a media-only turn falls back to "transcribe" / "describe" defaults the note would replace.
+        if not has_text:
+            return messages
+        copied = list(messages)
+        copied[index] = {**msg, "content": new_content}
+        return copied
+    return messages
+
+
 def _apply_current_date_prompt(
     system_prompt: str,
     request: Any = None,
     *,
     include_api_key: bool = False,
+    thread_id: Any = None,
 ) -> str:
-    """Prefix the user's system prompt with today's date when the setting is on.
+    """Prefix the user's system prompt with the date when the setting is on.
 
     Kept ahead of the user's own text so a system prompt that ends in an instruction still reads
     as the last word to the model.
     """
-    if request is not None and not _wants_current_date(request):
-        if not include_api_key or _request_is_internal_workflow(request):
-            return system_prompt
-    date_line = current_date_prompt_line(request = request)
+    if _date_gate_blocks(request, include_api_key):
+        return system_prompt
+    date_line = _current_date_parts(request, thread_id)[0]
     if not date_line:
         return system_prompt
     refreshed_prompt, stated, _ = _refresh_stated_date(system_prompt, date_line)
@@ -6066,6 +6177,7 @@ def _prepend_current_date_to_messages(
     *,
     include_api_key: bool = False,
     provider_type: str | None = None,
+    thread_id: Any = None,
 ) -> list[dict]:
     """Apply the date to an already-built message list for a provider Studio proxies to.
 
@@ -6074,12 +6186,12 @@ def _prepend_current_date_to_messages(
     such turn one is synthesized, except for ``_MODELFILE_SYSTEM_PROVIDERS``, where it is
     dropped: the caller's silence is what lets the server's own prompt apply.
     """
-    if request is not None and not _wants_current_date(request):
-        if not include_api_key or _request_is_internal_workflow(request):
-            return messages
-    date_line = current_date_prompt_line(request = request)
+    if _date_gate_blocks(request, include_api_key):
+        return messages
+    date_line, note = _current_date_parts(request, thread_id)
     if not date_line:
         return messages
+    messages = _append_current_date_note(messages, note = note)
     copied = [dict(msg) for msg in messages]
     stated = False
     refreshed = False
@@ -23881,6 +23993,7 @@ async def _proxy_to_external_provider(
             chat_messages,
             request,
             include_api_key = bool(studio_tool_payloads),
+            thread_id = getattr(payload, "thread_id", None),
         )
         cancel_event = threading.Event()
         cancel_keys = tuple(
@@ -24248,6 +24361,7 @@ async def _proxy_to_external_provider(
         request,
         include_api_key = run_studio_tool_loop,
         provider_type = None if _external_nudge else provider_type,
+        thread_id = getattr(payload, "thread_id", None),
     )
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
@@ -25924,7 +26038,12 @@ async def produce_openai_chat_completions(
                 system_prompt, chat_messages, _ = await _extract_content_parts_async(
                     payload.messages
                 )
-                system_prompt = _apply_current_date_prompt(system_prompt, request)
+                system_prompt = _apply_current_date_prompt(
+                    system_prompt, request, thread_id = getattr(payload, "thread_id", None)
+                )
+                chat_messages = _append_current_date_note(
+                    chat_messages, request, thread_id = getattr(payload, "thread_id", None)
+                )
             except _DecodedAudioTooLongError as e:
                 # A limit the caller can act on, not a server fault.
                 api_monitor.fail(monitor_id, str(e))
@@ -26363,7 +26482,12 @@ async def produce_openai_chat_completions(
             payload.messages, keep_tool_images = True
         )
     # applied once so both backends inherit it, with or without tools, and never state it twice.
-    system_prompt = _apply_current_date_prompt(system_prompt, request)
+    system_prompt = _apply_current_date_prompt(
+        system_prompt, request, thread_id = getattr(payload, "thread_id", None)
+    )
+    chat_messages = _append_current_date_note(
+        chat_messages, request, thread_id = getattr(payload, "thread_id", None)
+    )
 
     if not chat_messages:
         raise _reject(400, "At least one non-system message is required.")
@@ -26430,6 +26554,9 @@ async def produce_openai_chat_completions(
             _gguf_replayed_image_parts,
         )
         gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
+        gguf_messages = _append_current_date_note(
+            gguf_messages, request, thread_id = getattr(payload, "thread_id", None)
+        )
         image_b64 = None
         if audio_b64:
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
@@ -26576,6 +26703,7 @@ async def produce_openai_chat_completions(
                 system_prompt,
                 request,
                 include_api_key = True,
+                thread_id = getattr(payload, "thread_id", None),
             )
             gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
             # ── Tool-use system prompt nudge ──────────────────────
@@ -28213,6 +28341,9 @@ async def produce_openai_chat_completions(
             payload.messages, _legacy_distinct
         ):
             chat_messages, served_images = _msgs, _payloads
+            chat_messages = _append_current_date_note(
+                chat_messages, request, thread_id = getattr(payload, "thread_id", None)
+            )
 
     # Decode image (from content parts OR legacy field)
     image_b64 = extracted_image_b64 or payload.image_base64
@@ -28581,6 +28712,7 @@ async def produce_openai_chat_completions(
             system_prompt,
             request,
             include_api_key = True,
+            thread_id = getattr(payload, "thread_id", None),
         )
         if _sf_nudge:
             if _sf_system_prompt:
@@ -29207,8 +29339,12 @@ async def produce_openai_chat_completions(
             gen_kwargs["images"] = await _decode_request_images(
                 backend, _sf_rebuilt_images, dict(zip(served_images, images)), reject = _reject
             )
-            gen_kwargs["messages"] = _set_or_prepend_system_message(
-                _structured_tool_history_for_local_template(_sf_rebuilt), system_prompt
+            gen_kwargs["messages"] = _append_current_date_note(
+                _set_or_prepend_system_message(
+                    _structured_tool_history_for_local_template(_sf_rebuilt), system_prompt
+                ),
+                request,
+                thread_id = getattr(payload, "thread_id", None),
             )
         else:
             #
@@ -29232,7 +29368,11 @@ async def produce_openai_chat_completions(
                 trim_mcp_image_turns(
                     _sf_rebuilt, _sf_rebuilt_images, limit = _MCP_MAX_TOTAL_MODEL_IMAGES - 1
                 )
-            gen_kwargs["messages"] = _set_or_prepend_system_message(_sf_rebuilt, system_prompt)
+            gen_kwargs["messages"] = _append_current_date_note(
+                _set_or_prepend_system_message(_sf_rebuilt, system_prompt),
+                request,
+                thread_id = getattr(payload, "thread_id", None),
+            )
             gen_kwargs["images"] = _sf_rebuilt_images or None
         # Mark the turn that owns the image so the newest-user-turn scan does not move an
         # older picture onto a later question. Gated on _sf_renders_image, not on an image:
@@ -34872,7 +35012,12 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     # The completion applies this once for both non-GGUF backends before it branches.
     # Only with a request: the helper's requestless mode injects the date unconditionally.
     if request is not None:
-        system_prompt = _apply_current_date_prompt(system_prompt, request)
+        system_prompt = _apply_current_date_prompt(
+            system_prompt, request, thread_id = getattr(payload, "thread_id", None)
+        )
+        messages = _append_current_date_note(
+            messages, request, thread_id = getattr(payload, "thread_id", None)
+        )
 
     from state.tool_policy import get_tool_policy as _get_tool_policy_mlx
 
@@ -34980,7 +35125,11 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             ),
             vision = False,
         )
-        messages = _set_or_prepend_system_message(messages, system_prompt)
+        messages = _append_current_date_note(
+            _set_or_prepend_system_message(messages, system_prompt),
+            request,
+            thread_id = getattr(payload, "thread_id", None),
+        )
         system_prompt = ""
     elif _tools_to_use:
         # A PENDING turn is the shape this loop answers from exactly these messages, splicing
@@ -35037,6 +35186,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
                 system_prompt,
                 request,
                 include_api_key = True,
+                thread_id = getattr(payload, "thread_id", None),
             )
         if _nudge:
             system_prompt = (system_prompt.rstrip() + "\n\n" + _nudge) if system_prompt else _nudge
@@ -35241,8 +35391,14 @@ async def chat_count_tokens(
     _system_prompt, _, _ = await _extract_content_parts_async(payload.messages)
     # the verbatim passthrough carries no date line, so counting one here would overcount it.
     if not _takes_passthrough:
-        _system_prompt = _apply_current_date_prompt(_system_prompt, request)
+        _system_prompt = _apply_current_date_prompt(
+            _system_prompt, request, thread_id = getattr(payload, "thread_id", None)
+        )
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
+    if not _takes_passthrough:
+        openai_messages = _append_current_date_note(
+            openai_messages, request, thread_id = getattr(payload, "thread_id", None)
+        )
 
     # A PENDING turn (unanswered user message or tool result) is the one shape the tool loop
     # answers from exactly these messages, splicing in whatever build_rag_autoinject retrieves --
@@ -35306,6 +35462,7 @@ async def chat_count_tokens(
                 openai_messages,
                 request,
                 include_api_key = True,
+                thread_id = getattr(payload, "thread_id", None),
             )
             _count_nudge = await _apply_rag_nudge(
                 _build_tool_action_nudge(
@@ -35552,6 +35709,7 @@ async def anthropic_count_tokens(
             openai_messages,
             request,
             include_api_key = _count_server_tools,
+            thread_id = getattr(payload, "thread_id", None),
         )
     if _count_server_tools:
         openai_tools = _count_selected_server_tools
@@ -35935,6 +36093,7 @@ async def anthropic_messages(
             openai_messages,
             request,
             include_api_key = server_tools,
+            thread_id = getattr(payload, "thread_id", None),
         )
 
     # Anthropic tool_choice.disable_parallel_tool_use caps the response to a
