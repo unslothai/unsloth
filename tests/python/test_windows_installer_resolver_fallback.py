@@ -1906,6 +1906,7 @@ Write-Output "ANSWER:$(Read-NvidiaLibraryRawViaPython -TimeoutMs 1000)"
 
 
 @requires_pwsh
+@pytest.mark.skipif(os.name == "nt", reason = "the fake System32 tools are POSIX shell scripts")
 @pytest.mark.parametrize(
     "source, hung",
     [
@@ -1944,7 +1945,7 @@ def test_a_hung_integrity_tool_cannot_stall_the_nvidia_probe(tmp_path: Path, sou
         TMPDIR = str(tmp_path),
     )
     started = time.monotonic()
-    result = subprocess.run(
+    result = run_pwsh(
         ["pwsh", "-NoProfile", "-File", str(script), str(REPO_ROOT / source), str(python)],
         env = env,
         capture_output = True,

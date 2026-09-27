@@ -113,10 +113,16 @@ _FINAL_PATH_CHAIN = (
 )
 
 
+# Hosted Windows runners are elevated, and an elevated run declines a user-writable interpreter and
+# takes every lock. These cases are about lock identity, so they model a standard user; the elevated
+# gate itself is covered in test_windows_installer_resolver_fallback.py.
+_STANDARD_USER = "function Test-StudioChildScriptDirectoryElevated { return $false }\n"
+
+
 def _final_path_helpers(source: str) -> str:
     return "\n".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source) for name in _FINAL_PATH_CHAIN
-    )
+    ) + "\n" + _STANDARD_USER
 
 
 def _mutex_helpers(source: str) -> str:
@@ -168,7 +174,7 @@ def _mutex_helpers(source: str) -> str:
             "Enter-StudioInstallMutex",
             "Exit-StudioInstallMutex",
         )
-    )
+    ) + "\n" + _STANDARD_USER
 
 
 def _process_helpers(source: str) -> str:
@@ -210,7 +216,7 @@ def _process_helpers(source: str) -> str:
             "Get-StudioProcessImagePath",
             "Get-RunningStudioVenvProcesses",
         )
-    )
+    ) + "\n" + _STANDARD_USER
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
