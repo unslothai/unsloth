@@ -211,6 +211,8 @@ def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
     return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
 
 
+# Import-time stream snapshots and the old scratch pair. The kernels now read the live stream, but
+# these stay defined for external readers (e.g. tests/kaggle/t4_smoke/run_t4_smoke.py).
 global CUDA_STREAMS
 global XPU_STREAMS
 global WEIGHT_BUFFERS
@@ -480,19 +482,25 @@ def _quant_type(quant_state):
     return getattr(quant_state, "quant_type", "nf4")
 
 
-# Eager scratch for use_global_buffer, one per (kind, device, stream): work queued on one stream
-# must never find its buffer overwritten by another stream. Grow-only, allocated outside
-# inference mode so a first use under generate() stays writable in training. Never used while
-# compiling or capturing a CUDA graph, where every call gets its own output.
+# Eager scratch for use_global_buffer, one per (kind, device) like the old global pair, used only
+# on the device's default stream: other streams, compiling and CUDA-graph capture get their own
+# output, so nothing queued elsewhere can find its buffer overwritten. Allocated outside inference
+# mode so a first use under generate() stays writable in training.
 _SCRATCH = {}
+_DEFAULT_STREAMS = {}
 
 
-def _can_use_scratch():
-    return not torch.compiler.is_compiling() and not torch.cuda.is_current_stream_capturing()
+def _can_use_scratch(device):
+    if torch.compiler.is_compiling() or torch.cuda.is_current_stream_capturing():
+        return False
+    default = _DEFAULT_STREAMS.get(device.index)
+    if default is None:
+        default = _DEFAULT_STREAMS[device.index] = torch.cuda.default_stream(device).cuda_stream
+    return _gpu_getCurrentRawStream(device.index) == default
 
 
 def _scratch(kind, device, numel, dtype):
-    key = (kind, device.index, _gpu_getCurrentRawStream(device.index))
+    key = (kind, device.index)
     buffer = _SCRATCH.get(key)
     if buffer is None or buffer.dtype != dtype or buffer.numel() < numel:
         with torch.inference_mode(False):
@@ -512,10 +520,22 @@ if (
     try:
         from .nf4 import dequantize_nf4
         from .nf4_gemv import gemv_nf4
-
         _USE_NF4_KERNELS = True
     except Exception:
         pass
+
+
+def _nf4_kernels_failed(error):
+    """A Triton compile failure on an untested GPU switches to the bitsandbytes kernels for good.
+    False (re-raise) while tracing and for out-of-memory, which the fallback would not fix."""
+    global _USE_NF4_KERNELS
+    if torch.compiler.is_compiling() or isinstance(error, torch.cuda.OutOfMemoryError):
+        return False
+    _USE_NF4_KERNELS = False
+    print(
+        f"Unsloth: fused NF4 kernels failed ({type(error).__name__}: {error}), using bitsandbytes."
+    )
+    return True
 
 
 if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
@@ -550,9 +570,10 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             absmax, shape, dtype, blocksize, compressed_stats, _, _ = quant_state
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
+        global XPU_STREAMS
         device = W.device
         device_index = device.index
-        XPU_STREAM = _get_tensor_stream(W)
+        XPU_STREAM = XPU_STREAMS[device_index]
 
         n_elements_absmax = absmax.numel()
         if use_global_buffer:
@@ -626,7 +647,12 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
 elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
 
-    def _fast_dequantize_ctypes(W, quant_state, out = None, use_global_buffer = False):
+    def _fast_dequantize_ctypes(
+        W,
+        quant_state,
+        out = None,
+        use_global_buffer = False,
+    ):
         # bitsandbytes ctypes kernels, used when the NF4 kernels are unavailable or disabled.
         absmax, shape, dtype, blocksize, _, code2, absmax2, offset, blocksize2 = (
             _unpack_quant_state(quant_state)
@@ -642,11 +668,11 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         if out is not None:
             assert out.shape == shape
             assert out.dtype == dtype
-        elif use_global_buffer and _can_use_scratch():
+        elif use_global_buffer and _can_use_scratch(device):
             out = _scratch("weight", device, shape[0] * shape[1], dtype).view(shape)
         else:
             out = torch_empty(shape, dtype = dtype, device = device, requires_grad = False)
-        if use_global_buffer and _can_use_scratch():
+        if use_global_buffer and _can_use_scratch(device):
             out_absmax = _scratch("absmax", device, n_elements_absmax, torch_float32)
         else:
             out_absmax = torch_empty(
@@ -707,11 +733,26 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         if out is not None:
             assert out.shape == shape
             assert out.dtype == dtype
-        elif use_global_buffer and _can_use_scratch():
+        elif use_global_buffer and _can_use_scratch(W.device):
             out = _scratch("weight", W.device, shape[0] * shape[1], dtype).view(shape)
-        out = dequantize_nf4(
-            W, absmax, code2, absmax2, offset, blocksize, blocksize2, shape, dtype, out = out, code = code
-        )
+        try:
+            out = dequantize_nf4(
+                W,
+                absmax,
+                code2,
+                absmax2,
+                offset,
+                code,
+                blocksize,
+                blocksize2,
+                shape,
+                dtype,
+                out = out,
+            )
+        except Exception as error:
+            if not _nf4_kernels_failed(error):
+                raise
+            return _fast_dequantize_ctypes(W, quant_state, out, use_global_buffer)
         # Careful returning transposed data.
         is_transposed = True if W.shape[0] == 1 else False
         return out.t() if is_transposed else out
@@ -821,9 +862,10 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = quant_state
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
+        global XPU_STREAMS
         device = W.device
         device_index = device.index
-        XPU_STREAM = _get_tensor_stream(W)
+        XPU_STREAM = XPU_STREAMS[device_index]
 
         bout = shape[0]
 
@@ -896,7 +938,12 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
 elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
 
-    def _fast_gemv_ctypes(X, W, quant_state, out = None):
+    def _fast_gemv_ctypes(
+        X,
+        W,
+        quant_state,
+        out = None,
+    ):
         # Fast X @ W where seq_len == 1, from bitsandbytes functional.py#L1469 and TimDettmers/bitsandbytes#763.
         _, q_len, hd = X.shape
         absmax, shape, dtype, blocksize, stats, code2, absmax2, offset, blocksize2 = (
@@ -979,14 +1026,33 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
     ):
         if quant_state is None:
             return torch_matmul(X, W, out = out)
-        if not _USE_NF4_KERNELS:
-            return _fast_gemv_ctypes(X, W, quant_state, out)
         absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2 = (
             _unpack_quant_state(quant_state)
         )
-        return gemv_nf4(
-            X, W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype, out = out
-        )
+        if shape[1] % blocksize != 0:
+            # Both gemv kernels assume each weight row starts a new quantization block.
+            return torch_matmul(X, fast_dequantize(W, quant_state).t(), out = out)
+        if not _USE_NF4_KERNELS:
+            return _fast_gemv_ctypes(X, W, quant_state, out)
+        try:
+            return gemv_nf4(
+                X,
+                W,
+                absmax,
+                code2,
+                absmax2,
+                offset,
+                code,
+                blocksize,
+                blocksize2,
+                shape,
+                dtype,
+                out = out,
+            )
+        except Exception as error:
+            if not _nf4_kernels_failed(error):
+                raise
+            return _fast_gemv_ctypes(X, W, quant_state, out)
 
 else:
 

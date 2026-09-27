@@ -63,7 +63,12 @@ def nf4_kernels(monkeypatch):
     torch._dynamo.reset()
 
 
-def _quantize(shape, dtype, nested = True, seed = 0):
+def _quantize(
+    shape,
+    dtype,
+    nested = True,
+    seed = 0,
+):
     g = torch.Generator(device = DEVICE).manual_seed(seed)
     W = torch.randn(shape, dtype = dtype, device = DEVICE, generator = g)
     return F.quantize_4bit(W, quant_type = "nf4", compress_statistics = nested)
@@ -122,29 +127,109 @@ def test_gemv_matches_reference(path, dtype):
     assert rel < 1e-2, rel
 
 
-def test_two_side_streams_get_their_own_scratch(path):
-    """Two streams dequantizing different weights into the global buffer at the same time: each
-    must read its own weight back, and each stream must own a distinct scratch."""
-    (q1, s1), (q2, s2) = _quantize((4096, 4096), torch.bfloat16, seed = 1), _quantize(
-        (4096, 4096), torch.bfloat16, seed = 2
+@pytest.mark.parametrize("storage", [torch.bfloat16, torch.float32], ids = str)
+def test_float_packed_storage(path, storage):
+    """FSDP-QLoRA packs the 4bit weight into float storage (quant_storage); both the dequant and
+    the GEMV must read it as bytes, as the ctypes path always did."""
+    W = torch.randn(1024, 512, dtype = torch.bfloat16, device = DEVICE)
+    q, s = F.quantize_4bit(W, quant_type = "nf4", compress_statistics = True, quant_storage = storage)
+    ref = F.dequantize_4bit(q, s)
+    assert torch.equal(_bits(U.fast_dequantize(q, s)), _bits(ref))
+    X = torch.randn(1, 1, 512, dtype = torch.bfloat16, device = DEVICE)
+    got = U.fast_gemv(X, q, s).float()
+    want = (X @ ref.t()).float()
+    assert ((got - want).abs().max() / want.abs().max()).item() < 1e-2
+
+
+def test_side_streams_never_share_the_scratch(path):
+    """Two streams dequantizing different weights with use_global_buffer at the same time: each
+    must read its own weight back. Only the default stream owns a scratch, so a program making a
+    new stream per step cannot pin a weight-sized buffer per stream."""
+    (q1, s1), (q2, s2) = (
+        _quantize((4096, 4096), torch.bfloat16, seed = 1),
+        _quantize((4096, 4096), torch.bfloat16, seed = 2),
     )
     X = torch.randn(64, 4096, dtype = torch.bfloat16, device = DEVICE)
     refs = [X @ F.dequantize_4bit(q, s).t() for q, s in ((q1, s1), (q2, s2))]
-    streams = [torch.cuda.Stream(), torch.cuda.Stream()]
     outs = [None, None]
     torch.cuda.synchronize()
     for _ in range(10):
-        for i, (st, (q, s)) in enumerate(zip(streams, ((q1, s1), (q2, s2)))):
-            with torch.cuda.stream(st):
+        for i, (q, s) in enumerate(((q1, s1), (q2, s2))):
+            with torch.cuda.stream(torch.cuda.Stream()):
                 W = U.fast_dequantize(q, s, use_global_buffer = True)
                 outs[i] = X @ W.t()
     torch.cuda.synchronize()
     for got, ref in zip(outs, refs):
         assert torch.equal(got, ref)
-    weight_keys = {k for k in U._SCRATCH if k[0] == "weight"}
-    assert {k[2] for k in weight_keys} >= {st.cuda_stream for st in streams}
-    ptrs = {U._SCRATCH[k].data_ptr() for k in weight_keys}
-    assert len(ptrs) == len(weight_keys)
+    assert not U._SCRATCH
+    U.fast_dequantize(q1, s1, use_global_buffer = True)
+    assert {k[0] for k in U._SCRATCH} <= {"weight", "absmax"}
+    assert len([k for k in U._SCRATCH if k[0] == "weight"]) == 1
+
+
+@pytest.mark.parametrize("shape", [(512, 96), (256, 4160), (130, 100)])
+def test_gemv_rows_not_starting_a_block_fall_back_to_dequant(path, shape):
+    """Both GEMV kernels assume each row starts a quantization block; other shapes must still be
+    right (bitsandbytes' own GEMV is wrong for them too)."""
+    n, k = shape
+    q, s = _quantize(shape, torch.bfloat16)
+    X = torch.randn(1, 1, k, dtype = torch.bfloat16, device = DEVICE)
+    ref = (X @ F.dequantize_4bit(q, s).t()).float()
+    got = U.fast_gemv(X, q, s).float()
+    assert got.shape == (1, 1, n)
+    assert ((got - ref).abs().max() / ref.abs().max()).item() < 1e-2
+
+
+def test_gemv_side_stream_and_cuda_graph(path):
+    q, s = _quantize((4096, 4096), torch.bfloat16)
+    X = torch.randn(1, 1, 4096, dtype = torch.bfloat16, device = DEVICE)
+    expected = U.fast_gemv(X, q, s)
+    side = torch.cuda.Stream()
+    side.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side):
+        x = X.clone() * 1  # produced on the side stream, consumed there, no host sync
+        results = [U.fast_gemv(x, q, s) for _ in range(10)]
+        for _ in range(2):
+            U.fast_gemv(x, q, s)
+    torch.cuda.current_stream().wait_stream(side)
+    torch.cuda.synchronize()
+    assert all(torch.equal(r, expected) for r in results)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        static_out = U.fast_gemv(x, q, s)
+    x.copy_(X * 2)
+    graph.replay()
+    torch.cuda.synchronize()
+    assert torch.equal(static_out, U.fast_gemv(X * 2, q, s))
+
+
+def test_kernel_failure_falls_back_to_bitsandbytes(nf4_kernels, monkeypatch):
+    """A Triton compile failure on an untested GPU switches to the bitsandbytes kernels."""
+    q, s = _quantize((512, 256), torch.bfloat16)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("PTX compile failed")
+
+    monkeypatch.setattr(U, "dequantize_nf4", broken)
+    monkeypatch.setattr(U, "gemv_nf4", broken)
+    assert torch.equal(_bits(U.fast_dequantize(q, s)), _bits(F.dequantize_4bit(q, s)))
+    assert U._USE_NF4_KERNELS is False
+    monkeypatch.setattr(U, "_USE_NF4_KERNELS", True)
+    X = torch.randn(1, 1, 256, dtype = torch.bfloat16, device = DEVICE)
+    assert U.fast_gemv(X, q, s).shape == (1, 1, 512)
+    assert U._USE_NF4_KERNELS is False
+
+
+def test_out_of_memory_is_not_mistaken_for_a_kernel_failure(nf4_kernels, monkeypatch):
+    q, s = _quantize((512, 256), torch.bfloat16)
+
+    def oom(*args, **kwargs):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(U, "dequantize_nf4", oom)
+    with pytest.raises(torch.cuda.OutOfMemoryError):
+        U.fast_dequantize(q, s)
+    assert U._USE_NF4_KERNELS is True
 
 
 def test_scratch_first_allocated_under_inference_mode_still_trains(path):
@@ -209,7 +294,11 @@ def test_matmul_lora_cuda_graph_capture_and_replay(path):
 # torch.compile: every entry point traces as one graph and matches eager bit for bit.
 
 
-def _lora_block(dtype = torch.bfloat16, D = 256, H = 512):
+def _lora_block(
+    dtype = torch.bfloat16,
+    D = 256,
+    H = 512,
+):
     import torch.nn as nn
     from peft import LoraConfig, get_peft_model
 
@@ -239,9 +328,7 @@ def _lora_block(dtype = torch.bfloat16, D = 256, H = 512):
                 compress_statistics = True,
             )
     targets = ["gate_proj", "up_proj", "down_proj", "q_proj", "k_proj", "v_proj", "o_proj"]
-    model = get_peft_model(
-        block.to(DEVICE), LoraConfig(r = 8, lora_alpha = 16, target_modules = targets)
-    )
+    model = get_peft_model(block.to(DEVICE), LoraConfig(r = 8, lora_alpha = 16, target_modules = targets))
     for name, p in model.named_parameters():
         if "lora_B" in name:
             torch.nn.init.normal_(p, std = 0.02)

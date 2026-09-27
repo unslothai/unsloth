@@ -9,16 +9,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Fused NF4 dequantization in one Triton launch: nested absmax decode, + offset, NF4 lookup
-# and scale. bitsandbytes does the same work in three launches (cdequantize_blockwise_fp32,
-# a torch add, cdequantize_blockwise_*_nf4). Triton launches on torch's current stream, so the
-# result is ordered on whatever stream the caller is on, and the op is registered with
-# torch.library.triton_op so torch.compile traces it without a graph break.
-#
-# Bit-exact with bitsandbytes csrc/kernels.cu kDequantizeBlockwise (NF4 branch):
+# NF4 dequantization in one Triton launch on torch's current stream, bit-exact with bitsandbytes
+# kDequantizeBlockwise, which needs three launches for a double quantized weight:
 #   absmax = fp32(code2[absmax_u8[k]] * absmax2[k // blocksize2]) + offset   (two roundings)
-#   out[j] = T(nf4_lut[nibble(j)] * absmax[j // blocksize])                 (high nibble first)
+#   out[j] = T(code[nibble(j)] * absmax[j // blocksize])                     (high nibble first)
 
+import contextlib
+import math
 from typing import List, Optional
 
 import torch
@@ -27,36 +24,11 @@ import triton.language as tl
 
 __all__ = [
     "dequantize_nf4",
-    "NF4_LUT",
 ]
 
-# The table in bitsandbytes csrc/kernels.cu (nf4_dequantization_lut). Written as the same
-# decimal literals so every entry rounds to the identical fp32 value.
-NF4_LUT = (
-    -1.0,
-    -0.6961928009986877,
-    -0.5250730514526367,
-    -0.39491748809814453,
-    -0.28444138169288635,
-    -0.18477343022823334,
-    -0.09105003625154495,
-    0.0,
-    0.07958029955625534,
-    0.16093020141124725,
-    0.24611230194568634,
-    0.33791524171829224,
-    0.44070982933044434,
-    0.5626170039176941,
-    0.7229568362236023,
-    1.0,
-)
-
-# On NVIDIA the nested product uses PTX mul.rn.f32, which ptxas never contracts into an FMA,
-# so the separate + offset rounds exactly as bitsandbytes does. Inline asm (not a libdevice
-# alias) because Inductor re-emits user kernels without their module globals. HIP has no PTX,
-# so there the eager launch disables fp fusion instead.
-_IS_HIP = torch.version.hip is not None
-_HAS_MUL_RN = not _IS_HIP
+# PTX mul.rn.f32 is never contracted into an FMA, so the + offset rounds separately as in
+# bitsandbytes. HIP has no PTX: there the launch disables fp fusion instead.
+_HAS_MUL_RN = torch.version.hip is None
 
 
 @triton.jit
@@ -66,7 +38,7 @@ def _nf4_dequant_kernel(
     code2_ptr,  # fp32 [256], nested only
     absmax2_ptr,  # fp32, nested only
     offset_ptr,  # fp32 [1], nested only
-    lut_ptr,  # fp32 [16], NF4_LUT
+    lut_ptr,  # fp32 [16], the NF4 codebook
     out_ptr,
     n_elements,
     n_bytes,
@@ -79,6 +51,8 @@ def _nf4_dequant_kernel(
 ):
     # A [ROWS, HALF] tile of packed bytes: each row is one absmax block, so its scale is
     # decoded once per row and broadcast, instead of once per byte.
+    # FSDP-QLoRA packs the 4bit weight into float storage; it is bytes either way.
+    W_ptr = W_ptr.to(tl.pointer_type(tl.uint8))
     pid = tl.program_id(0).to(tl.int64)
     rows = pid * ROWS + tl.arange(0, ROWS)
     row_mask = rows < n_blocks
@@ -117,11 +91,9 @@ def _nf4_dequant_kernel(
     tl.store(out_ptr + out_offs, vals, mask = out_offs < n_elements)
 
 
-# Rough one-off sweep on a shared B200 (see plans/impl_dequant.md): about 2048 packed bytes per
-# program with 4 warps (or 1024 with 2) was fastest from 4096x4096 to 128256x4096, both about
-# 2.2-2.5x faster than bitsandbytes' three launches. Small weights use smaller programs so the
-# grid still fills the GPU.
 def _config_for(n_bytes: int, half: int):
+    # From a sweep on a B200 over 4096x4096 to 128256x4096; small weights use smaller programs
+    # so the grid still fills the GPU.
     if n_bytes <= (1 << 16):
         target, num_warps = 256, 2
     elif n_bytes <= (1 << 20):
@@ -131,66 +103,25 @@ def _config_for(n_bytes: int, half: int):
     return max(1, target // half), num_warps
 
 
-# Without mul_rn the add could contract into an FMA, which rounds once where bitsandbytes
-# rounds twice.
-_NO_FP_FUSION = {"enable_fp_fusion": False}
-
-_LUTS = {}
-
-
-def _lut_for(device: torch.device) -> torch.Tensor:
-    """NF4_LUT on ``device``. Only real tensors are cached: a tensor created while
-    torch.compile is tracing is fake, and caching it would leak it into later traces."""
-    key = (device.type, device.index)
-    lut = _LUTS.get(key)
-    if lut is not None:
-        return lut
-    if torch.compiler.is_compiling():
-        return torch.tensor(NF4_LUT, dtype = torch.float32, device = device)
-    with torch.inference_mode(False):
-        lut = torch.tensor(NF4_LUT, dtype = torch.float32, device = device)
-    _LUTS[key] = lut
-    return lut
-
-
-_SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
-
-
 def _is_pow2(x: int) -> bool:
     return x > 0 and (x & (x - 1)) == 0
 
 
-def _check(W, absmax, code2, absmax2, offset, blocksize, blocksize2, dtype):
-    if dtype not in _SUPPORTED_DTYPES:
-        raise TypeError(f"Unsloth: dequantize_nf4 does not support dtype {dtype}")
-    if not _is_pow2(blocksize) or blocksize < 2:
-        raise ValueError(f"Unsloth: dequantize_nf4 needs a power-of-two blocksize, got {blocksize}")
+def _launch(kernel, W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, out, fp_fusion):
     nested = code2 is not None
-    if nested:
-        if absmax2 is None or offset is None:
-            raise ValueError("Unsloth: nested NF4 state needs code2, absmax2 and offset")
-        if not _is_pow2(blocksize2):
-            raise ValueError(
-                f"Unsloth: dequantize_nf4 needs a power-of-two blocksize2, got {blocksize2}"
-            )
-    return nested
-
-
-def _launch(kernel, W, absmax, code2, absmax2, offset, lut, blocksize, blocksize2, out, nested, eager = False):
     n_elements = out.numel()
     n_bytes = (n_elements + 1) // 2
     half = blocksize // 2
     n_blocks = triton.cdiv(n_elements, blocksize)
     rows, num_warps = _config_for(n_bytes, half)
-    grid = (triton.cdiv(n_blocks, rows),)
-    if nested:
-        args = (W, absmax, code2, absmax2, offset)
-    else:
-        # The nested-only pointers are never dereferenced; absmax fills the slots.
-        args = (W, absmax, absmax, absmax, absmax)
-    kernel[grid](
-        *args,
-        lut,
+    # The nested-only pointers are never dereferenced for a flat state; absmax fills the slots.
+    kernel[(triton.cdiv(n_blocks, rows),)](
+        W,
+        absmax,
+        code2 if nested else absmax,
+        absmax2 if nested else absmax,
+        offset if nested else absmax,
+        code,
         out,
         n_elements,
         n_bytes,
@@ -201,22 +132,22 @@ def _launch(kernel, W, absmax, code2, absmax2, offset, lut, blocksize, blocksize
         USE_MUL_RN = _HAS_MUL_RN,
         ROWS = rows,
         num_warps = num_warps,
-        **(_NO_FP_FUSION if (eager and not _HAS_MUL_RN) else {}),
+        **({} if fp_fusion else {"enable_fp_fusion": False}),
     )
     return out
 
 
 if _HAS_MUL_RN:
-    # Inductor sees the Triton kernel itself and can schedule it with the surrounding graph.
+    # Inductor sees the Triton kernel itself and schedules it with the surrounding graph.
     _register = torch.library.triton_op
     _traced_kernel = lambda: torch.library.wrap_triton(_nf4_dequant_kernel)
-    _traced_eager = False
+    _traced_guard = lambda device: contextlib.nullcontext()
 else:
-    # HIP: Inductor re-emits a triton_op kernel with fp fusion on, so the nested product could
-    # contract into an FMA. An opaque custom op keeps the eager launch with fusion disabled.
+    # HIP: Inductor would re-emit a triton_op kernel with fp fusion on. An opaque custom op keeps
+    # the eager launch (fusion off), which also needs its own device guard.
     _register = torch.library.custom_op
     _traced_kernel = lambda: _nf4_dequant_kernel
-    _traced_eager = True
+    _traced_guard = torch.cuda.device
 
 
 @_register("unsloth::dequantize_nf4", mutates_args = ())
@@ -226,28 +157,27 @@ def _dequantize_nf4_op(
     code2: Optional[torch.Tensor],
     absmax2: Optional[torch.Tensor],
     offset: Optional[torch.Tensor],
-    lut: torch.Tensor,
+    code: torch.Tensor,
     blocksize: int,
     blocksize2: int,
     shape: List[int],
     dtype: torch.dtype,
 ) -> torch.Tensor:
-    nested = code2 is not None
     out = torch.empty(shape, dtype = dtype, device = W.device)
-    return _launch(
-        _traced_kernel(),
-        W,
-        absmax,
-        code2,
-        absmax2,
-        offset,
-        lut,
-        blocksize,
-        blocksize2,
-        out,
-        nested,
-        eager = _traced_eager,
-    )
+    with _traced_guard(W.device):
+        return _launch(
+            _traced_kernel(),
+            W,
+            absmax,
+            code2,
+            absmax2,
+            offset,
+            code,
+            blocksize,
+            blocksize2,
+            out,
+            fp_fusion = _HAS_MUL_RN,
+        )
 
 
 @_register("unsloth::dequantize_nf4_out", mutates_args = ["out"])
@@ -257,43 +187,36 @@ def _dequantize_nf4_out_op(
     code2: Optional[torch.Tensor],
     absmax2: Optional[torch.Tensor],
     offset: Optional[torch.Tensor],
-    lut: torch.Tensor,
+    code: torch.Tensor,
     blocksize: int,
     blocksize2: int,
     out: torch.Tensor,
 ) -> None:
-    nested = code2 is not None
-    _launch(
-        _traced_kernel(),
-        W,
-        absmax,
-        code2,
-        absmax2,
-        offset,
-        lut,
-        blocksize,
-        blocksize2,
-        out,
-        nested,
-        eager = _traced_eager,
-    )
+    with _traced_guard(W.device):
+        _launch(
+            _traced_kernel(),
+            W,
+            absmax,
+            code2,
+            absmax2,
+            offset,
+            code,
+            blocksize,
+            blocksize2,
+            out,
+            fp_fusion = _HAS_MUL_RN,
+        )
 
 
 if not _HAS_MUL_RN:
 
     @_dequantize_nf4_op.register_fake
-    def _(W, absmax, code2, absmax2, offset, lut, blocksize, blocksize2, shape, dtype):
+    def _(W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype):
         return W.new_empty(shape, dtype = dtype)
 
     @_dequantize_nf4_out_op.register_fake
-    def _(W, absmax, code2, absmax2, offset, lut, blocksize, blocksize2, out):
+    def _(W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, out):
         return None
-
-
-def _as_offset_tensor(offset, device):
-    if offset is None or isinstance(offset, torch.Tensor):
-        return offset
-    return torch.tensor([float(offset)], dtype = torch.float32, device = device)
 
 
 def dequantize_nf4(
@@ -301,49 +224,39 @@ def dequantize_nf4(
     absmax: torch.Tensor,
     code2: Optional[torch.Tensor],
     absmax2: Optional[torch.Tensor],
-    offset,
+    offset: Optional[torch.Tensor],
+    code: torch.Tensor,
     blocksize: int,
     blocksize2: int,
     shape,
     dtype: torch.dtype,
     out: Optional[torch.Tensor] = None,
-    code: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Dequantize a bitsandbytes NF4 weight in one kernel launch.
+    """Dequantize a bitsandbytes NF4 weight into ``out`` (allocated when None).
 
-    ``code2``, ``absmax2`` and ``offset`` are None for a non-nested quant state (absmax is
-    then fp32). ``offset`` may be a device tensor (read in the kernel, no host sync) or a float.
-    ``code`` is the quant state's NF4 codebook (fp32 [16], bit-identical to NF4_LUT); passing
-    it keeps a compiled graph from rebuilding the table on every call.
-    Returns ``out`` (allocated when None) with ``shape`` and ``dtype``.
+    ``code`` is the quant state's fp32 [16] NF4 codebook. ``code2``, ``absmax2`` and the device
+    tensor ``offset`` are None when the absmax is not double quantized (it is then fp32).
     """
-    nested = _check(W, absmax, code2, absmax2, offset, blocksize, blocksize2, dtype)
-    offset = _as_offset_tensor(offset, W.device) if nested else None
-    if (
-        isinstance(code, torch.Tensor)
-        and code.dtype == torch.float32
-        and code.numel() == 16
-        and code.device == W.device
-    ):
-        lut = code
-    else:
-        lut = _lut_for(W.device)
+    if dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        raise TypeError(f"Unsloth: dequantize_nf4 does not support dtype {dtype}")
+    if not _is_pow2(blocksize) or blocksize < 2 or (code2 is not None and not _is_pow2(blocksize2)):
+        raise ValueError(f"Unsloth: dequantize_nf4 needs power-of-two blocksizes, got {blocksize}")
+    if out is not None and (out.dtype != dtype or out.numel() != math.prod(shape)):
+        raise ValueError("Unsloth: dequantize_nf4 out has the wrong dtype or size")
     if torch.compiler.is_compiling():
         if out is None:
             return torch.ops.unsloth.dequantize_nf4(
-                W, absmax, code2, absmax2, offset, lut, blocksize, blocksize2, list(shape), dtype
+                W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, list(shape), dtype
             )
         torch.ops.unsloth.dequantize_nf4_out(
-            W, absmax, code2, absmax2, offset, lut, blocksize, blocksize2, out
+            W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, out
         )
         return out
     if out is None:
         out = torch.empty(shape, dtype = dtype, device = W.device)
-    else:
-        if out.dtype != dtype or out.numel() != _numel(shape):
-            raise ValueError("Unsloth: dequantize_nf4 out has the wrong dtype or size")
-    # Eager: launch the kernel directly, skipping the op dispatcher.
-    with torch.cuda.device(W.device) if W.device.index != torch.cuda.current_device() else _NULL:
+    # Eager launches skip the op dispatcher, which costs about as much as the kernel.
+    same_device = W.device.index == torch.cuda.current_device()
+    with contextlib.nullcontext() if same_device else torch.cuda.device(W.device):
         return _launch(
             _nf4_dequant_kernel,
             W,
@@ -351,28 +264,9 @@ def dequantize_nf4(
             code2,
             absmax2,
             offset,
-            lut,
+            code,
             blocksize,
             blocksize2,
             out,
-            nested,
-            eager = True,
+            fp_fusion = False,
         )
-
-
-def _numel(shape) -> int:
-    n = 1
-    for s in shape:
-        n *= int(s)
-    return n
-
-
-class _Null:
-    def __enter__(self):
-        return None
-
-    def __exit__(self, *args):
-        return False
-
-
-_NULL = _Null()

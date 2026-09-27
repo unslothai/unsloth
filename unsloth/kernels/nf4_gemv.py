@@ -9,23 +9,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Batch-1 NF4 GEMV for decoding: out[1, 1, N] = X[1, 1, K] @ dequant(W).T
+# Batch-1 NF4 GEMV for decoding, out[1, 1, N] = X[1, 1, K] @ dequant(W).T, in one Triton launch
+# (nested absmax decode, NF4 lookup and dot product fused) on torch's current stream. Registered
+# as unsloth::gemv_nf4 so torch.compile traces it and CUDA graphs capture it. Each quantization
+# block is summed before scaling, so it matches bitsandbytes to fp32 accumulation noise, not bitwise.
+# Every weight row must start a new quantization block (K % blocksize == 0); callers check.
 
-Two implementations share one signature:
-
-gemv_nf4        Triton. One launch: the nested absmax decode, the NF4 lookup and the dot
-                product are fused. Launches on torch's current stream, and is registered as
-                ``unsloth::gemv_nf4`` through ``torch.library.triton_op`` so torch.compile
-                traces it without a graph break and CUDA graphs can capture it.
-gemv_nf4_bnb    bitsandbytes' cgemm_4bit_inference_naive through ctypes, byte-identical to the
-                historical fast_gemv, but reading the live stream at call time. Registered as
-                the opaque custom op ``unsloth::gemv_nf4_bnb`` so it also compiles with 0 breaks.
-
-The Triton kernel sums each quantization block before scaling it, which is a different
-reduction order from bitsandbytes, so the two agree to fp32 accumulation noise, not bitwise.
-"""
-
-import ctypes
 import functools
 from typing import Optional
 
@@ -35,8 +24,6 @@ import triton.language as tl
 
 __all__ = [
     "gemv_nf4",
-    "gemv_nf4_bnb",
-    "triton_gemv_supported",
 ]
 
 
@@ -58,6 +45,8 @@ def _gemv_nf4_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
+    # FSDP-QLoRA packs the 4bit weight into float storage; it is bytes either way.
+    W = W.to(tl.pointer_type(tl.uint8))
     pid = tl.program_id(0)
     rows = pid * BLOCK_N + tl.arange(0, BLOCK_N)
     rmask = rows < N
@@ -112,11 +101,6 @@ def _gemv_config(N: int, K: int, blocksize: int):
     return (triton.cdiv(N, block_n),), block_n, block_k, num_warps
 
 
-def triton_gemv_supported(K: int, blocksize: int) -> bool:
-    """The kernel indexes absmax per row, so every row must start a new quantization block."""
-    return blocksize >= 2 and (blocksize & (blocksize - 1)) == 0 and K % blocksize == 0
-
-
 def _launch(kernel, X, W, absmax, code2, absmax2, offset, code, out, N, K, blocksize, blocksize2):
     nested = code2 is not None
     grid, block_n, block_k, num_warps = _gemv_config(N, K, blocksize)
@@ -159,8 +143,18 @@ def _gemv_nf4_op(
     out = torch.empty((1, 1, out_features), dtype = X.dtype, device = X.device)
     return _launch(
         torch.library.wrap_triton(_gemv_nf4_kernel),
-        X, W, absmax, code2, absmax2, offset, code, out,
-        out_features, in_features, blocksize, blocksize2,
+        X,
+        W,
+        absmax,
+        code2,
+        absmax2,
+        offset,
+        code,
+        out,
+        out_features,
+        in_features,
+        blocksize,
+        blocksize2,
     )
 
 
@@ -196,8 +190,17 @@ def gemv_nf4(
     blocksize2 = int(blocksize2) if code2 is not None else 0
     if _is_compiling():
         result = _gemv_nf4_op(
-            X, W_u8, absmax, code2, absmax2, offset, code,
-            int(blocksize), blocksize2, out_features, in_features,
+            X,
+            W_u8,
+            absmax,
+            code2,
+            absmax2,
+            offset,
+            code,
+            int(blocksize),
+            blocksize2,
+            out_features,
+            in_features,
         )
         if out is not None:
             out.copy_(result)
@@ -206,115 +209,7 @@ def gemv_nf4(
     if out is None:
         out = torch.empty((1, 1, out_features), dtype = X.dtype, device = X.device)
     args = (
-        _gemv_nf4_kernel, X, W_u8, absmax, code2, absmax2, offset, code, out,
-        out_features, in_features, int(blocksize), blocksize2,
-    )
-    # Triton launches on the current device's current stream, so only switch when X lives elsewhere.
-    if X.device.index == _current_device():
-        return _launch(*args)
-    with torch.cuda.device(X.device):
-        return _launch(*args)
-
-
-# bitsandbytes naive GEMV, live stream
-_bnb_lib = None
-_c_int = ctypes.c_int
-_c_int32 = ctypes.c_int32
-_c_void_p = ctypes.c_void_p
-
-
-def _bnb():
-    # Imported on first use so this module loads without bitsandbytes (the Triton path needs none).
-    global _bnb_lib
-    if _bnb_lib is None:
-        import bitsandbytes.functional as bnb_functional
-
-        _bnb_lib = bnb_functional.lib
-    return _bnb_lib
-
-
-def _ptr(t):
-    return None if t is None else _c_void_p(t.data_ptr())
-
-
-@torch.library.custom_op("unsloth::gemv_nf4_bnb", mutates_args = ())
-def _gemv_nf4_bnb_op(
-    X: torch.Tensor,
-    W: torch.Tensor,
-    absmax: torch.Tensor,
-    code2: Optional[torch.Tensor],
-    absmax2: Optional[torch.Tensor],
-    offset: Optional[torch.Tensor],
-    code: torch.Tensor,
-    blocksize: int,
-    blocksize2: int,
-    out_features: int,
-    in_features: int,
-) -> torch.Tensor:
-    lib = _bnb()
-    device = X.device
-    out = torch.empty((1, 1, out_features), dtype = X.dtype, device = device)
-    with torch.cuda.device(device):
-        stream = _c_void_p(torch._C._cuda_getCurrentRawStream(device.index))
-        if code2 is not None:
-            df = torch.empty(absmax.shape, dtype = torch.float32, device = device)
-            lib.cdequantize_blockwise_fp32(
-                _ptr(code2),
-                _ptr(absmax),
-                _ptr(absmax2),
-                _ptr(df),
-                _c_int(blocksize2),
-                _c_int(df.numel()),
-                stream,
-            )
-            df += offset
-            absmax = df
-        fx = (
-            lib.cgemm_4bit_inference_naive_fp16
-            if X.dtype == torch.float16
-            else lib.cgemm_4bit_inference_naive_bf16
-        )
-        fx(
-            _c_int32(out_features),
-            _c_int32(1),
-            _c_int32(in_features),
-            _ptr(X),
-            _ptr(W),
-            _ptr(absmax),
-            _ptr(code),
-            _ptr(out),
-            _c_int32(out_features),
-            _c_int32((in_features + 1) // 2),
-            _c_int32(out_features),
-            _c_int32(blocksize),
-            stream,
-        )
-    return out
-
-
-@_gemv_nf4_bnb_op.register_fake
-def _(X, W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, out_features, in_features):
-    return X.new_empty((1, 1, out_features))
-
-
-def gemv_nf4_bnb(
-    X,
-    W_u8,
-    absmax,
-    code2,
-    absmax2,
-    offset,
-    code,
-    blocksize,
-    blocksize2,
-    shape,
-    dtype,
-    out = None,
-):
-    """Same contract as gemv_nf4, computed by bitsandbytes' naive GEMV."""
-    if X.dtype not in (torch.float16, torch.bfloat16):
-        raise TypeError(f"Unsloth: 4bit GEMV supports float16 and bfloat16, not {X.dtype}.")
-    result = _gemv_nf4_bnb_op(
+        _gemv_nf4_kernel,
         X,
         W_u8,
         absmax,
@@ -322,12 +217,14 @@ def gemv_nf4_bnb(
         absmax2,
         offset,
         code,
+        out,
+        out_features,
+        in_features,
         int(blocksize),
-        int(blocksize2) if blocksize2 is not None else 0,
-        int(shape[0]),
-        int(shape[1]),
+        blocksize2,
     )
-    if out is not None:
-        out.copy_(result)
-        return out
-    return result
+    # Triton launches on the current device's current stream, so only switch when X lives elsewhere.
+    if X.device.index == _current_device():
+        return _launch(*args)
+    with torch.cuda.device(X.device):
+        return _launch(*args)
