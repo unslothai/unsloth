@@ -500,6 +500,54 @@ def fp8_torch_block_quant_forward(X, weight, weight_scale):
     return FP8BlockQuantLinear.apply(X, weight, weight_scale)
 
 
+def _quantize_fp8_per_row(x, scale_ub = None):
+    # Same as FBGEMM quantize_fp8_per_row: scale = max(min(row absmax, scale_ub) / 448, 1 / (448 * 512)), saturating cast.
+    row_max = x.abs().amax(dim = -1, keepdim = True).float()
+    if scale_ub is not None:
+        row_max = torch.minimum(row_max, scale_ub.float())
+    scale = torch.clamp(row_max / 448.0, min = 1.0 / (448.0 * 512.0))
+    return (x.float() / scale).clamp(-448.0, 448.0).to(torch.float8_e4m3fn), scale
+
+
+def _rowwise_gemm_works(gemm, device):
+    x = torch.ones(128, 128, dtype = torch.float8_e4m3fn, device = device)
+    try:
+        return bool((gemm(x) == 128).all())
+    except Exception:
+        return False
+
+
+@functools.lru_cache(maxsize = None)
+def _probe_fp8_rowwise_backend(device):
+    """Fastest rowwise FP8 GEMM that runs correctly on this device: FBGEMM ships no sm120 kernels ("cutlass
+    cannot initialize" on RTX PRO 6000 / 5090), where torch._scaled_mm keeps FBGEMM's numerics; else dequant."""
+    ones = lambda n: torch.ones(n, dtype = torch.float32, device = device)
+    if hasattr(torch.ops.fbgemm, "f8f8bf16_rowwise"):
+        from unsloth.import_fixes import suppress_cuda_printf
+        with suppress_cuda_printf():
+            if _rowwise_gemm_works(
+                lambda x: torch.ops.fbgemm.f8f8bf16_rowwise(x, x, ones(128), ones(128)), device
+            ):
+                return "fbgemm"
+    if _rowwise_gemm_works(
+        lambda x: torch._scaled_mm(
+            x, x.t(), scale_a = ones((128, 1)), scale_b = ones((1, 128)), out_dtype = torch.bfloat16
+        ),
+        device,
+    ):
+        return "scaled_mm"
+    return "dequant"
+
+
+def _fp8_rowwise_backend(device):
+    return _probe_fp8_rowwise_backend(device)
+
+
+if hasattr(torch._dynamo, "assume_constant_result"):
+    # Compiled callers run the probe once at trace time and bake the answer in; an lru_cache wrapper would be traced.
+    _fp8_rowwise_backend = torch._dynamo.assume_constant_result(_fp8_rowwise_backend)
+
+
 class FbgemmFp8Linear_matmul(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -508,9 +556,13 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
         weight,
         weight_scale,
         bias = None,
+        backend = "fbgemm",
     ):
-        if weight.shape[0] == weight_scale.shape[0] and (
-            weight.shape[0] % 8 == 0 and weight.shape[1] % 8 == 0
+        rowwise = weight.shape[0] == weight_scale.shape[0]
+        if (
+            backend == "fbgemm"
+            and rowwise
+            and (weight.shape[0] % 8 == 0 and weight.shape[1] % 8 == 0)
         ):
             # The kernel needs weight dims divisible by 8 (else "cutlass cannot implement"), and padding plus
             # f8f8bf16 is slower than dequant plus bf16 matmul.
@@ -539,10 +591,31 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             output = output.reshape(output_shape)
             del x_quantized, x_scale
         elif (
-            weight.shape[0] != weight_scale.shape[0] and weight.shape[1] == weight_scale.shape[0]
-        ) or (weight.shape[0] % 8 != 0 or weight.shape[1] % 8 != 0):
-            # Transposed weight/scale (backward dY@W) or a non-divisible-by-8 shape (Qwen 2.5 VL 7B gate proj
-            # 3420x1280): dequant is preferred.
+            backend == "scaled_mm"
+            and rowwise
+            and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
+            and x.shape[-1] == weight.shape[1]
+        ):
+            output_shape = (*x.shape[:-1], -1)
+            x_quantized, x_scale = _quantize_fp8_per_row(
+                x.reshape(-1, x.shape[-1]), getattr(weight, "input_scale_ub", None)
+            )
+            if not weight.is_contiguous():
+                weight = weight.contiguous()
+            output = torch._scaled_mm(
+                x_quantized,
+                weight.t(),
+                scale_a = x_scale,
+                scale_b = weight_scale.to(torch.float32).view(1, -1),
+                out_dtype = x.dtype,
+                use_fast_accum = True,
+            )
+            output = output + bias if bias is not None else output
+            output = output.reshape(output_shape)
+            del x_quantized, x_scale
+        elif rowwise or weight.shape[1] == weight_scale.shape[0]:
+            # Transposed weight/scale (backward dY@W), a non-divisible-by-8 shape (Qwen 2.5 VL 7B gate proj
+            # 3420x1280) or no working FP8 GEMM here: dequant is preferred.
             W_deq = weight_dequant(weight, weight_scale).T
             output = torch_matmul(x, W_deq)
             output = output + bias if bias is not None else output
@@ -571,7 +644,9 @@ def fbgemm_fp8_linear(
     weight_scale,
     bias = None,
 ):
-    return FbgemmFp8Linear_matmul.apply(X, weight, weight_scale, bias)
+    return FbgemmFp8Linear_matmul.apply(
+        X, weight, weight_scale, bias, _fp8_rowwise_backend(X.device)
+    )
 
 
 class FP8_fbgemm_block_linear(torch.autograd.Function):
