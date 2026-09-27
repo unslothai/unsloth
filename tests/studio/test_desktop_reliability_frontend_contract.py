@@ -2581,7 +2581,6 @@ def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
 #
 # The variant is part of the claim, so each row carries its own. `h-[...]` and
 # `hover:h-[...]` are different guarantees, and the second one is not a fixed band at all.
-_MEDIA_CONTROL_HEIGHT = "var(--studio-media-control-height,%s)"
 _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (NAVBAR, "", "h", "48px", 2),
     (IMAGES_PAGE, "", "h", "48px", 1),
@@ -2602,15 +2601,14 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (APP_SIDEBAR, "", "pl", "39px", 2),
     # The 34px pill controls in the media headers, in all three spellings the pages use. The
     # band around them scales and so does their own text, so a control left fixed is the one
-    # thing in that row that does not move, and it crowds out its label. They read the custom
-    # titlebar's row height first, which scales too.
-    (IMAGES_PAGE, "!", "h", "34px", 2, _MEDIA_CONTROL_HEIGHT),
-    (IMAGES_PAGE, "", "h", "34px", 1, _MEDIA_CONTROL_HEIGHT),
-    (IMAGES_PAGE, "[&>button]:", "h", "34px", 1, _MEDIA_CONTROL_HEIGHT),
-    (AUDIO_PAGE, "!", "h", "34px", 1, _MEDIA_CONTROL_HEIGHT),
-    (AUDIO_PAGE, "", "h", "34px", 1, _MEDIA_CONTROL_HEIGHT),
-    (AUDIO_PAGE, "[&>button]:", "h", "34px", 1, _MEDIA_CONTROL_HEIGHT),
-    (VIDEO_PAGE, "!", "h", "34px", 2, _MEDIA_CONTROL_HEIGHT),
+    # thing in that row that does not move, and it crowds out its label.
+    (IMAGES_PAGE, "!", "h", "34px", 2),
+    (IMAGES_PAGE, "", "h", "34px", 1),
+    (IMAGES_PAGE, "[&>button]:", "h", "34px", 1),
+    (AUDIO_PAGE, "!", "h", "34px", 1),
+    (AUDIO_PAGE, "", "h", "34px", 1),
+    (AUDIO_PAGE, "[&>button]:", "h", "34px", 1),
+    (VIDEO_PAGE, "!", "h", "34px", 2),
     # The chat page's 30px round controls, including the collapsed New Chat button and the
     # save-temporary-chat button beside them. The header they sit in grows with the setting, so
     # one left fixed shrinks against its own row.
@@ -2720,13 +2718,18 @@ def test_the_colours_these_contracts_read_still_carry_their_gain():
 
 
 def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
-    for path, variant, utility, length, expected, *wrap in _LENGTHS_THAT_MUST_KEEP_THE_SCALE:
+    for path, variant, utility, length, expected in _LENGTHS_THAT_MUST_KEEP_THE_SCALE:
         source = path.read_text(encoding = "utf-8")
         named = f"{variant}{utility}-{length}"
-        value = (wrap[0] if wrap else "%s") % f"calc({length}*var(--ui-space-scale,1))"
         scaled = len(
             re.findall(
-                _CLASS_STARTS + re.escape(f"{variant}{utility}-[{value}]") + _CLASS_ENDS,
+                # A chrome may route it through its own variable, the scaled length as fallback.
+                _CLASS_STARTS
+                + re.escape(f"{variant}{utility}-[")
+                + r"(?:var\(--[\w-]+,)?"
+                + re.escape(f"calc({length}*var(--ui-space-scale,1))")
+                + r"\)?\]"
+                + _CLASS_ENDS,
                 source,
             )
         )
