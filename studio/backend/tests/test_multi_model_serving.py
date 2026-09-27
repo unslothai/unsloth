@@ -1114,3 +1114,28 @@ def test_a_model_that_does_not_fit_says_so_without_api_flags():
     capped = _gpu_short_message(13.2, 8.4, 32768, 8192, True)
     assert "8192 context" in capped
     assert "force_alongside" not in spill + capped
+
+
+def test_a_reused_slot_refuses_a_load_during_a_llama_update(backends, monkeypatch):
+    primary, extra = backends
+    primary._llama_update_in_progress = True
+    request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q4_K_M", alongside = True)
+    assert _selected(monkeypatch, request) is extra
+    assert extra.llama._llama_update_in_progress is True
+    primary._llama_update_in_progress = False
+    assert _selected(monkeypatch, request) is extra
+    assert extra.llama._llama_update_in_progress is False
+
+
+def test_a_repo_still_filling_a_slot_cannot_be_deleted(backends, monkeypatch):
+    from hub.services.models import deletion
+
+    _, extra = backends
+    starting = inf._ExtraSlot(FakeLlama(), FakeOrchestrator(), "owner")
+    inf._extra_slots.append(starting)
+    monkeypatch.setattr(inf, "_loading_slot", (starting, "org/D-GGUF"))
+    assert deletion._llama_cpp_blocks_delete("org/D-GGUF", "Q4_K_M")
+    monkeypatch.setattr(inf, "_loading_slot", None)
+    assert not deletion._llama_cpp_blocks_delete("org/D-GGUF", "Q4_K_M")
+    starting.orchestrator.loading_models = {"org/E"}
+    assert deletion._inference_backend_blocks_delete("org/E")

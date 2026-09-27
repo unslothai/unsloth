@@ -622,11 +622,15 @@ _LOAD_STATE_UNVERIFIABLE_DETAIL = (
 def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
     """Whether the llama.cpp backend holds *repo_id* (/variant). Acquiring fails open (import error means nothing loaded); reading load state is unguarded so a raise propagates and the caller fails closed rather than delete a live model."""
     try:
-        from routes.inference import extra_slot_backends, get_llama_cpp_backend
+        from routes.inference import extra_slot_backends, filling_slot_model, get_llama_cpp_backend
         backends = [get_llama_cpp_backend(), *(llama for llama, _ in extra_slot_backends())]
+        filling = filling_slot_model()
     except Exception as e:
         logger.debug(f"llama.cpp backend unavailable during delete guard for {repo_id}: {e}")
         return False
+    # A load filling a slot of its own names no model on its backend until its files are down.
+    if filling and _loaded_id_matches_repo(filling, repo_id):
+        return True
     for backend in backends:
         loaded_id = backend.model_identifier
         if (backend.is_active or backend.is_loaded) and loaded_id:
@@ -645,15 +649,21 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
     try:
         from core.inference.orchestrator import peek_inference_backend
         from routes.inference import extra_slot_backends
-        backends = [peek_inference_backend(), *(orch for _, orch in extra_slot_backends())]
+
+        primary = peek_inference_backend()
+        kept = [orch for _, orch in extra_slot_backends()]
     except Exception as e:
         logger.debug(f"Inference backend unavailable during delete guard for {repo_id}: {e}")
         return False
-    for backend in backends:
+    for backend in (primary, *kept):
         if backend is None:
             continue
         active_name = backend.active_model_name
         if active_name and _loaded_id_matches_repo(active_name, repo_id):
+            return True
+    # A model still loading into a slot of its own is already reading these files.
+    for backend in kept:
+        if any(_loaded_id_matches_repo(m, repo_id) for m in getattr(backend, "loading_models", ())):
             return True
     return False
 

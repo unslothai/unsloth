@@ -8139,6 +8139,12 @@ def extra_slot_backends() -> list[tuple[LlamaCppBackend, InferenceOrchestrator]]
     return [(slot.llama, slot.orchestrator) for slot in list(_extra_slots)]
 
 
+def filling_slot_model() -> Optional[str]:
+    """The model a load is still filling a slot of its own with, if any."""
+    loading = _loading_slot
+    return loading[1] if loading else None
+
+
 def extra_slot_loading() -> bool:
     """Whether a model is still loading into a slot of its own."""
     return _loading_slot is not None or any(
@@ -16633,6 +16639,16 @@ async def load_model_gated(
 
 async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     """The extra slot already serving the model, or a new one for ``alongside``. None is the primary."""
+    slot = await _pick_load_slot(request)
+    if slot is not None:
+        # A slot loading during a llama.cpp update refuses as the primary does, a reused one included.
+        slot.llama._llama_update_in_progress = getattr(
+            _llama_cpp_backend, "_llama_update_in_progress", False
+        )
+    return slot
+
+
+async def _pick_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     requested = (
         f"{request.model_path}:{request.gguf_variant}"
         if request.gguf_variant
@@ -16657,10 +16673,6 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
         current_account_id(),
     )
     slot.llama._owns_pidfile = False
-    # Built during a llama.cpp update, it refuses its load as the primary does.
-    slot.llama._llama_update_in_progress = getattr(
-        _llama_cpp_backend, "_llama_update_in_progress", False
-    )
     register_serving_backend(slot.llama)
     routed_slot.set(slot)
     return slot
