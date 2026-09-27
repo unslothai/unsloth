@@ -24,10 +24,17 @@ from unsloth_zoo.temporary_patches.common import torch_compile
 torch_matmul = torch.matmul
 
 
+# Read once: device_count() inside a compiled region is a graph break ("torch.* op returned non-Tensor").
+_CUDA_MULTI_DEVICE = torch.cuda.is_available() and torch.cuda.device_count() > 1
+_XPU_MULTI_DEVICE = (
+    hasattr(torch, "xpu") and torch.xpu.is_available() and torch.xpu.device_count() > 1
+)
+
+
 def _fp8_triton_device_context(tensor: torch.Tensor):
-    if tensor.device.type == "cuda" and torch.cuda.device_count() > 1:
+    if tensor.device.type == "cuda" and _CUDA_MULTI_DEVICE:
         return torch.cuda.device(tensor.device)
-    if tensor.device.type == "xpu" and hasattr(torch, "xpu") and torch.xpu.device_count() > 1:
+    if tensor.device.type == "xpu" and _XPU_MULTI_DEVICE:
         return torch.xpu.device(tensor.device)
     return nullcontext()
 
