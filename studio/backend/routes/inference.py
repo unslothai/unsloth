@@ -6033,7 +6033,8 @@ def _current_date_parts(request: Any, thread_id: Any) -> tuple[str, str]:
     if started is None:
         return date_line, ""
     today_iso = date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1]
-    if started.isoformat() == today_iso:
+    # a browser clock running ahead can stamp a future creation day; never state a later "start".
+    if started.isoformat() >= today_iso:
         return date_line, ""
     return (
         f"{CURRENT_DATE_PROMPT_PREFIX}{started.isoformat()}.",
@@ -6047,17 +6048,27 @@ def _date_gate_blocks(request: Any, include_api_key: bool) -> bool:
     return False
 
 
-_FOLDED_TOOL_RESULT_PREFIX = '{\n  "tool_response"'
+def _is_folded_tool_json(text: Any) -> bool:
+    if not isinstance(text, str) or not text.lstrip().startswith("{"):
+        return False
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(parsed, dict) and "tool_response" in parsed
 
 
 def _is_folded_tool_result(content: Any) -> bool:
-    # fold_tool_results_into_user turns a tool result into a user turn for tool-role-less templates.
+    # fold_tool_results_into_user turns a tool result into a user turn for tool-role-less templates;
+    # a follow-up coalesced onto it is the user's text, so only a turn that is ALL result counts.
     if isinstance(content, list):
-        content = next(
-            (p.get("text") for p in content if isinstance(p, dict) and p.get("type") == "text"),
-            None,
-        )
-    return isinstance(content, str) and content.startswith(_FOLDED_TOOL_RESULT_PREFIX)
+        texts = [
+            p.get("text")
+            for p in content
+            if isinstance(p, dict) and isinstance(p.get("text"), str) and p["text"].strip()
+        ]
+        return bool(texts) and all(_is_folded_tool_json(t) for t in texts)
+    return _is_folded_tool_json(content)
 
 
 def _append_current_date_note(

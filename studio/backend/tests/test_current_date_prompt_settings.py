@@ -601,6 +601,38 @@ class TestDateChangeNote:
             assert noted[0]["content"] != content
             assert _last_user_text(noted) == "refund policy"
 
+    def test_a_follow_up_coalesced_onto_a_folded_tool_result_gets_the_note(self):
+        from core.inference.anthropic_compat import fold_tool_results_into_user
+
+        self.today = "2026-08-16"
+        messages = self.inference._coalesce_consecutive_user_turns(
+            fold_tool_results_into_user(
+                [
+                    {"role": "user", "content": "list files"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{"id": "c1", "function": {"name": "ls", "arguments": "{}"}}],
+                    },
+                    {"role": "tool", "tool_call_id": "c1", "content": "a.txt"},
+                    {"role": "user", "content": "now read it"},
+                ]
+            )
+        )
+        out = self.inference._append_current_date_note(messages, object(), thread_id = "t")
+        assert out[0] is messages[0]
+        assert out[-1]["content"].startswith("[Current date: 2026-08-16]\n\n")
+        assert out[-1]["content"].endswith("now read it")
+
+    def test_a_future_creation_day_never_becomes_the_stated_start(self):
+        self.today = "2026-08-15"
+        self.started = date(2026, 8, 20)
+        out = self._proxy([{"role": "user", "content": "hi"}])
+        assert out == [
+            {"role": "system", "content": "The current date is 2026-08-15."},
+            {"role": "user", "content": "hi"},
+        ]
+
     def test_note_is_not_added_twice(self):
         self.today = "2026-08-16"
         once = self.inference._append_current_date_note(
