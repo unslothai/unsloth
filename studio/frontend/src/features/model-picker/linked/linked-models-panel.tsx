@@ -524,7 +524,10 @@ export function LinkedModelsPanel({
               : info?.online
                 ? " · CPU only"
                 : ""}
-            {" · downloads and loads run there"}
+            {" · "}
+            <span className="whitespace-nowrap">
+              downloads and loads run there
+            </span>
           </span>
         </div>
         <div className="model-list-scroll mr-1 max-h-[calc(335px*var(--ui-space-scale,1))] overflow-y-auto px-0.5 pb-4">
