@@ -441,7 +441,6 @@ def _assert_video_precision_for_target(
                 f"'{model_kind}' load, which runs the precision its checkpoint carries"
             )
             from .video_ltx2 import LTX23_PREQUANT_BASE, LTX23_PREQUANT_SOURCE_FILES
-
             if (
                 pinned == TQ_FP8
                 and getattr(fam, "name", None) == "ltx-2"
@@ -2038,7 +2037,6 @@ class VideoBackend:
             checkpoint_repo = repo_id,
         ):
             from .video_ltx2 import LTX23_PREQUANT_BASE
-
             claimed_assets = claimed_assets + self._denoiser_prequant_repo_ids(
                 fam, TQ_FP8, LTX23_PREQUANT_BASE
             )
@@ -4735,7 +4733,6 @@ class VideoBackend:
             # VAEs / connectors / vocoder the companion term already prices, so 0.55 x file over-stated the DiT by ~6 GB
             # and a card where the real one fits resident planned an offload and refused the pick.
             from .video_ltx2 import LTX23_PREQUANT_RESIDENT_GB
-
             transformer_mib = int(LTX23_PREQUANT_RESIDENT_GB * mib_per_gb)
         runtime_mib = estimate_video_runtime_mib(
             width = fam.resolution_presets[0][0],
