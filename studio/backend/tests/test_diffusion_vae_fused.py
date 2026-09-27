@@ -55,12 +55,29 @@ def test_rocm_and_old_triton_keep_stock(monkeypatch):
     monkeypatch.setattr(torch.version, "hip", "6.4.0", raising = False)
     assert F.runtime_ok() is False
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
-    F._triton_version_ok.cache_clear()
-    import triton
+    # a stand-in module, so this also runs where triton is not installed (CPU CI)
+    import sys
+    import types
 
-    monkeypatch.setattr(triton, "__version__", "3.2.0")
+    F._triton_version_ok.cache_clear()
+    monkeypatch.setitem(sys.modules, "triton", types.SimpleNamespace(__version__ = "3.2.0"))
     try:
         assert F.runtime_ok() is False
+    finally:
+        F._triton_version_ok.cache_clear()
+
+
+def test_missing_triton_keeps_stock(monkeypatch):
+    import sys
+
+    monkeypatch.delenv(F.VAE_FUSED_ENV, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    F._triton_version_ok.cache_clear()
+    monkeypatch.setitem(sys.modules, "triton", None)  # `import triton` raises ImportError
+    try:
+        assert F.runtime_ok() is False
+        assert F.will_install(type("AutoencoderKL", (), {})()) is False
     finally:
         F._triton_version_ok.cache_clear()
 
