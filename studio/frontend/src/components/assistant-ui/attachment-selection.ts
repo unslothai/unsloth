@@ -63,6 +63,7 @@ export const selectAttachmentSource = ({
   attachment: {
     type?: string;
     name: string;
+    contentType?: string;
     content?: AttachmentContentPart[];
   };
 }): AttachmentSelection => {
@@ -71,7 +72,7 @@ export const selectAttachmentSource = ({
   const file = held instanceof File ? held : undefined;
   const contentType =
     file?.type ||
-    (attachment as { contentType?: string }).contentType ||
+    attachment.contentType ||
     undefined;
   const audio = parts.find((part) => part.type === "audio")?.audio;
   const video = parts.find(
