@@ -9745,6 +9745,8 @@ def _has_working_git() -> bool:
 # _MLX_INSTALL_SPECS.
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.2", "mlx-metal==0.32.2", "mlx-lm==0.31.3")
 _MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.1"
+# Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
+_LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + ("mlx-vlm",)
 
 
@@ -11906,14 +11908,20 @@ def install_python_stack() -> int:
     _diffusers_main_step()
 
     # 11d. Apple Silicon grammar engine, outside skip_base: install.sh always takes that branch, leaving fresh installs without it.
+    # Optional: a failure only loses response_format on MLX (a clear 400), never the install.
     if IS_MAC_ARM:
-        _progress("MLX grammar engine")
-        pip_install(
-            "Installing the MLX grammar engine (llguidance)",
-            "--no-cache-dir",
-            "--upgrade",
-            "llguidance",
-        )
+        if _exact_distribution_spec_is_installed(_LLGUIDANCE_PIN):
+            _progress("MLX grammar engine (satisfied, skipped)")
+        else:
+            _progress("MLX grammar engine")
+            try:
+                pip_install(
+                    "Installing the MLX grammar engine (llguidance)",
+                    "--no-cache-dir",
+                    _LLGUIDANCE_PIN,
+                )
+            except SystemExit:
+                _note(f"{_LLGUIDANCE_PIN} failed to install; MLX response_format stays unavailable")
 
     # 12. Patch metadata for single-env compatibility
     _finalize_ran = _dd_deps_ran or _dd_ran or _patch_metadata_is_pending()

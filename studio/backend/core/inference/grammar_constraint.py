@@ -28,7 +28,7 @@ SUPPORTED_RESPONSE_FORMAT_TYPES = ("text", "json_object", "json_schema")
 
 MISSING_ENGINE_MESSAGE = (
     "response_format needs the llguidance grammar engine, which did not load. Install or "
-    "repair it with `pip install --upgrade llguidance`, or load a GGUF model to use the "
+    "repair it with `pip install llguidance==1.8.0`, or load a GGUF model to use the "
     "llama.cpp grammar engine instead."
 )
 
