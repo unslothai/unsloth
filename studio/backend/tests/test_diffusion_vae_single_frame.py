@@ -54,7 +54,15 @@ def test_multi_frame_and_tiled_calls_take_the_stock_path(monkeypatch):
     sf.install(fast)
     z = torch.randn(1, 4, 3, 16, 16)
     with torch.no_grad():
-        assert torch.allclose(fast.decode(z).sample, stock.decode(z).sample, atol = 1e-5, rtol = 1e-4)
+        # Bit-identical: the first chunk of the walk also reaches every conv with no cache and one frame.
+        assert torch.equal(fast.decode(z).sample, stock.decode(z).sample)
+        x = torch.rand(1, 3, 5, 64, 64) * 2 - 1
+        assert torch.equal(fast.encode(x).latent_dist.mean, stock.encode(x).latent_dist.mean)
+    for vae in (stock, fast):
+        vae.enable_tiling(tile_sample_min_height = 32, tile_sample_min_width = 32)
+    z1 = torch.randn(1, 4, 1, 16, 16)
+    with torch.no_grad():
+        assert torch.equal(fast.decode(z1).sample, stock.decode(z1).sample)
     calls = []
     real = fast._unsloth_stock_decode
     fast._unsloth_stock_decode = lambda *a, **k: calls.append(1) or real(*a, **k)
