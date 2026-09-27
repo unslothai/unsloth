@@ -8890,11 +8890,7 @@ def disable_openai_auto_switch_for_request(scope) -> None:
 
 
 async def _keyless_caller_held_back(fastapi_request) -> bool:
-    """A keyless caller that may not POST /api/inference/load itself, so it gets only the serving model or the idle-unloaded one it names.
-
-    The load-route probe reads the scope and the transport the way admission does, off
-    the loop and through the retrying settings accessor. Only a keyless caller pays it.
-    """
+    """Keyless caller that may not POST /api/inference/load itself, so it may not switch models."""
     from auth.authentication import request_admitted_without_credential
     from utils.keyless_api_access import keyless_request_may_load_models
 
@@ -9066,10 +9062,9 @@ async def _no_model_loaded_error(
 ):
     """``(status, detail)`` for the /v1 sites that fail because nothing is loaded.
 
-    Changes only the cases the generic text gets wrong, both with auto-switch on and a
-    model named: a name resolving to nothing local (the switch silently did nothing)
-    becomes a 404 model_not_found, and a downloaded one a held-back keyless caller may
-    not load keeps ``status`` but says so. Everything else keeps ``status`` and the
+    Changes only the cases the generic text gets wrong (auto-switch on, a model named):
+    a name resolving to nothing local becomes a 404 model_not_found, and a downloaded one
+    a held-back keyless caller may not load says so. Everything else keeps ``status`` and the
     :func:`_no_model_loaded_detail` text verbatim.
     """
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled

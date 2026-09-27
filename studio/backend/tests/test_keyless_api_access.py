@@ -1105,15 +1105,13 @@ def test_a_held_back_keyless_caller_is_told_it_cannot_switch(monkeypatch, loaded
 
 
 def test_the_keyless_load_probe_runs_off_the_event_loop(monkeypatch):
-    """The probe reads settings and resolves the bind host, so it must not run on the loop:
-    a slow resolver would stall every in-flight generation, not just this request. Same
-    invariant as test_auth_lookup_off_event_loop.py."""
+    """A slow bind-host resolver on the loop would stall every in-flight generation."""
     from routes import inference
     from utils import keyless_api_access as keyless
     seed_user(); set_keyless_api_access("full")
     request = request_for(headers = {"Host": "localhost:8888"})
     assert admitted_without_session(request)
-    # As the middleware leaves it, so the admission fallback does not run the predicate too.
+    # as the middleware leaves it, so the admission fallback skips the predicate
     keyless.mark_keyless_admission(request, True)
     threads: list[int] = []
     real = keyless._keyless_request_allowed_for_scope
@@ -1128,10 +1126,7 @@ def test_the_keyless_load_probe_runs_off_the_event_loop(monkeypatch):
 
 
 def test_the_keyless_load_probe_waits_out_a_settings_refresh(monkeypatch):
-    """The sync settings read fails a follower closed to "off" for the length of one SQLite
-    read while another caller refreshes the 1s cache. Answering from it told a full-scope
-    caller admission had already admitted that it may not load, which silently dropped the
-    auto-switch this PR exists to deliver. The probe must read the way admission reads."""
+    """The sync settings read fails closed to "off" during a concurrent refresh, dropping the full-scope switch."""
     from routes import inference
     from utils import keyless_api_access as keyless
     seed_user(); set_keyless_api_access("full")
@@ -1145,7 +1140,6 @@ def test_the_keyless_load_probe_waits_out_a_settings_refresh(monkeypatch):
     monkeypatch.setattr(keyless, "_read_settings_from_db", _slow)
     with keyless._cache_lock:
         keyless._cached_settings = None
-    # A second caller holds the refresh while this one asks.
     refresher = threading.Thread(target = keyless.get_keyless_api_access_scope)
     refresher.start(); assert started.wait(2)
     try:
