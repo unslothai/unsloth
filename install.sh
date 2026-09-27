@@ -5567,8 +5567,9 @@ import sys
 print('cp{}{}'.format(sys.version_info.major, sys.version_info.minor))
 " 2>/dev/null) || return 1
     _radeon_http=""
+    _radeon_rc=0
     if command -v curl >/dev/null 2>&1; then
-        _RADEON_LISTING=$(curl -fsSL --max-time 20 -w '\n%{http_code}' "$_RADEON_BASE_URL" 2>/dev/null) || true
+        _RADEON_LISTING=$(curl -fsSL --max-time 20 -w '\n%{http_code}' "$_RADEON_BASE_URL" 2>/dev/null) || _radeon_rc=$?
         _radeon_nl='
 '
         _radeon_http=${_RADEON_LISTING##*"$_radeon_nl"}
@@ -5576,8 +5577,10 @@ print('cp{}{}'.format(sys.version_info.major, sys.version_info.minor))
         # Re-strip trailing newlines as a plain $(curl) did, so a newline-only body still fails over to X.Y.
         _RADEON_LISTING=$(printf '%s' "$_RADEON_LISTING")
     elif command -v wget >/dev/null 2>&1; then
-        _RADEON_LISTING=$(wget -qO- --timeout=20 "$_RADEON_BASE_URL" 2>/dev/null) || true
+        _RADEON_LISTING=$(wget -qO- --timeout=20 "$_RADEON_BASE_URL" 2>/dev/null) || _radeon_rc=$?
     fi
+    # A timeout or reset mid-body leaves a truncated listing that would pick an older wheel set.
+    [ "$_radeon_rc" -eq 0 ] || _RADEON_LISTING=""
     # Only 404/410 mean "no such release": curl -f exits 22 on 429/5xx too, and wget's 8 is any error.
     case "$_radeon_http" in
         404|410) [ "$_RADEON_HOST_ANSWERED" = inconclusive ] || _RADEON_HOST_ANSWERED=true ;;

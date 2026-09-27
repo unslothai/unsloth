@@ -20,12 +20,12 @@ echo cp312
 STUB
 chmod +x "$_STUB_DIR/fakepy"
 
-# $1 = stub curl exit code, $2 = the %{http_code} it writes out, as curl -w does even on failure.
+# $1 = stub curl exit code, $2 = the %{http_code} it writes out, as curl -w does even on failure, $3 = body sent first.
 run_fetch() {
     _curl_dir=$(mktemp -d)
     cat > "$_curl_dir/curl" <<STUB
 #!/bin/sh
-printf '\\n%s' '$2'
+printf '%s\\n%s' '${3:-}' '$2'
 exit $1
 STUB
     chmod +x "$_curl_dir/curl"
@@ -61,6 +61,13 @@ assert_eq "connection refused -> inconclusive" \
 
 assert_eq "timeout -> inconclusive" \
     "fail answered=inconclusive" "$(run_fetch 28 000)"
+
+# curl -w still reports 200 when the body is cut off mid-transfer; the partial listing must not be used.
+_partial='<a href="torch-2.9.0%2Brocm7.2.4-cp312-cp312-linux_x86_64.whl">torch</a>'
+assert_eq "HTTP 200 truncated by a timeout -> fetch fails, inconclusive" \
+    "fail answered=inconclusive" "$(run_fetch 28 200 "$_partial")"
+assert_eq "HTTP 200 truncated by a reset -> fetch fails, inconclusive" \
+    "fail answered=inconclusive" "$(run_fetch 56 200 "$_partial")"
 
 # A newline-only 200 body stays a failed fetch, as before -w, so the X.Y retry still runs.
 _curl_dir=$(mktemp -d)
@@ -135,6 +142,7 @@ run_fetch_wget() {
     _wget_dir=$(mktemp -d)
     cat > "$_wget_dir/wget" <<STUB
 #!/bin/sh
+printf '%s' '${2:-}'
 exit $1
 STUB
     chmod +x "$_wget_dir/wget"
@@ -156,6 +164,8 @@ assert_eq "no curl, wget HTTP error -> inconclusive" \
     "fail answered=inconclusive" "$(run_fetch_wget 8)"
 assert_eq "no curl, wget network failure -> inconclusive" \
     "fail answered=inconclusive" "$(run_fetch_wget 4)"
+assert_eq "no curl, wget timed out mid-body -> fetch fails, inconclusive" \
+    "fail answered=inconclusive" "$(run_fetch_wget 4 '<a href="torch-2.9.0%2Brocm7.2.4-cp312-cp312-linux_x86_64.whl">torch</a>')"
 
 _answered_line=$(grep -n 'elif \[ "\$_RADEON_HOST_ANSWERED" = true \]; then' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _unreachable_line=$(grep -n 'Radeon repo unreachable' "$INSTALL_SH" | head -1 | cut -d: -f1)
