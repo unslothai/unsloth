@@ -21,7 +21,8 @@ the bf16 rounding.
 
 Covered: ``diffusers.models.attention.FeedForward`` with ``GELU(approximate="tanh")`` (FLUX.1 double
 blocks, Qwen-Image, Wan) and ``FluxSingleTransformerBlock`` (attention output concatenated in
-front of the GELU branch before ``proj_out``). Anything else, or any weight that is not a plain
+front of the GELU branch before ``proj_out``), and the Z-Image SwiGLU FeedForward (see ``_SWIGLU_ALL_LAYOUTS`` for
+why the other SwiGLU layouts keep the stock path). Anything else, or any weight that is not a plain
 dynamic symmetric per-row ``Int8Tensor``, keeps the stock path. CUDA + Triton only: ROCm, CPU,
 MPS, Windows without the MSVC CRT headers, a Triton older than 3.2 or a failing kernel build leave
 the model untouched. Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0``.
@@ -534,7 +535,7 @@ def _swiglu_spec(module: Any) -> Optional[tuple]:
             if any(type(extra).__name__ != "Dropout" for extra in (net[1], *net[3:])):
                 return None
             n = net[0].proj.out_features // 2
-            # SwiGLU.forward: hidden, gate = proj(x).chunk(2) -> value first, gate second (MiniMax-H3)
+            # SwiGLU.forward: hidden, gate = proj(x).chunk(2) -> value first, gate second
             return ("net.0.proj", None, "net.2", n, n, 0)
         if name == "Flux2FeedForward" and type(getattr(module, "act_fn", None)).__name__ == "Flux2SwiGLU":
             n = module.linear_in.out_features // 2
@@ -553,6 +554,24 @@ def _split_spec(module: Any) -> Optional[tuple]:
     if name == "QwenImage21SwiGLUFeedForward":
         return ("gate_layer", "proj", "out")
     return None
+
+
+# The SwiGLU kernel is bit-exact vs eager torchao on every layout above, but it only runs on Z-Image. On FLUX.2-klein
+# and Qwen-Image-2.1 it moved the compiled output further from the eager bf16 render than the stock compiled int8 path
+# (12 seed/prompt pairs, 1024px, LPIPS vs the eager bf16 render):
+# FLUX.2-klein-4B mean 0.0631 -> 0.0715, worse on 10 of 12 pairs; Qwen-Image-2.1 mean 0.0386 -> 0.0385 but single
+# pairs moved by up to 0.066 either way (worst +0.051). The stock path moved by at most 0.0001 per pair across three
+# runs. Both are outside that spread, so those layouts keep the stock forward until the
+# drift is understood. The GELU kernel (FeedForward gelu-tanh, FLUX.1 single block) is not affected by this gate.
+_SWIGLU_ALL_LAYOUTS = False
+
+
+def _is_zimage_ff(module: Any) -> bool:
+    return _split_spec(module) == ("w1", "w3", "w2") and type(module).__module__.endswith("transformer_z_image")
+
+
+def _swiglu_layout_allowed(module: Any) -> bool:
+    return _SWIGLU_ALL_LAYOUTS or _is_zimage_ff(module)
 
 
 def _get(module: Any, dotted: str) -> Any:
@@ -587,6 +606,8 @@ def _prepare_swiglu(module: Any) -> bool:
     """Attach the (off-tree) record the SwiGLU forward reads; False keeps the stock forward."""
     from torch import nn
 
+    if not _swiglu_layout_allowed(module):
+        return False
     spec = _swiglu_spec(module)
     if spec is not None:
         in_name, _unused, down_name, n, gate_col, value_col = spec
@@ -722,7 +743,7 @@ def install(transformer: Any, logger: Any = None, offload_active: bool = False) 
 
 
 def _swiglu_candidate(module: Any) -> bool:
-    return _swiglu_spec(module) is not None or _split_spec(module) is not None
+    return (_swiglu_spec(module) is not None or _split_spec(module) is not None) and _swiglu_layout_allowed(module)
 
 
 def _finalize(transformer: Any, logger: Any = None) -> int:

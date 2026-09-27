@@ -230,7 +230,9 @@ def _quantize(module):
 
 @needs_cuda
 @pytest.mark.parametrize("kind", ["diffusers_swiglu", "zimage", "flux2", "qwenimage21"])
-def test_swiglu_mlps_bit_identical_to_stock_eager(kind):
+def test_swiglu_mlps_bit_identical_to_stock_eager(kind, monkeypatch):
+    # Kernel exactness on every SwiGLU layout, including the ones the quality gate keeps on the stock path.
+    monkeypatch.setattr(fused, "_SWIGLU_ALL_LAYOUTS", True)
     torch.manual_seed(0)
     if kind == "diffusers_swiglu":
         from diffusers.models.attention import FeedForward
@@ -287,7 +289,7 @@ def test_offload_skips_install():
 
 @needs_cuda
 @pytest.mark.parametrize("kind", ["gelu", "swiglu"])
-def test_convrot_linears_keep_the_stock_forward(kind):
+def test_convrot_linears_keep_the_stock_forward(kind, monkeypatch):
     # MiniMax-H3's hosted int8 checkpoint swaps its MLP Linears onto ConvRotLinear, which rotates the input by a block
     # Hadamard before the GEMM. The fused forward calls _int_mm on the weight directly and would skip the rotation.
     from core.inference.diffusion_convrot import _install_rotation
@@ -301,7 +303,38 @@ def test_convrot_linears_keep_the_stock_forward(kind):
         torch.manual_seed(0)
         ff = _quantize(FeedForward(256, inner_dim = 512, activation_fn = "swiglu", bias = False).cuda().to(torch.bfloat16).eval())
         lins = (ff.net[0].proj, ff.net[2])
+    monkeypatch.setattr(fused, "_SWIGLU_ALL_LAYOUTS", True)  # the layout gate alone would already refuse diffusers SwiGLU
     for lin in lins:
         _install_rotation(lin, 16)
     assert fused.install(ff) == 0
     assert not fused.is_installed(ff)
+
+
+def _swiglu_module(kind):
+    if kind == "diffusers_swiglu":
+        from diffusers.models.attention import FeedForward
+
+        return FeedForward(256, inner_dim = 512, activation_fn = "swiglu", bias = False)
+    if kind == "zimage":
+        return pytest.importorskip("diffusers.models.transformers.transformer_z_image").FeedForward(256, 512)
+    if kind == "flux2":
+        return pytest.importorskip("diffusers.models.transformers.transformer_flux2").Flux2FeedForward(256, inner_dim = 512)
+    return pytest.importorskip("diffusers.models.transformers.transformer_qwenimage21").QwenImage21SwiGLUFeedForward(256, 512)
+
+
+@pytest.mark.parametrize("kind", ["diffusers_swiglu", "zimage", "flux2", "qwenimage21"])
+def test_swiglu_quality_gate_allows_zimage_only(kind):
+    # FLUX.2 and Qwen-Image-2.1 drifted further from bf16 with the fused SwiGLU than the stock compiled path does
+    # (see _SWIGLU_ALL_LAYOUTS). Device-free: the gate is a layout check, the candidate count drives the deferred swap.
+    ff = _swiglu_module(kind)
+    assert fused._swiglu_candidate(ff) is (kind == "zimage")
+    assert fused._swiglu_layout_allowed(ff) is (kind == "zimage")
+
+
+@needs_cuda
+@pytest.mark.parametrize("kind", ["zimage", "flux2", "qwenimage21"])
+def test_swiglu_install_count_follows_the_quality_gate(kind):
+    torch.manual_seed(0)
+    ff = _quantize(_swiglu_module(kind).cuda().to(torch.bfloat16).eval())
+    assert fused.install(ff) == (1 if kind == "zimage" else 0)
+    assert fused.is_installed(ff) is (kind == "zimage")
