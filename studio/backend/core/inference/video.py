@@ -382,8 +382,24 @@ def _ltx23_prequant_serves_on_card(
     gpu_ordinal: Optional[int],
     checkpoint_repo: Optional[str] = None,
     probe: bool = True,
+    hash_source: bool = True,
 ) -> bool:
-    """``_ltx23_prequant_serves`` before the load, asked of the card it will use. An unanswerable probe keeps the pick."""
+    """``_ltx23_prequant_serves`` before the load, asked of the card it will use. An unanswerable probe keeps the pick.
+    ``hash_source=False`` (planning) never hashes a local source file; see ``ltx23_identity_without_hashing``."""
+    if not hash_source:
+        from .video_ltx2 import ltx23_identity_without_hashing
+
+        with ltx23_identity_without_hashing():
+            return _ltx23_prequant_serves_on_card(
+                fam,
+                model_kind,
+                checkpoint_filename,
+                transformer_quant,
+                memory_mode = memory_mode,
+                gpu_ordinal = gpu_ordinal,
+                checkpoint_repo = checkpoint_repo,
+                probe = probe,
+            )
     pinned = normalize_transformer_quant(transformer_quant)
     if not _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned, checkpoint_repo):
         return False
@@ -3994,6 +4010,7 @@ class VideoBackend:
                 gpu_ordinal = load_kwargs.get("gpu_ordinal"),
                 checkpoint_repo = repo_id,
                 probe = allow_device_probe,
+                hash_source = False,
             ):
                 # The LTX-2.3 distilled single file under an explicit fp8 seeds the hosted DiT from its own repo (the
                 # file itself is still read for its connectors / VAEs / vocoder).

@@ -11563,9 +11563,26 @@ def test_ltx23_hosted_fp8_seed_requires_fp8_on_the_card(fake_runtime, monkeypatc
             video_mod.assert_video_precision_available(fam, **kwargs)
 
 
+def _ltx23_verdict_store(monkeypatch, tmp_path):
+    """Point the persisted LTX-2.3 identity verdicts at a per-test file and count full hashes."""
+    from core.inference import video_ltx2
+
+    store = tmp_path / "verdicts" / "ltx23-source-verdicts.json"
+    monkeypatch.setattr(video_ltx2, "_ltx23_verdicts_path", lambda: store)
+    hashed: list = []
+    real_hash = video_ltx2.ltx23_source_sha256
+
+    def _counting(path):
+        hashed.append(str(path))
+        return real_hash(path)
+
+    monkeypatch.setattr(video_ltx2, "ltx23_source_sha256", _counting)
+    return store, hashed
+
+
 def _ltx23_synthetic_official(monkeypatch, path):
-    """Write a small safetensors-shaped file at *path* and pin the official identity to it, so the real size and
-    fingerprint check runs against bytes the test controls. Returns (size, sampled offsets)."""
+    """Write a small safetensors-shaped file at *path* and pin the official identity (size and sha256) to it, so the
+    real check runs against bytes the test controls. Returns (size, the four 1 MiB windows a sampled check read)."""
     import hashlib
 
     from core.inference import video_ltx2
@@ -11576,34 +11593,35 @@ def _ltx23_synthetic_official(monkeypatch, path):
     sample = 1 << 20
     data = 8 + len(header)
     offsets = [data + (len(blob) - data) * k // 4 for k in (1, 2, 3)] + [len(blob) - sample]
-    digest = hashlib.sha256(blob[:data])
-    for off in offsets:
-        digest.update(blob[off : off + sample])
     monkeypatch.setattr(video_ltx2, "LTX23_PREQUANT_SOURCE_SIZE", len(blob))
-    monkeypatch.setattr(video_ltx2, "LTX23_PREQUANT_SOURCE_FINGERPRINT", digest.hexdigest())
-    monkeypatch.setattr(video_ltx2, "_LTX23_VERIFIED", {})
+    monkeypatch.setattr(video_ltx2, "LTX23_PREQUANT_SOURCE_SHA256", hashlib.sha256(blob).hexdigest())
     return len(blob), offsets
 
 
 def test_ltx23_local_file_is_substituted_only_when_it_is_the_official_one(tmp_path, monkeypatch):
     # The hosted DiT replaces the file's own, so a same-named fine-tune must not be swapped for the stock weights. Local
-    # files are verified by size and a sampled fingerprint (header plus four 1 MiB samples of the tensor data).
+    # files are verified by size and the full sha256.
     from core.inference import video_ltx2
 
+    _ltx23_verdict_store(monkeypatch, tmp_path)
     name = "ltx-2.3-22b-distilled.safetensors"
     official = tmp_path / "official"
     official.mkdir()
     size, offsets = _ltx23_synthetic_official(monkeypatch, official / name)
     assert video_ltx2.ltx23_prequant_eligible(name, str(official))
     assert video_ltx2.ltx23_prequant_eligible(name, str(official / name))
-    # Same name and size, different weights in a sampled region / different header: a fine-tune, not served.
-    for where in (offsets[1] + 7, 12):
+    # Same name, size and header, one tensor byte changed: inside a window a sampled check read, and outside all of
+    # them (a merge that touched only some layers). Neither is served.
+    outside = offsets[0] - 4096
+    assert all(not (off <= outside < off + (1 << 20)) for off in offsets)
+    for where in (offsets[1] + 7, outside, 12):
         tuned = tmp_path / f"tuned_{where}"
         tuned.mkdir()
         blob = bytearray((official / name).read_bytes())
         blob[where] ^= 0xFF
         (tuned / name).write_bytes(bytes(blob))
         assert not video_ltx2.ltx23_prequant_eligible(name, str(tuned)), where
+        assert not video_ltx2.ltx23_source_file_verified(tuned / name), where
     # Different size, and a missing file: not served.
     short = tmp_path / "short"
     short.mkdir()
@@ -11611,6 +11629,44 @@ def test_ltx23_local_file_is_substituted_only_when_it_is_the_official_one(tmp_pa
     assert not video_ltx2.ltx23_prequant_eligible(name, str(short))
     assert not video_ltx2.ltx23_prequant_eligible(name, str(tmp_path / "missing"))
     assert size == video_ltx2.LTX23_PREQUANT_SOURCE_SIZE
+
+
+def test_ltx23_local_verdict_is_hashed_once_and_invalidated_by_a_change(tmp_path, monkeypatch):
+    import os
+
+    from core.inference import video_ltx2
+
+    store, hashed = _ltx23_verdict_store(monkeypatch, tmp_path)
+    name = "ltx-2.3-22b-distilled.safetensors"
+    path = tmp_path / name
+    _ltx23_synthetic_official(monkeypatch, path)
+    assert video_ltx2.ltx23_source_file_verified(path)
+    assert video_ltx2.ltx23_source_file_verified(path)
+    assert len(hashed) == 1 and store.is_file()
+    # Rewritten in place under the same size: the stored verdict no longer applies.
+    blob = bytearray(path.read_bytes())
+    blob[-3] ^= 0xFF
+    stat = path.stat()
+    path.write_bytes(bytes(blob))
+    os.utime(path, ns = (stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert not video_ltx2.ltx23_source_file_verified(path)
+    assert not video_ltx2.ltx23_source_file_verified(path)
+    assert len(hashed) == 2
+    # Planning never hashes: a stored verdict answers, an unknown file of the official size reads as eligible.
+    other = tmp_path / "other" / name
+    other.parent.mkdir()
+    other.write_bytes(bytes(blob))
+    with video_ltx2.ltx23_identity_without_hashing():
+        assert not video_ltx2.ltx23_source_file_verified(path)
+        assert video_ltx2.ltx23_source_file_verified(other)
+    assert len(hashed) == 2
+    # A read error is not official and is not remembered.
+    def _unreadable(p):
+        raise OSError("EIO")
+
+    monkeypatch.setattr(video_ltx2, "ltx23_source_sha256", _unreadable)
+    assert not video_ltx2.ltx23_source_file_verified(other)
+    assert str(other.resolve()) not in video_ltx2._ltx23_read_verdicts()
 
 
 def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, monkeypatch):
@@ -11629,7 +11685,8 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     assert not video_ltx2.ltx23_prequant_eligible(
         "ltx-2.3-22b-dev.safetensors", "Lightricks/LTX-2.3"
     )
-    # Cached: a content-addressed blob of the official size is the file; anything else in its place is not.
+    # Cached: a content-addressed blob of the official size is the file, with no hashing; anything else in its place is not.
+    _, hashed = _ltx23_verdict_store(monkeypatch, tmp_path)
     blobs = tmp_path / "blobs"
     blobs.mkdir()
     good = blobs / video_ltx2.LTX23_PREQUANT_SOURCE_SHA256
@@ -11640,13 +11697,14 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     (snap / name).symlink_to(good)
     cached["hit"] = snap / name
     assert video_ltx2.ltx23_source_file_verified(snap / name)
+    assert hashed == []
     assert video_ltx2.ltx23_prequant_eligible(name, "Lightricks/LTX-2.3")
     bad = blobs / ("0" * 64)
     with open(bad, "wb") as fh:
         fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)  # right size, wrong content (zeros)
     (snap / name).unlink()
     (snap / name).symlink_to(bad)
-    monkeypatch.setattr(video_ltx2, "_LTX23_VERIFIED", {})
+    monkeypatch.setattr(video_ltx2, "ltx23_source_sha256", lambda path: "0" * 64)
     assert not video_ltx2.ltx23_prequant_eligible(name, "Lightricks/LTX-2.3")
 
 

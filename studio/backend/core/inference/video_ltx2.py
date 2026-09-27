@@ -23,8 +23,11 @@ authoritative 2.3 mapping the loader hasn't absorbed). Assembled through the con
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
+import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from loggers import get_logger
 
@@ -460,51 +463,93 @@ LTX23_PREQUANT_SOURCE_REPOS = frozenset({"lightricks/ltx-2.3"})
 LTX23_PREQUANT_SOURCE_SIZE = 46_149_345_038
 # The LFS sha256, which is also the blob name the Hub cache links the snapshot entry to: free to check there.
 LTX23_PREQUANT_SOURCE_SHA256 = "14409a4d1337a8ded02fa87fb895b17a91ab2c6588f7cc3352e624ff18a689bf"
-# Outside the Hub cache: sha256 over the safetensors header (the 8-byte length and the JSON, which records this
-# training run's own metadata) and 1 MiB of tensor data at 1/4, 1/2 and 3/4 of the data region and at the end. About
-# 5 MB read instead of hashing 46 GB; taken from the official file with ranged reads.
-LTX23_PREQUANT_SOURCE_FINGERPRINT = (
-    "2af533b0abd59f3d0bae1dfbf1a4d22c756cf3ddaccfc3e6e90e6df025cdce0a"
-)
-_LTX23_SAMPLE_BYTES = 1 << 20
-_LTX23_MAX_HEADER_BYTES = 100 << 20
-_LTX23_VERIFIED: dict[tuple[str, int, int], bool] = {}
+# Anywhere else the whole file is hashed (about 30 s for 46 GB where sha256 runs at 1.4 GB/s), once: the verdict is
+# persisted per (realpath, size, mtime_ns, inode). A sample would miss a fine-tune that rewrote only some tensors.
+_LTX23_HASH_CHUNK = 16 << 20
+_LTX23_VERDICTS_FILE = "ltx23-source-verdicts.json"
+_LTX23_VERDICTS_VERSION = 1
+_LTX23_VERIFY_LOCK = threading.Lock()
+_LTX23_NO_HASH: contextvars.ContextVar[bool] = contextvars.ContextVar("ltx23_no_hash", default = False)
 
 
-def ltx23_source_fingerprint(path: Path | str) -> Optional[str]:
-    """``LTX23_PREQUANT_SOURCE_FINGERPRINT``'s digest of *path*, or None when it is not a readable safetensors file."""
-    import hashlib
+@contextlib.contextmanager
+def ltx23_identity_without_hashing() -> Iterator[None]:
+    """For planning (the download plan and its precision check): a local file with the official size and no stored
+    verdict reads as official instead of being hashed there, like an uncached Hub pick; the load hashes it."""
+    token = _LTX23_NO_HASH.set(True)
+    try:
+        yield
+    finally:
+        _LTX23_NO_HASH.reset(token)
+
+
+def _ltx23_verdicts_path() -> Path:
+    from utils.paths.storage_roots import cache_root
+    return cache_root() / _LTX23_VERDICTS_FILE
+
+
+def _ltx23_read_verdicts() -> dict[str, Any]:
+    import json
+
+    try:
+        data = json.loads(_ltx23_verdicts_path().read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != _LTX23_VERDICTS_VERSION
+        or data.get("sha256") != LTX23_PREQUANT_SOURCE_SHA256
+        or not isinstance(data.get("files"), dict)
+    ):
+        return {}
+    return data["files"]
+
+
+def _ltx23_write_verdict(real: str, record: dict[str, Any]) -> None:
+    import json
     import os
+    import uuid
 
-    with open(path, "rb") as fh:
-        size = os.fstat(fh.fileno()).st_size
-        prefix = fh.read(8)
-        if len(prefix) != 8:
-            return None
-        header_len = int.from_bytes(prefix, "little")
-        if not 0 < header_len <= _LTX23_MAX_HEADER_BYTES:
-            return None
-        header = fh.read(header_len)
-        if len(header) != header_len:
-            return None
-        digest = hashlib.sha256(prefix + header)
-        data_start = 8 + header_len
-        span = size - data_start
-        if span < _LTX23_SAMPLE_BYTES:
-            return None
-        offsets = [data_start + span * k // 4 for k in (1, 2, 3)] + [size - _LTX23_SAMPLE_BYTES]
-        for offset in offsets:
-            fh.seek(offset)
-            chunk = fh.read(_LTX23_SAMPLE_BYTES)
-            if len(chunk) != _LTX23_SAMPLE_BYTES:
-                return None
-            digest.update(chunk)
+    files = _ltx23_read_verdicts()
+    files[real] = record
+    path = _ltx23_verdicts_path()
+    tmp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
+    payload = {"version": _LTX23_VERDICTS_VERSION, "sha256": LTX23_PREQUANT_SOURCE_SHA256, "files": files}
+    try:
+        path.parent.mkdir(parents = True, exist_ok = True)
+        with tmp.open("w", encoding = "utf-8") as fh:
+            json.dump(payload, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except OSError as exc:
+        logger.debug("Could not persist the LTX-2.3 source verdict: %s", exc)
+        try:
+            tmp.unlink(missing_ok = True)
+        except OSError:
+            pass
+
+
+def _ltx23_stat_key(stat: Any) -> dict[str, int]:
+    return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "inode": stat.st_ino}
+
+
+def ltx23_source_sha256(path: Path | str) -> str:
+    """The full sha256 of *path*. Raises OSError on a read failure."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    buf = bytearray(_LTX23_HASH_CHUNK)
+    view = memoryview(buf)
+    with open(path, "rb", buffering = 0) as fh:
+        while n := fh.readinto(buf):
+            digest.update(view[:n])
     return digest.hexdigest()
 
 
 def ltx23_source_file_verified(checkpoint_path: Path | str) -> bool:
     """Whether the file on disk is the official ``ltx-2.3-22b-distilled.safetensors``: its size, then the Hub cache's
-    content-addressed blob name, else the sampled fingerprint (cached per path, size and mtime). Never raises."""
+    content-addressed blob name, else the full sha256 (persisted per realpath, size, mtime and inode). Never raises."""
     try:
         path = Path(str(checkpoint_path)).expanduser()
         if path.name.lower() not in LTX23_PREQUANT_SOURCE_FILES:
@@ -515,12 +560,23 @@ def ltx23_source_file_verified(checkpoint_path: Path | str) -> bool:
             return False
         if real.name == LTX23_PREQUANT_SOURCE_SHA256:
             return True
-        key = (str(real), stat.st_size, stat.st_mtime_ns)
-        if key not in _LTX23_VERIFIED:
-            _LTX23_VERIFIED[key] = (
-                ltx23_source_fingerprint(real) == LTX23_PREQUANT_SOURCE_FINGERPRINT
-            )
-        return _LTX23_VERIFIED[key]
+        key = _ltx23_stat_key(stat)
+        stored = _ltx23_read_verdicts().get(str(real))
+        if isinstance(stored, dict) and {k: stored.get(k) for k in key} == key:
+            return stored.get("verified") is True
+        if _LTX23_NO_HASH.get():
+            return True
+        with _LTX23_VERIFY_LOCK:
+            stored = _ltx23_read_verdicts().get(str(real))
+            if isinstance(stored, dict) and {k: stored.get(k) for k in key} == key:
+                return stored.get("verified") is True
+            logger.info("video.ltx23_prequant: hashing %s once to confirm it is the official file", real)
+            verified = ltx23_source_sha256(real) == LTX23_PREQUANT_SOURCE_SHA256
+            # Changed while being read: the digest describes neither version, so it is neither stored nor trusted.
+            if _ltx23_stat_key(real.stat()) != key:
+                return False
+            _ltx23_write_verdict(str(real), {**key, "verified": verified})
+            return verified
     except Exception:  # noqa: BLE001 -- unverifiable is not official
         return False
 
