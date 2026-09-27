@@ -2854,11 +2854,13 @@ html[data-chat-font] .aui-root {
 		border-radius: 10px;
 	}
 
+	/* A heading opens its group: more room above it than below, so it reads with the rows under it
+	   rather than the rule or edge over it. */
 	.unsloth-plus-menu.sidebar-row-menu :is(
 			[data-slot="dropdown-menu-label"],
 			[data-slot="context-menu-label"]
 		) {
-		@apply pl-2.5 pr-2.5 py-1 text-ui-11;
+		@apply pl-2.5 pr-2.5 pt-2 pb-1 text-ui-11;
 	}
 
 	/* Checkbox and radio rows (a sidebar header menu's Show toggles and sorts) shaped like the rows

@@ -4120,6 +4120,8 @@ export function AppSidebar() {
     const leaving = config.current
       ? customSections.find((section) => section.id === config.current)
       : undefined;
+    // The section the rows are in is not a place to move them to, so it is left out, not greyed.
+    const destinations = customSections.filter((section) => section.id !== config.current);
     return (
       <>
         {config.heading && <P.Label>{t("shell.sections.sectionsHeading")}</P.Label>}
@@ -4135,12 +4137,11 @@ export function AppSidebar() {
           <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.sections.newSection")}</span>
         </P.Item>
-        {customSections.length > 0 && (
+        {destinations.length > 0 && (
           <div className={MOVE_TO_LIST}>
-            {customSections.map((section) => (
+            {destinations.map((section) => (
               <P.Item
                 key={section.id}
-                disabled={config.current === section.id}
                 onSelect={() => fileSectionTarget(target, section.id)}
               >
                 <HugeiconsIcon icon={LayerIcon} strokeWidth={1.75} className="size-icon" />
@@ -4425,12 +4426,12 @@ export function AppSidebar() {
                   <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
                   <span>New project</span>
                 </P.Item>
-                {projects.length > 0 && (
+                {/* The project the chat is in is not a place to move it to: left out, not greyed. */}
+                {projects.some((project) => project.id !== item.projectId) && (
                   <div className={MOVE_TO_LIST}>
-                    {projects.map((project) => (
+                    {projects.filter((project) => project.id !== item.projectId).map((project) => (
                       <P.Item
                         key={project.id}
-                        disabled={item.projectId === project.id}
                         onSelect={() => void moveChatToProject(item, project.id)}
                       >
                         <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />

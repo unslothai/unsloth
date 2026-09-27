@@ -111,7 +111,7 @@ test("a chat's Move to submenu groups projects and sections, New first and Remov
     trigger: sub.indexOf('<span>{t("shell.sections.moveTo")}</span>'),
     projects: sub.indexOf('<P.Label>{t("shell.navigation.projects")}</P.Label>'),
     newProject: sub.indexOf("<span>New project</span>"),
-    destinations: sub.indexOf("{projects.map((project) => ("),
+    destinations: sub.indexOf("{projects.filter((project) => project.id !== item.projectId).map((project) => ("),
     removeProject: sub.indexOf('t("shell.sections.removeFromProject")'),
     rule: sub.indexOf("<P.Separator />"),
     sections: sub.indexOf("{renderSectionItems(P, {"),
@@ -132,7 +132,10 @@ test("a chat's Move to submenu groups projects and sections, New first and Remov
   assert.match(items, /icon=\{PlusSignIcon\}[^\n]*\n\s*<span>\{t\("shell\.sections\.newSection"\)\}<\/span>/);
   // Sections run New section, the sections, then Remove from section, only where there is one.
   const newSection = items.indexOf('t("shell.sections.newSection")');
-  const list = items.indexOf("{customSections.map((section) => (");
+  const list = items.indexOf("{destinations.map((section) => (");
+  // The project or section the row is already in is left out, not offered greyed out.
+  assert.match(items, /const destinations = customSections\.filter\(\(section\) => section\.id !== config\.current\);/);
+  assert.doesNotMatch(APP_SIDEBAR, /disabled=\{config\.current === section\.id\}|disabled=\{item\.projectId === project\.id\}/);
   const remove = items.indexOf("{config.anyFiled && (");
   assert.ok(newSection < list && list < remove, "the Sections group is out of order");
   // No Project sources, no separate Project or Section submenus, no ellipsis on New section.
@@ -430,4 +433,12 @@ test("Move to names what a row leaves, and its lists scroll inside the window", 
   assert.match(APP_SIDEBAR, /const MOVE_TO_MENU =\n\s*"max-h-\[var\(--radix-dropdown-menu-content-available-height,var\(--radix-context-menu-content-available-height\)\)\] overflow-y-auto";/);
   assert.equal((APP_SIDEBAR.match(/<div className=\{MOVE_TO_LIST\}>/g) ?? []).length, 2);
   assert.equal((APP_SIDEBAR.match(/sidebar-menu w-52", MOVE_TO_MENU\)/g) ?? []).length, 2);
+});
+
+test("a sidebar menu heading has more room above it than below", async () => {
+  const css = await readSrcAsync("index.css");
+  assert.match(
+    css,
+    /\.unsloth-plus-menu\.sidebar-row-menu :is\(\n\s*\[data-slot="dropdown-menu-label"\],\n\s*\[data-slot="context-menu-label"\]\n\s*\) \{\n\s*@apply pl-2\.5 pr-2\.5 pt-2 pb-1 text-ui-11;/,
+  );
 });
