@@ -4087,7 +4087,8 @@ def update_personalization_settings(
         ) from exc
     # Return the stored record, not the defaults-filled request, so the response
     # matches storage (and the next GET) for fields the client omitted. An unknown
-    # stored palette stays on disk for the build that wrote it.
+    # stored palette is filtered like GET does; clients send a palette with every
+    # save, so the next save replaces it.
     return PersonalizationPayload.model_validate(drop_unknown_palette(merged, _PALETTE_IDS))
 
 

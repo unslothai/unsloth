@@ -798,7 +798,8 @@ function SizeInput({
     onCommit(normalized.value);
   };
   return (
-    <div className="flex items-center gap-1.5">
+    // Tagged so settings search can land on a size input nested in its font row.
+    <div data-settings-label={ariaLabel} className="flex items-center gap-1.5">
       <Input
         type="number"
         inputMode="numeric"
