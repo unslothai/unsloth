@@ -65,7 +65,7 @@ $blockNames = @(
     "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory", "Test-StudioChildScriptDirectoryElevated",
     "Invoke-StudioSystem32ToolBounded", "Get-StudioSystem32Tool", "Test-StudioPathUnderAdminRoot", "Test-StudioSddlRightsAreWrite",
     "Test-StudioSddlPrincipalIsAdminOnly", "Test-StudioSddlWritableByNonAdmin",
-    "Test-StudioDirectoryIsAdminOnly", "Get-StudioLexicalParent"
+    "Test-StudioDirectoryIsAdminOnly", "Get-StudioLexicalParent", "Get-NvidiaSystem32Dir"
 )
 $installParts = @(Get-HelperSources $installPs1 $blockNames)
 $setupParts = @(Get-HelperSources $setupPs1 $blockNames)
