@@ -4,13 +4,15 @@
 """Backport of PyTorch's symbolic divisibility fix (pytorch/pytorch#184566, first released in torch 2.14.0).
 
 Inductor splits a flat iteration range against a kernel group in ``SIMDKernel._split_iteration_ranges`` and raises
-``CantSplit`` unless ``SizeVarAllocator.statically_known_multiple_of(size, group)`` proves the division exact. Before
-2.14 a SYMBOLIC group was only tried through ``Eq(Mod(size, group), 0)``, and torch's ``Mod`` cannot cancel an Add
-over an Add, so ``(4096*s87 - 4096*s89) / (s87 - s89)`` or ``(15360*s31 + 15360*s87) / (s31 + s87)`` stayed unproven
-and every ``torch.compile(dynamic=True)`` of a block with such a tensor failed to lower (Qwen-Image-2.1 on torchao
-fp8 / int8 weights, FLUX.1 single-stream blocks). 2.14 first asks for a polynomial gcd that covers the denominator;
-this module adds exactly that proof, on torch builds whose own check still misses it (decided by a probe, not by a
-version string), and changes nothing on 2.14+.
+``CantSplit`` unless ``SizeVarAllocator.statically_known_multiple_of(size, group)`` proves the division exact. For a
+SYMBOLIC group torch <= 2.11 asked ``Eq(numerator % denominator, 0)``, i.e. sympy's own ``Mod``, which cancels
+``(4096*s87 - 4096*s89) % (s87 - s89)`` to 0. pytorch/pytorch#177051 (torch 2.12.0) switched that line to torch's
+``Mod`` (``torch.utils._sympy.functions``), which only proves divisibility through ``(p / q).is_integer``, and sympy
+leaves an Add over an Add unevaluated, so the same expression became unprovable. On 2.12.x and 2.13.x every
+``torch.compile(dynamic=True)`` of a block holding such a tensor fails to lower (Qwen-Image-2.1 on torchao fp8 /
+int8 weights, FLUX.1 single-stream blocks). 2.14 first asks whether a polynomial gcd covers the denominator; this
+module adds exactly that proof on torch builds whose own check misses it (decided by a probe, not by a version
+string), and changes nothing where the stock check already proves the canonical case.
 
 Sound by construction: it only ever turns a False into a True when ``gcd(numerator, denominator)`` equals the
 denominator up to sign, i.e. the numerator is an integer-polynomial multiple of it.

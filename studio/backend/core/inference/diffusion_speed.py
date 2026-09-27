@@ -699,6 +699,7 @@ def _compile_repeated_blocks(
     unet = _denoiser_unet(pipe) if not dits else None
     if not dits and unet is None:
         return False
+    _install_inductor_backports(logger)
     # default: dynamic=True, fast cold start, no recompile on resolution change. max: max-autotune-no-cudagraphs +
     # automatic dynamic (None): the first shape compiles static and autotuned, and a dimension that then changes is
     # generalised once. dynamic=False recompiled on every new prompt length for DiTs whose blocks see the text tokens
@@ -802,6 +803,17 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "cache-hook inner compile", exc)
     return engaged
+
+
+def _install_inductor_backports(logger: Any) -> bool:
+    """torch 2.12 / 2.13 cannot prove ``(k*a - k*b) % (a - b) == 0`` and raise inductor ``CantSplit`` on it (fixed in
+    2.14); a probe-gated backport of that proof, a no-op on every other torch. Never fails a load."""
+    try:
+        from . import diffusion_inductor_backports
+        return diffusion_inductor_backports.install(logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "inductor backports", exc)
+        return False
 
 
 def compile_dynamic(transformer: Any, dynamic: Optional[bool]) -> Optional[bool]:
@@ -1155,6 +1167,7 @@ def _compile_vae_decode(
         return True
     if getattr(vae, "_unsloth_compile_decode_error", None):
         return False
+    _install_inductor_backports(logger)
     try:
         import torch
 
