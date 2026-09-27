@@ -4052,7 +4052,12 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         return _unsloth_gkd_note_fallback(self, "use_liger_gkd_loss")
     if getattr(self, "is_fsdp_enabled", False) or getattr(self, "is_deepspeed_enabled", False):
         return _unsloth_gkd_note_fallback(self, "FSDP / DeepSpeed")
-    if not isinstance(inputs, dict) or any(k not in inputs for k in ("input_ids", "attention_mask", "labels")):
+    try:
+        # Any mapping (dict, BatchEncoding) carrying what TRL's forwards and slicing read.
+        missing = any(k not in inputs for k in ("input_ids", "attention_mask", "labels"))
+    except Exception:
+        missing = True
+    if missing:
         return _unsloth_gkd_note_fallback(self, "inputs")
     if layout["shift"] == "prompt" and "prompts" not in inputs:
         return _unsloth_gkd_note_fallback(self, "inputs")

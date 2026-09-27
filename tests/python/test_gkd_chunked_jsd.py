@@ -409,3 +409,15 @@ def test_fsdp_deepspeed_and_missing_inputs_fall_back():
     inputs = _inputs(vocab)
     inputs.pop("prompts")
     assert rl._unsloth_gkd_chunked_loss(_trainer(0.5, student, teacher), student, inputs, None, layout) is None
+
+
+def test_batch_encoding_inputs_take_the_chunked_path():
+    from transformers import BatchEncoding
+
+    vocab = 97
+    student, teacher = _TinyLM(vocab, 16, 0.0, 1), _TinyLM(vocab, 24, 0.0, 2)
+    layout = {"shift": "prompt", "num_items_in_batch": False}
+    got = rl._unsloth_gkd_chunked_loss(_trainer(0.5, student, teacher), student, BatchEncoding(_inputs(vocab)), None, layout)
+    want = rl._unsloth_gkd_chunked_loss(_trainer(0.5, student, teacher), student, _inputs(vocab), None, layout)
+    assert got is not None
+    torch.testing.assert_close(got, want)
