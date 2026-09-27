@@ -141,7 +141,8 @@ def _nounits(argv: Sequence[str]) -> bool:
 
 @dataclass
 class _Entry:
-    result: subprocess.CompletedProcess
+    # None = the CLI's latest answer had no rows (failed or empty): never served, only orders writers.
+    result: Optional[subprocess.CompletedProcess]
     at: float
     gen: int
     static_gen: int
@@ -241,7 +242,7 @@ def _copy(result: Any) -> Any:
 
 
 def _entry_fresh(entry: _Entry, kind: str, now: float) -> bool:
-    if now - entry.at > ttl_for(kind):
+    if entry.result is None or now - entry.at > ttl_for(kind):
         return False
     if kind == STATIC:
         return entry.static_gen == _static_gen
@@ -256,18 +257,10 @@ def _run_child(flight: _Flight, argv: list, kind: str, kwargs: dict) -> None:
         result = subprocess.run(argv, **kwargs)
         flight.result = result
         stdout = getattr(result, "stdout", None)
-        if (
-            getattr(result, "returncode", None) == 0
-            and isinstance(stdout, str)
-            and not stdout.strip()
-        ):
-            # An answered "no rows" is never cached, but it must not leave an older non-empty one served.
-            with _lock:
-                if flight.epoch == _reset_epoch:
-                    existing = _cache.get(flight.key)
-                    if existing is not None and existing.started <= flight.started:
-                        del _cache[flight.key]
-        elif getattr(result, "returncode", None) == 0 and isinstance(stdout, str):
+        if isinstance(stdout, str):
+            # A non-zero exit or no rows (e.g. "No devices were found", exit 6) is never served, but
+            # replaces any older answer so a card that went away is not reported from the cache.
+            good = getattr(result, "returncode", None) == 0 and bool(stdout.strip())
             with _lock:
                 if flight.epoch != _reset_epoch:
                     return
@@ -275,7 +268,7 @@ def _run_child(flight: _Flight, argv: list, kind: str, kwargs: dict) -> None:
                 # A slow child that began before the current entry's must not replace it.
                 if existing is None or existing.started <= flight.started:
                     _cache[flight.key] = _Entry(
-                        result = result,
+                        result = result if good else None,
                         at = flight.started,
                         gen = flight.gen,
                         static_gen = flight.static_gen,
@@ -337,12 +330,16 @@ def _fallback(key: tuple, kind: str) -> Optional[subprocess.CompletedProcess]:
     now = time.monotonic()
     with _lock:
         entry = _cache.get(key)
-    if entry is not None:
+    if entry is not None and entry.result is not None:
         if kind == STATIC and entry.static_gen == _static_gen:
             with _lock:
                 _stats.stale_served += 1
             return _copy(entry.result)
-        if kind == DISPLAY and now - entry.at <= _DISPLAY_MAX_STALE_S:
+        if (
+            kind == DISPLAY
+            and now - entry.at <= _DISPLAY_MAX_STALE_S
+            and entry.gen == _events.generation()
+        ):
             with _lock:
                 _stats.stale_served += 1
             return _copy(entry.result)
@@ -397,12 +394,16 @@ def run_nvidia_smi(
         if entry is not None and _entry_fresh(entry, kind, now):
             _stats.hits += 1
             return _copy(entry.result)
-        serve_stale = entry is not None and (
-            (kind == STATIC and entry.static_gen == _static_gen)
-            or (
-                kind == DISPLAY
-                and now - entry.at <= _DISPLAY_MAX_STALE_S
-                and entry.gen == _events.generation()
+        serve_stale = (
+            entry is not None
+            and entry.result is not None
+            and (
+                (kind == STATIC and entry.static_gen == _static_gen)
+                or (
+                    kind == DISPLAY
+                    and now - entry.at <= _DISPLAY_MAX_STALE_S
+                    and entry.gen == _events.generation()
+                )
             )
         )
     if serve_stale:

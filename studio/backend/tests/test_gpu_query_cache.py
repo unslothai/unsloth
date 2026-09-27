@@ -457,7 +457,6 @@ def test_slow_cli_answers_a_display_read_from_the_last_good_value(smi, monkeypat
     with gpu_query.display_reads():
         good = nvidia.get_visible_gpu_utilization([0, 1])
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_DISPLAY_TTL", "0")
-    gpu_memory_events.invalidate_gpu_memory("x")  # force past the SWR fast path
     monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 4.0)
     smi.set(delay = 12.0)
     monkeypatch.setattr(gpu_query, "run_nvidia_smi", _with_timeout(gpu_query.run_nvidia_smi, 0.5))
@@ -466,6 +465,52 @@ def test_slow_cli_answers_a_display_read_from_the_last_good_value(smi, monkeypat
         out = nvidia.get_visible_gpu_utilization([0, 1])
     assert time.monotonic() - t0 < 2.0
     assert out == good
+
+
+def test_slow_cli_never_shows_a_pre_load_reading_after_a_load(smi, monkeypatch):
+    with gpu_query.display_reads():
+        nvidia.get_visible_gpu_utilization([0, 1])
+    monkeypatch.setenv("UNSLOTH_GPU_QUERY_DISPLAY_TTL", "0")
+    gpu_memory_events.invalidate_gpu_memory("load")
+    monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 4.0)
+    smi.set(delay = 12.0)
+    monkeypatch.setattr(gpu_query, "run_nvidia_smi", _with_timeout(gpu_query.run_nvidia_smi, 0.5))
+    t0 = time.monotonic()
+    with gpu_query.display_reads():
+        out = nvidia.get_visible_gpu_utilization([0, 1])
+    assert time.monotonic() - t0 < 2.0
+    assert out["available"] is False
+
+
+def test_a_failed_answer_replaces_the_cached_inventory(smi, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GPU_QUERY_STATIC_TTL", "0")
+    assert nvidia.get_physical_gpu_count() == 2
+    smi.set(exit = 6)  # real nvidia-smi on a host with no GPU: "No devices were found", exit 6
+    counts = []
+    for _ in range(20):
+        counts.append(nvidia.get_physical_gpu_count())
+        if counts[-1] is None:
+            break
+        time.sleep(0.1)
+    assert counts[-1] is None, counts
+
+
+def test_an_older_answer_does_not_overwrite_a_newer_empty_one(smi, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GPU_QUERY_DISPLAY_TTL", "3600")
+    argv = ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader"]
+
+    def run():
+        return gpu_query.run_nvidia_smi(argv, capture_output = True, text = True, timeout = 5)
+
+    smi.set(delay = 1.0)
+    older = threading.Thread(target = run)  # fit checks never share a child
+    older.start()
+    time.sleep(0.3)
+    smi.set(delay = 0, gpus = [])
+    assert run().stdout == ""
+    older.join(5)
+    with gpu_query.display_reads():
+        assert run().stdout == ""
 
 
 def test_slow_cli_never_answers_a_fit_check_from_an_old_reading(smi, llama_probe, monkeypatch):
