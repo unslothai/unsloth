@@ -1043,7 +1043,6 @@ const BASE_PARTS = {
     ["rIdS", "sharedStrings", "sharedStrings.xml"],
     ["rIdT", "styles", "styles.xml"],
   ]),
-  // Listed out of archive order: the workbook, not the zip, decides sheet order.
   "xl/workbook.xml": `<workbook xmlns="${MAIN}" xmlns:r="${REL}"><sheets>
     <sheet name="Second" sheetId="2" r:id="rIdB"/>
     <sheet name="Secret" sheetId="3" state="hidden" r:id="rIdC"/>
@@ -1127,7 +1126,6 @@ test("a stored part is charged its real size, not the size it declares", async (
     ),
     [name]: [strToU8(sheet(" ".repeat(11 * 1024 * 1024))), { level: 0 }],
   });
-  // Rewrite the central directory to declare the stored part as 1 byte.
   const view = new DataView(zipped.buffer);
   for (let offset = 0; offset < zipped.length - 46; offset++) {
     if (view.getUint32(offset, true) !== 0x02014b50) continue;
@@ -1163,7 +1161,6 @@ test("a row repeating one long shared string stops at the text budget", async ()
     "book.xlsx",
   );
   assert.ok(content.text.length < 11 * 1024 * 1024);
-  // The cells that fit are kept, not the whole row dropped.
   assert.equal(content.text.split("\t").length, 9);
   assert.match(content.text, /\[Truncated: /);
 });
@@ -1196,9 +1193,7 @@ const DECK_PARTS = {
     ["rId8", "slide", "slides/slide2.xml"],
     ["rId9", "slide", "slides/slide3.xml"],
   ]),
-  // The plain id comes first, as PowerPoint writes it.
   "ppt/presentation.xml": `<p:presentation xmlns:p="${PML}" xmlns:r="${REL}"><p:sldIdLst><p:sldId id="256" r:id="rId9"/><p:sldId id="257" r:id="rId8"/><p:sldId id="258" r:id="rId7"/></p:sldIdLst></p:presentation>`,
-  // Archived out of deck order.
   "ppt/slides/slide1.xml": slide(
     `${shape(`<a:p><a:r><a:t>before</a:t></a:r></a:p>`)}<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="3" name="t"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>Region</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>Sales</a:t></a:r></a:p><a:p><a:r><a:t>(k)</a:t></a:r></a:p></a:txBody></a:tc></a:tr><a:tr><a:tc><a:txBody><a:p><a:r><a:t>North</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>42</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame>${shape(`<a:p><a:r><a:t>after</a:t></a:r></a:p>`)}`,
   ),
@@ -1299,7 +1294,6 @@ test("Word-style output reads fields, tables and double-byte fonts", async () =>
 });
 
 test("an RTF reader stays bounded", async () => {
-  // Nesting past the text budget is never reached, so it cannot fail the read.
   const long = await readRtf(
     `{\\rtf1 ${"x".repeat(11 * 1024 * 1024)}${"{".repeat(2000)}`,
   );
@@ -1329,8 +1323,6 @@ const bytes = (field: number, value: Bytes | string): Bytes => {
 };
 const ref = (field: number, id: number): Bytes => bytes(field, int(1, id));
 
-/** Records as iWork writes them, over two Snappy chunks, optionally ending on one- and two-byte
- *  copies that repeat the two bytes before them three more times. */
 function iwa(
   objects: [number, number, Bytes][],
   overlapTail = false,
@@ -1349,7 +1341,6 @@ function iwa(
   ]);
 }
 
-/** A Snappy block of `data`, whose last six bytes come from `copies` when there are any. */
 function chunk(data: Bytes, copies: Bytes): Bytes {
   const literal = copies.length > 0 ? data.slice(0, -6) : data;
   const block = [...varint(data.length)];
@@ -1408,11 +1399,9 @@ test("Keynote slides read in deck order, numbered past skipped slides", async ()
     iwa([
       [10, 2, bytes(3, [...ref(2, 20), ...ref(2, 21), ...ref(2, 23)])],
       [20, 4, [...ref(2, 30), ...ref(1, 22)]],
-      // A node listed twice in the tree is still one slide.
       [22, 4, [...ref(2, 32), ...int(4, 1), ...ref(1, 21)]],
       [21, 4, ref(2, 31)],
       [23, 4, ref(2, 33)],
-      // Builds come first on the wire, and set neither the slide's text nor its order.
       [
         30,
         5,
@@ -1424,7 +1413,6 @@ test("Keynote slides read in deck order, numbered past skipped slides", async ()
           ...ref(27, 60),
         ],
       ],
-      // A shape links back to a slide, which is not followed.
       [50, 2011, [...bytes(1, ref(2, 41)), ...ref(3, 31)]],
       [60, 15, ref(1, 44)],
       [70, 8, ref(1, 50)],
@@ -1469,7 +1457,6 @@ function rowInfo(index: number, cells: (Bytes | null)[]): Bytes {
 }
 
 test("Numbers sheets read their tables as rows of typed cells", async () => {
-  // -12345678901234567.89: a mantissa past 2^53, exponent -2 stored with bias 0x1820.
   const mantissa = BigInt("1234567890123456789");
   const biased = 0x1820 - 2;
   const decimal = [
@@ -1479,7 +1466,6 @@ test("Numbers sheets read their tables as rows of typed cells", async () => {
     (biased & 0x7f) << 1,
     0x80 | (biased >> 7),
   ];
-  // Listed out of order: the second tile first.
   const tileStorage = [
     ...bytes(1, [...int(1, 1), ...ref(2, 7)]),
     ...bytes(1, [...int(1, 0), ...ref(2, 6)]),
@@ -1583,7 +1569,6 @@ test("an iWork reader refuses old and oversized files", async () => {
     readIwork("huge.pages", new Uint8Array([0, huge.length, 0, 0, ...huge])),
     /unpacks too large/,
   );
-  // Empty records hold no bytes but still cost memory to keep.
   const records = Array.from({ length: 450_000 }, (_, index) => [
     index + 1,
     1,

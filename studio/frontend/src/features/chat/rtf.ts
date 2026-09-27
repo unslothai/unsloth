@@ -15,7 +15,6 @@ function maxTextLength(): number {
 const MAX_GROUP_DEPTH = 1024;
 const LATIN1 = new TextDecoder("latin1");
 
-// Groups whose text is not document body: tables, metadata, pictures, field codes, headers and footers.
 const SKIPPED_DESTINATIONS = new Set([
   "fonttbl",
   "colortbl",
@@ -71,7 +70,6 @@ const CONTROL_WORD_TEXT = new Map<string, string>([
   ["qmspace", " "],
 ]);
 
-// \fcharset values mapped to Windows code pages.
 const CHARSET_CODEPAGES: Record<number, number> = {
   0: 1252,
   77: 10000,
@@ -151,7 +149,6 @@ function rtfToText(bytes: Uint8Array, filename: string): string {
 
   const flush = () => {
     if (pending.length > 0) {
-      // Charged when buffered: a byte decodes to at most one character.
       parts.push(
         new TextDecoder(pendingEncoding).decode(new Uint8Array(pending)),
       );
@@ -263,7 +260,6 @@ function rtfToText(bytes: Uint8Array, filename: string): string {
       } else if (word === "intbl" || word === "pard") {
         group.inTable = word === "intbl";
       } else if (word === "par" && group.inTable) {
-        // A paragraph break inside a cell would split the row across lines.
         emit(" ");
       } else if (SKIPPED_DESTINATIONS.has(word)) {
         group.skip = true;

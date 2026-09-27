@@ -596,7 +596,6 @@ export function SharedComposer({
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  // Images still being re-encoded; a send now would go out without them.
   const [convertingImages, setConvertingImages] = useState(0);
   const [pendingAudio, setPendingAudio] = useState<{
     name: string;

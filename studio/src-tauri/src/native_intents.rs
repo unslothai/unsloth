@@ -610,7 +610,6 @@ const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 // Matches the clipboard reader, so a dropped source file and a pasted one
 // accept the same sizes.
 const MAX_NATIVE_TEXT_BYTES: u64 = 20 * 1024 * 1024;
-// OpenDocument and Office Open XML archives use the composer's larger archive limit.
 const MAX_NATIVE_OPEN_DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
 // Images stop lower: the composer throws over 20 MB without a toast and the
 // drain swallows it, so a larger read loses them silently.

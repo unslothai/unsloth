@@ -433,9 +433,6 @@ def test_delete_attachment_route_then_404(tmp_path, monkeypatch):
     assert excinfo.value.status_code == 404
 
 
-# ---------------------------------------------------------------------------
-# Stored original files
-# ---------------------------------------------------------------------------
 
 
 def _upload(data: bytes, filename: str = "book.xlsx") -> dict:
@@ -462,11 +459,9 @@ def test_tool_only_upload_returns_a_preview(tmp_path, monkeypatch):
         "text": "2 entries:\n  big.bin (5000 bytes)\n  notes/readme.txt (15 bytes)\n"
         "--- notes/readme.txt ---\ncodeword: OTTER",
     }
-    # A corrupt file is still stored; it just has no preview.
     broken = _upload(b"PK\x03\x04 not a zip", "t.zip")
     assert "preview" not in broken and broken["id"]
 
-    # A reader that runs past the deadline is killed: MuPDF takes about 18 s to lay this out.
     from core import chat_attachment_preview as previews
 
     monkeypatch.setattr(previews, "PREVIEW_TIMEOUT_SECONDS", 1.0)
@@ -483,7 +478,6 @@ def test_previews_convert_images_and_read_drawings(tmp_path):
 
     from core.chat_attachment_preview import build_preview
 
-    # 16-bit grey is stretched to 8 bits rather than clipped to white.
     Image.frombytes("I;16", (2, 1), bytes([0, 0, 128, 0])).save(tmp_path / "depth.pgm")
     preview = build_preview(tmp_path / "depth.pgm", "depth.pgm")
     png = Image.open(io.BytesIO(base64.b64decode(preview["image"].split(",", 1)[1])))
@@ -496,7 +490,6 @@ def test_previews_convert_images_and_read_drawings(tmp_path):
             '<o xmlns:d="urn:d" xmlns:t="urn:t"><d:page><t:p>Roadmap</t:p></d:page>'
             "<d:page><t:h>Beta</t:h><t:p>April</t:p></d:page></o>",
         )
-    # The upload stores an attachment under its hash, so the reader cannot go by the path.
     xps = "http://schemas.openxps.org/oxps/v1.0"
     with zipfile.ZipFile(tmp_path / "3f9a", "w") as archive:
         archive.writestr(
@@ -543,7 +536,6 @@ def test_previews_stop_at_their_budgets(tmp_path, monkeypatch):
     def text(name: str) -> str:
         return previews.build_preview(tmp_path / name, name)["text"]
 
-    # tarfile reads extended headers whole, so the scan cap has to hold below it.
     monkeypatch.setattr(previews, "MAX_SCANNED_BYTES", 4096)
     with tarfile.open(tmp_path / "logs.tar.gz", "w:gz") as archive:
         for name, pax in (("a.txt", {}), ("b.txt", {"comment": "x" * 8192}), ("c.txt", {})):
@@ -572,7 +564,6 @@ def test_previews_stop_at_their_budgets(tmp_path, monkeypatch):
     )
     assert text("book.fb2").endswith("more pages not read]")
 
-    # The read cap counts bytes, so multi-byte text is cut short of the character cap.
     monkeypatch.setattr(previews, "MAX_TEXT_CHARS", 10)
     assert text("book.fb2").endswith(
         "[Truncated: the document has more text than one attachment carries]"
@@ -583,19 +574,16 @@ def test_previews_stop_at_their_budgets(tmp_path, monkeypatch):
         == "la marée \n[Truncated: poem.txt is longer than one attachment carries]"
     )
 
-    # Nested elements repeat their descendants' text, so the budget bounds what is built at all.
     nested = ("<p>" * 2000) + ("body " * 100) + ("</p>" * 2000)
     root = ElementTree.fromstring(f"<o>{nested}</o>")
     siblings = ElementTree.fromstring("<o>" + "<p>ten chars</p>" * 50 + "</o>")
     for built in (previews._xml_text(root, {"p"}, 50), previews._xml_text(siblings, {"p"}, 50)):
-        # The marker sits past the budget, as every truncation marker in this module does.
         assert 40 <= len(built.split("\n[Truncated")[0]) <= 50 and built.endswith("shows]")
     two = '<o xmlns:d="urn:d"><d:page><p>{}</p></d:page><d:page><p>{}</p></d:page></o>'
     with zipfile.ZipFile(tmp_path / "two.odp", "w") as archive:
         archive.writestr("content.xml", two.format("a" * 50, "b" * 50))
     assert "b" not in previews._drawing_text(tmp_path / "two.odp", ".odp")
 
-    # ZipFile does not cap what one read of an LZMA or bzip2 member inflates, so those are not read.
     with zipfile.ZipFile(tmp_path / "packed.zip", "w", zipfile.ZIP_LZMA) as archive:
         archive.writestr("notes.txt", "packed")
     assert "packed" not in text("packed.zip")
@@ -613,7 +601,6 @@ def test_previews_stop_at_their_budgets(tmp_path, monkeypatch):
         "kind": "outline",
         "text": "central directory of 153 bytes, too large to list",
     }
-    # Documents that are zips get the same directory check, and image-only pages end the walk too.
     with zipfile.ZipFile(tmp_path / "comic.cbz", "w") as archive:
         archive.writestr("ComicInfo.xml", "<ComicInfo/>")
         for number in range(3):
@@ -628,11 +615,9 @@ def test_previews_stop_at_their_budgets(tmp_path, monkeypatch):
     monkeypatch.setattr(previews, "MAX_DOCUMENT_PAGES", 2)
     assert text("comic.cbz") == "3 pages, no text in the first 2 (images only)"
 
-    # An icon's PNG or BMP frame is checked before Pillow decodes it on open.
     monkeypatch.setattr(previews, "MAX_IMAGE_PIXELS", 100)
     for frames in ("png", "bmp"):
         Image.new("RGB", (16, 16)).save(tmp_path / f"{frames}.ico", bitmap_format = frames)
-    # An icon named as another format opens as that format only, so it cannot skip the check.
     (tmp_path / "icon.tga").write_bytes((tmp_path / "png.ico").read_bytes())
     assert previews.build_preview(tmp_path / "icon.tga", "icon.tga") is None
     monkeypatch.setattr(Image, "open", lambda *args, **kwargs: pytest.fail("icon was decoded"))
@@ -692,7 +677,6 @@ def test_previews_outline_tables_and_arrays(tmp_path, monkeypatch):
         ("weather.parquet", "7c20", "7"),
         ("weather.feather", "7c21", "7"),
         ("weather.orc", "7c22", "7"),
-        # StataReader counts observations only privately.
         ("survey.dta", "7c23", "unknown"),
     ):
         text = build_preview(tmp_path / stored, name)["text"]
@@ -723,7 +707,6 @@ def test_previews_outline_tables_and_arrays(tmp_path, monkeypatch):
         "1 tensors, 6 parameters, metadata {'r': '16'}\nw: shape (2, 3), dtype F32"
     )
 
-    # A name out of a file can hold a lone surrogate, which the JSON response cannot encode.
     lone = json.dumps({"bad\ud800": {"dtype": "F32", "shape": [2], "data_offsets": [0, 8]}})
     raw = lone.encode("utf-8", "surrogatepass")
     (tmp_path / "u.safetensors").write_bytes(struct.pack("<Q", len(raw)) + raw + b"\0" * 8)
@@ -731,11 +714,9 @@ def test_previews_outline_tables_and_arrays(tmp_path, monkeypatch):
     assert text.endswith("bad?: shape (2,), dtype F32")
     assert JSONResponse({"preview": text}).body
 
-    # A .sas7bdat is opened as its own layout, and states its row count under another name.
     class _Sas7bdat:
         row_count = 9
         nobs = 4
-        # pandas names the encoding a file states even when Python has no codec by that name.
         inferred_encoding = "unknown (code=0)"
 
         def __enter__(self):
@@ -745,7 +726,6 @@ def test_previews_outline_tables_and_arrays(tmp_path, monkeypatch):
             return False
 
         def read(self, rows):
-            # SAS7BDATReader leaves character columns as bytes in the file's own encoding.
             return pd.DataFrame(
                 {
                     "year": [1948, 1949, 1950],
@@ -758,7 +738,6 @@ def test_previews_outline_tables_and_arrays(tmp_path, monkeypatch):
     (tmp_path / "a.sas7bdat").touch()
     text = build_preview(tmp_path / "a.sas7bdat", "airline.sas7bdat")["text"]
     assert text.startswith("9 rows x 2 columns") and opened["format"] == "sas7bdat"
-    # Python reserves the buffer for the lengths a sas7bdat claims, filled or not.
     magic = bytes.fromhex("0" * 24 + "c2ea8160b31411cfbd92080009c7318c181f1011")
 
     def sas7bdat(
@@ -790,12 +769,10 @@ def test_previews_outline_tables_and_arrays(tmp_path, monkeypatch):
         "\n  \u041c\u043e\u0441\u043a\u0432\u0430"
     )
 
-    # Below the 288 bytes already read, the next read runs to the end and the claim states nothing.
     monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 100)
     assert sas7bdat(287, 4096, pad = b"\x00" * 712) == (
         "1000 bytes to read through before the first row"
     )
-    # A value cut mid-character is not a single-byte encoding; a real one reads once UTF-8 fails.
     assert text.endswith(
         "\n  1948\tcaf\u00e9\n  1949\ta" + "\u00e9" * 79 + "...\n  1950\t" + "\u00e9" * 80 + "..."
     )
@@ -815,7 +792,6 @@ def test_table_previews_stop_at_their_budgets(tmp_path, monkeypatch):
     def preview(name):
         return previews.build_preview(tmp_path / name, name)["text"]
 
-    # Parquet decodes a page at a time, checked in every row group the sample reaches.
     monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 10)
     text = preview("w.parquet")
     assert (
@@ -829,12 +805,10 @@ def test_table_previews_stop_at_their_budgets(tmp_path, monkeypatch):
     pq.write_table(pa.table({"s": ["x", "z" * 400]}), tmp_path / "two.parquet", row_group_size = 1)
     monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 300)
     assert "[First rows not read: a row group of " in (preview("two.parquet"))
-    # The group is the bound, not the file: 267 bytes under the cap in a file over it.
     assert (tmp_path / "w.parquet").stat().st_size > 300
     assert "first 5 rows:\n  Oslo\t1.5" in (preview("w.parquet"))
     monkeypatch.undo()
 
-    # Labels are decoded with the first row, so the map's size gates them, the codes surviving.
     def dta(
         name,
         frame,
@@ -851,26 +825,21 @@ def test_table_previews_stop_at_their_budgets(tmp_path, monkeypatch):
         text = preview(name)
         assert text.endswith(" bytes to read through]") and "\n  1\n  0\n" in text, name
         monkeypatch.undo()
-    # The stated table gates them, not the file: over the cap, its stated table under it.
     monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 1000)
     assert (tmp_path / "coded.dta").stat().st_size > 1000
     assert preview("coded.dta").endswith("\n  yes\n  no")
     monkeypatch.undo()
 
-    # Stata decodes its long-string table whole on the first row, so its map's size gates it.
     dta("long.dta", pd.DataFrame({"s": ["x" * 2100]}))
     monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 1000)
     assert preview("long.dta") == ("long-string table of 2136 bytes, too large to read")
 
-    # Fixed-width strings state 15 bytes of long strings, so a file over the cap still samples.
     dta("fixed.dta", pd.DataFrame({"s": ["y" * 244] * 40}))
     assert (tmp_path / "fixed.dta").stat().st_size > 1000
     assert preview("fixed.dta").startswith("unknown rows x 1 columns")
-    # A Stata file states the byte order its map is written in, and MSF is not the host's.
     dta("msf.dta", pd.DataFrame({"n": [1, 2]}), byteorder = ">")
     assert b"<byteorder>MSF" in (tmp_path / "msf.dta").read_bytes()[:200]
     assert preview("msf.dta").startswith("unknown rows x 1 columns")
-    # A label and a value hold the same tags, so neither the first <map> nor the last is the real one.
     dta(
         "spoof.dta",
         pd.DataFrame({"s": ["<map>" + "x" * 2100]}),
@@ -879,19 +848,16 @@ def test_table_previews_stop_at_their_budgets(tmp_path, monkeypatch):
     raw = (tmp_path / "spoof.dta").read_bytes()
     assert raw.count(b"<map>") == 3 and b"<byteorder>MSF" in raw[:200]
     assert preview("spoof.dta") == ("long-string table of 2141 bytes, too large to read")
-    # pandas skips those tags unchecked, so a header this cannot follow states nothing.
     for tag in (b"</header><map>", b"<stata_dta>"):
         (tmp_path / "odd.dta").write_bytes(raw.replace(tag, tag.upper(), 1))
         text = preview("odd.dta")
         assert text.startswith("header in no known layout, and "), tag
-    # A release opening with its own number has no long-string table, so it samples over the cap.
     dta("plain.dta", pd.DataFrame({"s": ["y" * 200] * 20}), version = 114)
     assert (tmp_path / "plain.dta").read_bytes()[0] == 114
     assert (tmp_path / "plain.dta").stat().st_size > 1000
     assert "first 5 rows:" in preview("plain.dta")
     monkeypatch.undo()
 
-    # ORC and Arrow materialise a whole stripe or batch, so size and stated rows both gate it.
     for cap, value in (("MAX_SAMPLED_CELLS", 3), ("MAX_SAMPLED_BYTES", 10)):
         monkeypatch.setattr(previews, cap, value)
         for name in ("w.orc", "w.feather"):
@@ -899,7 +865,6 @@ def test_table_previews_stop_at_their_budgets(tmp_path, monkeypatch):
             assert "columns: city (" in text and "[First rows not read: " in text, (name, cap)
         monkeypatch.undo()
 
-    # A column of lists states one cell a row: 500 of them take 200 MB in Feather, 492 MB in ORC.
     import pyarrow.feather as feather
     import pyarrow.orc as orc
 
@@ -914,7 +879,6 @@ def test_table_previews_stop_at_their_budgets(tmp_path, monkeypatch):
             text.startswith("4 rows x 2 columns") and "[First rows not read: 4 rows]" in text
         ), name
 
-    # Compression hides a batch's size, so the shape the footer states refuses it instead.
     wide = pa.table({f"c{index}": pa.array([0.0] * 5000) for index in range(4)})
     feather.write_feather(wide, tmp_path / "z.feather", compression = "zstd")
     monkeypatch.setattr(previews, "MAX_SAMPLED_CELLS", 1000)
@@ -922,12 +886,10 @@ def test_table_previews_stop_at_their_budgets(tmp_path, monkeypatch):
     assert text.startswith("5000 rows x 4 columns") and "[First rows not read: 5000 rows]" in text
     monkeypatch.undo()
 
-    # Feather v1 predates the IPC reader; an IPC stream has no footer, and is left to the tool.
     feather.write_feather(pa.table({"n": [1, 2]}), tmp_path / "v1.feather", version = 1)
     assert preview("v1.feather") == (
         "2 rows x 1 columns\ncolumns: n (int64)\nfirst 2 rows:\n  1\n  2"
     )
-    # Nothing states its schema separately, so a large one is left alone entirely.
     monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 10)
     assert previews.build_preview(tmp_path / "v1.feather", "v1.feather") is None
     monkeypatch.undo()
@@ -945,7 +907,6 @@ def test_table_previews_stop_at_their_budgets(tmp_path, monkeypatch):
         "small: shape (3,), dtype int8, min 0, max 0, mean 0, values [0, 0, 0]"
     )
     monkeypatch.undo()
-    # The version decides the encoding: 3.0 is UTF-8, written for a name outside Latin-1.
     monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 10)
     for field, version in (("caf\u00e9", b"\x01\x00"), ("\u6e29\u5ea6", b"\x03\x00")):
         np.save(tmp_path / f"{field}.npy", np.zeros(4000, dtype = [(field, "f8")]))
@@ -955,7 +916,6 @@ def test_table_previews_stop_at_their_budgets(tmp_path, monkeypatch):
         ), field
     monkeypatch.undo()
 
-    # A structured dtype of a thousand fields passes numpy's 10,000-byte refusal in a 21 KB file.
     np.save(tmp_path / "wide.npy", np.zeros(1, dtype = [(f"f{i}", "f4") for i in range(1000)]))
     np.savez(tmp_path / "wide.npz", w = np.zeros(1, dtype = [(f"f{i}", "f4") for i in range(1000)]))
     for name in ("wide.npy", "wide.npz"):
@@ -965,7 +925,6 @@ def test_table_previews_stop_at_their_budgets(tmp_path, monkeypatch):
         archive.writestr("packed.npy", np.arange(3).tobytes())
     assert preview("z.npz") == ("1 arrays\npacked: packed.npy uses zip compression method 14")
 
-    # Unchecked, the two bytes after a header the file cannot hold read as an empty one.
     (tmp_path / "b.safetensors").write_bytes(struct.pack("<Q", 4 << 30) + b"{}")
     assert preview("b.safetensors") == ("header of 4294967296 bytes, too large to read")
     (tmp_path / "b.npy").write_bytes(b"\x93NUMPY\x02\x00" + struct.pack("<I", 1 << 30) + b"{}")
@@ -973,7 +932,6 @@ def test_table_previews_stop_at_their_budgets(tmp_path, monkeypatch):
     assert preview("b.npy") == ("array: header of 1073741824 bytes, too large to read")
     monkeypatch.undo()
 
-    # A long cell is cut where the row is built, not where the outline is clipped.
     long_frame = pd.DataFrame({"note": ["z" * 200]})
     long_frame.to_parquet(tmp_path / "long.parquet")
     text = preview("long.parquet")
@@ -1026,14 +984,12 @@ def test_attachment_sweep_keeps_referenced_and_recent_files(tmp_path, monkeypatc
 
     chat_history.delete_attachment("msg-1", "att-1", current_subject = "unsloth")
     assert sorted(p.name for p in root.iterdir()) == [recent]
-    # A server that deletes nothing still reclaims, on an upload, at most once an interval.
     os.utime(root / recent, (1, 1))
     _upload(b"fresh")
     assert recent in [p.name for p in root.iterdir()]
     monkeypatch.setattr(store, "_swept_at", {})
     _upload(b"newer")
     assert recent not in [p.name for p in root.iterdir()]
-    # Keyed per store, so a busy account's uploads cannot hold off the sweep of a quiet one.
     monkeypatch.setattr(store, "_root", lambda: tmp_path / "other")
     store.sweep_attachments_if_due()
     assert sorted(store._swept_at) == sorted([root, tmp_path / "other"])
@@ -1317,7 +1273,6 @@ def _models(tmp_path):
     padded = "<model><metadata>Plate</metadata><object/><!--" + "p" * 1500 + "--></model>"
     rels = '<R><Relationship Type="t/thumbnail" Target="/3D/3dmodel.model"/><Relationship '
     rels += 'Type="t/3dmodel" Target="/3D/p.model"/><!--' + "r" * 1500 + "--></R>"
-    # One archive answers for both container formats, so its listing carries members of each.
     with zipfile.ZipFile(tmp_path / "p.3mf", "w") as archive:
         archive.writestr("_rels/.rels", rels)
         archive.writestr("3D/3dmodel.model", padded.replace("Plate", "Decoy"))
@@ -1371,20 +1326,16 @@ def test_model_previews_stop_at_their_budgets(tmp_path, monkeypatch):
     (tmp_path / "up.stl").write_bytes(b"SOLID " + b"x" * 100 + b"\nfacet normal 0 0 1\n" * 200)
     bomb = struct.pack("<4sII", b"glTF", 2, 12) + struct.pack("<I4s", 3 << 30, b"JSON")
     (tmp_path / "bomb.glb").write_bytes(bomb)
-    # octet_length measures from the record: 751 two-byte characters are 1502 bytes.
     if previews.SQLITE_MEASURES_UNREAD:
         sampled = preview("shelf.sqlite")
         assert "\n  3\t<text of 1502 bytes>" in sampled and "\n  6\t" not in sampled
         assert "\nnotes: a virtual table, not read" in sampled
-    # 100 million triangles are not 84 bytes, and a GLB states the size of the scene it opens with.
     assert preview("claim.stl") == "STL of 84 bytes, in neither layout"
     assert preview("up.stl") == "ASCII STL, 'SOLID %s'" % ("x" * 100)
     assert preview("bomb.glb") == "glTF 2 binary, scene of 3221225472 bytes, too large to read"
-    # A KMZ declares no start part, so the conventional name answers for it.
     assert previews.build_preview(tmp_path / "p.3mf", "t.kmz")["text"].startswith("doc.kml: 1 kml")
     monkeypatch.setattr(previews, "MAX_XML_BYTES", 10)
     assert preview("p.3mf").startswith("[_rels/.rels not read: 1628 bytes of XML]\n[3D/3dmodel")
-    # Without octet_length, sizing a cell would read it, so no row is read at all.
     monkeypatch.setattr(previews, "SQLITE_MEASURES_UNREAD", False)
     assert "[First rows not read: SQLite " in preview("shelf.sqlite")
     monkeypatch.setattr(previews, "MAX_OUTLINE_CHARS", 270)

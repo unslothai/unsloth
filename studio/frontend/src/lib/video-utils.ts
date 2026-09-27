@@ -3,8 +3,7 @@
 
 /** Containers llama-server can decode. It shells out to ffmpeg, so this is
  * what ffmpeg reads, not what the webview can play. Extensions ride along
- * because MIME is unreliable for mkv and some mov files. Browsers give TypeScript .ts files
- * video/mp2t too, so those keep it only once classifiedAttachmentFile has seen their packets. */
+ * because MIME is unreliable for mkv and some mov files. */
 export const VIDEO_ACCEPT =
   "video/mp4,video/x-m4v,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,video/mpeg,video/x-ms-wmv,video/x-flv,video/3gpp,video/ogg,video/mp2t,.mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv,.m2ts";
 
@@ -224,8 +223,7 @@ export function needsAttachmentTrackInspection(file: File): boolean {
   return /\.(3gp|m?ts)$/i.test(file.name);
 }
 
-/** A stream rather than TypeScript: the 0x47 sync byte opens every 188-byte packet, or every 192
- *  behind M2TS's 4-byte timestamp. Mirrors `is_mpeg_transport_stream` in native_path_policy.rs. */
+/** Mirrors `is_mpeg_transport_stream` in native_path_policy.rs. */
 export function isMpegTransportStreamBytes(head: Uint8Array): boolean {
   return [
     [0, 188],
@@ -244,7 +242,7 @@ export function isMpegTransportStreamBytes(head: Uint8Array): boolean {
  * whichever surface claims video: rejected outright on an audio model, and fed
  * to ffmpeg as frames on a video one. The native readers already read the BMFF
  * handlers and stamp audio/3gpp, so do the same before an adapter is picked.
- * Every other file is returned untouched, so this costs one predicate per file.
+ * Everything else is returned untouched, so this costs one predicate per file.
  */
 export async function classifiedAttachmentFile(file: File): Promise<File> {
   if (!needsAttachmentTrackInspection(file)) {
@@ -257,7 +255,6 @@ export async function classifiedAttachmentFile(file: File): Promise<File> {
     } catch {
       return file;
     }
-    // Both directions: the browser labels TypeScript video/mp2t too.
     const corrected = isMpegTransportStreamBytes(head)
       ? "video/mp2t"
       : "text/plain";

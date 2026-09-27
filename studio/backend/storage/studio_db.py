@@ -159,8 +159,7 @@ def _ensure_project_workspace(root_path: str) -> str:
 
 
 def chat_attachment_blob_is_referenced(blob_id: str) -> bool:
-    """Whether any stored message's attachments name this stored-file id (a sha256 hex digest, which
-    ordinary text never contains by accident). An unreadable database answers True."""
+    """Whether any stored message names this sha256 blob id; an unreadable database answers True."""
     conn = get_connection()
     try:
         row = conn.execute(

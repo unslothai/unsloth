@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Model backends take JPEG, PNG, WebP and GIF; the rest are re-encoded before they are attached.
 export const CHAT_IMAGE_MIMES = [
   "image/jpeg",
   "image/png",
@@ -16,7 +15,6 @@ export const CHAT_IMAGE_MIMES = [
 export const CHAT_IMAGE_EXTENSIONS =
   ".jpg,.jpeg,.png,.webp,.gif,.heic,.heif,.avif,.bmp,.tif,.tiff";
 
-// Camera photos go to JPEG, since PNG would multiply their size; the rest go to lossless PNG.
 const CONVERTED_IMAGE_TYPES: Record<string, string> = {
   heic: "image/jpeg",
   heif: "image/jpeg",
@@ -26,7 +24,6 @@ const CONVERTED_IMAGE_TYPES: Record<string, string> = {
   tiff: "image/png",
 };
 
-// Also matched by extension, since some platforms give a .heic file no image MIME type at all.
 export const CHAT_IMAGE_ACCEPT = [
   ...CHAT_IMAGE_MIMES,
   ...Object.keys(CONVERTED_IMAGE_TYPES).map((extension) => `.${extension}`),
@@ -45,7 +42,6 @@ export function isChatImageFile(file: { name: string; type: string }): boolean {
   return imageKind(file) !== null;
 }
 
-/** The type an attached image is re-encoded to, or null when it is sent as is. */
 export function convertedImageType(file: {
   name: string;
   type: string;
@@ -56,7 +52,6 @@ export function convertedImageType(file: {
 
 const MAX_CONVERTED_IMAGE_BYTES = 20 * 1024 * 1024;
 
-/** Re-encodes an image the model backends cannot take into one they can, using the webview's own decoder. */
 export async function normalizeChatImage(file: File): Promise<File> {
   const type = convertedImageType(file);
   if (type === null) {
@@ -91,7 +86,6 @@ export async function normalizeChatImage(file: File): Promise<File> {
     if (!blob) {
       throw new Error(`Could not convert ${file.name}.`);
     }
-    // A HEIC photo is about half the size of the same JPEG.
     if (blob.size > MAX_CONVERTED_IMAGE_BYTES) {
       throw new Error(`${file.name} is over 20 MB once converted.`);
     }

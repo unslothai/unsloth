@@ -53,9 +53,7 @@ pub const OPEN_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &["ods", "odt"];
 /// Office Open XML files the chat composer parses directly; keep in sync with `open-document-accept.ts`.
 pub const OFFICE_OPEN_XML_ATTACHMENT_EXTS: &[&str] =
     &["xlsx", "xlsm", "xltx", "xltm", "pptx", "pptm", "ppsx"];
-/// Rich text files the chat composer parses directly; keep in sync with `open-document-accept.ts`.
 pub const RTF_ATTACHMENT_EXTS: &[&str] = &["rtf"];
-/// iWork files the chat composer parses directly; keep in sync with `open-document-accept.ts`.
 pub const IWORK_ATTACHMENT_EXTS: &[&str] = &["pages", "numbers", "key"];
 /// Files only the python tool reads; keep in sync with `open-document-accept.ts`.
 pub const TOOL_ONLY_ATTACHMENT_EXTS: &[&str] = &[
@@ -653,13 +651,11 @@ pub fn is_audio_only_3gp(raw: &[u8]) -> bool {
     has_audio && !has_video
 }
 
-/// Whether a path's extension is one that TypeScript shares with MPEG transport streams.
 pub fn has_transport_stream_extension(path: &Path) -> bool {
     has_extension(path, "ts") || has_extension(path, "mts")
 }
 
-/// A camcorder `.mts` or broadcast `.ts` stream, not TypeScript: the 0x47 sync byte opens every
-/// 188-byte packet, or every 192 bytes behind the 4-byte timestamp M2TS adds.
+/// 0x47 sync byte every 188 bytes, or 192 behind M2TS's 4-byte timestamp.
 pub fn is_mpeg_transport_stream(path: &Path, bytes: &[u8]) -> bool {
     has_transport_stream_extension(path)
         && [(0, 188), (4, 192)].iter().any(|&(start, packet)| {

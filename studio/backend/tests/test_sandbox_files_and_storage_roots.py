@@ -3336,7 +3336,6 @@ def test_attachments_are_copied_only_for_the_python_tool(monkeypatch):
         )
         asyncio.run(inference._materialize_sandbox_attachments(payload))
     assert calls == [("s", [("a" * 64, "data.csv")])] * 2
-    # Once, before the request splits between local backends and external providers.
     source = inspect.getsource(inference.produce_openai_chat_completions)
     assert source.count("await _materialize_sandbox_attachments(payload)") == 1
     assert source.index("_materialize_sandbox_attachments") < source.index(

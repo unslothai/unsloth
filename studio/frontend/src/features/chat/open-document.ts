@@ -700,7 +700,6 @@ function getOpenDocumentAttribute(
 const ELEMENT_NODE = 1;
 const MAX_UNPACKED_BYTES = 2 * MAX_OPEN_DOCUMENT_ARCHIVE_BYTES;
 const MAX_TEXT_LENGTH = MAX_OPEN_DOCUMENT_XML_BYTES;
-// A sparse row whose only cell sits at column XFD would otherwise become 16,383 tabs.
 const MAX_SPREADSHEET_COLUMNS = 1024;
 const BUILTIN_TIME_FORMAT_IDS = new Set([
   18, 19, 20, 21, 32, 33, 34, 35, 45, 47, 55, 56,
@@ -819,7 +818,6 @@ function resolvePartPath(dir: string, target: string): string {
   try {
     decoded = decodeURIComponent(target);
   } catch {
-    // An unescaped "%" is a literal part name character.
   }
   const segments: string[] = [];
   const joined = decoded.startsWith("/") ? decoded : `${dir}${decoded}`;
@@ -908,7 +906,6 @@ function extractPresentationText(
   const relationships = packageRelationships(parts, presentationPath);
   const budget = { remaining: MAX_TEXT_LENGTH };
   const slides: string[] = [];
-  // Numbered by position in the deck, hidden slides included, so [Slide N] matches what PowerPoint shows.
   for (const [index, slide] of descendants(presentation, ["sldId"]).entries()) {
     const target = relationships.get(relationshipId(slide))?.target;
     const xml = target && parts.get(target);
@@ -934,7 +931,6 @@ function extractPresentationText(
   return slides.join("\n\n");
 }
 
-/** Text frames and tables in document order, skipping hidden shapes and the Fallback copy of mc:AlternateContent. */
 function shapeTreeLines(
   root: Element,
   budget: { remaining: number },
@@ -1120,7 +1116,6 @@ function formatDateSerial(
     const pad = (value: number) => String(value).padStart(2, "0");
     return `${Math.floor(seconds / 3600)}:${pad(Math.floor(seconds / 60) % 60)}:${pad(seconds % 60)}`;
   }
-  // The 1900 system counts a nonexistent 1900-02-29 (serial 60), so earlier serials start a day later.
   const epoch = date1904
     ? Date.UTC(1904, 0, 1)
     : Date.UTC(1899, 11, serial < 60 ? 31 : 30);
@@ -1161,11 +1156,9 @@ function collectDateFormatKinds(styles: Element): DateFormatKind[] {
 
 function dateFormatCodeKind(code: string): DateFormatKind {
   const unquoted = code.replace(/"[^"]*"/g, "").replace(/\\./g, "");
-  // [h], [mm] and [ss] count elapsed time, which may pass 24 hours.
   if (/\[(h+|m+|s+)\]/i.test(unquoted)) {
     return "duration";
   }
-  // Padding, [colour]/[$currency]/[condition] sections and AM/PM markers are not date tokens.
   const tokens = unquoted
     .replace(/[_*]./g, "")
     .replace(/\[[^\]]*\]/g, "")
@@ -1178,11 +1171,9 @@ function dateFormatCodeKind(code: string): DateFormatKind {
   if (hasTime) {
     return "time";
   }
-  // A lone "m" (e.g. "mmm") is a month.
   return hasDate || /m/i.test(tokens) ? "date" : null;
 }
 
-// Phonetic guides (rPh) repeat the base text as kana, so only the runs are read.
 function richText(element: Element): string {
   let text = "";
   for (const child of elementChildren(element)) {
@@ -1235,7 +1226,6 @@ function descendants(element: Element, localNames: string[]): Element[] {
   return matches;
 }
 
-// Matched by namespace: <p:sldId> also carries a plain numeric id.
 function relationshipId(element: Element): string {
   for (const attr of Array.from(element.attributes)) {
     if (

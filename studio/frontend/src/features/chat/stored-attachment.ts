@@ -5,7 +5,6 @@ import { authFetch } from "@/features/auth/api";
 
 import { isToolOnlyAttachmentName } from "./open-document-accept";
 
-/** What the backend could read of the file without the model opening it. */
 export type AttachmentPreview =
   | { kind: "image"; description: string; image: string }
   | { kind: "text"; label: string; text: string }
@@ -14,7 +13,6 @@ export type AttachmentPreview =
 export type StoredAttachmentFile = {
   id: string;
   sandboxPath: string;
-  /** The preview held the file's own text, which the message now carries. */
   inlineText?: boolean;
 };
 
@@ -22,7 +20,6 @@ export type UploadedAttachmentFile = StoredAttachmentFile & {
   preview?: AttachmentPreview;
 };
 
-/** What the message keeps: the preview is its content already, and would be stored twice. */
 export function storedAttachmentFile({
   id,
   sandboxPath,
@@ -37,7 +34,6 @@ type AttachmentContent =
   | { type: "text"; text: string }
   | { type: "image"; image: string };
 
-/** What the model sees of such a file: the preview, or the note that the tool has to open it. */
 export function toolOnlyAttachmentContent(
   name: string,
   preview: AttachmentPreview | undefined,
@@ -73,7 +69,6 @@ type Attachment = {
   storedFile?: StoredAttachmentFile;
 };
 
-/** A response's preview, or nothing when it is not one of the three shapes. */
 function parsePreview(value: unknown): AttachmentPreview | undefined {
   const preview = value as AttachmentPreview | undefined;
   const has = (...keys: string[]) =>
@@ -88,7 +83,6 @@ function parsePreview(value: unknown): AttachmentPreview | undefined {
   return undefined;
 }
 
-/** Keeps the original bytes for the python tool. Null when that fails, leaving the inline text. */
 export async function uploadAttachmentFile(
   file: File,
 ): Promise<UploadedAttachmentFile | null> {
@@ -120,8 +114,7 @@ function isStored(
   );
 }
 
-// What ChatCompletionRequest.sandbox_attachments takes. Past it the request is refused outright,
-// so a long thread carries its most recent files rather than failing every turn.
+// ChatCompletionRequest.sandbox_attachments cap: past it the whole request is refused.
 const MAX_SANDBOX_ATTACHMENTS = 64;
 
 function carriedSandboxPaths(
@@ -132,7 +125,6 @@ function carriedSandboxPaths(
     for (const attachment of message.attachments ?? []) {
       if (!isStored(attachment)) continue;
       const { sandboxPath } = attachment.storedFile;
-      // Deleted first, so a file attached again late in the thread counts as recent, not as old.
       order.delete(sandboxPath);
       order.add(sandboxPath);
     }
@@ -140,7 +132,6 @@ function carriedSandboxPaths(
   return new Set([...order].slice(-MAX_SANDBOX_ATTACHMENTS));
 }
 
-/** Names every stored attachment's sandbox copy, and asks the backend to put the copies there. */
 export function withSandboxAttachmentPaths<
   M extends { attachments?: readonly unknown[] },
 >(messages: readonly M[]) {
@@ -152,7 +143,6 @@ export function withSandboxAttachmentPaths<
     const attachments = message.attachments.map((attachment) => {
       if (!isStored(attachment)) return attachment;
       const { id, sandboxPath, inlineText } = attachment.storedFile;
-      // Dropped from the request, so it is not told to open a file that was never copied.
       if (!carried.has(sandboxPath)) return attachment;
       if (!listed.has(sandboxPath)) {
         listed.add(sandboxPath);
@@ -160,7 +150,6 @@ export function withSandboxAttachmentPaths<
         sandboxAttachments.push({ id, name: sandboxPath.split("/").pop()! });
       }
       const reader = sandboxReader(sandboxPath);
-      // A file whose text is inline says so; an outline or an image is not its text.
       const note =
         isToolOnlyAttachmentName(attachment.name) && !inlineText
           ? `[${attachment.name} is saved at ${sandboxPath} in the python tool's working directory${reader ? `; open it with ${reader}, where path = ${JSON.stringify(sandboxPath)}` : ""}]`
@@ -175,9 +164,6 @@ export function withSandboxAttachmentPaths<
   return { messages: annotated, sandboxAttachments };
 }
 
-// A library every install ships, since models guess wrong (python-docx refuses .docm; openpyxl,
-// python-pptx and odfpy are absent). `path` is a variable because the sandbox's scanner reads a
-// literal passed to .connect() as a network host. Compound extensions come before their last part.
 const READERS: ReadonlyArray<readonly [string, string]> = [
   [".csv", "pandas.read_csv(path)"],
   [".tsv", 'pandas.read_csv(path, sep="\\t")'],
@@ -199,6 +185,7 @@ const READERS: ReadonlyArray<readonly [string, string]> = [
   [".feather", "pandas.read_feather(path)"],
   [".arrow", "pyarrow.ipc.open_file(path).read_all()"],
   [".orc", "pyarrow.orc.read_table(path)"],
+  // `path` stays a variable: the sandbox scanner treats a literal passed to .connect() as a network host.
   [".sqlite,.sqlite3,.db,.gpkg,.mbtiles", "sqlite3.connect(path)"],
   [".duckdb", "duckdb.connect(path, read_only=True)"],
   [".npy,.npz", "numpy.load(path)"],

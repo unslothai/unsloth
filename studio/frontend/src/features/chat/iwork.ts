@@ -7,8 +7,6 @@ import {
   MAX_OPEN_DOCUMENT_XML_BYTES,
 } from "./open-document";
 
-// iWork 2013 and later keep a document as protobuf records in Snappy-compressed Index/*.iwa files.
-// No schema ships with them; the message types and field numbers below are the ones iWork writes.
 // Calls, not consts: read at module scope, an import the chat barrel also reaches can still be in
 // its temporal dead zone when this module runs.
 function maxUnpackedBytes(): number {
@@ -17,7 +15,6 @@ function maxUnpackedBytes(): number {
 function maxTextLength(): number {
   return MAX_OPEN_DOCUMENT_XML_BYTES;
 }
-// Charged per stored object, so a flood of empty records cannot outgrow the unpacked budget.
 const OBJECT_OVERHEAD_BYTES = 256;
 const MAX_REFERENCE_DEPTH = 8;
 const MAX_TABLE_COLUMNS = 1024;
@@ -34,7 +31,6 @@ const TEXT_STORAGE = 2001;
 const TABLE_MODEL = 6001;
 const TABLE_DATA_LIST = 6005;
 const PAGES_DOCUMENT = 10000;
-// Links back to the document, a sheet, a slide or the styles: following them repeats or sprawls.
 const WALK_STOPS = new Set([
   DOCUMENT,
   SHOW_OR_SHEET,
@@ -42,8 +38,6 @@ const WALK_STOPS = new Set([
   SLIDE,
   STYLESHEET,
 ]);
-// Title and body placeholders, then drawables. The rest are builds, whose order is not reading
-// order, and the template slide and speaker notes, which the PPTX reader also leaves out.
 const SLIDE_TEXT_FIELDS = [5, 6, 7];
 const STRING_LIST = 1;
 const RICH_TEXT_LIST = 8;
@@ -63,7 +57,6 @@ type Field = {
   bytes: Uint8Array | null;
 };
 type Budget = { remaining: number };
-// Every object is walked at most once, so shared structure cannot multiply the work.
 type Walk = {
   objects: Objects;
   seen: Set<number>;
@@ -102,7 +95,6 @@ async function readObjects(file: File): Promise<Objects> {
         if (!/^Index\/.+\.iwa$/.test(entry.name)) {
           return false;
         }
-        // Charged like the Office reader: fflate may allocate either size.
         charge(budget, Math.max(entry.size, entry.originalSize), file.name);
         return true;
       },
@@ -152,7 +144,6 @@ function* iwaChunks(data: Uint8Array): Generator<Uint8Array> {
   }
 }
 
-/** Every chunk inflated into one buffer: a run of empty chunks costs no allocation each. */
 function iwaData(data: Uint8Array, budget: Budget, name: string): Uint8Array {
   let total = 0;
   for (const chunk of iwaChunks(data)) {
@@ -167,8 +158,6 @@ function iwaData(data: Uint8Array, budget: Budget, name: string): Uint8Array {
   return output;
 }
 
-/** Inflates one Snappy block into `output` at `start`, returning where it ends. A copy stays
- *  inside `output`, though a corrupt one may reach into an earlier block. */
 function snappy(input: Uint8Array, output: Uint8Array, start: number): number {
   const [length, first] = varint(input, 0);
   const end = start + length;
@@ -243,7 +232,6 @@ function varint(data: Uint8Array, offset: number): [number, number] {
   throw new Error("Varint too long");
 }
 
-/** Parsed lazily and never kept: a message of millions of tiny fields costs no memory per field. */
 function* fields(message: Uint8Array): Generator<Field> {
   for (let offset = 0; offset < message.length;) {
     const [key, next] = varint(message, offset);
@@ -298,7 +286,6 @@ function bytesField(message: Uint8Array, field: number): Uint8Array | null {
   return null;
 }
 
-/** An ArchiveInfo, then its payloads. */
 function readArchives(
   data: Uint8Array,
   objects: Objects,
@@ -360,7 +347,6 @@ function isMessage(bytes: Uint8Array): boolean {
   }
 }
 
-/** Objects a message points at, in field order, so a caller wanting the first reads no further. */
 function* references(
   message: Uint8Array,
   objects: Objects,
@@ -393,7 +379,6 @@ function findObject(objects: Objects, type: number): IworkObject | undefined {
 }
 
 function storageText(payload: Uint8Array): string {
-  // Joined as bytes and decoded once, so a storage of many tiny runs costs no string per run.
   const text = new Uint8Array(payload.length);
   let length = 0;
   for (const f of fields(payload)) {
@@ -405,7 +390,6 @@ function storageText(payload: Uint8Array): string {
   return (
     utf8
       .decode(text.subarray(0, length))
-      // U+FFFC holds the place of an inline object: a slide number, an image, a footnote mark.
       .replace(/\uFFFC/g, "")
       .replace(/[\u2028\u2029]/g, "\n")
       .replace(/\p{Cc}/gu, (control) =>
@@ -422,7 +406,6 @@ function pushLine(lines: string[], line: string, budget: Budget): void {
   }
 }
 
-/** Text boxes and tables reachable from one object, in the order its fields name them. */
 function collect(
   id: number,
   walk: Walk,
@@ -482,7 +465,6 @@ function keynoteText(objects: Objects, filename: string): string {
   const walk = newWalk(objects, filename);
   const slides: string[] = [];
   let number = 0;
-  // Skipped slides keep their number, so [Slide N] matches Keynote's own numbering.
   const visit = (nodeId: number): void => {
     const node = objects.get(nodeId);
     if (
@@ -559,8 +541,6 @@ function numbersText(objects: Objects, filename: string): string {
   return truncated(sheets, budget, "spreadsheet");
 }
 
-/** A table's name, then its non-empty rows as tab-separated cells. Cells are read only while the
- *  text budget lasts, so one long row stops there rather than crowding out the rows before it. */
 function collectTable(
   model: Uint8Array,
   walk: Walk,
@@ -629,7 +609,6 @@ function collectTable(
   }
 }
 
-/** Strings and rich text a table's cells point into, by list type and entry key, on one line each. */
 function dataLists(
   store: Uint8Array,
   walk: Walk,
@@ -657,7 +636,6 @@ function dataLists(
         }
         text = lines.join("\n");
       }
-      // Once per entry here, not per cell: a string repeated across rows costs its length only.
       entries.set(numberField(entry.bytes, 1), text.replace(/[\t\r\n]+/g, " "));
     }
     lists.set(type, entries);
@@ -733,7 +711,6 @@ function cellText(
   }
 }
 
-/** An IEEE 754 decimal128 as exact decimal digits: the fraction a double would round is kept. */
 function decimal128(bytes: Uint8Array): string {
   if (bytes.length < 16) {
     return "";
@@ -745,7 +722,6 @@ function decimal128(bytes: Uint8Array): string {
   }
   let digits = mantissa.toString();
   if (exponent > 20 || digits.length + exponent < -20) {
-    // An exponent reaches ±6176; keep such values from spelling out thousands of zeros.
     digits = `${digits}e${exponent}`;
   } else if (exponent >= 0) {
     digits += "0".repeat(exponent);

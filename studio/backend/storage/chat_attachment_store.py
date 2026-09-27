@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-account store for the original bytes of chat attachments.
-
-A blob is named by the sha256 of its bytes, so an upload needs no thread id and an identical file
-is kept once. Its mtime is its last upload, and the sweep deletes only a blob older than the grace
-window that no message names. One lock covers both, so an upload renews a blob before the sweep.
-"""
+"""Per-account sha256-named store of attachment bytes; one lock orders upload renewal before the sweep."""
 
 from __future__ import annotations
 
@@ -22,9 +17,7 @@ from typing import BinaryIO
 from utils.paths import account_path, ensure_dir
 
 MAX_ATTACHMENT_BYTES = 200 * 1024 * 1024
-# A send persists its message seconds after uploading; the window covers cancelled and failed sends.
 SWEEP_GRACE_SECONDS = 24 * 60 * 60
-# Deleting a chat is the only other thing that sweeps, and a server may run for weeks without one.
 SWEEP_INTERVAL_SECONDS = 60 * 60
 
 _ID = re.compile(r"[0-9a-f]{64}")
@@ -85,7 +78,6 @@ def attachment_path(attachment_id: str) -> Path | None:
 
 
 def sweep_attachments_if_due(now: float | None = None) -> int:
-    """Sweep at most once an interval, so uploads abandoned on a server that deletes nothing go."""
     root = _root()
     moment = time.time() if now is None else now
     with _lock:

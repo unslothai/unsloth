@@ -87,7 +87,6 @@ test("an upload that fails or answers oddly leaves the attachment inline-only", 
   const answers = [
     () => Response.json(stored),
     () => Response.json({ ...stored, preview: outline }),
-    // A preview missing a field of its own kind, or of no kind at all, is not one.
     () => Response.json({ ...stored, preview: { kind: "text", text: "a,b" } }),
     () => Response.json({ ...stored, preview: { kind: "image", image: "d" } }),
     () => Response.json({ ...stored, preview: { text: "a,b" } }),
@@ -114,7 +113,6 @@ test("the preview is what the model sees, and the message keeps only the note it
   const text = { kind: "text" as const, label: "DOCM", text: "Hi" };
   const img = { type: "image", image: "d:,A" };
   assert.deepEqual(parts("a.psd", image, true), [img, ...said("[a.psd: 8x8]")]);
-  // A model that takes no image still learns what the file holds.
   assert.deepEqual(parts("a.psd", image, false), said("[a.psd: 8x8]"));
   assert.deepEqual(parts("m.docm", text, true), said("[DOCM: m.docm]\nHi"));
   assert.deepEqual(
@@ -129,7 +127,6 @@ test("the preview is what the model sees, and the message keeps only the note it
   const inline = { ...upload, inlineText: true };
   assert.deepEqual(storedAttachmentFile({ ...upload, preview: image }), upload);
   assert.deepEqual(storedAttachmentFile({ ...upload, preview: text }), inline);
-  // Its text is in the message, so the note stops telling the model to open the file for it.
   const noted = (storedFile: object) =>
     withSandboxAttachmentPaths([
       { attachments: [{ name: "m.docm", content: [] as Part[], storedFile }] },
@@ -153,13 +150,11 @@ test("only document adapters keep their file, and only a python turn asks for co
     provider,
     /uploadAttachmentFile\(attachment\.file\),\s*\]\);[^}]*return storedFile\s*\?\s*\(\{ \.\.\.complete, storedFile \}/,
   );
-  // The tool-only adapter sends the preview, and its image only where the vision adapter would.
   assert.match(
     provider,
     /content: upload\s*\? toolOnlyAttachmentContent\(\s*attachment\.name,\s*upload\.preview,\s*!imageInputUnavailableReason\(\),\s*\)/,
   );
   assert.equal(provider.split("imageInputUnavailableReason").length, 4);
-  // Both adapters persist what the helper leaves, not the preview bytes the upload carried.
   assert.equal(provider.split("storedAttachmentFile(upload)").length, 3);
   const adapter = read("api/chat-adapter.ts");
   assert.match(

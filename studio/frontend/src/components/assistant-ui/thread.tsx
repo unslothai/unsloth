@@ -3406,8 +3406,6 @@ const Composer: FC<{
             const intent = intents[index]!;
             let file: File;
             try {
-              // Converted here, not in the adapter, so a file the webview cannot
-              // decode fails alone instead of stopping the batch below.
               file = await normalizeChatImage(
                 await nativeAttachmentIntentToFile(intent),
               );

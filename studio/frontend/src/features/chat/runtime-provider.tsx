@@ -271,7 +271,6 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
     const file = await classifiedAttachmentFile(state.file);
     const added = await this.delegate.add({ ...state, file });
     if (Symbol.asyncIterator in added) {
-      // These adapters each resolve to one attachment, so drain the generator to its last value.
       let last: PendingAttachment | undefined;
       for await (const value of added) last = value;
       if (!last) throw new Error("The attachment adapter yielded nothing.");
@@ -301,7 +300,6 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
-/** Documents only: images, audio and video are never copied to the sandbox. */
 class StoredFileAttachmentAdapter implements AttachmentAdapter {
   private readonly delegate: AttachmentAdapter;
 
@@ -327,14 +325,12 @@ class StoredFileAttachmentAdapter implements AttachmentAdapter {
       uploadAttachmentFile(attachment.file),
     ]);
     const storedFile = upload && storedAttachmentFile(upload);
-    // Persisted with the message, so later turns can hand the file to the tool again.
     return storedFile
       ? ({ ...complete, storedFile } as CompleteAttachment)
       : complete;
   }
 }
 
-/** Why the chat model cannot be sent an image, or null when it can. */
 function imageInputUnavailableReason(): string | null {
   const state = useChatRuntimeStore.getState();
   const checkpoint = state.params.checkpoint;
@@ -373,7 +369,6 @@ function imageInputUnavailableReason(): string | null {
 
 class VisionImageAdapter implements AttachmentAdapter {
   accept = CHAT_IMAGE_ACCEPT;
-  // Held from the running placeholder until send or remove; null when conversion failed.
   private readonly converted = new Map<string, Promise<File | null>>();
 
   async *add({
@@ -403,7 +398,6 @@ class VisionImageAdapter implements AttachmentAdapter {
       yield attachment;
       return;
     }
-    // Shown as running while it converts, which holds the composer's send.
     yield {
       ...attachment,
       status: { type: "running", reason: "uploading", progress: 0 },
@@ -435,7 +429,6 @@ class VisionImageAdapter implements AttachmentAdapter {
     this.converted.delete(attachment.id);
     const file = conversion ? await conversion : attachment.file;
     if (!file) {
-      // Its conversion failed and said so; the unconverted file is not one a backend takes.
       return {
         id: attachment.id,
         type: "image",
@@ -678,7 +671,6 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
 
 type PackagedDocumentContent = { label: string; text: string };
 
-/** Read in the composer, so a file that cannot be read is marked there and not at send. */
 abstract class PackagedDocumentAttachmentAdapter implements AttachmentAdapter {
   private readonly active = new Set<string>();
   private readonly sending = new Set<string>();
@@ -818,7 +810,6 @@ class IworkAttachmentAdapter extends PackagedDocumentAttachmentAdapter {
 
 const MAX_TOOL_ONLY_ATTACHMENT_BYTES = 200 * 1024 * 1024;
 
-// Code on a provider that hosts execution runs no python tool here, so nothing could open it.
 function pythonToolRunsInStudio(): boolean {
   const { params, supportsTools, codeToolsEnabled } =
     useChatRuntimeStore.getState();
@@ -849,7 +840,6 @@ function pythonToolRunsInStudio(): boolean {
   }).local.includes("python");
 }
 
-/** Formats the browser cannot read, which reach the model only through the python tool. */
 class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
   accept = TOOL_ONLY_ATTACHMENT_EXTENSIONS;
   private readonly uploads = new Map<
@@ -883,7 +873,6 @@ class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
     const upload = uploadAttachmentFile(file);
     this.uploads.set(attachment.id, upload);
     const storedFile = await upload;
-    // Removed while uploading: yielding again would put it back.
     if (this.uploads.get(attachment.id) !== upload) return;
     if (!storedFile) {
       this.uploads.delete(attachment.id);
@@ -898,7 +887,6 @@ class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    // An incomplete chip is still sent: its failed upload is tried once more here.
     const upload =
       (await this.uploads.get(attachment.id)) ??
       (await uploadAttachmentFile(attachment.file));

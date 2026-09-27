@@ -19,9 +19,6 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
-// The formats consumers read as-is; the native path policy also admits ones
-// only the chat converts. The picker itself accepts image/*, so name the
-// droppable formats instead of surfacing the backend's refusal.
 const NATIVE_IMAGE_EXTS = ["jpg", "jpeg", "png", "webp", "gif"];
 
 /** Shared image picker that returns a data URL. */

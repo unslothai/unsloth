@@ -11454,7 +11454,6 @@ def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
             # a real file there is the user's like any other.
             if _is_spill_artifact(target, parent, name):
                 continue
-            # The chat's own attachment, still as sent: its original stays with the user.
             if _is_attachment_copy(target, parent, name):
                 continue
             return False
@@ -19715,7 +19714,6 @@ _UNSAFE_NAME_CHARS = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|]')
 
 
 def sandbox_attachment_path(blob_id: str, name: str) -> str:
-    """Where a stored attachment appears, keyed by the start of its id so names cannot collide."""
     base = _UNSAFE_NAME_CHARS.sub("_", name or "").strip(" .") or "attachment"
     # In bytes: filesystems cap a name at 255, and macOS stores decomposed text that can triple it.
     if len(base.encode()) > _ATTACHMENT_NAME_BYTES:
@@ -19798,7 +19796,6 @@ def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
 
 
 def _is_attachment_copy(sandbox: str, parent: str, name: str) -> bool:
-    """An unmodified attachment copy: its directory is named for the start of its sha256."""
     prefix = os.path.basename(parent)
     path = os.path.join(parent, name)
     if (

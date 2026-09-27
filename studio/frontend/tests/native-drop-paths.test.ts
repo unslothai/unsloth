@@ -412,14 +412,12 @@ test("every accepted image extension has a Rust MIME arm", () => {
   assert.deepEqual(mapped, accepted);
 });
 
-// Conversion is async: a send before it finishes would go out without the image.
 test("no composer sends while an image is being converted", () => {
   assert.match(
     SHARED_COMPOSER,
     /setConvertingImages\(\(count\) => count \+ 1\);\s*try \{\s*image = await normalizeChatImage\(file\);[\s\S]*?\} finally \{\s*setConvertingImages\(\(count\) => count - 1\);/,
   );
   assert.match(SHARED_COMPOSER, /const canSend =[^;]*convertingImages === 0/);
-  // Removed while converting stays removed, and a failed conversion never sends the source file.
   assert.match(
     RUNTIME_PROVIDER,
     /class VisionImageAdapter[\s\S]*?if \(!this\.converted\.has\(attachment\.id\)\) \{\s*return;\s*\}\s*toast\.error[\s\S]*?if \(!this\.converted\.has\(attachment\.id\)\) \{\s*return;\s*\}\s*yield \{ \.\.\.attachment, name: file\.name/,
@@ -430,7 +428,6 @@ test("no composer sends while an image is being converted", () => {
   );
 });
 
-// A file the webview cannot convert must fail alone: a throw stops the whole batch.
 test("dropped images are converted as part of their per-file read", () => {
   assert.match(THREAD, IMAGE_DRAIN_CONVERTS_PER_FILE_RE);
 });
@@ -652,13 +649,11 @@ test("every video MIME Rust stamps is one the video adapter claims", () => {
 
   assert.ok(stamped.length > 0, "Rust stamps no video MIME types");
   for (const mime of stamped) {
-    // Claimed through .m2ts only: browsers give TypeScript .ts files this MIME too.
     if (mime === "video/mp2t") continue;
     assert.ok(claimed.has(mime), `the video adapter does not claim ${mime}`);
   }
 });
 
-// The video adapter is registered before the text one, so claiming this MIME would take .ts sources.
 test("an .m2ts clip is a video under the MIME browsers give it", async () => {
   const { fileMatchesAccept } = (await import(
     new URL(
@@ -1727,7 +1722,6 @@ test("a transport stream named .ts or .mts routes to video, TypeScript to text",
     assert.equal(classified.type, "video/mp2t", file.name);
     assert.ok(fileMatchesAccept(classified, VIDEO_ACCEPT), file.name);
   }
-  // Opens with the sync byte's "G", so one matching packet start is not enough.
   const typescript = new File(
     ["GENERATED\n" + "export const value = 1;\n".repeat(40)],
     "index.ts",
@@ -2630,7 +2624,6 @@ test("formats the backends cannot take are converted, the rest sent as is", () =
   ]) {
     assert.ok(CHAT_IMAGE_ACCEPT.split(",").includes(extension), extension);
   }
-  // A format sent as is needs its MIME type: the data URL carries it.
   assert.ok(!isChatImageFile({ name: "pic.png", type: "" }));
   assert.ok(!isChatImageFile({ name: "x.constructor", type: "" }));
 });

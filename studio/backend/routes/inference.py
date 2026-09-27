@@ -4266,7 +4266,6 @@ def _effective_enable_tools(payload) -> Optional[bool]:
 
 
 async def _materialize_sandbox_attachments(payload) -> None:
-    """Before any backend runs the tool loop: the python tool reads the attachments from the sandbox."""
     attachments = getattr(payload, "sandbox_attachments", None)
     enabled = getattr(payload, "enabled_tools", None)
     if not attachments or not _effective_enable_tools(payload):

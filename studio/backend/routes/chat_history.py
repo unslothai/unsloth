@@ -963,8 +963,7 @@ def _sweep_attachment_files() -> None:
 def upload_attachment_file(
     file: UploadFile = File(...), current_subject: str = Depends(get_current_subject)
 ) -> dict:
-    """Keep an attachment's original bytes so tools can read the file itself. A file only the python
-    tool can read also gets a preview (image, text or outline) for the message."""
+    """Store an attachment's original bytes for tools, with a preview when only the python tool can read it."""
     from storage.chat_attachment_store import (
         AttachmentTooLarge,
         EmptyAttachment,
