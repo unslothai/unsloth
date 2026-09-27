@@ -644,8 +644,10 @@ function ModelSelectorContent({
               // Sized so the left-packed row keeps uniform gaps and the last dropdown's right gap matches
               // the pill's left gap. Widths track the controls they hold so the row does not wrap.
               hasExternal
-                ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pr-4"
-                : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pr-2",
+                ? "w-[min(calc(var(--picker-panel-w-external)_+_var(--picker-machine-w,0px)),calc(100vw-1rem))] pr-4"
+                : "w-[min(calc(var(--picker-panel-w)_+_var(--picker-machine-w,0px)),calc(100vw-1rem))] pr-2",
+              // The machine switch rides in the tab row; widen by it so the filters stay on that row.
+              showMachineSwitch && "[--picker-machine-w:3.5rem]",
             ),
         className,
       )}

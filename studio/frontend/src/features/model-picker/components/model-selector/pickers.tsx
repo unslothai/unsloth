@@ -782,7 +782,7 @@ function isOverBudget(status?: GgufFitClass | VramFitStatus | null): boolean {
 }
 
 /** VRAM verdict: an info mark that names itself on hover, rather than a shouted pill. */
-function VramBadge({
+export function VramBadge({
   status,
   /** Model rows hold the mark in the layout and paint it on hover; variant rows always show it. */
   revealOnHover = false,
@@ -828,7 +828,7 @@ function VramBadge({
 
 const SIZE_PARTS_RE = /^(~?)([\d.]+)\s*([A-Za-z]+)$/;
 
-function SizeText({ value }: { value: string }) {
+export function SizeText({ value }: { value: string }) {
   const parts = SIZE_PARTS_RE.exec(value);
   if (!parts) {
     return <>{value}</>;

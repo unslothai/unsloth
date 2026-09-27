@@ -12,6 +12,7 @@ import type {
   LinkedInstance,
   LinkedInstanceInfo,
 } from "@/features/settings/api/linked-instances";
+import { formatBytes } from "@/features/hub/lib/format";
 import { gpuPool } from "@/features/settings/components/linked-instance-format";
 import type { VramFitStatus } from "@/lib/vram";
 import { cn } from "@/lib/utils";
@@ -29,6 +30,8 @@ import {
 import {
   CapabilityScope,
   ModelRow,
+  SizeText,
+  VramBadge,
 } from "../components/model-selector/pickers";
 import { detectCapabilities } from "../components/model-selector/model-capabilities";
 import type { ModelSelectorChangeMeta } from "../components/model-selector/types";
@@ -169,29 +172,49 @@ function VariantRows({
     : variants;
   if (shown.length === 0) return <Note>No quants found.</Note>;
   return (
-    <div className="ml-4 border-l border-border/60 pl-1">
+    <div className="my-1 ml-3 border-l-2 border-accent/50 pl-4">
       {shown.map((variant) => {
-        const bytes = variant.download_size_bytes || variant.size_bytes;
-        const fit = fitOn(vramGb, variant.size_bytes);
+        const status = variant.downloaded
+          ? "downloaded"
+          : variant.partial
+            ? "partial"
+            : null;
         return (
-          <ModelRow
+          <button
             key={variant.filename}
-            label={variant.display_label || variant.quant}
-            meta={formatSize(bytes)}
-            hideOwner={true}
-            selected={selectedVariant === variant.quant}
-            downloaded={variant.downloaded}
-            partial={variant.partial}
-            vramStatus={fit}
-            vramEst={
-              variant.size_bytes
-                ? Math.ceil((variant.size_bytes / GB) * 1.15)
-                : undefined
-            }
-            gpuGb={vramGb ?? undefined}
-            alignMeta="hub"
+            type="button"
             onClick={() => onPick(variant)}
-          />
+            className={cn(
+              "flex w-full min-w-0 items-center justify-between gap-2 rounded-full py-1 pr-1.5 pl-2 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              selectedVariant === variant.quant && "bg-sidebar-accent",
+            )}
+          >
+            <span className="min-w-0 flex-1 truncate font-mono text-xs">
+              {variant.display_label || variant.quant}
+              {status ? (
+                <span
+                  className={cn(
+                    "ml-1.5 font-sans text-ui-9 font-medium",
+                    status === "downloaded"
+                      ? "text-green-600/90 dark:text-green-400/80"
+                      : "text-amber-700 dark:text-amber-300",
+                  )}
+                >
+                  {status}
+                </span>
+              ) : null}
+            </span>
+            <span className="flex shrink-0 items-center gap-1.5">
+              <VramBadge status={fitOn(vramGb, variant.size_bytes)} />
+              <span className="font-mono text-ui-10 tabular-nums text-muted-foreground">
+                <SizeText
+                  value={formatBytes(
+                    variant.download_size_bytes || variant.size_bytes,
+                  )}
+                />
+              </span>
+            </span>
+          </button>
         );
       })}
     </div>
