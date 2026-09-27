@@ -447,6 +447,19 @@ def apply_speed_optims(
             eager_when_tiled = _vae_eager_when_tiled(pipe),
         )
 
+    if applied["channels_last"] and not _channels_last_decode_wins(
+        pipe, target, applied["compiled_vae_decode"], offload_active
+    ):
+        applied["channels_last"] = not _vae_contiguous(pipe, logger)
+    elif applied["compiled_vae_decode"] and not _channels_last_decode_wins(
+        pipe, target, False, offload_active
+    ):
+        # A decode compile that fails at first call falls back eager: relayout then.
+        try:
+            pipe.vae._unsloth_eager_contiguous = True
+        except Exception:  # noqa: BLE001
+            pass
+
     if mode == SPEED_MAX:
         if on_cuda:
             applied["tf32"] = _enable_tf32(logger)
@@ -1040,6 +1053,46 @@ def _vae_eager_when_tiled(pipe: Any) -> bool:
     return os.environ.get(COMPILE_VAE_ENV, "").strip().lower() not in _VAE_TRUE_TOKENS
 
 
+def _vae_contiguous(pipe: Any, logger: Any) -> bool:
+    try:
+        import torch
+        pipe.vae.to(memory_format = torch.contiguous_format)
+        return True
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "contiguous vae", exc)
+        return False
+
+
+# VAE classes whose decode layout was measured; any other keeps channels_last.
+_VAE_LAYOUT_MEASURED: frozenset[str] = frozenset({"AutoencoderKL", "AutoencoderKLFlux2"})
+
+
+def _channels_last_decode_wins(
+    pipe: Any,
+    target: Any,
+    compiled_decode: bool,
+    offload_active: bool = False,
+) -> bool:
+    """NVIDIA-measured: eager 16-bit is faster contiguous (no NHWC GroupNorm) but offload keeps channels_last (lower peak); compiled 16-bit wins channels_last; fp32 wins contiguous."""
+    vae = getattr(pipe, "vae", None)
+    if (
+        getattr(target, "backend", "cuda") != "cuda"
+        or getattr(target, "device", None) != "cuda"
+        or type(vae).__name__ not in _VAE_LAYOUT_MEASURED
+    ):
+        return True
+    config = getattr(vae, "config", None)
+    # SDXL pipelines upcast a force_upcast fp16 VAE to fp32 for the decode.
+    fp32_decode = str(getattr(vae, "dtype", "")).endswith("float32") or (
+        bool(getattr(config, "force_upcast", False))
+        and _is_float16(getattr(vae, "dtype", None))
+        and _denoiser_unet(pipe) is not None
+    )
+    if fp32_decode:
+        return False
+    return compiled_decode or offload_active
+
+
 def _guard_compiled_decode(
     vae: Any,
     compiled: Any,
@@ -1079,6 +1132,12 @@ def _guard_compiled_decode(
                         del owner.decode
                 except Exception:  # noqa: BLE001 - `failed` still routes this wrapper to eager
                     pass
+                if getattr(vae, "_unsloth_eager_contiguous", False):
+                    try:
+                        import torch
+                        vae.to(memory_format = torch.contiguous_format)
+                    except Exception:  # noqa: BLE001 - optimisation only
+                        pass
                 if logger is not None:
                     logger.warning(
                         "diffusion.speed: torch.compile failed on the VAE decode (%s); decoding eager",
