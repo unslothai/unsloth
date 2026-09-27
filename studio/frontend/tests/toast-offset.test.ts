@@ -44,7 +44,7 @@ test("desktop routes without page headers clear the titlebar", () => {
 
 test("custom-titlebar desktop headers share the titlebar band", () => {
   // Its header is 48px, 4px taller than the macOS one, and keeps the same 8px gap.
-  for (const pathname of ["/chat", "/images", "/video"]) {
+  for (const pathname of ["/chat", "/images", "/video", "/audio"]) {
     assert.deepEqual(getToastOffsets(pathname, true, true), {
       default: { top: 56, right: 12 },
       mobile: { top: 56, right: 16 },
@@ -53,7 +53,7 @@ test("custom-titlebar desktop headers share the titlebar band", () => {
 });
 
 test("macOS desktop headers overlay the native titlebar", () => {
-  for (const pathname of ["/chat", "/images", "/video"]) {
+  for (const pathname of ["/chat", "/images", "/video", "/audio"]) {
     assert.deepEqual(getToastOffsets(pathname, true, false), {
       default: { top: 52, right: 12 },
       mobile: { top: 52, right: 16 },
