@@ -45,6 +45,14 @@ def _gcd_proves_multiple(allocator: Any, numerator: Any, denominator: Any) -> bo
     if numerator == 0:
         return True
     try:
+        # sympy's gcd works over the rationals, so a fractional coefficient would "cover" a non-multiple:
+        # gcd((a + b) / 2, a + b) == a + b. Only integer polynomials carry the divisibility guarantee.
+        for expr in (numerator, denominator):
+            if any(not number.is_integer for number in expr.atoms(sympy.Number)):
+                return False
+    except Exception:  # noqa: BLE001
+        return False
+    try:
         from torch.utils._sympy.functions import simple_floordiv_gcd
     except Exception:  # noqa: BLE001 - very old torch: only the polynomial gcd below
         simple_floordiv_gcd = None

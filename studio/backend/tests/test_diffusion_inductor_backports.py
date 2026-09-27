@@ -47,6 +47,9 @@ def test_never_proves_a_non_multiple():
     assert not _proves(4096 * a - 4095 * b, a - b)
     assert not _proves(4096 * a, a + b)
     assert not _proves(a * b + 1, a)
+    # sympy.gcd is taken over the rationals: gcd((a + b) / 2, a + b) == a + b, yet (a + b) / 2 is no multiple.
+    assert not _proves((a + b) / 2, a + b)
+    assert not _proves(sympy.Rational(8, 3) * a * b, a * b)
 
 
 def test_integer_denominators_keep_the_stock_answer():
