@@ -155,6 +155,9 @@ def test_routed_scale_saves_in_the_checkpoint_shape(strategy):
     for key, value in before.items():
         assert after[key].shape == value.shape
         assert torch.equal(after[key], value)
+    runtime = model.lin.weight_scale.detach().clone()
+    model.load_state_dict(after)
+    assert torch.equal(model.lin.weight_scale, runtime)
 
 
 def test_per_tensor_scale_routes_as_per_row():

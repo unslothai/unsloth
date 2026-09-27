@@ -1373,6 +1373,18 @@ def _save_compressed_tensors_scale_shape(module, state_dict, prefix, local_metad
     return state_dict
 
 
+def _load_compressed_tensors_scale_shape(module, state_dict, prefix, *args):
+    key = prefix + "weight_scale"
+    scale = state_dict.get(key)
+    current = getattr(module, "weight_scale", None)
+    if scale is None or current is None or scale.shape == current.shape:
+        return
+    if scale.numel() == 1:
+        state_dict[key] = scale.reshape(1, 1).expand(current.shape).contiguous()
+    elif scale.numel() == current.numel():
+        state_dict[key] = scale.reshape(current.shape)
+
+
 def _unsloth_compressed_tensors_fp8_forward(self, input):
     from unsloth.kernels.fp8 import can_use_fp8_rowwise_gemv, fp8_linear, fp8_rowwise_gemv
 
@@ -1436,6 +1448,9 @@ def _route_compressed_tensors_fp8_to_unsloth(model):
         if tuple(scale.shape) != scale_shape:
             module._unsloth_ct_scale_shape = scale_shape
             module._register_state_dict_hook(_save_compressed_tensors_scale_shape)
+            module._register_load_state_dict_pre_hook(
+                _load_compressed_tensors_scale_shape, with_module = True
+            )
         module.weight.requires_grad_(False)
         scale.requires_grad_(False)
         if block != [1, module.weight.shape[1]]:
