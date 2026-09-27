@@ -4231,6 +4231,36 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
+	/* Streamdown's table controls, drawn like the code block's (ACTION_BUTTON_CLASS in
+	   markdown-text.tsx) so the two toolbars in one answer agree. Copy and download sit in
+	   dropdown wrappers, which flex keeps on the fullscreen button's line. Without controls
+	   the table box is the only child, hence :not(:last-child). */
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) {
+		margin-right: calc(var(--spacing) * 1);
+	}
+
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > .relative {
+		display: flex;
+	}
+
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > button,
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > .relative > button {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: calc(var(--spacing) * 8);
+		height: calc(var(--spacing) * 8);
+		padding: 0;
+		border-radius: 10px;
+		color: var(--color-chat-icon-fg);
+	}
+
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > button:hover:not(:disabled),
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > .relative > button:hover:not(:disabled) {
+		background-color: var(--color-chat-icon-bg-hover);
+		color: var(--color-chat-icon-fg-hover);
+	}
+
 	/* Chat: use the app sans stack for UI + prose. */
 	.aui-thread-root {
 		--font-heading: var(--font-sans);
