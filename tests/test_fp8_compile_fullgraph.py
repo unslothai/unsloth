@@ -22,17 +22,18 @@ def test_block_fp8_linear_compiles_fullgraph_and_matches_eager():
 
     torch._dynamo.reset()
     compiled = torch.compile(step, fullgraph = True)
-    # Several weight shapes: the second one used to trigger automatic dynamic shapes.
-    for N, K in [(512, 256), (256, 256), (256, 768), (768, 256)]:
+    # Several weight shapes (the second triggers automatic dynamic shapes); K = 200 takes the dequant fallback.
+    for N, K in [(512, 256), (256, 256), (256, 768), (768, 256), (512, 200)]:
         torch.manual_seed(0)
         X = torch.randn(256, K, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
         W = (torch.randn(N, K, device = "cuda") * 0.02).to(torch.float8_e4m3fn)
-        s = torch.rand(N // 128, K // 128, device = "cuda") + 0.5
+        s = torch.rand(-(-N // 128), -(-K // 128), device = "cuda") + 0.5
         s.block_size = [128, 128]
 
         compiled(X, W, s).backward()
         grad_compiled, X.grad = X.grad, None
         step(X, W, s).backward()
+        assert X.grad.norm() > 0
         torch.testing.assert_close(grad_compiled, X.grad, rtol = 0, atol = 0)
 
     explain = torch._dynamo.explain(step)(X, W, s)

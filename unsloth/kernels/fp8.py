@@ -33,24 +33,27 @@ def _fp8_triton_device_context(tensor: torch.Tensor):
 
 
 def _opaque_under_compile(name, fake):
-    # torch.compile records the launcher as one custom op instead of tracing it: tracing breaks the graph
-    # (device_count) and recompiles the Triton kernel under dynamic shapes 40-80x slower. Eager calls skip the op.
+    # torch.compile swaps the launcher for one custom op: tracing it breaks the graph (device_count) and recompiles
+    # the Triton kernel under dynamic shapes 40-80x slower. Eager calls still run the plain function, at no cost.
     def decorator(fn):
-        if not hasattr(torch.library, "custom_op") or not hasattr(torch.compiler, "is_compiling"):
+        substitute_in_graph = getattr(torch._dynamo, "substitute_in_graph", None)
+        if substitute_in_graph is None or not hasattr(torch.library, "custom_op"):
             return fn
         try:
             op = torch.library.custom_op(f"unsloth::{name}", fn, mutates_args = ())
-        except RuntimeError:  # Already registered by an earlier import of this module.
-            return fn
-        op.register_fake(fake)
-
-        @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
-            if torch.compiler.is_compiling():
-                return op(*args, **kwargs)
-            return fn(*args, **kwargs)
-
-        return wrapper
+            op.register_fake(fake)
+            substitute_in_graph(fn)(
+                functools.wraps(fn)(
+                    lambda *args, **kwargs: getattr(torch.ops.unsloth, name)(*args, **kwargs)
+                )
+            )
+        except (
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):  # Already registered by an earlier import of this module.
+            pass
+        return fn
 
     return decorator
 
@@ -519,7 +522,8 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             ctx.weight = weight
             ctx.weight_scale = original_weight_scale
             ctx.block_size = block_size
-            return torch_matmul(X, W_deq.T).to(X.dtype)
+            output = torch_matmul(X, W_deq.T)
+            return output if output.dtype == X.dtype else output.to(X.dtype)
 
         qinput, scale = act_quant(X, block_size[1])
         output = fp8_block_matmul(
@@ -533,7 +537,8 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         ctx.weight = weight
         ctx.weight_scale = original_weight_scale
         ctx.block_size = block_size
-        return output.to(X.dtype)
+        # No no-op .to(): torch 2.11's compiled autograd.Function returns zero dX when the output aliases an intermediate.
+        return output if output.dtype == X.dtype else output.to(X.dtype)
 
     @staticmethod
     def backward(ctx, grad_output):
