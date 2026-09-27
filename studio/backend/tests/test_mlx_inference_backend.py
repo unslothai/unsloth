@@ -7020,3 +7020,54 @@ def test_single_image_replay_notes_describe_only_retained_pixels(monkeypatch, me
     else:
         assert calls[-1]["prompt"].count(IMAGE_TURN_TEXT) == 1
     assert len(image_marker_parts(history)) == 2
+
+
+def test_a_random_model_decoding_through_mlx_lm_emits_only_the_schema():
+    """Real mlx_lm pipelining (the next step is masked before this token is yielded) with a
+    random model: only the grammar can make the reply a valid document."""
+    mx = _metal_mx()
+    pytest.importorskip("mlx_lm")
+    from mlx_lm import stream_generate
+    from mlx_lm.models import llama
+    from mlx_lm.sample_utils import make_sampler
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    from core.inference.grammar_constraint import make_grammar_logits_processor
+
+    tokenizer = _char_tokenizer()
+    tokenizer.chat_template = "{{ messages[0].content }}"
+    mx.random.seed(0)
+    model = llama.Model(
+        llama.ModelArgs(
+            model_type = "llama",
+            hidden_size = 32,
+            num_hidden_layers = 1,
+            intermediate_size = 64,
+            num_attention_heads = 2,
+            num_key_value_heads = 2,
+            rms_norm_eps = 1e-5,
+            vocab_size = len(tokenizer),
+        )
+    )
+    schema = {
+        "type": "object",
+        "properties": {"a": {"enum": ["x", "y"]}, "b": {"type": "boolean"}},
+        "required": ["a", "b"],
+        "additionalProperties": False,
+    }
+    wrapped = TokenizerWrapper(tokenizer)
+    constraint = build_constraint({"type": "json_schema", "schema": schema}, wrapped, "p")
+    text = "".join(
+        chunk.text
+        for chunk in stream_generate(
+            model,
+            wrapped,
+            tokenizer.encode("go", add_special_tokens = False),
+            max_tokens = 64,
+            sampler = make_sampler(temp = 1.0),
+            logits_processors = [make_grammar_logits_processor(constraint)],
+        )
+    )
+    document = json.loads(text)
+    assert document["a"] in ("x", "y") and isinstance(document["b"], bool)
+    assert set(document) == {"a", "b"}
