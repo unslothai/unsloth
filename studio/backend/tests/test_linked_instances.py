@@ -282,6 +282,19 @@ def test_info_merges_the_remotes_system_endpoints(monkeypatch):
     assert info["online"] and info["version"] == "2026.9.1" and info["cuda"] == "12.8"
     assert info["gpus"] == [{"name": "NVIDIA L4", "vram_total_gb": 22.5, "vram_used_gb": 11.7, "utilization_pct": None}]
     assert info["cpu_count"] == 12 and info["install_source"] is None
+    assert info["image_model"] is None  # the images endpoint 404s, as on an older release
+
+
+def test_info_names_a_loaded_image_model(monkeypatch):
+    instance = linked_instances_db.create_instance("colab", "http://remote", REMOTE_KEY)
+
+    def handler(request: httpx.Request):
+        if request.url.path == "/api/inference/images/status":
+            return httpx.Response(200, json = {"loaded": True, "repo_id": "unsloth/Qwen-Image-2.1-GGUF"})
+        return httpx.Response(200, json = {})
+
+    _remote(handler, monkeypatch)
+    assert asyncio.run(linked_instances.fetch_info(instance))["image_model"] == "unsloth/Qwen-Image-2.1-GGUF"
 
 
 def test_info_reports_a_rejected_key(monkeypatch):

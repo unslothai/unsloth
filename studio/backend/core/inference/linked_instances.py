@@ -455,11 +455,13 @@ async def proxy(request: Request, instance: dict, path: str) -> Response:
     )
 
 
-# Read-only endpoints every Unsloth Studio serves to an API key, old releases included.
+# Read-only endpoints an Unsloth Studio serves to an API key; a release without one just omits it.
 _INFO_PATHS = {
     "system": "/api/system",
     "hardware": "/api/system/hardware?include_details=true",
     "install": "/api/studio/install-source",
+    # /v1/models only flags chat models as loaded.
+    "images": "/api/inference/images/status",
 }
 
 
@@ -520,6 +522,7 @@ async def fetch_info(instance: dict) -> dict:
             error = "Not reachable."
         return {"online": False, "error": error}
     system, hardware, install = parts.get("system", {}), parts.get("hardware", {}), parts.get("install", {})
+    images = parts.get("images", {})
     versions = _dict(hardware.get("versions"))
     packages = _dict(system.get("ml_packages"))
     memory, disk = _dict(system.get("memory")), _dict(system.get("disk"))
@@ -545,4 +548,5 @@ async def fetch_info(instance: dict) -> dict:
         "disk_total_gb": _number(disk.get("total_gb")),
         "disk_free_gb": _number(disk.get("free_gb")),
         "uptime_seconds": _number(system.get("uptime_seconds")),
+        "image_model": _text(images.get("repo_id")) if images.get("loaded") is True else None,
     }

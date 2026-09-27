@@ -49,6 +49,7 @@ function InstanceCard({
   const prefix = `@${instance.name}/`;
   const serving = status?.loaded[0]?.slice(prefix.length);
   const ready = info?.online === true;
+  const imageModel = ready ? info.image_model : null;
   const gpus = ready ? info.gpus : [];
   const pool = gpus.length > 0 ? gpuPool(gpus) : null;
   const pct =
@@ -204,16 +205,23 @@ function InstanceCard({
               No GPU reported
             </span>
           )}
-          <span
-            className={cn(
-              "break-all text-ui-11",
-              serving
-                ? "font-mono text-foreground/85"
-                : "text-muted-foreground",
-            )}
-          >
-            {serving ?? "No model loaded"}
-          </span>
+          {serving || imageModel ? (
+            <span className="flex flex-col gap-0.5 break-all font-mono text-ui-11 text-foreground/85">
+              {serving ? <span>{serving}</span> : null}
+              {imageModel ? (
+                <span>
+                  {imageModel}
+                  <span className="ml-1.5 font-sans text-ui-10 text-muted-foreground">
+                    image
+                  </span>
+                </span>
+              ) : null}
+            </span>
+          ) : (
+            <span className="text-ui-11 text-muted-foreground">
+              No model loaded
+            </span>
+          )}
         </>
       )}
 
