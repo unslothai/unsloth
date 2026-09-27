@@ -8002,9 +8002,7 @@ class DiffusionBackend:
             if (
                 getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE
                 or getattr(state, "calibrated_placement", False)
-            ) and (
-                _offload_controlnet_module(cn_model, state.device, logger)
-            ):
+            ) and (_offload_controlnet_module(cn_model, state.device, logger)):
                 pass
             else:
                 cn_model = cn_model.to(state.device)
