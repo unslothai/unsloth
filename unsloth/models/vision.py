@@ -108,6 +108,7 @@ from .loader_utils import (
     _restore_dropped_fp8_scales,
     planner_class_mismatch_reason,
     planner_model_class,
+    exclude_no_placement_params,
     planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
@@ -2160,6 +2161,9 @@ class FastBaseModel:
                 extra_skip_modules = _architecture_skip_modules(model_types) or None,
             ),
         )
+
+        # Parameters the model declares unplaceable (Qwen4Exp's ~102 GB n-gram table) stay on CPU.
+        device_map = exclude_no_placement_params(device_map, model_class, auto_config)
 
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(

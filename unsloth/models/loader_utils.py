@@ -257,6 +257,120 @@ def planner_quantization_kwargs(
     return kwargs
 
 
+def _single_device_index(device_map):
+    """The one CUDA device a string/int device map resolves to on this host, else None."""
+    if isinstance(device_map, bool):
+        return None
+    if isinstance(device_map, int):
+        return device_map
+    if isinstance(device_map, torch.device):
+        return device_map.index or 0 if device_map.type == "cuda" else None
+    if not isinstance(device_map, str):
+        return None
+    if device_map.startswith("cuda:"):
+        try:
+            return int(device_map.split(":", 1)[1])
+        except ValueError:
+            return None
+    if device_map in ("cuda", "auto", "sequential", "balanced", "balanced_low_0") or isinstance(
+        device_map, _DefaultDeviceMap
+    ) or device_map in AUTOMATIC_DEVICE_MAPS:
+        try:
+            if DEVICE_TYPE_TORCH == "cuda" and torch.cuda.device_count() == 1:
+                return 0
+        except Exception:
+            return None
+    return None
+
+
+def exclude_no_placement_params(device_map, model_class, config):
+    """Keep a model's `_no_placement_params` out of the device map, so they stay on CPU.
+
+    Qwen4Exp (Qwen3.8-Flash-Next) declares its 51B-parameter hashed n-gram table
+    (`ple.ple_embedding.ngram_embedding.weight`, ~102 GB in bf16) this way: the module does
+    its lookup wherever the weight lives and moves only the gathered rows. transformers
+    escapes it from `infer_auto_device_map` only when the next device is a GPU, so on one
+    GPU the whole model was sent to CPU ("does not fit any GPU's remaining memory") and the
+    first CUDA forward failed. The table is frozen and never quantized, so keeping it on
+    CPU costs a small host gather per step and saves ~102 GB of VRAM. Every other parameter
+    goes where the map already put it (a single device for string maps on a one-GPU host).
+    `UNSLOTH_PLACE_NO_PLACEMENT_PARAMS=1` restores the transformers behaviour. Returns the
+    map unchanged for every model without `_no_placement_params`."""
+    names = getattr(model_class, "_no_placement_params", None) if model_class is not None else None
+    if not names or os.environ.get("UNSLOTH_PLACE_NO_PLACEMENT_PARAMS", "0") == "1":
+        return device_map
+    if isinstance(device_map, dict):
+        base = dict(device_map)
+    else:
+        index = _single_device_index(device_map)
+        if index is None:
+            print(
+                f"Unsloth: {model_class.__name__} keeps {', '.join(names)} off the device map, but "
+                f"device_map = {device_map!r} spans several devices; leaving the placement to transformers."
+            )
+            return device_map
+        base = {"": index}
+    try:
+        from accelerate import init_empty_weights
+        with init_empty_weights():
+            meta = model_class._from_config(config)
+    except Exception as error:
+        print(f"Unsloth: could not build {model_class.__name__} on meta to place {names} ({error}).")
+        return device_map
+    excluded = {
+        name
+        for name, _ in list(meta.named_parameters()) + list(meta.named_buffers())
+        if any(name == n or name.endswith("." + n) for n in names)
+    }
+    if not excluded:
+        return device_map
+
+    def owner(name):
+        # The device map entry that currently places `name` (longest matching prefix).
+        best = None
+        for key in base:
+            if key == "" or name == key or name.startswith(key + "."):
+                if best is None or len(key) > len(best):
+                    best = key
+        return best
+
+    out = dict(base)
+    for name in sorted(excluded):
+        key = owner(name)
+        if key is None:
+            continue
+        device = out.pop(key)
+        # Re-place every sibling subtree along the path from `key` down to `name`.
+        module = meta.get_submodule(key) if key else meta
+        prefix = key
+        parts = name[len(key) + 1:].split(".") if key else name.split(".")
+        for depth, part in enumerate(parts):
+            here = f"{prefix}.{part}" if prefix else part
+            for child_name, _ in module.named_children():
+                if child_name != part:
+                    out[f"{prefix}.{child_name}" if prefix else child_name] = device
+            for tensor_name, _ in list(module.named_parameters(recurse = False)) + list(
+                module.named_buffers(recurse = False)
+            ):
+                if tensor_name != part:
+                    out[f"{prefix}.{tensor_name}" if prefix else tensor_name] = device
+            if depth == len(parts) - 1:
+                break
+            module = getattr(module, part)
+            prefix = here
+    gib = sum(
+        t.numel() * t.element_size()
+        for n, t in list(meta.named_parameters()) + list(meta.named_buffers())
+        if n in excluded
+    ) / 2**30
+    print(
+        f"Unsloth: keeping {', '.join(sorted(excluded))} ({gib:.1f} GiB, frozen) on CPU; "
+        f"set UNSLOTH_PLACE_NO_PLACEMENT_PARAMS=1 to place it on the GPU instead."
+    )
+    del meta
+    return out
+
+
 def planner_model_class(config, trust_remote_code = False):
     """The model class the planner's own rules pick for `config`, or None if unknown. The planner never sees the auto class the load chose: `config` is whatever the caller passed, while the planner rebuilds the repo's from `model_name`, and the two can disagree."""
     try:
