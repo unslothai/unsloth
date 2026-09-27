@@ -699,7 +699,6 @@ function ModelSelectorContent({
               <LinkedModelsPanel
                 kind={linkedPicker}
                 instance={linkedInstance}
-                status={machines.statuses[linkedInstance.id]}
                 info={machines.infos[linkedInstance.id]}
                 section={
                   effectiveHubSection === "downloaded"

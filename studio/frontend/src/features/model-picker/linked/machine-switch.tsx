@@ -11,6 +11,7 @@ import type {
   LinkedInstanceInfo,
   LinkedInstanceStatus,
 } from "@/features/settings/api/linked-instances";
+import { gpuPool } from "@/features/settings/components/linked-instance-format";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -19,14 +20,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 
 function gpuLine(info?: LinkedInstanceInfo): string | null {
-  const gpu = info?.gpus?.[0];
-  if (!gpu) return info?.online ? "CPU only" : null;
-  const vram = gpu.vram_total_gb
-    ? ` · ${Math.round(gpu.vram_total_gb)} GB`
-    : "";
-  const more =
-    (info?.gpus?.length ?? 0) > 1 ? ` +${(info?.gpus?.length ?? 1) - 1}` : "";
-  return `${gpu.name}${vram}${more}`;
+  if (!info?.gpus?.length) return info?.online ? "CPU only" : null;
+  const pool = gpuPool(info.gpus);
+  return pool.total
+    ? `${pool.label} · ${Math.round(pool.total)} GB`
+    : pool.label;
 }
 
 function Row({
@@ -172,9 +170,8 @@ export function MachineSwitch({
               icon={CloudServerIcon}
               title={`@${instance.name}`}
               detail={
-                statuses[instance.id]?.online === false
-                  ? "Offline"
-                  : gpuLine(infos[instance.id])
+                gpuLine(infos[instance.id]) ??
+                (statuses[instance.id]?.online === false ? "Offline" : null)
               }
               online={statuses[instance.id]?.online}
               selected={value?.id === instance.id}

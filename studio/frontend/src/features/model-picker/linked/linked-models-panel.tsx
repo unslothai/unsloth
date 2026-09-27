@@ -11,8 +11,8 @@ import type {
 import type {
   LinkedInstance,
   LinkedInstanceInfo,
-  LinkedInstanceStatus,
 } from "@/features/settings/api/linked-instances";
+import { gpuPool } from "@/features/settings/components/linked-instance-format";
 import type { VramFitStatus } from "@/lib/vram";
 import { cn } from "@/lib/utils";
 import { CloudServerIcon, Search01Icon } from "@hugeicons/core-free-icons";
@@ -196,7 +196,6 @@ function VariantRows({
 export function LinkedModelsPanel({
   kind,
   instance,
-  status,
   info,
   section,
   sectionToggle,
@@ -207,7 +206,6 @@ export function LinkedModelsPanel({
 }: {
   kind: LinkedPickerKind;
   instance: LinkedInstance;
-  status?: LinkedInstanceStatus;
   info?: LinkedInstanceInfo;
   section: Section;
   sectionToggle: ReactNode;
@@ -219,9 +217,9 @@ export function LinkedModelsPanel({
   const inventory = useLinkedInventory(instance.id, kind);
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
-  const gpu = info?.gpus?.[0];
-  const vramGb = gpu?.vram_total_gb ?? null;
-  const offline = status?.online === false;
+  // llama.cpp splits a GGUF across every card, so fit is judged against the pool.
+  const pool = info?.gpus?.length ? gpuPool(info.gpus) : null;
+  const vramGb = pool?.total ?? null;
   const needle = query.trim().toLowerCase();
   const matches = (text: string) =>
     !needle || text.toLowerCase().includes(needle);
@@ -365,15 +363,7 @@ export function LinkedModelsPanel({
   };
 
   let body: ReactNode;
-  if (offline) {
-    body = (
-      <Note>
-        @{instance.name} is not reachable
-        {status?.error ? `: ${status.error}` : "."} Check that it is running, or
-        switch back to this machine.
-      </Note>
-    );
-  } else if (inventory.loading) {
+  if (inventory.loading) {
     body = (
       <div className="flex items-center gap-2 px-2.5 py-3 text-xs text-muted-foreground">
         <Spinner className="size-3.5" /> Reading models on @{instance.name}
@@ -484,8 +474,8 @@ export function LinkedModelsPanel({
             <span className="font-medium text-foreground">
               @{instance.name}
             </span>
-            {gpu
-              ? ` · ${gpu.name}${vramGb ? ` · ${formatSize(vramGb * GB)}` : ""}`
+            {pool
+              ? ` · ${pool.label}${vramGb ? ` · ${formatSize(vramGb * GB)}` : ""}`
               : info?.online
                 ? " · CPU only"
                 : ""}
