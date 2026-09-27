@@ -1545,6 +1545,7 @@ def _wan_batched_tiled_decode(
     self: Any,
     z: Any,
     return_dict: bool = True,
+    clamp: bool = True,
 ) -> Any:
     """``tiled_decode`` of a Wan-lineage VAE with same-shaped tiles decoded as one batch (fewer, larger launches:
     the stock loop issues ~50k kernels for an 81-frame 832x480 decode) and vectorised seam blending."""
@@ -1622,10 +1623,27 @@ def _wan_batched_tiled_decode(
     if patch is not None:
         from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
         dec = unpatchify(dec, patch_size = patch)
-    dec = torch.clamp(dec, min = -1.0, max = 1.0)
+    if (
+        clamp
+    ):  # as the class's stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
+        dec = torch.clamp(dec, min = -1.0, max = 1.0)
     if not return_dict:
         return (dec,)
     return DecoderOutput(sample = dec)
+
+
+@lru_cache(maxsize = None)
+def _stock_tiled_decode_clamps(cls: type) -> Optional[bool]:
+    """Whether ``cls.tiled_decode`` clamps its output to [-1, 1], read off the installed diffusers source (Wan and
+    Qwen-Image-2.1 do, Qwen-Image does not). None when the source is unreadable: the stock loop is kept then."""
+    import inspect
+    import re
+
+    try:
+        src = inspect.getsource(cls.tiled_decode)
+    except (OSError, TypeError, AttributeError):
+        return None
+    return re.search(r"\bclamp\(\s*dec\b", src) is not None
 
 
 def install_wan_tile_batch(vae: Any, logger: Any = None) -> bool:
@@ -1635,13 +1653,16 @@ def install_wan_tile_batch(vae: Any, logger: Any = None) -> bool:
         or not callable(getattr(vae, "tiled_decode", None))
     ):
         return False
+    clamp = _stock_tiled_decode_clamps(type(vae))
+    if clamp is None:
+        return False
     stock = _stock_forward_attr(vae, "tiled_decode")
 
     def tiled_decode(z: Any, return_dict: bool = True) -> Any:
         if z.shape[0] != 1 or getattr(vae, "_unsloth_vae_fused_failed", False):
             return stock(z, return_dict = return_dict)
         try:
-            return _wan_batched_tiled_decode(vae, z, return_dict)
+            return _wan_batched_tiled_decode(vae, z, return_dict, clamp)
         except Exception as exc:  # noqa: BLE001
             if _is_oom(exc):
                 raise
@@ -1787,9 +1808,12 @@ def _hv_causal_mask(
     """Vectorised ``prepare_causal_attention_mask`` (the stock one launches one fill kernel per token row: 80k fills
     per 848x480x121 decode). Same values: 0 where key frame <= query frame, else -inf."""
     torch = _torch()
-    frame = torch.arange(n_frame * n_hw, device = device) // n_hw
-    mask = torch.where(frame[None, :] <= frame[:, None], torch.zeros((), dtype = dtype, device = device),
-                       torch.full((), float("-inf"), dtype = dtype, device = device))  # fmt: skip
+    # the predicate is per FRAME pair, broadcast over the (n_hw, n_hw) blocks of a view of the output: no seq_len x
+    # seq_len temporary beside the mask itself (the stock loop's peak)
+    seq_len = n_frame * n_hw
+    mask = torch.zeros((seq_len, seq_len), dtype = dtype, device = device)
+    later = torch.ones((n_frame, n_frame), dtype = torch.bool, device = device).triu_(1)
+    mask.view(n_frame, n_hw, n_frame, n_hw).masked_fill_(later[:, None, :, None], float("-inf"))
     if batch_size is not None:
         mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
     return mask

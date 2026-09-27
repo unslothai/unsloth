@@ -386,3 +386,70 @@ def test_attention_oom_falls_back_for_that_call_only(monkeypatch, oom):
     assert torch.equal(out, ref)
     # an OOM keeps the fused path for the next call; a real failure retires it
     assert getattr(attn, "_unsloth_vae_fused_failed", False) is (not oom)
+
+
+@needs_cuda
+def test_qwenimage_tiled_decode_is_not_clamped_like_stock(monkeypatch):
+    # diffusers' AutoencoderKLQwenImage.tiled_decode returns the raw decoder output (Wan's and Qwen-Image-2.1's clamp)
+    from diffusers import AutoencoderKLQwenImage
+
+    torch.manual_seed(0)
+    vae = (
+        AutoencoderKLQwenImage(base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1)
+        .cuda()
+        .eval()
+    )
+    vae = vae.to(torch.bfloat16)
+    vae.enable_tiling(tile_sample_min_height = 64, tile_sample_min_width = 64, tile_sample_stride_height = 48,
+                      tile_sample_stride_width = 48)  # fmt: skip
+    monkeypatch.setenv(F.TILE_BATCH_ENV, "3")
+    with torch.no_grad():
+        vae.decoder.conv_out.weight.mul_(64)  # the decode lands far outside [-1, 1]
+    z = torch.randn(1, 4, 1, 14, 18, device = "cuda", dtype = torch.bfloat16)
+    with torch.inference_mode():
+        ref = _decode(vae, z)
+        assert ref.abs().max() > 1.5  # the case under test exists
+        F.install(vae)
+        out = _decode(vae, z)
+    assert out.shape == ref.shape
+    assert out.abs().max() > 1.5
+    assert ((out - ref).norm() / ref.norm()).item() < 2e-2  # same values, unclamped
+
+
+def test_hv_causal_mask_allocates_nothing_quadratic_besides_the_output():
+    # the stock row loop allocates only the seq_len x seq_len mask (6.4 GB extra at 80k tokens otherwise)
+    from torch.utils._python_dispatch import TorchDispatchMode
+    from torch.utils._pytree import tree_leaves
+
+    class _Allocs(TorchDispatchMode):
+        def __init__(self):
+            super().__init__()
+            self.storages = []
+
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            out = func(*args, **(kwargs or {}))
+            for t in tree_leaves(out):
+                if isinstance(t, torch.Tensor):
+                    self.storages.append(
+                        (t.untyped_storage().data_ptr(), t.untyped_storage().nbytes())
+                    )
+            return out
+
+    mod = pytest.importorskip("diffusers.models.autoencoders.autoencoder_kl_hunyuanvideo15")
+    n_frame, n_hw = 6, 32
+    seq_len = n_frame * n_hw
+    rec = _Allocs()
+    with rec:
+        mask = F._hv_causal_mask(n_frame, n_hw, torch.bfloat16, "cpu", batch_size = 2)
+    own = mask.untyped_storage().data_ptr()
+    assert [nb for ptr, nb in rec.storages if ptr != own and nb >= seq_len * seq_len] == []
+    stock = mod.HunyuanVideo15AttnBlock.prepare_causal_attention_mask(
+        n_frame, n_hw, torch.bfloat16, "cpu", batch_size = 2
+    )
+    assert torch.equal(mask, stock) and mask.stride() == stock.stride()
