@@ -837,12 +837,25 @@ def _model_class_supports_flash_attention(model_class):
     new_flag_dispatched = PreTrainedModel is not None and hasattr(
         PreTrainedModel, "_supports_flash_attn"
     )
+    if not _flash_attention_2_is_compatible(model_class):
+        return False
     if new_flag_dispatched and not _flash_dispatch_reads_legacy_flag(PreTrainedModel):
         return bool(getattr(model_class, "_supports_flash_attn", False))
     return bool(
         getattr(model_class, "_supports_flash_attn_2", False)
         or getattr(model_class, "_supports_flash_attn", False)
     )
+
+
+def _flash_attention_2_is_compatible(model_class):
+    """transformers 5 lets a class name the only flash kernels it works with (`_compatible_flash_implementations`,
+    e.g. mimo_v2_flash / gpt_oss / granite_swa: ["flash_attention_4"] for sinks or asymmetric head dims) and silently
+    rewrites a flash_attention_2 request to the first of them, which then fails to import when that kernel is not
+    installed. Unsloth only ever requests flash_attention_2, so such a class must take the non-flash branch."""
+    compatible = getattr(model_class, "_compatible_flash_implementations", None)
+    if not isinstance(compatible, (list, tuple)):
+        return True
+    return any(str(name).split("|")[-1] == "flash_attention_2" for name in compatible)
 
 
 def _flash_dispatch_reads_legacy_flag(PreTrainedModel) -> bool:
