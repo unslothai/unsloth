@@ -46,9 +46,51 @@ export const DRAG_THRESHOLD_PX = 5;
  *  registration: the hit test reads it back off whatever sits under the pointer. */
 export const DROP_ZONE_ATTR = "data-sidebar-drop";
 
-/** Set on the body for the length of a drag: no text selection, and the grabbing cursor
- *  follows the row off its own list. */
-export const DRAGGING_BODY_CLASS = "sidebar-row-dragging";
+/** Set on the box a drag happens in (the sidebar, or the model picker's list) for its length: the
+ *  grabbing cursor over its rows, whose buttons set a cursor of their own, and no selection
+ *  (index.css). Never on the body: a class or inherited style changed there restyles every element
+ *  on the page, which with a long chat open made a visible hitch as a drag started and ended. */
+export const DRAGGING_CLASS = "pointer-dragging";
+
+/** Past the box, text selection is refused as it starts: no style change, so no restyle. */
+function refuseSelection(event: Event) {
+  event.preventDefault();
+}
+
+/** Marks a drag in flight in `box`. Off clears every mark. */
+export function markDragging(box: Element | null, on: boolean) {
+  if (on) {
+    box?.classList.add(DRAGGING_CLASS);
+    window.getSelection()?.removeAllRanges();
+    document.addEventListener("selectstart", refuseSelection, true);
+    return;
+  }
+  document.removeEventListener("selectstart", refuseSelection, true);
+  for (const marked of document.querySelectorAll(`.${DRAGGING_CLASS}`)) {
+    marked.classList.remove(DRAGGING_CLASS);
+  }
+}
+
+/** Holds whatever a drag draws over the page: the lifted copy, the cue drawn over it, a section's
+ *  line. Made once and never taken off the body. Taking a body child out while another follows it
+ *  restyles every element on the page, which on the drop was a visible hitch; the same child taken
+ *  out of this layer costs nothing. */
+export function dragLayer(): HTMLElement {
+  let layer = document.getElementById(DRAG_LAYER_ID);
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.id = DRAG_LAYER_ID;
+    layer.setAttribute("aria-hidden", "true");
+    document.body.append(layer);
+  }
+  return layer;
+}
+
+const DRAG_LAYER_ID = "pointer-drag-layer";
+
+/** The sidebar a drag started in, which markDragging marks. */
+export const sidebarOf = (element: Element): Element | null =>
+  element.closest('[data-sidebar="sidebar"]');
 
 /** Controls that own their own press. A drag never starts from the pin or the kebab. */
 const NO_DRAG_SELECTOR = ".sidebar-row-action";
@@ -179,6 +221,8 @@ interface RowGhost {
   grab: number;
   /** The box the copy stays inside: the list it scrolls in. */
   view: Element;
+  /** Where the copy was put when it lifted; it moves by a transform from there. */
+  top: number;
   /** The cues drawn over the copy: the line, and the outline of the folder it lands in. */
   cues: HTMLElement[];
 }
@@ -198,7 +242,10 @@ function liftRow(row: HTMLElement, pressY: number, view: Element): RowGhost | nu
   element.setAttribute("aria-hidden", "true");
   element.className = ROW_GHOST_CLASS;
   element.append(copy);
+  // Lifted where the row is, so a frame drawn before its first transform lands shows it there,
+  // not at the top of the window.
   Object.assign(element.style, {
+    top: `${rect.top}px`,
     left: `${rect.left}px`,
     width: `${rect.width}px`,
     height: `${rect.height}px`,
@@ -209,8 +256,8 @@ function liftRow(row: HTMLElement, pressY: number, view: Element): RowGhost | nu
   // The icon size is the sidebar's own variable, which the copy leaves behind on the body.
   const iconSize = style.getPropertyValue("--icon-size");
   if (iconSize) element.style.setProperty("--icon-size", iconSize);
-  document.body.append(element);
-  return { element, grab: pressY - rect.top, view, cues: [] };
+  dragLayer().append(element);
+  return { element, grab: pressY - rect.top, view, top: rect.top, cues: [] };
 }
 
 /** Draws each cue painted under the copy again over it: its border only, since the tint under
@@ -226,7 +273,7 @@ function placeCue(ghost: RowGhost) {
       overlay = document.createElement("div");
       overlay.setAttribute("aria-hidden", "true");
       overlay.className = CUE_OVERLAY_CLASS;
-      document.body.append(overlay);
+      dragLayer().append(overlay);
       ghost.cues.push(overlay);
     }
     shown += 1;
@@ -246,7 +293,9 @@ function placeCue(ghost: RowGhost) {
       borderBottomWidth: style.borderBottomWidth,
       borderLeftWidth: style.borderLeftWidth,
       borderRadius: style.borderRadius,
-      transform: `translate3d(${left}px, ${top}px, 0)`,
+      // Placed by left and top, set in the same change that shows it, never a frame late.
+      left: `${left}px`,
+      top: `${top}px`,
       clipPath: `inset(${Math.max(0, view.top - top)}px 0 ${Math.max(0, top + height - view.bottom)}px 0)`,
     });
   }
@@ -258,7 +307,7 @@ function placeGhost(ghost: RowGhost, y: number) {
   const view = ghost.view.getBoundingClientRect();
   const height = ghost.element.offsetHeight;
   const top = Math.min(Math.max(y - ghost.grab, view.top), view.bottom - height);
-  ghost.element.style.transform = `translate3d(0, ${Math.round(top)}px, 0)`;
+  ghost.element.style.transform = `translate3d(0, ${Math.round(top - ghost.top)}px, 0)`;
 }
 
 /** What a drop zone says it is, or null if it cannot be read. */
@@ -417,7 +466,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
     ghost.current?.element.remove();
     for (const overlay of ghost.current?.cues ?? []) overlay.remove();
     ghost.current = null;
-    document.body.classList.remove(DRAGGING_BODY_CLASS);
+    markDragging(null, false);
     setDrag(null);
     showPlan(null);
   }, [cancelSpring, showPlan]);
@@ -611,7 +660,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
               scroller.current ?? row.closest('[data-sidebar="content"]') ?? document.documentElement,
             );
             if (ghost.current) placeGhost(ghost.current, moved.clientY);
-            document.body.classList.add(DRAGGING_BODY_CLASS);
+            markDragging(sidebarOf(row), true);
             // Without capture a release outside the window never arrives and the row stays
             // stuck. Capture retargets events only, so the hit test still finds the zone.
             try {

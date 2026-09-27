@@ -1281,7 +1281,15 @@ test("a carried row lifts a copy that follows the pointer", () => {
   assert.match(HOOK, /started = true;\n\s*scroller\.current = scrollerOf\(row\);\n\s*ghost\.current = liftRow\(/);
   assert.match(HOOK, /const face = row\.querySelector<HTMLElement>\(ROW_FACE_SELECTOR\);/);
   assert.match(HOOK, /Math\.min\(Math\.max\(y - ghost\.grab, view\.top\), view\.bottom - height\)/);
-  assert.match(HOOK, /translate3d\(0, \$\{Math\.round\(top\)\}px, 0\)/);
+  // Lifted where the row is and moved from there, so a frame before the first transform shows it
+  // over the row, not at the top of the window.
+  assert.match(HOOK, /top: `\$\{rect\.top\}px`,/);
+  assert.match(HOOK, /translate3d\(0, \$\{Math\.round\(top - ghost\.top\)\}px, 0\)/);
+  // In the drag layer, which is never taken off the body; the copy and its cues come and go in it.
+  assert.match(HOOK, /dragLayer\(\)\.append\(element\);/);
+  assert.match(HOOK, /dragLayer\(\)\.append\(overlay\);/);
+  assert.doesNotMatch(HOOK, /document\.body\.append\((element|overlay)\)/);
+  assert.match(CSS, /#pointer-drag-layer \{\n\tposition: fixed;[\s\S]*?z-index: 60;\n\tpointer-events: none;/);
   // A picture only: no drop zone, row key, id, test id or open-chat mark rides along, so no hit
   // test, lookup or test finds it, and it takes no pointer.
   for (const attr of ["DROP_ZONE_ATTR", "ROW_KEY_ATTR", '"id"', '"data-active"', '"data-testid"', '"data-thread-id"']) {
@@ -1292,7 +1300,11 @@ test("a carried row lifts a copy that follows the pointer", () => {
   assert.match(HOOK, /const clear = useCallback\(\(\) => \{[^]*?ghost\.current\?\.element\.remove\(\);\n\s*for \(const overlay of ghost\.current\?\.cues \?\? \[\]\) overlay\.remove\(\);\n\s*ghost\.current = null;/);
   // The row it came from dims as a section does, bare of its pressed look.
   assert.equal(APP_SIDEBAR.match(/draggingRow\?\.id === (item|project)\.id && "opacity-40"/g)?.length, 2);
-  assert.match(CSS, /body\.sidebar-row-dragging \[data-sidebar="menu-button"\]:active \{\n\s*background-color: transparent;/);
+  assert.match(CSS, /\.pointer-dragging \[data-sidebar="menu-button"\]:active \{\n\s*background-color: transparent;/);
+  // Marked on the sidebar, never the body: a body class restyles every element on the page.
+  assert.match(HOOK, /markDragging\(sidebarOf\(row\), true\);/);
+  assert.doesNotMatch(HOOK, /document\.body\.classList/);
+  assert.match(CSS, /\.pointer-dragging,\n\.pointer-dragging \* \{/);
 });
 
 test("a dropped row slides from where it was let go, unless motion is reduced", () => {

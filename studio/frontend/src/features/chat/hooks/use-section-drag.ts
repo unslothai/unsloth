@@ -15,10 +15,12 @@ import type { DropEdge } from "../lib/sidebar-drag.ts";
 import { placeIdAt } from "../stores/sidebar-organization-store.ts";
 import {
   DRAG_THRESHOLD_PX,
-  DRAGGING_BODY_CLASS,
   EDGE_PX,
   EDGE_STEP_PX,
+  dragLayer,
+  markDragging,
   scrollerOf,
+  sidebarOf,
 } from "./use-sidebar-drag.ts";
 
 /** Marks a draggable section's box with its key. */
@@ -149,6 +151,8 @@ export function useSectionDrag(
     let landing: SectionLanding | null = null;
     let scroller: HTMLElement = list;
     let ghost: HTMLElement | null = null;
+    /** Where the copy was put when it lifted; it moves by a transform from there. */
+    let ghostTop = 0;
     let line: HTMLElement | null = null;
     // Where on the header text the press landed, so the lifted copy does not jump.
     const text = header.querySelector("button") ?? header;
@@ -172,7 +176,11 @@ export function useSectionDrag(
       copy.tabIndex = -1;
       ghost.append(copy);
       const inset = 10;
+      // Lifted where the header is, raised as place() raises it, so a frame drawn before its
+      // first transform lands shows it there, not at the top of the window.
+      ghostTop = textRect.top - 6;
       Object.assign(ghost.style, {
+        top: `${ghostTop}px`,
         left: `${textRect.left - inset}px`,
         width: `${headerRect.right - 8 - (textRect.left - inset)}px`,
         height: `${textRect.height + 12}px`,
@@ -186,7 +194,7 @@ export function useSectionDrag(
       line = document.createElement("div");
       line.setAttribute("aria-hidden", "true");
       line.className = "sidebar-section-drop-line";
-      document.body.append(ghost, line);
+      dragLayer().append(ghost, line);
     };
 
     const place = () => {
@@ -197,7 +205,7 @@ export function useSectionDrag(
           Math.max(pointerY - grab - 6, view.top),
           view.bottom - height,
         );
-        ghost.style.transform = `translate3d(0, ${Math.round(top)}px, 0)`;
+        ghost.style.transform = `translate3d(0, ${Math.round(top - ghostTop)}px, 0)`;
       }
       const blocks = drawnBlocks();
       const drawn = blocks.map((element) => element.getAttribute(SECTION_ATTR)!);
@@ -226,12 +234,13 @@ export function useSectionDrag(
         return;
       }
       const shown = line.style.opacity === "1";
-      // Glides between gaps once it is up; the first placement is instant.
+      // Glides between gaps once it is up; the first placement is instant. Shown and placed in
+      // one change, by `top`, so it is never drawn a frame early at the top of the window.
       line.style.transition = shown ? "" : "none";
       Object.assign(line.style, {
         left: `${view.left + 8}px`,
         width: `${view.width - 16}px`,
-        transform: `translate3d(0, ${y}px, 0)`,
+        top: `${y - 0.75}px`,
         opacity: "1",
       });
     };
@@ -262,7 +271,7 @@ export function useSectionDrag(
       ghost = null;
       line = null;
       block.removeAttribute(SECTION_DRAGGING_ATTR);
-      document.body.classList.remove(DRAGGING_BODY_CLASS);
+      markDragging(null, false);
       return ghostTop;
     };
 
@@ -338,7 +347,7 @@ export function useSectionDrag(
         }
         started = true;
         scroller = scrollerOf(list) ?? list;
-        document.body.classList.add(DRAGGING_BODY_CLASS);
+        markDragging(sidebarOf(list), true);
         // Without capture a release outside the window never arrives and the drag sticks.
         try {
           document.body.setPointerCapture(pointerId);
@@ -347,10 +356,13 @@ export function useSectionDrag(
         }
         block.setAttribute(SECTION_DRAGGING_ATTR, "");
         lift();
+        // Placed now, so the copy and line are right in the frame that first shows them.
+        place();
         frame = requestAnimationFrame(onFrame);
       }
+      // The frame loop places everything, once a frame: moves come faster than frames on many
+      // mice, and each placement reads every section's box.
       moved.preventDefault();
-      place();
     }
 
     function onUp(released: PointerEvent) {

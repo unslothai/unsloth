@@ -673,7 +673,17 @@ test("a section drag draws itself, so the sidebar re-renders only on the drop", 
   // No React state in the hook: the lifted copy, the line and the dimming are DOM, redrawn per frame.
   assert.doesNotMatch(drag, /useState|setState/);
   assert.match(drag, /block\.setAttribute\(SECTION_DRAGGING_ATTR, ""\);/);
-  assert.match(drag, /document\.body\.append\(ghost, line\);/);
+  // Drawn in the drag layer, never straight onto the body: taking a body child out while another
+  // follows it restyled the whole page on the drop.
+  assert.match(drag, /dragLayer\(\)\.append\(ghost, line\);/);
+  assert.doesNotMatch(drag, /document\.body\.append/);
+  // Lifted where the header is, so a frame before the first transform never shows it at the top.
+  assert.match(drag, /ghostTop = textRect\.top - 6;\n\s*Object\.assign\(ghost\.style, \{\n\s*top: `\$\{ghostTop\}px`,/);
+  assert.match(drag, /translate3d\(0, \$\{Math\.round\(top - ghostTop\)\}px, 0\)/);
+  assert.match(drag, /line\.style\.top = `\$\{y - 0\.75\}px`|top: `\$\{y - 0\.75\}px`/);
+  // The drag is marked on the sidebar, not the body, whose every change restyles the page.
+  assert.match(drag, /markDragging\(sidebarOf\(list\), true\);/);
+  assert.match(drag, /markDragging\(null, false\);/);
   assert.doesNotMatch(APP_SIDEBAR, /sectionDrag\b|setSectionDrag/);
   // As the row drag: pointer capture, edge scroll from the frame loop, and a gesture per pointer.
   assert.match(drag, /document\.body\.setPointerCapture\(pointerId\);/);
