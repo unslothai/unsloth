@@ -2903,8 +2903,12 @@ exit 1
 
     # Shortcut icon refresh via a child interpreter when the type cannot be defined. Cosmetic: never throws.
     function Invoke-StudioPythonShellIconRefresh {
-        param([string[]]$Paths = @(), [string]$Exe = "")
+        param([string[]]$Paths = @(), [string]$Exe = "", [switch]$DestinationValidated)
         if (-not ($env:OS -eq "Windows_NT")) { return $false }
+        # Elevated, a venv interpreter runs only after the destination guard; --shortcuts-only never reaches it.
+        if (-not $DestinationValidated) {
+            try { if ((Get-ElevationState) -ne "false") { return $false } } catch { return $false }
+        }
         # Kill switch before $Exe too: it forbids any child on this host, however the path was found.
         if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $false }
         $exe = $Exe
@@ -4899,7 +4903,8 @@ exit 1
 
     function New-StudioShortcuts {
         param(
-            [Parameter(Mandatory = $true)][string]$ManagedPythonPath
+            [Parameter(Mandatory = $true)][string]$ManagedPythonPath,
+            [switch]$DestinationValidated
         )
 
         if (-not (Test-Path -LiteralPath $ManagedPythonPath)) {
@@ -5453,7 +5458,7 @@ exit 0
                         # WDAC Dynamic Code Security refused the type: same notifications via a child.
                         try {
                             $null = Invoke-StudioPythonShellIconRefresh `
-                                -Paths $createdShortcutPaths -Exe $ManagedPythonPath
+                                -Paths $createdShortcutPaths -Exe $ManagedPythonPath -DestinationValidated:$DestinationValidated
                         } catch {}
                     }
                     if ($firstInstall -or $iconChanged) {
@@ -11195,7 +11200,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     }
 
     # New-StudioShortcuts gates the .lnk shortcuts on env-mode internally.
-    New-StudioShortcuts -ManagedPythonPath $VenvPython
+    New-StudioShortcuts -ManagedPythonPath $VenvPython -DestinationValidated
 
     # Compare content hashes so hardlinks and identical copies do not false-trigger.
     try {
