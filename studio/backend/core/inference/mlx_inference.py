@@ -2358,6 +2358,11 @@ def _mlx_sampling_processors(
     logit_bias = None,
     grammar_constraint = None,
 ):
+    """Logits processors for the sampling knobs, or ``None`` when all are inert. Bias runs before
+    the penalties, matching llama-server's sampler order. mlx_lm supplies only the repetition
+    penalty here: its presence and frequency processors window the last 20 tokens *including the
+    prompt*, while the penalties below score the whole completion and exclude it, so using them
+    would make the same request sample differently depending on the backend."""
     processors = []
     if grammar_constraint is not None:
         from core.inference.grammar_constraint import make_grammar_logits_processor
@@ -3477,7 +3482,7 @@ class MLXInferenceBackend:
             prompt,
             reasoning_markers = reasoning_channel_markers,
             reasoning_is_extracted = reasoning_is_extracted,
-            # The same answer the prefill got, or a closer it re-emits for is refused here.
+            # Must match the prefill's answer, or a closer it re-emits would be refused.
             reply_keeps_special_tokens = preserve_native_channels or think_close_survives,
         )
         if constraint is not None and not constraint.allows_reasoning:
@@ -3958,8 +3963,7 @@ class MLXInferenceBackend:
         if document_only:
             prefill = ""
         elif constraint is not None:
-            # The grammar let a special </think> close the block and this text keeps it, so the
-            # opener must be re-emitted too or the route reads the whole reply as content.
+            # The grammar lets a kept </think> close the block: re-emit the opener or it all reads as content.
             prefill = detect_think_prefill(prompt, preserves_think_close = True)
         if constraint is not None and _vlm_generation_is_diffusion(self._model):
             from core.inference.grammar_constraint import ResponseFormatError
@@ -4145,8 +4149,7 @@ class MLXInferenceBackend:
                         )
 
         if document_only:
-            # Explicit markers override a None tokenizer, so skip the normalizer outright: it
-            # would rewrite marker text inside the document.
+            # The normalizer would rewrite marker text inside the document.
             yield from _stream_vlm_snapshots()
         else:
             yield from normalize_reasoning_snapshots(

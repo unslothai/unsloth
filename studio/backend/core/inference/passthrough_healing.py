@@ -61,12 +61,10 @@ _NUDGE_DEFAULT = os.environ.get("UNSLOTH_TOOL_CALL_NUDGE", "0") == "1"
 
 
 def response_format_constrains_decoding(response_format: Any) -> bool:
-    """Whether a ``response_format`` shapes the reply with a grammar."""
     return response_format is not None and response_format != {"type": "text"}
 
 
 def nudge_enabled(request_flag: Optional[bool], *, response_format: Any = None) -> bool:
-    """Whether a turn that asked for no tool gets one re-ask to actually call one."""
     if response_format_constrains_decoding(response_format):
         return False
     return _NUDGE_DEFAULT if request_flag is None else bool(request_flag)
@@ -98,8 +96,7 @@ def heal_gate(
     {"name": N}}`` narrows promotion to that one function. ``"auto"`` /
     ``"required"`` / absent keep the full declared set.
 
-    ``response_format`` withdraws healing entirely when it constrains decoding: a schema whose
-    string values resemble call markup would be promoted away. Asked here, not at each caller.
+    A constraining ``response_format`` disables healing: schema strings resembling call markup would be promoted away.
     """
     if _HEALING_DISABLED or auto_heal is False:
         return None

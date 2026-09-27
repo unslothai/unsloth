@@ -11907,8 +11907,7 @@ def install_python_stack() -> int:
     #      rather than no install.
     _diffusers_main_step()
 
-    # 11d. Apple Silicon grammar engine, outside skip_base: install.sh always takes that branch, leaving fresh installs without it.
-    # Optional: a failure only loses response_format on MLX (a clear 400), never the install.
+    # 11d. Apple Silicon grammar engine, outside skip_base (install.sh always skips base); failure only loses MLX response_format.
     if IS_MAC_ARM:
         if _exact_distribution_spec_is_installed(_LLGUIDANCE_PIN):
             _progress("MLX grammar engine (satisfied, skipped)")

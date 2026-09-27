@@ -52,8 +52,6 @@ class GrammarDesyncError(RuntimeError):
 
 @dataclass(frozen = True)
 class ConstraintSpec:
-    """A validated document grammar for one request, not yet bound to a tokenizer."""
-
     grammar: str
     schema_json: Optional[str] = None
     reasoning_close: Optional[str] = None
@@ -91,7 +89,6 @@ def build_constraint(
     reasoning_is_extracted: bool = False,
     reply_keeps_special_tokens: bool = False,
 ) -> Optional["GrammarConstraint"]:
-    """The constraint one rendered prompt decodes under, or None for no contract."""
     markers = _reasoning_markers(tokenizer, reasoning_markers, tools)
     spec = constraint_spec_from_response_format(
         response_format,
@@ -116,7 +113,6 @@ def constraint_spec_from_response_format(
     reasoning_markers = None,
     reply_keeps_special_tokens: bool = False,
 ) -> Optional[ConstraintSpec]:
-    """Validate a request's ``response_format`` into a :class:`ConstraintSpec`, or None."""
     if response_format is None:
         return None
     if not isinstance(response_format, dict):
@@ -225,8 +221,6 @@ def _marker_reference(tokenizer, marker: str, *, reply_keeps_special_tokens: boo
 
 
 class GrammarConstraint:
-    """One generation's matcher: mask each logits row, advance on each token."""
-
     def __init__(
         self,
         grammar: str,
@@ -267,7 +261,6 @@ class GrammarConstraint:
         return next((i for i in self._stop_ids if self._mask_allowed(i)), None)
 
     def advance(self, token_id: int) -> None:
-        """Commit a sampled token, raising when it desyncs."""
         if self._matcher is None:
             raise GrammarDesyncError("guided decoding advanced before the grammar was bound")
         if self._matcher.is_stopped():
@@ -298,7 +291,6 @@ class GrammarConstraint:
 
 
 def make_grammar_logits_processor(constraint: GrammarConstraint):
-    """``(tokens, logits) -> logits`` masking each step through *constraint*."""
     state = {"seen": None}
 
     def _processor(tokens, logits):

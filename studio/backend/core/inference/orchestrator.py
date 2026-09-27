@@ -292,7 +292,7 @@ class GenStreamErrorRaised(RuntimeError):
 
     @classmethod
     def from_chunk(cls, chunk: "GenStreamError") -> "GenStreamErrorRaised":
-        """Re-raise a streamed error at a generator boundary, classification intact, so a refusal is not answered 500."""
+        """Keeps public/openai_param so a refusal is not answered 500."""
         return cls(str(chunk), public = chunk.public, openai_param = chunk.openai_param)
 
 
