@@ -32,3 +32,10 @@ test("an unknown reading leaves the sum unknown instead of undercounting", () =>
   assert.equal(pool.used, null);
   assert.equal(pool.total, 16);
 });
+
+test("a mix of more than two card kinds is labelled by count", () => {
+  const card = (name: string) => ({ name, vram_total_gb: 24, vram_used_gb: 1 });
+  const pool = gpuPool([card("A"), card("A"), card("B"), card("C")]);
+  assert.equal(pool.label, "4 GPUs");
+  assert.equal(pool.total, 96);
+});
