@@ -29,7 +29,6 @@ _PROBE_DEPTH = 2
 _PROBE_OPEN_LIMIT = 64
 # A huggingface_hub cache keeps the weights only in <root>/models--org--name/snapshots/<commit>/, so refusing that directory leaves the folder looking healthy and empty at once.
 _HF_SNAPSHOTS_DIR = "snapshots"
-# A registered HF_HOME keeps that cache one level down, in hub/.
 _HF_HOME_HUB_DIR = "hub"
 
 

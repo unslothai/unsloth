@@ -808,7 +808,6 @@ def test_a_denied_hf_snapshot_commit_directory_is_not_ok(tmp_path: Path):
 
 @requires_posix_permissions
 def test_a_denied_hf_snapshot_under_a_registered_hf_home_is_not_ok(tmp_path: Path):
-    """A registered HF_HOME keeps its cache one level down, in hub/."""
     repo = tmp_path / "hub" / "models--org--model"
     (repo / "blobs").mkdir(parents = True)
     (repo / "blobs" / "deadbeef").write_bytes(b"stub")
