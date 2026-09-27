@@ -493,9 +493,17 @@ def fp16_unet_offloaded(target: Any, pipe: Any, *, offload_active: bool) -> bool
     )
 
 
+# VAEs MEASURED slower in channels_last; they keep the contiguous layout. AutoencoderKLQwenImage21 (a 2D conv net with
+# channel RMS norms), 1024 decode on B200: 72.7 ms contiguous vs 89 ms channels_last, and channels_last + cudnn.benchmark
+# re-tunes 1-1.7 s on every new resolution where contiguous does not.
+_VAE_CHANNELS_LAST_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
+
+
 def _vae_channels_last(pipe: Any, logger: Any) -> bool:
     vae = getattr(pipe, "vae", None)
     if vae is None or not hasattr(vae, "to"):
+        return False
+    if type(vae).__name__ in _VAE_CHANNELS_LAST_DENY:
         return False
     try:
         import torch
