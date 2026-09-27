@@ -7230,7 +7230,6 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                     fi
                 fi
             elif [ "$_RADEON_HOST_ANSWERED" = true ]; then
-                # Not a WARN: AMD publishes only some releases here (#7264, #10657).
                 _radeon_rel=${_radeon_url%/}
                 _radeon_rel=${_radeon_rel##*/}
                 substep "repo.radeon.com has no $_radeon_rel wheels; using $(_strip_index_url_credentials "$TORCH_INDEX_URL")"

@@ -201,7 +201,6 @@ run_func() {
     fi
 }
 
-# Captures stderr only (run_func discards it).
 run_func_stderr() {
     _mock_dir="$1"
     if [ "$_mock_dir" = "none" ]; then
