@@ -1310,7 +1310,7 @@ test("a carried row lifts a copy that follows the pointer", () => {
 test("a dropped row slides from where it was let go, unless motion is reduced", () => {
   assert.match(HOOK, /const from = ghost\.current\?\.element\.getBoundingClientRect\(\)\.top \?\? null;\n\s*clear\(\);/);
   assert.match(HOOK, /onDrop\(aimed\.outcome, dragged\);\n\s*if \(from !== null && !optionsRef\.current\.reducedMotion\?\.\(\)\) settleRow\(dragged, from\);/);
-  assert.match(APP_SIDEBAR, /onDrop: \(plan\) => commitDrop\(plan\),\n\s*reducedMotion: prefersReducedMotion,/);
+  assert.match(APP_SIDEBAR, /onDrop: \(plan, dragged\) => commitDrop\(plan, dragged\),\n\s*reducedMotion: prefersReducedMotion,/);
   // A folder carries its open chats: the spots naming it slide with its row, each once.
   assert.match(HOOK, /zone\.folderId === item\.id &&/);
   assert.match(HOOK, /!all\.some\(\(other\) => other !== element && other\.contains\(element\)\)/);

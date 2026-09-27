@@ -150,8 +150,9 @@ export interface SidebarOrganizationState {
   /** The order of the sections above Recents, as dragged; read through resolveSectionOrder. */
   sectionOrder: string[];
   /** A new chat started from a custom section's header, filed there once it has an id. Not
-   *  saved: it is only good for the new chat on screen now. */
-  pendingNewChatSection: { sectionId: string; nonce: string } | null;
+   *  saved: it is only good for the new chat on screen now. `compare` is set once that chat was
+   *  turned into a compare chat before its first send, which then takes the mark. */
+  pendingNewChatSection: { sectionId: string; nonce: string; compare?: string } | null;
   setOrganizeBy: (value: SidebarOrganizeBy) => void;
   setChatSort: (value: SidebarChatSort) => void;
   setPinnedSort: (value: SidebarChatSort) => void;
@@ -169,7 +170,7 @@ export interface SidebarOrganizationState {
   setSectionHidden: (key: string, hidden: boolean) => void;
   /** Drops the section `key` against the `edge` side of `targetKey`, as a row drag lands. */
   moveSection: (key: string, targetKey: string, edge: "top" | "bottom") => void;
-  setPendingNewChatSection: (pending: { sectionId: string; nonce: string } | null) => void;
+  setPendingNewChatSection: (pending: SidebarOrganizationState["pendingNewChatSection"]) => void;
 }
 
 /** Trims and bounds a section name. Empty when there is nothing to name it with. */

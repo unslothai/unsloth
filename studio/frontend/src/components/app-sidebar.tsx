@@ -1402,21 +1402,39 @@ export function AppSidebar() {
     : undefined;
   // A chat started from a section's header joins it when its first send gives it an id, which
   // lands in the store while the address still names the new chat. Leaving that chat first lets
-  // the mark go, so a chat opened afterwards is never filed by mistake.
+  // the mark go, so a chat opened afterwards is never filed by mistake. Turning it into a compare
+  // chat before that first send is not leaving it: the compare chat takes the mark, and joins once
+  // its pair is listed, under the id the address gives it.
   useEffect(() => {
     if (!pendingNewChatSection) return;
-    const onNewChat =
-      isChatRoute &&
-      search.new === pendingNewChatSection.nonce &&
-      !search.thread &&
-      !search.compare &&
-      !search.project;
-    if (!onNewChat) {
+    const { sectionId, nonce, compare } = pendingNewChatSection;
+    const fresh = isChatRoute && !search.thread && !search.project;
+    if (compare === undefined) {
+      if (fresh && search.new === nonce && !search.compare) {
+        if (storeThreadId) {
+          setChatsSection([storeThreadId], sectionId);
+          setPendingNewChatSection(null);
+        }
+        return;
+      }
+      // Straight from the new chat to a compare chat nothing lists yet: the same chat, now
+      // compared. A compare chat already listed is one opened instead, and lets the mark go.
+      const newCompare =
+        fresh &&
+        !search.new &&
+        search.compare &&
+        !allChatItems.some((item) => item.id === search.compare)
+          ? search.compare
+          : undefined;
+      setPendingNewChatSection(newCompare ? { sectionId, nonce, compare: newCompare } : null);
+      return;
+    }
+    if (!(fresh && !search.new && search.compare === compare)) {
       setPendingNewChatSection(null);
       return;
     }
-    if (storeThreadId) {
-      setChatsSection([storeThreadId], pendingNewChatSection.sectionId);
+    if (allChatItems.some((item) => item.type === "compare" && item.id === compare)) {
+      setChatsSection([compare], sectionId);
       setPendingNewChatSection(null);
     }
   }, [
@@ -1427,6 +1445,7 @@ export function AppSidebar() {
     search.compare,
     search.project,
     storeThreadId,
+    allChatItems,
     setChatsSection,
     setPendingNewChatSection,
   ]);
@@ -2243,15 +2262,26 @@ export function AppSidebar() {
       else if (zone.section === "projects") setProjectsOpen(true);
       else setChatOpen(true);
     },
-    onDrop: (plan) => commitDrop(plan),
+    onDrop: (plan, dragged) => commitDrop(plan, dragged),
     reducedMotion: prefersReducedMotion,
   });
   const draggingRow = dnd.drag;
 
   /** Runs a plan. Pin toggles are guarded against a stale plan; a sorted list that would undo
    *  the drop switches to Manual and says so. */
-  function commitDrop(plan: SidebarDropPlan) {
+  function commitDrop(plan: SidebarDropPlan, dragged: SidebarDragItem) {
     const { effects } = plan;
+    // A chat dropped again while an earlier drop's move is in flight: this drop is the newer
+    // intent, so the earlier one's slot, pin and filing stand down when its move lands. A move
+    // bumps the generation below; any other drop, a reorder where the row still is included,
+    // bumps it here.
+    const pendingMove = dragged.kind === "chat" ? chatMovesRef.current.get(dragged.id) : undefined;
+    if (pendingMove && !effects.moveChat) {
+      chatMovesRef.current.set(dragged.id, {
+        generation: pendingMove.generation + 1,
+        chain: pendingMove.chain,
+      });
+    }
     if (effects.pinChat && !pinnedIdSet.has(effects.pinChat)) {
       togglePinnedChat(effects.pinChat);
     }

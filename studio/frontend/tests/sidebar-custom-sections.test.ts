@@ -619,9 +619,24 @@ test("a section's header starts a chat that is filed there on its first send", (
   // Filed when the store gains an id while the address still names that new chat; leaving it
   // first drops the mark.
   const effect = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("if (!pendingNewChatSection) return;"));
-  assert.match(effect, /search\.new === pendingNewChatSection\.nonce &&\n\s*!search\.thread/);
-  assert.match(effect, /if \(!onNewChat\) \{\n\s*setPendingNewChatSection\(null\);/);
-  assert.match(effect, /setChatsSection\(\[storeThreadId\], pendingNewChatSection\.sectionId\)/);
+  assert.match(effect, /const fresh = isChatRoute && !search\.thread && !search\.project;/);
+  assert.match(
+    effect,
+    /if \(fresh && search\.new === nonce && !search\.compare\) \{\n\s*if \(storeThreadId\) \{\n\s*setChatsSection\(\[storeThreadId\], sectionId\);\n\s*setPendingNewChatSection\(null\);/,
+  );
+  // Turned into a compare chat before its first send, the compare chat takes the mark; a compare
+  // chat already listed is one opened instead, which lets it go.
+  assert.match(
+    effect,
+    /fresh &&\n\s*!search\.new &&\n\s*search\.compare &&\n\s*!allChatItems\.some\(\(item\) => item\.id === search\.compare\)/,
+  );
+  assert.match(effect, /setPendingNewChatSection\(newCompare \? \{ sectionId, nonce, compare: newCompare \} : null\);/);
+  // Leaving the compare chat lets it go; its pair, listed under the address's id, joins.
+  assert.match(effect, /if \(!\(fresh && !search\.new && search\.compare === compare\)\) \{\n\s*setPendingNewChatSection\(null\);/);
+  assert.match(
+    effect,
+    /allChatItems\.some\(\(item\) => item\.type === "compare" && item\.id === compare\)\) \{\n\s*setChatsSection\(\[compare\], sectionId\);/,
+  );
   // Not saved: a reload must not file some later chat.
   const store = useSidebarOrganizationStore.getInitialState();
   assert.equal(store.pendingNewChatSection, null);
@@ -825,6 +840,25 @@ test("a row id named like an object built-in is unfiled until it is filed", () =
 
 // A project picked from a chat's "Move to" is where the chat is meant to show, as a drop on the
 // folder is, so a section it is filed in lets it go once the move lands.
+// A chat dropped into a folder stays on screen in its section until the move lands, so it can be
+// dropped again meanwhile. Any later drop of it, a reorder where it still is included, is the
+// newer intent, and the earlier drop's filing, slot and pin stand down.
+test("a later drop of a chat supersedes its earlier drop's pending move", () => {
+  const commit = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("function commitDrop("),
+    APP_SIDEBAR.indexOf("/** The insertion line for a row, on the landing edge. */"),
+  );
+  assert.match(commit, /function commitDrop\(plan: SidebarDropPlan, dragged: SidebarDragItem\) \{/);
+  assert.match(
+    commit,
+    /const pendingMove = dragged\.kind === "chat" \? chatMovesRef\.current\.get\(dragged\.id\) : undefined;\n\s*if \(pendingMove && !effects\.moveChat\) \{\n\s*chatMovesRef\.current\.set\(dragged\.id, \{\n\s*generation: pendingMove\.generation \+ 1,\n\s*chain: pendingMove\.chain,/,
+  );
+  // Read before any drop that does not wait for a move commits, so it counts from the first.
+  assert.ok(commit.indexOf("const pendingMove") < commit.indexOf("if (!move) {"));
+  // The earlier move checks its generation before it files, slots or unpins.
+  assert.match(commit, /if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;/);
+});
+
 test("a chat moved into a project from its menu leaves its section, as a drop does", () => {
   const fn = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("async function moveChatToProjectFromMenu("));
   assert.match(fn, /if \(!\(await moveChatToProject\(item, projectId\)\) \|\| filedSince\) return;/);
