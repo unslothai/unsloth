@@ -1778,8 +1778,11 @@ function GgufVariantExpander({
   diffusionLoad = false,
   hostPooledMemory = false,
   gpuCount,
+  loadedQuants,
 }: {
   repoId: string;
+  /** Quants of this repo loaded right now; the list marks them. */
+  loadedQuants?: readonly string[];
   pipelineTag?: string | null;
   /** True on Images / Video, where a GGUF is placed by the diffusion backend rather than
    *  llama-server, so the llama.cpp budget does not apply. Audio is task-scoped but not this. */
@@ -2323,6 +2326,10 @@ function GgufVariantExpander({
               {unusableLocal ? (
                 <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
                   incomplete
+                </span>
+              ) : loadedQuants?.some((q) => ggufVariantsMatchForPicker(q, v.quant)) ? (
+                <span className="ml-1.5 text-ui-9 font-sans font-medium text-green-600/90 dark:text-green-400/80">
+                  loaded
                 </span>
               ) : v.downloaded ? (
                 <>
@@ -2975,6 +2982,19 @@ export function HubModelPicker({
   );
   const isKeptLoaded = (repoId: string) =>
     loadedIdSet.has(repoId.toLowerCase());
+  // The quants a repo runs right now, so a repo with several cached says which one is loaded.
+  const loadedQuantsFor = (repoId: string): string[] => {
+    const quants =
+      task === undefined
+        ? loadedModels
+            .filter((m) => m.quant && modelIdsMatchForPicker(m.id, repoId))
+            .map((m) => m.quant as string)
+        : [];
+    if (activeGgufVariant && modelIdsMatchForPicker(loadedModelId, repoId)) {
+      quants.push(activeGgufVariant);
+    }
+    return [...new Set(quants)];
+  };
   const loadedRows = useMemo(() => {
     if (task !== undefined || section !== "recommended") return [];
     const q = debouncedQuery.trim().toLowerCase();
@@ -6332,6 +6352,11 @@ export function HubModelPicker({
               label={c.repo_id}
               tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
               meta="GGUF"
+              quantChip={
+                loadedQuantsFor(c.repo_id).length
+                  ? loadedQuantsFor(c.repo_id).map(ggufQuantChipLabel).join(", ")
+                  : undefined
+              }
               showVision={c.has_vision ?? visionByRepo[c.repo_id]}
               alignMeta="device"
               partial={isPartialRepo}
@@ -6413,6 +6438,7 @@ export function HubModelPicker({
             hostPooledMemory={gpu.loadDeviceSharesHostMemory}
             gpuCount={expanderGpuCount}
             repoId={c.repo_id}
+            loadedQuants={loadedQuantsFor(c.repo_id)}
             pipelineTag={c.task ?? null}
             loadId={c.load_id}
             cachePath={c.cache_path}
@@ -7514,6 +7540,7 @@ export function HubModelPicker({
                                   hostPooledMemory={gpu.loadDeviceSharesHostMemory}
                                   gpuCount={expanderGpuCount}
                                   repoId={m.id}
+                                  loadedQuants={loadedQuantsFor(m.id)}
                                   onDevice={true}
                                   onSelect={onSelect}
                                   resolveDownloadFootprint={resolveDownloadFootprint}
@@ -7652,6 +7679,7 @@ export function HubModelPicker({
                                 hostPooledMemory={gpu.loadDeviceSharesHostMemory}
                                 gpuCount={expanderGpuCount}
                                 repoId={m.id}
+                                loadedQuants={loadedQuantsFor(m.id)}
                                 onDevice={true}
                                 onSelect={onSelect}
                                 resolveDownloadFootprint={resolveDownloadFootprint}
@@ -7779,6 +7807,7 @@ export function HubModelPicker({
                                 hostPooledMemory={gpu.loadDeviceSharesHostMemory}
                                 gpuCount={expanderGpuCount}
                                 repoId={m.id}
+                                loadedQuants={loadedQuantsFor(m.id)}
                                 onDevice={true}
                                 onSelect={onSelect}
                                 resolveDownloadFootprint={resolveDownloadFootprint}
@@ -7915,6 +7944,7 @@ export function HubModelPicker({
                                 hostPooledMemory={gpu.loadDeviceSharesHostMemory}
                                 gpuCount={expanderGpuCount}
                                 repoId={id}
+                                loadedQuants={loadedQuantsFor(id)}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
                                 resolveDownloadFootprint={resolveDownloadFootprint}
@@ -8046,6 +8076,7 @@ export function HubModelPicker({
                               hostPooledMemory={gpu.loadDeviceSharesHostMemory}
                               gpuCount={expanderGpuCount}
                               repoId={id}
+                              loadedQuants={loadedQuantsFor(id)}
                               pipelineTag={pipelineTagById.get(id) ?? null}
                               onSelect={onSelect}
                               resolveDownloadFootprint={resolveDownloadFootprint}
@@ -8173,6 +8204,7 @@ export function HubModelPicker({
                                 hostPooledMemory={gpu.loadDeviceSharesHostMemory}
                                 gpuCount={expanderGpuCount}
                                 repoId={id}
+                                loadedQuants={loadedQuantsFor(id)}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
                                 resolveDownloadFootprint={resolveDownloadFootprint}
@@ -8524,6 +8556,11 @@ function FineTunedRows({
             {expandedGguf === adapter.id && (
               <GgufVariantExpander
                 repoId={adapter.id}
+                loadedQuants={
+                  activeGgufVariant && modelIdsMatchForPicker(loadedModelId, adapter.id)
+                    ? [activeGgufVariant]
+                    : undefined
+                }
                 onSelect={onSelect}
                 onConfigure={onConfigure}
                 parentOptionKey={optionKey}
