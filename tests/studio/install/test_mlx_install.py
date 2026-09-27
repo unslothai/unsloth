@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-import re
 import subprocess
 import sys
 from unittest.mock import Mock
@@ -108,15 +107,69 @@ def _repair_specs():
 _GRAMMAR_ENGINE_SLOT = 1
 
 
+def _progress_calls(nodes) -> int:
+    return sum(
+        isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_progress"
+        for node in nodes
+        for n in ast.walk(node)
+    )
+
+
+def _one_unconditional_progress(branch) -> bool:
+    """The branch reaches exactly one _progress call, as a statement of its own, on every path."""
+    direct = [
+        stmt
+        for stmt in branch
+        if isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Call)
+        and isinstance(stmt.value.func, ast.Name)
+        and stmt.value.func.id == "_progress"
+    ]
+    # Anything before it that can leave the branch would let a path skip the slot.
+    before = branch[: branch.index(direct[0])] if len(direct) == 1 else []
+    exits = (ast.Return, ast.Raise, ast.Continue, ast.Break)
+    return (
+        len(direct) == 1
+        and _progress_calls(branch) == 1
+        and not any(isinstance(n, exits) for stmt in before for n in ast.walk(stmt))
+    )
+
+
 def test_the_grammar_engine_slot_and_step_share_the_apple_silicon_gate():
     source = Path(stack.__file__).read_text(encoding = "utf-8")
-    budget = re.search(r"\n( *)if (\w+):\n\1    base_total \+= 1  # MLX grammar engine", source)
-    step = re.search(r"# 11d\. Apple Silicon grammar engine[^\n]*\n( *)if (\w+):\n", source)
-    assert budget and step, "the grammar engine budget line or step 11d moved; recount the slot"
-    assert budget.group(2) == step.group(2) == "IS_MAC_ARM", (budget.group(2), step.group(2))
-    body = source[step.end() : source.index("# 12. Patch metadata", step.end())]
-    # One slot: exactly one progress call on each branch of the step.
-    assert body.count("_progress(") == 2 and body.count("else:") == 1, body
+    lines = source.splitlines()
+    install = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "install_python_stack"
+    )
+    # `if <gate>: base_total += 1  # MLX grammar engine ...`
+    budget_gates = [
+        node
+        for node in ast.walk(install)
+        if isinstance(node, ast.If)
+        and len(node.body) == 1
+        and isinstance(node.body[0], ast.AugAssign)
+        and isinstance(node.body[0].target, ast.Name)
+        and node.body[0].target.id == "base_total"
+        and "# MLX grammar engine" in lines[node.body[0].lineno - 1]
+    ]
+    # The step: the top-level `if` of install_python_stack() that announces the grammar engine.
+    step_gates = [
+        node
+        for node in install.body
+        if isinstance(node, ast.If)
+        and '"MLX grammar engine' in (ast.get_source_segment(source, node) or "")
+    ]
+    assert len(budget_gates) == 1 and len(step_gates) == 1, "the budget line or step 11d moved"
+    for gate in (budget_gates[0], step_gates[0]):
+        assert isinstance(gate.test, ast.Name) and gate.test.id == "IS_MAC_ARM", ast.dump(gate.test)
+    assert not step_gates[0].orelse, "a slot spent off Apple Silicon has no budget"
+    # One slot on every path through the step: a single if/else, and each arm spends one.
+    (branch,) = step_gates[0].body
+    assert isinstance(branch, ast.If) and branch.orelse, ast.dump(branch)
+    assert _one_unconditional_progress(branch.body), ast.get_source_segment(source, branch)
+    assert _one_unconditional_progress(branch.orelse), ast.get_source_segment(source, branch)
 
 
 @pytest.mark.parametrize("platform", ["macos_arm", "macos_intel", "linux", "windows"])
