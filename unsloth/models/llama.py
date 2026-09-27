@@ -1018,7 +1018,11 @@ def LlamaModel_fast_forward(
         # Gemma2 builds its own masks below; a 4D sliding mask here would also window the global layers.
         if IS_GEMMA2:
             # No padding: keep the flash path, which windows each layer itself.
-            if HAS_FLASH_ATTENTION_SOFTCAPPING and bool(attention_mask.all()):
+            if (
+                HAS_FLASH_ATTENTION_SOFTCAPPING
+                and attention_mask.dim() == 2
+                and bool(attention_mask.all())
+            ):
                 attention_mask = None
         else:
             attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
@@ -1064,14 +1068,19 @@ def LlamaModel_fast_forward(
             # Unsloth needs a 2D mask, not [2, 1, n, n] (#853), converted to float not bool
             # (pytorch/pytorch#103749).
 
-            # The SDPA helper returns None for an all-ones mask; the softcapping kernels need a tensor.
-            key_value_length = past_key_values_length + seq_length
-            dynamic_SWA_mask = AttentionMaskConverter(
-                is_causal = True, sliding_window = self.config.sliding_window
-            ).to_4d(attention_mask, seq_length, inputs_embeds.dtype, key_value_length)
-            dynamic_GA_mask = AttentionMaskConverter(is_causal = True).to_4d(
-                attention_mask, seq_length, inputs_embeds.dtype, key_value_length
-            )
+            if attention_mask.dim() == 2:
+                # The SDPA helper returns None for an all-ones mask; the softcapping kernels need a tensor.
+                key_value_length = past_key_values_length + seq_length
+                dynamic_SWA_mask = AttentionMaskConverter(
+                    is_causal = True, sliding_window = self.config.sliding_window
+                ).to_4d(attention_mask, seq_length, inputs_embeds.dtype, key_value_length)
+                dynamic_GA_mask = AttentionMaskConverter(is_causal = True).to_4d(
+                    attention_mask, seq_length, inputs_embeds.dtype, key_value_length
+                )
+            else:
+                # A caller-built 4D mask is used as given for both layer types.
+                dynamic_SWA_mask = attention_mask
+                dynamic_GA_mask = attention_mask
             use_static_mask = False
 
         elif not hasattr(self, "SWA_mask"):
