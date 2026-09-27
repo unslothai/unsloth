@@ -27,6 +27,8 @@ foreach ($name in @(
     if ($fn.Count -lt 1) { throw "expected $name in install.ps1, found none" }
     Invoke-Expression $fn[0].Extent.Text
 }
+# A standard user: an elevated run declines this probe, and hosted Windows runners are elevated.
+function Get-ElevationState { return "false" }
 
 function Initialize-StudioProcessImageNativeType { return $false }
 function Get-StudioNativeProcessImagePath { param([int]$ProcessId) return $null }
