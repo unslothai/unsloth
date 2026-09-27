@@ -1223,7 +1223,6 @@ def test_an_uncompilable_family_quantises_auto_when_the_budget_is_unmeasured(
 
 
 def _measured_bf16_family(monkeypatch, *, measured = True):
-    # Compiles regionally (Studio supplies its blocks), but the measured table keeps bf16 while it fits.
     _uncompilable(monkeypatch, measured = measured)
     monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: True)
     monkeypatch.setattr(dmod, "auto_bf16_when_resident_reason", lambda _name: "measured: no faster")
@@ -1282,7 +1281,6 @@ def test_the_bf16_rule_names_only_the_measured_families(repo, kept):
     assert fam is not None
     reason = dmod._auto_keeps_bf16_reason(fam)
     assert (reason is not None) is kept
-    # Both deciders read this one answer; neither may call the family uncompilable any more.
     assert reason is None or "cannot be regionally compiled" not in reason
 
 

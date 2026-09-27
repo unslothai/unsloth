@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Names the repeated blocks for Diffusers transformers that declare none (``compile_repeated_blocks`` raises on an
-empty list), on the instance only. Only classes verified to compile without graph breaks are listed."""
+"""Supplies ``_repeated_blocks`` (on the instance) for verified Diffusers transformers that declare none."""
 
 from __future__ import annotations
 
@@ -18,7 +17,6 @@ _VERIFIED_BLOCKS: dict[str, tuple[str, ...]] = {
 
 
 def discover_repeated_blocks(model: Any) -> tuple[str, ...]:
-    """``_no_split_modules`` classes that occur at least twice inside an ``nn.ModuleList`` of ``model``."""
     names = tuple(getattr(model, "_no_split_modules", None) or ())
     if not names:
         return ()
@@ -75,8 +73,7 @@ def _moe_infer_dense(self: Any, x: Any, flat_expert_indices: Any, flat_expert_we
 
 
 def install_traceable_moe(model: Any) -> int:
-    """Replace HiDream's routed-expert loop, whose host read of per-expert counts (``bincount().cpu()``) breaks the
-    graph in every block. Dense experts cost 2x the routed FLOPs (top-2 of 4) but need no host sync or gather."""
+    """Swap HiDream's ``moe_infer`` (host ``bincount().cpu()`` breaks every block's graph) for dense experts."""
     patched = 0
     for sub in model.modules():
         if type(sub).__name__ != "MOEFeedForwardSwiGLU":

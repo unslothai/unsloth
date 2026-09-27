@@ -286,8 +286,7 @@ def fp16_compile_explicit_only(target: Any) -> bool:
 
 
 def family_compiles_regionally(family: Any) -> bool:
-    """False only for an EMPTY ``_repeated_blocks`` Studio cannot supply (``compile_repeated_blocks`` raises); unknown
-    reads True."""
+    """False only for an EMPTY ``_repeated_blocks`` Studio cannot supply; unknown reads True."""
     if getattr(family, "denoiser_attr", "transformer") != "transformer":
         return True
     name = getattr(family, "transformer_class", None)
