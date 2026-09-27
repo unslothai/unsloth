@@ -5259,7 +5259,7 @@ def _posix_join(parts) -> str:
 
 
 def _shell_assign_value_self_references(name: str, value: str) -> bool:
-    """True when *value* expands *name* (VAR=$VAR); such bindings never reach a concrete path here."""
+    """True when *value* expands *name* (VAR=$VAR), which must not feed back into itself."""
     if any((m.group(1) or m.group(2)) == name for m in _SHELL_VAR_RE.finditer(value)):
         return True
     return any(
@@ -5273,13 +5273,7 @@ def _expand_shell_assignments(command: str) -> str:
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path split across an
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
     pattern replacement. Fail-open: only adds detections."""
-    env = {
-        var: val
-        for var, val in _SHELL_ASSIGN_RE.findall(command)
-        if not _shell_assign_value_self_references(var, val)
-    }
-    if not env:
-        return command
+    env = {}
 
     def repl_pattern(m):
         var, is_global, pat, rep = m.group(1), m.group(2), m.group(3), m.group(4)
@@ -5305,10 +5299,20 @@ def _expand_shell_assignments(command: str) -> str:
         pointed = env.get(m.group(1))
         return env.get(pointed, m.group(0)) if pointed is not None else m.group(0)
 
-    command = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, command)
-    command = _SHELL_PARAM_REPL_RE.sub(repl_pattern, command)
-    command = _SHELL_PARAM_CASE_RE.sub(repl_case, command)
-    return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command)
+    def expand(text):
+        text = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, text)
+        text = _SHELL_PARAM_REPL_RE.sub(repl_pattern, text)
+        text = _SHELL_PARAM_CASE_RE.sub(repl_case, text)
+        return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), text)
+
+    for var, val in _SHELL_ASSIGN_RE.findall(command):
+        if _shell_assign_value_self_references(var, val):
+            # Keep concrete path pieces without feeding the binding back into itself.
+            # An unset self-reference contributes nothing; an earlier binding can supply it.
+            env.setdefault(var, "")
+            val = expand(_expand_param_defaults(val))
+        env[var] = val
+    return expand(command) if env else command
 
 
 def _expand_param_defaults(command: str) -> str:

@@ -2402,6 +2402,17 @@ def test_two_self_referential_assignments_in_one_quoted_string_do_not_hang(studi
         assert tools._references_studio_credential_here(ordinary, workdir) is False, ordinary
 
 
+@pytest.mark.parametrize(
+    "value", ["../..$x", "${x}../..", "../${x}/..", "${x:-../..}", "../..${x,,}"]
+)
+def test_self_referential_assignments_preserve_concrete_paths(studio_home, value):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = f'unset x; x={value}; cat "$x/auth/auth.db"'
+    assert tools._references_studio_credential_here(command, workdir)
+    harmless = command.replace("../..", "./project").replace("../${x}/..", "./${x}/project")
+    assert not tools._references_studio_credential_here(harmless, workdir)
+
+
 @pytest.mark.parametrize("hops", [14, 15, 16, 32, 128])
 @pytest.mark.parametrize("read", ["cat $v{hops}/auth/auth.db", "cd $v{hops}; cat auth/auth.db"])
 def test_long_alias_chains_still_refuse_the_auth_directory(studio_home, hops, read):
