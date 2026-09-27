@@ -28,7 +28,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   audit:
@@ -336,6 +336,8 @@ jobs:
             Write-Host '::warning::llama-quantize.exe is not in the bundle, so only llama-server was loaded'
           }
           Add-Content -Path $env:GITHUB_ENV -Value 'EXERCISE_COMPLETED=true'
+          # The exit codes are recorded for the verdict; llama-quantize --help exits 1 after printing usage.
+          exit 0
 
       - name: Verdict
         if: always() && steps.control.outputs.control_fired == 'true'
