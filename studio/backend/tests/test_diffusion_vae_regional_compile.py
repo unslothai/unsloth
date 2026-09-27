@@ -177,3 +177,16 @@ def test_tiny_minimax_h3_vae_decode_compiles_once_per_tile_shape():
     torch.testing.assert_close(out, ref, atol = 2e-3, rtol = 2e-3)
     torch.testing.assert_close(out2, out)
     torch._dynamo.reset()
+
+
+def test_a_vae_whose_blocks_the_fast_decoder_bypasses_is_not_compiled_even_when_forced(monkeypatch):
+    # MiniMax-H3's fused decoder reads block weights and never calls the blocks: compiling them would report
+    # compiled_vae_decode for a compile that never runs.
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    vae = _RegionalVae()
+    pipe = types.SimpleNamespace(vae = vae)
+    assert ds_mod._vae_decode_compile_allowed(pipe, ds_mod.SPEED_DEFAULT) is True
+    vae._unsloth_decode_blocks_bypassed = True
+    for tier in (ds_mod.SPEED_DEFAULT, ds_mod.SPEED_MAX):
+        assert ds_mod._vae_decode_compile_allowed(pipe, tier) is False
+        assert ds_mod.vae_decode_compile_allowed(pipe, tier) is False

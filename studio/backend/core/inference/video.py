@@ -5967,6 +5967,13 @@ class VideoBackend:
         # the requested profile -- and the pin above is what removes the eager downgrade that used to hide it.
         speed_view = _denoiser_view(pipe, denoiser_component)
         try:
+            from .video_minimax_h3_vae import reserve_h3_fast_decoder
+            reserve_h3_fast_decoder(
+                getattr(pipe, "vae", None), speed_mode = h3_vae_speed, workflow = workflow
+            )
+        except Exception:  # noqa: BLE001 -- optimisation only, never fail a load
+            pass
+        try:
             attention_engaged = apply_attention_backend(
                 speed_view,
                 select_attention_backend(

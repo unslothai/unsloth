@@ -1108,6 +1108,11 @@ def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
     """U-Nets always; a DiT only on ``max`` (it costs a 60-70 s slower first render) or with the env forced on."""
     if _denoiser_unet(pipe) is not None:
         return True
+    # MiniMax-H3's fused decoder reads each block's weights and never calls the block, so compiled blocks would never
+    # run while status claimed the compile. The fused decoder is the default and wins even over a forced compile;
+    # UNSLOTH_H3_VAE_FAST=0 restores the stock block stack, and with it this compile.
+    if getattr(getattr(pipe, "vae", None), "_unsloth_decode_blocks_bypassed", False):
+        return False
     raw = os.environ.get(COMPILE_VAE_ENV, "").strip().lower()
     if raw in _VAE_FALSE_TOKENS:
         return False

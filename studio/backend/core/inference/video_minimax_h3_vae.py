@@ -1220,6 +1220,28 @@ def cuda_fast_path_available(vae: Any = None) -> bool:
     return _triton_version_ok() and _kernels() is not None and _triton_jit_toolchain_ok()
 
 
+def reserve_h3_fast_decoder(
+    vae: Any,
+    *,
+    speed_mode: Optional[str],
+    workflow: Optional[str] = None,
+) -> bool:
+    """Mark ``vae`` when apply_h3_vae_speedups will swap in the fused decoder; called BEFORE apply_speed_optims so it
+    skips the VAE block compile the fused stack would bypass. Same arguments as that call; never raises."""
+    try:
+        engages = (
+            vae is not None
+            and LEVER_FUSED_DECODER in plan_h3_vae_levers(speed_mode, workflow = workflow)
+            and _decoder_fusable(getattr(vae, "decoder", None))
+            and cuda_fast_path_available(vae)
+        )
+        if engages:
+            vae._unsloth_decode_blocks_bypassed = True
+        return bool(engages)
+    except Exception:  # noqa: BLE001 - optimisation only
+        return False
+
+
 def apply_h3_vae_speedups(
     vae: Any,
     *,
