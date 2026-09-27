@@ -5060,6 +5060,9 @@ class VideoBackend:
                     plan, bf16_plan, quant_replanned = _plan_for_te_scale(
                         settled_te_scale, log = False
                     )
+                    raise_on_unified_memory_shortfall(
+                        plan, family = getattr(fam, "name", None), logger = logger
+                    )
                 # 2.3 checkpoints need the full assembly: new config flags, key renames the stock converter lacks, and
                 # the 2.3 connectors/VAEs/vocoder.
                 pipe = load_ltx23_pipeline(

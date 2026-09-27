@@ -11763,6 +11763,23 @@ def test_ltx23_single_file_fp8_without_a_checkpoint_is_refused(fake_runtime, tmp
         _load_ltx23_single_file_fp8(tmp_path, monkeypatch, None)
 
 
+def test_ltx23_hosted_fp8_fallback_rechecks_unified_memory(fake_runtime, tmp_path, monkeypatch):
+    # The opt-in bf16 fallback re-plans at the dense DiT size, so that plan must pass the unified-memory refusal too.
+    from core.inference import video as video_mod
+
+    priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 10**9)
+    checked: list = []
+    monkeypatch.setattr(
+        video_mod, "raise_on_unified_memory_shortfall", lambda plan, **k: checked.append(len(priced))
+    )
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+    backend, calls = _load_ltx23_single_file_fp8(tmp_path, monkeypatch, None)
+    assert calls["override"] is None
+    assert priced[-1] > priced[0]
+    assert checked and checked[-1] == len(priced)
+    backend.unload()
+
+
 def _ltx23_fp8_plan_at(monkeypatch, fits_mib):
     """A card where a DiT priced above ``fits_mib`` (the plan's model size less its companions) offloads; returns the
     DiT sizes the plans were priced at."""
