@@ -3058,6 +3058,7 @@ def _tiny_lm(
 
 
 def test_a_text_model_mlx_vlm_cannot_load_is_served_without_turboquant(monkeypatch):
+    pytest.importorskip("mlx.core")
     from core.inference import mlx_inference
 
     attempts = []
@@ -4718,7 +4719,7 @@ def test_the_load_policy_bounds_a_pin_only_where_the_bound_can_be_enforced(monke
 
 
 def test_turboquant_leaves_every_cache_for_the_runtime_to_build():
-    from mlx_lm.models import cache as lm_cache
+    lm_cache = pytest.importorskip("mlx_lm.models.cache")
 
     from core.inference.mlx_inference import MLXInferenceBackend
 
