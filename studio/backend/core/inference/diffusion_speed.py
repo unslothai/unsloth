@@ -949,7 +949,7 @@ def settle_compile_fallback(
     dual-DiT load whose second expert still compiles keeps the LoRA gate and the compile-cache shape registry. Returns
     the recorded failure, or None when nothing fell back."""
     dit_error = compile_fallback_error(pipe)
-    vae_error = getattr(getattr(pipe, "vae", None), "_unsloth_compile_decode_error", None)
+    vae_error = _vae_compile_error(getattr(pipe, "vae", None))
     fallback = dit_error or vae_error
     if not fallback:
         return None
@@ -1099,11 +1099,14 @@ def _compile_vae_decode(
     decode = getattr(vae, "decode", None) if vae is not None else None
     if not callable(decode):
         return False
+    # A regional block guard does not clear _unsloth_compiled_decode when it falls back, so the error is read first.
+    if _vae_compile_error(vae):
+        return False
     # A dual-DiT family calls apply_speed_optims twice over the same pipe.
     if getattr(vae, "_unsloth_compiled_decode", False):
         return True
-    if getattr(vae, "_unsloth_compile_decode_error", None):
-        return False
+    if _vae_declares_repeated_blocks(vae):
+        return _compile_vae_regionally(vae, logger, max_autotune = max_autotune)
     try:
         import torch
 
@@ -1119,6 +1122,43 @@ def _compile_vae_decode(
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "vae decode compile", exc)
         return False
+
+
+def _vae_declares_repeated_blocks(vae: Any) -> bool:
+    try:
+        return bool(getattr(vae, "_repeated_blocks", None)) and callable(
+            getattr(vae, "compile_repeated_blocks", None)
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _compile_vae_regionally(vae: Any, logger: Any, max_autotune: bool = False) -> bool:
+    """Compile the VAE's repeated block, not ``decode``. A tiled video decode loops over temporal chunks and spatial
+    tiles in Python, so compiling ``decode`` unrolls the loop into one graph: MiniMax-H3 at 960x544 is 6 chunks x 15
+    tiles x 36 ViT blocks, which fails with RecursionError static and CantSplit dynamic. The block itself sees one
+    tile, whose shape is fixed by the tile size rather than the video, so static costs one graph per tile batch size:
+    0.95 s against 2.17 s eager at 960x544x121, cold 7 s."""
+    try:
+        kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": False}
+        if max_autotune:
+            kwargs["mode"] = "max-autotune-no-cudagraphs"
+        vae.compile_repeated_blocks(**kwargs)
+        guard_compiled_blocks(vae, logger)
+        vae._unsloth_compiled_decode = True
+        return True
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "vae regional compile", exc)
+        return False
+
+
+def _vae_compile_error(vae: Any) -> Optional[str]:
+    """The decode-compile failure a VAE fell back from: the whole-decode wrapper's, or a regional block guard's."""
+    error = getattr(vae, "_unsloth_compile_decode_error", None)
+    if error:
+        return error
+    guard = getattr(vae, "_unsloth_compile_guard", None)
+    return getattr(guard, "error", None) if guard is not None else None
 
 
 def _enable_cudnn_benchmark(logger: Any) -> bool:
