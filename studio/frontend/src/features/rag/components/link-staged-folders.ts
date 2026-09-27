@@ -12,7 +12,7 @@ import {
 import { markProjectSourcesPending } from "./project-source-dropzone";
 import { EXPIRY_GRACE_MS } from "./staged-source";
 
-/** The picker returns a signed lease, valid for LEASE_TTL in native_backend_lease.rs. */
+/** LEASE_TTL in native_backend_lease.rs, for shells that do not send expiresAtMs. */
 const FOLDER_LEASE_TTL_MS = 2 * 60_000;
 
 export type StagedFolder = NativeDocumentFolderSelection & {
@@ -22,7 +22,10 @@ export type StagedFolder = NativeDocumentFolderSelection & {
 export function stageFolder(
   selected: NativeDocumentFolderSelection,
 ): StagedFolder {
-  return { ...selected, expiresAtMs: Date.now() + FOLDER_LEASE_TTL_MS };
+  return {
+    ...selected,
+    expiresAtMs: selected.expiresAtMs ?? Date.now() + FOLDER_LEASE_TTL_MS,
+  };
 }
 
 /** Expired, or too close to it to survive the request. */

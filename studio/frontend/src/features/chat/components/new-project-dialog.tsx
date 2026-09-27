@@ -61,6 +61,8 @@ export function NewProjectDialog({
   // A desktop drop reaches `staged` only once its native registration settles. Creating before
   // then would upload without the files the user just dropped.
   const [stagingDrop, setStagingDrop] = useState(false);
+  // Same for a folder pick still resolving over IPC.
+  const [pickingFolder, setPickingFolder] = useState(false);
   // Uploads outlive this component, so a slow one must not yank the user to the new project after
   // they have navigated away.
   const mounted = useRef(true);
@@ -78,6 +80,7 @@ export function NewProjectDialog({
     setStaged([]);
     setFolders([]);
     setStagingDrop(false);
+    setPickingFolder(false);
   }
 
   // Every close path routes through here: callers keep this mounted, so a draft left behind would
@@ -90,7 +93,7 @@ export function NewProjectDialog({
 
   async function commitCreate() {
     const trimmed = name.trim();
-    if (!trimmed || busy || stagingDrop) return;
+    if (!trimmed || busy || stagingDrop || pickingFolder) return;
     setBusy(true);
     // Sidebar callers keep this mounted across routes, so unmounting alone cannot tell whether the
     // user has moved on during a slow upload.
@@ -175,6 +178,7 @@ export function NewProjectDialog({
           folders={folders}
           onChange={setFolders}
           disabled={busy}
+          onPendingChange={setPickingFolder}
         />
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">
           <Button type="button" variant="ghost" disabled={busy} onClick={close}>
@@ -183,9 +187,13 @@ export function NewProjectDialog({
           <Button
             type="button"
             onClick={() => void commitCreate()}
-            disabled={!name.trim() || busy || stagingDrop}
+            disabled={!name.trim() || busy || stagingDrop || pickingFolder}
           >
-            {busy ? "Creating…" : stagingDrop ? "Adding sources…" : submitLabel}
+            {busy
+              ? "Creating…"
+              : stagingDrop || pickingFolder
+                ? "Adding sources…"
+                : submitLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

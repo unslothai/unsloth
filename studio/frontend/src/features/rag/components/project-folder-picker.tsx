@@ -36,10 +36,13 @@ export function ProjectFolderPicker({
   folders,
   onChange,
   disabled = false,
+  onPendingChange,
 }: {
   folders: StagedFolder[];
   onChange: Dispatch<SetStateAction<StagedFolder[]>>;
   disabled?: boolean;
+  /** True while a pick is resolving, so Create waits for it. */
+  onPendingChange?: (pending: boolean) => void;
 }) {
   const leasesSupported = useNativePathLeasesSupported();
   const supported = isTauri && leasesSupported;
@@ -76,6 +79,7 @@ export function ProjectFolderPicker({
   async function add() {
     if (!supported || picking || disabled) return;
     setPicking(true);
+    onPendingChange?.(true);
     try {
       const selected = await pickNativeDocumentFolder();
       // Closing the dialog unmounts this, so a late pick is dropped.
@@ -86,7 +90,10 @@ export function ProjectFolderPicker({
         description: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      if (mounted.current) setPicking(false);
+      if (mounted.current) {
+        setPicking(false);
+        onPendingChange?.(false);
+      }
     }
   }
 
