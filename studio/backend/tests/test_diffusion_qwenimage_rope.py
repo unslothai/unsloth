@@ -14,7 +14,11 @@ torch = pytest.importorskip("torch")
 qmod = pytest.importorskip("diffusers.models.transformers.transformer_qwenimage")
 
 needs_cuda = pytest.mark.skipif(
-    not (torch.cuda.is_available() and not getattr(torch.version, "hip", None) and q21.inductor_addcmul_is_fma()),
+    not (
+        torch.cuda.is_available()
+        and not getattr(torch.version, "hip", None)
+        and q21.inductor_addcmul_is_fma()
+    ),
     reason = "needs CUDA and inductor's fma addcmul lowering",
 )
 

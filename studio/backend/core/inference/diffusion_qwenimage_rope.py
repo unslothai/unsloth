@@ -29,8 +29,12 @@ _STOCK: dict = {}
 
 def disabled() -> bool:
     from .diffusion_qwenimage21_rope import real_rope_disabled
-
-    return (os.environ.get(QWEN_REAL_ROPE_ENV) or "").strip().lower() in ("0", "off", "false", "no") or real_rope_disabled()
+    return (os.environ.get(QWEN_REAL_ROPE_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ) or real_rope_disabled()
 
 
 def _patch_table(index: int, logger: Any = None) -> bool:
@@ -51,7 +55,11 @@ def _patch_table(index: int, logger: Any = None) -> bool:
         if getattr(getattr(entry, "func", None), "__unsloth_real_rope__", False):
             return True
         stock = getattr(entry, "func", None)
-        if stock is None or dict(getattr(entry, "keywords", {}) or {}) != {"use_real": False} or q21._digest(stock) not in _FINGERPRINT:
+        if (
+            stock is None
+            or dict(getattr(entry, "keywords", {}) or {}) != {"use_real": False}
+            or q21._digest(stock) not in _FINGERPRINT
+        ):
             if logger is not None:
                 logger.info("diffusion.qwenimage_rope: complex RoPE kept: RoPE table entry differs")
             return False
@@ -66,7 +74,9 @@ def _patch_table(index: int, logger: Any = None) -> bool:
         _STOCK[id(table)] = (table, entry)
         table["cuda"] = functools.partial(wrapper, use_real = False)
     if logger is not None:
-        logger.info("diffusion.qwenimage_rope: RoPE runs in real arithmetic inside the compiled blocks")
+        logger.info(
+            "diffusion.qwenimage_rope: RoPE runs in real arithmetic inside the compiled blocks"
+        )
     return True
 
 
@@ -82,7 +92,9 @@ def install(transformer: Any, logger: Any = None) -> bool:
             return False
         import torch
 
-        return _patch_table(dev.index if dev.index is not None else torch.cuda.current_device(), logger)
+        return _patch_table(
+            dev.index if dev.index is not None else torch.cuda.current_device(), logger
+        )
 
     if resident_cuda_device(transformer) is not None:
         return _finish(transformer)

@@ -45,7 +45,6 @@ def zimage_fused_disabled() -> bool:
 
 def _stock_digest(cls: Any) -> Optional[str]:
     from .diffusion_qwenimage21_rope import _digest
-
     return _digest(getattr(cls, "__call__", None))
 
 
@@ -85,9 +84,18 @@ def _qkv_intact(attn: Any) -> Any:
 def _make_call(stock: Any) -> Any:
     import torch
 
-    def __call__(self, attn, hidden_states, encoder_hidden_states = None, attention_mask = None, freqs_cis = None):
+    def __call__(
+        self,
+        attn,
+        hidden_states,
+        encoder_hidden_states = None,
+        attention_mask = None,
+        freqs_cis = None,
+    ):
         if not torch.compiler.is_compiling():
-            return stock(self, attn, hidden_states, encoder_hidden_states, attention_mask, freqs_cis)
+            return stock(
+                self, attn, hidden_states, encoder_hidden_states, attention_mask, freqs_cis
+            )
         from diffusers.models.attention_dispatch import dispatch_attention_fn
 
         fused = _qkv_intact(attn)
@@ -106,7 +114,11 @@ def _make_call(stock: Any) -> Any:
             key = attn.norm_k(key)
         if freqs_cis is not None:
             fusion = _FUSION.get(query.device.index) if query.is_cuda else None
-            if fusion is not None and freqs_cis.dtype == torch.complex64 and query.shape[-1] % 2 == 0:
+            if (
+                fusion is not None
+                and freqs_cis.dtype == torch.complex64
+                and query.shape[-1] % 2 == 0
+            ):
                 query = _real_rope(query, freqs_cis, fusion)
                 key = _real_rope(key, freqs_cis, fusion)
             else:
@@ -139,7 +151,6 @@ def _make_call(stock: Any) -> Any:
 
 def _stock_rope(x_in: Any, freqs_cis: Any) -> Any:
     import torch
-
     with torch.amp.autocast("cuda", enabled = False):
         x = torch.view_as_complex(x_in.float().reshape(*x_in.shape[:-1], -1, 2))
         x_out = torch.view_as_real(x * freqs_cis.unsqueeze(2)).flatten(3)
@@ -159,7 +170,9 @@ def _fuse_linears(linears: list) -> Any:
     if any(has_bias) and not all(has_bias):
         return None
     cls = type(ws[0])
-    if any(type(w) is not cls for w in ws) or any(w.dtype != ws[0].dtype or w.device != ws[0].device for w in ws):
+    if any(type(w) is not cls for w in ws) or any(
+        w.dtype != ws[0].dtype or w.device != ws[0].device for w in ws
+    ):
         return None
     if any(w.shape[1] != ws[0].shape[1] for w in ws):
         return None
@@ -177,7 +190,9 @@ def _fuse_linears(linears: list) -> Any:
             parts = [getattr(w, name, None) for w in ws]
             if all(p is None for p in parts):
                 continue
-            if any(p is None or p.dim() == 0 or p.shape[0] != w.shape[0] for p, w in zip(parts, ws)):
+            if any(
+                p is None or p.dim() == 0 or p.shape[0] != w.shape[0] for p, w in zip(parts, ws)
+            ):
                 return None
             kwargs[name] = torch.cat(parts, dim = 0)
         for name in attrs + opt_a:
@@ -192,7 +207,9 @@ def _fuse_linears(linears: list) -> Any:
     out = nn.Linear(ws[0].shape[1], sum(w.shape[0] for w in ws), bias = False, device = "meta")
     out.weight = nn.Parameter(fused_w, requires_grad = False)
     if all(has_bias):
-        out.bias = nn.Parameter(torch.cat([lin.bias.detach() for lin in linears]), requires_grad = False)
+        out.bias = nn.Parameter(
+            torch.cat([lin.bias.detach() for lin in linears]), requires_grad = False
+        )
     return out
 
 
@@ -206,8 +223,10 @@ def _share_storage(fused: Any, linears: list) -> bool:
         whole = fused.weight.detach()
         for lin in linears:
             n = lin.weight.shape[0]
-            view = whole[start:start + n]
-            if tuple(view.shape) != tuple(lin.weight.shape) or type(view) is not type(lin.weight.detach()):
+            view = whole[start : start + n]
+            if tuple(view.shape) != tuple(lin.weight.shape) or type(view) is not type(
+                lin.weight.detach()
+            ):
                 return False
             views.append(view)
             start += n
@@ -218,7 +237,11 @@ def _share_storage(fused: Any, linears: list) -> bool:
     return True
 
 
-def install(transformer: Any, logger: Any = None, offload_active: bool = False) -> dict:
+def install(
+    transformer: Any,
+    logger: Any = None,
+    offload_active: bool = False,
+) -> dict:
     """Patch the Z-Image attention processor class now; probe the card and fuse each block's QKV once the weights are
     on the GPU (immediately if they already are, else right before the first forward). Before the first compile."""
     if zimage_fused_disabled() or type(transformer).__name__ != "ZImageTransformer2DModel":
@@ -229,14 +252,17 @@ def install(transformer: Any, logger: Any = None, offload_active: bool = False) 
 
     if resident_cuda_device(transformer) is not None:
         return install_modules(transformer, logger, fuse_qkv = not offload_active)
-    run_on_first_call(transformer, "zimage_fused", lambda t: install_modules(t, logger, fuse_qkv = not offload_active))
+    run_on_first_call(
+        transformer,
+        "zimage_fused",
+        lambda t: install_modules(t, logger, fuse_qkv = not offload_active),
+    )
     return {"real_rope": None, "fused_qkv": None}
 
 
 def _patch_class(logger: Any = None) -> bool:
     try:
         import importlib
-
         cls = importlib.import_module(_MODULE).ZSingleStreamAttnProcessor
     except Exception:  # noqa: BLE001
         return False
@@ -247,14 +273,20 @@ def _patch_class(logger: Any = None) -> bool:
         digest = _stock_digest(cls)
         if digest not in _FINGERPRINTS["ZSingleStreamAttnProcessor.__call__"]:
             if logger is not None:
-                logger.info("diffusion.zimage_fused: stock attention kept: processor differs (%s)", digest)
+                logger.info(
+                    "diffusion.zimage_fused: stock attention kept: processor differs (%s)", digest
+                )
             return False
         _STATE["stock"] = current
         cls.__call__ = _make_call(current)
     return True
 
 
-def install_modules(root: Any, logger: Any = None, fuse_qkv: bool = True) -> dict:
+def install_modules(
+    root: Any,
+    logger: Any = None,
+    fuse_qkv: bool = True,
+) -> dict:
     result = {"real_rope": False, "fused_qkv": 0}
     if zimage_fused_disabled() or not _patch_class(logger):
         return result
@@ -273,8 +305,9 @@ def install_modules(root: Any, logger: Any = None, fuse_qkv: bool = True) -> dic
         if index not in _FUSION:
             try:
                 from .diffusion_qwenimage21_rope import inductor_addcmul_is_fma, probe_fusion
-
-                _FUSION[index] = probe_fusion(torch.device("cuda", index)) if inductor_addcmul_is_fma() else None
+                _FUSION[index] = (
+                    probe_fusion(torch.device("cuda", index)) if inductor_addcmul_is_fma() else None
+                )
             except Exception:  # noqa: BLE001
                 _FUSION[index] = None
         result["real_rope"] = _FUSION[index] is not None
@@ -307,7 +340,10 @@ def uninstall(transformer: Any = None) -> None:
         try:
             import importlib
             cls = importlib.import_module(_MODULE).ZSingleStreamAttnProcessor
-            if getattr(cls.__dict__.get("__call__"), "__unsloth_zimage_fused__", False) and "stock" in _STATE:
+            if (
+                getattr(cls.__dict__.get("__call__"), "__unsloth_zimage_fused__", False)
+                and "stock" in _STATE
+            ):
                 cls.__call__ = _STATE.pop("stock")
         except Exception:  # noqa: BLE001
             pass

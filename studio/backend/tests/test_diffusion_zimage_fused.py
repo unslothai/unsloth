@@ -17,11 +17,12 @@ def _ready() -> bool:
     if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
         return False
     from core.inference.diffusion_qwenimage21_rope import inductor_addcmul_is_fma
-
     return inductor_addcmul_is_fma()
 
 
-needs_cuda = pytest.mark.skipif(not _ready(), reason = "needs CUDA (not ROCm) and inductor's fma addcmul lowering")
+needs_cuda = pytest.mark.skipif(
+    not _ready(), reason = "needs CUDA (not ROCm) and inductor's fma addcmul lowering"
+)
 
 
 @pytest.fixture(autouse = True)
@@ -32,7 +33,10 @@ def _restore(monkeypatch):
 
 
 def test_stock_processor_fingerprint_matches_installed_diffusers():
-    assert zf._stock_digest(zmod.ZSingleStreamAttnProcessor) in zf._FINGERPRINTS["ZSingleStreamAttnProcessor.__call__"]
+    assert (
+        zf._stock_digest(zmod.ZSingleStreamAttnProcessor)
+        in zf._FINGERPRINTS["ZSingleStreamAttnProcessor.__call__"]
+    )
 
 
 def test_disabled_and_wrong_model_are_noops(monkeypatch):
@@ -54,18 +58,28 @@ def test_fuse_linears_plain_bf16_matches_and_shares_storage():
     fused = zf._fuse_linears(parts)
     assert zf._share_storage(fused, parts)
     assert torch.equal(fused(x), ref)
-    assert parts[1].weight.data_ptr() == fused.weight.data_ptr() + 8 * 16 * fused.weight.element_size()
+    assert (
+        parts[1].weight.data_ptr() == fused.weight.data_ptr() + 8 * 16 * fused.weight.element_size()
+    )
 
 
 def _block(quant: str):
     torch.manual_seed(0)
-    blk = zmod.ZImageTransformerBlock(0, 384, 4, 4, 1e-5, True, modulation = True).cuda().to(torch.bfloat16).eval()
+    blk = (
+        zmod.ZImageTransformerBlock(0, 384, 4, 4, 1e-5, True, modulation = True)
+        .cuda()
+        .to(torch.bfloat16)
+        .eval()
+    )
     for p in blk.parameters():
         p.data.normal_(0, 0.05)
     if quant == "int8":
         from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
-
-        quantize_(blk, Int8DynamicActivationInt8WeightConfig(), filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and "adaLN" not in fqn)
+        quantize_(
+            blk,
+            Int8DynamicActivationInt8WeightConfig(),
+            filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and "adaLN" not in fqn,
+        )
     return blk
 
 
@@ -99,7 +113,9 @@ def test_compiled_block_stays_within_the_compile_floor(quant):
         out = torch.compile(blk)(x, mask, freqs, adaln)
     floor = (ref != eager).sum().item()
     assert (out != eager).sum().item() <= 1.1 * floor + 16
-    assert (out.float() - eager.float()).abs().max().item() <= 2 * (ref.float() - eager.float()).abs().max().item() + 1e-6
+    assert (out.float() - eager.float()).abs().max().item() <= 2 * (
+        ref.float() - eager.float()
+    ).abs().max().item() + 1e-6
 
 
 @needs_cuda
