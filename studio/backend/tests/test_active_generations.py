@@ -18,7 +18,7 @@ import pytest
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
-from core.inference.worker import _SLOTS, PendingTeardowns, StopLedger
+from core.inference.worker import _SLOTS, StopLedger
 from state import active_generations
 
 

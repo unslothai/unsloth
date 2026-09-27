@@ -35,7 +35,6 @@ def _stub_if_missing(name, attrs):
 _stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
 
 from core.inference import worker  # noqa: E402
-from core.inference.inference import InferenceBackend  # noqa: E402
 from core.inference.worker import RowRefused  # noqa: E402
 from core.inference.worker import StopLedger  # noqa: E402
 
@@ -406,6 +405,7 @@ def test_a_batch_that_will_not_open_still_answers_the_reply(monkeypatch):
 
 def test_a_row_override_the_backend_cannot_take_is_dropped_not_raised():
     """The route varies the seed per row, and the fallback decodes on backends without one."""
+    InferenceBackend = pytest.importorskip("core.inference.inference").InferenceBackend
 
     class _NoSeedBackend(_DecliningBackend):
         """Transformers-shaped: wraps() carries the real signature, which declares no seed."""

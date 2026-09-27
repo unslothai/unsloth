@@ -13,6 +13,7 @@ wiring behind the /load, /validate and /status echoes.
 
 from __future__ import annotations
 
+import importlib.util
 import inspect
 import re
 import struct
@@ -26,9 +27,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-try:
-    import loggers  # noqa: F401
-except ImportError:
+if importlib.util.find_spec("loggers") is None:
     _loggers_stub = _types.ModuleType("loggers")
     _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
     sys.modules.setdefault("loggers", _loggers_stub)

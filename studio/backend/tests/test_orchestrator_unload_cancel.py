@@ -6,16 +6,13 @@ hanging the UI. ``unload_model`` now cancels first (the mp.Event the worker chec
 each token) and takes ``_gen_lock`` before the unload round-trip.
 """
 
-import base64
 import inspect
-import multiprocessing as _mp
 import queue
 import threading
 import time
 
 import pytest
 
-from core.inference.worker import PendingTeardowns
 from core.inference import orchestrator as orch_mod
 from core.inference.orchestrator import InferenceOrchestrator
 

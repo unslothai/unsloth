@@ -9,13 +9,11 @@ holds sidecar transformers modules (breaking the rename on Windows). The methods
 the handle and return False so callers can refuse the swap.
 """
 
-import multiprocessing as _mp
 import threading
 
 import pytest
 
 from core.export.orchestrator import ExportOrchestrator
-from core.inference.worker import PendingTeardowns
 from core.inference.orchestrator import InferenceOrchestrator
 
 
