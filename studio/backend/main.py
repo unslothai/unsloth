@@ -2909,6 +2909,12 @@ def _is_colab_notebook_request(request: Request) -> bool:
 
 def _should_inject_bootstrap(request: Request) -> bool:
     """Whether to embed the seeded bootstrap password in index.html."""
+    from utils.local_proxy import local_proxy_configured
+
+    # An operator-managed proxy can strip headers or rewrite Host. With this
+    # opt-in, no served HTML may carry bootstrap credentials, on any listener.
+    if local_proxy_configured():
+        return False
     if not _is_same_origin_request(request):
         return False
     if _IS_COLAB and _is_colab_notebook_request(request):
@@ -2958,11 +2964,16 @@ def _is_live_cloudflare_frontend_request(scope, app_state) -> bool:
 
 
 def _is_remote_frontend_request(scope, app_state) -> bool:
-    """True for a request the desktop backend may answer with its packaged web UI: Cloudflare's own edge, or one
-    of the sockets the runtime LAN listener bound, both identified by the connection itself rather than a
-    client header the caller controls."""
+    """Serve the packaged UI through Cloudflare, a runtime LAN listener, or an
+    operator-configured HTTPS proxy reaching an actual loopback listener."""
     from lan_access import request_on_lan_listener
-    return _is_live_cloudflare_frontend_request(scope, app_state) or request_on_lan_listener(scope)
+    from utils.local_proxy import local_proxy_frontend_request
+
+    return (
+        _is_live_cloudflare_frontend_request(scope, app_state)
+        or request_on_lan_listener(scope)
+        or local_proxy_frontend_request(scope)
+    )
 
 
 class _TunnelOnlyFrontend:
@@ -2984,7 +2995,10 @@ def setup_frontend(
     tunnel_only: bool = False,
 ):
     """Mount frontend static files (optional). ``tunnel_only`` restricts the mount to remote callers:
-    the Cloudflare edge, or a socket the runtime LAN listener bound."""
+    the Cloudflare edge, a runtime LAN listener, or an explicitly configured local HTTPS proxy."""
+    from utils.local_proxy import validate_local_proxy_origin
+
+    validate_local_proxy_origin()
     if not build_path.exists():
         return False
 
