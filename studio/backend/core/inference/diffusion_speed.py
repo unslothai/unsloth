@@ -798,12 +798,13 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "compile_repeated_blocks", exc)
             continue
-        if dit_kwargs["dynamic"] is None:
-            try:
-                from . import diffusion_dynamic_text
-                diffusion_dynamic_text.install(transformer, logger)
-            except Exception as exc:  # noqa: BLE001 - optimisation only
-                _warn(logger, "dynamic text dims", exc)
+        # Automatic dynamic arms the prompt-length and unbacked sources; dynamic=True (a dense H3) still needs the
+        # unbacked temb, or its size-1 first step compiles a second graph. install() is a no-op for a static compile.
+        try:
+            from . import diffusion_dynamic_text
+            diffusion_dynamic_text.install(transformer, logger, dynamic = dit_kwargs["dynamic"])
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "dynamic text dims", exc)
         # compile_repeated_blocks is lazy: inductor only runs on the first forward, inside generate(), where a lowering
         # bug would fail the render. Guard every compiled block so such a failure drops this DiT to eager instead.
         guard_compiled_blocks(transformer, logger)

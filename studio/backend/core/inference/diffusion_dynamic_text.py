@@ -103,6 +103,10 @@ def sources_for(transformer: Any) -> tuple[str, ...]:
 
 
 def fingerprint(transformer: Any, dynamic: Any) -> Optional[str]:
+    if dynamic is True:
+        # dynamic=True already makes every dim dynamic; only the unbacked sources are armed (see install).
+        unbacked = unbacked_sources_for(transformer)
+        return "unbacked:" + ",".join(unbacked) if unbacked else None
     if dynamic is not None:
         return None
     sources = sources_for(transformer)
@@ -120,13 +124,18 @@ def _merge(current: str, extra: tuple[str, ...]) -> str:
     return ",".join(parts)
 
 
-def install(transformer: Any, logger: Any = None) -> bool:
+def install(transformer: Any, logger: Any = None, *, dynamic: Any = None) -> bool:
+    """Arm the family's sources around the DiT forward for a compile made with ``dynamic``. None (automatic dynamic):
+    the dynamic and the unbacked sources. True: every dim is already dynamic, but a backed symbol still specialises a
+    size of 1, so only the unbacked sources are armed (dense H3 compiles with dynamic=True). False (static): nothing."""
+    if dynamic is False:
+        return False
     if getattr(transformer, "_unsloth_dynamic_text", None) is not None:
         return True
-    sources = sources_for(transformer)
     unbacked = unbacked_sources_for(transformer)
+    sources = sources_for(transformer) if dynamic is None else ()
     cfg = _compiler_config()
-    if not sources or cfg is None:
+    if not (sources or unbacked) or cfg is None:
         return False
     saved: list[tuple[Optional[str], Optional[str]]] = []
 
@@ -155,8 +164,10 @@ def install(transformer: Any, logger: Any = None) -> bool:
     transformer._unsloth_dynamic_text = (pre, post)
     if logger is not None:
         logger.info(
-            "diffusion.dynamic_text: prompt-length dims of %s compile dynamic from the first forward",
+            "diffusion.dynamic_text: %s of %s compile %s from the first forward",
+            "prompt-length dims" if sources else ",".join(unbacked),
             type(transformer).__name__,
+            "dynamic" if sources else "unbacked",
         )
     return True
 
