@@ -3338,12 +3338,64 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
     return None
 
 
+class GgufRepoUnreadableError(ValueError):
+    """A GGUF-named Hub repo whose file listing could not be read.
+
+    A ValueError so /load and /validate return it as a 400 with this text, instead of
+    the Transformers "Both AutoConfig and PeftConfig loading failed" the misroute gave (#11551).
+    """
+
+
+# Set by from_identifier around its detect_gguf_model_remote call; receives the Hub error
+# when the None it gets back means "could not list the repo" rather than "no GGUF in it".
+_gguf_remote_detect_failure: ContextVar[Optional[List[Exception]]] = ContextVar(
+    "gguf_remote_detect_failure", default = None
+)
+
+
+def _note_gguf_remote_detect_failure(error: Exception) -> None:
+    sink = _gguf_remote_detect_failure.get()
+    if sink is not None:
+        sink.append(error)
+
+
+# A repo NAME carrying "gguf" as its own token: unsloth/X-GGUF, org/x-gguf, org/gguf-x.
+_GGUF_REPO_NAME_RE = _re.compile(r"(?:^|[-_.])gguf(?:$|[-_.])", _re.IGNORECASE)
+
+
+def _looks_like_gguf_repo(repo_id: str, gguf_variant: Optional[str] = None) -> bool:
+    if gguf_variant:
+        return True
+    return bool(_GGUF_REPO_NAME_RE.search(repo_id.rstrip("/").rsplit("/", 1)[-1]))
+
+
+def _gguf_repo_unreadable_message(repo_id: str, error: Optional[Exception]) -> str:
+    if error is None:
+        cause = "Hugging Face is unreachable (offline) and the repo is not in the local cache"
+    else:
+        status = getattr(getattr(error, "response", None), "status_code", None)
+        first_line = (str(error).strip().splitlines() or [""])[0][:200]
+        cause = type(error).__name__
+        if status is not None:
+            cause += f" (HTTP {status})"
+        if first_line:
+            cause += f": {first_line}"
+    return (
+        f"Could not read the GGUF repo '{repo_id}' from Hugging Face ({cause}). "
+        "Unsloth needs the repo's file list to pick a GGUF file. Check the Hugging Face "
+        "token in Settings (clear it if it is expired or revoked), your network, proxy "
+        "or HF_ENDPOINT, then try again."
+    )
+
+
 def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Optional[str]:
     """Return the best GGUF filename in a HF repo, or None.
 
     Retries (3 attempts, 1s/2s/4s backoff) on transient HF Hub failures: a
     silent None would make the caller treat a GGUF-only repo as non-GGUF and
     fall through to MLX on Apple Silicon. Offline falls back to the local cache.
+    A None from a failed Hub read (not from a listing without GGUFs) is also
+    reported to ``_gguf_remote_detect_failure`` when a caller has set it.
     """
     if _env_offline():
         return _detect_gguf_from_hf_cache(repo_id)
@@ -3378,6 +3430,7 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
                 "EntryNotFoundError",
             ):
                 logger.debug(f"Could not check GGUF files for '{repo_id}': {e}")
+                _note_gguf_remote_detect_failure(e)
                 return None
             if attempt < 2:
                 time.sleep(2**attempt)
@@ -3393,6 +3446,8 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
         return cached
 
     logger.warning(f"Could not check GGUF files for '{repo_id}' after 3 attempts: {last_err}")
+    if last_err is not None:
+        _note_gguf_remote_detect_failure(last_err)
     return None
 
 
@@ -4269,7 +4324,23 @@ class ModelConfig:
                 )
         else:
             # Does the HF repo contain GGUF files?
-            gguf_filename = detect_gguf_model_remote(identifier, hf_token = hf_token)
+            detect_failures: List[Exception] = []
+            failure_token = _gguf_remote_detect_failure.set(detect_failures)
+            try:
+                gguf_filename = detect_gguf_model_remote(identifier, hf_token = hf_token)
+            finally:
+                _gguf_remote_detect_failure.reset(failure_token)
+            # "Could not list the repo" is not "no GGUF in it". For a GGUF-named repo the
+            # fall-through below reaches Transformers, whose missing config.json error names
+            # neither the repo's format nor the Hub failure that caused it (#11551). A
+            # refused repo is still never served from cache: that is the Hub's call.
+            if not gguf_filename and _looks_like_gguf_repo(identifier, gguf_variant):
+                if detect_failures:
+                    raise GgufRepoUnreadableError(
+                        _gguf_repo_unreadable_message(identifier, detect_failures[-1])
+                    ) from None
+                if _env_offline() and next(iter(_iter_hf_cache_snapshots(identifier)), None) is None:
+                    raise GgufRepoUnreadableError(_gguf_repo_unreadable_message(identifier, None))
             if gguf_filename:
                 # Preflight: verify the llama-server binary exists before a multi-GB download.
                 # include_denied: a transiently locked binary still exists and the lock clears in time.
