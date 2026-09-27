@@ -12,8 +12,6 @@ export const CHAT_IMAGE_MIMES = [
   "image/bmp",
   "image/tiff",
 ];
-export const CHAT_IMAGE_EXTENSIONS =
-  ".jpg,.jpeg,.png,.webp,.gif,.heic,.heif,.avif,.bmp,.tif,.tiff";
 
 const CONVERTED_IMAGE_TYPES: Record<string, string> = {
   heic: "image/jpeg",
@@ -23,10 +21,17 @@ const CONVERTED_IMAGE_TYPES: Record<string, string> = {
   tif: "image/png",
   tiff: "image/png",
 };
+const CONVERTED_IMAGE_EXTENSIONS = Object.keys(CONVERTED_IMAGE_TYPES).map(
+  (extension) => `.${extension}`,
+);
 
+export const CHAT_IMAGE_EXTENSIONS = [
+  ".jpg,.jpeg,.png,.webp,.gif",
+  ...CONVERTED_IMAGE_EXTENSIONS,
+].join(",");
 export const CHAT_IMAGE_ACCEPT = [
   ...CHAT_IMAGE_MIMES,
-  ...Object.keys(CONVERTED_IMAGE_TYPES).map((extension) => `.${extension}`),
+  ...CONVERTED_IMAGE_EXTENSIONS,
 ].join(",");
 
 function imageKind(file: { name: string; type: string }): string | null {

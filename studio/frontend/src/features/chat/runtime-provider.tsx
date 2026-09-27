@@ -406,27 +406,14 @@ class VisionImageAdapter implements AttachmentAdapter {
     const conversion = this.converted.get(attachment.id);
     this.converted.delete(attachment.id);
     const file = conversion ? await conversion : attachment.file;
-    if (!file) {
-      return {
-        id: attachment.id,
-        type: "image",
-        name: attachment.name,
-        contentType: attachment.contentType,
-        content: [],
-        status: { type: "complete" },
-      };
-    }
     return {
       id: attachment.id,
       type: "image",
-      name: file.name,
-      contentType: file.type,
-      content: [
-        {
-          type: "image",
-          image: await this.fileToBase64DataURL(file),
-        },
-      ],
+      name: file?.name ?? attachment.name,
+      contentType: file?.type ?? attachment.contentType,
+      content: file
+        ? [{ type: "image", image: await this.fileToBase64DataURL(file) }]
+        : [],
       status: { type: "complete" },
     };
   }

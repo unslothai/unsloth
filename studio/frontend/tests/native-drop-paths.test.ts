@@ -406,7 +406,7 @@ test("no composer sends while an image is being converted", () => {
   );
   assert.match(
     RUNTIME_PROVIDER,
-    /class VisionImageAdapter[\s\S]*?this\.converted\.set\(\s*attachment\.id,\s*conversion\.catch\(\(\) => null\),?\s*\);[\s\S]*?const file = conversion \? await conversion : attachment\.file;\s*if \(!file\) \{[\s\S]*?content: \[\],[\s\S]*?async remove\(attachment: \{ id: string \}\): Promise<void> \{\s*this\.converted\.delete\(attachment\.id\);/,
+    /class VisionImageAdapter[\s\S]*?this\.converted\.set\(\s*attachment\.id,\s*conversion\.catch\(\(\) => null\),?\s*\);[\s\S]*?const file = conversion \? await conversion : attachment\.file;[\s\S]*?content: file\s*\?[\s\S]*?: \[\],[\s\S]*?async remove\(attachment: \{ id: string \}\): Promise<void> \{\s*this\.converted\.delete\(attachment\.id\);/,
   );
 });
 
@@ -634,22 +634,6 @@ test("every video MIME Rust stamps is one the video adapter claims", () => {
     if (mime === "video/mp2t") continue;
     assert.ok(claimed.has(mime), `the video adapter does not claim ${mime}`);
   }
-});
-
-test("an .m2ts clip is a video under the MIME browsers give it", async () => {
-  const { fileMatchesAccept } = (await import(
-    new URL(
-      "../node_modules/@assistant-ui/core/dist/adapters/attachment.js",
-      import.meta.url,
-    ).href
-  )) as {
-    fileMatchesAccept: (
-      file: { name: string; type: string },
-      accept: string,
-    ) => boolean;
-  };
-  const as = (name: string) => ({ name, type: "video/mp2t" });
-  assert.ok(fileMatchesAccept(as("clip.M2TS"), VIDEO_ACCEPT));
 });
 
 test("the rejection hint names video too", () => {
@@ -1682,7 +1666,7 @@ test("the restamped recording routes to the audio adapter", async () => {
   assert.equal(fileMatchesAccept(classified, AUDIO_ATTACHMENT_ACCEPT), true);
 });
 
-test("a transport stream named .ts or .mts routes to video, TypeScript to text", async () => {
+test("a transport stream named .m2ts, .ts or .mts routes to video, TypeScript to text", async () => {
   const { fileMatchesAccept } = (await import(
     new URL(
       "../node_modules/@assistant-ui/core/dist/adapters/attachment.js",
@@ -1696,6 +1680,12 @@ test("a transport stream named .ts or .mts routes to video, TypeScript to text",
     }
     return bytes;
   };
+  assert.ok(
+    fileMatchesAccept(
+      new File([], "clip.M2TS", { type: "video/mp2t" }),
+      VIDEO_ACCEPT,
+    ),
+  );
   for (const file of [
     new File([stream(192, 4)], "camcorder.MTS", { type: "" }),
     new File([stream(188, 0)], "broadcast.ts", { type: "video/mp2t" }),
@@ -2596,14 +2586,7 @@ test("formats the backends cannot take are converted, the rest sent as is", () =
     assert.ok(isChatImageFile({ name, type }), name);
     assert.equal(convertedImageType({ name, type }), converted, name);
   }
-  for (const extension of [
-    ".heic",
-    ".heif",
-    ".avif",
-    ".bmp",
-    ".tif",
-    ".tiff",
-  ]) {
+  for (const extension of [".heic", ".heif", ".avif", ".bmp", ".tif", ".tiff"]) {
     assert.ok(CHAT_IMAGE_ACCEPT.split(",").includes(extension), extension);
   }
   assert.ok(!isChatImageFile({ name: "pic.png", type: "" }));

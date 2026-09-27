@@ -4299,11 +4299,12 @@ def _effective_enable_tools(payload) -> Optional[bool]:
 
 
 async def _materialize_sandbox_attachments(payload) -> None:
-    attachments = getattr(payload, "sandbox_attachments", None)
-    enabled = getattr(payload, "enabled_tools", None)
-    if not attachments or not _effective_enable_tools(payload):
-        return
-    if enabled is not None and "python" not in enabled:
+    enabled = payload.enabled_tools
+    if (
+        not payload.sandbox_attachments
+        or not _effective_enable_tools(payload)
+        or (enabled is not None and "python" not in enabled)
+    ):
         return
     from starlette.concurrency import run_in_threadpool
 
@@ -4312,7 +4313,7 @@ async def _materialize_sandbox_attachments(payload) -> None:
     await run_in_threadpool(
         materialize_sandbox_attachments,
         payload.session_id,
-        [(item.sha256, item.name) for item in attachments],
+        [(item.sha256, item.name) for item in payload.sandbox_attachments],
     )
 
 

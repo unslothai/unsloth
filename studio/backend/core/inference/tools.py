@@ -19902,14 +19902,8 @@ def _is_attachment_copy(sandbox: str, parent: str, name: str) -> bool:
         or os.path.islink(path)
     ):
         return False
-    digest = hashlib.sha256()
-    try:
-        with open(path, "rb") as handle:
-            while block := handle.read(1 << 20):
-                digest.update(block)
-    except OSError:
-        return False
-    return digest.hexdigest().startswith(prefix)
+    digest = _file_digest(path)
+    return digest is not None and digest.startswith(prefix)
 
 
 def _forget_spill_record(path: str) -> None:
