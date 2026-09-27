@@ -1643,6 +1643,10 @@ def _calibrated_activation(fam: Any, target: Any) -> Any:
     """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel."""
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
         return None
+    # Measured without input images: a reference family the generation guard cannot size (no reference_resolutions)
+    # would run up to four ~1 MP references past the 2048 canvas the promoted tier budgets.
+    if getattr(fam, "reference", False) and not tuple(getattr(fam, "reference_resolutions", ()) or ()):
+        return None
     # Measured at 16-bit: an fp16-incompatible family promoted to fp32 (Z-Image on pre-Ampere) holds ~2x.
     compute = _resolve_diffusion_compute_dtype(fam, getattr(target, "dtype", None))
     if (_float_load_itemsize(compute) or 2) > 2:

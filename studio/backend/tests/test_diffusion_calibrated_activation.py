@@ -353,6 +353,22 @@ def test_an_fp32_promoted_family_keeps_the_flat_plan(monkeypatch):
     assert d._calibrated_activation(flux, on(torch.float16)) is not None
 
 
+def test_a_reference_family_the_guard_cannot_size_keeps_the_flat_plan(monkeypatch):
+    # FLUX.2 Klein takes up to four ~1 MP references the generation guard never counts (no reference_resolutions),
+    # so a promoted tier would have no headroom for them. Qwen-Image-2.1 declares them, so the guard sizes it.
+    import core.inference.diffusion as d
+    from core.inference.diffusion_families import detect_family
+
+    monkeypatch.setattr(d, "sdpa_subquadratic_confirmed", lambda target: True)
+    nvidia = types.SimpleNamespace(backend = "cuda", vendor = "nvidia")
+    klein = detect_family("black-forest-labs/FLUX.2-klein-4B")
+    assert klein.name == "flux.2-klein" and klein.reference and not klein.reference_resolutions
+    assert d._calibrated_activation(klein, nvidia) is None
+    qwen = detect_family("Qwen/Qwen-Image-2.1")
+    assert qwen.name == "qwen-image-2.1" and qwen.reference_resolutions
+    assert d._calibrated_activation(qwen, nvidia) is not None
+
+
 def test_an_explicit_auto_mode_ignores_the_legacy_offload_flag():
     for gib in (12, 16, 20):
         assert _plan(gib, QWEN21_GGUF, QWEN21_ACT, "auto", True) == _plan(
