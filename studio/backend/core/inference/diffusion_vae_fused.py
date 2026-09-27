@@ -746,7 +746,8 @@ def causal_conv(
     """Wan-lineage causal conv of ``silu?(rms?(x + in_bias))`` with the causal cache; returns (out, new_cache).
 
     ``new_cache`` is what the stock block stores: the activated input's last ``CACHE_T`` (2) frames, prefixed by the
-    previous cache's last frame when the chunk is one frame. It is a VIEW of the conv input (no clone)."""
+    previous cache's last frame when the chunk is one frame. A compact copy when the conv input has more frames, so
+    the cache never pins the whole input (a 4-frame chunk would keep 6 frames alive per slot)."""
     import torch.nn.functional as F
 
     kind = _conv_kind(conv)
@@ -788,7 +789,8 @@ def causal_conv(
         return F.conv3d(y, weight, bias, conv.stride, spatial, conv.dilation), y
     p = rms_norm_act(x, norm, act, front = front, cache = cache, in_bias = in_bias)
     out = F.conv3d(p, conv.weight, bias, conv.stride, spatial, conv.dilation)
-    return out, p[:, :, -2:]
+    new_cache = p[:, :, -2:]
+    return out, (new_cache if p.shape[2] <= 2 else new_cache.clone())
 
 
 # ----------------------------------------------------------------------------------------------------------------

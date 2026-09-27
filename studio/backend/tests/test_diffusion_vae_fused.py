@@ -518,3 +518,19 @@ def test_wan_attention_oom_retries_stock_for_that_call_only(monkeypatch):
         out = block(x)
     assert torch.equal(out, ref)
     assert not getattr(block, "_unsloth_vae_fused_failed", False)
+
+
+@pytest.mark.parametrize("frames", [1, 2, 4])
+def test_causal_cache_is_a_compact_two_frame_copy(frames):
+    # a view would pin the whole (frames + 2)-frame conv input per cache slot until the next chunk
+    mod = pytest.importorskip("diffusers.models.autoencoders.autoencoder_kl_wan")
+    conv = mod.WanCausalConv3d(8, 8, 3, padding = 1).eval()
+    x = torch.randn(1, 8, frames, 4, 4)
+    cache = torch.randn(1, 8, 2, 4, 4)
+    with torch.inference_mode():
+        out, new = F.causal_conv(conv, x, cache)
+        ref = conv(x, cache)
+    stock = torch.cat([cache, x], dim = 2)[:, :, -2:]
+    assert torch.allclose(out, ref, atol = 1e-5)
+    assert torch.equal(new, stock)
+    assert new.untyped_storage().nbytes() == new.numel() * new.element_size()
