@@ -30,7 +30,6 @@ needs_cuda = pytest.mark.skipif(not _cuda_int8_ready(), reason = "needs CUDA (no
 def _clean_env(monkeypatch):
     monkeypatch.delenv(fused.INT8_FUSED_ENV, raising = False)
     yield
-    fused.uninstall()
 
 
 @pytest.mark.parametrize(
@@ -164,6 +163,20 @@ def test_feedforward_compiles_without_graph_break():
         out = compiled(x)
     # Only the pointwise epilogue after the second GEMM is recompiled, so the result stays within bf16 rounding.
     assert (out.float() - eager_fused.float()).abs().max().item() <= 2 ** -6 * eager_fused.float().abs().max().item()
+
+
+@needs_cuda
+def test_install_is_idempotent_and_holds_no_global_reference():
+    import gc
+    import weakref
+
+    ff = _quantized_ff()
+    assert fused.install(ff) == 1
+    assert fused.install(ff) == 1
+    ref = weakref.ref(ff)
+    del ff
+    gc.collect()
+    assert ref() is None
 
 
 @needs_cuda

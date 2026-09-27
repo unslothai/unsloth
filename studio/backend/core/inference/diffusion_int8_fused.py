@@ -46,7 +46,9 @@ _OP_NAME = "int8_dq_gelu_quant"
 _LOCK = threading.Lock()
 # The resolved op, read by the traced forwards (dynamo must not trace into the lru_cache'd registration).
 _OP_HANDLE: Any = None
-_INSTALLED: dict = {}  # id(module) -> (module, previous instance forward or None)
+# Marker on each patched module (no global registry: it would pin an unloaded transformer).
+_MARK = "_unsloth_i8_fused_prev"
+_NO_PREV = object()
 
 
 def int8_fused_disabled() -> bool:
@@ -473,7 +475,7 @@ def install(transformer: Any, logger: Any = None) -> int:
     with _LOCK:
         _OP_HANDLE = _op()
         for _name, module in transformer.named_modules():
-            if id(module) in _INSTALLED:
+            if _MARK in module.__dict__:
                 count += 1
                 continue
             if _ff_eligible(module):
@@ -483,7 +485,7 @@ def install(transformer: Any, logger: Any = None) -> int:
                 module._unsloth_i8_addcmul = _flux_single_class_is_arch_patched(module)
             else:
                 continue
-            _INSTALLED[id(module)] = (module, module.__dict__.get("forward"))
+            module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(fn, module)
             count += 1
     if logger is not None and count:
@@ -492,17 +494,20 @@ def install(transformer: Any, logger: Any = None) -> int:
 
 
 def uninstall(transformer: Any = None) -> None:
+    """Restore the stock forwards under ``transformer`` (a dropped transformer needs nothing: the patch is per instance)."""
+    if transformer is None:
+        return
     with _LOCK:
-        for key, (module, previous) in list(_INSTALLED.items()):
-            if transformer is not None and not any(m is module for m in transformer.modules()):
+        for module in transformer.modules():
+            prev = module.__dict__.pop(_MARK, None)
+            if prev is None:
                 continue
-            if previous is None:
+            if prev is _NO_PREV:
                 module.__dict__.pop("forward", None)
             else:
-                module.forward = previous
+                module.forward = prev
             module.__dict__.pop("_unsloth_i8_addcmul", None)
-            _INSTALLED.pop(key, None)
 
 
 def is_installed(module: Any) -> bool:
-    return id(module) in _INSTALLED
+    return _MARK in getattr(module, "__dict__", {})

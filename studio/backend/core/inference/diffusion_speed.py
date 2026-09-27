@@ -746,6 +746,18 @@ def _compile_repeated_blocks(
                 install_real_rope(logger)
             except Exception as exc:  # noqa: BLE001 - optimisation only
                 _warn(logger, "qwen-image-2.1 real rope", exc)
+        # Before the compile: the regional compile traces whatever forward the blocks carry at the first call.
+        try:
+            from .diffusion_int8_fused import install as install_int8_fused
+            install_int8_fused(transformer, logger)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "int8 fused mlp", exc)
+        if type(transformer).__name__ == "ZImageTransformer2DModel":
+            try:
+                from .diffusion_zimage_fused import install as install_zimage_fused
+                install_zimage_fused(transformer, logger)
+            except Exception as exc:  # noqa: BLE001 - optimisation only
+                _warn(logger, "z-image fused attention", exc)
         try:
             transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
