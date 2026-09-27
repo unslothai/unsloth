@@ -415,3 +415,122 @@ def test_generation_guard_never_refuses_the_calibrated_2048_canvas_on_a_promoted
         )
         assert verdict.action in (dm.ACTIVATION_RUN, dm.ACTIVATION_TILE), (gib, plan.reasons)
     assert promoted > 0
+
+
+def _guard(free, total, *, calibrated, tile_side = 256, **kw):
+    return dm.image_activation_verdict(
+        device_memory = DeviceMemory("cuda", "cuda", "discrete_vram", free, total),
+        family = kw.pop("family", "qwen-image-2.1"),
+        vae_tile_side = tile_side,
+        vae_sliced = True,
+        calibrated_placement = calibrated,
+        **kw,
+    )
+
+
+def _fits(verdict):
+    overhead = dm.DEFAULT_BASE_OVERHEAD_MIB
+    if verdict.needed_mib + overhead <= verdict.budget_mib:
+        return True
+    return verdict.tiled_needed_mib is not None and (
+        verdict.tiled_needed_mib + overhead <= verdict.budget_mib
+    )
+
+
+# Six 512px references at the Qwen-Image-2.1 condition weight: ~5980 MiB untiled, under the flat 8192 MiB plan.
+SIX_REFS = dict(width = 512, height = 512, condition_pixels = int(6 * 512 * 512 * 0.32))
+
+
+def test_references_on_a_calibrated_tier_are_checked_against_the_free_budget():
+    total = 16 * GIB
+    free = 4_266 + 1_229
+    flat = _guard(free, total, calibrated = False, **SIX_REFS)
+    assert flat.action != dm.ACTIVATION_REFUSE  # the flat plan budgeted 8192 MiB for it
+    verdict = _guard(free, total, calibrated = True, **SIX_REFS)
+    assert verdict.action == dm.ACTIVATION_REFUSE
+    assert "balanced memory mode" in verdict.message
+    assert "fewer input images" in verdict.message
+
+
+def test_references_on_a_calibrated_tier_run_when_they_fit():
+    verdict = _guard(20 * GIB, 24 * GIB, calibrated = True, **SIX_REFS)
+    assert verdict.action == dm.ACTIVATION_RUN
+
+
+@pytest.mark.parametrize("sizes", [QWEN21_GGUF, QWEN21_GGUF_BF16_TE])
+def test_conditioned_requests_on_every_promoted_tier_never_skip_the_budget(sizes):
+    act = calibrated_image_activation("qwen-image-2.1", max_speed = True)
+    for step in range(10 * 4, 48 * 4 + 1):
+        gib = step / 4
+        plan = _plan(gib, sizes, act)
+        if "calibrated_headroom_mib" not in plan.estimates:
+            continue
+        total = int(gib * GIB)
+        free = max(0, total - 1_229 - _resident_after_placement(plan, sizes))
+        for kw in (SIX_REFS, dict(width = 1024, height = 1024, controlnet = True)):
+            verdict = _guard(free, total, calibrated = True, **kw)
+            assert verdict.action == dm.ACTIVATION_REFUSE or _fits(verdict), (gib, kw)
+
+
+@pytest.mark.parametrize("family", ["flux.1", "qwen-image-2.1"])
+def test_controlnet_on_a_calibrated_tier_budgets_its_forward_and_residuals(family):
+    total = 24 * GIB
+    free = 6 * GIB
+    kw = dict(width = 1024, height = 1024, family = family)
+    plain = _guard(free, total, calibrated = True, **kw)
+    assert plain.action != dm.ACTIVATION_REFUSE
+    verdict = _guard(free, total, calibrated = True, controlnet = True, **kw)
+    assert verdict.action == dm.ACTIVATION_REFUSE
+    assert verdict.needed_mib > plain.needed_mib
+    assert "with ControlNet" in verdict.message
+    assert "without ControlNet" in verdict.message
+    assert "balanced memory mode" in verdict.message
+    assert "fewer input images" not in verdict.message
+    # plenty of room: runs
+    roomy = _guard(40 * GIB, 48 * GIB, calibrated = True, controlnet = True, **kw)
+    assert roomy.action == dm.ACTIVATION_RUN
+
+
+@pytest.mark.parametrize("free", [1_500, 3_000, 5_000, 8_000, 12_000, 30_000])
+@pytest.mark.parametrize("tile_side", [None, 256, dm.DEFAULT_VAE_TILE_SIDE])
+@pytest.mark.parametrize(
+    "kw",
+    [
+        dict(width = 512, height = 512),
+        dict(width = 1024, height = 1024),
+        dict(width = 2048, height = 2048),
+        dict(width = 1024, height = 1024, batch_size = 2),
+        dict(width = 1344, height = 768, family = "flux.1"),
+    ],
+)
+def test_unconditioned_requests_on_a_calibrated_tier_are_unchanged(free, tile_side, kw):
+    flat = _guard(free, 16 * GIB, calibrated = False, tile_side = tile_side, **dict(kw))
+    cal = _guard(free, 16 * GIB, calibrated = True, tile_side = tile_side, **dict(kw))
+    assert cal == flat
+
+
+@pytest.mark.parametrize("free", [1_500, 3_000, 5_000, 8_000, 12_000, 30_000])
+@pytest.mark.parametrize(
+    "kw",
+    [
+        SIX_REFS,
+        dict(width = 1024, height = 1024, condition_pixels = 1024 * 1024),
+        dict(width = 1024, height = 1024),
+    ],
+)
+def test_flat_tiers_ignore_the_controlnet_flag(free, kw):
+    # Flat tiers keep today's verdict: the flat plan already budgets conditioned work.
+    base = _guard(free, 16 * GIB, calibrated = False, **dict(kw))
+    with_cn = _guard(free, 16 * GIB, calibrated = False, controlnet = True, **dict(kw))
+    assert with_cn.action == base.action
+    assert (with_cn.needed_mib, with_cn.tiled_needed_mib) == (base.needed_mib, base.tiled_needed_mib)
+
+
+def test_generate_passes_the_calibrated_placement_and_controlnet_to_the_guard():
+    import inspect
+
+    import core.inference.diffusion as d
+
+    src = inspect.getsource(d)
+    assert 'calibrated_placement = bool(getattr(state, "calibrated_placement", False)),' in src
+    assert 'controlnet = workflow == "controlnet" and control_pil is not None,' in src

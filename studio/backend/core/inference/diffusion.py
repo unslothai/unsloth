@@ -8820,6 +8820,8 @@ class DiffusionBackend:
                             guard_target, getattr(state, "attention_backend", None)
                         ),
                         allow_oversized = allow_oversized,
+                        calibrated_placement = bool(getattr(state, "calibrated_placement", False)),
+                        controlnet = workflow == "controlnet" and control_pil is not None,
                         logger = logger,
                     )
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)

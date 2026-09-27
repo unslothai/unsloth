@@ -2178,9 +2178,13 @@ def _activation_refusal_message(
     source_driven: bool,
     condition_pixels: int,
     tiled: bool,
+    controlnet: bool = False,
+    calibrated: bool = False,
 ) -> str:
     batch_note = f" at a batch of {batch}" if batch > 1 else ""
-    cond_note = " with its input images" if condition_pixels else ""
+    cond_note = (
+        " with ControlNet" if controlnet else " with its input images" if condition_pixels else ""
+    )
     if source_driven:
         remedy = (
             "Upload a smaller source image (this workflow takes its output size from the image, "
@@ -2199,7 +2203,9 @@ def _activation_refusal_message(
         # Smaller-batch hint only when batch > 1: a one-image refusal cannot be fixed by asking for fewer.
         f"{remedy}"
         f"{' or a smaller batch size' if batch > 1 else ''}"
-        f"{', use fewer input images or a lower reference detail' if condition_pixels else ''}, "
+        f"{', use fewer input images or a lower reference detail' if condition_pixels else ''}"
+        f"{', generate without ControlNet' if controlnet else ''}"
+        f"{', reload the model with the balanced memory mode' if calibrated else ''}, "
         "or free GPU memory by closing other applications. To try anyway, turn on "
         f"'{OVERSIZED_GENERATE_SETTING_LABEL}' under Advanced on the Images page "
         "(API callers of /api/inference/images/generate can send allow_oversized; server installs "
@@ -2221,6 +2227,8 @@ def image_activation_verdict(
     vae_sliced: bool = False,
     quadratic_attention: bool = False,
     allow_oversized: bool = False,
+    calibrated_placement: bool = False,
+    controlnet: bool = False,
 ) -> ImageActivationVerdict:
     """Decide whether this generation's ACTIVATIONS fit the free device budget: run it as loaded,
     run it with the VAE tiled, or refuse.
@@ -2270,6 +2278,15 @@ def image_activation_verdict(
         budget = _safe_device_budget_mib(device_memory)
         if budget is None:
             return ImageActivationVerdict(ACTIVATION_RUN)
+        # A calibrated tier measured only the unconditioned denoise, so conditioned work gets no `planned` exemption.
+        # A ControlNet counts as one more output-sized input image: its forward plus the residuals the base
+        # consumes stay far below the flat per-pixel conditioning rate.
+        input_pixels = max(0, int(condition_pixels or 0))
+        conditioned = bool(calibrated_placement) and (input_pixels > 0 or bool(controlnet))
+        if calibrated_placement and controlnet:
+            condition_pixels = input_pixels + max(
+                64, int(width or DEFAULT_IMAGE_WIDTH)
+            ) * max(64, int(height or DEFAULT_IMAGE_HEIGHT))
         needed = estimate_image_runtime_mib(
             width = width,
             height = height,
@@ -2307,9 +2324,11 @@ def image_activation_verdict(
     # false refusal at or below the default resolution, because the `needed <= planned` arm already exempts every
     # request the load itself budgeted for.
     numbers = dict(needed_mib = int(needed), tiled_needed_mib = tiled, budget_mib = int(budget))
-    if int(needed) + overhead <= int(budget) or needed <= planned:
+    if int(needed) + overhead <= int(budget) or (not conditioned and needed <= planned):
         return ImageActivationVerdict(ACTIVATION_RUN, **numbers)
-    if tiled is not None and (int(tiled) + overhead <= int(budget) or tiled <= planned):
+    if tiled is not None and (
+        int(tiled) + overhead <= int(budget) or (not conditioned and tiled <= planned)
+    ):
         return ImageActivationVerdict(ACTIVATION_TILE, **numbers)
     if override:
         # Tile even under quadratic attention: the estimate is untrusted there, but tiling still lowers the peak.
@@ -2329,8 +2348,10 @@ def image_activation_verdict(
         budget_mib = int(budget),
         free_mib = int(free),
         source_driven = source_driven,
-        condition_pixels = condition_pixels,
+        condition_pixels = input_pixels,
         tiled = tiled is not None,
+        controlnet = bool(controlnet),
+        calibrated = conditioned,
     )
     return ImageActivationVerdict(ACTIVATION_REFUSE, message = message, **numbers)
 
@@ -2349,6 +2370,8 @@ def image_activation_shortfall_message(
     vae_sliced: bool = False,
     quadratic_attention: bool = False,
     allow_oversized: bool = False,
+    calibrated_placement: bool = False,
+    controlnet: bool = False,
 ) -> Optional[str]:
     return image_activation_verdict(
         device_memory = device_memory,
@@ -2363,6 +2386,8 @@ def image_activation_shortfall_message(
         vae_sliced = vae_sliced,
         quadratic_attention = quadratic_attention,
         allow_oversized = allow_oversized,
+        calibrated_placement = calibrated_placement,
+        controlnet = controlnet,
     ).message
 
 
@@ -2380,6 +2405,8 @@ def raise_on_image_activation_shortfall(
     vae_sliced: bool = False,
     quadratic_attention: bool = False,
     allow_oversized: bool = False,
+    calibrated_placement: bool = False,
+    controlnet: bool = False,
     logger: Any = None,
 ) -> ImageActivationVerdict:
     """Refuse a generation whose activations cannot fit the free device budget; else return the verdict.
@@ -2401,6 +2428,8 @@ def raise_on_image_activation_shortfall(
         vae_sliced = vae_sliced,
         quadratic_attention = quadratic_attention,
         allow_oversized = allow_oversized,
+        calibrated_placement = calibrated_placement,
+        controlnet = controlnet,
     )
     if verdict.action == ACTIVATION_REFUSE:
         if logger is not None:
