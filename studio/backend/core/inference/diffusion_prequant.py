@@ -56,7 +56,7 @@ DEFAULT_PREQUANT_COMPONENT = "transformer"
 
 
 def prequant_format_for(metadata: Any) -> str:
-    """The on-disk format tag for ``metadata``. v2 and v3 are mutually exclusive (one tag slot)."""
+    """The format tag to stamp for ``metadata``; v2 and v3 share one tag slot, so declaring both is refused."""
     from .diffusion_convrot import declares_rotation
     from .diffusion_nvfp4_policy import declares_policy
 
@@ -558,8 +558,15 @@ def resolve_prequant_source(
         # Family-declared name first when there is one, then the derived chain, which puts the
         # safetensors spelling ahead of the pickle. Order-preserving dedup so a family that declares
         # exactly what the chain would derive does not make the downloader ask twice for it.
+        declared = (preferred,) if preferred else ()
+        # opt-in rotated artifact goes first; the plain chain stays behind it (not yet hosted, or offline)
+        from .diffusion_transformer_quant import convrot_prequant_filename, int8_convrot_enabled
+
+        rotated = convrot_prequant_filename(scheme, getattr(fam, "name", None))
+        if rotated and int8_convrot_enabled():
+            declared = (rotated,) + declared
         names: list[str] = []
-        for name in ((preferred,) if preferred else ()) + derived:
+        for name in declared + derived:
             if name and name not in names:
                 names.append(name)
         return PrequantSource(
@@ -567,7 +574,7 @@ def resolve_prequant_source(
             location = repo_id,
             filename = names[0],
             fallback_filenames = tuple(names[1:]),
-            declared_filenames = (preferred,) if preferred else (),
+            declared_filenames = declared,
         )
     return None
 
@@ -744,7 +751,6 @@ def declares_nvfp4_checkpoint(model_path: Optional[str]) -> bool:
     return raw.rstrip("/\\").lower().endswith("-nvfp4")
 
 
-# Bump on any payload-order or hash change, so two recipes are never compared under one name.
 FINGERPRINT_ALGO = "md5-packed-v1"
 
 # Payload attrs per torchao class NAME, hash order; unlisted reads "not covered", never "equal".
@@ -767,7 +773,7 @@ _FINGERPRINT_PAYLOAD: dict = {
 
 
 def _packed_bytes(tensor: Any, torch: Any) -> bytes:
-    """Raw bytes of ``tensor``; a uint8 view reinterprets, so fp8 / fp4 / bf16 hash exactly."""
+    """``tensor``'s raw bytes via ``view(torch.uint8)``, exact for dtypes numpy cannot represent."""
     t = tensor.detach().contiguous()
     if t.dim() == 0:
         t = t.reshape(1)
@@ -777,7 +783,7 @@ def _packed_bytes(tensor: Any, torch: Any) -> bytes:
 
 
 def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
-    """Hash slot names + bytes into ``digest``; False if uncovered or no slot present."""
+    """Feed one weight's packed payload (with attribute names) into ``digest``; False when uncovered."""
     names = _FINGERPRINT_PAYLOAD.get(type(tensor).__name__)
     if names is None:
         return False
@@ -798,7 +804,7 @@ def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
 
 
 def packed_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
-    """md5 of every ``.weight``'s packed bytes by fqn; not the pickle, so re-saves match."""
+    """md5 of every quantized weight's packed payload by fqn (``select`` narrows it); unknown ones go under ``skipped``."""
     import hashlib
 
     import torch
@@ -842,7 +848,7 @@ def _fingerprint_mode() -> str:
 
 
 def _fingerprint_sampled(fqn: str) -> bool:
-    """Stable 1-in-8 by md5 of the fqn; ``hash()`` is randomised per process by PYTHONHASHSEED."""
+    """Stable 1-in-8 by md5 of the name (``hash()`` is randomised per process)."""
     import hashlib
     return hashlib.md5(fqn.encode("utf-8")).digest()[0] % FINGERPRINT_SAMPLE_RATE == 0
 
@@ -853,7 +859,7 @@ def _verify_packed_fingerprint(
     *,
     logger: Any = None,
 ) -> bool:
-    """Refuse on a fingerprint mismatch; no block, or one this build cannot compute, passes."""
+    """Check the artifact's packed fingerprint: a mismatch drops to dense, a missing or uncomputable block passes."""
     block = (metadata or {}).get("fingerprint")
     expected = (block or {}).get("modules") if isinstance(block, dict) else None
     if not expected:
@@ -1113,8 +1119,9 @@ def load_prequantized_transformer(
     lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
     into a root Unsloth no longer reads.
 
-    ``component`` is checked (experts share every other key); ``prepare_model`` may reshape before
-    ``load_state_dict``; a recorded ``diffusion_convrot`` always gets its online half installed.
+    ``component`` must match the checkpoint's (MoE experts share every other field); ``prepare_model``
+    runs between ``from_config`` and ``load_state_dict``, the one window to reshape the skeleton. A
+    declared activation rotation is installed unconditionally: a miss renders wrong pixels silently.
 
     Returns the placed transformer, or None on any problem (missing / mismatched / unreadable
     checkpoint, unsupported meta-init, or a rotation this build cannot apply exactly) so the caller
@@ -1203,7 +1210,11 @@ def load_prequantized_transformer(
         # dense fallback) for one this build cannot honour exactly. After load_state_dict because the meta retry above
         # rebuilds the module; before apply_small_m_padding because padding reparents the Linears and the recorded
         # fqns name the unwrapped tree.
-        from .diffusion_convrot import apply_activation_rotation
+        from .diffusion_convrot import (
+            apply_activation_rotation,
+            declares_rotation,
+            warm_rotation_cache,
+        )
 
         apply_activation_rotation(transformer, metadata, logger = logger)
 
@@ -1218,6 +1229,17 @@ def load_prequantized_transformer(
         del ckpt
 
         transformer = transformer.to(device)
+        if declares_rotation(metadata):
+            try:
+                import torch
+
+                on = next(iter(transformer.parameters()), None)
+                dtype = getattr(
+                    torch, str(metadata.get("torch_dtype") or "bfloat16"), torch.bfloat16
+                )
+                warm_rotation_cache(transformer, on.device if on is not None else device, dtype)
+            except Exception:  # noqa: BLE001
+                pass
         # Same small-M row padding the runtime quantise path applies, and for the same reason: a checkpoint built
         # under the current exclusion set QUANTISES the family's small-M linears, so without the wrappers they would
         # raise inside _int_mm the moment the compiled scope reaches them. After load_state_dict, since wrapping
@@ -1393,7 +1415,16 @@ def _resolve_checkpoint_path(
                 # happened. Offline, a cache miss is the only verdict there is, so the chain is
                 # walked exactly as for a 404.
                 if not local_files_only or last:
-                    raise
+                    cached = (
+                        None
+                        if last
+                        else cached_checkpoint_path(
+                            source, cache_dir = cache_dir, names = names[index + 1 :]
+                        )
+                    )
+                    if cached is None:
+                        raise
+                    return cached
             except EntryNotFoundError:
                 if last:
                     raise
@@ -1454,8 +1485,7 @@ _FLOAT8_TENSOR_CLASS = "Float8Tensor"
 
 
 def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
-    """True unless some fp8 tensor was quantised with no activation lower bound. Only the first
-    FLOAT8 tensor is read: an NVFP4Tensor also has ``act_quant_kwargs`` but no ``hp_value_lb``."""
+    """True unless the first Float8Tensor has no activation lower bound (by class: NVFP4Tensor lacks one too)."""
     from .diffusion_transformer_quant import TQ_FP8
 
     try:
@@ -1522,8 +1552,7 @@ def _validate_activation_rotation(ckpt_format: Any, meta: Any, scheme: str, logg
 
 
 def _validate_policy(ckpt_format: Any, meta: Any, scheme: str, logger: Any) -> bool:
-    """Reject a policy this build cannot reproduce EXACTLY: the weights do not say which layer got
-    which precision."""
+    """Reject a checkpoint whose per-layer nvfp4 policy this build cannot reproduce EXACTLY."""
     from .diffusion_nvfp4_policy import (
         NVFP4_POLICY_KEY,
         declares_policy,
@@ -1626,7 +1655,7 @@ def _validate_checkpoint(
     fast_accum: Optional[bool] = None,
     component: Optional[str] = None,
 ) -> bool:
-    """Reject a wrong format / scheme / base / filter / denoiser; absent fields predate them."""
+    """Reject a wrong format / scheme / base / filter / denoiser; absent ``min_features`` / ``fast_accum`` pass."""
     if not isinstance(ckpt, dict) or ckpt.get("format") not in PREQUANT_FORMATS:
         _warn(logger, scheme, ValueError("unrecognised pre-quant checkpoint format"))
         return False

@@ -728,6 +728,54 @@ def _flex_attn_impl_for(config, other_attn_implementation):
     return None
 
 
+def _flash_unsupported_sub_configs(config):
+    """{sub-config: fallback} for towers lacking flash, which Transformers rejects (LFM2-VL SigLIP2)."""
+    try:
+        from transformers import AutoModel, AutoModelForCausalLM
+        mappings = (AutoModel._model_mapping, AutoModelForCausalLM._model_mapping)
+    except Exception:
+        return {}
+    # Encoder-decoder composites (Donut, MusicGen) name their towers "encoder" / "decoder".
+    declared = getattr(config, "sub_configs", None) or ()
+    out = {}
+    for field_name, child_config in _config_items(config):
+        if not isinstance(field_name, str):
+            continue
+        if not (field_name.endswith("_config") or field_name in declared):
+            continue
+        if not hasattr(child_config, "model_type"):
+            continue
+        child_class = None
+        for mapping in mappings:
+            try:
+                child_class = mapping[type(child_config)]
+                break
+            except Exception:
+                continue
+        if isinstance(child_class, (list, tuple)):
+            child_class = child_class[0] if child_class else None
+        if child_class is None:
+            continue
+        if getattr(child_class, "_supports_flash_attn", False) or getattr(
+            child_class, "_supports_flash_attn_2", False
+        ):
+            continue
+        out[field_name] = "sdpa" if getattr(child_class, "_supports_sdpa", False) else "eager"
+    return out
+
+
+def _scoped_flash_attention(config, supports_sdpa):
+    unsupported = _flash_unsupported_sub_configs(config)
+    if not unsupported:
+        return "flash_attention_2"
+    if not _transformers_supports_attn_impl_mapping():
+        # One plain value reaches every tower, so it must suit the weakest (Pixtral on 4.51).
+        if not supports_sdpa or "eager" in unsupported.values():
+            return "eager"
+        return "sdpa"
+    return {"": "flash_attention_2", **unsupported}
+
+
 def _flex_support_anchor_class(model_class):
     """The architecture's own PreTrainedModel base, so `_supports_flex_attn` also covers the inner
     text model Transformers validates separately under a mapping."""
@@ -1509,6 +1557,454 @@ def _cast_text_only_prequantized_params(model, dtype):
     return n_cast
 
 
+def _is_remote_code_config(config):
+    # A config class defined by repo code (trust_remote_code), not one transformers ships.
+    return type(config).__module__.startswith("transformers_modules")
+
+
+def _checkpoint_weight_names(
+    model_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    subfolder = None,
+    variant = None,
+    cache_dir = None,
+):
+    # Checkpoint tensor names (safetensors index/header or sharded .bin index); None when unknown. Never unpickles a .bin.
+    import json, os
+
+    def _add_variant(name):
+        if not variant:
+            return name
+        stem, ext = name.rsplit(".", 1)
+        return f"{stem}.{variant}.{ext}"
+
+    index_name = _add_variant("model.safetensors.index.json")
+    single_name = _add_variant("model.safetensors")
+    bin_index_name = _add_variant("pytorch_model.bin.index.json")
+    if os.path.isdir(str(model_name)):
+        model_name = os.path.join(model_name, subfolder) if subfolder else model_name
+        index_path = os.path.join(model_name, index_name)
+        if os.path.isfile(index_path):
+            with open(index_path, "r", encoding = "utf-8") as f:
+                return set(json.load(f).get("weight_map", {}))
+        single_path = os.path.join(model_name, single_name)
+        if os.path.isfile(single_path):
+            from safetensors import safe_open
+            with safe_open(single_path, framework = "pt") as f:
+                return set(f.keys())
+        bin_index_path = os.path.join(model_name, bin_index_name)
+        if os.path.isfile(bin_index_path):
+            with open(bin_index_path, "r", encoding = "utf-8") as f:
+                return set(json.load(f).get("weight_map", {})) or None
+        return None
+    try:
+        from huggingface_hub import hf_hub_download
+        index_path = hf_hub_download(
+            model_name,
+            index_name,
+            token = token,
+            revision = revision,
+            subfolder = subfolder or None,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+        )
+        with open(index_path, "r", encoding = "utf-8") as f:
+            return set(json.load(f).get("weight_map", {}))
+    except Exception:
+        pass
+    try:
+        # An unsharded checkpoint already in the cache: read its header, never download it.
+        from safetensors import safe_open
+        single_path = hf_hub_download(
+            model_name,
+            single_name,
+            token = token,
+            revision = revision,
+            subfolder = subfolder or None,
+            local_files_only = True,
+            cache_dir = cache_dir,
+        )
+        with safe_open(single_path, framework = "pt") as f:
+            return set(f.keys())
+    except Exception:
+        pass
+    if not local_files_only and not subfolder and not variant:
+        # get_safetensors_metadata reads the repo root's unvarianted files only.
+        try:
+            from huggingface_hub import get_safetensors_metadata
+
+            meta = get_safetensors_metadata(model_name, token = token, revision = revision)
+            names = set(getattr(meta, "weight_map", {}) or {})
+            if names:
+                return names
+        except Exception:
+            pass
+    try:
+        bin_index_path = hf_hub_download(
+            model_name,
+            bin_index_name,
+            token = token,
+            revision = revision,
+            subfolder = subfolder or None,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+        )
+        with open(bin_index_path, "r", encoding = "utf-8") as f:
+            return set(json.load(f).get("weight_map", {})) or None
+    except Exception:
+        return None
+
+
+def _infer_text_submodel_prefix(expected_names, checkpoint_names):
+    # The one checkpoint prefix under which EVERY parameter of the standalone text model is stored (language_model.), or None.
+    expected = set(expected_names)
+    if not expected or not checkpoint_names:
+        return None
+    counts = {}
+    for name in checkpoint_names:
+        start = 0
+        while True:
+            dot = name.find(".", start)
+            if dot == -1:
+                break
+            prefix, suffix = name[: dot + 1], name[dot + 1 :]
+            if suffix in expected:
+                counts[prefix] = counts.get(prefix, 0) + 1
+            start = dot + 1
+    full = [p for p, n in counts.items() if n == len(expected)]
+    if len(full) != 1:
+        # None covers everything (weights would be random), or two prefixes do and the choice is ambiguous.
+        return None
+    return full[0]
+
+
+def _resolve_text_causal_lm_class(
+    text_config,
+    model_name,
+    trust_remote_code,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    cache_dir = None,
+    code_revision = None,
+):
+    # The class AutoModelForCausalLM.from_pretrained(model_name, config = text_config) will build: repo code first when trusted.
+    auto_map = getattr(text_config, "auto_map", None) or {}
+    class_ref = auto_map.get("AutoModelForCausalLM") if isinstance(auto_map, dict) else None
+    if class_ref is not None:
+        if not trust_remote_code:
+            return None
+        if "--" in str(class_ref):
+            # Code from another repository, named only in a nested config that remote-code scanners
+            # (which read the top-level auto_map) never see: keep the full-composite load instead of importing it.
+            return None
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+
+        return get_class_from_dynamic_module(
+            class_ref,
+            model_name,
+            token = token,
+            revision = revision,
+            # from_pretrained reads repo code at code_revision when given, else at revision.
+            code_revision = code_revision,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+        )
+    from transformers import AutoModelForCausalLM
+
+    return resolve_model_class(AutoModelForCausalLM, text_config)
+
+
+def _meta_parameter_names(model_class, config):
+    # Meta-device param names: (tied counted once, all names incl. tied aliases).
+    import torch
+
+    config = copy.deepcopy(config)
+    try:
+        # The build only needs names; a hardcoded flash_attention_2 would refuse to init without a GPU.
+        config._attn_implementation = "eager"
+    except Exception:
+        pass
+    with torch.device("meta"):
+        model = model_class(config)
+    return (
+        [name for name, _ in model.named_parameters()],
+        [name for name, _ in model.named_parameters(remove_duplicate = False)],
+    )
+
+
+def _get_remote_composite_text_only(
+    model_config,
+    model_name,
+    trust_remote_code = False,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    fast_inference = False,
+    subfolder = None,
+    device_map = None,
+    variant = None,
+    cache_dir = None,
+    code_revision = None,
+):
+    # Text-only load plan for a repo-code composite (Nemotron-Omni: llm_config + vision/sound) whose text sub-model is a whole causal LM stored under one prefix.
+    # Returns (text_config, key_mapping, text_parameter_names) or None; None keeps the previous full-model load.
+    if not trust_remote_code or not _is_remote_code_config(model_config):
+        return None
+    if isinstance(device_map, dict) and any(key != "" for key in device_map):
+        # Keys name the composite's modules (language_model, vision_model), which the standalone decoder does not have.
+        return None
+    if fast_inference:
+        # vLLM loads the repo's own composite config and weights by name, with no prefix rewrite for a standalone text config.
+        return None
+    if Version(transformers_version) < Version("5.0.0"):
+        # transformers 4.x key_mapping cannot strip a wrapper prefix (corrupted state dict or random weights).
+        return None
+    try:
+        text_config = model_config.get_text_config()
+    except Exception:
+        text_config = None
+    if text_config is None:
+        text_config = getattr(model_config, "text_config", None)
+    if text_config is None or text_config is model_config:
+        # InternVL / Nemotron-Nano-VL keep the decoder config as llm_config without the text_config alias get_text_config() looks for.
+        text_config = None
+        for attr in ("llm_config", "language_config"):
+            sub = getattr(model_config, attr, None)
+            if sub is not None and sub is not model_config and hasattr(sub, "to_dict"):
+                text_config = sub
+                break
+        if text_config is None:
+            return None
+    text_config = copy.copy(text_config)
+    qc = getattr(model_config, "quantization_config", None)
+    if qc is not None and getattr(text_config, "quantization_config", None) is None:
+        text_config.quantization_config = qc
+    if getattr(text_config, "_commit_hash", None) is None:
+        # A nested config carries no commit; the load runs the parent repo's code and weights, so pin to the parent's.
+        text_config._commit_hash = getattr(model_config, "_commit_hash", None)
+    # Probe the commit the load is pinned to (the one the config was read at), not a branch that may have moved.
+    revision = getattr(text_config, "_commit_hash", None) or revision
+    try:
+        text_class = _resolve_text_causal_lm_class(
+            text_config,
+            model_name,
+            trust_remote_code,
+            token = token,
+            revision = revision,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+            code_revision = code_revision,
+        )
+        if text_class is None:
+            return None
+        parent_class_names = set()
+        for ref in (getattr(model_config, "auto_map", None) or {}).values():
+            parent_class_names.update(ref if isinstance(ref, (list, tuple)) else (ref,))
+        if (
+            f"{text_class.__module__.rsplit('.', 1)[-1]}.{text_class.__name__}"
+            in parent_class_names
+        ):
+            return None  # the text entry points back at the wrapper itself
+        expected, text_names = _meta_parameter_names(text_class, text_config)
+    except Exception:
+        return None
+    names = _checkpoint_weight_names(
+        model_name,
+        token = token,
+        revision = revision,
+        local_files_only = local_files_only,
+        subfolder = subfolder,
+        variant = variant,
+        cache_dir = cache_dir,
+    )
+    prefix = _infer_text_submodel_prefix(expected, names)
+    if prefix is None:
+        return None
+    qc = getattr(text_config, "quantization_config", None)
+    if qc is not None:
+        qc = _strip_skip_module_prefix(qc, prefix)
+        if qc is None:
+            return None
+        text_config.quantization_config = qc
+    return text_config, {"^" + re.escape(prefix): ""}, text_names
+
+
+_QC_MODULE_NAME_FIELDS = (
+    "llm_int8_skip_modules",
+    "modules_to_not_convert",
+    "ignore",  # compressed-tensors, modelopt
+    "exclude_modules",
+)
+
+
+def _strip_skip_module_prefix(qc, prefix):
+    # Wrapper-root module names -> text-model names; None for a regex naming the prefix (caller keeps the full model).
+    is_dict = isinstance(qc, dict)
+    dot = r"\\?\."  # a regex entry may escape any of the prefix's dots
+    stem = re.compile(
+        r"(?:^|[^A-Za-z0-9_])" + dot.join(map(re.escape, prefix.rstrip(".").split("."))) + dot
+    )
+    updates = {}
+    for field in _QC_MODULE_NAME_FIELDS:
+        names = qc.get(field) if is_dict else getattr(qc, field, None)
+        if not names or not isinstance(names, (list, tuple)):
+            continue
+        remapped = []
+        for name in names:
+            if isinstance(name, str) and name.startswith(prefix):
+                name = name[len(prefix) :]
+            elif isinstance(name, str) and stem.search(name):
+                return None
+            remapped.append(name)
+        updates[field] = list(dict.fromkeys(remapped))
+    if not updates:
+        return qc
+    qc = dict(qc) if is_dict else copy.copy(qc)
+    for field, names in updates.items():
+        if is_dict:
+            qc[field] = names
+        else:
+            setattr(qc, field, names)
+    return qc
+
+
+def _rebase_user_quantization_config(kwargs, key_mapping):
+    # Caller's quantization_config overrides the config's, so rebase its skip names too, on a copy.
+    qc = kwargs.get("quantization_config", None)
+    if qc is None:
+        return
+    for pattern, replacement in key_mapping.items():
+        if pattern.startswith("^") and not replacement:
+            qc = _strip_skip_module_prefix(qc, re.sub(r"\\(.)", r"\1", pattern[1:])) or qc
+    kwargs["quantization_config"] = qc
+
+
+def _trusted_remote_code_commit(
+    model_name,
+    commit,
+    code_revision = None,
+    token = None,
+    cache_dir = None,
+    local_files_only = False,
+):
+    # The commit whose repo code a trusted load ran, which the export's trusted config re-read pins to (unsloth-zoo).
+    # from_pretrained runs a Hub repo's code at code_revision when given, not at the weights' commit.
+    import os
+
+    if code_revision is None or os.path.isdir(str(model_name)):
+        return commit
+    if re.fullmatch(r"[0-9a-f]{40}", str(code_revision)):
+        return code_revision
+    resolved = None
+    try:
+        from transformers.utils.hub import cached_file, extract_commit_hash
+        path = cached_file(
+            model_name,
+            "config.json",
+            revision = code_revision,
+            token = token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+        )
+        resolved = extract_commit_hash(path, None)
+    except Exception:
+        pass
+    if resolved is None and not local_files_only:
+        try:
+            from huggingface_hub import HfApi
+            resolved = HfApi().model_info(model_name, revision = code_revision, token = token).sha
+        except Exception:
+            pass
+    # Unresolved: "", not None, which unsloth-zoo would replace with the weights' commit.
+    return resolved or ""
+
+
+def _merge_key_mapping(kwargs, mapping):
+    user_mapping = kwargs.get("key_mapping", None)
+    kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
+
+
+def _drop_text_only_key_mapping(model, mapping):
+    # transformers 5 reverses key_mapping in save_pretrained; drop only the plan's own entries.
+    conversions = getattr(model, "_weight_conversions", None)
+    if not mapping or not isinstance(conversions, list):
+        return
+    own = {(pattern, replacement) for pattern, replacement in mapping.items()}
+
+    def _is_own(conversion):
+        sources = getattr(conversion, "source_patterns", None)
+        targets = getattr(conversion, "target_patterns", None)
+        if type(conversion).__name__ != "WeightRenaming" or not sources or not targets:
+            return False
+        if len(sources) != 1 or len(targets) != 1:
+            return False
+        return (sources[0], targets[0]) in own
+
+    model._weight_conversions = [c for c in conversions if not _is_own(c)]
+
+
+def _adapter_fits_text_model(
+    adapter_name,
+    key_mapping,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    cache_dir = None,
+    text_names = None,
+):
+    # False when the adapter targets the composite (wrapper prefix or wrapper-only module) or is unreadable.
+    import os
+
+    names = None
+    # PEFT's own order: safetensors first, then a safe_serialization = False adapter_model.bin.
+    for file_name in ("adapter_model.safetensors", "adapter_model.bin"):
+        try:
+            if os.path.isdir(str(adapter_name)):
+                path = os.path.join(adapter_name, file_name)
+                if not os.path.isfile(path):
+                    continue
+            else:
+                from huggingface_hub import hf_hub_download
+                path = hf_hub_download(
+                    adapter_name,
+                    file_name,
+                    token = token,
+                    revision = revision,
+                    local_files_only = local_files_only,
+                    cache_dir = cache_dir,
+                )
+            if file_name.endswith(".safetensors"):
+                from safetensors import safe_open
+                with safe_open(path, framework = "pt") as f:
+                    names = list(f.keys())
+            else:
+                import torch
+
+                # An adapter is small; weights_only never runs pickled code.
+                names = list(torch.load(path, map_location = "cpu", weights_only = True))
+            break
+        except Exception:
+            continue
+    if not names:
+        return False
+    patterns = [re.compile(p) for p in key_mapping]
+    # Standalone decoder modules that own a weight; LoRA tensors hang off them (q_proj.lora_A.weight).
+    owners = {n.rsplit(".", 1)[0] for n in text_names or () if "." in n}
+    for name in names:
+        name = name.removeprefix("base_model.model.")
+        if any(p.match(name) for p in patterns):
+            return False
+        if text_names is None or name in text_names:
+            continue
+        parts = name.split(".")
+        if not any(".".join(parts[:i]) in owners for i in range(1, len(parts))):
+            return False
+    return True
+
+
 def resolve_attention_implementation(
     model_class,
     config,
@@ -1560,7 +2056,7 @@ def resolve_attention_implementation(
             and supports_flash_attention
             and not flex_forced_for_head_dim
         ):
-            attn_impl = _set_attn_impl(config, "flash_attention_2")
+            attn_impl = _set_attn_impl(config, _scoped_flash_attention(config, supports_sdpa))
         elif flash_attention_disabled:
             attn_impl = _disable_flash_attention_if_needed(
                 config,
@@ -1608,6 +2104,8 @@ def resolve_attention_implementation(
         )
     else:
         final_attn_impl = requested_attn_implementation
+        if final_attn_impl == "flash_attention_2":
+            final_attn_impl = _scoped_flash_attention(config, supports_sdpa)
         _set_attn_impl(config, final_attn_impl)
 
     # An explicit "sdpa" is kept even on a conservatively unsupported model, except where SDPA is known-broken, which still downgrades to eager just as flex falls back for _FLEX_EXCLUDED_MODELS. A synthesized default sdpa (requested is None) also downgrades.

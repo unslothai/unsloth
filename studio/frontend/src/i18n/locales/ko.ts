@@ -92,6 +92,10 @@ export const ko = {
       "일치하는 {noun} 항목이 여러 개 있습니다. 목록에서 하나를 선택하세요.",
     rateLimitedTitle: "Hugging Face 요청 한도에 도달했습니다",
     rateLimitedBody: "잠시 기다린 후 {noun} 검색을 다시 시도하세요.",
+    modelScope: "ModelScope",
+    useModelScope: "ModelScope 사용",
+    useModelScopeHint: "대신 ModelScope에서 검색하고 다운로드합니다. 설정에서 다시 바꿀 수 있습니다.",
+    useModelScopeFailed: "ModelScope로 전환하지 못했습니다.",
     hfToken: {
       label: "HF 토큰",
       saved: "저장됨",
@@ -122,6 +126,16 @@ export const ko = {
     shutdown: "종료",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "문서",
+      keyboardShortcuts: "키보드 단축키",
+      whatsNew: "새로운 기능",
+      troubleshooting: "문제 해결",
+      systemStatus: "시스템 상태",
+      sendFeedback: "피드백 보내기",
+      about: "Unsloth 정보",
+    },
     find: {
       label: "페이지에서 찾기",
       previous: "이전 결과",
@@ -176,6 +190,9 @@ export const ko = {
       noChats: "채팅 없음",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "모든 프로젝트가 고정됨",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "모든 프로젝트가 고정되었거나 섹션에 있음",
+      noProjects: "프로젝트 없음",
       showMore: "더 보기",
       showLess: "간략히 보기",
       settings: "설정",
@@ -221,16 +238,42 @@ export const ko = {
       byProject: "프로젝트별",
       inOneList: "하나의 목록으로",
       sortChatsBy: "채팅 정렬 기준",
-      sortPinnedBy: "고정됨 정렬 기준",
-      priority: "우선순위",
       lastUpdated: "최근 업데이트",
       manualOrder: "수동 정렬",
       switchedToManual: "수동 정렬로 전환됨: 행을 끌어 순서를 바꾸세요",
       organizeChats: "채팅 정리",
       organizeProjects: "프로젝트 정리",
       sortPinnedChats: "고정된 채팅 정렬",
-      moveUp: "위로 이동",
-      moveDown: "아래로 이동",
+      // Header of the menu's section-visibility toggles.
+      show: "표시",
+      newSection: "새 섹션",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "새 섹션",
+      createDescription: "채팅과 프로젝트를 원하는 대로 묶어 보세요",
+      namePlaceholder: "섹션 이름",
+      create: "섹션 만들기",
+      renameTitle: "섹션 이름 변경",
+      renameDescription: "이 섹션에 새 이름을 지정하세요",
+      edit: "편집",
+      remove: "섹션 제거",
+      markAllRead: "모두 읽음으로 표시",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "이동",
+      section: "섹션",
+      sectionsHeading: "섹션",
+      removeFromProject: "프로젝트에서 제거",
+      newSection: "새 섹션",
+      removeFromSection: "섹션에서 제거",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "{name}에서 제거",
+      // Shown in a section with nothing filed in it yet.
+      empty: "채팅이나 프로젝트를 여기로 드래그하세요",
+      sectionOptions: "섹션 옵션",
+      newChatInSection: "{name}에 새 채팅",
+      deleted: "“{name}” 섹션 삭제됨",
+      undo: "실행 취소",
     },
     dialog: {
       deleteChat: {
@@ -1036,6 +1079,19 @@ export const ko = {
         loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
       },
+      hub: {
+        source: "모델 소스",
+        sourceDescription: "모델 허브가 검색하고 다운로드하는 곳입니다. 네트워크에서 Hugging Face가 차단되었거나 느리면 ModelScope를 선택하세요.",
+        sourceFallback: "ModelScope를 시작할 수 없어 Hugging Face를 사용하고 있습니다. Unsloth 로그를 확인하세요.",
+        sectionTitle: "모델 허브",
+        endpoint: "Hugging Face 엔드포인트",
+        endpointDescription: "모델과 데이터셋을 내려받는 곳입니다. 비워 두면 huggingface.co를 사용하고, 미러를 쓰려면 https://hf-mirror.com 같은 주소를 입력하세요.",
+        datasetsServer: "데이터셋 미리보기에도 사용",
+        datasetsServerDescription: "데이터셋 미리보기 요청(HF_DATASETS_SERVER)도 이 엔드포인트로 보냅니다. 미러가 지원할 때만 켜세요.",
+        invalidEndpoint: "로그인 정보나 쿼리가 없는 http(s) URL을 입력하세요. http는 로컬 주소에서만 쓸 수 있습니다.",
+        saveFailed: "허브 설정을 저장하지 못했습니다.",
+        loadFailed: "허브 설정을 불러오지 못했습니다.",
+      },
       downloads: {
         sectionTitle: "다운로드",
         transport: "다운로드 전송 방식",
@@ -1230,19 +1286,20 @@ export const ko = {
       title: "외관",
       description: "이 기기에서 Unsloth가 표시되는 방식입니다.",
       theme: {
-        title: "테마",
-        label: "색상 구성",
+        title: "시각 스타일",
+        label: "모드",
         description: "라이트, 다크 또는 시스템 설정을 따릅니다.",
         system: "시스템",
         light: "라이트",
         dark: "다크",
       },
       palette: {
-        label: "색상 팔레트",
+        label: "테마",
         description: "라이트 모드와 다크 모드에서 Unsloth 전반에 쓰이는 색상입니다.",
         standard: "표준",
         classic: "클래식",
         minimal: "미니멀",
+        moreThemes: "더 많은 테마",
       },
       custom: {
         chatWidth: {
@@ -1256,8 +1313,6 @@ export const ko = {
         resetAll: "사용자 지정 초기화",
         preferencesTitle: "환경설정",
         colors: {
-          lightGroup: "라이트 테마",
-          darkGroup: "다크 테마",
           accent: "강조색",
           background: "배경",
           foreground: "전경",
@@ -3021,6 +3076,11 @@ export const ko = {
       gridView: "그리드 보기",
       listView: "목록 보기",
       settings: "라이브러리 설정",
+      sort: "정렬",
+      sortDefault: "기본 순서",
+      sortName: "이름",
+      sortModified: "수정한 날짜",
+      sortSize: "크기",
     },
     create: {
       note: "메모",

@@ -247,7 +247,7 @@ _STREAM_BANNED = ("set_stream", "set_device", "setDevice")
 
 
 def _banned_stream_calls(source: str) -> list[tuple[int, str]]:
-    """``set_stream`` silently sets the current DEVICE; ``set_device`` moves what the guard restores."""
+    """``set_stream`` silently sets the current DEVICE too, and ``set_device`` moves what the guard restores."""
     found: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Attribute) and node.attr in _STREAM_BANNED:
@@ -360,6 +360,7 @@ def _fake_blackwell(monkeypatch):
 
 
 def test_an_allocation_failure_is_answered_but_not_cached(monkeypatch):
+    """An OOM during AUTO planning means 'not now'; cached, it would drop nvfp4 for the process."""
     torch = _fake_blackwell(monkeypatch)
     calls: list = []
 
@@ -379,6 +380,7 @@ def test_an_allocation_failure_is_answered_but_not_cached(monkeypatch):
 
 
 def test_a_host_property_failure_stays_cached(monkeypatch):
+    """A JIT build that cannot run here never will, so the failure is cached."""
     _fake_blackwell(monkeypatch)
     calls: list = []
 

@@ -93,6 +93,10 @@ export const ar = {
       "توجد عدة نتائج مطابقة ضمن {noun}. اختر نتيجة من القائمة.",
     rateLimitedTitle: "تم بلوغ حد طلبات Hugging Face",
     rateLimitedBody: "انتظر قليلًا، ثم أعد البحث في {noun}.",
+    modelScope: "ModelScope",
+    useModelScope: "استخدام ModelScope",
+    useModelScopeHint: "ابحث ونزّل من ModelScope بدلًا من ذلك. يمكنك العودة من الإعدادات.",
+    useModelScopeFailed: "تعذّر التبديل إلى ModelScope.",
     hfToken: {
       label: "توكن HF",
       saved: "محفوظ",
@@ -122,6 +126,16 @@ export const ar = {
     shutdown: "إيقاف التشغيل",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "الوثائق",
+      keyboardShortcuts: "اختصارات لوحة المفاتيح",
+      whatsNew: "ما الجديد",
+      troubleshooting: "استكشاف الأخطاء وإصلاحها",
+      systemStatus: "حالة النظام",
+      sendFeedback: "إرسال ملاحظات",
+      about: "حول Unsloth",
+    },
     find: {
       label: "البحث في الصفحة",
       previous: "التطابق السابق",
@@ -176,6 +190,9 @@ export const ar = {
       noChats: "لا توجد محادثات",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "كل المشاريع مثبتة",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "كل المشاريع مثبتة أو ضمن أقسام",
+      noProjects: "لا توجد مشاريع",
       showMore: "عرض المزيد",
       showLess: "عرض أقل",
       settings: "الإعدادات",
@@ -221,16 +238,42 @@ export const ar = {
       byProject: "حسب المشروع",
       inOneList: "في قائمة واحدة",
       sortChatsBy: "ترتيب المحادثات حسب",
-      sortPinnedBy: "ترتيب المثبتة حسب",
-      priority: "الأولوية",
       lastUpdated: "آخر تحديث",
       manualOrder: "ترتيب يدوي",
       switchedToManual: "الترتيب يدوي الآن: اسحب الصفوف لإعادة ترتيبها",
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
       sortPinnedChats: "ترتيب المحادثات المثبتة",
-      moveUp: "تحريك لأعلى",
-      moveDown: "تحريك لأسفل",
+      // Header of the menu's section-visibility toggles.
+      show: "إظهار",
+      newSection: "قسم جديد",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "قسم جديد",
+      createDescription: "جمّع المحادثات والمشاريع بالطريقة التي تناسبك",
+      namePlaceholder: "اسم القسم",
+      create: "إنشاء قسم",
+      renameTitle: "إعادة تسمية القسم",
+      renameDescription: "امنح هذا القسم اسمًا جديدًا",
+      edit: "تعديل",
+      remove: "إزالة القسم",
+      markAllRead: "تعليم الكل كمقروء",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "نقل إلى",
+      section: "قسم",
+      sectionsHeading: "الأقسام",
+      removeFromProject: "إزالة من المشروع",
+      newSection: "قسم جديد",
+      removeFromSection: "إزالة من القسم",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "إزالة من {name}",
+      // Shown in a section with nothing filed in it yet.
+      empty: "اسحب المحادثات أو المشاريع إلى هنا",
+      sectionOptions: "خيارات القسم",
+      newChatInSection: "محادثة جديدة في {name}",
+      deleted: "تم حذف القسم «{name}»",
+      undo: "تراجع",
     },
     dialog: {
       deleteChat: {
@@ -1039,6 +1082,19 @@ export const ar = {
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },
+      hub: {
+        source: "مصدر النماذج",
+        sourceDescription: "المكان الذي يبحث فيه مركز النماذج ويُنزّل منه. اختر ModelScope إذا كان Hugging Face محظورًا أو بطيئًا على شبكتك.",
+        sourceFallback: "تعذّر تشغيل ModelScope، لذلك يُستخدم Hugging Face. راجع سجلات Unsloth.",
+        sectionTitle: "مركز النماذج",
+        endpoint: "نقطة نهاية Hugging Face",
+        endpointDescription: "المصدر الذي تُنزَّل منه النماذج ومجموعات البيانات. اتركه فارغًا لاستخدام huggingface.co، أو أدخل مرآة مثل https://hf-mirror.com.",
+        datasetsServer: "استخدامه أيضًا لمعاينات مجموعات البيانات",
+        datasetsServerDescription: "إرسال طلبات معاينة مجموعات البيانات (HF_DATASETS_SERVER) إلى نقطة النهاية هذه أيضًا. فعّله فقط إذا كانت المرآة تدعمها.",
+        invalidEndpoint: "أدخل عنوان http(s) بلا بيانات دخول أو استعلام. لا يعمل http العادي إلا مع عنوان محلي.",
+        saveFailed: "تعذّر حفظ إعدادات المركز.",
+        loadFailed: "تعذّر تحميل إعدادات المركز.",
+      },
       downloads: {
         sectionTitle: "التنزيلات",
         transport: "طريقة نقل التنزيل",
@@ -1234,19 +1290,20 @@ export const ar = {
       title: "المظهر",
       description: "كيفية ظهور Unsloth على هذا الجهاز.",
       theme: {
-        title: "السمة",
-        label: "نظام الألوان",
+        title: "النمط المرئي",
+        label: "الوضع",
         description: "فاتح أو داكن أو حسب إعداد نظامك.",
         system: "النظام",
         light: "فاتح",
         dark: "داكن",
       },
       palette: {
-        label: "لوحة الألوان",
+        label: "السمة",
         description: "الألوان المستخدمة في Unsloth في الوضعين الفاتح والداكن.",
         standard: "قياسية",
         classic: "كلاسيكية",
         minimal: "بسيطة",
+        moreThemes: "المزيد من السمات",
       },
       custom: {
         chatWidth: {
@@ -1260,8 +1317,6 @@ export const ar = {
         resetAll: "إعادة تعيين التخصيص",
         preferencesTitle: "التفضيلات",
         colors: {
-          lightGroup: "المظهر الفاتح",
-          darkGroup: "المظهر الداكن",
           accent: "لون التمييز",
           background: "الخلفية",
           foreground: "اللون الأمامي",
@@ -3027,6 +3082,11 @@ export const ar = {
       gridView: "عرض الشبكة",
       listView: "عرض القائمة",
       settings: "إعدادات المكتبة",
+      sort: "الترتيب",
+      sortDefault: "الترتيب الافتراضي",
+      sortName: "الاسم",
+      sortModified: "تاريخ التعديل",
+      sortSize: "الحجم",
     },
     create: {
       note: "ملاحظة",

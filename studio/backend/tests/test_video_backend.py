@@ -9562,7 +9562,7 @@ def test_the_planned_scheme_is_what_the_load_seeds(fake_runtime, monkeypatch):
 
 
 def test_a_seed_the_plan_declined_is_not_re_taken_by_the_load(fake_runtime, monkeypatch):
-    """The load honours the plan's decline: re-deciding here would fetch the artifact inline."""
+    """The load honours the plan's decline, or it would fetch the artifact inline."""
     import core.inference.video as video_mod
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
@@ -9745,7 +9745,7 @@ def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatc
 
 
 def test_the_video_status_response_carries_the_nvfp4_backend_label():
-    """'NVFP4' alone does not say which backend ran."""
+    """The same backend field the image status exposes: 'NVFP4' alone does not say what ran."""
     from models.inference import VideoStatusResponse
 
     resp = VideoStatusResponse(
@@ -9827,7 +9827,6 @@ def _a14b_plan(monkeypatch):
 
 
 def test_a_plan_that_still_offloads_at_artifact_size_stages_the_dense_experts(monkeypatch):
-    """A card the artifact-sized plan still offloads on cannot seed: stage the dense experts."""
     import core.inference.video as video_mod
 
     _a14b_plan(monkeypatch)
@@ -9847,7 +9846,6 @@ def test_a_plan_that_still_offloads_at_artifact_size_stages_the_dense_experts(mo
 
 
 def test_a_card_the_artifact_fits_on_still_stages_the_artifacts(monkeypatch):
-    """Where the artifact-sized plan stays resident the load seeds, so dense shards stay out."""
     import core.inference.video as video_mod
 
     _a14b_plan(monkeypatch)
@@ -9870,7 +9868,6 @@ def test_a_card_the_artifact_fits_on_still_stages_the_artifacts(monkeypatch):
 
 
 def test_an_offloading_memory_mode_stages_the_dense_experts_on_any_card(monkeypatch):
-    """An explicit offload memory_mode stages the dense experts even on a roomy card."""
     import core.inference.video as video_mod
 
     _a14b_plan(monkeypatch)
@@ -9892,7 +9889,7 @@ def test_an_offloading_memory_mode_stages_the_dense_experts_on_any_card(monkeypa
 def test_a_dense_encoder_fallback_that_forces_offload_also_drops_the_seed(
     fake_runtime, monkeypatch
 ):
-    """A failed pre-cast encoder re-plans at bf16, which can offload: re-decide the seed there."""
+    """A dense-encoder fallback re-plan that selects offload must re-take the seed decision."""
     import core.inference.diffusion_te_prequant as te
     import core.inference.video as video_mod
 
@@ -10542,6 +10539,24 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
     assert marks["calls"] == 1
     assert marks["ok"] is True
     assert at_decode.get("phase") == "decode"
+
+
+def test_generate_runs_the_video_pipeline_through_the_render_thread(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import video as video_mod
+
+    names = []
+
+    def run(name, fn):
+        names.append(name)
+        return fn()
+
+    monkeypatch.setattr(video_mod.render_thread, "run", run)
+    backend = _load_ltx23_from_dir(tmp_path)
+    backend.generate(prompt = "a sloth")
+    assert names == ["video"]
+    assert backend._state.pipe.last_kwargs["num_inference_steps"] == 8
 
 
 @pytest.mark.parametrize("resident", [True, False])

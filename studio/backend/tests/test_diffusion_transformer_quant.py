@@ -2305,7 +2305,7 @@ def test_a_gated_row_is_inert_without_a_record_and_leads_with_one(monkeypatch, t
 
 
 def test_the_gated_head_stands_on_any_backend_a_passing_record_names(monkeypatch, tmp_path):
-    """One policy can hold records on both backends; neither device may lose nvfp4 to row order."""
+    """One policy can hold artifacts gated on either backend; neither may lose nvfp4 to row order."""
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
     _gate(
@@ -2643,9 +2643,9 @@ def _capable_host(
 
     monkeypatch.setattr(diffusion_speed, "compile_eligible", lambda target, **kw: True)
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
-    monkeypatch.setattr(tq, "_capability", lambda: cap)
+    monkeypatch.setattr(tq, "_capability", lambda ordinal = None: cap)
     monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", (torchao_reason,))
-    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device: "cuda:0")
+    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device, ordinal = None: "cuda:0")
     monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
 
 

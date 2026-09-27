@@ -94,6 +94,10 @@ export const hi = {
     rateLimitedTitle: "Hugging Face की अनुरोध सीमा पूरी हो गई",
     rateLimitedBody:
       "कुछ देर प्रतीक्षा करें, फिर {noun} की खोज दोबारा करें।",
+    modelScope: "ModelScope",
+    useModelScope: "ModelScope इस्तेमाल करें",
+    useModelScopeHint: "इसके बजाय ModelScope से खोजें और डाउनलोड करें। आप सेटिंग्स में वापस बदल सकते हैं।",
+    useModelScopeFailed: "ModelScope पर स्विच नहीं हो सका।",
     hfToken: {
       label: "HF टोकन",
       saved: "सहेजा गया",
@@ -125,6 +129,16 @@ export const hi = {
     shutdown: "शटडाउन",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "दस्तावेज़",
+      keyboardShortcuts: "कीबोर्ड शॉर्टकट",
+      whatsNew: "नया क्या है",
+      troubleshooting: "समस्या निवारण",
+      systemStatus: "सिस्टम स्थिति",
+      sendFeedback: "फ़ीडबैक भेजें",
+      about: "Unsloth के बारे में",
+    },
     find: {
       label: "पेज में खोजें",
       previous: "पिछला मिलान",
@@ -179,6 +193,9 @@ export const hi = {
       noChats: "कोई चैट नहीं",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "सभी प्रोजेक्ट पिन किए गए",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "सभी प्रोजेक्ट पिन किए गए हैं या सेक्शन में हैं",
+      noProjects: "कोई प्रोजेक्ट नहीं",
       showMore: "और दिखाएं",
       showLess: "कम दिखाएं",
       settings: "सेटिंग्स",
@@ -224,16 +241,42 @@ export const hi = {
       byProject: "प्रोजेक्ट के अनुसार",
       inOneList: "एक ही सूची में",
       sortChatsBy: "चैट क्रमबद्ध करें",
-      sortPinnedBy: "पिन किए गए क्रमबद्ध करें",
-      priority: "प्राथमिकता",
       lastUpdated: "अंतिम अपडेट",
       manualOrder: "मैन्युअल क्रम",
       switchedToManual: "अब मैन्युअल क्रम: पंक्तियाँ खींचकर क्रम बदलें",
       organizeChats: "चैट व्यवस्थित करें",
       organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
-      moveUp: "ऊपर ले जाएँ",
-      moveDown: "नीचे ले जाएँ",
+      // Header of the menu's section-visibility toggles.
+      show: "दिखाएँ",
+      newSection: "नया सेक्शन",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "नया सेक्शन",
+      createDescription: "चैट और प्रोजेक्ट को अपनी पसंद से समूहित करें",
+      namePlaceholder: "सेक्शन का नाम",
+      create: "सेक्शन बनाएँ",
+      renameTitle: "सेक्शन का नाम बदलें",
+      renameDescription: "इस सेक्शन को नया नाम दें",
+      edit: "संपादित करें",
+      remove: "सेक्शन हटाएँ",
+      markAllRead: "सभी को पढ़ा हुआ चिह्नित करें",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "यहाँ ले जाएँ",
+      section: "सेक्शन",
+      sectionsHeading: "सेक्शन",
+      removeFromProject: "प्रोजेक्ट से हटाएँ",
+      newSection: "नया सेक्शन",
+      removeFromSection: "सेक्शन से हटाएँ",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "{name} से हटाएँ",
+      // Shown in a section with nothing filed in it yet.
+      empty: "चैट या प्रोजेक्ट यहाँ खींचें",
+      sectionOptions: "सेक्शन विकल्प",
+      newChatInSection: "{name} में नई चैट",
+      deleted: "सेक्शन “{name}” हटाया गया",
+      undo: "पूर्ववत करें",
     },
     dialog: {
       deleteChat: {
@@ -1042,6 +1085,19 @@ export const hi = {
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
       },
+      hub: {
+        source: "मॉडल स्रोत",
+        sourceDescription: "मॉडल हब कहाँ खोजता और डाउनलोड करता है। अगर आपके नेटवर्क पर Hugging Face ब्लॉक या धीमा है तो ModelScope चुनें।",
+        sourceFallback: "ModelScope शुरू नहीं हो सका, इसलिए Hugging Face इस्तेमाल हो रहा है। Unsloth के लॉग देखें।",
+        sectionTitle: "मॉडल हब",
+        endpoint: "Hugging Face एंडपॉइंट",
+        endpointDescription: "मॉडल और डेटासेट यहीं से डाउनलोड होते हैं। huggingface.co के लिए खाली छोड़ें, या https://hf-mirror.com जैसा कोई मिरर डालें।",
+        datasetsServer: "डेटासेट प्रीव्यू के लिए भी इस्तेमाल करें",
+        datasetsServerDescription: "डेटासेट प्रीव्यू अनुरोध (HF_DATASETS_SERVER) भी इसी एंडपॉइंट पर भेजें। इसे तभी चालू करें जब मिरर इन्हें सपोर्ट करता हो।",
+        invalidEndpoint: "लॉगिन जानकारी या क्वेरी के बिना http(s) URL डालें। सादा http केवल लोकल पते के लिए काम करता है।",
+        saveFailed: "हब सेटिंग्स सेव नहीं हो सकीं।",
+        loadFailed: "हब सेटिंग्स लोड नहीं हो सकीं।",
+      },
       downloads: {
         sectionTitle: "डाउनलोड",
         transport: "डाउनलोड ट्रांसपोर्ट",
@@ -1237,19 +1293,20 @@ export const hi = {
       title: "रूप-रंग",
       description: "इस डिवाइस पर Unsloth कैसा दिखता है।",
       theme: {
-        title: "थीम",
-        label: "रंग योजना",
+        title: "विज़ुअल स्टाइल",
+        label: "मोड",
         description: "लाइट, डार्क या सिस्टम सेटिंग के अनुसार।",
         system: "सिस्टम",
         light: "लाइट",
         dark: "डार्क",
       },
       palette: {
-        label: "रंग पैलेट",
+        label: "थीम",
         description: "लाइट और डार्क मोड में पूरे Unsloth में दिखने वाले रंग।",
         standard: "मानक",
         classic: "क्लासिक",
         minimal: "मिनिमल",
+        moreThemes: "और थीम",
       },
       custom: {
         chatWidth: {
@@ -1263,8 +1320,6 @@ export const hi = {
         resetAll: "कस्टमाइज़ेशन रीसेट करें",
         preferencesTitle: "प्राथमिकताएं",
         colors: {
-          lightGroup: "लाइट थीम",
-          darkGroup: "डार्क थीम",
           accent: "एक्सेंट",
           background: "पृष्ठभूमि",
           foreground: "अग्रभूमि",
@@ -3034,6 +3089,11 @@ export const hi = {
       gridView: "ग्रिड व्यू",
       listView: "सूची व्यू",
       settings: "लाइब्रेरी सेटिंग्स",
+      sort: "क्रमबद्ध करें",
+      sortDefault: "डिफ़ॉल्ट क्रम",
+      sortName: "नाम",
+      sortModified: "बदला गया",
+      sortSize: "आकार",
     },
     create: {
       note: "नोट",

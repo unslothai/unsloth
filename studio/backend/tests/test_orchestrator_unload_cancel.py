@@ -1446,6 +1446,25 @@ def test_gguf_load_attempt_does_not_hide_a_real_resolver_failure():
         )
 
 
+def test_a_codec_missing_on_modelscope_stays_with_the_load_that_hit_it():
+    import asyncio
+    import routes.inference as inference_route
+    from unittest import mock
+    from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+    from hub.utils.hf_errors import not_on_modelscope
+
+    llama = LlamaCppBackend()
+    llama._codec_failure.message, llama._llama_update_in_progress = "x", True  # refused after reset
+    pytest.raises(RuntimeError, llama.load_model, intent = GgufLoadIntent(model_identifier = "o/m"))
+    assert llama.codec_failure() is None
+    llama._healthy, failures = True, []
+    llama.init_audio_codec = mock.Mock(side_effect = OSError(not_on_modelscope("o/c")))
+    llama.load_model = lambda **_: llama._apply_detected_audio("snac")
+    run = inference_route._run_gguf_load_attempt(llama, object(), threading.Event(), failures)
+    assert asyncio.run(run) is False and failures == [not_on_modelscope("o/c")]
+    assert llama.codec_failure() is None  # set on the loading thread only
+
+
 def test_stale_unload_does_not_hide_an_update_refusal():
     import asyncio
     import routes.inference as inference_route

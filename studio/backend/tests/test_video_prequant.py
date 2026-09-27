@@ -1378,6 +1378,7 @@ def test_the_conventional_auto_scheme_needs_an_artifact_for_every_expert(monkeyp
 
 
 def test_auto_is_handed_the_probe_that_lets_it_reach_a_prequant_only_scheme(monkeypatch):
+    """AUTO offers nvfp4 only where a hosted checkpoint provably covers THIS load."""
     assert _video_auto(monkeypatch, scheme = "nvfp4") == "nvfp4"
     probe = _video_auto.calls[-1]["has_prequant"]
     assert probe("nvfp4") is True
@@ -1430,7 +1431,6 @@ def _a14b_auto(
     fam = None,
     allowed = None,
 ):
-    """Real selector, preference table and coverage resolver for the shipped A14B family."""
     import types
 
     import core.inference.diffusion_nvfp4_ops as ops
@@ -1502,7 +1502,7 @@ def test_the_a14b_auto_plan_falls_through_when_the_fp4_kernel_is_missing(monkeyp
 
 
 def _planned_denoiser_request(monkeypatch, fam, **load_kwargs):
-    """The scheme the planner hands ``_denoiser_prequant_verified`` (stubbed, as is the build)."""
+    """The scheme the download planner hands ``_denoiser_prequant_verified``; only the Hub probe is stubbed."""
     from core.inference import video as vid
 
     backend = vid.VideoBackend()
@@ -1532,7 +1532,6 @@ def _planned_denoiser_request(monkeypatch, fam, **load_kwargs):
 
 
 def test_a_conventional_plan_drops_no_shard_the_load_will_not_seed(monkeypatch):
-    """Only the planned seed drops shards: a conventional load never forwards the raw request."""
     from core.inference.video_families import detect_video_family
 
     wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
@@ -1552,7 +1551,7 @@ def test_a_conventional_plan_drops_no_shard_the_load_will_not_seed(monkeypatch):
 
 
 def test_a_seed_the_plan_declined_is_pinned_into_the_load(monkeypatch):
-    """The plan's decline travels as its own value: the load cannot re-decide on a roomier card."""
+    """The plan runs with the PREVIOUS pipeline resident, so its decline travels as its own value, not None."""
     from core.inference import video as vid
     from core.inference.video_families import detect_video_family
 
@@ -1590,7 +1589,6 @@ def test_a_seed_the_plan_declined_is_pinned_into_the_load(monkeypatch):
 
 
 def test_the_seeded_denoiser_repo_is_claimed_against_a_concurrent_delete(monkeypatch):
-    """The seeded denoiser's repo (neither repo_id nor base_repo) joins the in-flight claim."""
     from core.inference import video as vid
     from core.inference.video_families import detect_video_family
 
@@ -1632,7 +1630,6 @@ def test_both_experts_of_an_moe_resolve_to_one_claimed_repo():
 
 
 def test_the_seeded_denoiser_artifact_is_fetched_under_the_load_cancel_event(monkeypatch):
-    """The seeded artifact is prefetched under the load's cancel event, not by the injection."""
     import threading
 
     from core.inference import video as vid

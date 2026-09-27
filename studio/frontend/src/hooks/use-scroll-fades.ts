@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
  */
 export function useScrollFades() {
   // The node is state, not a ref, so the observer re-attaches when it changes.
-  const [node, setNode] = useState<HTMLDivElement | null>(null);
+  const [node, setNode] = useState<HTMLElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
   const [moreBelow, setMoreBelow] = useState(false);
 

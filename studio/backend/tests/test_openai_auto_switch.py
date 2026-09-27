@@ -1993,7 +1993,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     monkeypatch.setattr(
         studio_db, "list_scan_folders", lambda: [{"path": str(tmp_path / "custom")}]
     )
-    for sub in ("active", "previous", "legacy", "default", "lmstudio", "custom"):
+    for sub in ("active", "previous", "legacy", "default", "lmstudio", "custom", "custom/hub"):
         (tmp_path / sub).mkdir()
 
     resolver._build_index()
@@ -2004,6 +2004,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     assert str((tmp_path / "default").resolve()) in hf
     assert str((tmp_path / "previous").resolve()) in hf
     assert str((tmp_path / "custom").resolve()) in hf
+    assert str((tmp_path / "custom" / "hub").resolve()) in hf
     assert str((tmp_path / "lmstudio").resolve()) in lm
 
 
@@ -4493,6 +4494,58 @@ def test_completions_rejects_object_prompt_before_switch(monkeypatch):
         )
     assert exc.value.status_code == 400
     assert rec.calls == []  # no switch before rejection
+
+
+def _raise_reached(*_args, **_kwargs):
+    raise _Reached()
+
+
+_IGNORED_COMPLETIONS_PARAMS = [
+    ({"echo": True}, "echo"),
+    ({"suffix": " the end."}, "suffix"),
+    ({"best_of": 3}, "best_of"),
+    ({"best_of": 3, "n": 2}, "best_of"),
+    ({"best_of": 2, "stream": True}, "best_of"),
+]
+
+
+@pytest.mark.parametrize("extra, param", _IGNORED_COMPLETIONS_PARAMS)
+def test_completions_rejects_ignored_params_before_switch(monkeypatch, extra, param):
+    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/p/B", "Q8_0", "org/B-GGUF"))
+    body = {"model": "org/B-GGUF", "prompt": "hi", **extra}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["code"] == "unsupported_parameter"
+    assert exc.value.detail["error"]["param"] == param
+    assert rec.calls == []
+
+
+@pytest.mark.parametrize("extra, param", _IGNORED_COMPLETIONS_PARAMS)
+def test_completions_rejects_ignored_params_without_switch(monkeypatch, extra, param):
+    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), None, enabled = False)
+    monkeypatch.setattr(inference_route, "_fill_recommended_sampling_completions", _raise_reached)
+    body = {"prompt": "hi", "max_tokens": 8, **extra}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["param"] == param
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"echo": False, "suffix": "", "best_of": 1},
+        {"echo": None, "suffix": None, "best_of": None},
+        {"best_of": 2, "n": 2},
+    ],
+)
+def test_completions_default_ignored_params_still_proxy(monkeypatch, extra):
+    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), None, enabled = False)
+    monkeypatch.setattr(inference_route, "_fill_recommended_sampling_completions", _raise_reached)
+    body = {"prompt": "hi", "max_tokens": 8, **extra}
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
 
 
 def test_embeddings_rejects_object_input_before_switch(monkeypatch):

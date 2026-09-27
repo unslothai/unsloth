@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TranslationKey } from "@/i18n";
+import type { HubSource } from "@/lib/hf-endpoint";
 import type { SettingsTab } from "./stores/settings-dialog-store";
 
 /**
@@ -29,6 +30,10 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.rag.embeddingModel",
     "settings.general.helperLlm.sectionTitle",
     "settings.general.helperLlm.preloadOnStartup",
+    "settings.general.hub.sectionTitle",
+    "settings.general.hub.source",
+    "settings.general.hub.endpoint",
+    "settings.general.hub.datasetsServer",
     "settings.general.downloads.sectionTitle",
     "settings.general.downloads.transport",
     "settings.general.downloads.https",
@@ -314,6 +319,21 @@ export function createSettingsSearchIndex({
       (key) => key !== "settings.about.updates",
     ),
   };
+}
+
+const HUGGING_FACE_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
+  "settings.general.hub.endpoint",
+  "settings.general.hub.datasetsServer",
+]);
+
+export function renderedSearchEntries(
+  index: Record<SettingsTab, TranslationKey[]>,
+  tab: SettingsTab,
+  hubSource: HubSource,
+): TranslationKey[] {
+  return hubSource === "modelscope"
+    ? index[tab].filter((key) => !HUGGING_FACE_ONLY_ENTRIES.has(key))
+    : index[tab];
 }
 
 /**

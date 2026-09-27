@@ -34,6 +34,7 @@ export interface BackendLoraInfo {
   base_model?: string | null;
   source?: "training" | "exported" | null;
   export_type?: "lora" | "merged" | "gguf" | null;
+  size_bytes?: number | null;
   /** Codec of the checkpoint's base model when it fine-tunes an audio model, else null. */
   audio_type?: string | null;
 }
