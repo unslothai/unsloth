@@ -3736,6 +3736,8 @@ _setup_nvidia_physical=false
 _setup_gfx_all=""
 _setup_gfx=""
 _setup_hip_map_missing=0
+_setup_amd_probe=""
+_setup_rocr_uuid_declined=0
 _setup_mkt=""
 _setup_amd_records=""
 
@@ -3967,6 +3969,7 @@ if [ "$_setup_nvidia_usable" != true ]; then
     fi
     if [ -n "$_setup_gfx_all" ]; then
         _setup_amd_detected=true
+        _setup_amd_probe=rocminfo
     elif command -v amd-smi >/dev/null 2>&1 && \
          _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         _setup_amd_detected=true
@@ -3975,7 +3978,8 @@ if [ "$_setup_nvidia_usable" != true ]; then
         if [ -n "$_setup_amd_records" ]; then
             _setup_amd_smi_out=$(_setup_run_smi amd-smi list -e 2>/dev/null \
                 | _setup_amd_smi_hip_order "$_setup_amd_records" || true)
-            _setup_amd_space=$(printf '%s\n' "$_setup_amd_smi_out" | head -n 1)
+            # Expansion, not `| head -n 1`: head exiting early SIGPIPEs printf under pipefail.
+            _setup_amd_space=${_setup_amd_smi_out%%$'\n'*}
             _setup_amd_records=$(printf '%s\n' "$_setup_amd_smi_out" | tail -n +2)
             # No map, and the adapters are not interchangeable: the mask indexes HIP order
             # while these records are in discovery order, so any ordinal is a guess. Decline
@@ -4023,7 +4027,31 @@ if [ "$_setup_nvidia_usable" = true ]; then
     # behind on the common path where there is no driver string to print.
     if [ -n "$_setup_nv_driver" ]; then substep "Driver: $_setup_nv_driver"; fi
 elif [ "$_setup_amd_detected" = true ]; then
-    _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+    # As install.sh: ROCr picks survivors (rocminfo is already filtered, amd-smi is not), then the
+    # first SET HIP-layer mask (HIP, then CUDA; empty still shadows) indexes them.
+    if [ "$_setup_amd_probe" != rocminfo ] && [ -n "${ROCR_VISIBLE_DEVICES:-}" ] && [ "$ROCR_VISIBLE_DEVICES" != "-1" ]; then
+        _setup_rocr_keep() {
+            _setup_kept=$(printf '%s\n' "$1" | awk -v m="$ROCR_VISIBLE_DEVICES" '
+                NF { v[n++] = $0 }
+                END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] !~ /^[0-9]+$/) continue; x = t[i] + 0; if (x >= n || (x in s)) break; s[x] = 1; print v[x] } }')
+            if [ -n "$_setup_kept" ]; then printf '%s\n' "$_setup_kept"; else printf '%s\n' "$1"; fi
+        }
+        # A UUID has no position in amd-smi's list: with unlike adapters, decline as install.sh does.
+        if [ -n "$(printf '%s' "$ROCR_VISIBLE_DEVICES" | tr -d '0-9, \t')" ] && \
+           [ "$(printf '%s\n' "${_setup_amd_records:-$_setup_gfx_all}" | awk -F'|' \
+                'NF { k = ($1 != "" ? $1 : "name:" $2); if (!(k in seen)) { seen[k]; n++ } } END { print n + 0 }')" -gt 1 ]; then
+            _setup_amd_records=""
+            _setup_gfx_all=""
+            _setup_rocr_uuid_declined=1
+        fi
+        [ -n "$_setup_amd_records" ] && _setup_amd_records=$(_setup_rocr_keep "$_setup_amd_records")
+        [ -n "$_setup_gfx_all" ] && _setup_gfx_all=$(_setup_rocr_keep "$_setup_gfx_all")
+    fi
+    if [ -n "${HIP_VISIBLE_DEVICES+x}" ]; then
+        _setup_vis="$HIP_VISIBLE_DEVICES"
+    else
+        _setup_vis="${CUDA_VISIBLE_DEVICES:-}"
+    fi
     _setup_vis_idx=0
     if [ -n "$_setup_vis" ] && [ "$_setup_vis" != "-1" ]; then
         _setup_first="${_setup_vis%%,*}"
@@ -4078,6 +4106,10 @@ elif [ "$_setup_amd_detected" = true ]; then
     if [ -z "$_setup_gfx" ] && [ "$_setup_hip_map_missing" = 1 ]; then
         substep "Unlike AMD adapters and no HIP id map (amd-smi list -e needs ROCm 6.4+):"
         substep "cannot tell which one this session selects. Set UNSLOTH_ROCM_GFX_ARCH to pick."
+    fi
+    if [ -z "$_setup_gfx" ] && [ "$_setup_rocr_uuid_declined" = 1 ]; then
+        substep "ROCR_VISIBLE_DEVICES names a GPU by UUID, which amd-smi cannot place, and the"
+        substep "adapters differ. Set UNSLOTH_ROCM_GFX_ARCH to pick."
     fi
     # ROCm version via hipconfig, then amd-smi
     _setup_rocm_ver=""

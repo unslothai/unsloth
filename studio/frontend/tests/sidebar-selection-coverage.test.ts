@@ -102,8 +102,8 @@ test("the bulk archive failure reads a translated string", async () => {
   // Its wording already exists as a key, so a literal here would be the one
   // English toast in an otherwise translated flow.
   const source = APP_SIDEBAR;
-  const archive = /async function archiveSelected\(([\s\S]*?)\n  \}/.exec(source);
-  assert.ok(archive, "no archiveSelected");
+  const archive = /async function archiveChatItems\(([\s\S]*?)\n  \}/.exec(source);
+  assert.ok(archive, "no archiveChatItems");
   assert.match(archive[1], /translate\("settings\.data\.failedToArchiveChats"\)/);
 });
 
@@ -112,13 +112,15 @@ test("one failed archive does not abandon the rest of the batch", async () => {
   // left unarchived with nothing left highlighted to retry from. The other two
   // bulk loops catch per item; this one has to as well.
   const source = APP_SIDEBAR;
-  const archive = /async function archiveSelected\(([\s\S]*?)\n  \}/.exec(source);
-  assert.ok(archive, "no archiveSelected");
+  // The selection and a section's "Archive chats" share one batch.
+  assert.match(source, /async function archiveSelected\(\) \{\s*const items = selectedChatItems;\s*clearSelection\(\);\s*await archiveChatItems\(items\);/);
+  const archive = /async function archiveChatItems\(([\s\S]*?)\n  \}/.exec(source);
+  assert.ok(archive, "no archiveChatItems");
   const body = archive[1];
   const loopAt = body.indexOf("for (const item of items)");
   const tryAt = body.indexOf("try {");
   assert.ok(loopAt >= 0, "no batch loop");
-  assert.ok(tryAt > loopAt, "archiveSelected catches around the loop, not in it");
+  assert.ok(tryAt > loopAt, "archiveChatItems catches around the loop, not in it");
   // Reported on what got through, not on whether the loop threw.
   assert.match(body, /archived \+= 1/);
   assert.match(body, /if \(archived > 0\) showArchivedChatsToast\(\)/);
