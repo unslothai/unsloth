@@ -367,3 +367,37 @@ def test_auto_never_resolves_to_int8_on_rocm(monkeypatch):
     )
     resolved = dit._resolve_base_precision(cfg, types.SimpleNamespace(dense_bf16_gb = 12.0), "cuda")
     assert resolved != "int8"
+
+
+# ── 4. the explicit-request decline must quote the helper, not its fallback ───
+
+
+def test_the_explicit_decline_text_is_the_helper_not_a_copy_of_its_fallback():
+    """An AMD owner asking for a scheme outright gets the ROCm reason, not "needs a CUDA GPU".
+
+    ``dense_transformer_unsupported_reason`` distinguishes ROCm and the Windows torchao stub from
+    a genuinely unsuitable device, and both loaders already call it on the AUTO path. The pinned
+    path used to carry its own copy of the generic fallback string, so the one user whose GPU is
+    real and whose request was explicit -- the person most likely to go looking -- got the least
+    accurate of the three answers. Asserting on the SOURCE rather than the rendered text: a
+    reworded reason should not break this, only a reintroduced copy should.
+    """
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parents[1] / "core" / "inference"
+    fallback = "it needs a CUDA GPU in bf16)"
+    for name in ("diffusion.py", "video.py"):
+        body = (here / name).read_text(encoding = "utf-8")
+        assert body.count(fallback) == 0, (
+            f"{name} carries its own copy of the generic decline; call "
+            f"dense_transformer_unsupported_reason(target) so ROCm and the stub keep their reasons"
+        )
+        assert "dense_transformer_unsupported_reason(target)" in body, name
+
+
+def test_the_rocm_reason_reaches_a_pinned_request(monkeypatch):
+    _stub_torch(monkeypatch, hip = "7.1.25424", version_str = "2.10.0+rocm7.1")
+    reason = tq.dense_transformer_unsupported_reason(_target())
+    # What the pinned branch now emits, for the device the probe actually measured.
+    assert "ROCm" in reason and "AMD" in reason
+    assert "needs a CUDA GPU" not in reason

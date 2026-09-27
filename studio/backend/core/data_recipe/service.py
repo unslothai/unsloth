@@ -139,17 +139,41 @@ def _apply_data_designer_image_context_patch() -> None:
 def _require_public_provider_endpoint(endpoint: str) -> None:
     """The recipe engine dials providers itself, so a managed account's endpoint cannot use the pinned
     transport: require HTTPS, which binds the peer to its certificate rather than to a DNS answer that
-    may rebind to loopback or the LAN after this public-address check."""
+    may rebind to loopback or the LAN after this public-address check.
+
+    With the switch on, the HTTPS and public-address rules stand down so a saved connection is one
+    a recipe can run on. The metadata rule does not: this path has no validator behind it."""
     if not managed_account():
         return
     from urllib.parse import urlsplit
 
-    from core.inference.providers import public_provider_address
+    from core.inference.providers import (
+        managed_private_url_hint,
+        provider_address_excluding_metadata,
+        public_provider_address,
+    )
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
 
     url = str(endpoint or "")
+    if get_managed_private_provider_urls_allowed():
+        try:
+            # The switch lifts HTTPS-only and public-only, not http(s)-only: everywhere else a
+            # provider URL is one of those two schemes, and this gate has no validator behind it.
+            if urlsplit(url).scheme not in ("http", "https"):
+                raise ValueError("Provider endpoints must use http or https.")
+            provider_address_excluding_metadata(url)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code = 403, detail = f"Recipe provider endpoint refused: {exc}"
+            ) from exc
+        return
+
     try:
         if urlsplit(url).scheme != "https":
-            raise ValueError("Managed accounts may only use HTTPS provider endpoints.")
+            raise ValueError(
+                "Managed accounts may only use HTTPS provider endpoints."
+                + managed_private_url_hint()
+            )
         public_provider_address(url)
     except ValueError as exc:
         raise HTTPException(
@@ -160,18 +184,32 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
 def install_public_egress_guard() -> None:
     """Managed recipe workers: the engine dials providers itself, so every name resolves through this
     guard and a host that rebinds to loopback or the LAN after the endpoint check is refused at connect
-    time rather than dialled. Process-wide, so it is installed only in the job subprocess."""
+    time rather than dialled. Process-wide, so it is installed only in the job subprocess.
+
+    With the switch on the guard narrows to the metadata services rather than standing down: a
+    worker whose engine dials for itself has nothing else between it and that address."""
     if not managed_account():
         return
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
+
     import ipaddress
     import socket
+
+    from core.inference.providers import _metadata_address
 
     resolve = socket.getaddrinfo
 
     def guarded_getaddrinfo(host, port, *args, **kwargs):
+        # Per lookup, not captured at install: a worker outlives the switch it started under.
+        private_allowed = get_managed_private_provider_urls_allowed()
         infos = resolve(host, port, *args, **kwargs)
         for info in infos:
-            if not ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]).is_global:
+            address = str(info[4][0]).split("%", 1)[0]
+            if _metadata_address(address):
+                raise socket.gaierror(
+                    f"Managed accounts may not reach cloud metadata services: {host!r}"
+                )
+            if not private_allowed and not ipaddress.ip_address(address).is_global:
                 raise socket.gaierror(
                     f"Managed accounts may only reach public-network addresses: {host!r}"
                 )

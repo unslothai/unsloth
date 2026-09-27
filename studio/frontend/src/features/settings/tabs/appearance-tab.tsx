@@ -5,7 +5,6 @@ import { useEffect, useRef } from "react";
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT } from "@/i18n";
-import { isTauri } from "@/lib/api-base";
 import {
   ActiveColorControl,
   ChatFontRow,
@@ -66,6 +65,22 @@ export function AppearanceTab() {
         </p>
       </header>
 
+      <SettingsSection title={t("settings.appearance.theme.title")}>
+        <SettingsRow
+          label={t("settings.appearance.theme.label")}
+          description={t("settings.appearance.theme.description")}
+        >
+          <ThemeSegmented />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.palette.label")}
+          description={t("settings.appearance.palette.description")}
+          className="flex-col items-stretch gap-3"
+        >
+          <PaletteCards />
+        </SettingsRow>
+      </SettingsSection>
+
       <SettingsSection title={t("settings.appearance.custom.preferencesTitle")}>
         <SettingsRow label={t("settings.appearance.custom.uiFont.label")}>
           <UiFontRow />
@@ -73,16 +88,14 @@ export function AppearanceTab() {
         <SettingsRow label={t("settings.appearance.custom.codeFont.label")}>
           <CodeFontRow />
         </SettingsRow>
-        {isTauri && (
-          <SettingsRow
-            label={t("settings.appearance.custom.interfaceScale.label")}
-            description={t(
-              "settings.appearance.custom.interfaceScale.description",
-            )}
-          >
-            <InterfaceScaleRow />
-          </SettingsRow>
-        )}
+        <SettingsRow
+          label={t("settings.appearance.custom.interfaceScale.label")}
+          description={t(
+            "settings.appearance.custom.interfaceScale.description",
+          )}
+        >
+          <InterfaceScaleRow />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.chatWidth.label")}
           description={t("settings.appearance.custom.chatWidth.description")}
@@ -133,22 +146,6 @@ export function AppearanceTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.appearance.theme.title")}>
-        <SettingsRow
-          label={t("settings.appearance.theme.label")}
-          description={t("settings.appearance.theme.description")}
-        >
-          <ThemeSegmented />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.palette.label")}
-          description={t("settings.appearance.palette.description")}
-          className="flex-col items-stretch gap-3"
-        >
-          <PaletteCards />
-        </SettingsRow>
-      </SettingsSection>
-
       <SettingsSection
         title={t(
           resolved === "light"
@@ -182,10 +179,7 @@ export function AppearanceTab() {
           <ChatFontRow />
         </SettingsRow>
         <SettingsGroupDivider />
-        <SettingsRow
-          label={t("settings.appearance.custom.contrast.label")}
-          description={t("settings.appearance.custom.contrast.description")}
-        >
+        <SettingsRow label={t("settings.appearance.custom.contrast.label")}>
           <ContrastSliderRow />
         </SettingsRow>
       </SettingsSection>

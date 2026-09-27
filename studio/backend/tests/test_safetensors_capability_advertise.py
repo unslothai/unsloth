@@ -163,6 +163,72 @@ def test_detect_reasoning_flags_none_template_returns_all_false():
     assert flags["reasoning_style"] == "enable_thinking"
 
 
+# Tool guards shipped templates actually write, each read as "no tools" by the older
+# exact-substring scan. A false greys out the Search and Code pills, so the user cannot correct it.
+@pytest.mark.parametrize(
+    "label, guard",
+    [
+        # Granite 3.3 aliases the list before branching on it.
+        (
+            "granite_alias",
+            "{%- if tools and not available_tools -%}{{- tools | tojson }}{%- endif -%}",
+        ),
+        # No spaces inside the tag.
+        ("tight_whitespace", "{%-if tools%}{{- tools | tojson }}{%- endif -%}"),
+        # `is not none` rather than a truth test.
+        ("is_not_none", "{% if tools is not none %}{{ tools | tojson }}{% endif %}"),
+        # No guard at all, straight into the loop.
+        ("unguarded_loop", "{%- for tool in tools %}{{- tool | tojson }}{%- endfor %}"),
+        # An elif arm.
+        (
+            "elif_arm",
+            "{%- if documents %}{{- documents }}{%- elif tools %}{{- tools }}{%- endif %}",
+        ),
+    ],
+)
+def test_detect_reasoning_flags_reads_tool_guards_however_they_are_written(label, guard):
+    from core.inference.llama_cpp import detect_reasoning_flags
+    flags = detect_reasoning_flags(guard, f"vendor/{label}")
+    assert flags["supports_tools"] is True
+
+
+@pytest.mark.parametrize(
+    "label, template",
+    [
+        # Prose, not a tool block.
+        ("prose_only", "{{- 'You are a helpful assistant with access to tools.' }}"),
+        # Studio passes tools as a kwarg, not a message field.
+        (
+            "phi4_message_scoped",
+            "{% if message['role'] == 'system' and 'tools' in message"
+            " and message['tools'] is not none %}{{ message['tools'] }}{% endif %}",
+        ),
+        # Excluding tool turns is not handling them.
+        (
+            "negated_role_check",
+            "{% for m in messages %}{% if m.role != 'tool' %}{{ m.content }}"
+            "{% endif %}{% endfor %}",
+        ),
+        # The word in a Jinja comment is not a capability.
+        (
+            "tool_calls_in_comment",
+            "{# tool_calls are deliberately unsupported #}"
+            "{% for m in messages %}{{ m.content }}{% endfor %}",
+        ),
+        # Llama 3.1's other switches: neither renders a schema.
+        (
+            "adjacent_switch_names",
+            "{%- if builtin_tools %}{{- 'x' }}{%- endif %}"
+            "{%- if tools_in_user_message %}{{- 'y' }}{%- endif %}",
+        ),
+    ],
+)
+def test_detect_reasoning_flags_does_not_invent_tool_support(label, template):
+    from core.inference.llama_cpp import detect_reasoning_flags
+    flags = detect_reasoning_flags(template, f"vendor/{label}")
+    assert flags["supports_tools"] is False
+
+
 def test_detect_reasoning_flags_deepseek_v4_exposes_none_high_max():
     """DeepSeek-V4-Flash: enable_thinking gate + reasoning_effort 'max' preamble.
     Classified as the hybrid style with the full none/high/max ladder even
@@ -563,6 +629,50 @@ def test_detect_safetensors_features_qwen35_keeps_tools_on():
     assert flags["supports_tools"] is True
     assert flags["supports_reasoning"] is True
     assert flags["reasoning_style"] == "enable_thinking"
+
+
+# No tools and no reasoning, so features read from the shipped template cannot pass for it.
+_PLAIN_OVERRIDE = (
+    "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
+)
+_TOOLS_OVERRIDE = QWEN35_TOOL_INSTRUCTION + "{# override #}"
+_REFUSED = "it could not render a conversation"
+_TOOL = [{"type": "function"}]
+
+
+@pytest.mark.parametrize(
+    "shipped, override, reason, is_vision, tools, rendered, supports_tools",
+    [
+        (QWEN35_TOOL_INSTRUCTION, None, None, False, None, "shipped", True),
+        (QWEN35_TOOL_INSTRUCTION, "  ", None, False, None, "shipped", True),
+        (QWEN35_TOOL_INSTRUCTION, _PLAIN_OVERRIDE, _REFUSED, False, None, "shipped", True),
+        (QWEN35_TOOL_INSTRUCTION, _TOOLS_OVERRIDE, None, False, _TOOL, "override", True),
+        # A text model renders a tool turn the override drops through the shipped template.
+        (QWEN35_TOOL_INSTRUCTION, _PLAIN_OVERRIDE, None, False, _TOOL, "shipped", True),
+        (QWEN35_TOOL_INSTRUCTION, _PLAIN_OVERRIDE, None, False, None, "override", True),
+        (_PLAIN_OVERRIDE + "{# shipped #}", _PLAIN_OVERRIDE, None, False, _TOOL, "override", False),
+        # A vision model renders through the processor, which has no such fallback.
+        (QWEN35_TOOL_INSTRUCTION, _PLAIN_OVERRIDE, None, True, _TOOL, "override", False),
+        (QWEN35_TOOL_INSTRUCTION, _PLAIN_OVERRIDE, None, True, None, "override", False),
+    ],
+)
+def test_rendered_features_classify_the_template_generation_renders(
+    shipped, override, reason, is_vision, tools, rendered, supports_tools
+):
+    from routes.inference import _detect_safetensors_features, _sf_rendered_features
+
+    backend = SimpleNamespace(active_model_name = "mlx/model", models = {})
+    model_info = {
+        "is_vision": is_vision,
+        "chat_template_info": {"template": shipped},
+        "chat_template_override_requested": override,
+        "chat_template_override_reason": reason,
+    }
+    features, template = _sf_rendered_features(backend, model_info, tools = tools)
+    assert template == {"shipped": shipped, "override": override}[rendered]
+    expected = _detect_safetensors_features(backend, template, tools = tools)
+    assert features == dict(expected, supports_tools = supports_tools)
 
 
 # ── Tests: IPC bridge contract ───────────────────────────────────────

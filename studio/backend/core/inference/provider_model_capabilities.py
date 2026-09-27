@@ -75,3 +75,64 @@ def provider_model_capabilities(
         return []
     mapped = (openrouter_model_capabilities(m) for m in models if isinstance(m, dict))
     return [entry for entry in mapped if entry is not None]
+
+
+MODELS_DEV_URL = "https://models.dev/api.json"
+
+MODELS_DEV_PROVIDER_MAP = {
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "openrouter": "openrouter",
+    "google": "gemini",
+    "mistral": "mistral",
+    "deepseek": "deepseek",
+    "moonshotai": "kimi",
+    "cohere": "cohere",
+    "huggingface": "huggingface",
+    "alibaba": "qwen",
+    "ollama-cloud": "ollama",
+    "lmstudio": "lmstudio",
+}
+
+
+def _trim_models_dev_model(model: dict[str, Any]) -> dict[str, Any]:
+    entry: dict[str, Any] = {}
+    if model.get("reasoning") is True:
+        entry["reasoning"] = True
+    options = model.get("reasoning_options")
+    options = options if isinstance(options, list) else []
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        if option.get("type") == "effort":
+            efforts = _sorted_efforts(option.get("values"))
+            if efforts:
+                entry["efforts"] = efforts
+        elif option.get("type") == "toggle":
+            entry["toggle"] = True
+    modalities = model.get("modalities")
+    inputs = modalities.get("input") if isinstance(modalities, dict) else None
+    if isinstance(inputs, list) and inputs:
+        entry["input"] = [m for m in inputs if isinstance(m, str)]
+    # Total context window. The frontend merges this payload over its bundled snapshot per model,
+    # so a field missing here erases the bundled one. limit.input is the prompt share of the
+    # window and limit.output the completion cap, which max_output_tokens already carries.
+    limit = model.get("limit")
+    context = limit.get("context") if isinstance(limit, dict) else None
+    if isinstance(context, int) and not isinstance(context, bool) and context > 0:
+        entry["context"] = context
+    return entry
+
+
+def trim_models_dev_catalog(raw: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
+    catalog: dict[str, dict[str, dict[str, Any]]] = {}
+    for source, provider_type in MODELS_DEV_PROVIDER_MAP.items():
+        provider = raw.get(source)
+        models = provider.get("models") if isinstance(provider, dict) else None
+        if not isinstance(models, dict):
+            continue
+        bucket = catalog.setdefault(provider_type, {})
+        for model_id, model in models.items():
+            if isinstance(model_id, str) and model_id.strip() and isinstance(model, dict):
+                bucket[model_id.strip().lower()] = _trim_models_dev_model(model)
+    return catalog

@@ -132,4 +132,8 @@ def test_embedding_lr_without_embeddings_is_still_fine_off_the_delayed_path():
 
     plain = nn.Linear(8, 8, bias = False)
     optimizer = _create_unsloth_optimizer(plain, torch.optim.AdamW, {"lr": 1e-3}, 5e-5)
-    assert optimizer.param_groups[1]["params"] == []
+    # Asserted by meaning rather than by group index: empty groups are dropped, so
+    # there is no embedding group at all, and the one weight trains at the ordinary lr.
+    groups = optimizer.param_groups
+    assert [p for group in groups for p in group["params"]] == [plain.weight]
+    assert all(group["lr"] == 1e-3 for group in groups), groups

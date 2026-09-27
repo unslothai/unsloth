@@ -90,6 +90,33 @@ def _clear_flash_attn_parity_caches():
     ri._estimate_config_cache.clear()
 
 
+_RAGGED_SWA_FIELDS = {
+    "context_length": 131072,
+    "block_count": 30,
+    "attention.head_count": 16,
+    "attention.head_count_kv": 8,
+    "embedding_length": 2816,
+    "attention.key_length": 512,
+    "attention.value_length": 512,
+    "attention.key_length_swa": 256,
+    "attention.value_length_swa": 256,
+    "attention.sliding_window": 1024,
+    "attention.sliding_window_pattern": 6,
+}
+
+
+@pytest.fixture
+def ragged_swa_gguf(tmp_path):
+    """Gemma-class: the sliding-window layers carry a narrower V, padded to the model-wide
+    maximum when flash attention is off, so even an f16 cache moves with the state. A
+    quantized cache cannot serve here, because a quantized V forces flash attention on."""
+    fields = {"general.architecture": "gemma3"}
+    fields.update({f"gemma3.{k}": v for k, v in _RAGGED_SWA_FIELDS.items()})
+    path = tmp_path / "ragged-swa.gguf"
+    path.write_bytes(_make_gguf_bytes("gemma3", fields))
+    return str(path)
+
+
 @pytest.fixture
 def qwen3_shaped_gguf(tmp_path):
     # general.architecture goes in FIRST. The reader takes it before it knows which
@@ -383,3 +410,61 @@ def test_grok_is_priced_without_flash_attention(monkeypatch, qwen3_shaped_gguf):
 
     monkeypatch.setattr(ri.LlamaCppBackend, "_read_gguf_metadata", read_as_grok)
     assert _runtime(qwen3_shaped_gguf) == off
+
+
+def test_the_admission_estimate_keeps_the_no_flash_reserve(monkeypatch, ragged_swa_gguf):
+    """``_estimate_gguf_kv_gb`` feeds the active-training admission guard, and ``load_model``
+    holds the reading down through ``_reserved_flash_attn_state`` where a flash-attention-off
+    respawn cannot be re-placed. Resolving only the plan here admitted a load against the
+    smaller cache that the same placement then reserves the larger one for, so the respawn
+    could take VRAM the guard never admitted and take a training run with it.
+
+    A ragged-SWA shape with an f16 cache: a quantized V forces flash attention on, and an
+    equal-width f16 cache does not move with the state, so on either of those the control
+    below could not fail."""
+    monkeypatch.delenv("LLAMA_ARG_FLASH_ATTN", raising = False)
+    monkeypatch.delenv("LLAMA_ARG_FIT", raising = False)
+    monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS", raising = False)
+    _flash_attn_caps(monkeypatch, True)
+
+    def kv(extras = None, tensor_parallel = False):
+        return ri._gguf_runtime_bytes(
+            ragged_swa_gguf,
+            32768,
+            extras,
+            1,
+            "f16",
+            tensor_parallel,
+            reserve_no_flash_respawn = True,
+        ).kv_bytes
+
+    def panel(extras = None):
+        """What the panel shows: the plan, not the reserve."""
+        return ri._gguf_runtime_bytes(ragged_swa_gguf, 32768, extras, 1, "f16", False).kv_bytes
+
+    managed = kv()
+    priced_off = kv(["--flash-attn", "off"])
+    # The control: the two readings really do differ on this shape, or nothing below holds.
+    assert priced_off > managed
+
+    # A user's own --fit off, and the environment spelling of it: both take away the
+    # re-placement, so both keep the conservative reserve.
+    assert kv(["--fit", "off"]) == priced_off
+    monkeypatch.setenv("LLAMA_ARG_FIT", "off")
+    assert kv() == priced_off
+    monkeypatch.delenv("LLAMA_ARG_FIT")
+
+    # A fixed layer count is the other fitter-proof placement.
+    assert kv(["-ngl", "99"]) == priced_off
+
+    # An ordinary managed placement keeps the launch price: the fitter re-places the
+    # respawn, so reserving for it would refuse contexts that fit.
+    assert kv() == managed
+
+    # Tensor mode is exempt, because llama.cpp has no flash-attention-off respawn there.
+    assert kv(["--fit", "off"], tensor_parallel = True) == managed
+
+    # And the panel is untouched: its total is what the launch uses, and an existing pin
+    # holds it placement-independent (test_memory_estimate's extras -ngl case).
+    assert panel(["--fit", "off"]) == panel()
+    assert panel(["-ngl", "99"]) == panel()

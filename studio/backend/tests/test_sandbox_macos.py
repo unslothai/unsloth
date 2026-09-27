@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the macOS Seatbelt profile generator, asserting on the profile TEXT.
-
-``os.path.exists`` and ``os.path.isdir`` are stubbed for exactly two paths so the
-dual-spelling assertions get a ``/tmp``-rooted workdir without creating one.
-"""
+"""Tests for the macOS Seatbelt profile generator, asserting on the profile TEXT."""
 
 from __future__ import annotations
 
@@ -32,7 +28,6 @@ _WORKDIR = "/tmp/unsloth-session-abc123"
 _PRIVATE_TMP = "/tmp/us-seatbelt-xyz789"
 _READ_PREFIX = '(allow file-read* file-test-existence (literal "/") '
 _OPTIONAL_PREFIX = '(allow file-read* file-test-existence (literal "/etc/gitconfig")'
-# The devices rule and the /dev/fd regex rules share the file-write* operation.
 _WRITE_PREFIX = "(allow file-write* (literal "
 
 
@@ -105,8 +100,7 @@ def test_every_rule_is_a_balanced_s_expression(profile):
 
 
 def test_login_keychain_mach_service_is_absent(profile):
-    """com.apple.SecurityServer would make the login Keychain readable through
-    Security.framework. TLS uses trustd and ocspd, not it."""
+    """com.apple.SecurityServer would make the login Keychain readable through Security.framework."""
     assert "com.apple.SecurityServer" not in profile
     assert "com.apple.SecurityServer" not in backend._MACH_SERVICES
     assert 'com.apple.trustd"' in profile
@@ -151,21 +145,16 @@ def test_optional_literals_are_allowed_even_though_they_do_not_exist(profile):
     for path in backend._OPTIONAL_READ_LITERALS:
         assert path in literals, f"{path} lost its unconditional read allowance"
     assert {"/private/etc/gitconfig", "/private/etc/gitattributes"} <= literals
-    # At least one does not exist here, so the existence-filtered path rules
-    # could not have carried it.
     absent = [path for path in backend._OPTIONAL_READ_LITERALS if not os.path.exists(path)]
     assert absent, "no optional literal is absent here, so this test proved nothing"
 
 
 def test_optional_read_literals_never_follow_a_symlink(tmp_path):
-    """Read literals must not resolve: an /etc/gitconfig symlinked at ~/dotfiles
-    would put a home path in the read set. Denials still resolve."""
+    """Read literals must not resolve: an /etc/gitconfig symlinked at ~/dotfiles would put a home path in the read set."""
     target = tmp_path / "secret"
     target.write_text("")
     link = tmp_path / "link"
     link.symlink_to(target)
-    # The target's absence is the assertion, not an exact list: _sbpl_spellings
-    # emits the /private pair on both platforms, so the spelling is never alone.
     unresolved = backend._literal_filters((str(link),), resolve = False)
     assert f'(literal "{link}")' in unresolved
     assert not any(str(target) in filter_ for filter_ in unresolved), unresolved
@@ -183,12 +172,10 @@ def test_ancestor_metadata_rules_are_emitted(profile):
         "/etc",
         "/private/etc",
         "/usr/local/etc",
-        # Resolving mDNSResponder's socket for connect() walks these first.
         "/var/run",
         "/private/var/run",
     ):
         assert ancestor in metadata, f"{ancestor} has no file-read-metadata rule"
-    # Metadata only: an ancestor must not become readable or listable.
     assert not _subpaths(metadata_rule)
 
 
@@ -201,8 +188,7 @@ def test_workdir_and_private_tmp_are_the_only_writable_subpaths(profile):
 
 
 def test_no_read_root_reaches_the_users_home(profile):
-    """Asserted against the tables, not the profile text: the read roots are
-    existence-filtered and mostly vanish on a non-macOS host."""
+    """Asserted against the tables, not the profile text: the read roots are existence-filtered and mostly vanish on a non-macOS host."""
     home = str(Path.home())
     assert f'(subpath "{home}")' not in profile
     assert "/Users/" not in profile
@@ -215,7 +201,6 @@ def test_no_read_root_reaches_the_users_home(profile):
     for path in tables:
         assert not path.startswith("/Users/"), path
         assert "~" not in path, path
-    # SYSTEM keychains only; the login one is under the unreadable home.
     assert "/System/Library/Keychains" in backend._TLS_TRUST_PATHS
     assert not any("Library/Keychains" in path and path.startswith(home) for path in tables)
 
@@ -224,20 +209,16 @@ def test_ip_egress_is_unrestricted_but_unix_sockets_are_not(profile):
     lines = profile.splitlines()
     for rule in ("(allow system-socket)", "(allow network-inbound)"):
         assert rule in lines
-    # Neither direction may be unconditional: an unfiltered grant covers AF_UNIX.
     assert "(allow network-outbound)" not in lines
     assert "(allow network-bind)" not in lines
     assert '(allow network-outbound (remote ip "*:*"))' in lines
     assert '(allow network-bind (local ip "*:*"))' in lines
     assert "localhost" not in profile
     assert "proxy" not in profile.lower()
-    # connect()/bind() on a unix socket is network-outbound / network-bind, not a
-    # file operation, so multiprocessing needs its own rule.
     for root in (_PRIVATE_TMP, _WORKDIR):
         for path in (root, f"/private{root}"):
             assert f'(allow network-outbound (remote unix-socket (subpath "{path}")))' in lines
             assert f'(allow network-bind (local unix-socket (subpath "{path}")))' in lines
-    # Both spellings for the DNS socket: no test here can pick the right one.
     assert '(allow network-outbound (literal "/private/var/run/mDNSResponder")' in profile
     assert "(allow network-outbound (remote unix-socket (literal " in profile
     for path in ("/var/run/mDNSResponder", "/private/var/run/mDNSResponder"):
@@ -247,8 +228,7 @@ def test_ip_egress_is_unrestricted_but_unix_sockets_are_not(profile):
 
 
 def test_process_substitution_descriptors_are_readable(profile):
-    """bash process substitution hands the child /dev/fd/63, so narrowing the rule
-    to 0, 1 and 2 fails a command that works everywhere else."""
+    """bash process substitution hands the child /dev/fd/63, so narrowing the rule to 0, 1 and 2 fails a command that works everywhere else."""
     assert '(allow file-read* (regex #"^/dev/fd/[0-9]+$"))' in profile
     assert '(allow file-write* (regex #"^/dev/fd/[0-9]+$"))' in profile
 
@@ -279,12 +259,8 @@ def test_sysctl_and_shm_rules_survive(profile):
 
 def test_runtime_read_paths_cover_the_interpreter_and_the_site_shim():
     paths = backend.runtime_read_paths()
-    # normpath, because ``backend.__file__`` carries whatever spelling first
-    # imported the module, so a direct comparison passes or fails on import order.
     shim = os.path.normpath(os.path.join(os.path.dirname(backend.__file__), "sandbox_site"))
     assert shim in paths
-    # "/" or "/usr" as a read root hands back most of the host, so a system
-    # interpreter reporting one as its prefix must be dropped.
     assert "/" not in paths and "/usr" not in paths
     for prefix in (sys.prefix, sys.exec_prefix, sys.base_prefix, sys.base_exec_prefix):
         for name in ("bin", "lib"):
@@ -292,8 +268,6 @@ def test_runtime_read_paths_cover_the_interpreter_and_the_site_shim():
             if not os.path.isdir(member):
                 continue
             assert any(backend._within(member, root) for root in paths), member
-    # lib-dynload hangs off the exec pair, which a uv interpreter spells through
-    # an alias symlink base_prefix alone never names.
     dynload = os.path.join(
         sys.base_exec_prefix,
         "lib",
@@ -416,8 +390,6 @@ def test_available_never_raises_on_a_host_without_the_launcher():
         assert backend.SANDBOX_EXEC in reason
 
 
-# Everything above asserts on text; none of it proves the kernel accepts it.
-
 _darwin_only = pytest.mark.skipif(
     sys.platform != "darwin" or not os.path.exists(backend.SANDBOX_EXEC),
     reason = "needs a real macOS host: only a Darwin kernel can compile or enforce an SBPL profile",
@@ -441,8 +413,7 @@ def test_profile_compiles_under_sandbox_exec(tmp_path):
 
 @_darwin_only
 def test_home_is_unreadable_inside_the_sandbox(tmp_path):
-    """The file is created and proven readable on the host first: a read that fails
-    for an unrelated reason proves nothing."""
+    """The file is created and proven readable on the host first: a read that fails for an unrelated reason proves nothing."""
     workdir = tmp_path / "session"
     workdir.mkdir()
     canary = Path(os.path.expanduser("~")) / ".unsloth-seatbelt-canary"
@@ -485,7 +456,6 @@ def test_a_runtime_path_symlinked_out_of_the_workdir_is_not_readable(monkeypatch
     paths = backend.runtime_read_paths(str(workdir))
     assert str(secret) not in paths
     assert not any(backend._within(str(secret), path) for path in paths)
-    # Asserted so the workdir parameter cannot be dropped silently.
     assert str(secret) in backend.runtime_read_paths()
 
 
@@ -540,8 +510,7 @@ def test_a_runtime_under_the_workdir_is_denied_write_after_the_allowance(tmp_pat
 
 
 def test_no_write_denial_is_emitted_when_the_runtime_is_outside_the_workdir(tmp_path, monkeypatch):
-    """The negative control: the rule above must not fire for an ordinary layout,
-    where denying anything under the workdir would take away the one writable place."""
+    """The negative control: the rule above must not fire for an ordinary layout, where denying anything under the workdir would take away the one writable place."""
     workdir = tmp_path / "session"
     workdir.mkdir()
     monkeypatch.setattr(sys, "prefix", "/usr")
@@ -557,8 +526,6 @@ def test_the_openssl_directory_is_granted_by_component_not_whole(profile):
                 continue
             assert f'(subpath "{spelling}")' not in line, line
             assert f'(literal "{spelling}")' not in line, line
-    # The components are optional paths, dropped from the profile on a host that
-    # lacks them, so the trust list itself is what carries the assertion.
     assert "/private/etc/ssl" not in backend._TLS_TRUST_PATHS
     for component in ("cert.pem", "certs", "openssl.cnf"):
         assert f"/private/etc/ssl/{component}" in backend._TLS_TRUST_PATHS
@@ -576,8 +543,6 @@ def test_a_toolchain_directory_the_user_can_write_is_not_trusted(tmp_path):
     missing_file = tmp_path / "Developer"
     missing_file.write_text("", encoding = "utf-8")
     assert backend._trusted_system_dir(str(missing_file)) is False
-    # The positive control, so the check above is not passing because it always
-    # says no: a root-owned system directory is accepted.
     assert backend._trusted_system_dir("/usr") is True
 
 
@@ -629,7 +594,6 @@ def test_a_runtime_under_a_symlinked_workdir_is_denied_through_both_spellings(
     deny = _rule(profile, "(deny file-write* ")
     for spelling in (real / "venv" / "lib", alias / "venv" / "lib"):
         assert f'(subpath "{spelling}")' in deny, deny
-    # Last-match-wins, so the denial is worthless before the allowance.
     lines = profile.splitlines()
     assert lines.index(_rule(profile, _WRITE_PREFIX)) < lines.index(deny)
 
@@ -658,11 +622,7 @@ def test_an_optional_search_root_that_resolves_out_of_its_prefix_is_dropped(monk
     monkeypatch.setattr(os.path, "realpath", resolves_home)
     kept = backend._contained_optional_roots()
     assert "/usr/local/bin" not in kept
-    # The positive control: the siblings are untouched, so this is not passing by
-    # dropping everything.
     assert "/opt/homebrew/bin" in kept and "/usr/local/lib" in kept
-    # Through the profile as well, since the filter is worth nothing if
-    # build_profile still reaches for the unfiltered list.
     named = {"/usr/local/bin", _WORKDIR, _PRIVATE_TMP}
     real_isdir, real_exists = os.path.isdir, os.path.exists
     monkeypatch.setattr(os.path, "isdir", lambda path: path in named or real_isdir(path))
@@ -774,7 +734,6 @@ def test_a_path_with_a_control_byte_is_refused(tmp_path):
     for control in ("\x0c", "\x01", "\x7f"):
         with pytest.raises(SandboxUnavailableError, match = "control characters"):
             backend._validated(f"/tmp/session{control}x")
-    # The positive control: an ordinary accented path is still accepted.
     assert backend._validated("/tmp/session-café") == "/tmp/session-café"
 
 
@@ -801,7 +760,170 @@ def test_a_runtime_is_denied_when_sys_prefix_carries_the_workdir_alias(tmp_path,
 def test_a_path_that_cannot_be_encoded_is_refused_rather_than_carried():
     with pytest.raises(SandboxUnavailableError, match = "encodable as UTF-8"):
         backend._validated("/tmp/session-\udcff")
-    # The positive control: an ordinary accented path is NOT refused, or this
-    # guard would be undoing the fix it is protecting.
     assert backend._validated("/tmp/session-café") == "/tmp/session-café"
     assert "\\u00" not in backend._sbpl_string("/tmp/session-café")
+
+
+def test_studio_state_under_an_optional_read_root_is_denied(monkeypatch, tmp_path):
+    """A Homebrew-prefixed Studio home is inside a recursive read root."""
+    from core.inference import sandbox_macos
+
+    state = tmp_path / "Cellar" / "unsloth-studio"
+    (state / "auth").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    rules = sandbox_macos._studio_state_rules((), (), str(tmp_path / "work"), str(tmp_path / "tmp"))
+
+    assert rules, "no rule was emitted for a Studio home inside a read root"
+    assert rules[0].startswith("(deny file-read-data")
+    assert str(state) in rules[0]
+
+
+def test_a_studio_home_that_does_not_exist_yet_is_still_denied(monkeypatch, tmp_path):
+    """Measured on macos-15/26: with no Studio home the probe raised 'no paths survived' and never isolated."""
+    from core.inference import sandbox_macos
+
+    state = tmp_path / "not-created-yet" / "studio"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    rules = sandbox_macos._studio_state_rules((), (), str(tmp_path / "work"), str(tmp_path / "tmp"))
+
+    assert rules and rules[0].startswith("(deny file-read-data")
+    assert f'(subpath "{state}")' in rules[0]
+
+
+def test_the_runtime_inside_a_custom_studio_home_is_restored(monkeypatch, tmp_path):
+    """A blanket deny would break a custom-home install: the managed venv lives under the Studio root, so the interpreter itself would stop being readable."""
+    from core.inference import sandbox_macos
+
+    state = tmp_path / "studio"
+    venv = state / "unsloth_studio" / "lib"
+    venv.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    rules = sandbox_macos._studio_state_rules(
+        (str(venv),), (), str(tmp_path / "work"), str(tmp_path / "tmp")
+    )
+
+    assert len(rules) == 2, "the runtime under the Studio home was not restored"
+    assert rules[1].startswith("(allow file-read*")
+    assert str(venv) in rules[1]
+
+
+def test_the_studio_state_deny_keeps_path_traversal_working(monkeypatch, tmp_path):
+    """The workdir lives under the Studio root on a default install."""
+    from core.inference import sandbox_macos
+
+    state = tmp_path / "studio"
+    (state / "auth").mkdir(parents = True)
+    workdir = state / "sandbox" / "_default"
+    workdir.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    rules = sandbox_macos._studio_state_rules((), (), str(workdir), str(tmp_path / "tmp"))
+
+    assert rules[0].startswith("(deny file-read-data"), rules[0][:60]
+    assert "file-read-metadata" not in rules[0]
+    assert "file-test-existence" not in rules[0]
+    assert "file-read-data" in rules[0]
+    assert str(state) in rules[0]
+
+
+def test_the_workdir_under_the_studio_home_is_restored_for_the_operation_the_deny_names(
+    monkeypatch, tmp_path
+):
+    """Measured on macos-15: a later (allow file-read* ...) loses to (deny file-read-data ...), so every Python call in the default workdir failed with Operation not permitted."""
+    from core.inference import sandbox_macos
+
+    state = tmp_path / "studio"
+    workdir = state / "sandbox" / "_default"
+    workdir.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    deny, restore = sandbox_macos._studio_state_rules((), (), str(workdir), str(tmp_path / "tmp"))
+
+    denied = deny[1:].split(" (", 1)[0].split()[1:]
+    restored = restore[1:].split(" (", 1)[0].split()[1:]
+    assert restore.startswith("(allow ")
+    assert set(denied) <= set(restored), (denied, restored)
+    assert str(workdir) in restore
+
+
+def test_a_registered_model_folder_is_readable(monkeypatch, tmp_path):
+    """The approval gate treats registered model folders as read-silent, so a read from one never prompts."""
+    from core.inference import os_sandbox, sandbox_macos
+
+    library = tmp_path / "models"
+    library.mkdir()
+    monkeypatch.setattr(sandbox_macos, "model_library_roots", lambda: (str(library),))
+    monkeypatch.setattr(os_sandbox, "model_library_roots", lambda: (str(library),))
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    private_tmp = tmp_path / "tmp"
+    private_tmp.mkdir()
+
+    profile = sandbox_macos.build_profile(
+        workdir = str(workdir),
+        private_tmp = str(private_tmp),
+        runtime_paths = (),
+    )
+
+    assert str(library) in profile
+
+
+@_darwin_only
+def test_a_hard_link_to_a_readable_file_cannot_be_created_in_the_workdir(tmp_path, monkeypatch):
+    """The workdir is writable and the model folders are readable, both on one volume."""
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    library = tmp_path / "library"
+    library.mkdir()
+    external = library / "weights.bin"
+    external.write_text("UNSLOTH_EXTERNAL_INODE", encoding = "utf-8")
+    monkeypatch.setattr(backend, "model_library_roots", lambda: (str(library),))
+
+    control = workdir / "host-alias"
+    os.link(external, control)
+    assert control.stat().st_ino == external.stat().st_ino, (
+        "the host could not hard-link across these two paths, so the negative "
+        "control below would prove nothing"
+    )
+    control.unlink()
+
+    argv = ("/bin/ln", str(external), str(workdir / "alias"))
+    prepared = backend.prepare(
+        ToolLaunchPlan(argv = argv, workdir = str(workdir), env = {"PATH": "/usr/bin:/bin"})
+    )
+    try:
+        result = subprocess.run(
+            prepared.argv, capture_output = True, text = True, timeout = 60, check = False
+        )
+    finally:
+        prepared.cleanup()
+
+    assert result.returncode != 0, (
+        "a hard link to a readable file outside the workdir was created inside it, "
+        "so a tool can write to that file through the alias"
+    )
+    assert not (workdir / "alias").exists()
+
+
+def test_a_workdir_spelled_differently_from_the_studio_home_is_still_readable(
+    monkeypatch, tmp_path
+):
+    """The deny rules are emitted in every spelling a path has, so the restore list has to be built the same way."""
+    real_home = tmp_path / "private" / "studio-home"
+    workdir = real_home / "sandbox" / "_default"
+    workdir.mkdir(parents = True)
+    (tmp_path / "alias").symlink_to(tmp_path / "private")
+    aliased_home = tmp_path / "alias" / "studio-home"
+
+    monkeypatch.setattr(backend, "studio_state_roots", lambda: (str(aliased_home),))
+
+    rules = backend._studio_state_rules((), (), str(workdir.resolve()), "")
+
+    assert rules, "the state deny was not emitted, so this test proves nothing"
+    restored = [rule for rule in rules if rule.startswith("(allow")]
+    assert restored, "the workdir under the Studio home was never restored"
+    assert any(str(workdir.resolve()) in rule for rule in restored)

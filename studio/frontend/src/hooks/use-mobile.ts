@@ -36,3 +36,22 @@ export function useIsMobile(): boolean {
 export function useIsMobileShell(): boolean {
   return useIsMobile() && !isTauri;
 }
+
+const COMPACT_QUERY = "(max-width: 1023px)";
+
+function getCompactSnapshot(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia(COMPACT_QUERY).matches;
+}
+
+function subscribeCompact(callback: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const mql = window.matchMedia(COMPACT_QUERY);
+  mql.addEventListener("change", callback);
+  return () => mql.removeEventListener("change", callback);
+}
+
+/** Below lg: too narrow to dock a side panel, so panels overlay instead. */
+export function useIsCompact(): boolean {
+  return useSyncExternalStore(subscribeCompact, getCompactSnapshot, () => false);
+}

@@ -11,7 +11,7 @@ set -euo pipefail
 # CUDA tool selection reads the venv. Fatal on failure (a half-linked home); no-op on the base image.
 if [[ -x /usr/local/bin/unsloth-studio-home ]]; then
     /usr/local/bin/unsloth-studio-home || {
-        echo "ERROR: could not link Studio's code into ${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}; see the messages above" >&2
+        echo "ERROR: could not link Unsloth Studio's code into ${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}; see the messages above" >&2
         exit 1
     }
 fi
@@ -100,7 +100,7 @@ fi
 
 if [[ "${has_gpu}" == "0" && "${allow_cpu}" == "1" ]]; then
     warn "UNSLOTH_ALLOW_CPU=1 and no GPU visible -- continuing on CPU."
-    warn "CPU mode covers Jupyter, GGUF tooling and llama.cpp (GGUF) Studio chat."
+    warn "CPU mode covers Jupyter, GGUF tooling and llama.cpp (GGUF) Unsloth Studio chat."
     warn "Training and loading Unsloth models (FastLanguageModel) still require an NVIDIA GPU."
     sync_notebooks
     exec "$@"
@@ -133,7 +133,7 @@ Likely causes (in order of frequency):
 
   5. This host has no NVIDIA GPU at all (Docker Desktop on macOS, Windows
      without WSL2 GPU support, CPU-only Linux). Training and loading Unsloth
-     models need a GPU, but Jupyter, GGUF tooling and llama.cpp (GGUF) Studio
+     models need a GPU, but Jupyter, GGUF tooling and llama.cpp (GGUF) Unsloth Studio
      chat work on CPU:
        docker run -e UNSLOTH_ALLOW_CPU=1 ...
 
@@ -214,7 +214,7 @@ if [ "$(uname -m)" = "aarch64" ]; then
             if [ "$_drv_major" -lt 580 ]; then
                 echo "WARNING: this arm64 image bakes a CUDA 13 llama.cpp (upstream ships no CUDA 12 arm64 build)." >&2
                 echo "         Host driver $_drv is < 580, which cannot load CUDA 13 binaries:" >&2
-                echo "         training (torch cu128) works, but GGUF export / Studio chat will fail" >&2
+                echo "         training (torch cu128) works, but GGUF export / Unsloth Studio chat will fail" >&2
                 echo "         until the host driver is upgraded to >= 580." >&2
             fi
             ;;
