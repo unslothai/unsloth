@@ -1243,7 +1243,16 @@ def _fuse_qkv(pipe: Any, logger: Any) -> bool:
     fn = getattr(pipe, "fuse_qkv_projections", None)
     if callable(fn):
         try:
+            vae = getattr(pipe, "vae", None)
+            fused_vae_attn = callable(getattr(vae, "modules", None)) and any(
+                type(getattr(m, "processor", None)).__name__ == "FusedSingleHeadProcessor"
+                for m in vae.modules()
+            )
             fn()
+            if fused_vae_attn:  # the pipe-level fuse resets every VAE processor to FusedAttnProcessor2_0
+                from . import diffusion_vae_fused  # noqa: PLC0415
+
+                diffusion_vae_fused.install_attention_processors(vae)
             return True
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "fuse_qkv_projections", exc)

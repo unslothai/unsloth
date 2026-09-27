@@ -534,3 +534,35 @@ def test_causal_cache_is_a_compact_two_frame_copy(frames):
     assert torch.allclose(out, ref, atol = 1e-5)
     assert torch.equal(new, stock)
     assert new.untyped_storage().nbytes() == new.numel() * new.element_size()
+
+
+def test_pipeline_qkv_fuse_keeps_the_fused_vae_attention():
+    # SDXL's pipe-level fuse_qkv_projections() resets every VAE processor; the fused one must be re-wrapped around it
+    diffusers = pytest.importorskip("diffusers")
+    from diffusers.models.attention_processor import FusedAttnProcessor2_0
+    from diffusers.pipelines.pipeline_utils import StableDiffusionMixin
+
+    from core.inference import diffusion_speed as S
+
+    torch.manual_seed(0)
+    vae = diffusers.AutoencoderKL(
+        block_out_channels = (32,), down_block_types = ("DownEncoderBlock2D",), up_block_types = ("UpDecoderBlock2D",),
+        latent_channels = 4, norm_num_groups = 32, layers_per_block = 1,
+    ).eval()  # fmt: skip
+    unet = diffusers.UNet2DConditionModel(
+        block_out_channels = (32, 64), layers_per_block = 1, sample_size = 8, in_channels = 4, out_channels = 4,
+        down_block_types = ("DownBlock2D", "CrossAttnDownBlock2D"), up_block_types = ("CrossAttnUpBlock2D", "UpBlock2D"),
+        cross_attention_dim = 32, norm_num_groups = 32,
+    ).eval()  # fmt: skip
+
+    class Pipe(StableDiffusionMixin):
+        pass
+
+    pipe = Pipe()
+    pipe.vae, pipe.unet = vae, unet
+    assert F.install_attention_processors(vae) > 0
+    assert S._fuse_qkv(pipe, None) is True
+    procs = [m.processor for m in vae.modules() if type(m).__name__ == "Attention"]
+    assert procs and all(isinstance(p, F.FusedSingleHeadProcessor) for p in procs)
+    assert all(isinstance(p.fallback, FusedAttnProcessor2_0) for p in procs)
+    assert all(isinstance(p, FusedAttnProcessor2_0) for p in unet.attn_processors.values())
