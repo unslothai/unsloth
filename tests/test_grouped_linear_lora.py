@@ -8,7 +8,6 @@ peft = pytest.importorskip("peft")
 
 
 class GroupedLinear(torch.nn.Linear):
-
     def __init__(self, in_per_group, out_features, n_groups):
         super().__init__(in_per_group, out_features, bias = False)
         self.n_groups = n_groups

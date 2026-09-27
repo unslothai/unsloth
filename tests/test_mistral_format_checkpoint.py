@@ -24,7 +24,6 @@ def test_params_json_without_config_json_is_mistral_format(tmp_path):
 
 def test_a_params_json_without_a_mistral_marker_is_not_claimed(tmp_path):
     from unsloth.models.loader import _is_mistral_format_checkpoint
-
     assert (
         _is_mistral_format_checkpoint(
             _write(tmp_path, ["params.json", "consolidated.00.pth", "tokenizer.model"])

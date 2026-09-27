@@ -91,9 +91,7 @@ def test_the_defect_before_the_shim(model):
 def test_accessor_serves_both_contracts_after_the_shim(model):
     from unsloth.models.remote_code_shims import apply_remote_code_shims
 
-    apply_remote_code_shims(
-        model
-    )
+    apply_remote_code_shims(model)
     assert Inner._unsloth_original_get_input_embeddings is not None
     assert model.get_input_embeddings() is model.model.embed_tokens
     assert model.model.get_input_embeddings() is model.model.embed_tokens
@@ -150,7 +148,6 @@ def test_a_forward_that_returns_its_own_loss_is_left_alone():
 
 
 def test_a_tuple_output_with_its_own_loss_is_left_alone():
-
     class TupleGood(Outer):
         def forward(
             self,
@@ -174,7 +171,6 @@ def test_a_tuple_output_with_its_own_loss_is_left_alone():
 
 @pytest.mark.parametrize("healthy_first", [True, False])
 def test_loss_support_is_decided_per_instance(healthy_first):
-
     class Mixed(Outer):
         def forward(
             self,
