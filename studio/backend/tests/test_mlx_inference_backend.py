@@ -4928,7 +4928,8 @@ JSON_SCHEMA_FORMAT = {"type": "json_schema", "schema": SCHEMA}
 
 def _char_tokenizer(*extra_specials, markers_are_special = False):
     """A character-level fast tokenizer with ``</think>`` as an added token."""
-    pytest.importorskip("llguidance")
+    if not gc.LLGUIDANCE_AVAILABLE:
+        pytest.skip("llguidance.mlx did not import")
     tk = pytest.importorskip("tokenizers")
     transformers = pytest.importorskip("transformers")
 
@@ -4954,9 +4955,17 @@ def tiny_tokenizer():
     return _char_tokenizer()
 
 
+def _metal_mx():
+    """mlx.core where Metal runs: llguidance.mlx applies its bitmask with a Metal kernel."""
+    mx = pytest.importorskip("mlx.core")
+    if not mx.metal.is_available():
+        pytest.skip("llguidance.mlx masks with a Metal kernel")
+    return mx
+
+
 def _allowed(constraint, width):
     """Token ids the constraint permits at the current step, over a logits row that wide."""
-    mx = pytest.importorskip("mlx.core")
+    mx = _metal_mx()
     masked = np.asarray(constraint.mask_logits(mx.zeros((width,), dtype = mx.float32)))
     return set(np.nonzero(~np.isneginf(masked))[0].tolist())
 
@@ -5092,6 +5101,7 @@ class _Recorder:
 def test_the_grammar_mask_runs_first_and_its_inf_survives_every_knob():
     """The mask leads the chain, and nothing below it can restore a masked token."""
     mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_lm")
     from core.inference.mlx_inference import _mlx_sampling_processors
 
     class _MaskOdd(_Recorder):
