@@ -110,6 +110,13 @@ const ROW_MENU = readFileSync(
   ),
   "utf-8",
 );
+// "Open chat folder", now drawn by the Library's chat menu, not the sidebar.
+const OPEN_CHAT_FOLDER = readFileSync(
+  fileURLToPath(
+    new URL("../src/features/chat/components/open-chat-folder-item.tsx", import.meta.url),
+  ),
+  "utf-8",
+);
 const PROJECTS_PAGE = readFileSync(
   fileURLToPath(new URL("../src/features/chat/projects-page.tsx", import.meta.url)),
   "utf-8",
@@ -146,7 +153,8 @@ test("one thread that outlived a move counts as two folders, not one", () => {
     /recorded\.push\(\n\s*\.\.\.allRecordedSandboxSessionIds\(await listStoredChatMessages\(threadId\)\),\n\s*\);/,
   );
   // Every action refuses on more than one, rather than picking a folder.
-  assert.equal(SIDEBAR.split("distinct.length > 1").length - 1, 2);
+  assert.equal(SIDEBAR.split("distinct.length > 1").length - 1, 1);
+  assert.equal(OPEN_CHAT_FOLDER.split("distinct.length > 1").length - 1, 1);
   assert.equal(PROJECTS_PAGE.split("distinct.length > 1").length - 1, 1);
 });
 
@@ -224,11 +232,13 @@ test("both the folder and the session id are answered from the same probe", () =
   // Copy session id answered a legacy chat that had since joined a project with
   // project-<id>, a folder it had never written to, and called it a success.
   const callers = SIDEBAR.match(/await sandboxSessionIdsHolding\(/g) ?? [];
-  assert.equal(callers.length, 2);
-  for (const action of ["copyChatSessionId", "Open chat folder"]) {
-    const at = SIDEBAR.indexOf(action);
-    assert.notEqual(at, -1, `${action} moved`);
-  }
+  assert.equal(callers.length, 1);
+  assert.notEqual(SIDEBAR.indexOf("copyChatSessionId"), -1, "copyChatSessionId moved");
+  assert.equal(
+    (OPEN_CHAT_FOLDER.match(/await sandboxSessionIdsHolding\(/g) ?? []).length,
+    1,
+  );
+  assert.notEqual(OPEN_CHAT_FOLDER.indexOf("Open chat folder"), -1);
   // The Projects page draws the same action, and reads it from the same probe.
   assert.equal(
     (PROJECTS_PAGE.match(/await sandboxSessionIdsHolding\(/g) ?? []).length,

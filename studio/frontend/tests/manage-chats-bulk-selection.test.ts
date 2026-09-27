@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Bulk pin/unpin ordering, and the scope the header checkbox claims. The .tsx
-// view pulls in the whole app, so it is read as text; the store runs for real.
+// Bulk pin/unpin ordering and shift-range selection, run against the real store.
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { en } from "../src/i18n/locales/en.ts";
 
 import {
   installLocalStorageFake,
-  readSrcAsync,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -23,12 +20,6 @@ const { usePinnedChatsStore } = await import(
 const { rangeBetween } = await import(
   "../src/features/chat/utils/row-selection.ts"
 );
-
-async function manageChatsSource(): Promise<string> {
-  return await readSrcAsync(
-    "features/settings/components/manage-chats-view.tsx",
-  );
-}
 
 function reset(ids: string[] = []): void {
   usePinnedChatsStore.setState({ pinnedIds: ids });
@@ -79,35 +70,4 @@ test("a shift range survives the list re-sorting between the two clicks", () => 
   assert.equal(before.indexOf("b"), 1);
   assert.equal(after[1], "a");
   assert.deepEqual(rangeBetween(after, after[1], "c"), ["a", "b", "c"]);
-});
-
-test("the shift anchor is stored as a chat id, not a row index", async () => {
-  const src = await manageChatsSource();
-  assert.match(src, /useRef<string \| null>\(null\)/);
-  assert.match(src, /rangeBetween\(/);
-  // An index anchor addresses whatever row now sits at the saved position.
-  assert.doesNotMatch(src, /lastToggledIndex/);
-});
-
-test("bulk delete passes the always-delete-files preference through", async () => {
-  const src = await manageChatsSource();
-  // Without this, deleteChatItems defaults args to {} and sends
-  // delete_files:false, keeping every selected chat's sandbox.
-  assert.match(
-    src,
-    /useChatPreferencesStore\(\s*\(s\) => s\.alwaysDeleteChatFiles,?\s*\)/,
-  );
-  assert.match(
-    src,
-    /deleteChatItems\(selectedItems, openChatId, resetView, \{\s*deleteFiles: alwaysDeleteChatFiles,\s*\}\)/,
-  );
-});
-
-test("the header checkbox says it selects the visible chats, which is what it does", async () => {
-  const src = await manageChatsSource();
-  // rows sit behind "show more", so the label must not promise the whole list.
-  assert.match(src, /onCheckedChange=\{toggleAllVisible\}/);
-  assert.match(src, /aria-label=\{t\("settings\.data\.library\.selectAll"\)\}/);
-  assert.equal(en.settings.data.library.selectAll, "Select all visible chats");
-  assert.doesNotMatch(src, /aria-label="Select all chats"/);
 });

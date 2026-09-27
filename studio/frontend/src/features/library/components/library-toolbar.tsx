@@ -28,17 +28,18 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { type TranslationKey, useT } from "@/i18n";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowDownUpIcon, ChevronDownIcon } from "lucide-react";
+import { ArrowDownUpIcon } from "lucide-react";
 import type { LibrarySource } from "../api";
 import type { LibraryTypeFilter } from "../file-kind";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive } from "../filters";
 import type { LibrarySortKey, LibraryView } from "../settings-store";
 
 const ICON = "size-icon";
-const ROUND_BUTTON =
+export const ROUND_BUTTON =
   "flex size-9 shrink-0 items-center justify-center rounded-full text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring data-[active=true]:bg-white data-[active=true]:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:data-[active=true]:bg-card dark:data-[active=true]:shadow-none data-open:bg-muted";
 
 interface MenuOption<T extends string> {
@@ -62,7 +63,7 @@ const TYPE_OPTIONS: MenuOption<LibraryTypeFilter>[] = [
   { value: "pdfs", label: "library.toolbar.pdfs", icon: Pdf01Icon },
 ];
 
-const VIEW_OPTIONS = [
+export const VIEW_OPTIONS = [
   { value: "grid", label: "library.toolbar.gridView", icon: GridViewIcon },
   { value: "list", label: "library.toolbar.listView", icon: LeftToRightListBulletIcon },
 ] satisfies MenuOption<LibraryView>[];
@@ -176,7 +177,7 @@ function FilterMenu({
   );
 }
 
-function SortRadio({
+export function SortRadio({
   label,
   checked,
   onSelect,
@@ -286,7 +287,7 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
           className="flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-foreground pl-4 pr-3 font-medium text-ui-14 text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
         >
           {t("common.new")}
-          <ChevronDownIcon className="size-4" strokeWidth={2} />
+          <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={2} className="size-4" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-44">

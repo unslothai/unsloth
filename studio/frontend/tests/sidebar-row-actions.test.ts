@@ -224,13 +224,10 @@ test("the chat-folder hint names what to click instead", async () => {
     item.includes("download a file from the tool result that wrote it"),
     "the hint no longer says where the files can be had",
   );
-  // Carried twice on purpose: the tooltip is for the pointer, the title for everything else.
-  assert.equal(
-    (item.match(/Only the desktop app can open a chat('|&apos;)s files folder/g) ??
-      []).length,
-    2,
-    "the hint is no longer stated for both the pointer and the screen reader",
-  );
+  // One hint, used twice on purpose: tooltip for the pointer, title for everything else.
+  assert.match(item, /const CHAT_FOLDER_HINT =\s*"Only the desktop app can open a chat's files folder/);
+  assert.match(item, /title=\{hint\}/);
+  assert.match(item, /<TooltipContent[^>]*>\s*\{hint\}\s*<\/TooltipContent>/);
 });
 
 // Forking was reachable only from a message in the open thread, so copying a chat meant opening
@@ -239,12 +236,21 @@ test("a chat row forks from its own menu", async () => {
   const ROW_MENU = await readSrcAsync(
     "features/chat/components/chat-row-menu.ts",
   );
-  // Below Mark as unread, and before the rule that sets off the rest.
+  // Fork follows the rule after Mark as unread, beside Move to.
   assert.match(
     APP_SIDEBAR,
-    /t\("shell\.selection\.markUnread"\)\}\n\s*<\/span>\n\s*<\/P\.Item>\n\s*<P\.Item\n\s*disabled=\{!canForkChatRow\(item\)/,
+    /t\("shell\.selection\.markUnread"\)\}\n\s*<\/span>\n\s*<\/P\.Item>\n\s*\{\/\*[^]*?\*\/\}\n\s*<P\.Separator \/>/,
   );
-  assert.match(APP_SIDEBAR, /<span>Fork<\/span>\n\s*<\/P\.Item>\n\s*\{\/\*[^]*?\*\/\}\n\s*<P\.Separator \/>/);
+  assert.match(
+    APP_SIDEBAR,
+    /<P\.Item\n\s*disabled=\{!canForkChatRow\(item\)[^]*?<span>Fork<\/span>\n\s*<\/P\.Item>\n\s*\{\/\* Projects and sections in one place[^]*?\*\/\}\n\s*<P\.Sub>/,
+  );
+  // Export moved to the Library's Chats tab.
+  const rowMenu = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("function renderChatRowMenuItems("),
+    APP_SIDEBAR.indexOf("function renderChatSidebarItem("),
+  );
+  assert.doesNotMatch(rowMenu, /<span>Export<\/span>|Export all chats/);
   // A comparison has two threads and no single tip to fork from.
   assert.match(ROW_MENU, /export function canForkChatRow[^]*?return item\.type === "single";/);
   // The fork carries the settings on screen, not the ones the row was last written with.

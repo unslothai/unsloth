@@ -18,12 +18,15 @@ import { formatCardTime, formatItemCount } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
-import { GLASS_CONTROL, GLASS_SURFACE, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
+import {
+  CARD_SHADOW,
+  GLASS_CONTROL,
+  GLASS_SURFACE,
+  OVERLAY_CONTROL,
+  RAISED_SURFACE,
+} from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
-
-const CARD_SHADOW =
-  "shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_16px_rgba(0,0,0,0.06)] dark:shadow-none";
 
 const CARD_SURFACE = cn(
   RAISED_SURFACE,
@@ -252,6 +255,9 @@ function FolderCard({
   );
 }
 
+// Extra row spacing only; card width is unchanged.
+const CARD_ROW_GAP = "gap-y-6";
+
 function useCardColumns(container: RefObject<HTMLDivElement | null>): number {
   const { minWidth, max } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
   return useColumnCount(container, minWidth, max);
@@ -273,12 +279,27 @@ export function Masonry<T>({
   return (
     <div ref={container} className="flex items-start gap-5">
       {buckets.map((bucket, column) => (
-        <div key={column} className="flex min-w-0 flex-1 flex-col gap-5">
+        <div key={column} className={cn("flex min-w-0 flex-1 flex-col", CARD_ROW_GAP)}>
           {bucket.map((item) => (
             <div key={getKey(item)}>{render(item)}</div>
           ))}
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Grid using the Library's card-size column count. */
+export function CardGrid({ children }: { children: ReactNode }) {
+  const container = useRef<HTMLDivElement>(null);
+  const columns = useCardColumns(container);
+  return (
+    <div
+      ref={container}
+      className={cn("grid gap-x-5", CARD_ROW_GAP)}
+      style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+    >
+      {children}
     </div>
   );
 }
@@ -290,18 +311,12 @@ export function FolderGrid({
   folders: LibraryFolder[];
   counts: Map<string, number>;
 }) {
-  const container = useRef<HTMLDivElement>(null);
-  const columns = useCardColumns(container);
   return (
-    <div
-      ref={container}
-      className="grid gap-5"
-      style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
-    >
+    <CardGrid>
       {folders.map((folder) => (
         <FolderCard key={folder.id} folder={folder} itemCount={counts.get(folder.id) ?? 0} />
       ))}
-    </div>
+    </CardGrid>
   );
 }
 

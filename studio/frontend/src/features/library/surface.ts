@@ -4,6 +4,10 @@
 export const RAISED_SURFACE =
   "bg-white shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none";
 
+// Resting card shadow; hover swaps it for a fill.
+export const CARD_SHADOW =
+  "shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_16px_rgba(0,0,0,0.06)] dark:shadow-none";
+
 export const OVERLAY_CONTROL =
   "bg-white shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-neutral-700 dark:shadow-none";
 

@@ -16,7 +16,7 @@ export interface LibrarySettings {
   imageLayout: "masonry" | "square";
   showCardDates: boolean;
   sort: LibrarySort;
-  startTab: "last" | "suggested" | "favorites" | "folders" | "all";
+  startTab: "last" | "suggested" | "favorites" | "folders" | "all" | "chats";
   lastTab: LibraryTab;
   tabs: Record<LibraryTab, LibraryTabVisibility>;
   suggestedLimit: number;
@@ -43,6 +43,7 @@ export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
     audio: "auto",
     models: "auto",
     all: "always",
+    chats: "always",
   },
   suggestedLimit: 40,
   showChatAttachments: true,

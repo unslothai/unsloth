@@ -690,7 +690,7 @@ test("the sidebar and account menus share one flat surface and type; other menus
   );
   assert.match(css, /\.app-user-menu\.sidebar-menu :is\([\s\S]*?\) \{\n\s*@apply text-ui-14;\n\s*font-weight: 400;/);
   // Every sidebar menu is marked, the account menu and its Help submenu included.
-  assert.equal((APP_SIDEBAR.match(/"unsloth-plus-menu sidebar-row-menu sidebar-menu/g) ?? []).length, 13);
+  assert.equal((APP_SIDEBAR.match(/"unsloth-plus-menu sidebar-row-menu sidebar-menu/g) ?? []).length, 12);
   assert.match(APP_SIDEBAR, /className="app-user-menu sidebar-menu menu-soft-surface-up/);
 });
 
@@ -771,7 +771,7 @@ test("sidebar and account submenus open clear of their menu, first rows level", 
     /sideOffset: Math\.round\(SIDEBAR_MENU_PAD_X \* uiSpaceScale \+ SUBMENU_GAP_PX\),\n\s*alignOffset: -Math\.round\(SIDEBAR_MENU_PAD_Y \* uiSpaceScale \+ MENU_ROW_MARGIN_PX\),/,
   );
   assert.match(APP_SIDEBAR, /sideOffset: ACCOUNT_MENU_PAD_X \+ SUBMENU_GAP_PX,/);
-  assert.equal((APP_SIDEBAR.match(/\{\.\.\.sidebarSubmenuOffsets\}/g) ?? []).length, 5);
+  assert.equal((APP_SIDEBAR.match(/\{\.\.\.sidebarSubmenuOffsets\}/g) ?? []).length, 4);
   assert.equal((APP_SIDEBAR.match(/\{\.\.\.accountSubmenuOffsets\}/g) ?? []).length, 1);
   // No sidebar submenu keeps a hand-set offset that would overlap its menu.
   assert.doesNotMatch(APP_SIDEBAR, /SubContent[^>]*sideOffset=\{[0-9]+\}[^>]*sidebar-menu/);
@@ -788,9 +788,10 @@ test("sidebar and account menus read white on a lighter surface in dark mode", a
 });
 
 
-test("undoing a removed section puts it back where it was drawn", () => {
-  const start = APP_SIDEBAR.indexOf("function removeCustomSection(");
-  const body = APP_SIDEBAR.slice(start, APP_SIDEBAR.indexOf("function renderSortSubmenu", start));
+test("undoing a removed section puts it back where it was drawn", async () => {
+  // One removal for the sidebar and the Library alike.
+  assert.match(APP_SIDEBAR, /const undo = removeCustomSectionWithUndo\(section\);/);
+  const body = await readSrcAsync("features/chat/stores/remove-custom-section.ts");
   assert.match(body, /const followers = drawnOrder\.slice\(drawnOrder\.indexOf\(section\.id\) \+ 1\);/);
   assert.match(body, /const follower = followers\.find\(\(key\) => sectionOrder\.includes\(key\)\);/);
   assert.match(body, /customSections: inSectionOrder\(restored, sectionOrder\),\n\s*sectionOrder,/);
