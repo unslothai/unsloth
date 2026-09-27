@@ -1329,7 +1329,6 @@ def _mlx_finish_reason(response, stop_ids, generated_n, max_tokens):
     return "stop" if token is not None and token in tuple(stop_ids) else "length"
 
 
-
 def materialize_mtp_masked_embedding(draft_model: Any) -> int:
     """Densify the MXFP4-packed Gemma assistant ``embed_tokens.weight`` MaskedEmbedder indexes."""
     config = getattr(draft_model, "config", None)
@@ -1405,7 +1404,6 @@ def validate_speculative_target_contract(target_model, draft_model, method) -> N
     if not callable(reset):
         raise RuntimeError("mlx_speculative_drafter_reset_missing")
     reset(target_model)
-
 
 
 def _build_generation_stats(

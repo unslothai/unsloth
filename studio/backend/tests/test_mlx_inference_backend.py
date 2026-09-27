@@ -5765,7 +5765,6 @@ def test_every_recommendation_is_reachable_from_a_target_shape():
 )
 def test_an_lfm2_target_is_named_by_the_variant_its_repository_spells(target_id, expected):
     from core.inference import mlx_speculative as spec
-
     assert spec._target_identity_key(target_id) == expected
     assert spec._recommendation_target_owner_allowed(target_id, expected) is True
 
@@ -5924,7 +5923,6 @@ def test_auto_ranks_a_drafter_that_declares_its_width_beside_its_config(monkeypa
 
 def _stub_fitting_revisions(monkeypatch, widths = None):
     from core.inference import mlx_speculative as spec
-
     named = widths or {}
     monkeypatch.setattr(
         spec, "_fitting_cached_revision",
@@ -6967,7 +6965,6 @@ def test_a_runtime_self_heal_can_still_fix_is_probed_again(
 
 
 class _Rewinds:
-
     def rollback_speculative_cache(self, *_a, **_k):
         return None
 
@@ -6982,7 +6979,6 @@ class _Rewinds:
 
 
 class _RewindsOnly(_Rewinds):
-
     def __call__(self, x):
         return x
 
@@ -6993,7 +6989,6 @@ class _TakesAnything(_Rewinds):
 
 
 class _Wrapper:
-
     def __call__(self, x):
         return x
 
@@ -7029,6 +7024,8 @@ def test_discovery_asks_for_the_captures_the_loaded_pair_is_checked_for(
     else:
         with pytest.raises(RuntimeError, match = "mlx_speculative_target_capture_missing"):
             mlx_inference.validate_speculative_target_contract(target, drafter, "mtp")
+
+
 def _uncopyable_naive_detokenizer(detokenizers):
     """mlx-vlm's naive detokenizer as it behaves BELOW 0.6.0, which is where ``__copy__`` arrived.
 

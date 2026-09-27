@@ -440,7 +440,6 @@ _UNVERIFIED = "unverified"
 
 
 class _CandidateRow:
-
     __slots__ = ("key", "status", "fields", "reason", "inherit")
 
     def __init__(
@@ -1872,7 +1871,6 @@ def _snapshot_identity(snapshot: Path, handler: _NativeMtpHandler) -> str:
 
 @dataclass(frozen = True)
 class MlxSpeculativeResolution:
-
     method: str
     draft_model: Optional[str]
     reason: Optional[str] = None

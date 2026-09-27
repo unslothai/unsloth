@@ -1590,7 +1590,6 @@ class MlxSpeculativeCandidate(BaseModel):
 
 
 class MlxSpeculativeOptionsResponse(BaseModel):
-
     target_model: str
     # Reserved: this contract may still change between releases.
     experimental: bool = True
