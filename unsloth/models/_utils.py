@@ -4343,6 +4343,17 @@ def test_mask_creation():
         assert torch.all(correct_mask == our_mask)
 
 
+def _unsloth_align_batch_tensor_devices(inputs, reference_key: str = "input_ids"):
+    """Move every tensor batch field onto the reference tensor's device (padding-free metadata is often CPU)."""
+    reference = inputs.get(reference_key)
+    if not isinstance(reference, torch.Tensor):
+        return
+    device = reference.device
+    for key, value in list(inputs.items()):
+        if isinstance(value, torch.Tensor) and value.device != device:
+            inputs[key] = value.to(device)
+
+
 def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     num_items_in_batch = None
 
@@ -4393,6 +4404,8 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             _has_ccm = _mod is not None and hasattr(_mod, "create_causal_mask_mapping")
             if _has_ccm and _inner.training:
                 inputs["mm_token_type_ids"] = torch.zeros_like(inputs["input_ids"])
+
+    _unsloth_align_batch_tensor_devices(inputs)
 
     outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     return outputs

@@ -100,6 +100,42 @@ PADDING_FREE_BLOCKLIST = {
     "gemma2",  # - gemma2:  Uses slow_attention_softcapping which has torch.compile issues
     "gpt_oss",  # - gpt_oss: Uses Flex Attention which doesn't handle padding_free correctly
 }
+
+_GEMMA4_MODEL_TYPE_MARKERS = ("gemma4", "gemma4_text")
+
+
+def _model_spans_multiple_devices(model) -> bool:
+    """True when ``hf_device_map`` places layers on more than one device (typical 31B+ loads)."""
+    if model is None or isinstance(model, str):
+        return False
+    seen = set()
+    inner = model
+    for _ in range(6):
+        device_map = getattr(inner, "hf_device_map", None)
+        if isinstance(device_map, dict):
+            for target in device_map.values():
+                seen.add(str(target))
+                if len(seen) > 1:
+                    return True
+        next_inner = getattr(inner, "base_model", None)
+        if next_inner is None or next_inner is inner:
+            next_inner = getattr(inner, "model", None)
+        if next_inner is None or next_inner is inner:
+            break
+        inner = next_inner
+    return False
+
+
+def _block_gemma4_multidevice_padding_free(model, model_types) -> bool:
+    """Gemma 4 text-only SFT with auto padding-free can mix CPU index tensors and CUDA activations on multi-GPU maps (#11952)."""
+    if model is None or isinstance(model, str):
+        return False
+    if not any(
+        isinstance(model_type, str) and model_type in _GEMMA4_MODEL_TYPE_MARKERS
+        for model_type in (model_types or ())
+    ):
+        return False
+    return _model_spans_multiple_devices(model)
 # Hybrid linear-attention / state-space models (Qwen3.5, Qwen3-Next) carry a recurrent gated-delta
 # state plus a causal conv1d that leak across sequence boundaries once packing flattens the batch.
 # Detected structurally by _is_hybrid_linear_attention_model, not by model name.
@@ -1329,6 +1365,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         model = args[0] if len(args) >= 1 else kwargs.get("model")
         model_config = None
+        model_types = ()
         is_vlm = False
         is_unsupported_model = False
         is_hybrid = False
@@ -1399,6 +1436,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # several classes, so a "yes" from the resolved one is not proof about the
                 # instance. A correct "no" has already turned both flags off, which is the
                 # condition the post-init check skips on, so leaving it armed is free.
+        gemma4_multidevice_padding_free = _block_gemma4_multidevice_padding_free(
+            model,
+            model_types,
+        )
         blocked = (
             (data_collator is not None)
             or is_processor
@@ -1409,6 +1450,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or (is_hybrid and not hybrid_varlen_active)
             or (os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1")
             or forward_rejects_packing
+            or gemma4_multidevice_padding_free
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
         if blocked:
@@ -1431,6 +1473,11 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
+            elif gemma4_multidevice_padding_free:
+                reason = (
+                    "Gemma 4 on a multi-device device_map with padding-free batching "
+                    "(use padding_free=False or load on a single GPU)"
+                )
             elif forward_rejects_packing:
                 # Name the real blocker, else this falls through to the
                 # UNSLOTH_RETURN_LOGITS branch and points at an unset flag. For a string
