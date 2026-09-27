@@ -297,7 +297,6 @@ export interface LoadModelResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
-  /** Slots the load was invoked with (else the --parallel default). */
   requested_parallel_slots?: number | null;
   reasoning_budget?: number;
   reasoning_budget_message?: string;
@@ -306,7 +305,6 @@ export interface LoadModelResponse {
   requested_reasoning_budget?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   requested_reasoning_budget_message?: string;
-  /** Slots the load decodes at once: for llama-server, after any fit-time reduction. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the load was invoked with; null = default */
   requested_n_batch?: number | null;
@@ -411,7 +409,6 @@ export interface InferenceStatusResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
-  /** Slots the active load was invoked with (else the --parallel default). */
   requested_parallel_slots?: number | null;
   reasoning_budget?: number;
   reasoning_budget_message?: string;
@@ -420,7 +417,6 @@ export interface InferenceStatusResponse {
   requested_reasoning_budget?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   requested_reasoning_budget_message?: string;
-  /** Slots the active load decodes at once: for llama-server, after any fit-time reduction. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the active load was invoked with; null = default */
   requested_n_batch?: number | null;

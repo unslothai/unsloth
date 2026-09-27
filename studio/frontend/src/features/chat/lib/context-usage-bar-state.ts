@@ -60,12 +60,6 @@ function contextLimitAdvice(
   // nothing rotates and nothing stops, so neither of the other two is true of it. An
   // unjudged MLX window says the same thing operationally: the probe could not build a
   // cache, so none was bounded and it grows exactly as a confirmed false one does.
-  //
-  // The load answers the first two for a reply decoded on its own. Replies decoded
-  // together are the third: mlx-vlm's batch generator takes no window control, so a
-  // load serving more than one at a time is unbounded whatever the probe found. Both
-  // backend fields describe the load and neither moves, so this is read here rather
-  // than answered across the process boundary, where no snapshot could stay true.
   if (
     enforced === false ||
     (isMlx && enforced == null) ||

@@ -1166,9 +1166,6 @@ test("no llama.cpp invocation field decides against a non-GGUF resident", () => 
 });
 
 test("a resident decoding at another width is not adopted, whichever backend", () => {
-  // /load applies a new width to a model already resident rather than reloading it, so
-  // adopting one silently is how a model picked at two slots keeps running at four --
-  // the width another tab or an API load left it at.
   for (const is_gguf of [true, false]) {
     assert.equal(
       matches({ ...DEFAULTS, is_gguf, requested_parallel_slots: 4 }, { ...BLANK, nParallel: 2 }),

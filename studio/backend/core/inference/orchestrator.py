@@ -392,7 +392,6 @@ class InferenceOrchestrator:
         self._executing_cancel_events: list = []
         self._active_cancel_lock = threading.Lock()
         # Held across claim + _send_cmd so claim order matches the subprocess dequeue order, which _owns_worker relies
-        # on. Reentrant because a reset decides under it and then sends under it.
         self._send_order_lock = threading.RLock()
         # Set during a switch so a generation winning the _gen_lock handoff bails instead of starting on the outgoing
         # model
@@ -942,14 +941,7 @@ class InferenceOrchestrator:
         return not expected_free_gb
 
     def _reset_worker_scoped_state(self) -> None:
-        """Drop bookkeeping that only means anything for the worker that just died.
-
-        Ownership is scoped by cancel-event identity alone, so a consumer still blocked
-        on its mailbox when the process was replaced stayed recorded as the executor. A
-        generation on the fresh worker then failed _owns_worker and could not be stopped.
-        One left here would have a fresh worker told to stop a name it never heard of.
-        Mailboxes go too: a stale one reads as compare activity to the unload path.
-        """
+        """Drop bookkeeping that only means anything for the worker that just died."""
         with self._active_cancel_lock:
             self._active_cancel_events.clear()
             self._executing_cancel_events.clear()
@@ -1417,13 +1409,7 @@ class InferenceOrchestrator:
         mark_started: bool = True,
         rows: Optional[int] = None,
     ) -> Generator[Any, None, None]:
-        """Yield tokens from a response stream until gen_done/gen_error.
-
-        With ``rows`` set the yields are ``(row, text)`` and ``(row, None)``, and
-        ``stats_holder["stats"]`` holds one entry per row. Errors are yielded bare either
-        way. A cancelled single reply stops reading at once and drains the ack; several
-        read on for _CANCELLED_ROWS_GRACE, then drain the same way.
-        """
+        """Yield tokens from a response stream until gen_done/gen_error."""
         # Latch this stream's subprocess/queue: if a wedged worker is torn down and a later load spawns a fresh one,
         # bail rather than re-block on the new queue under _gen_lock (deadlock).
         initial_proc = self._proc
@@ -1474,11 +1460,6 @@ class InferenceOrchestrator:
             rtype = resp.get("type", "")
             if rtype == "status":
                 continue
-            # The worker is answering THIS request, so only now may its cancel event speak
-            # for the shared worker one. The dispatched path opts out: its dispatcher
-            # already did this in worker order. Not once this stream has sent its Stop:
-            # what follows says nothing about what the worker is on now, and claiming
-            # otherwise would displace whichever request it moved to.
             if mark_started and not stop_sent:
                 self._mark_worker_started(cancel_event)
             # Subprocess-level error (no request_id); request-scoped failures arrive as gen_error below
@@ -1528,31 +1509,10 @@ class InferenceOrchestrator:
                 yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
                 return
 
-    # ------------------------------------------------------------------
-    # Dispatcher — per-request mailbox routing for compare mode
-    # ------------------------------------------------------------------
 
     def _start_dispatcher(self) -> Optional[threading.Thread]:
-        """Start the dispatcher thread if not already running.
-
-        The dispatcher reads the shared resp_queue and routes responses to
-        per-request mailbox queues, letting multiple adapter-controlled
-        (compare) requests be in-flight without holding _gen_lock.
-
-        The whole check-then-spawn runs under _dispatcher_lifecycle_lock so
-        concurrent compare requests (which bypass _gen_lock) can't both observe
-        no live dispatcher and each spawn one. Returns the thread this call started, so a
-        caller undoing its own start says which dispatcher it means; None otherwise, and
-        that says nothing about why -- read the state itself when the reason matters.
-        """
+        """Start the dispatcher thread if not already running."""
         with self._dispatcher_lifecycle_lock:
-            # Refuse to start while an unload is in progress. unload_model sets
-            # _unload_pending under this same lock before it stops the idle
-            # dispatcher, so a start queued behind that stop observes the unload
-            # here and bails. Without this a fresh dispatcher would be spawned
-            # after the stop, become the resp_queue reader, and consume the
-            # worker's "unloaded" reply (unroutable, so dropped) before
-            # unload_model's _wait_response sees it -- hanging the unload 300s.
             if self._unload_pending or self._worker_reserved_for:
                 return None
             if self._dispatcher_thread is not None and self._dispatcher_thread.is_alive():
@@ -1569,18 +1529,7 @@ class InferenceOrchestrator:
             return self._dispatcher_thread
 
     def _stop_dispatcher(self, thread: Optional[threading.Thread] = None) -> None:
-        """Signal the dispatcher to stop and wait for it.
-
-        Runs under _dispatcher_lifecycle_lock (paired with _start_dispatcher) so
-        a stop can't interleave with a concurrent start. Callers must NOT hold
-        _mailbox_lock here: this joins the dispatcher, and the dispatcher loop
-        takes _mailbox_lock, so holding it would deadlock the join.
-
-        A thread says which dispatcher the stop is for, for a caller undoing a start of
-        its own: that one can be replaced before this runs, and stopping the replacement
-        would leave whoever registered with it reading a mailbox nothing writes to.
-        Without one this stops whatever is running.
-        """
+        """Signal the dispatcher to stop and wait for it."""
         with self._dispatcher_lifecycle_lock:
             if self._dispatcher_thread is None:
                 return
@@ -1728,11 +1677,6 @@ class InferenceOrchestrator:
             video_b64 = video,
         )
 
-        # Create the mailbox BEFORE sending, rechecking _unload_pending under
-        # _mailbox_lock: an unload sets _unload_pending before _wait_worker_idle
-        # reads _mailboxes under the same lock, so either the idle check sees this
-        # mailbox (and tears the dispatcher down) or we see the unload and bail.
-        # Registering after would orphan the mailbox and hang the compare stream forever.
         mailbox = _WorkerMailbox(self._proc)
         admission_deadline = time.monotonic() + _DISPATCH_IDLE_TIMEOUT
         while True:
@@ -1760,10 +1704,6 @@ class InferenceOrchestrator:
                     self._dispatcher_stop.set()
             if not blocked:
                 break
-            # A racing unload can pass its _wait_worker_idle() while the dispatcher was
-            # stopped, then set _unload_pending; the one just started would then race
-            # unload_model for the "unloaded" reply and drop it as unroutable. Stop it
-            # here so the unload stays the sole resp_queue reader. Outside _mailbox_lock:
             # _stop_dispatcher joins the dispatcher, which itself takes that lock.
             if orphaned_dispatcher:
                 self._stop_dispatcher(started)
@@ -1876,7 +1816,6 @@ class InferenceOrchestrator:
         cancel_event = None,
         timeout: float = _DISPATCH_IDLE_TIMEOUT,
     ) -> bool:
-        # Unbounded would deadlock: callers wait holding _gen_lock or the reservation.
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if cancel_event is not None and cancel_event.is_set():
@@ -1986,14 +1925,7 @@ class InferenceOrchestrator:
         anonymous_hf_access: bool = False,
         audio_codec_path: Optional[str] = None,
     ) -> bool:
-        """Load a model for inference.
-
-        Always spawns a fresh subprocess per load for a clean interpreter (no
-        stale unsloth patches, torch.compile caches, or getsource failures).
-
-        ``n_parallel`` is how many replies this load may decode at once, the same request
-        field a GGUF load takes for llama-server's slots.
-        """
+        """Load a model for inference."""
         from core.inference.llama_server_args import clamp_parallel_slots
 
         parallel_slots = clamp_parallel_slots(n_parallel)
@@ -2381,16 +2313,6 @@ class InferenceOrchestrator:
             self.models.pop(model_name, None)
             return True
 
-        # The subprocess runs commands sequentially, so a bare unload queues behind a
-        # running generate (a 2-3 min hang). Cancel first (via the mp.Event the worker
-        # polls each token), then take _gen_lock as sole resp_queue reader (like GGUF).
-        #
-        # Set _unload_pending under _dispatcher_lifecycle_lock so it is ordered ahead of
-        # the dispatcher stop that _wait_worker_idle runs under the same lock: a
-        # compare request's _start_dispatcher queued behind that stop then observes the
-        # unload and refuses to spawn a fresh dispatcher that would eat the "unloaded"
-        # reply off resp_queue. This is a standalone acquisition (no _gen_lock held yet),
-        # so it keeps the _gen_lock -> _dispatcher_lifecycle_lock order and can't deadlock.
         with self._dispatcher_lifecycle_lock:
             self._unload_pending = True
         # Cancelling only the running generation isn't enough: the worker clears cancel_event at each generate start,
@@ -2414,10 +2336,6 @@ class InferenceOrchestrator:
                 return True
 
             try:
-                # Stop the compare-mode dispatcher so it can't consume the "unloaded"
-                # reply first. A dispatched generation bypasses _gen_lock, so a wedged one
-                # slips past the acquire above and hangs _wait_response behind it. Mirror
-                # the wedged locked path: tear the subprocess down.
                 if not self._wait_worker_idle(timeout = _DISPATCH_IDLE_TIMEOUT):
                     logger.warning(
                         "Unload: compare-mode dispatcher still active after idle "
@@ -2488,7 +2406,6 @@ class InferenceOrchestrator:
         nowhere."""
         if not self._gen_lock.acquire(blocking = False):
             raise RuntimeError("Cannot count tokens while a generation is in progress")
-        # A dispatched generation holds no _gen_lock, and the worker reads no command while it runs.
         with self._mailbox_lock:
             dispatched = bool(self._mailboxes)
         if dispatched:
@@ -2901,11 +2818,7 @@ class InferenceOrchestrator:
         rows: Optional[list] = None,
         video: Optional[str] = None,
     ) -> Generator[Any, None, None]:
-        """Inner generation logic — sends command to subprocess, yields tokens.
-
-        With ``rows`` the yields are ``(row, text)`` and ``(row, None)``. Sent through the
-        dispatcher where the worker reads the stop record, under _gen_lock where it does not.
-        """
+        """Inner generation logic — sends command to subprocess, yields tokens."""
         if not self._ensure_subprocess_alive():
             yield GenStreamError("Error: Inference subprocess is not running", public = True)
             return
@@ -2948,9 +2861,6 @@ class InferenceOrchestrator:
             )
             return
 
-        # Serialize generation: two concurrent readers on resp_queue would
-        # consume and drop each other's token events. Hold _gen_lock across the
-        # cmd build + send + whole stream so we stay the sole resp_queue reader.
         with self._gen_lock:
             if self._unload_pending or self.active_model_name != expected_model:
                 yield GenStreamError("Error: model is being unloaded", public = True)
@@ -2989,10 +2899,6 @@ class InferenceOrchestrator:
                 video_b64 = video,
             )
 
-            # Claim the worker BEFORE sending, so a Stop on some other chat still queued on
-            # the lock above cannot reset the generation this is starting.
-            # Own mailbox: a compare request can start the dispatcher while this is streaming,
-            # and it would otherwise consume our responses and drop them.
             read_one, drain, release_mailbox = self._direct_reader(request_id, cancel_event)
             try:
                 try:
@@ -3017,14 +2923,7 @@ class InferenceOrchestrator:
                 release_mailbox()
 
     def _claim_worker(self, cancel_event) -> None:
-        """Record this request as one the worker will run.
-
-        Admission only. The one-at-a-time path executes generations in turn, so a
-        dispatched request sitting behind another in the command queue is claimed
-        but not executing, and must not be able to signal the shared cancel event
-        (that would end whichever request IS executing). _mark_worker_started
-        promotes it once the worker answers it.
-        """
+        """Record this request as one the worker will run."""
         with self._active_cancel_lock:
             self._active_cancel_events.append(cancel_event)
 
@@ -3117,15 +3016,7 @@ class InferenceOrchestrator:
         return None
 
     def reset_generation_state(self, caller_cancel_event = None):
-        """Cancel any ongoing generation and reset state.
-
-        ``caller_cancel_event`` scopes this to one request: it is stopped by name, and
-        the shared event is signalled only by the request the worker is running, since
-        it speaks for whatever is running rather than for whoever set it. A caller with
-        nothing of its own in flight is an error path recovering, and resets the worker
-        only when nothing else is in flight. Omit it for a global reset (unload,
-        switch), which ends every reply and resets the worker.
-        """
+        """Cancel any ongoing generation and reset state."""
         if caller_cancel_event is not None:
             request_id = self._request_of(caller_cancel_event)
             if request_id is not None:
@@ -3453,7 +3344,6 @@ class InferenceOrchestrator:
             if stop:
                 cmd["stop"] = stop
 
-            # Same shared-queue hazard as _generate_inner: see _direct_reader.
             read_one, drain, release_mailbox = self._direct_reader(request_id, cancel_event)
             try:
                 try:

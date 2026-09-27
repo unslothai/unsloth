@@ -1539,13 +1539,11 @@ def test_stale_unload_does_not_hide_an_update_refusal():
 
 # ----------------------------------------------------------------------------
 # A dispatched (compare-mode) request that races an unload must not orphan its
-# mailbox after _wait_worker_idle stops the dispatcher.
 # ----------------------------------------------------------------------------
 
 
 def test_dispatched_bails_when_unload_flips_before_mailbox_registration(monkeypatch):
     # The request passes the pre-work _unload_pending check, then an unload sets
-    # _unload_pending and _wait_worker_idle stops the dispatcher (mailboxes empty)
     # before this request registers its mailbox. The recheck under _mailbox_lock must
     # make it bail, or the worker's skipped-generate reply has nothing to route it and
     # the compare stream hangs on an orphaned mailbox.
@@ -1558,7 +1556,6 @@ def test_dispatched_bails_when_unload_flips_before_mailbox_registration(monkeypa
     monkeypatch.setattr(o, "_start_dispatcher", lambda: None)
 
     # Flip the unload flag after the pre-work check (626) but before mailbox
-    # registration -- exactly the window _wait_worker_idle exploits.
     def flip(*a, **k):
         o._unload_pending = True
         return {"type": "generate", "request_id": "r1"}
@@ -1620,10 +1617,6 @@ def test_dispatched_bails_when_model_swapped_before_mailbox_registration(monkeyp
 
 def test_dispatched_bails_when_dispatcher_stopped_before_mailbox_registration(monkeypatch):
     # Same window, but the unload was a same-model reload so active_model_name is
-    # unchanged and _unload_pending has already been cleared; the give-away is that the
-    # dispatcher was stopped. Registering a mailbox with nothing to route the reply would
-    # hang the compare stream, so this is what the request is told once waiting for a
-    # dispatcher to come back has run out of time.
     monkeypatch.setattr(orch_mod, "_DISPATCH_IDLE_TIMEOUT", 0.05)
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
@@ -2642,7 +2635,6 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
 
     def unload_side():
         # unload_model's sequence: set _unload_pending under the lifecycle lock, then stop
-        # the idle dispatcher (also under the lock, via _wait_worker_idle).
         with o._dispatcher_lifecycle_lock:
             o._unload_pending = True
         o._stop_dispatcher()
@@ -3018,8 +3010,6 @@ def test_a_scoped_load_cancel_that_never_reports_back_releases_the_load():
 
 
 def test_a_cancelled_row_stream_shows_no_token_a_single_reply_would_have_dropped():
-    # Replies read on past the Stop to report done, but a token already queued is one
-    # the same reply alone would have discarded.
     o = _bare_orchestrator()
     cancel = threading.Event()
     cancel.set()
@@ -3057,7 +3047,6 @@ def test_a_recovering_caller_resets_the_worker_without_deadlocking_on_itself():
     from types import SimpleNamespace
 
     backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
-    # The lock production builds: a non-reentrant one here would hang rather than pass.
     backend._send_order_lock = _real_send_order_lock()
     backend._mailbox_lock = threading.Lock()
     backend._request_cancel_events = {}
@@ -3510,7 +3499,6 @@ def test_a_shutdown_that_begins_during_the_spawn_reaps_the_new_worker():
     class _Ctx:
         Queue = staticmethod(lambda: mock.Mock())
         Event = staticmethod(lambda: mock.Mock())
-        # The stop ledger and teardown record are built from these too.
         Lock = staticmethod(lambda: mock.Mock())
         Array = staticmethod(lambda *a, **k: mock.Mock())
         Value = staticmethod(lambda *a, **k: mock.Mock())

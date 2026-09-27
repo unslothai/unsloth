@@ -7436,11 +7436,7 @@ def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
 
 
 def _unsloth_serving_fields(model_info: dict) -> dict:
-    """What a non-GGUF load says about serving replies, for the replies that report it.
-
-    One helper because a client cannot use any of them alone: a reply carrying some of
-    the three answers nothing.
-    """
+    """What a non-GGUF load says about serving replies, for the replies that report it."""
     slots = model_info.get("parallel_slots")
     batches = model_info.get("can_batch")
     effective = None if slots is None or batches is None else (slots if batches else 1)
@@ -7469,8 +7465,6 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_kv_quant_reason = None,
         mlx_kv_quant_note = None,
         chat_template_override_reason = None,
-        # llama.cpp allocates the window it reports: bounded by construction, and it
-        # decodes each slot against its own.
         context_length_enforced = True,
         context_unbounded_when_batched = False,
         # Older/custom backend doubles predate this additive runtime field.
@@ -29579,7 +29573,6 @@ async def produce_openai_chat_completions(
                 _reported = batch_stats.get("stats") or []
 
                 def _keep(_row, idx):
-                    # A row cancelled before it ran is acknowledged with no text and no stats.
                     _stats = _reported[_row] if _row < len(_reported) else None
                     if texts[_row] or _stats is not None:
                         _produced[idx] = (texts[_row], _stats)
@@ -30297,8 +30290,6 @@ def _openai_model_objects() -> list[dict]:
             _value = _positive_int_or_none(model_info.get(_field))
             if _value is not None:
                 entry[_field] = _value
-        # Through the same helper the load and status replies use, so this catalogue
-        # cannot disagree with the reply that loaded the model.
         _serving = _unsloth_serving_fields(model_info)
         if _serving["context_length_enforced"] is not None:
             entry["context_length_enforced"] = bool(_serving["context_length_enforced"])

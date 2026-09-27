@@ -59,8 +59,7 @@ logger = get_logger(__name__)
 
 
 def _language_model_view(model):
-    """mlx-lm's view of an mlx-vlm text build: its language model, answering in logits,
-    carrying what mlx-lm and this backend read off a model."""
+    """mlx-lm's view of an mlx-vlm text build: its language model, answering in logits,"""
     import mlx.nn as nn
 
     class _LanguageModelView(nn.Module):
@@ -2023,8 +2022,7 @@ def _kv_quant_status(
     context_pinned = False,
     eligibility = None,
 ):
-    """Resolve a requested bit width against this model into a status dict.
-    ``eligibility`` is a probe result already taken on this model, sparing a second probe."""
+    """Resolve a requested bit width against this model into a status dict."""
     status = {
         "requested_kv_bits": requested_bits,
         "kv_bits": None,
@@ -2312,11 +2310,7 @@ def _make_mlx_presence_penalty_processor(penalty: float):
 
 
 def _row_logits_processors(processors):
-    """A reply's processors, each starting at the prompt's last token.
-
-    How much prompt a processor sees is otherwise an accident of the prefill, and a
-    repetition penalty windows recent tokens, so that accident would decide the reply.
-    """
+    """A reply's processors, each starting at the prompt's last token."""
     if not processors:
         return []
 
@@ -2596,11 +2590,7 @@ def _asks_for_row_processors(request):
 
 
 def _row_processor_gap(engine, requests):
-    """Why these replies' penalties cannot travel into a batch, or None.
-
-    Asked per batch, not at load: only a reply that wants a processor needs the release
-    to carry one.
-    """
+    """Why these replies' penalties cannot travel into a batch, or None."""
     if not any(_asks_for_row_processors(request) for request in requests):
         return None
     unavailable = getattr(engine, "row_logits_processors_unavailable_reason", None)
@@ -2608,15 +2598,11 @@ def _row_processor_gap(engine, requests):
 
 
 def _request_batch_gap(request):
-    """What a reply asks for that only the one-at-a-time decode serves, or None.
-
-    Reads both the worker command's spellings and the generation kwargs built from them.
-    """
+    """What a reply asks for that only the one-at-a-time decode serves, or None."""
     if request.get("images") or request.get("images_base64"):
         return "a reply replays tool images"
     if request.get("video") is not None or request.get("video_base64"):
         return "a reply carries a video clip"
-    # The batch decodes without the native tool-token allowlist, so a wrapped call would be lost.
     if request.get("tools") or request.get("tool_protocol_active"):
         return "a reply runs the tool protocol"
     return None
@@ -3063,7 +3049,6 @@ class _VisionBatchSession:
             stop = request.get("stop"),
         )
         if plan.images:
-            # As on the one-reply path: the tower gets the headroom, under the lock this session holds.
             backend._release_vlm_snapshots()
         try:
             row_number = self.stream.add(
@@ -3104,8 +3089,6 @@ class _VisionBatchSession:
                     (row.handle, snapshot) for snapshot in row.plan.stream.feed(text = event.delta)
                 )
                 if row.plan.stream.stopped:
-                    # Its own stop sequence ended it: take the row back rather than decode
-                    # text nobody sees. A result means the batch already did.
                     row.cancelled = True
                     row.reason = "stop"
             if event.result is not None:
@@ -3163,7 +3146,6 @@ class _VisionBatchSession:
 
 
 class MLXInferenceBackend:
-    # What a batch decodes on: the load itself unless load_model built it on mlx-vlm.
     _batch_model = None
     _batch_processor = None
     _batches_on_vlm = False
@@ -3580,9 +3562,6 @@ class MLXInferenceBackend:
         self._configure_memory_limits()
 
         is_lora = getattr(config, "is_lora", False)
-        # mlx-lm's batch generator takes no quantization controls and mlx-vlm's does, so
-        # a text load wanting both is built by mlx-vlm and batches there; its one-at-a-time
-        # decode stays mlx-lm's. Not with a pinned window, which mlx-vlm's batch cannot hold.
         batch_text_on_vlm = (
             not is_vision
             and not is_distributed
@@ -3651,16 +3630,12 @@ class MLXInferenceBackend:
         else:
             not_on_vlm = None
             if batch_text_on_vlm:
-                # Decided on the build itself, so a refused quantization does not leave
-                # the load on a runtime it gained nothing from.
                 eligibility = _kv_quant_eligibility(
                     _language_model_view(model), False, _normalize_mlx_kv_bits(kv_bits)
                 )
                 if eligibility[0] not in ("full", "partial"):
                     not_on_vlm = eligibility[1]
         if not_on_vlm is not None:
-            # Outside the except and with the build dropped, so it is released first;
-            # collected, because the loader's bound methods keep the build in a cycle.
             logger.warning(
                 "MLX: %s; loading %s through mlx-lm, where a quantized KV cache and "
                 "batched replies are exclusive.",
@@ -3794,8 +3769,6 @@ class MLXInferenceBackend:
             # unbounded, None nothing could be built to judge. Without it the API reports a limit a client cannot tell
             # from an enforced one.
             "context_length_enforced": _ctx_enforced,
-            # Replies decoded together escape the window, and whether this load decodes
-            # any together is settled outside the worker.
             "context_unbounded_when_batched": self._vision_batch_is_available(),
             "mlx_kv_bits": self._kv_quant["kv_bits"],
             "mlx_kv_bits_requested": self._kv_quant["requested_kv_bits"],
@@ -3947,8 +3920,7 @@ class MLXInferenceBackend:
         return prompt, self._tokenizer
 
     def _vlm_batch_prepends_bos(self):
-        """Whether the batch tokenizer opens every prompt with the BOS itself. Asked of
-        the tokenizer: a GPT-2-style one adds nothing even when asked for special tokens."""
+        """Whether the batch tokenizer opens every prompt with the BOS itself. Asked of"""
         from unsloth_zoo.mlx.generate import vlm_batch_adds_special_tokens
 
         if not vlm_batch_adds_special_tokens(self._batch_model, self._batch_processor):
@@ -4020,12 +3992,7 @@ class MLXInferenceBackend:
         return full_messages
 
     def _conversation_to_render(self, messages, system_prompt, image):
-        """The turns this request renders, whichever way its reply is decoded.
-
-        A processor template wants every turn's content as a part list, not only the one
-        carrying the image: a string renders differently or not at all. Shared with the
-        transformers vision path so both render the same turns (#10092).
-        """
+        """The turns this request renders, whichever way its reply is decoded."""
         if self._is_vlm and image is not None:
             from core.inference.chat_template_helpers import (
                 chat_render_target as _chat_render_target,
@@ -4550,15 +4517,11 @@ class MLXInferenceBackend:
         )
         prompt = render_result.prompt
         reasoning_channel_markers = render_result.reasoning_channel_markers
-        # Not the request flag: a later tool-loop pass renders an ordinary prompt.
         _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
 
-        # An open <think> prefilled by the template lives in the prompt, so re-emit it.
         think_prefix = detect_think_prefill(
             prompt,
             getattr(self._tokenizer, "all_special_tokens", None),
-            # Matches native_token_decoder below: when it runs </think> survives, so the
-            # prefilled opener has to be re-emitted with it.
             preserves_think_close = (
                 bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
             )
@@ -4787,7 +4750,6 @@ class MLXInferenceBackend:
                 continue_final_message = continue_final_message,
             )
         else:
-            # A text load batching on mlx-vlm sends the prompt its one-at-a-time decode does.
             images = None
             prompt, chat_target = self._render_text_prompt_for_vlm_batch(
                 messages,
@@ -4800,7 +4762,6 @@ class MLXInferenceBackend:
 
         from core.inference.chat_template_helpers import detect_think_prefill
 
-        # Re-emit an open <think> prefill from the prompt (see _generate_text).
         think_prefix = detect_think_prefill(
             prompt, getattr(chat_target, "all_special_tokens", None)
         )
@@ -4822,13 +4783,9 @@ class MLXInferenceBackend:
             sequences = _mlx_stop_sequences(stop),
             normalizer = normalizer,
         )
-        # stream_generate forwards **kwargs into generate_step (builds the
-        # sampler + logits_processors internally). GOTCHA: generate_step expects
-        # temperature= (long form); temp= is silently ignored, stuck at greedy 0.0.
         if max_new_tokens is None:
             max_new_tokens = self._unset_generation_budget(prompt)
             if images:
-                # As in _generate_vlm: media expands past its placeholder.
                 max_new_tokens = min(max_new_tokens, UNSET_GENERATION_BUDGET)
         vlm_kwargs = dict(
             max_tokens = max_new_tokens,
@@ -4840,9 +4797,6 @@ class MLXInferenceBackend:
         vlm_kwargs.update(self._kv_quant_generate_kwargs())
         vlm_kwargs.update(self._kv_window_generate_kwargs())
         if seed is not None:
-            # generate_step builds its temperature/top_p/min_p/top_k sampler only
-            # when sampler is None, so a seeded request must supply the whole
-            # chain -- otherwise seeding would silently disable those controls.
             vlm_kwargs["sampler"] = _make_seeded_mlx_sampler(
                 seed,
                 temp = temperature,
@@ -5165,15 +5119,7 @@ class MLXInferenceBackend:
             self._mark_stopped()
 
     def _kv_policy_batch_reason(self):
-        """Why the load-time KV policy rules out a batch, or None if it does not.
-
-        A quantized cache does on mlx-lm, whose batch generator takes no quantization
-        controls at all, so a batch would decode unquantized and drop a memory bound the
-        caller believes is in force. mlx-vlm's takes them, which is why a text load
-        asking for one batches there. A cache window does not rule a batch out:
-        mlx-vlm's batch generator takes no window control, so refusing would refuse
-        every vision batch of a bounded load.
-        """
+        """Why the load-time KV policy rules out a batch, or None if it does not."""
         if self._kv_quant_generate_kwargs() and not self._batches_on_vlm:
             return "quantized KV cache is enabled without a runtime that batches it"
         return None
@@ -5195,8 +5141,6 @@ class MLXInferenceBackend:
             if reason is not None:
                 return reason
             if any(_mlx_stop_sequences(request.get("stop")) for request in requests):
-                # A fixed set offers no per-row cancel, so a row cut by its own stop
-                # sequence keeps costing a forward per token.
                 return "a reply asks for stop sequences"
             return None
         return self._text_batch_unavailable_reason()
@@ -5215,12 +5159,7 @@ class MLXInferenceBackend:
         return self._text_batch_unavailable_reason()
 
     def _text_batch_unavailable_reason(self):
-        """Why the installed mlx-lm cannot batch this load's replies, or None.
-
-        Asked before committing, because building the batch is what fails otherwise, and
-        a reply whose batch cannot be built is owed the one-at-a-time decode it would
-        have had rather than an error.
-        """
+        """Why the installed mlx-lm cannot batch this load's replies, or None."""
         try:
             from unsloth_zoo.mlx.generate import stream_unavailable_reason
         except ImportError:
@@ -5228,8 +5167,7 @@ class MLXInferenceBackend:
         return stream_unavailable_reason(self._model, self._tokenizer)
 
     def _kv_quant_forwarding_gap(self, engine):
-        """Why this mlx-vlm would drop the load's quantization across a batch, or None.
-        Asked before committing, so such a release leaves the reply its one-at-a-time decode."""
+        """Why this mlx-vlm would drop the load's quantization across a batch, or None."""
         quant = self._kv_quant_generate_kwargs()
         if not quant:
             return None
@@ -5267,11 +5205,7 @@ class MLXInferenceBackend:
         )
 
     def _vision_batch_is_available(self) -> bool:
-        """Whether this load will decode vision replies together, asked without a request.
-
-        Either batch counts: both leave the window behind, and a release that cannot keep
-        one open still decodes a fan-out together. The conservative answer, deliberately.
-        """
+        """Whether this load will decode vision replies together, asked without a request."""
         if not self._batches_on_vlm:
             return False
         return (
@@ -5436,7 +5370,6 @@ class MLXInferenceBackend:
                 prefill_s = ready_at - started
                 seen_prompt, seen_generated = counted.get(row, (0, 0))
                 prompt_n = result.prompt_token_count if result is not None else seen_prompt
-                # A row cut short reports what it produced, which is already with the caller.
                 generated = (
                     len(result.token_ids) + (result.finish_reason == "stop")
                     if result is not None

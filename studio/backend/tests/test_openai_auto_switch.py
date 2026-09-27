@@ -7366,12 +7366,8 @@ def test_parallel_slots_are_stored_and_reach_either_backend():
 
     gguf = settings.model_override_load_kwargs(override, is_gguf = True)
     assert gguf["n_parallel"] == 8
-    # Both backends decode several replies at once, so a width saved for a safetensors
-    # model has to survive the trip an API-driven switch takes: dropped here, an MLX
-    # model picked that way loads at the server default and reserves memory for it.
     safetensors = settings.model_override_load_kwargs(override, is_gguf = False)
     assert safetensors["n_parallel"] == 8
-    # The batch sizes stay behind: they are llama-server flags.
     for flag in ("n_batch", "n_ubatch"):
         stored = settings.normalize_model_override({flag: 512})
         assert flag not in settings.model_override_load_kwargs(stored, is_gguf = False)
@@ -10008,9 +10004,6 @@ def test_auto_switch_loads_an_unloaded_mlx_model(monkeypatch):
 
     assert [c.model_path for c in calls] == ["/srv/models/Qwen3-MLX"]
     assert calls[0].gguf_variant is None
-    # Through the route, not just the kwargs helper: a width saved for a safetensors
-    # model has to reach the request an API switch builds, or the load reserves memory
-    # for the server default instead of the count that was chosen.
     assert calls[0].n_parallel == 8
     # The alias lands on the orchestrator, leaving the llama.cpp backend untouched.
     assert orchestrator._openai_advertised_id == "unsloth/Qwen3-MLX"

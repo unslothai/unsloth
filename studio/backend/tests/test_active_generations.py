@@ -2579,7 +2579,6 @@ def test_drain_returns_as_soon_as_the_cancelled_requests_unwind(monkeypatch):
     assert polls == 3
 
 
-# ── what the parent records about a stop, and what the worker reads ───
 
 
 def _ids(n):

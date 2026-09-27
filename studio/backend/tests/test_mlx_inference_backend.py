@@ -5063,8 +5063,7 @@ def test_a_text_load_whose_engine_cannot_batch_says_so_before_it_commits(monkeyp
     ),
 )
 def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
-    """Replayed tool images, a clip and the native tool protocol live only on the
-    one-at-a-time decode, so a batch declines them instead of dropping them."""
+    """Replayed tool images, a clip and the native tool protocol live only on the"""
     from core.inference.mlx_inference import MLXInferenceBackend
     from unsloth_zoo.mlx import generate as engine
 
@@ -5080,7 +5079,6 @@ def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
     assert backend.batch_unavailable_reason([plain, {**plain, **extra}]) is not None
 
 
-# ── several replies through one decode, on a real model ───────────────
 
 try:
     import mlx.core as _mx
@@ -5230,7 +5228,6 @@ def test_a_vision_reply_stopped_partway_reports_the_tokens_it_actually_used(batc
         assert (
             usage["prompt_tokens"] == entire["prompt_tokens"]
         ), "a stopped row read a different prompt than the same row read whole"
-        # The count follows the row: a fixed report would answer any stop the same way.
         assert len(seen) <= usage["completion_tokens"] < entire["completion_tokens"], (
             f"row {row} delivered {len(seen)} snapshots and reported "
             f"{usage['completion_tokens']} of {entire['completion_tokens']} tokens"
@@ -5264,7 +5261,6 @@ def test_a_text_load_asking_for_a_quantized_cache_batches_on_the_runtime_that_ca
     def remember(*a, **k):
         if not k["text_only"] and eligibility == "unbuildable":
             raise ValueError("Model type nemotron-nas not supported")
-        # A retry must find the mlx-vlm build it replaces already released.
         assert k["text_only"] is False or not refs or refs[-1][0] or refs[-1][1]() is None
         model, other = build(*a, **k)
         model.cycle = model  # as the loader's bound methods do: alive until collected

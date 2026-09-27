@@ -198,16 +198,11 @@ test("the usage bar names the three ways a window can end", () => {
   assert.equal(at(30000, { contextEnforced: undefined }), "unenforced-limit");
   // Only for MLX: nothing else installs a window whose bound could go unjudged.
   assert.equal(at(30000, { isMlx: false, contextEnforced: null }), "stops-at-limit");
-  // A vision load's batch generator takes no window control, so replies it decodes
-  // together escape a window the probe confirmed for a reply on its own. Which fact
-  // applies is the width, read here rather than server-side.
   const batched = { contextUnboundedWhenBatched: true };
   assert.equal(at(30000, { ...batched, parallelSlots: 4 }), "unenforced-limit");
   assert.equal(at(40000, { ...batched, parallelSlots: 4 }), "unenforced-limit");
-  // One slot decodes replies one at a time, so the probe still answers for it.
   assert.equal(at(30000, { ...batched, parallelSlots: 1 }), "mlx-near-limit");
   assert.equal(at(30000, { ...batched, parallelSlots: null }), "mlx-near-limit");
-  // A load that cannot batch is answered by the probe at any width.
   assert.equal(at(30000, { parallelSlots: 4 }), "mlx-near-limit");
 });
 
@@ -304,8 +299,6 @@ test("a load keeps the pin it was built from, wherever the record held it", () =
 });
 
 test("a load response's two window facts and width reach the bar together", () => {
-  // Read from the response, not defaulted: a mapping that dropped either fact would
-  // leave the bar advising a bound the load does not promise.
   const wide = loadedContextFields({
     is_mlx: true,
     context_length: 32768,
@@ -317,7 +310,6 @@ test("a load response's two window facts and width reach the bar together", () =
   assert.equal(wide.loadedContextUnboundedWhenBatched, true);
   assert.equal(wide.loadedParallelSlots, 4);
 
-  // And carried into the advice exactly as the page passes them.
   assert.equal(
     deriveContextUsageBar({
       used: 30000,
@@ -330,7 +322,6 @@ test("a load response's two window facts and width reach the bar together", () =
     "unenforced-limit",
   );
 
-  // llama.cpp decodes each slot against its own window however many it runs.
   const gguf = loadedContextFields({
     is_gguf: true,
     context_length: 32768,
@@ -342,8 +333,6 @@ test("a load response's two window facts and width reach the bar together", () =
 });
 
 test("a background load cannot leave the visible model reading another model's window", () => {
-  // Preserving some of the three across a background auto-load is worse than preserving
-  // none: the visible model would answer with another model's batching facts.
   const source = readFileSync(
     new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
     "utf8",

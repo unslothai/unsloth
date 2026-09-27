@@ -253,7 +253,6 @@ export function applyActiveModelStatusToStore(
       : hydratingExistingModel)
       ? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)
       : null;
-  // Ungated, unlike the batch sizes below: both backends are sized by the width.
   const rememberedNParallel = remembered?.remembered
     ? (remembered.config.nParallel ?? null)
     : null;
@@ -568,8 +567,6 @@ export function applyActiveModelStatusToStore(
         mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
       }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
-    // "server default". Refreshed on every echo: another client, or an MLX width change,
-    // can move the count without this tab reloading.
     ...(seedLoadParams &&
       status.requested_parallel_slots != null && {
         loadedNParallel: status.requested_parallel_slots,

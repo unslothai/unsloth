@@ -1439,8 +1439,6 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.getState().params.checkpoint;
       const pendingConfig =
         typeof selection !== "string" ? selection.config : undefined;
-      // nativePathToken is excluded: a leased file is named by a label two files can share,
-      // and only a completed load writes the lease, so adopting would keep a stale token.
       if (!forceReload && !nativePathToken) {
         const residentStatus = await getInferenceStatus().catch(() => null);
         // Warm before reconciling the remembered GPU pick below: load-on-selection can run before any
@@ -1504,8 +1502,6 @@ export function useChatModelRuntime() {
           // no saved record the caller has already run applyModelLoadConfigToRuntime(null), which resets the
           // store to DEFAULT_PER_MODEL_CONFIG, and performLoad reads the store for the rest.
           residentRuntimeMatchesConfig(status, comparedConfig, {
-            // What the applier fills an unset field with, so this compares against what
-            // /load would send rather than against silence.
             speculativeType: readPersistedSpeculativeType(),
             gpuMemoryMode: readPersistedGpuMemoryMode(),
             gpuLayers: GPU_LAYERS_AUTO,

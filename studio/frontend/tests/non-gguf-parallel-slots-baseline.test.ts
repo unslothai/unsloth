@@ -61,8 +61,6 @@ test("a status reporting no width clears the baseline it would otherwise re-send
 });
 
 test("a remembered non-GGUF width is adopted into the control, not just the baseline", async () => {
-  // The baseline above only feeds a rollback. Without this the control stays blank while
-  // the model runs on the remembered width, and the next Apply would save the blank over it.
   const { setResidentInitialConfig } = await import(
     "./helpers/store-stubs/model-picker.ts"
   );
@@ -81,9 +79,6 @@ test("a remembered non-GGUF width is adopted into the control, not just the base
 });
 
 test("the baseline follows a width the server changed underneath this tab", () => {
-  // An MLX width changes without a reload, so the running count can move while this tab
-  // holds the same model. A baseline left at the first count seen would show no pending
-  // difference and roll back to a width the server stopped running.
   useChatRuntimeStore.setState({
     modelLoading: false,
     loadedNParallel: 2,

@@ -33,8 +33,6 @@ from utils.hardware import apply_gpu_ids, is_apple_silicon
 from utils.native_tls import activate_native_tls
 
 
-# The parent builds these and the worker reads them; both processes import this
-# module, so they live here rather than in a file only the pair would share.
 _ID_BYTES = 36
 
 _SLOTS = 256
@@ -128,13 +126,7 @@ class RowRefused(Exception):
 
 
 def narrow_load_reason(cmd: dict) -> Optional[str]:
-    """Why no batch of either kind may take this command, or None.
-
-    A batch one reply wide buys nothing and still costs what a batch cannot carry, the
-    KV window among it, so both paths ask this. A command carries the width the load had
-    when it was built and asking for more replies does not raise it: one grouping more
-    choices than the load serves decodes them apart.
-    """
+    """Why no batch of either kind may take this command, or None."""
     width = int(cmd.get("parallel_slots") or 1)
     if width <= 1:
         return "this load decodes one reply at a time"
@@ -678,8 +670,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 {
                     k: _entry[k]
                     for k in (
-                        # The window answer needs both halves: only the worker knows
-                        # whether these replies decode together, only the parent the width.
                         "context_unbounded_when_batched",
                         "mlx_kv_bits",
                         "mlx_kv_bits_requested",
@@ -937,7 +927,6 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
         "cancel_event": cancel_event,
     }
 
-    # Forward only present optional keys so the backend signature can evolve.
     for opt_key in (
         "tools",
         "enable_thinking",
@@ -951,15 +940,9 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
     if cmd.get("image_ordinal") is not None and _backend_declares(backend, "image_ordinal"):
         gen_kwargs["image_ordinal"] = cmd["image_ordinal"]
 
-    # Not every backend declares these (transformers declares only ``stop``)
-    # and none takes **kwargs, so forwarding unconditionally would turn a
-    # backend's documented "ignores them" behavior into a TypeError.
-    # ``tool_protocol_active`` rides here rather than above: MLX declares no such
-    # parameter and takes no **kwargs, so an unconditional forward would raise.
     for gated in ("seed", "frequency_penalty", "logit_bias", "stop", "tool_protocol_active"):
         if gated in cmd and _backend_declares(backend, gated):
             gen_kwargs[gated] = cmd[gated]
-    # A clip cannot be dropped like an unknown sampling knob: the answer would ignore it.
     if cmd.get("video_base64"):
         if not _backend_declares(backend, "video"):
             raise RuntimeError("The loaded backend does not read video.")
@@ -1086,10 +1069,7 @@ def _decline_count_tokens(
 
 
 def _load_can_batch(backend) -> bool:
-    """Whether this load serves several replies at once at all.
-
-    Either batch counts: a release that cannot keep one open still decodes a fan-out.
-    """
+    """Whether this load serves several replies at once at all."""
     fixed = getattr(backend, "batch_unavailable_reason", None)
     resident = getattr(backend, "resident_unavailable_reason", None)
     return (callable(fixed) and fixed([{}, {}]) is None) or (
@@ -1098,14 +1078,10 @@ def _load_can_batch(backend) -> bool:
 
 
 def _generate_rows_apart(backend, requests, request_id, resp_queue, cancel_event) -> None:
-    """Serve a declined batch reply by reply, reporting what the batch would have.
-
-    A cancelled command still closes out the rows it never reached.
-    """
+    """Serve a declined batch reply by reply, reporting what the batch would have."""
     for row, request in enumerate(requests):
         stats = None
         if not cancel_event.is_set():
-            # Row overrides arrive unvetted, so the backend is given only what it declares.
             generator = backend.generate_chat_response(
                 **{
                     name: value
@@ -1229,12 +1205,7 @@ def _admitted_width(cmd: dict) -> int:
 
 
 def _held_head_leaves_the_hold(batch: "_ResidentBatch", held: list) -> bool:
-    """Whether the head comes off the hold on this pass; the batch can still turn it away.
-
-    It leaves on a drained batch rather than on a quiet queue, which busy traffic never
-    supplies, and on a decoding batch that can still take it, so replies held behind one
-    incompatible command do not decode a batch at a time.
-    """
+    """Whether the head comes off the hold on this pass; the batch can still turn it away."""
     if not held:
         return False
     if not batch.rows_in_flight:
@@ -1252,7 +1223,6 @@ class _ResidentBatch:
         self.session = None
         self.width = None
         self._owed: dict = {}
-        # Cleared with the batch, because that batch is what these were refused from.
         self._refused: set = set()
 
     @property
@@ -1268,7 +1238,6 @@ class _ResidentBatch:
         if cmd.get("request_id", "") in self._refused:
             return "this batch has already refused these replies"
         if cmd.get("use_adapter") is not None:
-            # This batch keeps one adapter state for everything inside it.
             return "the reply asks for a particular adapter state"
         reason = narrow_load_reason(cmd)
         if reason is not None:
@@ -1281,7 +1250,6 @@ class _ResidentBatch:
             self.width is not None
             and self.rows_in_flight + len(cmd.get("rows") or [None]) > self.width
         ):
-            # Past the width, rows would wait inside the generator holding their prompt state.
             return "the open batch is full"
         probe = getattr(self.backend, "resident_unavailable_reason", None)
         if not callable(probe):
@@ -1301,14 +1269,10 @@ class _ResidentBatch:
         requests = [{**shared, **row} for row in rows] if rows else [shared]
 
         if self.session is None:
-            # A width change reaches an open batch only once it drains: a decoding
-            # generator cannot be resized without dropping the replies inside it.
             self.width = _admitted_width(cmd)
             try:
                 self.session = self.backend.open_resident_batch(width = self.width)
             except Exception as unopened:
-                # A batch that will not open is not a reply that cannot be served: this
-                # one is owed the decode it would have had before any batch existed.
                 logger.warning(
                     "No batch could be opened for request_id=%s, decoding it alone: %s",
                     request_id,
@@ -1954,8 +1918,6 @@ def run_inference_process(
                             reason,
                         )
                         if from_deferred:
-                            # Back where it was taken from, so a head the batch turned
-                            # away keeps its turn over what was waiting behind it.
                             deferred.insert(0, cmd)
                         else:
                             deferred.append(cmd)
@@ -2021,7 +1983,6 @@ def run_inference_process(
                     )
                 elif cmd_type == "count_tokens":
                     if batch.rows_in_flight:
-                        # A dispatched generation holds no orchestrator lock to wait behind.
                         _decline_count_tokens(cmd, resp_queue, "A generation is in progress.")
                     else:
                         _handle_count_tokens(backend, cmd, resp_queue)

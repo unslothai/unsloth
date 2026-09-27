@@ -30,7 +30,6 @@ class _Session:
     """A batch that hands back whatever the test scripted for each reply."""
 
     def __init__(self, *, width):
-        # Not named "width": no production session has that attribute.
         self.opened_at = width
         self.rows, self.ending, self.refusals = [], [], []
         self.settled, self.script, self.stats_at_retire = {}, {}, {}
@@ -255,12 +254,7 @@ _HOLD_CASES = [
 
 @pytest.mark.parametrize("case", _HOLD_CASES)
 def test_the_hold_releases_its_head_and_keeps_its_order(monkeypatch, case):
-    """The hold's whole contract, over the traffic that breaks each part of it.
-
-    Its head runs once the batch drains rather than once the queue falls quiet, and into
-    a decoding batch that can still take it. A row the session itself refuses is not
-    offered again, and goes back to the head rather than behind later arrivals.
-    """
+    """The hold's whole contract, over the traffic that breaks each part of it."""
     backend = _Backend()
     backend.script = {(name, None): events for name, events in case["script"].items()}
     if "refuse" in case:
@@ -303,7 +297,6 @@ class _DecliningBackend:
         seed = None,
         **kwargs,
     ):
-        # Echoes this row: a fallback decoding row zero twice would look the same.
         yield f"seed {seed}"
         yield f"seed {seed} done"
 
