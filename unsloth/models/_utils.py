@@ -729,7 +729,38 @@ def _flex_attn_impl_for(config, other_attn_implementation):
     return None
 
 
-def _flash_unsupported_sub_configs(config):
+def _sibling_model_class_for_config(model_class, child_config):
+    """The PreTrainedModel in `model_class`'s own modeling module built from `child_config`'s class.
+
+    Towers that are not registered with the Auto classes (Apertus 1.5's vision tokenizer) are only
+    reachable this way.
+    """
+    import sys
+
+    module = sys.modules.get(getattr(model_class, "__module__", None) or "")
+    if module is None:
+        return None
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        return None
+    config_type = type(child_config)
+    candidates = []
+    for value in vars(module).values():
+        if (
+            isinstance(value, type)
+            and issubclass(value, PreTrainedModel)
+            and getattr(value, "config_class", None) is config_type
+        ):
+            candidates.append(value)
+    if not candidates:
+        return None
+    # The concrete model over its *PreTrainedModel base: that is the class Transformers validates.
+    candidates.sort(key = lambda klass: (klass.__name__.endswith("PreTrainedModel"), klass.__name__))
+    return candidates[0]
+
+
+def _flash_unsupported_sub_configs(config, model_class = None):
     """{sub-config: fallback} for towers lacking flash, which Transformers rejects (LFM2-VL SigLIP2)."""
     try:
         from transformers import AutoModel, AutoModelForCausalLM
@@ -755,6 +786,8 @@ def _flash_unsupported_sub_configs(config):
                 continue
         if isinstance(child_class, (list, tuple)):
             child_class = child_class[0] if child_class else None
+        if child_class is None and model_class is not None:
+            child_class = _sibling_model_class_for_config(model_class, child_config)
         if child_class is None:
             continue
         if getattr(child_class, "_supports_flash_attn", False) or getattr(
@@ -765,8 +798,15 @@ def _flash_unsupported_sub_configs(config):
     return out
 
 
-def _scoped_flash_attention(config, supports_sdpa):
-    unsupported = _flash_unsupported_sub_configs(config)
+def _scoped_flash_attention(
+    config,
+    supports_sdpa,
+    model_class = None,
+):
+    if model_class is None:
+        unsupported = _flash_unsupported_sub_configs(config)
+    else:
+        unsupported = _flash_unsupported_sub_configs(config, model_class)
     if not unsupported:
         return "flash_attention_2"
     if not _transformers_supports_attn_impl_mapping():
@@ -2138,7 +2178,9 @@ def resolve_attention_implementation(
             and supports_flash_attention
             and not flex_forced_for_head_dim
         ):
-            attn_impl = _set_attn_impl(config, _scoped_flash_attention(config, supports_sdpa))
+            attn_impl = _set_attn_impl(
+                config, _scoped_flash_attention(config, supports_sdpa, model_class)
+            )
         elif flash_attention_disabled:
             attn_impl = _disable_flash_attention_if_needed(
                 config,
@@ -2187,7 +2229,7 @@ def resolve_attention_implementation(
     else:
         final_attn_impl = requested_attn_implementation
         if final_attn_impl == "flash_attention_2":
-            final_attn_impl = _scoped_flash_attention(config, supports_sdpa)
+            final_attn_impl = _scoped_flash_attention(config, supports_sdpa, model_class)
         _set_attn_impl(config, final_attn_impl)
 
     # An explicit "sdpa" is kept even on a conservatively unsupported model, except where SDPA is known-broken, which still downgrades to eager just as flex falls back for _FLEX_EXCLUDED_MODELS. A synthesized default sdpa (requested is None) also downgrades.
