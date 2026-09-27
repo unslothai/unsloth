@@ -2628,12 +2628,52 @@ def _make_mlx_logit_bias_processor(logit_bias: dict):
     return _processor
 
 
+def _vlm_generation_is_diffusion(model) -> bool:
+    try:
+        from mlx_vlm.generate.diffusion import is_diffusion_model
+    except Exception:
+        return False
+    try:
+        return bool(is_diffusion_model(model))
+    except Exception:
+        return False
+
+
+def _build_grammar_constraint(
+    response_format,
+    tokenizer,
+    prompt,
+    *,
+    reasoning_markers = None,
+    tools = None,
+    reasoning_is_extracted = False,
+    reply_keeps_special_tokens = False,
+):
+    if response_format is None or response_format == {"type": "text"}:
+        return None
+    from core.inference.grammar_constraint import build_constraint
+
+    constraint = build_constraint(
+        response_format,
+        tokenizer,
+        prompt,
+        reasoning_markers = reasoning_markers,
+        tools = tools,
+        reasoning_is_extracted = reasoning_is_extracted,
+        reply_keeps_special_tokens = reply_keeps_special_tokens,
+    )
+    if constraint is not None:
+        logger.info("Guided decoding active: response_format=%s", response_format.get("type"))
+    return constraint
+
+
 def _mlx_sampling_processors(
     *,
     repetition_penalty = None,
     presence_penalty: float = 0.0,
     frequency_penalty: float = 0.0,
     logit_bias = None,
+    grammar_constraint = None,
 ):
     """Logits processors for the sampling knobs, or ``None`` when all are inert. Bias runs before
     the penalties, matching llama-server's sampler order. mlx_lm supplies only the repetition
@@ -2641,6 +2681,9 @@ def _mlx_sampling_processors(
     prompt*, while the penalties below score the whole completion and exclude it, so using them
     would make the same request sample differently depending on the backend."""
     processors = []
+    if grammar_constraint is not None:
+        from core.inference.grammar_constraint import make_grammar_logits_processor
+        processors.append(make_grammar_logits_processor(grammar_constraint))
     if logit_bias:
         processors.append(_make_mlx_logit_bias_processor(logit_bias))
     if repetition_penalty is not None and float(repetition_penalty) not in (0.0, 1.0):
@@ -3593,6 +3636,8 @@ class MLXInferenceBackend:
         frequency_penalty = 0.0,
         logit_bias = None,
         stop = None,
+        response_format = None,
+        reasoning_is_extracted = False,
         _adapter_state = None,
         # Unrestricted mode runs the tool protocol with an EMPTY tools list, so bool(tools)
         # cannot tell that the wrappers below still have to survive decoding.
@@ -3683,6 +3728,8 @@ class MLXInferenceBackend:
                 _adapter_state = _adapter_state,
                 stop = stop,
                 tool_protocol_active = tool_protocol_active,
+                response_format = response_format,
+                reasoning_is_extracted = reasoning_is_extracted,
                 video = video,
             )
         else:
@@ -3707,6 +3754,8 @@ class MLXInferenceBackend:
                 _adapter_state = _adapter_state,
                 stop = stop,
                 tool_protocol_active = tool_protocol_active,
+                response_format = response_format,
+                reasoning_is_extracted = reasoning_is_extracted,
             )
         yield from stream
 
@@ -3738,6 +3787,8 @@ class MLXInferenceBackend:
         _adapter_state = None,
         tool_protocol_active = None,
         stop = None,
+        response_format = None,
+        reasoning_is_extracted = False,
     ):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
@@ -3757,20 +3808,32 @@ class MLXInferenceBackend:
         # Not the request flag: a later tool-loop pass keeps it but renders an ordinary post-tool prompt.
         _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
 
+        preserve_native_channels = reasoning_channel_markers is not None
         # An open <think> prefilled by the template lives in the prompt, not the generated tokens; re-emit it so the
         # frontend renders the block.
+        # Matches native_token_decoder below: when it runs </think> survives, so re-emit the opener.
+        think_close_survives = (
+            bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
+        ) and decoder_preserves_token(
+            self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
+        )
         think_prefix = detect_think_prefill(
             prompt,
             getattr(self._tokenizer, "all_special_tokens", None),
-            # Matches native_token_decoder below: when it runs </think> survives, so the
-            # prefilled opener has to be re-emitted with it.
-            preserves_think_close = (
-                bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
-            )
-            and decoder_preserves_token(
-                self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
-            ),
+            preserves_think_close = think_close_survives,
         )
+        constraint = _build_grammar_constraint(
+            response_format,
+            self._tokenizer,
+            prompt,
+            reasoning_markers = reasoning_channel_markers,
+            reasoning_is_extracted = reasoning_is_extracted,
+            # Must match the prefill's answer, or a closer it re-emits would be refused.
+            reply_keeps_special_tokens = preserve_native_channels or think_close_survives,
+        )
+        if constraint is not None and not constraint.allows_reasoning:
+            think_prefix = ""
+            preserve_native_channels = False
         if seed is None:
             sampler = make_sampler(
                 temp = temperature,
@@ -3792,9 +3855,9 @@ class MLXInferenceBackend:
             presence_penalty = presence_penalty,
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
+            grammar_constraint = constraint,
         )
 
-        preserve_native_channels = reasoning_channel_markers is not None
         native_token_decoder = (
             NativeToolTokenDecoder(
                 self._tokenizer,
@@ -3803,6 +3866,10 @@ class MLXInferenceBackend:
             if tools or preserve_native_channels or tool_protocol_active
             else None
         )
+        if constraint is not None:
+            constraint.decoded_dropping(
+                native_token_decoder.dropped_ids() if native_token_decoder is not None else None
+            )
         # Consulted per token on the reasoning path below, so resolved once here.
         stop_token_ids = (
             _mlx_stop_token_ids(self._tokenizer, self._model)
@@ -3827,7 +3894,7 @@ class MLXInferenceBackend:
                     prompt, reasoning_channel_markers, _resumed_partial
                 ),
             )
-            if reasoning_channel_markers is not None
+            if preserve_native_channels
             else None
         )
         # Sequences match the sampled text, ahead of the prefill this path restores and the <think> rewriting below:
@@ -3926,6 +3993,12 @@ class MLXInferenceBackend:
                             sampled = self._tokenizer.decode(
                                 token_ids,
                                 skip_special_tokens = True,
+                                # Cleanup would rewrite " ." inside a grammar-approved string.
+                                **(
+                                    {"clean_up_tokenization_spaces": False}
+                                    if constraint is not None
+                                    else {}
+                                ),
                             )
                         if not sequences:
                             yield think_prefix + sampled
@@ -4158,6 +4231,8 @@ class MLXInferenceBackend:
         tool_protocol_active = None,
         stop = None,
         video = None,
+        response_format = None,
+        reasoning_is_extracted = False,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
@@ -4177,7 +4252,6 @@ class MLXInferenceBackend:
 
         # Detected once: the decoder keeps the delimiters the normalizer below consumes.
         vlm_reasoning_markers = detect_reasoning_channel_markers(chat_target, tools = tools)
-        # Re-emit an open <think> prefill from the prompt (see _generate_text).
         prefill = detect_think_prefill(
             prompt,
             getattr(chat_target, "all_special_tokens", None),
@@ -4232,7 +4306,30 @@ class MLXInferenceBackend:
             0.0,
             1.0,
         )
-        if presence_penalty or frequency_penalty or logit_bias:
+        constraint = _build_grammar_constraint(
+            response_format,
+            chat_target,
+            prompt,
+            reasoning_markers = vlm_reasoning_markers,
+            tools = tools,
+            reasoning_is_extracted = reasoning_is_extracted,
+            reply_keeps_special_tokens = True,
+        )
+        document_only = constraint is not None and not constraint.allows_reasoning
+        if document_only:
+            prefill = ""
+        elif constraint is not None:
+            # The grammar lets a kept </think> close the block: re-emit the opener or it all reads as content.
+            prefill = detect_think_prefill(prompt, preserves_think_close = True)
+        if constraint is not None and _vlm_generation_is_diffusion(self._model):
+            from core.inference.grammar_constraint import ResponseFormatError
+            raise ResponseFormatError(
+                "response_format is not supported on this model: it generates by "
+                "diffusion rather than one token at a time, so no grammar can "
+                "constrain the next token. Load an autoregressive model to use "
+                "guided decoding."
+            )
+        if presence_penalty or frequency_penalty or logit_bias or constraint is not None:
             # These need custom processors: pass the full list (repetition + the rest) instead of the
             # repetition_penalty shortcut so all apply.
             vlm_kwargs["logits_processors"] = _mlx_sampling_processors(
@@ -4240,6 +4337,7 @@ class MLXInferenceBackend:
                 presence_penalty = presence_penalty,
                 frequency_penalty = frequency_penalty,
                 logit_bias = logit_bias,
+                grammar_constraint = constraint,
             )
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
@@ -4256,6 +4354,11 @@ class MLXInferenceBackend:
             and self._tokenizer
             else None
         )
+        if constraint is not None:
+            # mlx-vlm stops on the config's ids, which some repos set apart from the tokenizer's.
+            constraint.stops_on(_mlx_stop_token_ids(self._tokenizer, self._model))
+        if constraint is not None and vlm_token_decoder is not None:
+            constraint.decoded_dropping(vlm_token_decoder.dropped_ids())
         # The runtime EOS can itself be an allowlisted control, and this path appends every
         # decoded token to the snapshot, so it would trail each answer. As in _generate_text.
         vlm_stop_ids = (
@@ -4406,16 +4509,20 @@ class MLXInferenceBackend:
                             ),
                         )
 
-        yield from normalize_reasoning_snapshots(
-            _stream_vlm_snapshots(),
-            chat_target,
-            cancel_event,
-            markers = vlm_reasoning_markers,
-            tools = tools,
-            prompt = prompt,
-            continued = vlm_continued,
-            ended = lambda: stopped,
-        )
+        if document_only:
+            # The normalizer would rewrite marker text inside the document.
+            yield from _stream_vlm_snapshots()
+        else:
+            yield from normalize_reasoning_snapshots(
+                _stream_vlm_snapshots(),
+                chat_target,
+                cancel_event,
+                markers = vlm_reasoning_markers,
+                tools = tools,
+                prompt = prompt,
+                continued = vlm_continued,
+                ended = lambda: stopped,
+            )
         if stopped:
             self._mark_stopped()
 

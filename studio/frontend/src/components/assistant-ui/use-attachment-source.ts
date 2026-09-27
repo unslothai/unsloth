@@ -22,6 +22,7 @@ export type AttachmentSource = {
   src: string | undefined;
   audio: AttachmentAudioPart | undefined;
   text: string | undefined;
+  hasOriginal: boolean;
 };
 
 const useFileSrc = (file: File | undefined): string | undefined => {
@@ -45,7 +46,9 @@ const useFileSrc = (file: File | undefined): string | undefined => {
 export const useAttachmentSource = (): AttachmentSource => {
   const source = useAuiState(useShallow(selectAttachmentSource));
 
-  const fileSrc = useFileSrc(source.kind === "text" ? undefined : source.file);
+  const fileSrc = useFileSrc(
+    source.kind === "text" || source.kind === "document" ? undefined : source.file,
+  );
 
   // audio passes through unjoined: the payload is MAX_AUDIO_SIZE of base64 and every tile mounts this hook
   return {
@@ -56,6 +59,7 @@ export const useAttachmentSource = (): AttachmentSource => {
     src: fileSrc ?? source.image,
     audio: source.audio,
     text: source.text,
+    hasOriginal: source.hasOriginal,
   };
 };
 

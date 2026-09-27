@@ -285,8 +285,11 @@ export {
   attachmentTextLanguage,
   countAttachmentTextLines,
   isAudioAttachment,
+  attachmentBodyText,
   parseAttachmentText,
   readAttachmentText,
+  repackDocxAttachmentArchive,
+  repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
 } from "./attachment-content";
 export { ApiProviderLogo } from "./api-provider-logo";
@@ -505,3 +508,4 @@ export {
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
 } from "./utils/composer-preferences";
+export { isTextAttachmentName } from "./text-attachment-accept";
