@@ -32,8 +32,7 @@ _XPU_MULTI_DEVICE = (
 
 
 def _fp8_triton_device_context(tensor: torch.Tensor, static_device_count = False):
-    # static_device_count only for forward-only kernels: letting Dynamo trace through the per-call count
-    # made torch 2.11 compile FP8BlockQuantLinear's backward to a zero input gradient.
+    # static_device_count only for forward-only kernels: torch 2.11 compiles FP8BlockQuantLinear's backward to zeros.
     if tensor.device.type == "cuda" and (
         _CUDA_MULTI_DEVICE if static_device_count else torch.cuda.device_count() > 1
     ):
