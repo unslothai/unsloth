@@ -904,6 +904,42 @@ RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_text_tokenizer)
 RL_FUNCTIONS["cpo_trainer"].append(orpo_trainer_text_tokenizer)
 
 
+# TRL 0.29+ ORPO/CPO tokenize_row never truncates the prompt and cuts answers to `max_length - longer_response_length`, so prompt + answer can exceed max_length. The fast forward cuts input_ids to max_seq_length while labels keep the full row, which crashes the log-prob gather. Hold each row to max_length the way TRL <= 0.25 did with max_prompt_length (keep a prompt budget, then cut the answer); rows that fit are untouched.
+_ORPO_ROW_CAP = (
+    "_unsloth_ul = max(len(chosen_tokens['input_ids']), len(rejected_tokens['input_ids']))\n"
+    "_unsloth_pl = max(len(chosen_tokens['prompt_input_ids']), len(rejected_tokens['prompt_input_ids']))\n"
+    "if self.max_length is not None and _unsloth_pl + _unsloth_ul > self.max_length:\n"
+    "    _unsloth_keep = min(_unsloth_pl, max(self.max_length - _unsloth_ul, self.max_length // 2))\n"
+    "    _unsloth_keep_start = getattr(self, 'truncation_mode', 'keep_end') == 'keep_start'\n"
+    "    for answer_tokens in [chosen_tokens, rejected_tokens, prompt_tokens]:\n"
+    "        for k in ['prompt_input_ids', 'prompt_attention_mask']:\n"
+    "            answer_tokens[k] = answer_tokens[k][:_unsloth_keep] if _unsloth_keep_start else answer_tokens[k][max(0, len(answer_tokens[k]) - _unsloth_keep):]\n"
+    "    for answer_tokens in [chosen_tokens, rejected_tokens]:\n"
+    "        for k in ['input_ids', 'attention_mask']:\n"
+    "            answer_tokens[k] = answer_tokens[k][: self.max_length - _unsloth_keep]\n"
+)
+
+
+def orpo_trainer_row_cap(function_name, function):
+    if (
+        function_name != "tokenize_row"
+        or "_unsloth_ul" in function
+        or "max_prompt_length" in function
+    ):
+        return function
+    # Before TRL's own response cut: its negative slice end can empty the shorter answer.
+    match = re.search(r"(?m)^([ \t]*)longer_response_length = max\(", function)
+    if match is None:
+        return function
+    indent = match.group(1)
+    block = "".join(indent + line + "\n" for line in _ORPO_ROW_CAP.splitlines())
+    return function[: match.start()] + block + function[match.start() :]
+
+
+RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_row_cap)
+RL_FUNCTIONS["cpo_trainer"].append(orpo_trainer_row_cap)
+
+
 # Resolve processing_class.pad_token_id through the inner tokenizer when a multimodal processor is supplied: processors lack pad_token_id, so ORPO/CPOTrainer.__init__ raises AttributeError in the collator and padding_value.
 _PAD_FALLBACK = (
     "(getattr(processing_class, 'pad_token_id', None) "
