@@ -460,7 +460,9 @@ LTX23_PREQUANT_RESIDENT_GB = 19.06
 # stock weights without a word. Identity from the Hub (Lightricks/LTX-2.3 @ 5948be4ced3a, 2026-09-27). No mirror hosts
 # the bf16 single file (unsloth/LTX-2.3-GGUF carries GGUFs), so the official repo is the only source.
 LTX23_PREQUANT_SOURCE_REPOS = frozenset({"lightricks/ltx-2.3"})
-_LTX23_HUB_REPO_DIRS = frozenset("models--" + r.replace("/", "--") for r in LTX23_PREQUANT_SOURCE_REPOS)
+_LTX23_HUB_REPO_DIRS = frozenset(
+    "models--" + r.replace("/", "--") for r in LTX23_PREQUANT_SOURCE_REPOS
+)
 LTX23_PREQUANT_SOURCE_SIZE = 46_149_345_038
 # The LFS sha256, which is also the blob name the Hub cache links the snapshot entry to: free to check there.
 LTX23_PREQUANT_SOURCE_SHA256 = "14409a4d1337a8ded02fa87fb895b17a91ab2c6588f7cc3352e624ff18a689bf"

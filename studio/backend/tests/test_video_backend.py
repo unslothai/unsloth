@@ -11710,7 +11710,9 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
         fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)
     (snap / name).unlink()
     (snap / name).symlink_to(fake)
-    monkeypatch.setattr(video_ltx2, "ltx23_source_sha256", lambda path: hashed.append(path) or "1" * 64)
+    monkeypatch.setattr(
+        video_ltx2, "ltx23_source_sha256", lambda path: hashed.append(path) or "1" * 64
+    )
     assert not video_ltx2.ltx23_source_file_verified(snap / name)
     assert hashed
     (snap / name).unlink()
