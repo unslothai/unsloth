@@ -1896,7 +1896,7 @@ $t = $null; $e = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($Source, [ref]$t, [ref]$e)
 foreach ($name in @('Get-StudioSystem32Tool', 'Invoke-StudioSystem32ToolBounded',
         'Test-StudioChildScriptDirectoryElevated', 'New-StudioChildScriptDirectory',
-        'Get-NvidiaNvmlLibraryPath', 'Read-NvidiaLibraryRawViaPython')) {
+        'Get-NvidiaNvmlLibraryPath', 'Get-NvidiaSystem32Dir', 'Read-NvidiaLibraryRawViaPython')) {
     $fn = @($ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true))
     if ($fn.Count) { Invoke-Expression $fn[0].Extent.Text }

@@ -1640,6 +1640,27 @@ function Test-StudioPathUnderAdminRoot {
 
 function Invoke-StudioSystem32ToolBounded {
     param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutMs = 3000)
+    # CLM cannot construct ProcessStartInfo. A job captures the trusted system tool's
+    # output through PowerShell's pipes, without redirect files in an unlabelled directory.
+    if ("$($ExecutionContext.SessionState.LanguageMode)" -ne "FullLanguage") {
+        $job = $null
+        try {
+            $seconds = ($TimeoutMs - ($TimeoutMs % 1000)) / 1000
+            if (($TimeoutMs % 1000) -ne 0) { $seconds++ }
+            if ($seconds -lt 1) { $seconds = 1 }
+            $job = Start-Job -ScriptBlock {
+                param($tool, $toolArgs)
+                $lines = @(& $tool @toolArgs 2>$null)
+                return @{ Output = ($lines -join "`n"); ExitCode = $LASTEXITCODE }
+            } -ArgumentList $Exe, (,$Arguments)
+            if (Wait-Job -Job $job -Timeout $seconds) {
+                return (Receive-Job -Job $job -ErrorAction SilentlyContinue | Select-Object -Last 1)
+            }
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
+        } catch { return $null }
+        finally { if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue } }
+        return $null
+    }
     $proc = $null
     try {
         # If policy forbids these types, decline. The caller treats an unreadable
@@ -1916,7 +1937,8 @@ def main():
 
 main()
 '@
-    # Cmdlets only. Constrained Language Mode refuses New-Object ProcessStartInfo and
+    # Cmdlets only: Constrained Language Mode refuses New-Object ProcessStartInfo and
+    # [Process]::Start, and this launcher has to work there.
     $probeDir = New-StudioChildScriptDirectory
     $inline = (-not $probeDir)
     if ($inline) {

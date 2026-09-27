@@ -545,6 +545,49 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
     }
 }
 
+# Constrained Language Mode refuses ProcessStartInfo, so the system-tool wrapper has a job branch:
+# without it the directory label and the elevation read both fail, and every probe declines.
+# A host with no enforced policy refuses Start-Job from a hand-constrained session, so a trusted
+# wrapper starts the job and constrains its body instead, as an enforced policy would.
+if ($IsWindows -or $env:OS -eq "Windows_NT") {
+    Write-Host "  SKIP  the constrained system-tool rows need a POSIX shell"
+} else {
+    $clmDir = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-clmtool-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $clmDir | Out-Null
+    try {
+        $tool = Join-Path $clmDir "tool"
+        [System.IO.File]::WriteAllText($tool, "#!/bin/sh`nif [ `"`$1`" = hang ]; then exec sleep 30; fi`nprintf '%s|' `"`$@`"`nexit 3`n")
+        & chmod +x $tool
+        foreach ($file in @($installPs1, $setupPs1)) {
+            $leaf = Split-Path $file -Leaf
+            $script = @(
+                'function Start-Job {'
+                '    param([scriptblock]$ScriptBlock, [object[]]$ArgumentList)'
+                '    $body = ''$ExecutionContext.SessionState.LanguageMode = "ConstrainedLanguage"; & {'' + $ScriptBlock.ToString() + ''} @args'''
+                '    Microsoft.PowerShell.Core\Start-Job -ScriptBlock ([scriptblock]::Create($body)) -ArgumentList $ArgumentList'
+                '}'
+                '$ExecutionContext.SessionState.LanguageMode = "ConstrainedLanguage"'
+                (Get-Helper $file "Invoke-StudioSystem32ToolBounded")
+                '$r = Invoke-StudioSystem32ToolBounded -Exe $args[0] -Arguments @("a b", "c")'
+                '"MODE=$($ExecutionContext.SessionState.LanguageMode)"'
+                '"OUT=$($r.Output) EXIT=$($r.ExitCode)"'
+                '$t0 = Get-Date'
+                '$h = Invoke-StudioSystem32ToolBounded -Exe $args[0] -Arguments @("hang") -TimeoutMs 1000'
+                '"HUNG=$($null -eq $h) SECS=$([int]((Get-Date) - $t0).TotalSeconds)"'
+            ) -join "`n"
+            $scriptPath = Join-Path $clmDir "clm_$leaf"
+            [System.IO.File]::WriteAllText($scriptPath, $script)
+            $out = @(& pwsh -NoProfile -File $scriptPath $tool 2>&1 | ForEach-Object { "$_" }) -join "`n"
+            Check "constrained ($leaf): the session really is constrained" ($out -match 'MODE=ConstrainedLanguage')
+            Check "constrained ($leaf): a system tool's output and exit code come back" ($out -match 'OUT=a b\|c\| EXIT=3')
+            $secs = if ($out -match 'SECS=(\d+)') { [int]$Matches[1] } else { 99 }
+            Check "constrained ($leaf): a hung system tool is abandoned near its bound" ($out -match 'HUNG=True' -and $secs -lt 10)
+        }
+    } finally {
+        Remove-Item -LiteralPath $clmDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed"
