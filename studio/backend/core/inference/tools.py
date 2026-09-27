@@ -11454,6 +11454,8 @@ def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
             # a real file there is the user's like any other.
             if _is_spill_artifact(target, parent, name):
                 continue
+            if _is_attachment_copy(target, parent, name):
+                continue
             return False
         budget -= 1
         if budget <= 0:
@@ -19702,6 +19704,116 @@ def _quiet_unlink(path: str, dir_fd = None) -> None:
         os.unlink(path, dir_fd = dir_fd) if dir_fd is not None else os.unlink(path)
     except OSError:
         pass
+
+
+# Hidden, like the spill directory: a project chat's workdir can be the user's own folder.
+_ATTACHMENTS_DIR = ".unsloth_attachments"
+_ATTACHMENT_PREFIX_LEN = 12
+_ATTACHMENT_NAME_BYTES = 80
+_UNSAFE_NAME_CHARS = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|]')
+
+
+def sandbox_attachment_path(sha256: str, name: str) -> str:
+    """Mirrored by sandboxAttachmentPath in the frontend's sandbox-attachments.ts."""
+    base = _UNSAFE_NAME_CHARS.sub("_", name or "").strip(" .") or "attachment"
+    # In bytes: filesystems cap a name at 255, and macOS stores decomposed text that can triple it.
+    if len(base.encode()) > _ATTACHMENT_NAME_BYTES:
+        stem, ext = os.path.splitext(base)
+        ext = ext if len(ext.encode()) <= 16 else ""
+        room = _ATTACHMENT_NAME_BYTES - len(ext.encode())
+        # Stripped again so the basename the frontend sends back derives this same path.
+        base = (stem.encode()[:room].decode("utf-8", "ignore").rstrip(" .") or "attachment") + ext
+    return f"{_ATTACHMENTS_DIR}/{sha256[:_ATTACHMENT_PREFIX_LEN]}/{base}"
+
+
+def materialize_sandbox_attachments(
+    session_id: "str | None", attachments: "list[tuple[str, str]]"
+) -> None:
+    """Copy chat attachment originals into the sandbox, leaving one already there so edits survive."""
+    from core import chat_originals
+    with _session_in_flight(session_id):
+        workdir = _get_workdir(session_id)
+        for sha256, name in attachments:
+            source = chat_originals.originals_dir() / sha256
+            if not source.is_file():
+                continue
+            try:
+                _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
+            except (OSError, ValueError):
+                logger.warning(
+                    "could not copy attachment %s into the sandbox", sha256, exc_info = True
+                )
+
+
+def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
+    """The spill writer's discipline: no link followed, and `os.link` never replaces a name."""
+    *dirs, name = relative.split("/")
+    tmp = f".tmp-{uuid.uuid4().hex[:12]}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if not _DIR_FD_WRITES:
+        target = workdir
+        for part in dirs:
+            target = os.path.join(target, part)
+            if os.path.islink(target):
+                return
+            os.makedirs(target, mode = 0o700, exist_ok = True)
+        if os.path.realpath(target) != os.path.join(os.path.realpath(workdir), *dirs):
+            return
+        if os.path.lexists(os.path.join(target, name)):
+            return
+        tmp = os.path.join(target, tmp)
+        try:
+            with (
+                open(source, "rb") as src,
+                os.fdopen(os.open(tmp, flags | getattr(os, "O_NOFOLLOW", 0), 0o600), "wb") as out,
+            ):
+                shutil.copyfileobj(src, out, 1 << 20)
+            with contextlib.suppress(FileExistsError):
+                os.link(tmp, os.path.join(target, name))
+        finally:
+            _quiet_unlink(tmp)
+        return
+    fds = [os.open(workdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+    try:
+        for part in dirs:
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(part, 0o700, dir_fd = fds[-1])
+            fds.append(os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd = fds[-1]))
+        with contextlib.suppress(FileNotFoundError):
+            os.stat(name, dir_fd = fds[-1], follow_symlinks = False)
+            return
+        try:
+            with (
+                open(source, "rb") as src,
+                os.fdopen(os.open(tmp, flags, 0o600, dir_fd = fds[-1]), "wb") as out,
+            ):
+                shutil.copyfileobj(src, out, 1 << 20)
+            with contextlib.suppress(FileExistsError):
+                os.link(tmp, name, src_dir_fd = fds[-1], dst_dir_fd = fds[-1])
+        finally:
+            _quiet_unlink(tmp, dir_fd = fds[-1])
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
+def _is_attachment_copy(sandbox: str, parent: str, name: str) -> bool:
+    prefix = os.path.basename(parent)
+    path = os.path.join(parent, name)
+    if (
+        os.path.dirname(parent) != os.path.join(sandbox, _ATTACHMENTS_DIR)
+        or not re.fullmatch(r"[0-9a-f]{12}", prefix)
+        or os.path.islink(path)
+    ):
+        return False
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            while block := handle.read(1 << 20):
+                digest.update(block)
+    except OSError:
+        return False
+    return digest.hexdigest().startswith(prefix)
 
 
 def _forget_spill_record(path: str) -> None:

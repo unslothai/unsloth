@@ -695,3 +695,26 @@ def test_a_sweep_rechecks_a_stale_snapshot_before_removing(tmp_path, monkeypatch
     studio_db.delete_chat_threads(["thread-1"])
     assert chat_originals.sweep(force = True) == 1
     assert not path.exists()
+
+
+def test_originals_upload_takes_any_name_and_caps_tool_only_files_higher(tmp_path, monkeypatch):
+    import io
+
+    from fastapi import UploadFile
+
+    from core import chat_originals
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(chat_originals, "MAX_BYTES", 4)
+    monkeypatch.setattr(chat_originals, "TOOL_ONLY_MAX_BYTES", 8)
+
+    def upload(name: str, data: bytes) -> dict:
+        file = UploadFile(io.BytesIO(data), filename = name)
+        return chat_history.upload_attachment_original(file, current_subject = "unsloth")
+
+    assert upload("data.csv", b"a,b")["sizeBytes"] == 3
+    assert upload("t.PARQUET", b"12345678")["sizeBytes"] == 8
+    for name, data in (("a.pdf", b"12345"), ("notes.rtf", b"12345"), ("t.parquet", b"123456789")):
+        with pytest.raises(HTTPException) as refused:
+            upload(name, data)
+        assert refused.value.status_code == 413, name

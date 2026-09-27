@@ -37,10 +37,16 @@ export async function withAttachmentOriginal(
   complete: CompleteAttachment,
   temporary: boolean,
   epoch: number,
+  forPythonTool: boolean,
 ): Promise<CompleteAttachment> {
-  const upload = complete.type === "document" ? originalUpload(pending.file) : null;
+  // Any other document is kept only for the python tool, which gets a copy in its sandbox: an
+  // upload no one reads would only delay the send.
+  const upload =
+    complete.type === "document" && !attachmentOriginal(complete)
+      ? (originalUpload(pending.file) ?? (forPythonTool ? pending.file : null))
+      : null;
   if (!upload) return complete;
-  if (temporary) return { ...complete, file: pending.file } as CompleteAttachment;
+  if (temporary && !forPythonTool) return { ...complete, file: pending.file } as CompleteAttachment;
   try {
     const original: ChatAttachmentOriginal = await uploadChatAttachmentOriginal(upload, epoch);
     return { ...complete, original } as CompleteAttachment;
