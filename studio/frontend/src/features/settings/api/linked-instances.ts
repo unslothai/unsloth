@@ -119,6 +119,8 @@ export interface LinkedInstanceInfo {
   disk_total_gb: number | null;
   disk_free_gb: number | null;
   uptime_seconds: number | null;
+  /** Absent on a release that predates it. */
+  image_model?: string | null;
 }
 
 export async function fetchLinkedInstancesInfo(): Promise<
