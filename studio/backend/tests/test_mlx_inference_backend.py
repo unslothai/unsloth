@@ -5764,7 +5764,7 @@ def test_the_sidecar_lock_hands_back_one_descriptor_and_reports_contention(tmp_p
 
 
 def _raise_contention(_fd):
-    raise OSError(35, "would block")
+    raise OSError(errno.EAGAIN, "would block")
 
 
 def _raise_unsupported(_fd):
@@ -6503,7 +6503,8 @@ def test_an_explicit_method_carries_its_own_reason_into_the_resolution(monkeypat
         ("/Users/someone/models/gemma-4-E2B-it-qat-4bit", "gemma-4-E2B-it-qat-4bit"),
         ("./private-checkpoint", "private-checkpoint"),
         (".foo/bar", "bar"),
-        ("~nosuchuser1234/foo", "local-model"),
+        # ntpath.expanduser resolves any ~user to a sibling of the home directory.
+        ("~nosuchuser1234/foo", "foo" if os.name == "nt" else "local-model"),
         ("mlx-community/gemma-4-E2B-it-qat-4bit", "mlx-community/gemma-4-E2B-it-qat-4bit"),
     ],
 )
