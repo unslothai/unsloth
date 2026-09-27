@@ -1061,10 +1061,17 @@ def LlamaModel_fast_forward(
     dynamic_SWA_mask = None
     dynamic_GA_mask = None
     if IS_GEMMA2:
+        # An unpadded prefill shares the static [n, n] masks instead of two [bsz, 1, q, q] copies.
+        unpadded_prefill = (
+            attention_mask is not None
+            and past_key_values_length == 0
+            and attention_mask.dim() == 2
+            and bool(attention_mask.all())
+        )
         if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
             self.SWA_mask = True
             self.GA_mask = False
-        elif attention_mask is not None:
+        elif attention_mask is not None and not unpadded_prefill:
             # Unsloth needs a 2D mask, not [2, 1, n, n] (#853), converted to float not bool
             # (pytorch/pytorch#103749).
 

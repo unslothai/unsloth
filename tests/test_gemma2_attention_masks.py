@@ -167,3 +167,37 @@ def test_prefill_masks_short_batches_and_4d(monkeypatch):
         from_4d = model(input_ids = ids, attention_mask = mask4d).logits
         from_2d = model(input_ids = ids, attention_mask = torch.ones_like(ids)).logits
         torch.testing.assert_close(from_4d, from_2d, rtol = 1e-4, atol = 1e-4)
+
+
+@pytest.mark.skipif(
+    not has_real_cuda(), reason = "loads tiny Gemma checkpoints through FastLanguageModel on CUDA"
+)
+def test_unpadded_prefill_uses_static_masks(monkeypatch):
+    import unsloth.models.llama as llama_module
+    from unsloth import FastLanguageModel
+
+    monkeypatch.setattr(llama_module, "HAS_FLASH_ATTENTION_SOFTCAPPING", False)
+    monkeypatch.setattr(g2, "HAS_FLASH_ATTENTION_SOFTCAPPING", False)
+    model, _ = FastLanguageModel.from_pretrained(
+        "trl-internal-testing/tiny-Gemma2ForCausalLM",
+        max_seq_length = 64,
+        load_in_4bit = False,
+        dtype = torch.float32,
+    )
+    FastLanguageModel.for_inference(model)
+    window, n = 4, 12
+    model.config.sliding_window = window
+    masks = {}
+    for idx, layer in enumerate(model.model.layers[:2]):
+        layer.register_forward_pre_hook(
+            lambda mod, args, kwargs, idx = idx: masks.__setitem__(idx, kwargs["causal_mask"]),
+            with_kwargs = True,
+        )
+    ids = torch.arange(10, 10 + n, device = "cuda").repeat(8, 1)
+    with torch.no_grad():
+        model(input_ids = ids, attention_mask = torch.ones_like(ids))
+    # Shared [max_seq_length, max_seq_length] masks, not one [bsz, 1, n, n] copy per row.
+    assert all(m.dim() == 2 for m in masks.values())
+    kept = {idx: (m[:n, :n] == 0).cpu() for idx, m in masks.items()}
+    assert kept[1][-1].sum() == n
+    assert kept[0][-1].sum() < n
