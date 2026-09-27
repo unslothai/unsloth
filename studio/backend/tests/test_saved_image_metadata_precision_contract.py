@@ -772,7 +772,9 @@ def test_recipe_e2e_generate_response_png_and_file_endpoint_agree(recipe_e2e_cli
         ("transformer_quant", _EngagedBackend.engaged),
         ("text_encoder_quant", "fp8"),
     ):
-        assert wire.get(key) == expected, f"generate response {key}={wire.get(key)!r}, want {expected!r}"
+        assert (
+            wire.get(key) == expected
+        ), f"generate response {key}={wire.get(key)!r}, want {expected!r}"
 
     listed = client.get("/api/inference/images/gallery").json()["images"]
     assert any(row["id"] == image_id for row in listed)
