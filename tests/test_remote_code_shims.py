@@ -58,7 +58,7 @@ class Outer(PreTrainedModel):
         return self.model.get_input_embeddings()
 
     def get_output_embeddings(self):
-        return self.model.get_output_embeddings()  # the inner model has no head: None
+        return self.model.get_output_embeddings()
 
     def forward(
         self,
@@ -68,14 +68,12 @@ class Outer(PreTrainedModel):
     ):
         logits = self.lm_head(self.model(input_ids))
         if labels is not None:
-            self.config.text_config.vocab_size  # the port's own loss code trips here
+            self.config.text_config.vocab_size
         return CausalLMOutputWithPast(logits = logits)
 
 
-# Remote code lives under transformers_modules; the loss shim keys on that.
 Outer.__module__ = "transformers_modules.tiny_remote.modeling_tiny"
-# Newer transformers reads sys.modules[cls.__module__] while building a model
-# (the experts implementation probe), so the name must resolve to a real module.
+# Newer transformers reads sys.modules[cls.__module__] while building a model.
 sys.modules.setdefault(Outer.__module__, sys.modules[__name__])
 
 
@@ -86,7 +84,6 @@ def model():
 
 
 def test_the_defect_before_the_shim(model):
-    """The arm that fails on main."""
     with pytest.raises(TypeError, match = "missing 1 required positional argument"):
         model.get_input_embeddings()
 
@@ -96,7 +93,7 @@ def test_accessor_serves_both_contracts_after_the_shim(model):
 
     apply_remote_code_shims(
         model
-    )  # class-level, so a second call in the same process repairs nothing new
+    )
     assert Inner._unsloth_original_get_input_embeddings is not None
     assert model.get_input_embeddings() is model.model.embed_tokens
     assert model.model.get_input_embeddings() is model.model.embed_tokens
@@ -153,7 +150,6 @@ def test_a_forward_that_returns_its_own_loss_is_left_alone():
 
 
 def test_a_tuple_output_with_its_own_loss_is_left_alone():
-    """return_dict = False gives (loss, logits); the model's own loss must survive the probe."""
 
     class TupleGood(Outer):
         def forward(
@@ -178,7 +174,6 @@ def test_a_tuple_output_with_its_own_loss_is_left_alone():
 
 @pytest.mark.parametrize("healthy_first", [True, False])
 def test_loss_support_is_decided_per_instance(healthy_first):
-    """One remote class, two configs: only the broken one gets the synthesized loss."""
 
     class Mixed(Outer):
         def forward(
@@ -208,7 +203,7 @@ def test_loss_support_is_decided_per_instance(healthy_first):
 def test_a_subclass_override_of_a_repaired_accessor_is_repaired_too(model):
     from unsloth.models.remote_code_shims import apply_remote_code_shims
 
-    apply_remote_code_shims(model)  # repairs Inner.get_input_embeddings
+    apply_remote_code_shims(model)
 
     class SubInner(Inner):
         def get_input_embeddings(self, input_ids):
@@ -250,7 +245,6 @@ def test_transformers_own_classes_are_not_touched():
 
 
 def test_the_repaired_forward_is_reached_through_an_accelerate_hook():
-    """device_map loading hooks forward before the shims run (Step-3.7 in 16-bit)."""
     accelerate = pytest.importorskip("accelerate")
     from accelerate.hooks import add_hook_to_module, ModelHook
     from unsloth.models.remote_code_shims import apply_remote_code_shims
@@ -265,7 +259,6 @@ def test_the_repaired_forward_is_reached_through_an_accelerate_hook():
 
 
 def test_the_synthesized_loss_is_the_first_ordered_entry(model):
-    """Positional readers take output[0] and to_tuple()[0] as the loss when labels were given."""
     from unsloth.models.remote_code_shims import apply_remote_code_shims
 
     apply_remote_code_shims(model)
@@ -276,7 +269,6 @@ def test_the_synthesized_loss_is_the_first_ordered_entry(model):
 
 
 def test_positional_labels_reach_the_synthesized_loss(model):
-    """Positional labels get the same loss as keyword labels."""
     from unsloth.models.remote_code_shims import apply_remote_code_shims
 
     apply_remote_code_shims(model)
@@ -288,7 +280,6 @@ def test_positional_labels_reach_the_synthesized_loss(model):
 
 
 def test_a_forward_without_a_loss_runs_once_on_the_probing_call():
-    """A second forward would hold both autograd graphs at once."""
     from unsloth.models.remote_code_shims import apply_remote_code_shims
 
     calls = []
@@ -318,7 +309,6 @@ def test_a_forward_without_a_loss_runs_once_on_the_probing_call():
 
 
 def test_non_token_logits_never_get_a_causal_loss():
-    """A classification head's (batch, n_labels) logits must not be shifted across examples."""
     from unsloth.models.remote_code_shims import apply_remote_code_shims
 
     class Classifier(Outer):
@@ -339,7 +329,6 @@ def test_non_token_logits_never_get_a_causal_loss():
 
 
 def test_an_unrelated_first_call_error_does_not_switch_the_objective():
-    """A failing first call must not pin the fallback: the model's own loss wins once calls work."""
     from unsloth.models.remote_code_shims import apply_remote_code_shims
 
     class Picky(Outer):
