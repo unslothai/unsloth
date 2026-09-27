@@ -140,6 +140,7 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_SEARCH_IMAGES_KEY = "unsloth_chat_search_images";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
+export const CHAT_ALL_TOOLS_OFF_KEY = "unsloth_chat_all_tools_off";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
@@ -2336,6 +2337,8 @@ type ChatRuntimeStore = {
   // web_search also returns images the model can place inline; read by the backend per call.
   searchImages: boolean;
   mcpEnabledForChat: boolean;
+  /** When true, every chat request sends enable_tools: false. */
+  allToolsOff: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
   projectAttachmentTarget: ProjectAttachmentTarget;
@@ -2614,6 +2617,7 @@ type ChatRuntimeStore = {
   setPreserveThinking: (value: boolean) => void;
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
+  setAllToolsOff: (allToolsOff: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
   setDeepResearchEnabled: (enabled: boolean) => void;
   setResearchWebsitePolicy: (policy: ResearchWebsitePolicy) => void;
@@ -4134,6 +4138,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ),
   searchImages: loadBool(CHAT_SEARCH_IMAGES_KEY, false),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
+  allToolsOff: loadBool(CHAT_ALL_TOOLS_OFF_KEY, false),
   // Mirrors permissionMode (gate requested for ask/auto) so both controls agree on load.
   confirmToolCalls:
     INITIAL_PERMISSION_MODE === "ask" || INITIAL_PERMISSION_MODE === "auto",
@@ -5301,6 +5306,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           : { toolsEnabled }),
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
+    }),
+  setAllToolsOff: (allToolsOff) =>
+    set((state) => {
+      saveBool(CHAT_ALL_TOOLS_OFF_KEY, allToolsOff);
+      return { allToolsOff, queuedSettingsEpoch: state.queuedSettingsEpoch + 1 };
     }),
   setCodeToolsEnabled: (codeToolsEnabled) =>
     set((state) => {

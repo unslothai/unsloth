@@ -149,9 +149,13 @@ test("the branch is only taken when a tool Unsloth itself can run is on", () => 
   // the hosted branch, which sends no permission_mode. Sending the Unsloth body
   // for it would ask the backend to confirm tool calls on a passthrough request,
   // which routes/inference.py answers with a 400.
+  // Master-off (#11671) wraps this via resolveEnableTools(..., allToolsOff).
+  const gateStart = SOURCE.indexOf(
+    "resolveEnableTools(\n                supportsStudioToolsForThisTurn &&",
+  );
   const gate = SOURCE.slice(
-    SOURCE.indexOf("...(supportsStudioToolsForThisTurn &&"),
-    SOURCE.indexOf("enable_tools: true", SOURCE.indexOf("...(supportsStudioToolsForThisTurn &&")),
+    gateStart,
+    SOURCE.indexOf("enable_tools: true", gateStart),
   );
 
   assert.ok(gate.length > 0, "the Unsloth-tools gate moved");
