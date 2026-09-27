@@ -421,7 +421,6 @@ def _fp8_rowwise_gemv_kernel(
 
 
 def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
-    """A single decode token on a contiguous per-row scaled e4m3 weight this GPU's triton can read."""
     if not (X.is_cuda and weight.is_cuda and X.dtype in (torch.bfloat16, torch.float16)):
         return False
     if weight.dtype != torch.float8_e4m3fn or weight.dim() != 2 or not weight.is_contiguous():

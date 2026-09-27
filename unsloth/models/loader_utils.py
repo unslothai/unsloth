@@ -1324,7 +1324,7 @@ def _compressed_tensors_fp8_block_size(module, weights):
         return None
     strategy = getattr(weights, "strategy", None)
     strategy = str(getattr(strategy, "value", strategy))
-    # Block FP8 is opt-in: fp8_block_quant_linear trains ~2.5x slower than the decompressed bf16 model.
+    # Block FP8 is opt-in: fp8_block_quant_linear is far slower than the decompressed bf16 model.
     if (
         strategy == "block"
         and os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_BLOCK_KERNELS", "0") != "1"
@@ -1412,8 +1412,7 @@ def _zoo_peft_forward_keeps_fp8_inputs():
 
 
 def _route_compressed_tensors_fp8_to_unsloth(model):
-    """Run compressed-tensors FP8 Linears on Unsloth FP8 kernels instead of decompressing them."""
-    # Opt-in: saves ~20% peak memory but on-the-fly dequant trains ~35-65% slower than bf16 (Qwen3-8B, B200).
+    # Opt-in: saves memory, but on-the-fly dequant trains slower than the decompressed bf16 model.
     if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0") != "1":
         return 0
     if getattr(getattr(model, "config", None), "quantization_config", None) is None:
@@ -1782,7 +1781,6 @@ def _decompress_compressed_tensors_model(model):
 
 
 def _prepare_compressed_tensors_model(model, full_finetuning = False):
-    """Route FP8 compressed-tensors to Unsloth kernels, else decompress once here."""
     # Routed FP8 weights are frozen, so full finetuning always takes the decompressed bf16 weights.
     if full_finetuning or not _route_compressed_tensors_fp8_to_unsloth(model):
         _decompress_compressed_tensors_model(model)

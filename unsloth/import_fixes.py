@@ -10673,7 +10673,6 @@ class _CompressedTensorsSTEFinder(importlib.abc.MetaPathFinder):
 
 
 def fix_compressed_tensors_activation_quant_gradient():
-    """Let gradients pass through compressed-tensors' activation fake quantization (W8A8 LoRA)."""
     if importlib.util.find_spec("compressed_tensors") is None:
         return
     module = sys.modules.get(_CT_FORWARD_MODULE)
