@@ -86,7 +86,8 @@ def _load_device_context_helper(fake_torch: _FakeTorch):
     namespace = {"torch": fake_torch, "nullcontext": nullcontext}
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
-            getattr(t, "id", None) in ("_CUDA_MULTI_DEVICE", "_XPU_MULTI_DEVICE") for t in node.targets
+            getattr(t, "id", None) in ("_CUDA_MULTI_DEVICE", "_XPU_MULTI_DEVICE")
+            for t in node.targets
         ):
             exec(ast.get_source_segment(source, node), namespace)
         if isinstance(node, ast.FunctionDef) and node.name == "_fp8_triton_device_context":
