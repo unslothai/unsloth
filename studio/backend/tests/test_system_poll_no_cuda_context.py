@@ -233,9 +233,6 @@ def test_the_probe_would_catch_a_regression():
     assert mib > 0, "mem_get_info created no context here, so the assertions above prove nothing"
 
 
-# Single-GPU hosts skip the per-card loop, so the poll tests above never covered it.
-
-
 def _cuda_device_count() -> int:
     try:
         import torch
@@ -362,7 +359,7 @@ def test_the_dense_quant_probes_pin_no_context_on_any_card():
 
 @needs_two_nvidia
 def test_the_multi_gpu_probe_would_catch_a_regression():
-    # Negative control: the old scoped call must register a context, else the test above is blind.
+    # Negative control: the pre-fix scoped call must register a context.
     held, primary, _ = _run_child_by_gpu("torch.cuda.device(1).__enter__()")
     if held is None and primary is None:
         pytest.skip("no per-PID nvidia-smi accounting and no torch primary-context flag")
