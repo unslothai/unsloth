@@ -142,5 +142,4 @@ def conversation_start_date(thread_id: Any, request: Any = None) -> date | None:
 
 
 def strip_current_date_update_note(text: str) -> str:
-    """The user's own words, without the date note Studio appends to a turn."""
     return CURRENT_DATE_UPDATE_NOTE_RE.sub("", text)
