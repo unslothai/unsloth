@@ -49,7 +49,11 @@ class _Status:
 
 
 class _Compressor:
-    def __init__(self, fail_first = False, removes_hook = True):
+    def __init__(
+        self,
+        fail_first = False,
+        removes_hook = True,
+    ):
         self.calls = []
         self.fail_first = fail_first
         self.removes_hook = removes_hook
