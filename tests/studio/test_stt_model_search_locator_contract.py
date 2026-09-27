@@ -149,7 +149,13 @@ def test_ci_actually_runs_this_file():
     """Repo-root pytest discovery skips this file, so a workflow must name it."""
     workflow = (REPO / ".github/workflows/studio-ui-smoke.yml").read_text(encoding = "utf-8")
     assert f"pytest tests/studio/{Path(__file__).name}" in workflow, workflow
-    assert "tests/studio/**" in workflow, "the workflow must trigger on this path"
+    # A filter entry naming this file, not just the pytest command above: the workflow no
+    # longer triggers on all of tests/studio, so the file has to be listed to trigger it.
+    # Matched as a paths: list item without yaml, which this job does not install.
+    entry = re.compile(rf"^\s*-\s*'tests/studio/{re.escape(Path(__file__).name)}'\s*$", re.M)
+    assert (
+        len(entry.findall(workflow)) >= 2
+    ), "the pull_request and push filters must list this file"
 
 
 def test_the_english_copy_is_still_free_to_change():

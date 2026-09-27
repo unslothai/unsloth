@@ -190,6 +190,37 @@ export function toHfModelResult(raw: unknown): HfModelResult | null {
   };
 }
 
+// Must cover every row field buildDiscoverRows reads, or the memoised Discover grid goes stale.
+export function discoveryInventorySignature(
+  cachedRows: readonly CachedInventoryRow[],
+  localRows: readonly LocalInventoryRow[],
+): string {
+  const state = (row: {
+    partial?: boolean;
+    downloading?: boolean;
+    companionPrefetch?: boolean;
+  }) =>
+    row.companionPrefetch
+      ? "x"
+      : row.partial
+        ? row.downloading
+          ? "d"
+          : "p"
+        : "c";
+  const parts: string[] = [];
+  for (const row of cachedRows) {
+    parts.push(
+      `c:${row.repoId.toLowerCase()}:${row.modelFormat}:${state(row)}`,
+    );
+  }
+  for (const row of localRows) {
+    parts.push(
+      `l:${(row.repoId ?? row.id).toLowerCase()}:${row.modelFormat}:${state(row)}`,
+    );
+  }
+  return parts.sort().join("|");
+}
+
 export function buildDiscoverRows(
   results: HfModelResult[],
   cachedRows: CachedInventoryRow[],
@@ -202,9 +233,14 @@ export function buildDiscoverRows(
       localRows,
       formatHint: result.isGguf ? "gguf" : "non-gguf",
     });
-    const partial = Boolean(
-      resource.cachedRow?.partial ?? resource.localRow?.partial ?? false,
-    );
+    const companionPrefetch =
+      (resource.cachedRow?.companionPrefetch ??
+        resource.localRow?.companionPrefetch) === true;
+    const partial =
+      !companionPrefetch &&
+      Boolean(
+        resource.cachedRow?.partial ?? resource.localRow?.partial ?? false,
+      );
     const downloading =
       partial &&
       Boolean(
@@ -215,7 +251,8 @@ export function buildDiscoverRows(
       owner: ownerOf(result.id),
       repo: repoOf(result.id),
       result,
-      isAvailableOnDevice: Boolean(resource.cachedRow || resource.localRow),
+      isAvailableOnDevice:
+        !companionPrefetch && Boolean(resource.cachedRow || resource.localRow),
       isPartialOnDevice: partial,
       isDownloadingOnDevice: downloading,
       summary: buildSummary(result),

@@ -291,11 +291,13 @@ class TestStepThirteenWiring:
         # str() is the label coercion around the probe, not a step.
         step13 = [c for c in _calls_in(guards[1]) if c != "str"]
         # Step 13 also re-selects torchao when a repair moved the torch label, which both the
-        # spec and the leaf are read from. Nothing else may join the set.
+        # spec and the leaf are read from, then removes an xFormers the final torch cannot
+        # import (#11545). Nothing else may join the set.
         assert step13 == (
             ["_progress", "_torch_step_label", "_probe_installed_torch_version"]
             + repairs
             + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]
+            + ["_evict_xformers_requiring_another_torch"]
         ), step13
         assert "_install_torchao_for_torch" not in _calls_in(guards[0])
 

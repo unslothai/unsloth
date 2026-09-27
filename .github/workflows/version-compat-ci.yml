@@ -38,6 +38,20 @@ on:
       - 'tests/version_compat/**'
       - 'pyproject.toml'
       - '.github/workflows/version-compat-ci.yml'
+      # Every pytest run here loads tests/conftest.py and the tests/_shared helpers it
+      # pulls in (installer_venv_root.py imports studio/install_manifest.py), and eight
+      # of the collected tests import tests/_zoo_aggressive_cuda_spoof.py. Studio
+      # Backend CI ignores tests/version_compat and tests/vllm_compat, so nothing else
+      # runs them.
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'studio/install_manifest.py'
+      - 'tests/_zoo_aggressive_cuda_spoof.py'
+      # Every job here `uses:` the pip cache pair, so an edit to either action changes
+      # what it runs.
+      - '.github/actions/pip-cache-restore/**'
+      - '.github/actions/pip-cache-save/**'
   schedule:
     # Daily 06:43 UTC. Catches upstream PyPI releases roughly within
     # 24 h. Off the :00 / :30 fleet-collision spots.
@@ -50,7 +64,7 @@ concurrency:
   # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
   # the moment a newer one is queued, so a merge burst still leaves only the tip.
   # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
