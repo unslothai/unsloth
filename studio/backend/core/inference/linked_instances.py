@@ -31,7 +31,8 @@ MODEL_PREFIX = "@"
 HOP_HEADER = "X-Unsloth-Linked-Hop"
 _FORWARDED_HEADERS = ("anthropic-version", "anthropic-beta")
 _CATALOG_TTL_S = 10.0
-_PROBE_TIMEOUT = httpx.Timeout(8.0, connect = 5.0)
+# A remote builds /v1/models from a disk scan; a busy Windows box takes 5 to 6 s.
+_PROBE_TIMEOUT = httpx.Timeout(20.0, connect = 5.0)
 
 _catalog_cache: dict[str, tuple[float, list[dict]]] = {}
 _http_client: Optional[httpx.AsyncClient] = None
