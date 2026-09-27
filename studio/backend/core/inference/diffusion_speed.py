@@ -373,6 +373,7 @@ def apply_speed_optims(
     applied = {
         "channels_last": False,
         "vae_fp16_decode": False,
+        "vae_single_frame": False,
         "cudnn_benchmark": False,
         "tf32": False,
         "fp16_accum": False,
@@ -391,6 +392,9 @@ def apply_speed_optims(
     on_cuda = getattr(target, "device", None) == "cuda"
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
 
+    # Near-lossless (PSNR ~60 dB): a one-frame image through the Qwen-Image causal 3D VAE as a 2D conv net. Before
+    # channels_last, which a 5D-weight VAE otherwise refuses outright.
+    applied["vae_single_frame"] = _vae_single_frame(pipe, logger)
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
     applied["channels_last"] = _vae_channels_last(pipe, logger)
     # Near-lossless, not bit-identical, so never on "off" (returned above).
@@ -491,6 +495,15 @@ def fp16_unet_offloaded(target: Any, pipe: Any, *, offload_active: bool) -> bool
         and _is_float16(getattr(target, "dtype", None))
         and _denoiser_unet(pipe) is not None
     )
+
+
+def _vae_single_frame(pipe: Any, logger: Any) -> bool:
+    try:
+        from . import diffusion_vae_single_frame  # noqa: PLC0415
+        return diffusion_vae_single_frame.install(getattr(pipe, "vae", None), logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "vae single-frame path", exc)
+        return False
 
 
 def _vae_channels_last(pipe: Any, logger: Any) -> bool:

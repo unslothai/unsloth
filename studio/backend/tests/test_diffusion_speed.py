@@ -417,6 +417,7 @@ def test_speed_off_applies_nothing(monkeypatch):
     assert applied == {
         "channels_last": False,
         "vae_fp16_decode": False,
+        "vae_single_frame": False,
         "cudnn_benchmark": False,
         "tf32": False,
         "fused_qkv": False,
