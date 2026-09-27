@@ -67,6 +67,10 @@ import {
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { useIsAccountOwner } from "@/features/auth";
+import {
+  LIBRARY_SETTINGS_STORAGE_KEY,
+  LIBRARY_VIEW_STORAGE_KEY,
+} from "@/features/library";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
 import {
@@ -77,6 +81,7 @@ import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
 import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
+import { HubSettingsSection } from "../components/hub-settings-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -101,6 +106,8 @@ const PREFS_KEYS: string[] = [
   "sidebar_width",
   "chat_settings_width",
   "unsloth_sidebar_navigate_open",
+  LIBRARY_SETTINGS_STORAGE_KEY,
+  LIBRARY_VIEW_STORAGE_KEY,
   // Grouping, sort and the manual row order.
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
@@ -502,9 +509,9 @@ export function GeneralTab() {
           label={t("settings.general.huggingFaceToken")}
           description={t("settings.general.huggingFaceTokenDescription")}
         >
-          <div className="flex flex-col items-end gap-1.5">
-            <div className="flex items-center gap-2">
-              <div className="relative w-[260px]">
+          <div className="flex min-w-0 flex-col items-end gap-1.5">
+            <div className="flex max-w-full items-center gap-2">
+              <div className="relative w-[calc(260px*var(--ui-space-scale,1))] min-w-0">
                 <Input
                   type={showToken ? "text" : "password"}
                   name="hf-token"
@@ -559,7 +566,7 @@ export function GeneralTab() {
               </Button>
             </div>
             {hfTokenPersistenceError ? (
-              <p className="max-w-[330px] text-right text-xs text-destructive">
+              <p className="max-w-[calc(330px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {hfTokenPersistenceError}
               </p>
             ) : tokenValidation.isChecking ? (
@@ -567,7 +574,7 @@ export function GeneralTab() {
                 {t("settings.general.checkingToken")}
               </p>
             ) : tokenValidation.error ? (
-              <p className="max-w-[330px] text-right text-xs text-destructive">
+              <p className="max-w-[calc(330px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {tokenValidation.error}
               </p>
             ) : null}
@@ -619,7 +626,7 @@ export function GeneralTab() {
                 onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
               />
               {launchAtLoginSetting.error ? (
-                <span className="max-w-[260px] text-right text-xs text-destructive">
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                   {launchAtLoginSetting.error}
                 </span>
               ) : null}
@@ -640,7 +647,7 @@ export function GeneralTab() {
                   onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
                 />
                 {closeToTraySetting.error ? (
-                  <span className="max-w-[260px] text-right text-xs text-destructive">
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                     {closeToTraySetting.error}
                   </span>
                 ) : null}
@@ -703,7 +710,7 @@ export function GeneralTab() {
               onCheckedChange={(enabled) => void savePreviewSharing(enabled)}
             />
             {previewSharingError ? (
-              <span className="max-w-[260px] text-right text-xs text-destructive">
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {previewSharingError}
               </span>
             ) : null}
@@ -748,12 +755,12 @@ export function GeneralTab() {
                 }
               />
               {managedProviderUrls?.lockedByEnvironment ? (
-                <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
                   {t("settings.general.managedProviderUrls.lockedByEnvironment")}
                 </span>
               ) : null}
               {managedProviderUrlsError ? (
-                <span className="max-w-[260px] text-right text-xs text-destructive">
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                   {managedProviderUrlsError}
                 </span>
               ) : null}
@@ -763,6 +770,8 @@ export function GeneralTab() {
       )}
 
       <DocumentsRagSection />
+
+      <HubSettingsSection />
 
       <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
         <DownloadTransportRow />
@@ -804,7 +813,7 @@ export function GeneralTab() {
               </Button>
             </div>
             {uploadLimitError ? (
-              <span className="max-w-[260px] text-right text-xs text-destructive">
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {uploadLimitError}
               </span>
             ) : null}
@@ -831,11 +840,11 @@ export function GeneralTab() {
               onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
             />
             {helperPrecache?.disabledByEnv ? (
-              <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
                 {t("settings.general.helperLlm.disabledByEnv")}
               </span>
             ) : helperPrecacheError ? (
-              <span className="max-w-[260px] text-right text-xs text-destructive">
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {helperPrecacheError}
               </span>
             ) : null}

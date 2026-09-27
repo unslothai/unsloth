@@ -19,7 +19,7 @@ import {
  *
  * Rendered once per COMPACTION, gated by the caller, not once per compacted turn: a
  * thread past its window refits on every request, so per-turn would mean a notice on
- * every reply forever. The caller shows this only when the eviction boundary moved.
+ * every reply forever. The caller shows this when the boundary moved or a checkpoint started.
  */
 export const CompactionNotice: FC<{ truncation: ContextTruncation }> = ({
   truncation,

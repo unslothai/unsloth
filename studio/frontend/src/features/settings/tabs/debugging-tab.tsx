@@ -141,8 +141,7 @@ export function DebuggingTab() {
   const [mode, setMode] = useState<RefreshMode>(readStoredMode);
   const [buffer, setBuffer] = useState<LogBufferState>(EMPTY_BUFFER);
   const [realpath, setRealpath] = useState<string | null>(null);
-  // Where the backend says the logs live, for the folder button when no source
-  // is selected yet, which is exactly the custom-home case that has no log.
+  // the logs directory the backend resolved, opened by the folder button
   const [logRoot, setLogRoot] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dropped, setDropped] = useState(false);
@@ -396,10 +395,7 @@ export function DebuggingTab() {
   const revealLogsFolder = useCallback(async () => {
     setRevealing(true);
     try {
-      // The selected log's own path, else the root the backend reported. Either
-      // resolves a custom UNSLOTH_STUDIO_HOME; open_logs_dir hard-codes
-      // ~/.unsloth/studio and cannot.
-      await openLogsFolder(realpath, logRoot);
+      await openLogsFolder(logRoot, realpath);
     } catch (error) {
       toast.error(t("settings.debugging.openLogsFolderFailed"), {
         description: (error as Error).message,
@@ -407,7 +403,7 @@ export function DebuggingTab() {
     } finally {
       setRevealing(false);
     }
-  }, [t, realpath, logRoot]);
+  }, [t, logRoot, realpath]);
 
   const downloadAllLogs = useCallback(async () => {
     setExporting(true);
@@ -480,7 +476,7 @@ export function DebuggingTab() {
               size="sm"
               data-testid="debug-log-source"
               aria-label={t("settings.debugging.source")}
-              className="max-w-[22rem] font-mono text-ui-12"
+              className="max-w-[calc(22rem*var(--ui-space-scale,1))] font-mono text-ui-12"
             >
               <SelectValue placeholder={t("settings.debugging.missing")} />
             </SelectTrigger>
@@ -496,14 +492,14 @@ export function DebuggingTab() {
                       value={source.id}
                       className="font-mono text-ui-12"
                     >
-                      <span className="flex items-center gap-2">
-                        <span>{source.label}</span>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="min-w-0 truncate">{source.label}</span>
                         {source.isCurrent ? (
-                          <span className="rounded-full bg-primary/10 px-1.5 py-px font-sans text-ui-10 font-medium text-primary">
+                          <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-px font-sans text-ui-10 font-medium text-primary">
                             {t("settings.debugging.currentSession")}
                           </span>
                         ) : null}
-                        <span className="font-sans text-ui-10 text-muted-foreground tabular-nums">
+                        <span className="shrink-0 font-sans text-ui-10 text-muted-foreground tabular-nums">
                           {formatBytes(source.sizeBytes)}
                         </span>
                       </span>
@@ -733,7 +729,7 @@ export function DebuggingTab() {
               </TooltipContent>
             </Tooltip>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+          <div className="flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1">
             <Button
               size="sm"
               variant="ghost"
@@ -774,7 +770,7 @@ export function DebuggingTab() {
                   />
                 </button>
               </TooltipTrigger>
-              <TooltipContent className="max-w-[300px] text-ui-11 leading-snug">
+              <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
                 {t("settings.debugging.exportMaskedNote")}
               </TooltipContent>
             </Tooltip>

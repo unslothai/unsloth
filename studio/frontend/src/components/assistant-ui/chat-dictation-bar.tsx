@@ -276,9 +276,9 @@ export const ChatDictationBar: FC<{
           className="aui-composer-send size-9 rounded-full"
         >
           {transcribing === "send" ? (
-            <Spinner className="size-[18px]" />
+            <Spinner className="size-[calc(18px*var(--ui-space-scale,1))]" />
           ) : (
-            <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
+            <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[calc(21px*var(--ui-space-scale,1))] stroke-2" />
           )}
         </TooltipIconButton>
       </div>

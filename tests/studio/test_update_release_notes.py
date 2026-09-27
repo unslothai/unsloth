@@ -1005,15 +1005,36 @@ def test_preview_highlights_the_leading_sentence():
     assert "item.rest" in panel
 
 
+def _max_widths(source: str) -> set[str]:
+    """Every `max-w-[...]` in *source*, read at the default UI scale.
+
+    #11648 wrapped these lengths in `calc(Npx*var(--ui-space-scale,1))` so they follow the interface size, which is
+    Npx at the default scale. Read back that way, the contract stays about the width rather than its spelling.
+    """
+    return {_SCALED_PX.sub(r"\1", width) for width in re.findall(r"max-w-\[([^\]\s\"]+)\]", source)}
+
+
+_SCALED_PX = re.compile(r"calc\((\d+(?:\.\d+)?px)\*var\(--ui-space-scale,1\)\)")
+# The notes width as written: `_max_widths` reads a bare 448px identically, so the scale is pinned raw.
+_NOTES_WIDTH_SCALED = "max-w-[calc(448px*var(--ui-space-scale,1))]"
+
+
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
 def test_update_popups_share_the_notes_width(banner):
     """Every update popup uses the same width for its notes and action rows."""
-    assert "max-w-[448px]" in banner.read_text(encoding = "utf-8")
+    source = banner.read_text(encoding = "utf-8")
+    assert "448px" in _max_widths(source)
+    assert (
+        _NOTES_WIDTH_SCALED in source and "max-w-[448px]" not in source
+    ), "the notes width stopped scaling"
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
-    assert "max-w-[400px]" not in provider, "stack must not cap overlay width"
+    assert "400px" not in _max_widths(provider), "stack must not cap overlay width"
     llama = (FRONTEND / "components/llama-update-banner.tsx").read_text(encoding = "utf-8")
-    assert "max-w-[448px]" in llama
-    assert "max-w-[400px]" not in llama
+    assert "448px" in _max_widths(llama)
+    assert (
+        _NOTES_WIDTH_SCALED in llama and "max-w-[448px]" not in llama
+    ), "the notes width stopped scaling"
+    assert "400px" not in _max_widths(llama)
 
 
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])

@@ -266,7 +266,7 @@ export function RemoteCodeConsentDialog() {
                   <p className="text-xs font-medium text-muted-foreground">
                     Our automatic scanner flagged issues including:
                   </p>
-                  <div className="max-h-[14rem] min-w-0 space-y-2 overflow-y-auto pr-1">
+                  <div className="max-h-[calc(14rem*var(--ui-space-scale,1))] min-w-0 space-y-2 overflow-y-auto pr-1">
                     {unsafeFiles.map((f, i) => (
                       <UnsafeFileCard key={`${f.path}-${i}`} file={f} />
                     ))}
@@ -279,7 +279,7 @@ export function RemoteCodeConsentDialog() {
                   <p className="text-xs font-medium text-muted-foreground">
                     Our automatic scanner flagged issues including:
                   </p>
-                  <div className="max-h-[22rem] min-w-0 space-y-3 overflow-y-auto pr-1">
+                  <div className="max-h-[calc(22rem*var(--ui-space-scale,1))] min-w-0 space-y-3 overflow-y-auto pr-1">
                     {findings.map((f, i) => (
                       <FindingCard key={i} finding={f} />
                     ))}

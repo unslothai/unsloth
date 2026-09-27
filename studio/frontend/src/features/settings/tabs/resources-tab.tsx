@@ -718,7 +718,7 @@ export function ResourcesTab() {
               // pane's, so it reads as one device's usage, not a rule.
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
-                className="flex min-w-0 items-center justify-between gap-x-4 gap-y-2 py-3 max-[992px]:flex-col max-[992px]:items-stretch"
+                className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3 max-[992px]:flex-col max-[992px]:items-stretch"
               >
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium text-foreground">
@@ -761,7 +761,7 @@ export function ResourcesTab() {
                     })}
                   </div>
                 ) : (
-                  <div className="flex w-[392px] shrink-0 flex-col items-stretch gap-2.5 max-[992px]:w-full">
+                  <div className="flex w-[min(calc(392px*var(--ui-space-scale,1)),100%)] shrink-0 flex-col items-stretch gap-2.5 max-[992px]:w-full">
                     {/* Ruled between the three readings: run together they are
                       easy to misread as one number. */}
                     {/* min-w-0 on each reading, or truncate cannot fire: a flex
@@ -838,7 +838,7 @@ export function ResourcesTab() {
           hint={t("settings.resources.storage.modelsFolderHint")}
           className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
         >
-          <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
+          <div className="grid w-[calc(392px*var(--ui-space-scale,1))] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
             <div className="relative min-w-0">
               <Input
                 readOnly

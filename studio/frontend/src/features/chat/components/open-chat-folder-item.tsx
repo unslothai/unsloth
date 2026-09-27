@@ -52,7 +52,7 @@ export function OpenChatFolderUnavailableItem({
             className="pointer-events-none absolute inset-y-0 right-0 w-0"
           />
         </TooltipTrigger>
-        <TooltipContent side="right" className="max-w-[220px]">
+        <TooltipContent side="right" className="max-w-[calc(220px*var(--ui-space-scale,1))]">
           Only the desktop app can open a chat&apos;s files folder. In a browser, download a
           file from the tool result that wrote it.
         </TooltipContent>

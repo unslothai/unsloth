@@ -92,13 +92,13 @@ def _send_path_slice() -> str:
     """
     body = slice_between(
         read(ADAPTER),
-        "      const survivingMessages = pruneOutboundHistory(\n"
-        "        messages,\n"
-        "        !isExternalRequest,\n",
+        "      const survivingMessages = pruneOutboundHistory(messages, replayReasoning);",
         "if (selectedImageEditReference) {",
     )
     return (
         "export function buildSendPathOutbound(messages: any, isExternalRequest: boolean) {\n"
+        # The provider-dependent flag is covered by external-preserve-thinking.test.ts.
+        + "  const replayReasoning = !isExternalRequest;\n"
         + body
         + "  return outboundMessages;\n}\n"
     )

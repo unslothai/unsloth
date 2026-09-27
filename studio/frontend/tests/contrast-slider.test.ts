@@ -36,12 +36,12 @@ const SURFACE_TOKENS = [
   // darker than the sidebar behind it.
   "sidebar",
   "popover",
-  "secondary",
-  "muted",
   "panel-input-surface",
   "panel-input-surface-hover",
   "tabs-line-indicator",
 ];
+/** Chips, secondary buttons and the muted hovers, between planes and states. */
+const CHIP_TOKENS = ["secondary", "muted"];
 /** Hover and selection fills, on a shorter curve so the state stays findable. */
 const STATE_TOKENS = [
   "accent",
@@ -51,7 +51,22 @@ const STATE_TOKENS = [
   "chat-icon-bg-hover",
 ];
 const LINE_TOKENS = ["border", "input", "sidebar-border"];
-const FILL_TOKENS = [...SURFACE_TOKENS, ...STATE_TOKENS];
+/** Where palette fills and lines head, so a custom foreground cannot steer them. */
+const PANEL_TARGET = "var(--contrast-panel-target, var(--contrast-target))";
+const FILL_TOKENS = [...SURFACE_TOKENS, ...CHIP_TOKENS, ...STATE_TOKENS];
+/** Body copy and labels: head for pure black/white raising, into the page lowering. */
+const INK_TOKENS = [
+  "foreground",
+  "card-foreground",
+  "popover-foreground",
+  "secondary-foreground",
+  "accent-foreground",
+  "sidebar-foreground",
+  "sidebar-accent-foreground",
+  "nav-fg",
+];
+/** Idle labels and icons, on the same curve as --muted-foreground. */
+const QUIET_INK_TOKENS = ["nav-fg-muted", "nav-icon-idle", "chat-icon-fg"];
 
 function block(marker: string): string {
   const at = CSS.indexOf(marker);
@@ -61,7 +76,12 @@ function block(marker: string): string {
 }
 
 test("the palettes author base values, never the token the app reads", () => {
-  for (const token of [...FILL_TOKENS, ...LINE_TOKENS]) {
+  for (const token of [
+    ...FILL_TOKENS,
+    ...LINE_TOKENS,
+    ...INK_TOKENS,
+    ...QUIET_INK_TOKENS,
+  ]) {
     const authored = CSS.match(new RegExp(`^\\t--${token}-base:`, "gm")) ?? [];
     assert.ok(
       authored.length >= 2,
@@ -81,7 +101,12 @@ test("the palettes author base values, never the token the app reads", () => {
 
 test("at the default the derivation is the identity", () => {
   const identity = block("--card: var(--card-base);");
-  for (const token of [...FILL_TOKENS, ...LINE_TOKENS]) {
+  for (const token of [
+    ...FILL_TOKENS,
+    ...LINE_TOKENS,
+    ...INK_TOKENS,
+    ...QUIET_INK_TOKENS,
+  ]) {
     assert.ok(
       identity.includes(`--${token}: var(--${token}-base);`),
       `--${token} does not fall back to its authored value`,
@@ -94,16 +119,26 @@ test("off the default, fills and lines each take their own curve", () => {
   for (const token of SURFACE_TOKENS) {
     assert.ok(
       adjusted.includes(
-        `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-target) var(--contrast-surface-mix));`,
+        `--${token}: color-mix(in oklab, var(--${token}-base), ${PANEL_TARGET} var(--contrast-surface-mix));`,
       ),
       `--${token} is not on the surface curve`,
     );
   }
-  // A hover nobody can find is the same failure as an outline nobody can find.
-  for (const token of STATE_TOKENS) {
+  for (const token of CHIP_TOKENS) {
     assert.ok(
       adjusted.includes(
-        `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-target) var(--contrast-state-mix, var(--contrast-surface-mix)));`,
+        `--${token}: color-mix(in oklab, var(--${token}-base), ${PANEL_TARGET} var(--contrast-fill-mix, var(--contrast-surface-mix)));`,
+      ),
+      `--${token} is not on the fill curve`,
+    );
+  }
+  // A hover nobody can find is the same failure as an outline nobody can find.
+  for (const token of STATE_TOKENS) {
+    // Chat control hovers sit on the page, like the chat icons.
+    const target = token === "chat-icon-bg-hover" ? "var(--contrast-target)" : PANEL_TARGET;
+    assert.ok(
+      adjusted.includes(
+        `--${token}: color-mix(in oklab, var(--${token}-base), ${target} var(--contrast-state-mix, var(--contrast-surface-mix)));`,
       ),
       `--${token} is not on the state curve`,
     );
@@ -112,7 +147,7 @@ test("off the default, fills and lines each take their own curve", () => {
     adjusted.includes("--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));"),
   );
   assert.ok(
-    adjusted.includes("--sidebar-border: color-mix(in oklab, var(--sidebar-border-base), var(--contrast-target) var(--contrast-line-mix));"),
+    adjusted.includes(`--sidebar-border: color-mix(in oklab, var(--sidebar-border-base), ${PANEL_TARGET} var(--contrast-line-mix));`),
   );
   // A control outline nobody can find is not low contrast, it is broken, so
   // --input stops short of the hairlines.
@@ -133,6 +168,7 @@ test("lowering flattens further than raising lifts", () => {
   };
   for (const name of [
     "CONTRAST_SURFACE_MIX_VAR",
+    "CONTRAST_FILL_MIX_VAR",
     "CONTRAST_LINE_MIX_VAR",
     "CONTRAST_CONTROL_MIX_VAR",
     "CONTRAST_STATE_MIX_VAR",
@@ -159,6 +195,153 @@ test("a lit row never sinks below the surface it sits on", () => {
     ceiling("CONTRAST_STATE_MIX_VAR") < ceiling("CONTRAST_SURFACE_MIX_VAR"),
     "hover fills flatten as fast as the surfaces under them",
   );
+});
+
+test("raising widens the step from a row to the lit row", () => {
+  // The lit row and the surface under it both head for the foreground. While
+  // they shared a ceiling the step between them held still, and in light mode
+  // it closed: raising the slider made hover and selection harder to see. The
+  // states take the steepest curve, the chips the next, the planes a nudge.
+  const raising = (name: string) => {
+    const hit = new RegExp(`${name}, mix\\(raising \\? (\\d+) :`).exec(STORE);
+    assert.ok(hit, `${name} is not set from the two ceilings`);
+    return Number(hit[1]);
+  };
+  const surface = raising("CONTRAST_SURFACE_MIX_VAR");
+  const fill = raising("CONTRAST_FILL_MIX_VAR");
+  const state = raising("CONTRAST_STATE_MIX_VAR");
+  assert.ok(surface < fill, "chips lift no further than the planes");
+  assert.ok(fill < state, "hovers lift no further than the chips under them");
+  assert.ok(state >= 2 * surface, "the lit row barely separates from its row");
+});
+
+test("ink follows the slider", () => {
+  // Contrast is first of all text against its background. Held fixed, a
+  // raised slider only greyed the surfaces behind the text and lowered it.
+  const adjusted = block("--card: color-mix(in oklab, var(--card-base)");
+  assert.ok(
+    adjusted.includes(
+      "--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));",
+    ),
+    "--foreground is not on the ink curve",
+  );
+  for (const token of INK_TOKENS.filter((token) => token !== "foreground")) {
+    assert.ok(
+      adjusted.includes(
+        `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));`,
+      ),
+      `--${token} is not on the panel ink curve`,
+    );
+  }
+  for (const token of QUIET_INK_TOKENS) {
+    // Nav ink sits on palette surfaces; chat icons sit on the page.
+    const target = token.startsWith("nav-") ? PANEL_TARGET : "var(--contrast-target)";
+    assert.ok(
+      adjusted.includes(
+        `--${token}: color-mix(in oklab, var(--${token}-base), ${target} var(--contrast-text-mix));`,
+      ),
+      `--${token} is not on the text curve`,
+    );
+  }
+  // Lowering stops well short of the page, or body copy stops being legible.
+  const hit = /CONTRAST_INK_MIX_VAR, mix\(raising \? (\d+) : (\d+)\)/.exec(
+    STORE,
+  );
+  assert.ok(hit, "the ink mix is not set from the two ceilings");
+  assert.ok(Number(hit[2]) <= 35, "lowering washes the ink into the page");
+  // A custom foreground is written as the base, so it takes the curve too.
+  assert.match(STORE, /setVar\("--foreground-base", colors\.foreground\)/);
+  assert.doesNotMatch(STORE, /setVar\("--foreground", colors\.foreground\)/);
+  assert.ok(SNAPSHOT.includes('"--foreground-base"'));
+});
+
+test("raising pushes ink its own way, never toward its surface", () => {
+  // Picked from the page, a dark custom background in light mode sent card,
+  // menu and sidebar text toward white on their white surfaces (2.3:1).
+  assert.match(
+    STORE,
+    /CONTRAST_PANEL_INK_TARGET_VAR,\s*raising \? palettePole : "var\(--background\)"/,
+  );
+  assert.match(
+    STORE,
+    /const palettePole = resolved === "light" \? "#000000" : "#ffffff";/,
+  );
+  // --foreground heads away from its page: #767676 on white is nearer white
+  // by luminance, and pushed there it fell from 4.5:1 to 1.5:1.
+  assert.match(
+    STORE,
+    /raising\s*\?\s*colors\.foreground\s*\?\s*inkPole\(\s*colors\.foreground,\s*colors\.background \?\? paletteSurfaces\.background,?\s*\)\s*:\s*palettePole/,
+  );
+  assert.match(
+    STORE,
+    /hexLuminance\(ink\) <= hexLuminance\(page\) \? "#000000" : "#ffffff"/,
+  );
+  assert.doesNotMatch(STORE, /\.background \?\? PALETTE_SURFACES\[resolved\]\.background;\s*const page/);
+  assert.ok(SNAPSHOT.includes('"--contrast-panel-ink-target"'));
+});
+
+test("raising lifts palette fills away from their surfaces under any foreground", () => {
+  // A white custom foreground on a dark custom page in light mode sent the
+  // white sidebar's lit row toward white: its step fell from 1.18:1 to 1.16:1.
+  assert.match(
+    STORE,
+    /CONTRAST_PANEL_TARGET_VAR,\s*raising && colors\.foreground \? palettePole : null/,
+  );
+  assert.match(STORE, /setVar\(CONTRAST_PANEL_TARGET_VAR, null\);/);
+  assert.ok(SNAPSHOT.includes('"--contrast-panel-target"'));
+  // The dark find bar stands in for --card, so it follows the same target.
+  assert.ok(
+    CSS.includes(
+      "background-color: color-mix(in oklab, #2c2c2c, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-surface-mix, 0%));",
+    ),
+  );
+});
+
+test("text and lines head away from whatever they are drawn on", () => {
+  // Lines sit on the page as well as on cards. Sent to the panel pole
+  // everywhere, a dark border on a light custom page in dark mode fell from
+  // 10:1 at 50 to 2.9:1 at 100; sent to the page target everywhere, borders
+  // on cards fell to 1.1:1. Every surface scope carries its own lines.
+  const scopes = CSS.slice(
+    CSS.indexOf("/* Body text, muted text and lines on palette surfaces"),
+    CSS.indexOf("/* Code font size"),
+  );
+  const rules = [...scopes.matchAll(/\{([^}]*)\}/g)].map((m) => m[1] ?? "");
+  assert.equal(rules.length, 6);
+  for (const rule of rules) {
+    const target = /--muted-foreground: color-mix\(\s*in oklab,\s*var\(--panel-surface-fg-muted\),\s*(var\(--contrast-panel-target, var\(--contrast-target\)\)|var\(--contrast-target\)) var/.exec(rule)?.[1];
+    assert.ok(target, "scope without muted text");
+    assert.ok(rule.includes(`--border: color-mix(in oklab, var(--border-base), ${target} var(--contrast-line-mix));`));
+    assert.ok(rule.includes(`--input: color-mix(in oklab, var(--input-base), ${target} var(--contrast-control-mix));`));
+    // Body text too: text-foreground on a card is card text. A mid grey custom
+    // foreground on a dark page went from 4.5:1 to 1.3:1 on white cards.
+    const ink =
+      target === PANEL_TARGET
+        ? "var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent))"
+        : "var(--contrast-ink-target, transparent)";
+    assert.ok(
+      rule.includes(`--foreground: color-mix(in oklab, var(--foreground-base), ${ink} var(--contrast-ink-mix, 0%));`),
+      "a surface scope leaves body text on the other surface's target",
+    );
+  }
+  // The Images page redoes the derivation for its own base, on the page.
+  assert.match(
+    CSS,
+    /html\[data-contrast-adjust\]:not\(\.dark\) \.diffusion-surface \{\s*--border: color-mix\(in oklab, var\(--border-base\), var\(--contrast-target\) var\(--contrast-line-mix\)\);\s*--input: color-mix\(in oklab, var\(--input-base\), var\(--contrast-target\) var\(--contrast-control-mix\)\);/,
+  );
+});
+
+test("the sidebar section labels follow the slider", () => {
+  // Authored as fixed greys, "Recents" and "Train" held still while every
+  // label around them moved.
+  for (const grey of ["#80868b", "#9aa0a6"]) {
+    assert.ok(
+      CSS.includes(
+        `color: color-mix(in oklab, ${grey}, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-text-mix, 0%));`,
+      ),
+      `${grey} is not on the text curve`,
+    );
+  }
 });
 
 test("a dark selection fill takes the token, not a wash", () => {
@@ -333,4 +516,125 @@ test("a reload repaints at the contrast the user chose", () => {
       `${name} is missing from reload-snapshot.js`,
     );
   }
+});
+
+test("muted text on a palette surface heads away from that surface", () => {
+  // A white custom foreground on a dark page took muted card text from
+  // 4.9:1 to 2.1:1 on white cards at 100.
+  const panel = CSS.match(
+    /html\[data-contrast-adjust\] :is\(\.bg-card, \.bg-popover, \.bg-sidebar[^)]*\) \{([^}]*)\}/,
+  );
+  assert.ok(panel, "palette surfaces do not re-derive muted text");
+  assert.match(
+    panel[1] ?? "",
+    /--muted-foreground: color-mix\(\s*in oklab,\s*var\(--panel-surface-fg-muted\),\s*var\(--contrast-panel-target, var\(--contrast-target\)\) var\(--contrast-text-mix\)/,
+  );
+  // A page-coloured pane inside one is the page again.
+  const pane = CSS.match(
+    /html\[data-contrast-adjust\] :is\(\.bg-card, \.bg-popover, \.bg-sidebar[^)]*\) \.bg-background:not\([^{]*\) \{([^}]*)\}/,
+  );
+  assert.ok(pane, "page panes inside palette surfaces keep the panel target");
+  assert.match(pane[1] ?? "", /var\(--contrast-target\) var\(--contrast-text-mix\)/);
+  assert.doesNotMatch(pane[1] ?? "", /--contrast-panel-target/);
+});
+
+test("every near-opaque card spelling takes the panel muted text", () => {
+  // bg-card/96 or dark:bg-card is a distinct class, so the plain .bg-card
+  // scope missed them and their muted labels followed the page instead.
+  const scoped = CSS.match(
+    /html\[data-contrast-adjust\] :is\(([^)]*)\),\s*html\[data-contrast-adjust\]\.dark :is\(([^)]*)\) \{([^}]*)\}/,
+  );
+  assert.ok(scoped, "opacity and dark card spellings are not scoped");
+  assert.match(scoped[3] ?? "", /var\(--contrast-panel-target, var\(--contrast-target\)\)/);
+  const light = (scoped[1] ?? "").replaceAll("\\", "");
+  const dark = (scoped[2] ?? "").replaceAll("\\", "");
+  for (const file of SOURCES.filter((f) => f.endsWith(".tsx"))) {
+    for (const [spelling, isDark, alpha] of readSrc(file).matchAll(
+      /(?<![\w:-])(dark:)?bg-card(?:\/(\d+))?(?![\w/-])/g,
+    )) {
+      if (alpha === undefined ? !isDark : Number(alpha) < 50) continue;
+      assert.ok(
+        (isDark ? dark : light).includes(`.${spelling}`),
+        `${file} paints ${spelling} outside the panel scope`,
+      );
+    }
+  }
+});
+
+test("surfaces the stylesheet paints take the panel muted text too", () => {
+  // .menu-soft-surface gets bg-popover through @apply, so no class matched it
+  // and model picker and Hub menu labels followed the page instead.
+  const always = CSS.match(
+    /html\[data-contrast-adjust\] :is\(\.bg-card, \.bg-popover, \.bg-sidebar, ([^)]*)\) \{/,
+  );
+  assert.ok(always);
+  for (const surface of [
+    ".menu-soft-surface",
+    ".menu-soft-surface-up",
+    ".hub-download-panel",
+    ".hub-download-fab",
+  ]) {
+    assert.ok(always[1]?.includes(surface), `${surface} is not a panel`);
+    assert.match(
+      CSS + HUB_CSS,
+      new RegExp(
+        `^\\s*(?:\\.[\\w-]+ )?${surface.replace(".", "\\.")}[,\\s{][^}]*(bg-popover|var\\(--(popover|card)\\))`,
+        "m",
+      ),
+      `${surface} no longer paints a palette surface`,
+    );
+  }
+  // Hub rows are cards in light only: dark paints them over the page, and
+  // the panel target there took their muted text from 4.1:1 to 1.0:1.
+  assert.match(
+    CSS,
+    /html\[data-contrast-adjust\]:not\(\.dark\) \.hub-page \.hub-result-row \{[^}]*var\(--contrast-panel-target, var\(--contrast-target\)\)/,
+  );
+  assert.match(HUB_CSS, /^  \.hub-page \.hub-result-row \{[^}]*background-color: var\(--card\)/m);
+  assert.match(
+    HUB_CSS,
+    /html\.dark \.hub-page \.hub-result-row \{\s*background-color: color-mix\(in srgb, var\(--foreground\) [^;]*, var\(--background\)\);/,
+  );
+  assert.doesNotMatch(always[1] ?? "", /hub-result-row/);
+  // Painted as cards only in dark, so scoped to dark, with their page panes
+  // (the Settings content pane) sent back unless a card in dark as well.
+  const dark = [".settings-surface", ".chat-composer-surface", ".unsloth-composer-surface", ".unsloth-plus-menu", ".dialog-soft-surface"];
+  const reset = CSS.match(
+    /html\[data-contrast-adjust\]\.dark :is\(([^)]*)\) \.bg-background:not\(\[class\*="dark:bg-"\]:not\(\[class\*="dark:bg-background"\]\)\) \{([^}]*)\}/,
+  );
+  assert.ok(reset, "dark card surfaces keep their page panes on the panel target");
+  assert.match(reset[2] ?? "", /var\(--contrast-target\) var\(--contrast-text-mix\)/);
+  const cards = CSS.match(/html\[data-contrast-adjust\]\.dark :is\(\.dark\\:bg-card([^)]*)\) \{/);
+  for (const surface of dark) {
+    assert.ok(reset[1]?.includes(surface), `${surface} page panes are not reset`);
+    assert.ok(cards?.[1]?.includes(surface), `${surface} is not a panel in dark`);
+  }
+  // The card rule comes after both resets, so a pane that is a card in dark wins.
+  assert.ok(CSS.indexOf(cards?.[0] ?? "@") > CSS.indexOf(reset[0]));
+});
+
+test("a pane that repaints itself in dark is not reset to the page there", () => {
+  // The Settings search keeps bg-background but paints a white wash over the
+  // sidebar in dark; reset to the page, its placeholder fell to 1.7:1 at 100.
+  assert.ok(
+    CSS.includes(
+      '.menu-soft-surface-up, .menu-soft-surface) .bg-background:not(.dark [class*="dark:bg-"]:not([class*="dark:bg-background"])) {',
+    ),
+  );
+  assert.match(
+    readSrc("features/settings/settings-dialog.tsx"),
+    /bg-background[^"]*dark:bg-\[rgb\(255_255_255/,
+  );
+});
+
+test("the dark Hub's popover repaint is scoped only where it wins", () => {
+  // hub.css repaints from @layer base, so bg-background/70 stays the page
+  // (its ink rises on the page target) while hover:bg-background at rest is a
+  // popover, whose muted icon fell from 9:1 to 2.5:1 on the page target.
+  assert.match(HUB_CSS, /@layer base \{[\s\S]*html\.dark \.hub-page \[class\*="bg-card"\],\s*html\.dark \.hub-page \[class\*="bg-background"\] \{\s*background-color: var\(--popover\);/);
+  const rule = CSS.match(
+    /html\[data-contrast-adjust\]\.dark \.hub-page :is\(\[class\*="bg-background"\], \[class\*="bg-card"\]\):not\(\[class\^="bg-"\], \[class\*=" bg-"\], \[class\*="dark:bg-"\], :hover\) \{([^}]*)\}/,
+  );
+  assert.ok(rule, "the repainted Hub popovers are not scoped");
+  assert.match(rule[1] ?? "", /var\(--contrast-panel-target, var\(--contrast-target\)\) var\(--contrast-text-mix\)/);
 });

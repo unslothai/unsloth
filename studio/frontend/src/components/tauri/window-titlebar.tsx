@@ -210,11 +210,11 @@ export function WindowTitlebar({
   const maximizeRefreshTimer = useRef<number | null>(null);
   // The titlebar sits outside the sidebar wrapper, so it cannot inherit
   // --sidebar-width. Read the resized width from the same store instead.
-  const { width } = useSidebarWidth();
+  const { width, scale: widthScale } = useSidebarWidth();
   const sidebarWidth = showSidebarSurface
     ? pinned
       ? // The live value only exists mid-drag; otherwise the committed width.
-        `var(--studio-sidebar-live-width, ${width}px)`
+        `var(--studio-sidebar-live-width, ${width * widthScale}px)`
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
 

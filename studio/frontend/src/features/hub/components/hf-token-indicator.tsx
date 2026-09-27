@@ -121,7 +121,7 @@ export function HfTokenIndicator({
             icon={AiSecurity03Icon}
             strokeWidth={1.75}
             // Shield ink leans right; nudge left to optically centre it.
-            className="block size-[13px] shrink-0 -translate-x-[0.5px]"
+            className="block size-[calc(13px*var(--ui-space-scale,1))] shrink-0 -translate-x-[0.5px]"
           />
         </button>
       </TooltipTrigger>
