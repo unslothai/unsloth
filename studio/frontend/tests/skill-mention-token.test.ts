@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Accepting a skill from the @ popover replaces the whole token under the caret. Before this,
-// both composers replaced only the text up to the caret, so arrowing back into "@calculator"
-// and pressing Enter produced "@calculator tor".
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -22,7 +19,6 @@ test("the token runs from the @ to the end of the name, whichever side of the ca
     end: 15,
     query: "cal",
   });
-  // The query is what was typed before the caret; the name after it is not a filter.
   assert.equal(mentionTokenAt("@calculator", 1)?.query, "");
 });
 
@@ -30,7 +26,6 @@ test("no token without an @ at a word start, or with a name character the rule r
   assert.equal(mentionTokenAt("mail foo@example", 16), null);
   assert.equal(mentionTokenAt("plain text", 5), null);
   assert.equal(mentionTokenAt("@calc.md", 8), null);
-  // A caret right after the @ still counts: that is the arrow-back case.
   assert.notEqual(mentionTokenAt("x @b", 3), null);
 });
 
@@ -55,8 +50,6 @@ test("replacing the token keeps one space after the mention and puts the caret p
   );
 });
 
-// Both composers go through the same token rule: the plain textarea one directly, the
-// assistant-ui one through the select override the library offers.
 test("both composers replace the whole token", () => {
   const mentions = readSrc("components/assistant-ui/skill-mention-token.ts");
   assert.match(mentions, /const tail = \/\^\[a-z0-9-\]\*\/i\.exec\(text\.slice\(caret\)\)/);

@@ -3,10 +3,7 @@
 
 export type MentionToken = { start: number; end: number; query: string };
 
-// The @name under the caret. It starts at an @ at the start of the text or after whitespace, the
-// query is what sits between the @ and the caret, and the token runs on past the caret when the
-// caret was moved back into it. Accepting a skill replaces the whole token, so a caret in the
-// middle of "@calculator" cannot leave "tor" behind.
+// The @name token around the caret; accepting replaces all of it, not just up to the caret.
 export function mentionTokenAt(text: string, caret: number): MentionToken | null {
   const prefix = text.slice(0, caret);
   const match = /(?:^|\s)@([a-z0-9-]*)$/i.exec(prefix);
@@ -15,8 +12,6 @@ export function mentionTokenAt(text: string, caret: number): MentionToken | null
   return { start: prefix.lastIndexOf("@"), end: caret + tail.length, query: match[1] ?? "" };
 }
 
-// The text once `directive` stands in for the token, and where the caret lands: after the
-// directive and the one space that separates it from what follows.
 export function replaceMentionToken(
   text: string,
   token: MentionToken,

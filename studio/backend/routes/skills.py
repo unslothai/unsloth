@@ -39,7 +39,6 @@ class SkillRecord(BaseModel):
     compatibility: Optional[str] = None
     metadata: Optional[dict[str, str]] = None
     allowed_tools: Optional[str] = None
-    # Only on a freshly created skill: where it landed, as the user would name it.
     path: Optional[str] = None
 
 

@@ -66,7 +66,6 @@ type View = { kind: "library" } | { kind: "new" } | { kind: "skill"; key: string
 
 const EMPTY_DRAFT: SkillDraft = { name: "", description: "", instructions: "" };
 const LIBRARY: View = { kind: "library" };
-// Library order: the skills this dialog writes first, then the read-only folders.
 const SECTIONS: ReadonlyArray<SkillRecord["source"]> = ["agents", "claude", "bundled"];
 
 // A shadowed row shares its name with the one that wins, so skills are keyed by source too.
@@ -80,8 +79,7 @@ function isChord(event: KeyboardEvent): boolean {
   return event.key === "Enter" && (event.metaKey || event.ctrlKey);
 }
 
-/** Only what the create_skill tool would have written: a plain folder in ~/.agents/skills.
- *  The backend refuses the rest, so the editor stays read-only on them. */
+/** A plain folder in ~/.agents/skills; the backend refuses writes to anything else. */
 function isEditable(skill: SkillRecord): boolean {
   return skill.valid && skill.source === "agents" && !skill.linked;
 }
@@ -108,7 +106,6 @@ export function ChatSkillsDialog({
   const [manifests, setManifests] = useState<ReadonlyMap<string, SkillManifest>>(
     () => new Map(),
   );
-  // Bodies being read right now, so opening the same skill twice does not read it twice.
   const inflight = useRef(new Set<string>());
   // Bumped when the catalog changes, so a read started before that change cannot land after it.
   const manifestGeneration = useRef(0);
@@ -116,10 +113,8 @@ export function ChatSkillsDialog({
   const [creating, setCreating] = useState(false);
   const [changing, setChanging] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<SkillRecord | null>(null);
-  // What to do once the user agrees to drop an unsaved draft.
   const [confirmingDiscard, setConfirmingDiscard] = useState<(() => void) | null>(null);
-  // Each open starts on the library: search, filter and drafts belong to one sitting. Reseeded
-  // on render, like the project dialog, so the first frame after opening is already reset.
+  // Reseeded on render so the first frame after opening is already reset.
   const [seenOpen, setSeenOpen] = useState(open);
   if (open !== seenOpen) {
     setSeenOpen(open);
@@ -134,7 +129,6 @@ export function ChatSkillsDialog({
       setConfirmingDiscard(null);
     }
   }
-  // Skills are added by writing files, so each open re-reads the folders.
   useEffect(() => {
     if (open) void listSkills(true).catch(() => undefined);
   }, [open]);
@@ -168,7 +162,6 @@ export function ChatSkillsDialog({
     (skill) => skill.enabled && skill.valid && !skill.shadowed,
   ).length;
 
-  // The open skill follows the catalog: gone from the folders means back to the library.
   const selected =
     view.kind === "skill" ? (skills.find((skill) => keyOf(skill) === view.key) ?? null) : null;
   if (open && view.kind === "skill" && !loading && selected === null) {
@@ -177,9 +170,6 @@ export function ChatSkillsDialog({
   }
   const readable = selected !== null && selected.valid && !selected.shadowed;
 
-  // The body is read when a skill is opened, once per sitting; Refresh forgets them all. A late
-  // result is kept rather than cancelled: it is the same file either way. A read that fails
-  // lands back on the library, with the reason in a toast.
   const readManifest = (skill: SkillRecord, replace = false) => {
     const name = skill.name;
     if (!skill.valid || skill.shadowed || (!replace && inflight.current.has(name))) return;
@@ -205,8 +195,7 @@ export function ChatSkillsDialog({
 
   const manifest = selected ? (manifests.get(selected.name) ?? null) : null;
 
-  // A catalog refresh (this window's write or another window's broadcast) may mean a changed
-  // file: forget other bodies and re-read the open one in place. An unsaved draft is kept.
+  // A catalog refresh may mean a changed file: re-read the open one, keep any draft.
   const [seenSkills, setSeenSkills] = useState(skills);
   if (skills !== seenSkills) {
     setSeenSkills(skills);
@@ -239,7 +228,6 @@ export function ChatSkillsDialog({
     draft.description.trim().length > 0 &&
     draft.instructions.trim().length > 0;
 
-  // Leaving an editor with a draft asks first; everything else just goes.
   const leaveTo = (next: () => void) => {
     if (dirty) setConfirmingDiscard(() => next);
     else next();
@@ -298,7 +286,6 @@ export function ChatSkillsDialog({
         instructions: manifest.instructions,
       };
       const next = { ...current, ...patch };
-      // A draft that returns to the file's content is dropped rather than kept as a no-op change.
       return next.description === manifest.description &&
         next.instructions === manifest.instructions
         ? null
@@ -941,7 +928,6 @@ function SkillCard({
         <Monogram name={skill.name} on={on} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold tracking-tight">{skill.name}</p>
-          {/* The section already says where a card comes from; chips are for what is unusual. */}
           {skill.shadowed || skill.linked || !skill.valid ? (
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
             {skill.shadowed ? (

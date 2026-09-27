@@ -266,7 +266,6 @@ def _read_limited(
 
 
 def _split_skill_markdown(raw: bytes) -> tuple[dict, str]:
-    """The frontmatter mapping and the Markdown body, the body with its bytes untouched."""
     if len(raw) > MAX_SKILL_MD_BYTES:
         raise SkillError("SKILL.md exceeds the 512 KB limit.")
     try:
@@ -526,7 +525,6 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
                 "enabled": False,
                 "valid": False,
                 "shadowed": False,
-                # A linked entry is followed for reading but never rewritten or deleted.
                 "linked": _is_linked_path(candidate),
             }
             try:
@@ -689,9 +687,7 @@ def create_skill(
 def _editable_skill(
     name: str, *, home: Optional[Path]
 ) -> tuple[dict, Path, Optional[os.stat_result]]:
-    """A skill the dialog may rewrite or delete: a plain directory in the Agents root.
-    ~/.claude and bundled skills, and linked entries (a dotfiles checkout, an `npx skills`
-    install), stay read-only here so a write never lands outside that root."""
+    """A plain, unlinked directory in the Agents root; anything else is read-only."""
     record, skill_dir, identity = _selected_skill(name, home = home)
     if record["source"] != "agents":
         raise SkillError(
@@ -744,15 +740,12 @@ def _replace_skill_manifest(skill_dir: Path, manifest: bytes, identity) -> None:
 
 
 def read_skill_manifest(name: str, *, home: Optional[Path] = None) -> dict:
-    """A skill plus its Markdown body, for the dialog's editor. Any selectable skill can be
-    read here, enabled or not; whether it can be written is the record's source and link."""
     with _LOCK:
         record, skill_dir, identity = _selected_skill(name, home = home)
         raw = _read_limited(
             skill_dir / "SKILL.md", MAX_SKILL_MD_BYTES, contained_in = skill_dir, identity = identity
         )
         _, body = _split_skill_markdown(raw)
-        # The path as the user would name it; a bundled skill has none worth showing.
         display = {
             "agents": "~/.agents/skills" if is_owner_context() else _MANAGED_SKILLS_DIR,
             "claude": "~/.claude/skills",
@@ -778,7 +771,6 @@ def update_skill(
             skill_dir / "SKILL.md", MAX_SKILL_MD_BYTES, contained_in = skill_dir, identity = identity
         )
         frontmatter, _ = _split_skill_markdown(raw)
-        # Only the two edited fields change; license, compatibility and metadata are kept.
         manifest = _render_manifest(
             {**frontmatter, "name": record["name"], "description": description}, instructions
         )

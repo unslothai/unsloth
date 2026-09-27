@@ -966,7 +966,6 @@ def test_update_skill_rewrites_the_manifest_and_keeps_the_rest_of_its_frontmatte
 
     assert record["description"] == "New description"
     assert record["license"] == "MIT" and record["metadata"] == {"author": "leo"}
-    # The dialog only edits two fields; a disable set earlier is not an edit.
     assert record["enabled"] is False
     text = (folder / "SKILL.md").read_text(encoding = "utf-8")
     assert text.startswith("---\nname: notes\ndescription: New description\nlicense: MIT\n")
@@ -974,7 +973,6 @@ def test_update_skill_rewrites_the_manifest_and_keeps_the_rest_of_its_frontmatte
     assert (
         skills.read_skill_manifest("notes", home = home)["instructions"] == "# New body\n\nStep one."
     )
-    # The write went through a temporary file; none is left behind as a stray resource.
     assert [path.name for path in folder.iterdir()] == ["SKILL.md"]
     with pytest.raises(skills.SkillError, match = "1-1024"):
         skills.update_skill("notes", "", "Body", home = home)
@@ -1019,7 +1017,6 @@ def test_only_agents_skills_can_be_changed_from_the_dialog(isolated_skills, monk
         return skills.delete_skill(name)
 
     for name in ("claude-owned", "skill-creator"):
-        # Readable in the editor, as a read-only view, even while disabled.
         manifest = skills.read_skill_manifest(name)
         assert manifest["source"] != "agents" and manifest["instructions"]
         with pytest.raises(skills.SkillError, match = "cannot be changed here"):
@@ -1148,7 +1145,6 @@ def test_managed_account_edits_and_deletes_only_its_own_skills(managed_accounts)
     record = run_as(bob, skills.update_skill, "bob-made", "Bob's edited skill", "Edited")
     assert record["description"] == "Bob's edited skill"
     assert run_as(bob, skills.read_skill_manifest, "bob-made")["instructions"] == "Edited"
-    # The owner's home is not in a managed account's roots, so it is not-found rather than edited.
     with pytest.raises(skills.SkillNotFoundError):
         run_as(bob, skills.update_skill, "owner-made", "Hijacked", "Body")
     with pytest.raises(skills.SkillNotFoundError):

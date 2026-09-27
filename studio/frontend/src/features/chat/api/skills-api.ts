@@ -21,7 +21,6 @@ export type SkillRecord = {
   compatibility?: string | null;
   metadata?: Record<string, string> | null;
   allowed_tools?: string | null;
-  // Only on a freshly created skill: where it landed, as the user would name it.
   path?: string | null;
 };
 
@@ -152,15 +151,13 @@ export async function setSkillEnabled(
   return updated;
 }
 
-// The backend's _normalize_skill_name: 1-64 lowercase letters, digits and single hyphens.
 export const SKILL_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
 export function isValidSkillName(name: string): boolean {
   return SKILL_NAME_PATTERN.test(name) && !name.includes("--");
 }
 
-// A create, edit or delete changes what @ offers and what the system prompt lists, so every
-// window re-reads the folders and the context readout.
+// Writes change @ and the system prompt in every window.
 async function skillsMutated(): Promise<void> {
   channel?.postMessage("changed");
   void refreshContextUsage({ invalidate: true });

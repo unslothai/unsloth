@@ -131,10 +131,7 @@ function MentionOpenSignal({
   return null;
 }
 
-// Mounted under the popover. The library's own insert replaces the text from the @ up to the
-// caret, so accepting a skill with the caret moved back inside the word left the rest of the
-// word behind ("@calculator tor"). This swaps the whole token under the caret instead, and
-// steps aside when the input is not the plain textarea the token was read from.
+// The library's insert stops at the caret, leaving "@calculator tor"; replace the whole token.
 function MentionTokenReplacer(): null {
   const aui = useAui();
   const { registerSelectItemOverride, setCursorPosition } =
