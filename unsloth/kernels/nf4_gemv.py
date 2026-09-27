@@ -18,6 +18,7 @@ from .nf4 import _HAS_MUL_RN
 
 __all__ = [
     "gemv_nf4",
+    "triton_gemv_eager",
 ]
 
 
@@ -94,10 +95,121 @@ def _gemv_nf4_kernel(
     tl.store(OUT + rows, acc.to(OUT.dtype.element_ty), mask = rmask)
 
 
+@triton.jit
+def _gemv_nf4_words_kernel(
+    X,
+    W,
+    ABSMAX,
+    CODE2,
+    ABSMAX2,
+    OFFSET,
+    LUT,
+    OUT,
+    N,
+    K,
+    BLOCKSIZE: tl.constexpr,
+    BLOCKSIZE2: tl.constexpr,
+    NESTED: tl.constexpr,
+    USE_MUL_RN: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    # Same math as _gemv_nf4_kernel, but the weight is read as int32 words of 8 nibbles and
+    # unpacked with one shift per value. Triton before 3.7 builds this form about 2x faster than
+    # the byte tile above (and 3.7 the other way round), so the config picks per Triton version.
+    W = W.to(tl.pointer_type(tl.int32))
+    pid = tl.program_id(0)
+    rows = pid * BLOCK_N + tl.arange(0, BLOCK_N)
+    rmask = rows < N
+    rows64 = rows.to(tl.int64)
+    WORDS: tl.constexpr = BLOCK_K // 8
+    NB: tl.constexpr = BLOCK_K // BLOCKSIZE
+    wk = tl.arange(0, WORDS)
+    j = tl.arange(0, 8)
+    # Little endian: byte b of a word holds values 2b (high nibble) and 2b + 1 (low nibble).
+    shifts = (j // 2) * 8 + (1 - (j % 2)) * 4
+    nbs = tl.arange(0, NB)
+    words_per_row = K // 8
+    blocks_per_row = K // BLOCKSIZE
+    acc = tl.zeros([BLOCK_N], dtype = tl.float32)
+    if NESTED:
+        offset = tl.load(OFFSET)
+    for k0 in range(0, K, BLOCK_K):
+        kw = k0 // 8 + wk
+        m = rmask[:, None] & (kw < words_per_row)[None, :]
+        w = tl.load(W + rows64[:, None] * words_per_row + kw[None, :], mask = m, other = 0)
+        v = tl.load(LUT + ((w[:, :, None] >> shifts[None, None, :]) & 15))
+        xk = k0 + wk[:, None] * 8 + j[None, :]
+        x = tl.load(X + xk, mask = xk < K, other = 0.0).to(tl.float32)
+        part = tl.sum(tl.reshape(v * x[None, :, :], (BLOCK_N, NB, BLOCKSIZE)), axis = 2)
+        bmask = rmask[:, None] & ((k0 + nbs * BLOCKSIZE) < K)[None, :]
+        blk = rows64[:, None] * blocks_per_row + (k0 // BLOCKSIZE + nbs)[None, :]
+        if NESTED:
+            q = tl.load(ABSMAX + blk, mask = bmask, other = 0).to(tl.int32)
+            c2 = tl.load(CODE2 + q, mask = bmask, other = 0.0)
+            s2 = tl.load(ABSMAX2 + blk // BLOCKSIZE2, mask = bmask, other = 0.0)
+            if USE_MUL_RN:
+                a = tl.inline_asm_elementwise(
+                    "mul.rn.f32 $0, $1, $2;",
+                    "=r,r,r",
+                    [c2, s2],
+                    dtype = tl.float32,
+                    is_pure = True,
+                    pack = 1,
+                )
+            else:
+                a = c2 * s2
+            a = a + offset
+        else:
+            a = tl.load(ABSMAX + blk, mask = bmask, other = 0.0)
+        acc += tl.sum(part * a, axis = 1)
+    tl.store(OUT + rows, acc.to(OUT.dtype.element_ty), mask = rmask)
+
+
+_TRITON_37 = tuple(int(x) for x in triton.__version__.split(".")[:2]) >= (3, 7)
+# None picks per GPU and Triton version below; "bytes" or "words" forces one kernel (tests, sweeps).
+_FORCE_KERNEL = None
+
+
+# Compute capabilities (major, minor) where the Triton GEMV beats bitsandbytes' in eager decode even
+# before Triton 3.7. Empty until measured there, so eager decode keeps bitsandbytes' GEMV.
+EAGER_BEFORE_TRITON_37 = frozenset()
+
+
+def triton_gemv_eager(device = None):
+    """Whether eager (uncompiled) decode should take the Triton GEMV on this Triton and GPU."""
+    if _TRITON_37:
+        return True
+    if not EAGER_BEFORE_TRITON_37:
+        return False
+    return tuple(torch.cuda.get_device_capability(device)) in EAGER_BEFORE_TRITON_37
+
+
+def _word_aligned(W):
+    # Each row is K / 2 bytes with K a multiple of the blocksize, so rows stay 4 byte aligned when
+    # the tensor starts on one. The storage base always is; only a view can shift it.
+    return (W.storage_offset() * W.element_size()) % 4 == 0
+
+
 @functools.lru_cache(maxsize = None)
-def _gemv_config(N: int, K: int, blocksize: int):
-    # Swept on a B200 over (4096,4096) (14336,4096) (4096,14336) (1024,4096) (128256,4096):
-    # BLOCK_K=1024 won every shape; few rows per program for small N, 4 rows and 2 warps for tall N.
+def _gemv_config(N: int, K: int, blocksize: int, major: int, words_ok: bool, force):
+    """(use the words kernel, grid, BLOCK_N, BLOCK_K, num_warps).
+
+    Timed with CUDA graphs (kernel time only) on a B200 over (4096,4096) (14336,4096)
+    (4096,14336) (1024,4096): Triton 3.7 runs the byte kernel best at BLOCK_K=2048 and 4 warps,
+    Triton 3.6 the words kernel at one row per program. Other GPUs keep the original configs
+    until they are measured."""
+    use_words = words_ok and (force == "words" or (force is None and major == 10 and not _TRITON_37))
+    if use_words:
+        block_k = max(blocksize, min(2048, triton.next_power_of_2(K)))
+        block_n, num_warps = 1, 1
+        return True, (triton.cdiv(N, block_n),), block_n, block_k, num_warps
+    if major == 10 and force is None:
+        block_k = max(blocksize, min(2048, triton.next_power_of_2(K)))
+        block_n, num_warps = 4, 4
+        return False, (triton.cdiv(N, block_n),), block_n, block_k, num_warps
+    # Swept on a B200 over the shapes above: BLOCK_K=1024 won every shape; few rows per program
+    # for small N, 4 rows and 2 warps for tall N.
     block_k = max(blocksize, min(1024, triton.next_power_of_2(K)))
     if N <= 2048:
         block_n, num_warps = 2, 4
@@ -105,12 +217,20 @@ def _gemv_config(N: int, K: int, blocksize: int):
         block_n, num_warps = 8, 4
     else:
         block_n, num_warps = 4, 2
-    return (triton.cdiv(N, block_n),), block_n, block_k, num_warps
+    return False, (triton.cdiv(N, block_n),), block_n, block_k, num_warps
 
 
-def _launch(kernel, X, W, absmax, code2, absmax2, offset, code, out, N, K, blocksize, blocksize2):
+@functools.lru_cache(maxsize = None)
+def _major(index):
+    return torch.cuda.get_device_capability(index)[0]
+
+
+def _launch(kernels, X, W, absmax, code2, absmax2, offset, code, out, N, K, blocksize, blocksize2):
     nested = code2 is not None
-    grid, block_n, block_k, num_warps = _gemv_config(N, K, blocksize)
+    use_words, grid, block_n, block_k, num_warps = _gemv_config(
+        N, K, blocksize, _major(X.device.index), _word_aligned(W), _FORCE_KERNEL
+    )
+    kernel = kernels[1] if use_words else kernels[0]
     kernel[grid](
         X,
         W,
@@ -149,7 +269,10 @@ def _gemv_nf4_op(
 ) -> torch.Tensor:
     out = torch.empty((1, 1, out_features), dtype = X.dtype, device = X.device)
     return _launch(
-        torch.library.wrap_triton(_gemv_nf4_kernel),
+        (
+            torch.library.wrap_triton(_gemv_nf4_kernel),
+            torch.library.wrap_triton(_gemv_nf4_words_kernel),
+        ),
         X,
         W,
         absmax,
@@ -165,6 +288,7 @@ def _gemv_nf4_op(
     )
 
 
+_KERNELS = (_gemv_nf4_kernel, _gemv_nf4_words_kernel)
 _is_compiling = torch.compiler.is_compiling
 _current_device = torch.cuda.current_device
 
@@ -216,7 +340,7 @@ def gemv_nf4(
     if out is None:
         out = torch.empty((1, 1, out_features), dtype = X.dtype, device = X.device)
     args = (
-        _gemv_nf4_kernel,
+        _KERNELS,
         X,
         W_u8,
         absmax,

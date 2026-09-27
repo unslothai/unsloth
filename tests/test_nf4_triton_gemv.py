@@ -14,6 +14,7 @@ if not torch.cuda.is_available():
 pytest.importorskip("triton")
 F = pytest.importorskip("bitsandbytes.functional")
 
+from unsloth.kernels import nf4_gemv
 from unsloth.kernels.nf4_gemv import gemv_nf4
 from unsloth.kernels.utils import _fast_gemv_ctypes
 
@@ -63,10 +64,17 @@ def _rel_err(a, ref):
 TOL = {torch.float16: 2e-3, torch.bfloat16: 1.2e-2}
 
 
+@pytest.fixture(params = [None, "bytes", "words"], ids = ["auto", "bytes", "words"])
+def kernel(request, monkeypatch):
+    # Both kernel forms, whichever this Triton version and GPU would pick on its own.
+    monkeypatch.setattr(nf4_gemv, "_FORCE_KERNEL", request.param)
+    return request.param
+
+
 @pytest.mark.parametrize("nested", [True, False], ids = ["nested", "flat"])
 @pytest.mark.parametrize("dtype", DTYPES, ids = str)
 @pytest.mark.parametrize("shape", SHAPES, ids = lambda s: f"{s[0]}x{s[1]}")
-def test_matches_fp32_reference_and_bitsandbytes(shape, dtype, nested):
+def test_matches_fp32_reference_and_bitsandbytes(shape, dtype, nested, kernel):
     n, k = shape
     q, s = _quant(n, k, dtype, nested)
     X = torch.randn(1, 1, k, dtype = dtype, device = "cuda")
@@ -76,6 +84,18 @@ def test_matches_fp32_reference_and_bitsandbytes(shape, dtype, nested):
     assert _rel_err(out, ref) < TOL[dtype]
     if nested:  # the ctypes GEMV only takes double quantized states
         assert _rel_err(out, ref) <= _rel_err(_fast_gemv_ctypes(X, q, s), ref) + 4e-3
+
+
+def test_unaligned_weight_view_uses_the_byte_kernel(monkeypatch):
+    # The words kernel reads int32; a weight view starting off a 4 byte boundary must not reach it.
+    monkeypatch.setattr(nf4_gemv, "_FORCE_KERNEL", "words")
+    q, s = _quant(1024, 4096, torch.float16)
+    buf = torch.empty(q.numel() + 2, dtype = torch.uint8, device = "cuda")
+    buf[2:].copy_(q.view(-1))
+    Wv = buf[2:].view(q.shape)
+    assert not nf4_gemv._word_aligned(Wv)
+    X = torch.randn(1, 1, 4096, dtype = torch.float16, device = "cuda")
+    assert _rel_err(gemv_nf4(X, Wv, *_args(q, s)[1:]), _reference(X, q, s)) < TOL[torch.float16]
 
 
 def test_vocab_sized_weight():
