@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Processor selection for repo-code VLMs that register only AutoModel /
-AutoModelForCausalLM.
+"""Processor selection for repo-code VLMs registering only AutoModel / AutoModelForCausalLM.
 
-nvidia/Nemotron-3-Nano-Omni maps only AutoModel / AutoModelForCausalLM, so
-auto_model is not a VLM class and FastBaseModel picked AutoTokenizer, returning
-a bare tokenizer although the repo ships an AutoProcessor. DeepSeek-OCR (no
-loadable AutoProcessor) and Nemotron-Nano-VL (AutoProcessor resolves to the
-tokenizer) must keep loading through AutoTokenizer.
-
-The selection statements and `_acquire_processor` are exec'd straight from
-vision.py with stub processor classes, so no network, weights or GPU are used.
+Runs the selection code of vision.py with stub processor classes (no network, weights or GPU).
 """
 
 import ast
@@ -123,7 +115,7 @@ def _select(
 
 
 def test_repo_autoprocessor_is_used_for_automodel_only_vlm():
-    """Nemotron-3-Nano-Omni: the defect. Fails before the fix (bare tokenizer)."""
+    """Nemotron-3-Nano-Omni."""
     tok, err, calls = _select(_Processor)
     assert isinstance(tok, _Processor), f"got {type(tok).__name__}, calls={calls}"
     assert hasattr(tok, "image_processor")
@@ -135,7 +127,7 @@ def test_repo_autoprocessor_is_used_for_automodel_only_vlm():
 
 
 def test_missing_autoprocessor_falls_back_to_tokenizer():
-    """DeepSeek-OCR: AutoProcessor raises 'Unrecognized processing class'."""
+    """DeepSeek-OCR."""
     tok, err, calls = _select(ValueError("Unrecognized processing class"))
     assert isinstance(tok, _Tokenizer)
     assert err is None
@@ -143,7 +135,7 @@ def test_missing_autoprocessor_falls_back_to_tokenizer():
 
 
 def test_autoprocessor_that_resolves_to_a_tokenizer_is_not_kept():
-    """Nemotron-Nano-VL: AutoProcessor returns the tokenizer; keep the AutoTokenizer load."""
+    """Nemotron-Nano-VL."""
     tok, err, calls = _select(_Tokenizer)
     assert isinstance(tok, _Tokenizer)
     assert [c[0] for c in calls][-1] == "AutoTokenizer"

@@ -1839,7 +1839,7 @@ class FastBaseModel:
             or (not text_only and hasattr(auto_config, "vision_config"))
         )
         auto_processor = AutoProcessor if (needs_processor or is_whisper) else AutoTokenizer
-        # Such repo-code VLMs may still ship an AutoProcessor (Nemotron-3-Nano-Omni); try it first, keep AutoTokenizer when it has no image processor (DeepSeek-OCR).
+        # Such repos may still ship an AutoProcessor (Nemotron-3-Nano-Omni); DeepSeek-OCR has none.
         try_repo_processor = is_vlm_config and auto_processor is AutoTokenizer
 
         model_type_arch = model_types[0]
