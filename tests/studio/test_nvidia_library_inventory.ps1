@@ -360,6 +360,24 @@ foreach ($file in @($installPs1, $setupPs1)) {
     }
 }
 
+# The update's kind guard runs before the keeper and deleted the bundle the keeper would have kept.
+$setupText = Get-Content -LiteralPath $setupPs1 -Raw
+$from = $setupText.IndexOf('$_nvidiaKinds = if (Test-WinArm64Venv) {')
+$to = $setupText.IndexOf('if ($existingKind -and ($existingKind -notin $expectedKinds))', $from)
+$kindBlock = $setupText.Substring($from, $to - $from)
+function Test-WinArm64Venv { $false }
+function Get-PinnedTorchIndexUrl { $null }
+function Get-PersistedWoaTorchIndex { $null }
+function Get-WoaTorchIndexMarker { $null }
+$WinArm64EffectiveTorchIndexUrl = $null; $HasROCm = $false; $script:ROCmGfxArch = $null; $HasNvidiaSmi = $false
+foreach ($case in @(@{ Flag = $true; Want = $true }, @{ Flag = $false; Want = $false })) {
+    $script:NvidiaDriverLibraryOnly = $case.Flag
+    Invoke-Expression $kindBlock
+    Check "the update's kind guard $(if ($case.Want) { 'keeps' } else { 'does not keep' }) a CUDA bundle $(if ($case.Flag) { 'for an NVIDIA GPU only a pre-CUDA 11 driver library found' } else { 'with no NVIDIA evidence' })" (
+        ($expectedKinds -contains "windows-cuda") -eq $case.Want)
+}
+$script:NvidiaDriverLibraryOnly = $false
+
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed"

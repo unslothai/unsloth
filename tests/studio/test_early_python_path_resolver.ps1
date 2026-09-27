@@ -576,9 +576,23 @@ try {
             New-Item -ItemType SymbolicLink -Path $venvPy -Target $hostPy | Out-Null
             function Test-StudioChildScriptDirectoryElevated { return $true }
             $VenvDir = $venvRoot
+            $StudioHome = Join-Path $tmp "elevated-home"
+            # It runs before the destination guard, so only where that guard would let it run.
+            Remove-Variable -Name StudioRedirectMode -ErrorAction SilentlyContinue
             Reset-EarlyPython
-            Check "an elevated run still uses the existing install's venv interpreter" ((Get-StudioEarlyPython) -eq $venvPy)
-            Remove-Variable -Name VenvDir -ErrorAction SilentlyContinue
+            Check "an elevated run declines the venv interpreter while the layout is unknown" (
+                [string]::IsNullOrWhiteSpace((Get-StudioEarlyPython)))
+            $StudioRedirectMode = 'default'
+            Reset-EarlyPython
+            Check "an elevated run still uses the default layout's venv interpreter" ((Get-StudioEarlyPython) -eq $venvPy)
+            $StudioRedirectMode = 'env'
+            Reset-EarlyPython
+            Check "an elevated run declines a custom home's venv interpreter that is not Unsloth's" (
+                [string]::IsNullOrWhiteSpace((Get-StudioEarlyPython)))
+            Set-Content -LiteralPath (Join-Path $venvRoot ".unsloth-studio-owned") -Value ""
+            Reset-EarlyPython
+            Check "an elevated run uses a custom home's venv interpreter once it is Unsloth's" ((Get-StudioEarlyPython) -eq $venvPy)
+            Remove-Variable -Name VenvDir, StudioHome, StudioRedirectMode -ErrorAction SilentlyContinue
         }
     } finally {
         function Test-StudioChildScriptDirectoryElevated { return $false }
