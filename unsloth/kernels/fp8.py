@@ -539,9 +539,6 @@ def _probe_fp8_rowwise_backend(device):
     return "dequant"
 
 
-_SCALED_MM_MIN_DECODE_WEIGHT = 8 * 1024 * 1024
-
-
 def _fp8_rowwise_backend(device):
     return _probe_fp8_rowwise_backend(device)
 
@@ -598,8 +595,8 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             and rowwise
             and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
             and x.shape[-1] == weight.shape[1]
-            # Decode on a small weight: quantizing the activation costs more launches than dequantizing W.
-            and (x.numel() > 64 * x.shape[-1] or weight.numel() > _SCALED_MM_MIN_DECODE_WEIGHT)
+            # Decode-sized calls: compiled dequant + GEMV beats quantizing the activation (Qwen3-8B decode +5%).
+            and x.numel() > 64 * x.shape[-1]
         ):
             output_shape = (*x.shape[:-1], -1)
             x_quantized, x_scale = _quantize_fp8_per_row(
