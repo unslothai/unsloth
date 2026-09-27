@@ -1271,19 +1271,20 @@ export const zhCN = {
         autoDetect: "自动检测",
       },
       theme: {
-        title: "主题",
-        label: "颜色主题",
+        title: "视觉样式",
+        label: "模式",
         description: "选择浅色、深色，或跟随系统。",
         system: "跟随系统",
         light: "浅色",
         dark: "深色",
       },
       palette: {
-        label: "调色板",
+        label: "主题",
         description: "Unsloth 全局使用的配色，支持浅色和深色模式。",
         standard: "标准",
         classic: "经典",
         minimal: "极简",
+        moreThemes: "更多主题",
       },
       custom: {
         chatWidth: {
@@ -1297,8 +1298,6 @@ export const zhCN = {
         resetAll: "重置自定义",
         preferencesTitle: "偏好设置",
         colors: {
-          lightGroup: "浅色主题",
-          darkGroup: "深色主题",
           accent: "强调色",
           background: "背景",
           foreground: "前景",
