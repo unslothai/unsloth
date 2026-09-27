@@ -307,16 +307,27 @@ def dequantize_nf4(
     shape,
     dtype: torch.dtype,
     out: Optional[torch.Tensor] = None,
+    code: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Dequantize a bitsandbytes NF4 weight in one kernel launch.
 
     ``code2``, ``absmax2`` and ``offset`` are None for a non-nested quant state (absmax is
     then fp32). ``offset`` may be a device tensor (read in the kernel, no host sync) or a float.
+    ``code`` is the quant state's NF4 codebook (fp32 [16], bit-identical to NF4_LUT); passing
+    it keeps a compiled graph from rebuilding the table on every call.
     Returns ``out`` (allocated when None) with ``shape`` and ``dtype``.
     """
     nested = _check(W, absmax, code2, absmax2, offset, blocksize, blocksize2, dtype)
     offset = _as_offset_tensor(offset, W.device) if nested else None
-    lut = _lut_for(W.device)
+    if (
+        isinstance(code, torch.Tensor)
+        and code.dtype == torch.float32
+        and code.numel() == 16
+        and code.device == W.device
+    ):
+        lut = code
+    else:
+        lut = _lut_for(W.device)
     if torch.compiler.is_compiling():
         if out is None:
             return torch.ops.unsloth.dequantize_nf4(

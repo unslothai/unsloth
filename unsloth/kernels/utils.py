@@ -701,7 +701,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             return bnb_functional.dequantize_4bit(W, quant_state, out = out)
         if not _USE_NF4_KERNELS:
             return _fast_dequantize_ctypes(W, quant_state, out, use_global_buffer)
-        absmax, shape, dtype, blocksize, _, code2, absmax2, offset, blocksize2 = (
+        absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2 = (
             _unpack_quant_state(quant_state)
         )
         if out is not None:
@@ -710,7 +710,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         elif use_global_buffer and _can_use_scratch():
             out = _scratch("weight", W.device, shape[0] * shape[1], dtype).view(shape)
         out = dequantize_nf4(
-            W, absmax, code2, absmax2, offset, blocksize, blocksize2, shape, dtype, out = out
+            W, absmax, code2, absmax2, offset, blocksize, blocksize2, shape, dtype, out = out, code = code
         )
         # Careful returning transposed data.
         is_transposed = True if W.shape[0] == 1 else False
