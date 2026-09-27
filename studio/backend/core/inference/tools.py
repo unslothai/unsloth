@@ -14031,7 +14031,8 @@ def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
     for tag in _HTML_TAG_RE.finditer(body[:_META_REFRESH_SCAN_BYTES]):
         name = (tag.group(1) or b"").lower()
         if inert is not None:
-            if inert != b"plaintext" and tag.group(0)[: len(inert) + 2].lower() == b"</" + inert:
+            end = tag.group(0)[: len(inert) + 3].lower()
+            if inert != b"plaintext" and end[:-1] == b"</" + inert and end[-1:] in b"\t\n\f\r />":
                 inert = None
         elif name in _META_REFRESH_INERT_TAGS:
             inert = name

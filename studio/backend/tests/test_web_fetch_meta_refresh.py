@@ -120,6 +120,7 @@ def test_reload_or_non_redirect_refresh_returns_the_page(monkeypatch, content):
         "<template>{meta}</template>",
         "<textarea>{meta}</textarea>",
         "<style>/* {meta} */</style>",
+        "<script>x = '</scripture>{meta}';</script>",
         "<noframes>{meta}</noframes>",
         "<iframe>{meta}</iframe>",
         "<noembed>{meta}</noembed>",
