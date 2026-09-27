@@ -433,6 +433,16 @@ class TestConversationStartDate:
         assert start("orphan", request) == date(2026, 8, 9)
         assert start("loop", request) == date(2026, 8, 9)
 
+    def test_a_deep_fork_chain_still_reaches_the_root(self, monkeypatch):
+        root = int(datetime(2026, 8, 1, 12, tzinfo = timezone.utc).timestamp() * 1000)
+        later = int(datetime(2026, 8, 9, 12, tzinfo = timezone.utc).timestamp() * 1000)
+        threads = {"t0": {"createdAt": root}}
+        for i in range(1, 40):
+            threads[f"t{i}"] = {"createdAt": later, "forkedFromThreadId": f"t{i - 1}"}
+        self._threads(monkeypatch, threads)
+        request = _types.SimpleNamespace(headers = {"x-unsloth-timezone": "UTC"})
+        assert current_date_settings.conversation_start_date("t39", request) == date(2026, 8, 1)
+
     @pytest.mark.parametrize("thread_id", [None, "", 7, "missing"])
     def test_unknown_threads_have_no_start_date(self, monkeypatch, thread_id):
         self._threads(monkeypatch, {})
@@ -548,6 +558,25 @@ class TestDateChangeNote:
             {"type": "text", "text": "what is this"},
             {"type": "text", "text": "The current date is now 2026-08-16."},
         ]
+
+    def test_note_skips_a_tool_result_folded_into_a_user_turn(self):
+        from core.inference.anthropic_compat import fold_tool_results_into_user
+
+        self.today = "2026-08-16"
+        messages = fold_tool_results_into_user(
+            [
+                {"role": "user", "content": "list files"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "c1", "function": {"name": "ls", "arguments": "{}"}}],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": "a.txt"},
+            ]
+        )
+        out = self.inference._append_current_date_note(messages, object(), thread_id = "t")
+        assert out[2] is messages[2]
+        assert out[0]["content"] == "list files\n\nThe current date is now 2026-08-16."
 
     def test_note_is_not_added_twice(self):
         self.today = "2026-08-16"

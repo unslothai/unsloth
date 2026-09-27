@@ -120,7 +120,7 @@ def conversation_start_date(thread_id: Any, request: Any = None) -> date | None:
         thread = get_chat_thread(thread_id)
         seen = {thread_id}
         # a fork keeps its parent's history, so it keeps the parent's prompt prefix too.
-        while thread and len(seen) < 16:
+        while thread:
             parent_id = thread.get("forkedFromThreadId")
             if not parent_id or parent_id in seen:
                 break

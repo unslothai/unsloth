@@ -6047,6 +6047,19 @@ def _date_gate_blocks(request: Any, include_api_key: bool) -> bool:
     return False
 
 
+_FOLDED_TOOL_RESULT_PREFIX = '{\n  "tool_response"'
+
+
+def _is_folded_tool_result(content: Any) -> bool:
+    # fold_tool_results_into_user turns a tool result into a user turn for tool-role-less templates.
+    if isinstance(content, list):
+        content = next(
+            (p.get("text") for p in content if isinstance(p, dict) and p.get("type") == "text"),
+            None,
+        )
+    return isinstance(content, str) and content.startswith(_FOLDED_TOOL_RESULT_PREFIX)
+
+
 def _append_current_date_note(
     messages: list[dict],
     request: Any = None,
@@ -6067,6 +6080,8 @@ def _append_current_date_note(
         if not isinstance(msg, dict) or msg.get("role") != "user":
             continue
         content = msg.get("content")
+        if _is_folded_tool_result(content):
+            continue
         if isinstance(content, str):
             if content.endswith(note):
                 return messages
@@ -28255,6 +28270,9 @@ async def produce_openai_chat_completions(
             payload.messages, _legacy_distinct
         ):
             chat_messages, served_images = _msgs, _payloads
+            chat_messages = _append_current_date_note(
+                chat_messages, request, thread_id = getattr(payload, "thread_id", None)
+            )
 
     # Decode image (from content parts OR legacy field)
     image_b64 = extracted_image_b64 or payload.image_base64
@@ -29224,8 +29242,12 @@ async def produce_openai_chat_completions(
             gen_kwargs["images"] = await _decode_request_images(
                 backend, _sf_rebuilt_images, dict(zip(served_images, images)), reject = _reject
             )
-            gen_kwargs["messages"] = _set_or_prepend_system_message(
-                _structured_tool_history_for_local_template(_sf_rebuilt), system_prompt
+            gen_kwargs["messages"] = _append_current_date_note(
+                _set_or_prepend_system_message(
+                    _structured_tool_history_for_local_template(_sf_rebuilt), system_prompt
+                ),
+                request,
+                thread_id = getattr(payload, "thread_id", None),
             )
         else:
             #
@@ -29249,7 +29271,11 @@ async def produce_openai_chat_completions(
                 trim_mcp_image_turns(
                     _sf_rebuilt, _sf_rebuilt_images, limit = _MCP_MAX_TOTAL_MODEL_IMAGES - 1
                 )
-            gen_kwargs["messages"] = _set_or_prepend_system_message(_sf_rebuilt, system_prompt)
+            gen_kwargs["messages"] = _append_current_date_note(
+                _set_or_prepend_system_message(_sf_rebuilt, system_prompt),
+                request,
+                thread_id = getattr(payload, "thread_id", None),
+            )
             gen_kwargs["images"] = _sf_rebuilt_images or None
         # Mark the turn that owns the image so the newest-user-turn scan does not move an
         # older picture onto a later question. Gated on _sf_renders_image, not on an image:
@@ -34930,7 +34956,11 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             ),
             vision = False,
         )
-        messages = _set_or_prepend_system_message(messages, system_prompt)
+        messages = _append_current_date_note(
+            _set_or_prepend_system_message(messages, system_prompt),
+            request,
+            thread_id = getattr(payload, "thread_id", None),
+        )
         system_prompt = ""
     elif _tools_to_use:
         # A PENDING turn is the shape this loop answers from exactly these messages, splicing
