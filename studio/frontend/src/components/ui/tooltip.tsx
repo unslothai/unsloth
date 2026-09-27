@@ -268,6 +268,8 @@ function TooltipContent({
   variant = "default",
   className,
   sideOffset = 0,
+  // Clear of the window edges, where a flush pill reads as clipped.
+  collisionPadding = 8,
   children,
   ref,
   ...props
@@ -297,6 +299,7 @@ function TooltipContent({
         ref={contentRef}
         data-slot="tooltip-content"
         sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
         className={cn(
           "z-[999999] w-fit max-w-xs",
           variant === "default" && "tooltip-compact",
