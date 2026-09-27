@@ -34545,14 +34545,9 @@ def _normalize_openai_image_parts_for_llama(openai_messages: list[dict], on_imag
             url = image_url.get("url", "")
             if not url.startswith("data:"):
                 url = fetches.inline(url)
-            if not url.startswith("data:"):
-                cleaned = normalize_mcp_image_b64(url)
-                if not cleaned:
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = "Failed to process image.",
-                    )
-                url = f"data:application/octet-stream;base64,{cleaned}"
+                if not url.startswith("data:"):
+                    # llama-server also accepts bare base64 payloads.
+                    continue
                 image_url["url"] = url
 
             try:
