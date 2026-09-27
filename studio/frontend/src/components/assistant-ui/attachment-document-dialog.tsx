@@ -18,11 +18,9 @@ import { type FC, type PropsWithChildren, useEffect, useRef, useState } from "re
 
 const SCALES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
-/** `plain`: a sent document's stored text, shown when its original file is gone. `text` and `plain`
- *  are capped for rendering (`truncated`); `blob`, which a download saves, is whole. */
+/** `plain`: stored text when the original is gone. `text`/`plain` are capped (`truncated`); `blob` is whole. */
 type Loaded = { blob?: Blob; text?: string; plain?: string; truncated?: boolean; error?: boolean };
 
-/** Rendered markdown, or the document's pages, grid or slides, at `scale`. */
 const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; scale: number }> = ({
   name,
   contentType,
@@ -58,7 +56,6 @@ const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; sca
   return <DocumentView file={loaded.blob} kind={kind} name={name} contentType={contentType} scale={scale} />;
 };
 
-/** Opens a document attachment in the Library's viewer. `load` returns its bytes. */
 const DocumentDialog: FC<
   PropsWithChildren<{
     source: AttachmentSource;
@@ -72,7 +69,6 @@ const DocumentDialog: FC<
   const [scale, setScale] = useState(1);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const markdown = isMarkdown(source.name, source.contentType ?? "");
-  // Read on open, so a re-render (e.g. streaming) does not restart the load.
   const loadRef = useRef(load);
   useEffect(() => {
     loadRef.current = load;
@@ -121,7 +117,6 @@ const DocumentDialog: FC<
         open={open}
         onOpenChange={(next) => {
           setOpen(next);
-          // A closed viewer keeps nothing: the file is fetched again when it next opens.
           if (!next) setLoaded(null);
         }}
         title={source.name}
@@ -156,7 +151,6 @@ const DocumentDialog: FC<
   );
 };
 
-/** A sent document's kept original, fetched by message id. Sent attachments only. */
 const SentOriginalDialog: FC<
   PropsWithChildren<{ source: AttachmentSource; redactFromReload: boolean }>
 > = ({ children, source, redactFromReload }) => {

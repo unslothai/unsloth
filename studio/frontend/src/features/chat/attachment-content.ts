@@ -99,8 +99,7 @@ const XML_NAMED_ENTITIES: Record<string, string> = {
  *  the webview. fflate allocates at the declared size and stops, so mammoth is handed a
  *  repack of fflate's output. */
 const MAX_DOCX_UNPACKED_BYTES = 2 * MAX_OPEN_DOCUMENT_ARCHIVE_BYTES;
-// Far past any real document's parts: a directory of empty entries is otherwise walked, and each
-// name kept, in full on every scan.
+// Bounds walking a directory of empty entries, each name kept on every scan.
 const MAX_DOCX_ENTRIES = 100_000;
 const AUDIO_EXTENSION_MIMES: Record<string, string> = {
   wav: "audio/wav",
@@ -608,13 +607,9 @@ type DocxArchive = {
  *  (still marked oversized) for the viewer, which needs large images as well as text. */
 const DOCX_IMAGE_PART = /\.(png|jpe?g|gif|bmp|tiff?|emf|wmf|svg|webp)$/i;
 
-/** The viewer's view of a package's images: which parts are images, as mammoth reads them (their
- *  Override in [Content_Types].xml, else their extension's Default, else their name), and which the
- *  document and its notes and comments point at. Only those are unpacked: an image no part refers
- *  to is never shown. */
+/** Image parts (as mammoth types them) the document, notes or comments reference: only those unpack. */
 function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => boolean; used: Set<string> } {
   const names = new Set<string>();
-  // Only the parts it reads are inflated, one at a time: at most six, each within the XML bound.
   const read = (name: string) =>
     unzipSync(bytes, {
       filter: (entry) => {
@@ -641,7 +636,6 @@ function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => bool
       overrides.get(name.toLowerCase()) ?? (dot === -1 ? undefined : defaults.get(name.slice(dot + 1).toLowerCase()));
     return type ? type.startsWith("image/") : DOCX_IMAGE_PART.test(name);
   };
-  // Each part's targets resolve against its folder, and mammoth opens the first that exists.
   const targetsOf = (path: string) =>
     readDocxXmlTargets(read(docxRelationshipsPath(path)), path.slice(0, Math.max(0, path.lastIndexOf("/"))));
   const resolve = (targets: string[] | undefined, fallback: string) =>
@@ -746,13 +740,11 @@ export function repackDocxAttachmentArchive(
   return zipSync(archive.entries, { level: 0 });
 }
 
-// A tag, or markup whose text may look like one.
 const XML_TOKEN_RE =
   /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<[?!][\s\S]*?>|<(\/?)([^\s/>]+)(?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*\s*(\/?)>/g;
 const PARAGRAPH_RE = /<(?:[\w.-]+:)?p[\s/>]/;
 
-/** The document cut after its `max`th paragraph (<w:p>, at any depth), each element still open
- *  closed after it; null when it has no more. */
+/** Document cut after its `max`th <w:p> (any depth), open elements closed; null when no more. */
 function cutDocxParagraphs(xml: string, max: number): string | null {
   const open: string[] = [];
   let count = 0;
@@ -774,8 +766,7 @@ function cutDocxParagraphs(xml: string, max: number): string | null {
   return null;
 }
 
-/** repackDocxAttachmentArchive for the viewer: large images kept, and the body cut after
- *  `maxParagraphs`, so mammoth never converts more than is shown. */
+/** repackDocxAttachmentArchive for the viewer: large images kept, body cut at `maxParagraphs`. */
 export function repackDocxPreviewArchive(
   filename: string,
   bytes: Uint8Array,
@@ -850,7 +841,6 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
 // A text attachment's limit, in UTF-8 bytes. Cells are not capped, so the total must be.
 const MAX_OFFICE_TEXT_BYTES = MAX_TEXT_ATTACHMENT_BYTES;
 
-/** UTF-8 length of `text` up to `limit`, and where to cut to fit. */
 function utf8Within(text: string, limit: number): { bytes: number; end: number } {
   let bytes = 0;
   for (let i = 0; i < text.length; i++) {
@@ -865,7 +855,6 @@ function utf8Within(text: string, limit: number): { bytes: number; end: number }
   return { bytes, end: text.length };
 }
 
-/** Charges each piece of text plus its delimiter to the byte budget. */
 function textBudget(limit: number) {
   let left = limit;
   let cut = false;
@@ -1074,7 +1063,6 @@ export function parseAttachmentText(raw: string): AttachmentText {
   return { label, ...sliceAttachmentBody(raw, start, end) };
 }
 
-/** The whole body parseAttachmentText previews, uncapped: what a download holds. */
 export function attachmentBodyText(raw: string): string {
   const { start, end } = attachmentBodyRange(raw);
   return raw.slice(start, Math.max(start, end));

@@ -4,7 +4,6 @@
 import type { CompleteAttachment, PendingAttachment } from "@assistant-ui/react";
 import { uploadChatAttachmentOriginal } from "./api/chat-api";
 
-/** A sent document's original file, kept by the server (core/chat_originals.py). */
 export interface ChatAttachmentOriginal {
   sha256: string;
   sizeBytes: number;
@@ -35,8 +34,7 @@ export function attachmentOriginal(attachment: unknown): ChatAttachmentOriginal 
   return typeof sha256 === "string" && typeof sizeBytes === "number" ? { sha256, sizeBytes } : null;
 }
 
-/** Adds the kept original to a sent document. In temporary chats the file stays in memory instead; `temporary` and `epoch`
- *  (the auth session) are as they were when the send began. Upload errors are ignored. */
+/** `temporary` and `epoch` (auth session) are as of send start; upload errors are ignored. */
 export async function withAttachmentOriginal(
   pending: PendingAttachment,
   complete: CompleteAttachment,
@@ -45,7 +43,6 @@ export async function withAttachmentOriginal(
 ): Promise<CompleteAttachment> {
   const upload = complete.type === "document" ? originalUpload(pending.file) : null;
   if (!upload) return complete;
-  // Kept in memory only, so it still opens as a document; uploaded if the chat is saved.
   if (temporary) return { ...complete, file: pending.file } as CompleteAttachment;
   try {
     const original: ChatAttachmentOriginal = await uploadChatAttachmentOriginal(upload, epoch);
@@ -55,8 +52,7 @@ export async function withAttachmentOriginal(
   }
 }
 
-/** For a temporary chat being saved: uploads each document's in-memory file as its original, and
- *  drops the file, which does not serialize. A failed upload only affects viewing. */
+/** Uploads in-memory files of a temporary chat being saved (File does not serialize). */
 export async function persistAttachmentOriginals(
   attachments: readonly CompleteAttachment[] | undefined,
   epoch: number,

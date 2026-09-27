@@ -17,23 +17,17 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 const MAX_PAGE_WIDTH = 880;
 const PAGE_GAP = 16;
 const EDGE = 24;
-// A page's canvas stays within these, drawn at a lower resolution past them: an extreme MediaBox
-// would otherwise ask for more pixels than a browser holds.
+// Canvas bound: an extreme MediaBox would otherwise ask for more pixels than a browser holds.
 const MAX_CANVAS_PIXELS = 32 * 1024 * 1024;
 const MAX_CANVAS_SIDE = 16384;
-// PDF.js skips, before decoding, any image past this many pixels: the canvas bound only shrinks
-// what is drawn, not the source. A 600dpi scan of a letter or A4 page still fits.
+// PDF.js skips larger images before decoding; a 600dpi letter/A4 scan still fits.
 const PDF_OPTIONS = { maxImageSize: 64 * 1024 * 1024 };
-// Below this resolution a page is too blurred to read, and shows as unpreviewable.
 const MIN_PIXEL_RATIO = 0.1;
 // A page with more text runs than this shows without its text layer: each is a positioned span.
 const MAX_TEXT_ITEMS = 20_000;
-// Past this many drawing operations a page shows as unpreviewable: PDF.js holds each one it reads,
-// and a small stream can hold millions.
+// PDF.js holds every operation it reads, and a small stream can hold millions.
 const MAX_PAGE_OPERATIONS = 1_000_000;
-// Pages listed: a page tree can claim millions for a few bytes, and the list holds each.
 const MAX_PDF_PAGES = 10_000;
-// Layout keeps even an extreme first page to a sane height until each page is measured.
 const clampAspect = (aspect: number) => Math.min(Math.max(aspect, 0.05), 20);
 
 type PdfDocument = {
@@ -88,10 +82,8 @@ function PdfCanvas() {
     });
     return () => {
       task.cancel();
-      // A page scrolled away lets go of its operations and decoded images; react-pdf keeps them
-      // until the document closes, so every page viewed would add up.
+      // react-pdf keeps operations and images until the document closes; free them on unmount.
       page.cleanup();
-      // Zeroed, so the browser lets go of the bitmap at once.
       canvas.width = 0;
       canvas.height = 0;
     };
@@ -99,7 +91,6 @@ function PdfCanvas() {
   return <canvas ref={canvasRef} className="block select-none" />;
 }
 
-/** One page, at its own shape and a resolution its canvas can hold. */
 function PdfPage({ pdf, index, width, aspect }: { pdf: PdfDocument; index: number; width: number; aspect: number }) {
   const t = useT();
   const [own, setOwn] = useState<{ index: number; aspect: number } | null>(null);
@@ -174,7 +165,6 @@ function PdfPage({ pdf, index, width, aspect }: { pdf: PdfDocument; index: numbe
   );
 }
 
-/** Only the pages near the viewport are mounted, so a document of many thousands opens as fast as a short one. */
 function PdfPages({
   pdf,
   pages,
@@ -223,7 +213,6 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
   const [pdf, setPdf] = useState<PdfDocument | null>(null);
   const [pages, setPages] = useState(0);
   const [aspect, setAspect] = useState(1.294);
-  // The file that failed, so a different one passed in later gets its own try.
   const [failed, setFailed] = useState<Blob | null>(null);
   const width = Math.max(200, Math.min(available, MAX_PAGE_WIDTH)) * scale;
 

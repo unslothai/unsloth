@@ -116,7 +116,6 @@ def _item(
         "fileUrl": file_url,
         "threadId": thread_id,
         "threadTitle": thread_title,
-        # Origin links: compare pair, project, or training run.
         "pairId": pair_id,
         "projectId": project_id,
         "runId": run_id,
@@ -734,7 +733,6 @@ class _SandboxSession(NamedTuple):
 
 
 def _sandbox_sessions() -> list[_SandboxSession]:
-    """Every chat or project that can own a sandbox."""
     from storage.studio_db import get_connection
 
     conn = get_connection()
