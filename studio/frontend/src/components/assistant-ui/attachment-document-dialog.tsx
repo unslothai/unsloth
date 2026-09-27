@@ -119,7 +119,11 @@ const DocumentDialog: FC<
       </Slot.Root>
       <MediaViewer
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={(next) => {
+          setOpen(next);
+          // A closed viewer keeps nothing: the file is fetched again when it next opens.
+          if (!next) setLoaded(null);
+        }}
         title={source.name}
         meta={meta}
         media={false}

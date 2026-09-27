@@ -1192,24 +1192,26 @@ function grow(array: Uint32Array): Uint32Array<ArrayBuffer> {
 
 // A style section past this is skipped: real ones are far smaller, even at Excel's 64,000 formats.
 const MAX_STYLE_SECTION_BYTES = 16 * 1024 * 1024;
-// A styles part past this is not read: its cells show unstyled.
+// A styles part past this is not read: its cells show unstyled, their sheets marked cut.
 const MAX_STYLES_BYTES = 3 * MAX_STYLE_SECTION_BYTES;
 
 /** Only the style sections the reader uses (number formats, fonts, cell formats), each found by a
  *  byte scan and decoded alone, so a large styles part costs little. */
-function styleSections(bytes: Uint8Array | undefined): Document | null {
+function styleSections(bytes: Uint8Array | undefined): { doc: Document | null; cut: boolean } {
   const root = bytes && findTag(bytes, 0, "styleSheet", false);
-  if (!bytes || !root || root.empty) return null;
+  if (!bytes || !root || root.empty) return { doc: null, cut: false };
   const open = strFromU8(bytes.subarray(root.start, root.end));
+  // Set when a section is past its bound and left out.
+  let cut = false;
   const parts = ["numFmts", "fonts", "cellXfs"].map((name) => {
     const start = findTag(bytes, root.end, name, false);
     const end = start && !start.empty ? findTag(bytes, start.end, name, true) : null;
-    return start && end && end.end - start.start <= MAX_STYLE_SECTION_BYTES
-      ? strFromU8(bytes.subarray(start.start, end.end))
-      : "";
+    if (!start || !end) return "";
+    if (end.end - start.start > MAX_STYLE_SECTION_BYTES) return ((cut = true), "");
+    return strFromU8(bytes.subarray(start.start, end.end));
   });
   const prefix = /^<([\w.-]+:)?/.exec(open)?.[1] ?? "";
-  return parseXml(`${open}${parts.join("")}</${prefix}styleSheet>`);
+  return { doc: parseXml(`${open}${parts.join("")}</${prefix}styleSheet>`), cut };
 }
 
 export function readXlsx(bytes: Uint8Array): Sheet[] {
@@ -1226,7 +1228,7 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
   const stylesPath = partOf("styles", "xl/styles.xml");
   // Each read when a kept cell first needs it: a workbook can carry a large table no cell uses.
   let strings: ((index: number) => string | undefined) | undefined;
-  // Set when a shown cell's string lies past the table's cut, so its sheet is marked cut.
+  // Set when a shown cell's string or style lies past what was read, so its sheet is marked cut.
   let missed = false;
   const string = (index: number) => {
     const text = (strings ??= sharedStrings(read.open(stringsPath, MAX_SHEET_XML_BYTES)))(index);
@@ -1234,8 +1236,16 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
     return text ?? "";
   };
   let styles: CellStyle[] | undefined;
-  const style = (index: number) =>
-    (styles ??= readStyles(styleSections(read([stylesPath], MAX_STYLES_BYTES)[stylesPath])))[index];
+  let stylesCut = false;
+  const style = (index: number) => {
+    if (!styles) {
+      const sections = styleSections(read([stylesPath], MAX_STYLES_BYTES)[stylesPath]);
+      stylesCut = sections.cut || (read.size(stylesPath) ?? 0) > MAX_STYLES_BYTES;
+      styles = readStyles(sections.doc);
+    }
+    missed ||= stylesCut;
+    return styles[index];
+  };
   const date1904 = ["1", "true"].includes(first(workbook, "workbookPr")?.getAttribute("date1904") ?? "");
   const paths = new Map(rels.map((rel) => [rel.id, rel.path]));
   const sheets: Sheet[] = [];
