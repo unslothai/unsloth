@@ -5009,7 +5009,8 @@ _SHELL_PARAM_CASE_RE = re.compile(r"\$\{(\w+)(\^\^|,,|\^|,)\}")
 # Indirect expansion ${!p} yields the value of the variable *named* by $p, so x=passwd; p=x; cat /etc/${!p} builds
 # /etc/passwd.
 _SHELL_PARAM_INDIRECT_RE = re.compile(r"\$\{!(\w+)\}")
-_SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]+)")
+_SHELL_PARAM_VALUE_OP_RE = re.compile(r"\$\{([A-Za-z_]\w*)(:?)([-=+])([^{}]*)\}")
+_SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]*)")
 # Bash ANSI-C quoting ($'\x77' -> 'w') is expanded after this classifier, so decode $'...' bodies before the
 # sensitive-path scan.
 _ANSI_C_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
@@ -5274,7 +5275,12 @@ def _shell_assign_value_self_references(name: str, value: str) -> bool:
         return True
     return any(
         m.group(1) == name
-        for pattern in (_SHELL_PARAM_REPL_RE, _SHELL_PARAM_CASE_RE, _SHELL_PARAM_INDIRECT_RE)
+        for pattern in (
+            _SHELL_PARAM_REPL_RE,
+            _SHELL_PARAM_CASE_RE,
+            _SHELL_PARAM_INDIRECT_RE,
+            _SHELL_PARAM_VALUE_OP_RE,
+        )
         for m in pattern.finditer(value)
     )
 
@@ -5284,6 +5290,14 @@ def _expand_shell_assignments(command: str, *, _include_quoted: bool = True) -> 
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
     pattern replacement. Fail-open: only adds detections."""
     env = {}
+
+    def repl_default(m):
+        name, colon, op, operand = m.groups()
+        value = env.get(name)
+        missing = value is None or (colon and not value.strip("'\""))
+        if op == "+":
+            return "" if missing else operand
+        return operand if missing else value
 
     def repl_pattern(m):
         var, is_global, pat, rep = m.group(1), m.group(2), m.group(3), m.group(4)
@@ -5326,8 +5340,9 @@ def _expand_shell_assignments(command: str, *, _include_quoted: bool = True) -> 
         if _shell_assign_value_self_references(var, val):
             # Keep concrete path pieces without feeding the binding back into itself.
             # An unset self-reference contributes nothing; an earlier binding can supply it.
+            val = _SHELL_PARAM_VALUE_OP_RE.sub(repl_default, val)
             env.setdefault(var, "")
-            val = expand(_expand_param_defaults(val))
+            val = expand(val)
         env[var] = val
     return expand(command) if env else command
 

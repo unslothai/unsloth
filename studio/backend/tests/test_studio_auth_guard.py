@@ -2435,6 +2435,24 @@ def test_quoted_inline_shell_assignments_still_refuse_auth(studio_home, prefix, 
     )
 
 
+@pytest.mark.parametrize("state", ["unset", "empty", "set"])
+@pytest.mark.parametrize("op", [":-", "-", ":=", "=", ":+", "+"])
+def test_self_reference_parameter_operators_follow_prior_binding(studio_home, state, op):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    prefix = {"unset": "unset x", "empty": "x=", "set": "x=../.."}[state]
+    if op.endswith("+"):
+        value = "../..${x" + op + "/safe}"
+        expected = state == "unset" or (state == "empty" and op.startswith(":"))
+    else:
+        value = "${x" + op + "../..}"
+        expected = state != "empty" or op.startswith(":")
+    command = prefix + f'; x={value}; cat "$x/auth/auth.db"'
+    assert tools._references_studio_credential_here(command, workdir) is expected
+    assert not tools._references_studio_credential_here(
+        command.replace("../..", "./project"), workdir
+    )
+
+
 @pytest.mark.parametrize("hops", [14, 15, 16, 32, 128])
 @pytest.mark.parametrize("read", ["cat $v{hops}/auth/auth.db", "cd $v{hops}; cat auth/auth.db"])
 def test_long_alias_chains_still_refuse_the_auth_directory(studio_home, hops, read):
