@@ -29576,27 +29576,26 @@ async def produce_openai_chat_completions(
                     cancel_event,
                     name = "openai-chat-nonstream-batch",
                 )
+                _reported = batch_stats.get("stats") or []
+
+                def _keep(_row, idx):
+                    # A row cancelled before it ran is acknowledged with no text and no stats.
+                    _stats = _reported[_row] if _row < len(_reported) else None
+                    if texts[_row] or _stats is not None:
+                        _produced[idx] = (texts[_row], _stats)
+
                 if isinstance(failed, GenStreamError):
                     backend.reset_generation_state(cancel_event)
                     logger.warning(
                         "Falling back to one command per choice: %s",
                         _friendly_gen_stream_error(failed),
                     )
-                    _reported = batch_stats.get("stats") or []
                     for _row, idx in enumerate(_indices):
                         if _row in _finished:
-                            _produced[idx] = (
-                                texts[_row],
-                                _reported[_row] if _row < len(_reported) else None,
-                            )
+                            _keep(_row, idx)
                     return False
-                _reported = batch_stats.get("stats") or []
                 for _row, idx in enumerate(_indices):
-                    if _row in _finished or texts[_row]:
-                        _produced[idx] = (
-                            texts[_row],
-                            _reported[_row] if _row < len(_reported) else None,
-                        )
+                    _keep(_row, idx)
                 return any(idx in _produced for idx in _indices)
 
             async def _one_choice(choice_index):

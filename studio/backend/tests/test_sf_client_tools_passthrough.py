@@ -1372,6 +1372,28 @@ def test_a_turn_asking_for_several_replies_sends_them_as_one_batch(monkeypatch):
     assert effective == [11, _choice_seed(11, 1), _choice_seed(11, 2)], effective
 
 
+class _StoppedAfterFirstRowBackend(_ScriptedBackend):
+    """A backend that cannot batch: rows run apart and a Stop skips the rest."""
+
+    def generate_chat_batch(self, rows, *, stats_holder = None, cancel_event = None, **kwargs):
+        self.batch_calls.append({"rows": rows, "shared": kwargs})
+        yield 0, "partial"
+        cancel_event.set()
+        yield 0, None
+        for row in range(1, len(rows)):
+            yield row, None
+        if stats_holder is not None:
+            stats_holder["stats"] = [{"completion_tokens": 1}] + [None] * (len(rows) - 1)
+
+
+def test_a_stop_during_the_first_choice_returns_no_empty_choices(monkeypatch):
+    backend = _StoppedAfterFirstRowBackend(_fixed("unused"))
+    body = _json_body(_call(_request(stream = False, n = 3), monkeypatch, backend))
+
+    assert len(backend.batch_calls) == 1
+    assert [c["message"]["content"] for c in body["choices"]] == ["partial"], body["choices"]
+
+
 class _VisionToolLoopBackend(_ToolLoopBackend):
     def __init__(self, responder, **kwargs):
         super().__init__(responder, **kwargs)
