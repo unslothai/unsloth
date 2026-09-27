@@ -136,8 +136,13 @@ def test_decode_masks_follow_each_layer_device(monkeypatch):
 @pytest.mark.skipif(
     not has_real_cuda(), reason = "loads tiny Gemma checkpoints through FastLanguageModel on CUDA"
 )
-def test_prefill_masks_short_batches_and_4d():
+def test_prefill_masks_short_batches_and_4d(monkeypatch):
+    import unsloth.models.llama as llama_module
     from unsloth import FastLanguageModel
+
+    # The masks under test feed the softcapping kernels, not flash-attn.
+    monkeypatch.setattr(llama_module, "HAS_FLASH_ATTENTION_SOFTCAPPING", False)
+    monkeypatch.setattr(g2, "HAS_FLASH_ATTENTION_SOFTCAPPING", False)
 
     model, _ = FastLanguageModel.from_pretrained(
         "trl-internal-testing/tiny-Gemma2ForCausalLM",
