@@ -202,7 +202,7 @@ class TestNonGgufStatusReportsWhatTheLoadAskedFor:
 
     def test_every_projection_that_reports_a_bound_reports_how_it_was_chosen(self):
         """Four hand-maintained projections, and a drop from any one of them is silent."""
-        lines = (_BACKEND / "routes" / "inference.py").read_text().split("\n")
+        lines = (_BACKEND / "routes" / "inference.py").read_text(encoding = "utf-8").split("\n")
         orphaned = [
             index + 1
             for index, line in enumerate(lines)
