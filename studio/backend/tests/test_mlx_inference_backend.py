@@ -7344,6 +7344,8 @@ def test_discovery_asks_for_the_captures_the_loaded_pair_is_checked_for(
     else:
         with pytest.raises(RuntimeError, match = "mlx_speculative_target_capture_missing"):
             mlx_inference.validate_speculative_target_contract(target, drafter, "mtp")
+
+
 import numpy as np  # noqa: E402
 
 from core.inference import grammar_constraint as gc
