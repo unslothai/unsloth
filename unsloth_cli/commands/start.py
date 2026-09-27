@@ -4528,16 +4528,27 @@ def write_openclaw_config(
 
 
 def opencode_output_limit(window: int, max_tokens: Optional[int] = None) -> int:
-    """OpenCode's limit.output. It compacts at context - output, so default to a quarter of the window up to OpenCode's 32k ceiling. --max-tokens wins, capped at half the window."""
+    """OpenCode's limit.output: a quarter of the window up to OpenCode's 32k ceiling. --max-tokens wins, capped at half the window."""
     if max_tokens:
         return max(1, min(int(max_tokens), window // 2))
     return max(1, min(window // 4, _OPENCODE_OUTPUT_TOKEN_MAX))
 
 
+def opencode_compaction_reserved(window: int, output: int) -> int:
+    """compaction.reserved: reply room at compaction. A tenth of the window, at least 8,192, at most the output limit."""
+    return max(1, min(output, max(window // 10, 8192)))
+
+
 def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
     """Lift OpenCode's 32k output ceiling when --max-tokens needs it. Keeps a larger exported value."""
     window = model.get("context_length") or model.get("max_context_length")
-    if not max_tokens or not window:
+    if not max_tokens:
+        return {}
+    if not window:
+        typer.echo(
+            "Warning: Studio did not report the model's context length, so --max-tokens is ignored.",
+            err = True,
+        )
         return {}
     output = opencode_output_limit(int(window), max_tokens)
     if output < max_tokens:
@@ -4576,13 +4587,13 @@ def write_opencode_config(
     # Keep the provider definition in this private session file. The launch path adjusts effective provider filters in the higher-priority inline overlay.
     model_entry = {"name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
+    reserved = None
     if window:
         window = int(window)
-        # Without a limit OpenCode assumes context 0 and never compacts. Declare the real window.
-        model_entry["limit"] = {
-            "context": window,
-            "output": opencode_output_limit(window, max_tokens),
-        }
+        output = opencode_output_limit(window, max_tokens)
+        reserved = opencode_compaction_reserved(window, output)
+        # Without a limit OpenCode assumes context 0 and never compacts. Without input it compacts at context - output and ignores compaction.reserved.
+        model_entry["limit"] = {"context": window, "input": window, "output": output}
     _subdict(config, "provider")[_OPENCODE_PROVIDER] = {
         "npm": "@ai-sdk/openai-compatible",
         "name": "Unsloth Studio",
@@ -4595,8 +4606,15 @@ def write_opencode_config(
         for field in ("model", "small_model"):
             if str(config.get(field) or "").startswith(f"{_OPENCODE_PROVIDER}/"):
                 config.pop(field, None)
-        managed_compaction = {"auto": True, "reserved": max(1, window // 10)} if window else None
-        if managed_compaction and config.get("compaction") == managed_compaction:
+        # Drop the compaction a normal session wrote, current or legacy value.
+        managed = {reserved, max(1, window // 10)} if window else set()
+        compaction = config.get("compaction")
+        if (
+            isinstance(compaction, dict)
+            and compaction.keys() == {"auto", "reserved"}
+            and compaction["auto"] is True
+            and compaction["reserved"] in managed
+        ):
             config.pop("compaction", None)
         _subdict(config, "agent")[_SUBAGENT_NAME] = {
             "description": _SUBAGENT_DESCRIPTION,
@@ -4612,10 +4630,10 @@ def write_opencode_config(
             if not agents:
                 config.pop("agent", None)
     if window and not as_subagent:
-        # Compact with ~10% headroom (near 90% full). The fixed 20k-token default buffer over-compacts, or never settles, on a small local context.
+        # Compact near 90% full, see opencode_compaction_reserved. The fixed 20k-token default buffer over-compacts, or never settles, on a small local context.
         compaction = _subdict(config, "compaction")
         compaction["auto"] = True
-        compaction["reserved"] = max(1, window // 10)
+        compaction["reserved"] = reserved
     tools = ("edit", "bash", "webfetch", *(("task",) if as_subagent else ()))
     if yolo:
         # Fallback for commands without native --auto and for the append-safe bare --no-launch command, where the subcommand is not known yet. Rides inline (OPENCODE_CONFIG_CONTENT) so it wins over a project config. TUI and `run` launches use --auto and call here with yolo=False, letting OpenCode preserve explicit deny rules.
