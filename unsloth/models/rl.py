@@ -2571,6 +2571,17 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "        args.padding_free = False\n"
                 )
             extra_args += max_length_check
+        elif trainer_file in ("dpo_trainer", "kto_trainer", "orpo_trainer", "cpo_trainer"):
+            # The fast forward cuts input_ids to model.max_seq_length but these trainers build labels at args.max_length, so a longer row crashes the logps gather.
+            extra_args += (
+                "_unsloth_model_msl = getattr(model, 'max_seq_length', None)\n"
+                "if isinstance(_unsloth_model_msl, int) and _unsloth_model_msl > 0 and hasattr(args, 'max_length'):\n"
+                "    if args.max_length is None or args.max_length > _unsloth_model_msl:\n"
+                "        print('Unsloth: `max_length = ' + str(args.max_length) + '` exceeds the model max_seq_length of ' + str(_unsloth_model_msl) + ', so it is reduced to ' + str(_unsloth_model_msl) + '.')\n"
+                "        args.max_length = _unsloth_model_msl\n"
+                "    if getattr(args, 'max_prompt_length', None) is not None and args.max_prompt_length >= args.max_length:\n"
+                "        args.max_prompt_length = args.max_length // 2\n"
+            )
 
     if "model" in call_args:
         training_check = (
