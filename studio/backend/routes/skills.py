@@ -64,7 +64,6 @@ class SkillCreateRequest(SkillDraft):
 
 
 def _invalidate_catalog() -> None:
-    # The next inference scan must not serve the snapshot from before this change.
     from routes.inference import _invalidate_agent_skills_cache
     _invalidate_agent_skills_cache()
 

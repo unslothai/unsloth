@@ -77,7 +77,6 @@ function isChord(event: KeyboardEvent): boolean {
   return event.key === "Enter" && (event.metaKey || event.ctrlKey);
 }
 
-/** A plain folder in ~/.agents/skills; the backend refuses writes to anything else. */
 function isEditable(skill: SkillRecord): boolean {
   return skill.valid && skill.source === "agents" && !skill.linked;
 }
@@ -240,7 +239,6 @@ export function ChatSkillsDialog({
     });
 
   function handleOpenChange(next: boolean) {
-    // A save, create or delete in flight finishes before the dialog can go away under it.
     if (!next && busy) return;
     if (!next && dirty) {
       setConfirmingDiscard(() => () => onOpenChange(false));

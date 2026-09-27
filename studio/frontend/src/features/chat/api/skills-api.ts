@@ -13,7 +13,6 @@ export type SkillRecord = {
   enabled: boolean;
   valid: boolean;
   shadowed: boolean;
-  // The entry in its root is a symlink or junction: listed and readable, never rewritten.
   linked?: boolean;
   shadowed_by?: "agents" | "claude" | "bundled" | null;
   error?: string | null;
@@ -157,7 +156,6 @@ export function isValidSkillName(name: string): boolean {
   return SKILL_NAME_PATTERN.test(name) && !name.includes("--");
 }
 
-// Writes change @ and the system prompt in every window.
 async function skillsMutated(): Promise<void> {
   channel?.postMessage("changed");
   void refreshContextUsage({ invalidate: true });

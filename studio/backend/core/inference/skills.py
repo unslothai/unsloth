@@ -114,7 +114,6 @@ def _agents_base(home: Optional[Path]) -> tuple[Path, Optional[Path]]:
 
 
 def _agents_ancestors(base: Path, root: Optional[Path]) -> tuple[Path, ...]:
-    # Owner: ~/.agents and ~/.agents/skills; managed account: <workspace>/skills. Last = the root.
     if root is None:
         return (base / ".agents", base / ".agents" / "skills")
     return (base / root,)
