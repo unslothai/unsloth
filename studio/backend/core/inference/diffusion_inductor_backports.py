@@ -57,7 +57,9 @@ def _gcd_proves_multiple(allocator: Any, numerator: Any, denominator: Any) -> bo
     except Exception:  # noqa: BLE001 - very old torch: only the polynomial gcd below
         simple_floordiv_gcd = None
     try:
-        symbols = set(getattr(numerator, "free_symbols", ())) | set(getattr(denominator, "free_symbols", ()))
+        symbols = set(getattr(numerator, "free_symbols", ())) | set(
+            getattr(denominator, "free_symbols", ())
+        )
     except Exception:  # noqa: BLE001
         return False
     if len(symbols) > _MAX_SYMBOLS:
@@ -71,7 +73,9 @@ def _gcd_proves_multiple(allocator: Any, numerator: Any, denominator: Any) -> bo
         simplify = getattr(allocator, "simplify", sympy.expand)
         return simplify(gcd - denominator) == 0 or simplify(gcd + denominator) == 0
 
-    wide = any(isinstance(e, sympy.Add) and len(e.args) > _MAX_ADD_TERMS for e in (numerator, denominator))
+    wide = any(
+        isinstance(e, sympy.Add) and len(e.args) > _MAX_ADD_TERMS for e in (numerator, denominator)
+    )
     try:
         if simple_floordiv_gcd is not None and covers(simple_floordiv_gcd(numerator, denominator)):
             return True
@@ -119,7 +123,6 @@ def install(logger: Any = None) -> bool:
                 return True
             try:
                 import sympy
-
                 if isinstance(denominator, (int, sympy.Integer)):
                     return False
                 return _gcd_proves_multiple(self, numerator, denominator)
@@ -132,7 +135,9 @@ def install(logger: Any = None) -> bool:
         _STATE["original"] = original
         _STATE["cls"] = SizeVarAllocator
     if logger is not None:
-        logger.info("diffusion.speed: backported torch 2.14 symbolic divisibility proof (inductor CantSplit fix)")
+        logger.info(
+            "diffusion.speed: backported torch 2.14 symbolic divisibility proof (inductor CantSplit fix)"
+        )
     return True
 
 
