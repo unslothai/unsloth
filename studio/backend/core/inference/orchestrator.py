@@ -916,6 +916,7 @@ class InferenceOrchestrator:
             previous = current
         return not expected_free_gb
 
+    @staticmethod
     def _cleanup_interrupted_mtp_staging() -> None:
         try:
             from core.inference.mlx_speculative import cleanup_native_mtp_staging
