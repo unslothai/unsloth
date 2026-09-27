@@ -1059,6 +1059,8 @@
 	--primary-foreground: #111417;
 	--sidebar-primary: #b87f02;
 	--sidebar-primary-foreground: #111417;
+	--control-accent: #b87f02;
+	--control-accent-foreground: #111417;
 }
 :root[data-palette="honey"].dark {
 	--th-bg: #1a1710;
@@ -1207,6 +1209,8 @@
 	--primary-foreground: #111417;
 	--sidebar-primary: #0f9b7e;
 	--sidebar-primary-foreground: #111417;
+	--control-accent: #0f9b7e;
+	--control-accent-foreground: #111417;
 }
 :root[data-palette="mint"].dark {
 	--th-bg: #111b1a;
@@ -1245,8 +1249,8 @@
 	--th-chart-5: #b8a200;
 	--ring: #008c99;
 	--sidebar-ring: #008c99;
-	--control-accent: #00f0ff;
-	--control-accent-foreground: #0a0a0f;
+	--control-accent: #0498a3;
+	--control-accent-foreground: #111417;
 	--nav-icon-idle-base: #1f8a96;
 }
 :root[data-palette="neon-cyberpunk"].dark {
@@ -1329,6 +1333,8 @@
 	--primary-foreground: #111417;
 	--sidebar-primary: #d56b3b;
 	--sidebar-primary-foreground: #111417;
+	--control-accent: #d56b3b;
+	--control-accent-foreground: #111417;
 }
 :root[data-palette="peach"].dark {
 	--th-bg: #1c1614;
@@ -1369,6 +1375,8 @@
 	--primary-foreground: #111417;
 	--sidebar-primary: #af8605;
 	--sidebar-primary-foreground: #111417;
+	--control-accent: #af8605;
+	--control-accent-foreground: #111417;
 }
 :root[data-palette="pina-paraiso"].dark {
 	--th-bg: #17150c;
@@ -1445,6 +1453,8 @@
 	--primary-foreground: #111417;
 	--sidebar-primary: #db6701;
 	--sidebar-primary-foreground: #111417;
+	--control-accent: #db6701;
+	--control-accent-foreground: #111417;
 }
 :root[data-palette="tangerine"].dark {
 	--th-bg: #1b1510;
@@ -1557,6 +1567,8 @@
 	--primary-foreground: #111417;
 	--sidebar-primary: #998f05;
 	--sidebar-primary-foreground: #111417;
+	--control-accent: #998f05;
+	--control-accent-foreground: #111417;
 }
 :root[data-palette="yuzu"].dark {
 	--th-bg: #16170f;

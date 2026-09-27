@@ -63,3 +63,60 @@ test("isColorThemeId rejects unknown values", () => {
   assert.equal(isColorThemeId("dracula"), false);
   assert.equal(isColorThemeId(null), false);
 });
+
+function luminance(hex: string): number {
+  const channel = (i: number) => {
+    const c = Number.parseInt(hex.slice(i, i + 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+}
+
+function ratio(a: string, b: string): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [
+    number,
+    number,
+  ];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function mix(hex: string, target: string, amount: number): string {
+  const channel = (i: number) => {
+    const from = Number.parseInt(hex.slice(i, i + 2), 16);
+    const to = Number.parseInt(target.slice(i, i + 2), 16);
+    return Math.round(from + (to - from) * amount)
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${channel(1)}${channel(3)}${channel(5)}`;
+}
+
+// text-primary and text-control-accent paint these on the page, so they share
+// the applier's 2.5:1 accent-text floor, plain and on a 20% wash.
+test("flavor accents used as text meet the accent-text floor", () => {
+  for (const id of FLAVOR_THEME_IDS) {
+    for (const [mode, selector] of [
+      ["light", `:root[data-palette="${id}"]:not(.dark) {`],
+      ["dark", `:root[data-palette="${id}"].dark {`],
+    ] as const) {
+      const start = indexCss.indexOf(selector);
+      assert.ok(start >= 0, `${id} ${mode} block`);
+      const block = indexCss.slice(start, indexCss.indexOf("}", start));
+      const token = (name: string) =>
+        block.match(new RegExp(`\\s${name}: (#[0-9a-f]{6});`))?.[1];
+      const page = token("--th-bg");
+      const surface = token("--th-surface");
+      const accent = token("--th-accent");
+      assert.ok(page && surface && accent, `${id} ${mode} seeds`);
+      for (const name of ["--primary", "--control-accent"]) {
+        const color = token(name) ?? accent;
+        for (const plane of [page, surface, mix(surface, color, 0.2)]) {
+          assert.ok(
+            ratio(color, plane) >= 2.5,
+            `${id} ${mode} ${name} ${color} is ${ratio(color, plane).toFixed(2)}:1 on ${plane}`,
+          );
+        }
+      }
+    }
+  }
+});
