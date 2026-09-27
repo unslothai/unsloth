@@ -63,7 +63,7 @@ const REASONING_TAGS = new Set([
   "step-by-step",
 ]);
 
-// Image generation / diffusion (surfaced as "Image generation" in filters).
+// Image generation / diffusion (surfaced as "Image/video gen" in filters).
 const DIFFUSION_TAGS = new Set([
   "diffusers",
   "diffusion",
@@ -218,7 +218,7 @@ export function detectCapabilities(
       lowerId,
     )
   ) {
-    out.push({ key: "diffusion", label: "Image generation" });
+    out.push({ key: "diffusion", label: "Image/video gen" });
   }
   const languageCodes = new Set<string>();
   for (const tag of tags ?? []) {

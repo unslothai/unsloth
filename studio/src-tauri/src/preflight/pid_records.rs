@@ -71,8 +71,8 @@ enum Recorded {
     Opaque,
 }
 
-/// The Python side uses the same one-second window in `_pid_is_studio_backend`.
-const START_TIME_TOLERANCE_SECS: f64 = 1.0;
+const START_TIME_TOLERANCE_SECS: f64 =
+    crate::process_identity::PID_START_TIME_TOLERANCE_SECS;
 
 fn classify(pid: u32, recorded_start: Option<f64>, probe: &Probe) -> Recorded {
     if !(probe.is_live)(pid) {
@@ -182,16 +182,8 @@ fn has_a_per_port_record(root: &Path, pid: u32) -> bool {
     false
 }
 
-/// Line two of a record, written by the server as `psutil` epoch seconds. A
-/// blank or absent line means the server could not determine it.
 fn recorded_start_time(path: &Path) -> Option<f64> {
-    std::fs::read_to_string(path)
-        .ok()?
-        .lines()
-        .nth(1)?
-        .trim()
-        .parse()
-        .ok()
+    crate::process_identity::recorded_pid_start_time(path)
 }
 
 #[cfg(test)]

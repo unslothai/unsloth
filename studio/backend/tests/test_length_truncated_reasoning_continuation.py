@@ -781,10 +781,20 @@ def test_a_continuation_one_eviction_short_is_not_abandoned(monkeypatch):
     for index in range(30):
         old_turns.append({"role": "user", "content": f"Question {index}. " + "x" * 600})
         old_turns.append({"role": "assistant", "content": f"Answer {index}. " + "y" * 600})
+    latest = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Create a Flappy Bird game"},
+            {
+                "type": "input_audio",
+                "input_audio": {"data": "A" * 100_000, "format": "wav"},
+            },
+        ],
+    }
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [*old_turns, {"role": "user", "content": "Create a Flappy Bird game"}],
+            messages = [*old_turns, latest],
             tools = [_WEB_SEARCH_TOOL],
             enable_thinking = True,
             max_tool_iterations = 3,
@@ -794,7 +804,59 @@ def test_a_continuation_one_eviction_short_is_not_abandoned(monkeypatch):
     )
 
     assert len(payloads) == 2, "the continuation was abandoned instead of making room"
+    assert payloads[1]["messages"][-3] == latest
+    assert payloads[1]["messages"][-3]["content"][1]["input_audio"]["data"] == "A" * 100_000
     assert "Done." in "".join(_texts(events, "content"))
+
+
+def test_final_pass_continuation_counts_strip_media_and_payloads_keep_it(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _truncated_thought_then([_sse({"content": "Done."}), _done()]),
+        payloads,
+    )
+    counted: list[list[dict]] = []
+
+    def fake_count(messages, *_args, **_kwargs):
+        counted.append(copy.deepcopy(messages))
+        return 100
+
+    monkeypatch.setattr(backend, "count_chat_tokens", fake_count)
+    audio_data = "A" * 100_000
+    latest = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Create a Flappy Bird game"},
+            {
+                "type": "input_audio",
+                "input_audio": {"data": audio_data, "format": "wav"},
+            },
+        ],
+    }
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [latest],
+            tools = [],
+            max_tool_iterations = 0,
+            enable_thinking = True,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    assert counted
+    assert all(
+        part.get("type") != "input_audio"
+        for candidate in counted
+        for message in candidate
+        for part in message.get("content", [])
+        if isinstance(part, dict)
+    )
+    assert len(payloads) == 2
+    assert payloads[0]["messages"][0] == latest
+    assert payloads[1]["messages"][0] == latest
+    assert payloads[1]["messages"][0]["content"][1]["input_audio"]["data"] == audio_data
 
 
 def test_a_continuation_is_sized_by_what_is_left_of_the_cap(monkeypatch):

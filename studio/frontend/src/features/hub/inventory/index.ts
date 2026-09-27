@@ -48,7 +48,6 @@ export {
   localSourceLabel,
   normalizeCapabilities,
   normalizeModelFormat,
-  normalizeRuntime,
 } from "./view-models";
 export {
   epochMillisecondsToSeconds,
@@ -62,6 +61,7 @@ export {
 export {
   dedupeSameSourceHubCacheRows,
   findCompleteHfCacheLocalRow,
+  partialSetFromRows,
 } from "./inventory-dedupe";
 export {
   fetchInventorySource,

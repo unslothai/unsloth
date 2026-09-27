@@ -222,9 +222,7 @@ def remote_access_status(app_state) -> dict:
         "Cloudflare URL was not reachable",
         "cloudflared did not register a connection",
         "cloudflared exited",
-        # Why Start is blocked: the connector's exit was never confirmed, so it
-        # still holds the runtime slot. The generic text hides the one reason
-        # the user can act on.
+        # Why Start is blocked: the connector's exit was never confirmed
         "cloudflared could not be stopped",
     }:
         error = "Cloudflare tunnel failed"
@@ -324,10 +322,7 @@ def stop_remote_access(app_state) -> dict:
         global _stop_worker_admission
         from cloudflare_tunnel import get_studio_tunnel_status, stop_studio_tunnel
 
-        # A stop can beat the newly-created start worker to the controller. Wait
-        # until it claims settings ownership, then cancel that generation. Bounded:
-        # a start that never claims it (foreign owner, bailed on admission) must
-        # not defer the user's Stop for the probe deadline.
+        # A stop can beat the newly-created start worker to the controller.
         deadline = time.monotonic() + _STOP_OWNERSHIP_WAIT
         while _worker_alive(_start_worker) and time.monotonic() < deadline:
             if get_studio_tunnel_status()["managed_by"] == "settings":
@@ -337,9 +332,8 @@ def stop_remote_access(app_state) -> dict:
         if current[0] != admission[0]:
             return
         if get_studio_tunnel_status()["managed_by"] == "settings":
-            # Every Stop admitted before this teardown decision must finish
-            # traversing cloudflared. Closing admission at the end of the drain
-            # prevents a later request from creating an unobserved lease.
+            # Every Stop admitted before this teardown decision must finish traversing cloudflared, so
+            # admission closes at the end of the drain, else a later request creates an unobserved lease.
             _drain_and_close_remote_access_stop_responses()
             current = get_studio_tunnel_control_token()
             if current[0] != admission[0] or get_studio_tunnel_status()["managed_by"] != "settings":

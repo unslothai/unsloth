@@ -197,7 +197,32 @@ class TestExternalProviderMessages:
         assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
         assert out[1] == {"role": "user", "content": "hi"}
 
-    def test_date_prefixes_text_inside_structured_system_content(self):
+    def test_ollama_keeps_its_modelfile_system_prompt_when_studio_sends_none(self):
+        # Ollama applies the Modelfile SYSTEM only while messages[0] is not a system turn (#10436).
+        import routes.inference as inference
+
+        messages = [{"role": "user", "content": "hi"}]
+        out = inference._prepend_current_date_to_messages(messages, provider_type = "ollama")
+        assert out is messages
+
+    def test_ollama_still_dates_a_system_turn_studio_composed(self):
+        import routes.inference as inference
+
+        out = inference._prepend_current_date_to_messages(
+            [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "hi"}],
+            provider_type = "ollama",
+        )
+        assert out[0]["content"] == "The current date is 2026-08-15.\n\nBe terse."
+        assert out[1] == {"role": "user", "content": "hi"}
+
+    def test_other_local_servers_still_get_a_synthesized_system_turn(self):
+        import routes.inference as inference
+        out = inference._prepend_current_date_to_messages(
+            [{"role": "user", "content": "hi"}], provider_type = "llama_cpp"
+        )
+        assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
+
+    def test_date_prefixes_text_inside_structured_content(self):
         messages = [{"role": "system", "content": [{"type": "text", "text": "Be terse."}]}]
         out = self._prepend(messages)
         assert len(out) == 1
@@ -373,3 +398,259 @@ class TestResearchSystemPrompt:
         # runs created before the field existed, and runs started with the setting off.
         assert _system_prompt_with_instructions("BASE", {}) == "BASE"
         assert _system_prompt_with_instructions("BASE", {"currentDate": ""}) == "BASE"
+
+
+class TestConversationStartDate:
+    @staticmethod
+    def _threads(monkeypatch, threads):
+        import storage.studio_db as studio_db
+        monkeypatch.setattr(studio_db, "get_chat_thread", lambda thread_id: threads.get(thread_id))
+
+    def test_start_date_is_the_creation_day_in_the_browser_zone(self, monkeypatch):
+        # 2026-08-15T02:00Z is still the 14th in New York.
+        created = int(datetime(2026, 8, 15, 2, tzinfo = timezone.utc).timestamp() * 1000)
+        self._threads(monkeypatch, {"t": {"createdAt": created}})
+        request = _types.SimpleNamespace(headers = {"x-unsloth-timezone": "America/New_York"})
+        assert current_date_settings.conversation_start_date("t", request) == date(2026, 8, 14)
+
+    def test_a_fork_keeps_its_root_threads_start_date(self, monkeypatch):
+        day = lambda d: int(datetime(2026, 8, d, 12, tzinfo = timezone.utc).timestamp() * 1000)
+        self._threads(
+            monkeypatch,
+            {
+                "root": {"createdAt": day(1)},
+                "mid": {"createdAt": day(5), "forkedFromThreadId": "root"},
+                "leaf": {"createdAt": day(9), "forkedFromThreadId": "mid"},
+                "orphan": {"createdAt": day(9), "forkedFromThreadId": "gone"},
+                "loop": {"createdAt": day(9), "forkedFromThreadId": "loop"},
+            },
+        )
+        request = _types.SimpleNamespace(headers = {"x-unsloth-timezone": "UTC"})
+        start = current_date_settings.conversation_start_date
+        assert start("leaf", request) == date(2026, 8, 1)
+        assert start("orphan", request) == date(2026, 8, 9)
+        assert start("loop", request) == date(2026, 8, 9)
+
+    def test_a_deep_fork_chain_still_reaches_the_root(self, monkeypatch):
+        root = int(datetime(2026, 8, 1, 12, tzinfo = timezone.utc).timestamp() * 1000)
+        later = int(datetime(2026, 8, 9, 12, tzinfo = timezone.utc).timestamp() * 1000)
+        threads = {"t0": {"createdAt": root}}
+        for i in range(1, 40):
+            threads[f"t{i}"] = {"createdAt": later, "forkedFromThreadId": f"t{i - 1}"}
+        self._threads(monkeypatch, threads)
+        request = _types.SimpleNamespace(headers = {"x-unsloth-timezone": "UTC"})
+        assert current_date_settings.conversation_start_date("t39", request) == date(2026, 8, 1)
+
+    @pytest.mark.parametrize("thread_id", [None, "", 7, "missing"])
+    def test_unknown_threads_have_no_start_date(self, monkeypatch, thread_id):
+        self._threads(monkeypatch, {})
+        assert current_date_settings.conversation_start_date(thread_id) is None
+
+    def test_a_lookup_failure_has_no_start_date(self, monkeypatch):
+        import storage.studio_db as studio_db
+
+        def _boom(_thread_id):
+            raise RuntimeError("db locked")
+
+        monkeypatch.setattr(studio_db, "get_chat_thread", _boom)
+        assert current_date_settings.conversation_start_date("t") is None
+
+
+class TestDateChangeNote:
+    @pytest.fixture(autouse = True)
+    def _clock(self, monkeypatch):
+        import routes.inference as inference
+
+        self.today = "2026-08-15"
+        self.started = date(2026, 8, 15)
+        monkeypatch.setattr(
+            inference,
+            "current_date_prompt_line",
+            lambda **_kwargs: f"The current date is {self.today}.",
+        )
+        monkeypatch.setattr(
+            inference,
+            "conversation_start_date",
+            lambda thread_id, _request = None: self.started if thread_id == "t" else None,
+        )
+        monkeypatch.setattr(inference, "_request_has_api_key", lambda _request: False)
+        self.inference = inference
+
+    def _proxy(
+        self,
+        messages,
+        thread_id = "t",
+        **kwargs,
+    ):
+        return self.inference._prepend_current_date_to_messages(
+            messages, object(), thread_id = thread_id, **kwargs
+        )
+
+    def test_same_day_is_byte_identical_to_a_threadless_request(self):
+        messages = [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "hi"}]
+        assert self._proxy(messages) == self._proxy(messages, thread_id = None)
+        assert self.inference._apply_current_date_prompt("Be terse.", object(), thread_id = "t") == (
+            "The current date is 2026-08-15.\n\nBe terse."
+        )
+
+    def test_midnight_keeps_the_system_turn_and_notes_the_newest_user_turn(self):
+        history = [
+            {"role": "system", "content": "Be terse."},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "second"},
+        ]
+        before = self._proxy(history)
+        self.today = "2026-08-16"
+        after = self._proxy(history)
+        assert after[0] == before[0]
+        assert after[0]["content"] == "The current date is 2026-08-15.\n\nBe terse."
+        assert after[1:3] == history[1:3]
+        assert after[3]["content"] == "[Current date: 2026-08-16]\n\nsecond"
+        assert history[3]["content"] == "second"
+
+    def test_next_request_after_midnight_restores_the_earlier_turn_to_its_own_text(self):
+        self.today = "2026-08-16"
+        turn1 = [{"role": "user", "content": "first"}]
+        sent1 = self._proxy(turn1)
+        turn2 = turn1 + [
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "second"},
+        ]
+        sent2 = self._proxy(turn2)
+        assert sent2[0] == sent1[0]
+        assert sent1[1]["content"] == "[Current date: 2026-08-16]\n\nfirst"
+        assert sent2[1]["content"] == "first"
+        assert sent2[3]["content"] == "[Current date: 2026-08-16]\n\nsecond"
+
+    def test_threadless_requests_still_refresh_to_today(self):
+        self.today = "2026-08-16"
+        out = self._proxy([{"role": "user", "content": "hi"}], thread_id = None)
+        assert out == [
+            {"role": "system", "content": "The current date is 2026-08-16."},
+            {"role": "user", "content": "hi"},
+        ]
+
+    def test_a_stated_system_date_is_refreshed_to_the_start_date(self):
+        self.today = "2026-08-16"
+        out = self._proxy(
+            [
+                {"role": "system", "content": "The current date is 2026-08-16."},
+                {"role": "user", "content": "hi"},
+            ]
+        )
+        assert out[0]["content"] == "The current date is 2026-08-15."
+        assert out[1]["content"] == "[Current date: 2026-08-16]\n\nhi"
+
+    def test_note_leads_the_text_part_and_skips_tool_results(self):
+        self.today = "2026-08-16"
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}
+        messages = [
+            {"role": "user", "content": [image, {"type": "text", "text": "what is this"}]},
+            {"role": "assistant", "content": "a cat"},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x"}]},
+        ]
+        out = self.inference._append_current_date_note(messages, object(), thread_id = "t")
+        assert out[2] is messages[2]
+        assert out[0]["content"] == [
+            image,
+            {"type": "text", "text": "[Current date: 2026-08-16]\n\nwhat is this"},
+        ]
+
+    def test_note_skips_a_tool_result_folded_into_a_user_turn(self):
+        from core.inference.anthropic_compat import fold_tool_results_into_user
+
+        self.today = "2026-08-16"
+        messages = fold_tool_results_into_user(
+            [
+                {"role": "user", "content": "list files"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "c1", "function": {"name": "ls", "arguments": "{}"}}],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": "a.txt"},
+            ]
+        )
+        out = self.inference._append_current_date_note(messages, object(), thread_id = "t")
+        assert out[2] is messages[2]
+        assert out[0]["content"] == "[Current date: 2026-08-16]\n\nlist files"
+
+    @pytest.mark.parametrize(
+        "content",
+        ["", "  ", [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}]],
+    )
+    def test_a_media_only_turn_keeps_its_transcribe_or_describe_default(self, content):
+        from core.inference.chat_template_helpers import last_user_text
+
+        self.today = "2026-08-16"
+        messages = [{"role": "user", "content": content}]
+        out = self.inference._append_current_date_note(messages, object(), thread_id = "t")
+        assert out is messages
+        assert last_user_text(out) == ""
+
+    def test_retrieval_queries_ignore_the_note(self):
+        from core.inference.tools import _last_user_text
+        self.today = "2026-08-16"
+        for content in ("refund policy", [{"type": "text", "text": "refund policy"}]):
+            noted = self.inference._append_current_date_note(
+                [{"role": "user", "content": content}], object(), thread_id = "t"
+            )
+            assert noted[0]["content"] != content
+            assert _last_user_text(noted) == "refund policy"
+
+    def test_a_follow_up_coalesced_onto_a_folded_tool_result_gets_the_note(self):
+        from core.inference.anthropic_compat import fold_tool_results_into_user
+
+        self.today = "2026-08-16"
+        messages = self.inference._coalesce_consecutive_user_turns(
+            fold_tool_results_into_user(
+                [
+                    {"role": "user", "content": "list files"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{"id": "c1", "function": {"name": "ls", "arguments": "{}"}}],
+                    },
+                    {"role": "tool", "tool_call_id": "c1", "content": "a.txt"},
+                    {"role": "user", "content": "now read it"},
+                ]
+            )
+        )
+        out = self.inference._append_current_date_note(messages, object(), thread_id = "t")
+        assert out[0] is messages[0]
+        assert out[-1]["content"].startswith("[Current date: 2026-08-16]\n\n")
+        assert out[-1]["content"].endswith("now read it")
+
+    def test_a_future_creation_day_never_becomes_the_stated_start(self):
+        self.today = "2026-08-15"
+        self.started = date(2026, 8, 20)
+        out = self._proxy([{"role": "user", "content": "hi"}])
+        assert out == [
+            {"role": "system", "content": "The current date is 2026-08-15."},
+            {"role": "user", "content": "hi"},
+        ]
+
+    def test_note_is_not_added_twice(self):
+        self.today = "2026-08-16"
+        once = self.inference._append_current_date_note(
+            [{"role": "user", "content": "hi"}], object(), thread_id = "t"
+        )
+        assert self.inference._append_current_date_note(once, object(), thread_id = "t") is once
+
+    def test_api_key_callers_never_use_a_thread_start_date(self, monkeypatch):
+        monkeypatch.setattr(self.inference, "_request_has_api_key", lambda _request: True)
+        monkeypatch.setattr(self.inference, "_request_is_internal_workflow", lambda _r: False)
+        self.today = "2026-08-16"
+        out = self._proxy([{"role": "user", "content": "hi"}], include_api_key = True)
+        assert out == [
+            {"role": "system", "content": "The current date is 2026-08-16."},
+            {"role": "user", "content": "hi"},
+        ]
+
+    def test_disabled_setting_adds_no_note(self, monkeypatch):
+        monkeypatch.setattr(self.inference, "current_date_prompt_line", lambda **_kwargs: "")
+        messages = [{"role": "user", "content": "hi"}]
+        assert (
+            self.inference._append_current_date_note(messages, object(), thread_id = "t") is messages
+        )

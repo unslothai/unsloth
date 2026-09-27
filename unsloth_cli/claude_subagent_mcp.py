@@ -34,9 +34,7 @@ from unsloth_cli.commands.start import (
 _MAX_RESULT_CHARACTERS = 100_000
 _CANCEL_POLL_SECONDS = 0.1
 _CANCEL_GRACE_SECONDS = 2.0
-# A local server that accepts the connection and then never answers leaves the
-# child, and the parent waiting on it, blocked forever. Generous enough not to cut
-# a long legitimate run short; 0 restores the unbounded wait.
+# A server that accepts and never answers would block the child and the parent forever; 0 restores the unbounded wait.
 _DEFAULT_TIMEOUT_SECONDS = 1800.0
 
 
@@ -87,7 +85,6 @@ def _stop_child(process: subprocess.Popen) -> None:
     """Stop the Claude child and any tool processes it started."""
     if process.poll() is not None:
         if os.name != "nt":
-            # Leader exited, but its tool processes may still be running.
             try:
                 os.killpg(process.pid, signal.SIGTERM)
             except OSError:
@@ -129,7 +126,6 @@ def _stop_child(process: subprocess.Popen) -> None:
         process.wait()
     else:
         if os.name != "nt":
-            # Leader is gone; kill any surviving group members.
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except OSError:
@@ -176,11 +172,8 @@ def run_local_agent(
         "--output-format",
         "json",
         "--no-session-persistence",
-        # Strip human-blocking tools so the child runs unattended. Only the read-only
-        # child's writers bite today, since a --print child is never offered the plan
-        # or prompt tools; those are listed anyway so a version that starts offering
-        # them cannot stall the subagent. Bash is denied read-only side because plan
-        # mode gates it through the same local model, which is not a write barrier.
+        # Strip human-blocking tools so the child runs unattended; plan/prompt tools are listed
+        # pre-emptively, and Bash is denied read-only side because plan mode is not a write barrier.
         "--disallowedTools",
         (
             "AskUserQuestion,EnterPlanMode,Edit,Write,NotebookEdit,Bash"
@@ -210,13 +203,14 @@ def run_local_agent(
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
     }
     if os.name == "nt":
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
-    # Same CR/LF hazard as the Codex bridge: --append-system-prompt and the task
-    # both span lines, so resolve npm shims rather than spawning the .cmd raw.
+    # Same CR/LF hazard as the Codex bridge: resolve npm shims rather than spawning the .cmd raw.
     process = subprocess.Popen(
         _resolved_launch_command(executable, command[1:], child_env),
         **popen_kwargs,
@@ -366,8 +360,8 @@ def serve(
             cancel_event.set()
 
     def handle_shutdown(_signum: int, _frame: Any) -> None:
-        # Claude Code sends SIGINT (possibly repeatedly) to cancel a tool call. Only
-        # the first unwinds stdin; later ones must not interrupt process-tree cleanup.
+        # Claude Code may send SIGINT repeatedly; only the first unwinds stdin, later ones must not
+        # interrupt process-tree cleanup.
         first_signal = not shutdown_started.is_set()
         shutdown_started.set()
         cancel_active()

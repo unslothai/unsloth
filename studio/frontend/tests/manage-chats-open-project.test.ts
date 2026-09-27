@@ -5,16 +5,13 @@
 // The .tsx view pulls in the whole app, so it is read as text.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { readSrcAsync } from "./helpers/kit.ts";
+
 async function openChatSource(): Promise<string> {
-  const src = await readFile(
-    new URL(
-      "../src/features/settings/components/manage-chats-view.tsx",
-      import.meta.url,
-    ),
-    "utf8",
+  const src = await readSrcAsync(
+    "features/settings/components/manage-chats-view.tsx",
   );
   const start = src.indexOf("function openChat(");
   assert.ok(start !== -1, "openChat not found in manage-chats-view.tsx");

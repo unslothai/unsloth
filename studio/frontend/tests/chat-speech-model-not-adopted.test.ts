@@ -7,7 +7,6 @@
 // it anywhere. These pin the places that now do.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -16,10 +15,9 @@ import {
   isSpeechOnlyStatus,
 } from "../src/features/chat/lib/speech-only-status.ts";
 
-const status = (fields: SpeechOnlyStatusInput): SpeechOnlyStatusInput => fields;
+import { readText } from "./helpers/kit.ts";
 
-const readSource = (path: string) =>
-  readFileSync(new URL(path, import.meta.url), "utf8");
+const status = (fields: SpeechOnlyStatusInput): SpeechOnlyStatusInput => fields;
 
 test("a resident TTS model reads as speech-only", () => {
   for (const audioType of ["snac", "csm", "bicodec", "dac"]) {
@@ -66,7 +64,7 @@ test("only an armed idle unload preserves an empty resident slot", () => {
 });
 
 test("chat does not adopt the server's model when it only speaks", () => {
-  const source = readSource(
+  const source = readText(
     "../src/features/chat/lib/apply-inference-status-to-store.ts",
   );
   // In tryAdoptServerActiveModel, not resolveInferenceCheckpointId: the loaded-models
@@ -87,18 +85,21 @@ test("chat does not adopt the server's model when it only speaks", () => {
 });
 
 test("the mount-time status sync treats a speech model as an empty slot", () => {
-  const hook = readSource(
+  const hook = readText(
     "../src/features/chat/hooks/use-chat-model-runtime.ts",
   );
   assert.match(
     hook,
-    /const chatActiveModel =\s*\n?\s*statusRes\.active_model && !isSpeechOnlyStatus\(statusRes\);/,
+    /const chatActiveModel =\s*statusRes\.active_model &&\s*!isSpeechOnlyStatus\(statusRes\) &&\s*!\(statusLoading && options\?\.externalChatSlotLoad\);/,
   );
   // Both edges, or the eviction branch would stop clearing a stale pick.
-  assert.match(hook, /if \(chatActiveModel && !isExternalSelectionActive\)/);
   assert.match(
     hook,
-    /\} else if \(!chatActiveModel && !isExternalSelectionActive\)/,
+    /if \(\s*chatActiveModel &&\s*!isExternalSelectionActive &&\s*!selectionChanged\s*\)/,
+  );
+  assert.match(
+    hook,
+    /\} else if \(\s*!chatActiveModel &&\s*!isExternalSelectionActive &&\s*!selectionChanged\s*\)/,
   );
   assert.match(
     hook,
@@ -108,14 +109,14 @@ test("the mount-time status sync treats a speech model as an empty slot", () => 
 });
 
 test("a TTS load announces its own runtime so chat re-reads the slot", () => {
-  const events = readSource("../src/lib/model-lifecycle-events.ts");
+  const events = readText("../src/lib/model-lifecycle-events.ts");
   assert.match(events, /export type ModelRuntime =[^;]*"tts"/);
 
   // Chat ignores its own loads when reconciling, so a TTS load announced as "chat" left
   // chat naming a model the Audio page had evicted.
-  const audio = readSource("../src/features/audio/audio-page.tsx");
+  const audio = readText("../src/features/audio/audio-page.tsx");
   assert.match(audio, /runtime: "tts",/);
-  const hook = readSource(
+  const hook = readText(
     "../src/features/chat/hooks/use-chat-model-runtime.ts",
   );
   assert.match(
@@ -123,10 +124,20 @@ test("a TTS load announces its own runtime so chat re-reads the slot", () => {
     /if \(runtime === "chat" \|\| runtime === "stt"\) return;/,
   );
   assert.doesNotMatch(hook, /runtime === "tts"\) return;/);
+  assert.match(
+    hook,
+    /externalChatSlotLoad: runtime === "tts"/,
+    "the shared loading lease must not hide TTS eviction from Chat",
+  );
+  assert.match(
+    hook,
+    /\(!modelLoading \|\| options\?\.externalChatSlotLoad\)/,
+    "the TTS settle event runs before Audio releases the shared loading lease",
+  );
 });
 
 test("chat re-reads status when a different tab returns to the foreground", () => {
-  const hook = readSource(
+  const hook = readText(
     "../src/features/chat/hooks/use-chat-model-runtime.ts",
   );
   assert.match(hook, /subscribeResidentStatusRefresh\(\(\) => \{/);
@@ -140,7 +151,7 @@ test("chat re-reads status when a different tab returns to the foreground", () =
 // sites resolve a resident model into the chat store on their own.
 
 test("the Hub does not pin a speech model as the chat checkpoint", () => {
-  const hub = readSource("../src/features/hub/hub-page.tsx");
+  const hub = readText("../src/features/hub/hub-page.tsx");
   const adopt = hub.slice(
     hub.indexOf("adoptResidentModelStatus("),
     hub.indexOf("registerRefresh(", hub.indexOf("adoptResidentModelStatus(")),
@@ -158,7 +169,7 @@ test("the Hub does not pin a speech model as the chat checkpoint", () => {
 });
 
 test("a queued local thread does not adopt a speech model either", () => {
-  const adapter = readSource("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   const queued = adapter.slice(
     adapter.indexOf("async function resolveQueuedEmptyLocalModel"),
     adapter.indexOf("export function createOpenAIStreamAdapter"),
@@ -170,7 +181,7 @@ test("a queued local thread does not adopt a speech model either", () => {
 });
 
 test("the auto-load sweep skips every task chat cannot answer", () => {
-  const adapter = readSource("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   const set = adapter.slice(
     adapter.indexOf("const NON_CHAT_TASKS"),
     adapter.indexOf("]);", adapter.indexOf("const NON_CHAT_TASKS")),

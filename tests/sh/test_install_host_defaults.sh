@@ -54,37 +54,13 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INSTALL_SH="$REPO_ROOT/install.sh"
 INSTALL_PS1="$REPO_ROOT/install.ps1"
 SETUP_SH="$REPO_ROOT/studio/setup.sh"
 README="$REPO_ROOT/README.md"
 STUDIO_CLI="$REPO_ROOT/unsloth_cli/commands/studio.py"
-PASS=0
-FAIL=0
-
-assert_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF -- "$_needle"; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected to find '$_needle')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
 assert_ge() {
     _label="$1"; _actual="$2"; _min="$3"
     if [ "$_actual" -ge "$_min" ] 2> /dev/null; then
@@ -130,7 +106,6 @@ WILDCARDS = ("0.0.0.0", "[::]", "::")
 _BEFORE = " \t\"'/"
 _WORD = "studio"
 
-
 def host_flags(source):
     """Every CLI spelling of the host option, read off the typer.Option that declares it.
 
@@ -161,7 +136,6 @@ def host_flags(source):
                         found.add(a.value)
     return sorted(found)
 
-
 def wildcard_pattern(flags):
     """A host flag bound to a wildcard address, in any of the flag's spellings.
 
@@ -177,7 +151,6 @@ def wildcard_pattern(flags):
     return re.compile(
         r"(?:^|\s)(?:%s)(?:\s+|=)(?:%s)(?=$|[^0-9A-Za-z._-])" % (alternation, values)
     )
-
 
 def code_blocks(text):
     """Fenced code blocks, CommonMark-style. Returns (blocks, unterminated).
@@ -210,9 +183,7 @@ def code_blocks(text):
         return blocks, True
     return blocks, False
 
-
 _COMMENT = re.compile(r"(?:^|\s)#.*$")
-
 
 def studio_commands(text):
     """Every `... studio <args>` command in *text*, as the tail from `studio` onwards.
@@ -236,7 +207,6 @@ def studio_commands(text):
             if (at == 0 or before in _BEFORE) and after in ("", " ", "\t"):
                 out.append(line[at:].strip())
     return out
-
 
 def main():
     mode = sys.argv[1]
@@ -273,7 +243,6 @@ def main():
             print("%s\t%s" % (key, value))
         return 0
     raise SystemExit("unknown mode: %s" % mode)
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -173,7 +173,7 @@ export function DeepResearchComposerButton({
         }}
         className="composer-pill-glyph cursor-pointer"
       >
-        <HugeiconsIcon icon={Telescope02Icon} className="size-[15px]" />
+        <HugeiconsIcon icon={Telescope02Icon} className="size-[calc(15px*var(--ui-space-scale,1))]" />
         <XIcon className="composer-pill-x" />
       </span>
       <span>Deep research</span>
@@ -181,7 +181,7 @@ export function DeepResearchComposerButton({
       <HugeiconsIcon
         icon={ChevronDownStandardIcon}
         strokeWidth={1.5}
-        className="composer-pill-caret size-[15px] text-primary/70"
+        className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))] text-primary/70"
       />
     </button>
   );
@@ -243,8 +243,8 @@ function DeepResearchWebsiteAccessContent({
       ),
     ),
   );
-  // The API accepts second-level values the minutes field cannot spell, so saving an
-  // untouched control must replay the stored seconds rather than the rounded minutes.
+  // The API accepts second-level values the minutes field cannot spell, so saving an untouched
+  // control must replay the stored seconds rather than the rounded minutes.
   const [timeoutEdited, setTimeoutEdited] = useState(false);
 
   return (
@@ -318,8 +318,8 @@ function DeepResearchWebsiteAccessContent({
           onClick={() => {
             setPolicy(draft);
             const minutes = Number(timeoutMinutes);
-            // The max attribute does not stop a typed value reaching here, and falling
-            // through to the default would hand someone asking for a long run a short one.
+            // The max attribute does not stop a typed value reaching here, and falling through to the default
+            // would hand someone asking for a long run a short one.
             setModelTimeoutSeconds(
               unlimited
                 ? 0

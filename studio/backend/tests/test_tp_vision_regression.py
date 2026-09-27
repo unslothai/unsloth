@@ -617,11 +617,10 @@ def test_fit_off_retry_skipped_on_a_tensor_capability_crash():
     """The fit-independent --fit off retry is skipped on the split-axis marker, else
     the model crashes a second time before the latch records it (reviewer.py, #6659).
 
-    The same skip now also covers the pre-b9455 refusal of a quantized KV cache in
-    tensor mode (ggml-org/llama.cpp#23792): both are capabilities the binary lacks,
-    so a second spawn to let it offload cannot help and costs a full model load.
-    Hence the guard's name is _tensor_capability_crash rather than the split-axis
-    one it started as.
+    It now also covers the pre-b9455 quantized-KV refusal in tensor mode
+    (ggml-org/llama.cpp#23792) and the unified-cache refusal: no second spawn helps
+    any of the three, and each costs a full model load. Hence _capability_crash,
+    with _tensor_capability_crash left as the half the ROCm rung gates on.
     """
     src = inspect.getsource(LlamaCppBackend.load_model)
     retry = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
@@ -629,11 +628,12 @@ def test_fit_off_retry_skipped_on_a_tensor_capability_crash():
     guard = src[max(0, retry - 1000) : retry]
     assert "_fit_retry_allowed" in guard and "_startup_crashed" in guard
     assert (
-        "not _tensor_capability_crash" in guard
-    ), "the fit-off retry must be skipped when the crash is a tensor capability limit"
-    # Both markers feed it, so neither can be dropped without this failing.
+        "not _capability_crash" in guard
+    ), "the fit-off retry must be skipped when the crash is a capability limit"
+    # All three markers feed it, so none can be dropped without this failing.
     assert "_is_tensor_split_assert" in src
     assert "_is_tensor_quant_kv_unsupported" in src
+    assert "_is_kv_unified_refused" in src
 
 
 def test_is_abort_exit_recognizes_windows_crt_abort():

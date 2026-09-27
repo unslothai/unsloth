@@ -3,24 +3,23 @@
 
 """Metadata-only compatibility preflight for a diffusion pick.
 
-A FLUX.2 GGUF only carries the transformer; its size (``inner_dim``) has to agree with the
-companion diffusers base repo the loader assembles around it. ``assert_flux2_gguf_matches_base``
-already catches a mismatch, but it opens the downloaded checkpoint, so it fires from inside
-``load_pipeline`` -- after the prefetch pulled ~19 GB of base shards and after the resident
-pipeline was torn down to make room. The user paid for both to be told the pick was never valid.
+A FLUX.2 GGUF only carries the transformer; its size (``inner_dim``) has to agree with the companion
+diffusers base repo the loader assembles around it. ``assert_flux2_gguf_matches_base`` already
+catches a mismatch, but it opens the downloaded checkpoint, so it fires from inside
+``load_pipeline`` -- after the prefetch pulled ~19 GB of base shards and after the resident pipeline
+was torn down to make room.
 
-This module answers the same question from metadata alone: one HTTP range request for the first
-few hundred KiB of the GGUF, which is where its tensor table lives. That is cheap enough to run
-at SELECTION time (``/images/download-plan``) and again on the pre-eviction path, so the refusal
-lands before a byte moves and before anything is unloaded.
+This module answers the same question from metadata alone: one HTTP range request for the first few
+hundred KiB of the GGUF, where its tensor table lives. That is cheap enough to run at SELECTION time
+(``/images/download-plan``) and again on the pre-eviction path, so the refusal lands before a byte
+moves and before anything is unloaded.
 
-Fail-open throughout, deliberately: an unreadable or truncated header, a base repo outside the
-size table, an offline host, a server that ignores Range -- all yield "no opinion", and the load
-proceeds exactly as it does today with the loader's own guard as the backstop. A false positive
-here would refuse a pick that works, which is strictly worse than the download this saves.
-
-(A known ungated MIRROR of a base is not an exception to that: it is byte-identical to what it
-copies, ``canonical_base`` maps it back, and it is checked like its upstream.)
+Fail-open throughout, deliberately: an unreadable or truncated header, a base repo outside the size
+table, an offline host, a server that ignores Range all yield "no opinion", and the load proceeds
+with the loader's own guard as the backstop. A false positive here would refuse a pick that works,
+which is strictly worse than the download this saves. (A known ungated MIRROR of a base is not an
+exception: it is byte-identical to what it copies, ``canonical_base`` maps it back, and it is
+checked like its upstream.)
 """
 
 from __future__ import annotations
@@ -32,6 +31,13 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from hub.utils.hf_tokens import (
+    ANONYMOUS_CACHE_IDENTITY,
+    qualify_cache_identity,
+    HfTokenArg,
+    is_anonymous,
+    normalize_token,
+)
 from core.inference.diffusion_families import (
     flux2_base_inner_dim,
     flux2_mismatch_reason,
@@ -50,30 +56,32 @@ _HEADER_TIMEOUT_SECONDS = 15
 # How long to wait for an interrupted read to notice before leaving it to the GC.
 _ABANDON_GRACE_SECONDS = 0.5
 
-# (repo_id, gguf_filename, token fingerprint, local file identity) -> inner_dim or None. Bounded
-# and process-local. It memoises the MISS too -- the three checks on one pick would otherwise
-# re-probe an unreachable Hub three times, and a sticky None is the degradation this module
-# promises anyway. Which is exactly why the last two key parts exist: a sticky None must not
-# outlive its cause.
-#
-#   * the TOKEN, fingerprinted rather than stored. Keying on mere presence made every non-empty
-#     token one key, so a first probe with an expired credential poisoned the valid one that
-#     replaced it for the rest of the process.
-#   * the local file's IDENTITY (path, size, mtime). A checkpoint swapped in place keeps its path,
-#     so keying on the name alone answers the new file with the old file's dim -- refusing a valid
-#     9B pairing, or handing sd.cpp the 4B text encoders. It also makes the file ARRIVING a new
-#     key, so a miss taken before a download finished re-probes off disk for free.
+# (repo_id, gguf_filename, token fingerprint, local file identity) -> inner_dim or None. Bounded and process-local. It
+# memoises the MISS too, since the three checks on one pick would otherwise re-probe an unreachable Hub three times,
+# which is exactly why the last two key parts exist: a sticky None must not outlive its cause. The TOKEN is
+# fingerprinted rather than stored, because keying on mere presence made every non-empty token one key, so a first
+# probe with an expired credential poisoned the valid one that replaced it. The local file's IDENTITY (path, size,
+# mtime) is keyed because a checkpoint swapped in place keeps its path, so keying on the name alone answers the new
+# file with the old file's dim; it also makes the file ARRIVING a new key, so a miss taken before a download finished
+# re-probes off disk for free.
 _INNER_DIM_CACHE: dict[tuple[str, str, str, Optional[tuple]], Optional[int]] = {}
 _INNER_DIM_CACHE_MAX = 256
 _CACHE_LOCK = threading.Lock()
 
 
-def _token_fingerprint(token: Optional[str]) -> str:
+def _token_fingerprint(token: HfTokenArg) -> str:
     """A stable, non-reversible tag for a token, or "" for none. Never the token itself: this
-    lands in a process-global dict that a traceback or a heap dump would render."""
+    lands in a process-global dict that a traceback or a heap dump would render.
+
+    A caller forced anonymous tags apart from one that may still use the ambient token,
+    so neither reads back the other's verdict."""
+    if is_anonymous(token):
+        return ANONYMOUS_CACHE_IDENTITY
     if not token:
         return ""
-    return hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()[:16]
+    return qualify_cache_identity(
+        token, hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()[:16]
+    )
 
 
 def _file_identity(path: Optional[str]) -> Optional[tuple]:
@@ -230,23 +238,27 @@ def _interrupt_read(response: Any) -> None:
             pass
 
 
-def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> bytes:
-    """The first ``_GGUF_HEADER_BYTES`` of a Hub-hosted GGUF, or b"" when they cannot be read.
+def _read_gguf_header(
+    repo_id: str,
+    gguf_filename: str,
+    hf_token: Optional[str],
+    *,
+    revision: Optional[str] = None,
+    max_bytes: Optional[int] = None,
+    timeout_seconds: Optional[float] = None,
+) -> bytes:
+    """A bounded prefix of a Hub-hosted GGUF, or b"" when it cannot be read.
 
-    One wall-clock bound over the WHOLE operation, request included. requests' timeout is an
-    inactivity timeout: a peer (or an intermediary) that trickles response HEADERS resets it on
-    every byte, so a deadline armed only once ``get()`` has returned leaves the caller blocked
-    before the bounded body reader is ever reached -- and this runs on the /images/load route
-    thread and on the download-plan path, both of which promised to fail open in seconds.
-
-    So the request AND the drain run on a worker this call can walk away from. On timeout the
-    response, if one exists by then, is half-closed to wake the worker; either way the caller
-    returns with whatever arrived."""
+    One wall-clock bound over the WHOLE operation: requests' own timeout is per-byte, so a
+    trickled response would block this fail-open path past any deadline armed after ``get()``.
+    Request and drain therefore run on a worker this call can abandon."""
     try:
         from huggingface_hub import hf_hub_url
         from huggingface_hub.utils import build_hf_headers, get_session
     except Exception:  # noqa: BLE001 — an unexpected hub layout leaves today's behaviour
         return b""
+    max_bytes = _GGUF_HEADER_BYTES if max_bytes is None else max_bytes
+    timeout_seconds = _HEADER_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
     buffer = bytearray()
     # Published by the worker as soon as it has something interruptible; read by this thread on
     # timeout. A one-element list rather than a nonlocal, so the worker's assignment is visible.
@@ -255,9 +267,9 @@ def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str])
     def _fetch() -> None:
         try:
             headers = dict(build_hf_headers(token = hf_token))
-            headers["Range"] = f"bytes=0-{_GGUF_HEADER_BYTES - 1}"
+            headers["Range"] = f"bytes=0-{max_bytes - 1}"
             with _ranged_stream(
-                get_session(), hf_hub_url(repo_id, gguf_filename), headers
+                get_session(), hf_hub_url(repo_id, gguf_filename, revision = revision), headers
             ) as response:
                 holder[0] = response
                 # 206 or nothing. A server (or a proxy) that ignored the Range header answers 200
@@ -265,12 +277,12 @@ def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str])
                 # download this preflight exists to prevent.
                 if response.status_code != 206:
                     return
-                deadline = time.monotonic() + _HEADER_TIMEOUT_SECONDS
+                deadline = time.monotonic() + timeout_seconds
                 for chunk in _iter_body(response, 65536):
                     # extend, not `+=`: augmented assignment to a closed-over name would rebind
                     # it as a local of _fetch and lose every byte.
                     buffer.extend(chunk)
-                    if len(buffer) >= _GGUF_HEADER_BYTES or time.monotonic() > deadline:
+                    if len(buffer) >= max_bytes or time.monotonic() > deadline:
                         break
         # Keep what arrived rather than discarding it: the deadline firing on a merely SLOW link
         # still leaves the tensor table (the first ~15 KiB) in hand, and the parser is
@@ -287,19 +299,19 @@ def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str])
     # return -- on urllib3 >= 2.3, where HTTPResponse.shutdown exists. requirements/studio.txt
     # floors it, but an install predating that floor keeps whatever it resolved, so the bound
     # here cannot depend on the version underneath us: the worker is abandonable either way.
-    watchdog = threading.Timer(_HEADER_TIMEOUT_SECONDS, lambda: _interrupt_read(holder[0]))
+    watchdog = threading.Timer(timeout_seconds, lambda: _interrupt_read(holder[0]))
     watchdog.daemon = True
     watchdog.start()
     worker = threading.Thread(target = _fetch, name = "gguf-header-read", daemon = True)
     worker.start()
-    worker.join(_HEADER_TIMEOUT_SECONDS)
+    worker.join(timeout_seconds)
     if worker.is_alive():
         _interrupt_read(holder[0])
         worker.join(_ABANDON_GRACE_SECONDS)
     watchdog.cancel()
     # bytes() snapshots under the GIL, so an abandoned worker still appending cannot tear the
     # copy; it can only lose a chunk that arrived too late to matter.
-    return bytes(buffer[:_GGUF_HEADER_BYTES])
+    return bytes(buffer[:max_bytes])
 
 
 def flux2_inner_dim_for_pick(
@@ -323,7 +335,7 @@ def flux2_inner_dim_for_pick(
     # spending a range request to learn that on every such load is pure waste.
     if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
         return None
-    token = (hf_token or "").strip() or None
+    token = normalize_token(hf_token)
     # Resolved BEFORE the memo is consulted, because the file's identity is part of the key. Two
     # stats, against a probe that is otherwise an HTTP round trip.
     local = _local_gguf_path(repo_id, gguf_filename)
@@ -371,7 +383,7 @@ def _revalidated_inner_dim(
     cached = _snapshot_revision(_local_gguf_path(repo_id, gguf_filename))
     if cached is None:
         return got
-    token = (hf_token or "").strip() or None
+    token = normalize_token(hf_token)
     live = _hub_revision(repo_id, gguf_filename, token)
     if live is None or live == cached:
         return got
@@ -428,16 +440,11 @@ _SPEECH_ARCH_CACHE_MAX = 256
 # variant listing's own freshness window for moved revisions.
 _SPEECH_REMOTE_TTL_SECONDS = 60.0
 
-# (repo_id, gguf_filename, token fingerprint, local file identity) -> the header prefix.
-#
-# The inner-dim probe and the speech probe read the SAME first _GGUF_HEADER_BYTES of the SAME
-# file, and a flux.2 pick that is not a size mismatch runs both: two range requests, each with its
-# own _HEADER_TIMEOUT_SECONDS, so a picker the user waits on could wear twice its documented
-# bound. They share the read now, keyed and aged exactly like the speech memo beside it, so this
-# adds no staleness the module did not already accept.
-#
-# Deliberately NOT consulted by the revalidation paths: their whole job is to re-read a file the
-# Hub has republished, and answering those from a memo would defeat them.
+# (repo_id, gguf_filename, token fingerprint, local file identity) -> the header prefix. The inner-dim probe and the
+# speech probe read the SAME first _GGUF_HEADER_BYTES of the SAME file, and a flux.2 pick that is not a size mismatch
+# runs both: two range requests, each with its own _HEADER_TIMEOUT_SECONDS, so a picker the user waits on could wear
+# twice its documented bound. They share the read now, keyed and aged exactly like the speech memo beside it.
+# Deliberately NOT consulted by the revalidation paths: their whole job is to re-read a file the Hub has republished.
 _HEADER_PREFIX_CACHE: dict[tuple[str, str, str, Optional[tuple]], tuple[bytes, float]] = {}
 _HEADER_PREFIX_CACHE_MAX = 32
 
@@ -533,7 +540,7 @@ def _speech_probe_architecture(
     because a probe that failed on an expired credential caches "no verdict" and the retry with a
     working one would read that back and let the speech file through to the download; the file
     identity, because a checkpoint replaced under the same name is a different checkpoint."""
-    token = (hf_token or "").strip() or None
+    token = normalize_token(hf_token)
     # Resolved BEFORE the memo is consulted, because the file's identity is part of the key.
     local = _local_gguf_path(repo_id, gguf_filename)
     key = (repo_id, gguf_filename, _token_fingerprint(token), _file_identity(local))

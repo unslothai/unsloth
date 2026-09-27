@@ -47,12 +47,13 @@ export function isRagClientError(error: unknown): boolean {
 
 async function ragRequest<T>(
   path: string,
-  init?: { method?: string; body?: object },
+  init?: { method?: string; body?: object; signal?: AbortSignal },
 ): Promise<T> {
   const response = await authFetch(`${RAG_BASE}${path}`, {
     method: init?.method,
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
     body: init?.body ? JSON.stringify(init.body) : undefined,
+    signal: init?.signal,
   });
   if (response.status === 204) {
     noteRagResponse(204, null);
@@ -210,9 +211,8 @@ export function uploadProjectDocument(
   );
 }
 
-// Cached "does this project have indexed sources?" probe so the chat adapter can
-// auto-scope project chats without a round trip per message. The sources panel
-// invalidates on upload/delete.
+// Cached "does this project have indexed sources?" probe so the chat adapter can auto-scope project
+// chats without a round trip per message. The sources panel invalidates on upload/delete.
 const projectSourcesCache = new Map<string, { has: boolean; at: number }>();
 const PROJECT_SOURCES_TTL_MS = 30_000;
 
@@ -720,8 +720,8 @@ export async function deleteDocument(
   return result;
 }
 
-export function getJob(jobId: string): Promise<IndexJob> {
-  return ragRequest(`/jobs/${encodeURIComponent(jobId)}`);
+export function getJob(jobId: string, signal?: AbortSignal): Promise<IndexJob> {
+  return ragRequest(`/jobs/${encodeURIComponent(jobId)}`, { signal });
 }
 
 /** Longest gap between frames before a stream is treated as buffered by a proxy. */
@@ -742,28 +742,50 @@ async function openEventStream(
   return response.body;
 }
 
+// One budget for every RAG stream: HTTP/1.1 allows six connections per origin, so counting
+// only document jobs let folder syncs fill the pool and stall the upload POSTs anyway.
+// Both callers already poll when a stream throws.
+const MAX_RAG_STREAMS = 4;
+let activeRagStreams = 0;
+
+async function* boundedEventStream<T>(
+  path: string,
+  signal?: AbortSignal,
+  stallMs?: number,
+): AsyncGenerator<T> {
+  if (activeRagStreams >= MAX_RAG_STREAMS) {
+    throw new Error("RAG stream capacity reached");
+  }
+  activeRagStreams += 1;
+  try {
+    const body = await openEventStream(`${RAG_BASE}${path}`, signal);
+    yield* readSseJsonEvents<T>(body, stallMs);
+  } finally {
+    activeRagStreams -= 1;
+  }
+}
+
 // sse; returns on [DONE]. transport errors propagate so callers can poll getJob
-export async function* streamJobEvents(
+export function streamJobEvents(
   jobId: string,
   signal?: AbortSignal,
 ): AsyncGenerator<JobEvent> {
   // no stall bound: this consumer reads an early end as a finished job
-  const body = await openEventStream(
-    `${RAG_BASE}/jobs/${encodeURIComponent(jobId)}/events`,
+  return boundedEventStream<JobEvent>(
+    `/jobs/${encodeURIComponent(jobId)}/events`,
     signal,
   );
-  yield* readSseJsonEvents<JobEvent>(body);
 }
 
-export async function* streamFolderSyncJobEvents(
+export function streamFolderSyncJobEvents(
   jobId: string,
   signal?: AbortSignal,
 ): AsyncGenerator<FolderSyncJobEvent> {
-  const body = await openEventStream(
-    `${RAG_BASE}/linked-folder-jobs/${encodeURIComponent(jobId)}/events`,
+  return boundedEventStream<FolderSyncJobEvent>(
+    `/linked-folder-jobs/${encodeURIComponent(jobId)}/events`,
     signal,
+    SSE_STALL_MS,
   );
-  yield* readSseJsonEvents<FolderSyncJobEvent>(body, SSE_STALL_MS);
 }
 
 export function getPreviewTarget(
@@ -776,9 +798,8 @@ export function getPreviewTarget(
   );
 }
 
-// Signed URL (no bearer) so pdf.js can issue Range requests. Absolute because
-// consumers bypass authFetch, and a relative path under Tauri resolves against
-// the webview origin.
+// Signed URL (no bearer) so pdf.js can issue Range requests. Absolute because consumers bypass
+// authFetch, and a relative path under Tauri resolves against the webview origin.
 export async function getDocumentFileUrl(documentId: string): Promise<string> {
   const data = await ragRequest<{ url: string }>(
     `/documents/${encodeURIComponent(documentId)}/file-url`,

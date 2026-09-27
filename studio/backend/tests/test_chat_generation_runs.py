@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +16,7 @@ from routes.chat_generation_runs import (
 from storage import chat_generation_runs_db as runs_db
 from storage import studio_db
 from state.tool_policy import reset_tool_policy, set_tool_policy, set_tool_policy_default
+from utils.paths import studio_db_path
 
 
 @pytest.fixture(autouse = True)
@@ -120,6 +123,7 @@ def test_create_is_owner_scoped_idempotent_and_binds_placeholder(chat_home):
         "serverManaged": True,
     }
     _assert_protected({**message, "content": [{"type": "text", "text": "stale overwrite"}]})
+
     synced = studio_db.sync_chat_messages("thread-1", [], prune_missing = True)
     assert {message["id"] for message in synced} == {"user-1", "assistant-1"}
     assert runs_db.get_run("run-1", "alice") is not None
@@ -135,6 +139,63 @@ def test_create_is_owner_scoped_idempotent_and_binds_placeholder(chat_home):
         _create(owner = "bob")
     with pytest.raises(runs_db.ChatGenerationConflictError):
         _create(request = _request(max_tokens = 9))
+
+
+@pytest.mark.parametrize("admit_before_route", [True, False])
+def test_fork_refuses_durable_run_before_supervisor_registration(
+    chat_home, monkeypatch, admit_before_route
+):
+    from fastapi import HTTPException
+    from routes import chat_history
+    from state import active_generations
+
+    assert "thread-1" not in active_generations.active_thread_ids()
+    if admit_before_route:
+        _create()
+    else:
+        original_fork = chat_history.fork_chat_thread
+
+        def admit_then_fork(**kwargs):
+            _create()
+            return original_fork(**kwargs)
+
+        monkeypatch.setattr(chat_history, "fork_chat_thread", admit_then_fork)
+
+    with pytest.raises(HTTPException) as exc:
+        chat_history.fork_thread(
+            "thread-1",
+            chat_history.ChatForkRequest(newThreadId = "fork-1", createdAt = 10),
+            current_subject = "alice",
+        )
+    assert exc.value.status_code == 409
+    assert "still generating" in exc.value.detail
+    assert studio_db.get_chat_thread("fork-1") is None
+
+
+def test_fork_resolves_tip_after_concurrent_generation_completes(chat_home, monkeypatch):
+    from routes import chat_history
+
+    original_fork = chat_history.fork_chat_thread
+
+    def complete_then_fork(**kwargs):
+        _create()
+        token = runs_db.get_worker_token("run-1")
+        assert runs_db.mark_running("run-1", token)
+        message = studio_db.get_chat_message("thread-1", "assistant-1")
+        message["content"] = [{"type": "text", "text": "Finished reply"}]
+        message["metadata"].update({"generationSeq": 1, "generationStatus": "running"})
+        studio_db.upsert_chat_message(message)
+        runs_db.finish_run("run-1", worker_token = token, status = "completed")
+        return original_fork(**kwargs)
+
+    monkeypatch.setattr(chat_history, "fork_chat_thread", complete_then_fork)
+    response = chat_history.fork_thread(
+        "thread-1",
+        chat_history.ChatForkRequest(newThreadId = "fork-1", createdAt = 10),
+        current_subject = "alice",
+    )
+    assert response.thread.forkedFromMessageId == "assistant-1"
+    assert response.messages[-1].content == [{"type": "text", "text": "Finished reply"}]
 
 
 def test_shared_thread_rejects_a_second_subjects_active_generation(chat_home):
@@ -296,6 +357,66 @@ def test_settled_generation_response_can_be_explicitly_edited(chat_home):
     _assert_protected(authoritative)
 
 
+def test_explicit_edit_keeps_display_metadata_but_not_the_run_claim(chat_home):
+    """The shape the edit pencil sends: the details the reply is shown with, minus the run's claim.
+
+    Passing the whole stored metadata back through is refused, because the record still says the
+    run owns the turn and detaching it is the whole point of an explicit edit.
+    """
+    _create()
+    token = runs_db.get_worker_token("run-1")
+    assert runs_db.mark_running("run-1", token)
+    streamed = studio_db.get_chat_message("thread-1", "assistant-1")
+    streamed["metadata"].update(
+        {
+            "generationStatus": "running",
+            "timing": {"tokensPerSecond": 42.5, "durationMs": 1200},
+            "contextUsage": {"promptTokens": 900, "contextLength": 4096},
+        }
+    )
+    studio_db.upsert_chat_message(streamed)
+    assert runs_db.finish_run(
+        "run-1", worker_token = token, status = "completed", finish_reason = "length"
+    )
+    run = runs_db.get_run("run-1", "alice")
+    settled = studio_db.get_chat_message("thread-1", "assistant-1")
+    settled["metadata"].update(
+        {
+            "generationSeq": run["lastEventSeq"],
+            "generationStatus": "completed",
+            "generationSettled": True,
+        }
+    )
+    studio_db.upsert_chat_message(settled)
+    authoritative = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert authoritative["metadata"]["incomplete"] == {"reason": "length"}
+
+    edited = {**authoritative, "content": [{"type": "text", "text": "edited"}]}
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(edited, allow_generation_edit = True)
+
+    edited["metadata"] = {
+        key: value
+        for key, value in authoritative["metadata"].items()
+        if key
+        not in {
+            "serverManaged",
+            "generationRunId",
+            "generationSeq",
+            "generationStatus",
+            "generationSettled",
+        }
+    }
+    saved = studio_db.upsert_chat_message(edited, allow_generation_edit = True)
+    assert saved["content"] == [{"type": "text", "text": "edited"}]
+    assert saved["metadata"] == {
+        "incomplete": {"reason": "length"},
+        "timing": {"tokensPerSecond": 42.5, "durationMs": 1200},
+        "contextUsage": {"promptTokens": 900, "contextLength": 4096},
+    }
+    assert runs_db.get_run("run-1", "alice") is None
+
+
 def test_batched_events_have_gapless_cursor_and_terminal_flush(chat_home):
     run, _created = _create()
     worker_token = runs_db.get_worker_token("run-1")
@@ -331,6 +452,26 @@ def test_batched_events_preserve_receipt_timestamps(chat_home):
     )
     chunks = [event for event in runs_db.list_events("run-1") if event["type"] == "chunk"]
     assert [event["createdAt"] for event in chunks] == [1001, 1002]
+
+
+def test_stream_batches_do_not_rewrite_studio_db_while_the_keeper_holds_the_wal(chat_home):
+    """#9934: each event batch closed the last connection, checkpointing studio.db."""
+    _create()
+    worker_token = runs_db.get_worker_token("run-1")
+    db_path = Path(str(studio_db_path()))
+    wal_path = Path(f"{db_path}-wal")
+
+    assert studio_db.open_wal_keeper() is True
+    try:
+        before = hashlib.sha256(db_path.read_bytes()).hexdigest()
+        for index in range(5):
+            runs_db.append_events("run-1", worker_token, [("chunk", {"text": str(index)})])
+            assert wal_path.is_file()
+        assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before
+    finally:
+        studio_db.close_wal_keeper()
+    assert not wal_path.exists()
+    assert len(runs_db.list_events("run-1")) >= 5
 
 
 def test_cancel_before_registration_and_startup_orphan_reconciliation(chat_home):
@@ -373,7 +514,7 @@ def test_an_uncancelled_run_still_reconciles_as_interrupted(chat_home):
 
     run = runs_db.get_run("run-1", "alice")
     assert (run["status"], run["finishReason"]) == ("failed", "interrupted")
-    assert run["error"] == "Studio restarted during generation"
+    assert run["error"] == "Unsloth restarted during generation"
     assert runs_db.list_events("run-1")[-1]["payload"]["interrupted"] is True
 
 
@@ -492,8 +633,6 @@ def test_an_explicit_delete_still_removes_a_detached_generated_assistant(chat_ho
     "override,detail",
     [
         ({"provider_id": "external"}, "only for local"),
-        ({"tools": [{"type": "function"}]}, "legacy streaming"),
-        ({"enable_tools": True}, "legacy streaming"),
         ({"rag_scope": {"access_token": "secret"}}, "Credentials"),
         ({"rag_scope": {"signing_key": "secret"}}, "Credentials"),
         ({"rag_scope": {"ssh_key": "secret"}}, "Credentials"),
@@ -583,24 +722,54 @@ def test_request_sanitization_accepts_empty_optional_routing(overrides):
     assert _sanitize_request(_model(**overrides))["stream"] is True
 
 
-def test_request_sanitization_rejects_launcher_default_tools():
+# A tool-enabled turn is durable now: the run persists every decoded frame, so a call that parks on an approval
+# survives the tab closing instead of being cancelled by it. The refusal these tests used to pin still exists - it is
+# what UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 restores - so both halves are pinned here: admitted by default, refused
+# under the toggle, and nothing in between.
+
+
+def test_request_sanitization_admits_a_tool_enabled_turn_by_default():
+    assert _sanitize_request(_model(tools = [{"type": "function"}]))["stream"] is True
+    assert _sanitize_request(_model(enable_tools = True))["stream"] is True
+
+
+def test_request_sanitization_refuses_a_tool_enabled_turn_when_the_toggle_is_off(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "0")
+    with pytest.raises(Exception, match = "Tool-enabled chat runs use the legacy streaming path"):
+        _sanitize_request(_model(tools = [{"type": "function"}]))
+    with pytest.raises(Exception, match = "Tool-enabled chat runs use the legacy streaming path"):
+        _sanitize_request(_model(enable_tools = True))
+
+
+def test_a_launcher_default_tool_policy_is_admitted_by_default_and_refused_under_the_toggle(
+    monkeypatch,
+):
     set_tool_policy_default(True)
-    with pytest.raises(Exception, match = "legacy streaming path"):
+    assert _sanitize_request(_model())["stream"] is True
+    monkeypatch.setenv("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "0")
+    with pytest.raises(Exception, match = "Tool-enabled chat runs use the legacy streaming path"):
         _sanitize_request(_model())
 
 
-def test_request_sanitization_rejects_cli_tools_override_even_when_request_disables_tools():
+def test_a_cli_tools_override_is_admitted_even_when_the_request_disables_tools(monkeypatch):
     set_tool_policy(True)
-    with pytest.raises(Exception, match = "legacy streaming path"):
+    assert _sanitize_request(_model(enable_tools = False))["stream"] is True
+    monkeypatch.setenv("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "0")
+    with pytest.raises(Exception, match = "Tool-enabled chat runs use the legacy streaming path"):
         _sanitize_request(_model(enable_tools = False))
 
 
-def test_request_sanitization_rejects_checkpoint_recall_tool_loop(monkeypatch):
+def test_a_checkpoint_recall_tool_loop_is_admitted_by_default_and_refused_under_the_toggle(
+    monkeypatch,
+):
     import routes.inference as inference_routes
+
     monkeypatch.setattr(
         inference_routes, "_checkpoint_recall_may_enable_tools", lambda request: True, raising = False
     )
-    with pytest.raises(Exception, match = "legacy streaming path"):
+    assert _sanitize_request(_model(enable_tools = False))["stream"] is True
+    monkeypatch.setenv("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "0")
+    with pytest.raises(Exception, match = "Tool-enabled chat runs use the legacy streaming path"):
         _sanitize_request(_model(enable_tools = False))
 
 
@@ -625,3 +794,110 @@ def test_request_sanitization_rejects_inline_media(field):
     """
     with pytest.raises(Exception, match = "legacy streaming path"):
         _sanitize_request(_model(**{field: "iVBORw0KGgo="}))
+
+
+class TestEmbeddedImagesStayOffTheDurablePath:
+    """A durable run persists its request verbatim, so an inline base64 image written into
+    request_json is written again on every follow-up turn for the life of the thread.
+
+    The media guard was field-shaped plus nested audio and video. It had no nested IMAGE check,
+    and turn-scoping removed the thing that used to catch this case by accident: a text-only
+    follow-up no longer sets top-level image_base64, yet the thread's earlier screenshot still
+    rides along inside messages[].content. So the follow-up was admitted and the blob re-persisted.
+    """
+
+    _PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+    def _msg(self, parts):
+        from models.inference import ChatMessage
+        return ChatMessage(role = "user", content = parts)
+
+    def test_an_inline_data_url_image_in_history_is_detected(self):
+        from routes.inference import _messages_have_embedded_image
+        messages = [
+            self._msg(
+                [
+                    {"type": "text", "text": "what is this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{self._PNG}"},
+                    },
+                ]
+            ),
+            self._msg([{"type": "text", "text": "and what colour was it?"}]),
+        ]
+        assert _messages_have_embedded_image(messages) is True
+
+    def test_a_remote_image_url_is_not_treated_as_embedded(self):
+        """Deliberately narrower than 'has an image'. A remote URL is a short string and costs
+        nothing to persist, so it has no business forcing a turn off the durable path."""
+        from routes.inference import _messages_have_embedded_image
+
+        messages = [
+            self._msg(
+                [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+                ]
+            )
+        ]
+        assert _messages_have_embedded_image(messages) is False
+
+    def test_a_plain_text_thread_is_not_treated_as_media(self):
+        """Negative control: if this ever returns True the guard would push every text turn onto
+        the legacy path and the feature would silently stop working."""
+        from routes.inference import _messages_have_embedded_image
+
+        assert (
+            _messages_have_embedded_image([self._msg([{"type": "text", "text": "hello"}])]) is False
+        )
+        from models.inference import ChatMessage
+
+        assert _messages_have_embedded_image([ChatMessage(role = "user", content = "hello")]) is False
+
+
+# The admission half of TestEmbeddedImagesStayOffTheDurablePath: the helper returning True is not
+# the claim, the route refusing the run is.
+
+_INLINE_PNG_PART = {
+    "type": "image_url",
+    "image_url": {
+        "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
+        "DUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    },
+}
+
+
+def test_a_text_only_follow_up_carrying_an_earlier_inline_image_stays_legacy():
+    """The case turn-scoping opened. No top-level image_base64 is set on a text-only follow-up, so
+    the field-shaped guard admitted it, and a durable run persists its request verbatim: the
+    thread's earlier screenshot would be written into request_json again on every follow-up."""
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": "what is this?"}, _INLINE_PNG_PART]},
+        {"role": "assistant", "content": "A red square."},
+        {"role": "user", "content": [{"type": "text", "text": "and what colour was it again?"}]},
+    ]
+    with pytest.raises(Exception, match = "Media chat runs use the legacy streaming path"):
+        _sanitize_request(_model(messages = messages))
+
+
+def test_a_remote_image_url_does_not_force_a_turn_off_the_durable_path():
+    """Narrower than 'has an image' on purpose: a remote URL is a short string, so persisting it
+    costs nothing and there is no reason to give up durability for it."""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what is this?"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+            ],
+        },
+    ]
+    assert _sanitize_request(_model(messages = messages))["stream"] is True
+
+
+def test_an_ordinary_text_thread_is_still_admitted():
+    """Negative control. If the new guard over-matched, every text turn would fall back to the
+    legacy stream and the whole feature would quietly stop working while these tests stayed green."""
+    messages = [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
+    assert _sanitize_request(_model(messages = messages))["stream"] is True

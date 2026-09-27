@@ -30,7 +30,7 @@ function activeExposureWarning(
   exposure: KeylessApiAccessSettings["exposure"],
 ): string {
   if (exposure === "public_url") {
-    return " A public URL or tunnel is active, so keyless access remains disabled, including on localhost, until it is stopped.";
+    return " A public URL or tunnel is active, so keyless access is disabled on localhost until it is stopped.";
   }
   if (exposure === "colab") {
     return " This Colab runtime cannot receive keyless access.";
@@ -199,7 +199,7 @@ export function KeylessApiAccessSection({
             />
           </div>
           <div className="flex min-w-0 flex-col gap-0.5">
-            <h2 className="text-base font-semibold font-heading text-foreground">
+            <h2 className="settings-heading text-base font-semibold font-heading">
               Keyless API access
             </h2>
             <p className="text-xs text-muted-foreground leading-relaxed">

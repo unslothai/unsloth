@@ -56,8 +56,7 @@ def _payload(tmp_path: Path) -> Path:
                         "completed": True,
                     }
                 )
-                # A control that is measured at BOTH rungs, so the refusal cannot pass by
-                # rejecting everything.
+                # A control that is measured at BOTH rungs, so the refusal cannot pass by rejecting everything.
                 rows.append(
                     {
                         "row_type": "action",

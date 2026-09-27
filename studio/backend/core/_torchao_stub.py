@@ -11,7 +11,8 @@ Worker subprocesses call install_torchao_windows_rocm_stub() before importing
 transformers / unsloth_zoo.
 
 xformers hits the same absent backend and takes diffusers with it, so the diffusion paths
-install both stubs before importing diffusers.
+install both stubs before importing diffusers. They also hide an xformers built for a newer
+torch than the venv has, which fails the same import on any platform.
 """
 
 from __future__ import annotations
@@ -28,9 +29,7 @@ from typing import Optional
 _STUB_SENTINEL = object()
 
 
-# Metaclass for stub types so isinstance(x, StubClass) returns False instead of
-# raising TypeError -- peft's lora/torchao.py does isinstance() against torchao
-# types, which fails if those names resolve to stub modules rather than types.
+# isinstance() against a stub module raises TypeError; peft's lora/torchao.py needs it to return False.
 class _StubTypeMeta(type):
     def __instancecheck__(cls, instance):
         return False
@@ -54,10 +53,15 @@ def _make_stub_type(name):
     return _StubTypeMeta(name, (), {})
 
 
+# Below every minimum: without dist-info, transformers 5 parses this ("N/A" raised).
+STUB_VERSION = "0.0.0"
+
+
 def _make_mod_stub(mod_name):
     m = types.ModuleType(mod_name)
     m.__path__ = []
     m.__package__ = mod_name
+    m.__version__ = STUB_VERSION
     m._unsloth_stub = _STUB_SENTINEL
     m.__spec__ = importlib.machinery.ModuleSpec(mod_name, loader = None, is_package = True)
 
@@ -122,6 +126,7 @@ _HIP_LINE_RE = re.compile(r"^hip\s*(?::[^=]*)?=\s*(.+?)\s*$", re.MULTILINE)
 
 def _version_is_rocm_tagged() -> Optional[bool]:
     """Whether the installed wheel's version carries a rocm tag. None if unreadable."""
+    # Neither on-disk signal was readable, so importing is the only way left.
     try:
         from importlib.metadata import version
         return "rocm" in version("torch").lower()
@@ -177,7 +182,6 @@ def torch_is_rocm() -> bool:
     verdict = _installed_torch_is_rocm()
     if verdict is not None:
         return verdict
-    # Neither on-disk signal was readable, so importing is the only way left.
     try:
         import torch
     except Exception:
@@ -233,3 +237,27 @@ def install_xformers_windows_rocm_stub() -> None:
         for _xf_name in ("xformers", "xformers.ops"):
             if _xf_name not in sys.modules:
                 sys.modules[_xf_name] = _make_mod_stub(_xf_name)
+
+
+def hide_xformers_built_for_another_torch() -> None:
+    """Hide an xFormers whose torch requirement is unmet (#11545); None, not a stub, so nothing sees usable attention."""
+    if "xformers" in sys.modules:
+        return
+    try:
+        if importlib.util.find_spec("xformers") is None:
+            return
+        from utils.wheel_utils import xformers_torch_requirement_unmet
+        mismatch = xformers_torch_requirement_unmet()
+    except Exception:  # noqa: BLE001 -- a check that cannot answer leaves xformers alone
+        return
+    if mismatch is None:
+        return
+    sys.modules["xformers"] = None
+    xformers_version, requirement, torch_version = mismatch
+    print(
+        f"Unsloth: xformers {xformers_version} requires torch{requirement} but torch "
+        f"{torch_version} is installed, so it cannot be imported. Using PyTorch attention "
+        "instead.",
+        file = sys.stderr,
+        flush = True,
+    )

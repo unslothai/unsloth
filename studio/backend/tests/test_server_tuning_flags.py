@@ -300,7 +300,10 @@ def test_the_checkpoint_flag_falls_back_to_the_legacy_spelling():
     # and the emission uses the recorded name, not a hard-coded one
     load = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
     assert "cmd.extend([str(_ctxcp_flag), str(int(ctx_checkpoints))])" in load
-    assert 'cmd.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])' in load
+    # The Windows tuning's 0 goes through the list the arch-crash respawn takes its own
+    # flags back off, so the sink is that list rather than cmd. What it pins is unchanged.
+    assert '_cache_flags_emitted.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])' in load
+    assert "cmd.extend(_cache_flags_emitted)" in load
 
 
 def test_an_unsupported_draft_cache_dtype_is_dropped_not_launched():
@@ -430,8 +433,9 @@ def test_the_coexistence_estimate_charges_the_requested_checkpoints():
         inference_routes._estimate_gguf_kv_gb
     )
     kv_source = inspect.getsource(inference_routes._gguf_runtime_bytes)
-    # priced on what the launch runs, so a typed --ctx-checkpoints wins here too
-    assert "resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints)" in kv_source
+    # Pricing uses the same effective count as the launch.
+    assert "effective_ctx_checkpoints_for_caps(" in kv_source
+    assert "llama_extra_args," in kv_source
 
 
 # ------------------------------------------------------------------- override storage

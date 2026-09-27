@@ -1,68 +1,34 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/* POTENCY PROBE for `content-visibility: auto` on Unsloth's chat message roots.
+/* POTENCY PROBE for `content-visibility: auto` on Unsloth's chat message roots. Installed through
+ * `SBENCH_EXTRA_INIT_SCRIPT`, reporting through `SBENCH_PAGE_CONSOLE`; needs `--password` (and
+ * `--password-b`, which defaults to `--password` and is wrong when two Unsloth instances are
+ * attached, since each mints its own bootstrap password). A run carrying this is a PROBE RUN and
+ * its payload is never scored: the probe forces layout on every sample, including the rendering it
+ * asks about.
+ * Without it the run dies on an HTTP 401 only after the browser has started. The invocation is
+ * SBENCH_EXTRA_INIT_SCRIPT=tests/studio/studiobench/arms/content_visibility_probe.js
+ * SBENCH_PAGE_CONSOLE="CVPOT " python -m tests.studio.studiobench --tier fast --ab probe
+ * --attach URL --attach-b URL --password ... --password-b ...; see the studiobench README.
  *
- * Installed through `SBENCH_EXTRA_INIT_SCRIPT`, reporting through `SBENCH_PAGE_CONSOLE`:
+ * WHY A PROBE AT ALL. A null from an arm that never fired measures the cascade, or a selector, or
+ * the fact that nothing was off screen -- a null already produced twice here. So nothing times
+ * anything; it answers only whether the browser genuinely skipped rendering an off-screen subtree.
+ * Three independent answers, weakest first: `cvAuto` (computed `auto`, proving only that the
+ * declaration won the cascade), `skipEvents` (`contentvisibilityautostatechange` with `skipped`,
+ * fired by the engine alone, so a non-zero count is proof), and `offUnrendered` (descendants with
+ * no layout boxes -- the route everybody reaches for first, which DOES NOT WORK; kept only so its
+ * zero is on the record. See `descendantBoxes`).
  *
- *     SBENCH_EXTRA_INIT_SCRIPT=tests/studio/studiobench/arms/content_visibility_probe.js \
- *     SBENCH_PAGE_CONSOLE="CVPOT " \
- *     python -m tests.studio.studiobench --tier fast --ab probe --out outputs/probe \
- *         --attach http://127.0.0.1:PORT --attach-b http://127.0.0.1:OTHER \
- *         --password "$(cat "$STUDIO_HOME_A/auth/.bootstrap_password")" \
- *         --password-b "$(cat "$STUDIO_HOME_B/auth/.bootstrap_password")"
+ * IT ALSO WATCHES THE SIZING TRAP. Size containment while skipping means a skipped root's height is
+ * its `contain-intrinsic-size`; with `auto` that is the LAST REMEMBERED SIZE (css-sizing-4 5.2),
+ * and a root never rendered without containment falls back to the <length>. Both wreck scroll
+ * geometry and they differ, so scrollHeight, the roots on the fallback and the roots on their
+ * PADDING ALONE (a remembered size of zero) are reported per sample, read against the unarmed side.
  *
- * The credential flags are spelled out rather than trailed off with an ellipsis. A probe run
- * drives a real Unsloth like every other command in the loop, and without `--password` it dies on
- * an HTTP 401 only after the browser has already started. See "You need an Unsloth, and you need
- * its password" in the studiobench README.
- *
- * ONE PASSWORD PER ARM when both arms are attached. Two separately booted Unsloth instances mint two
- * different bootstrap passwords, so reusing the first for the treatment is a 401 on the second
- * arm only, after the browser is up. `--password-b` defaults to `--password`, which is right
- * for the single-Unsloth case and wrong for this one.
- *
- * A run carrying this is a PROBE RUN and its payload is never scored: the probe forces layout on
- * every sample, and one of the things it forces is the very rendering it is asking about. See the
- * warning on `descendantBoxes`.
- *
- * WHY A PROBE AT ALL, AND WHY IT RUNS BEFORE ANY TIMING IS COLLECTED.
- *
- * A null from an arm that never fired is not a measurement of the mechanism; it is a measurement
- * of the cascade, or of a selector, or of the fact that nothing was ever off screen. This exact
- * null has already been produced twice in this codebase for `content-visibility`. So nothing here
- * times anything. It answers one question: did the browser genuinely skip rendering an off-screen
- * subtree, on the elements this arm targets, in the running app.
- *
- * THREE INDEPENDENT ANSWERS, WEAKEST FIRST.
- *
- *   1. cvAuto            elements whose COMPUTED content-visibility is `auto`. This proves the
- *                        declaration won the cascade and nothing more. An element can compute to
- *                        `auto` and be painted on every single frame because it never stopped
- *                        being relevant to the user.
- *   2. skipEvents        `contentvisibilityautostatechange` events with `skipped === true`. This
- *                        event is fired by the engine's own relevance machinery and by nothing
- *                        else: no stylesheet, no selector and no author code can produce one. A
- *                        non-zero count is proof that a subtree was locked and its rendering
- *                        skipped.
- *   3. offUnrendered     off-screen armed roots whose element descendants generate NO layout
- *                        boxes. This is the route everybody reaches for first and it DOES NOT
- *                        WORK for `content-visibility: auto`. It is kept, and reported, only so
- *                        that its zero is on the record next to a non-zero skip count rather than
- *                        being rediscovered. See `descendantBoxes`.
- *
- * IT ALSO WATCHES THE SIZING TRAP. `content-visibility: auto` imposes size containment while
- * skipping, so a skipped root's height is its `contain-intrinsic-size`. With the `auto` keyword
- * that is the LAST REMEMBERED SIZE (css-sizing-4 5.2, 5.2.1), and an element that has never been
- * rendered without size containment has none and falls back to the <length>. Both failure modes
- * wreck scroll geometry on a long thread and they are different, so the viewport's scrollHeight,
- * the count of roots sitting on the declared fallback, and the count sitting on their PADDING
- * ALONE (a remembered size of zero) are all reported every sample, to be read against the
- * unarmed side of the same session.
- *
- * OUT OF THE PAGE VIA THE CONSOLE. Unsloth ships `connect-src 'self'`, so a beacon to a collector
- * on another port is blocked by CSP before it is sent. The console is the one channel that costs
- * nothing and cannot be silently dropped.
+ * Reporting goes out via the console: Unsloth ships `connect-src \'self\'`, so a beacon to another
+ * port is blocked by CSP before it is sent.
  */
 (function () {
 	"use strict";
@@ -73,32 +39,25 @@
 	var SAMPLE_MS = 2000;
 	var MAX_ROOTS_SCANNED = 60;
 	var MAX_DESCENDANTS_PER_ROOT = 40;
-	/* Per role, the two heights a skipped root can land on, and they mean OPPOSITE things:
-	 *
-	 *   fallback  the declared `contain-intrinsic-size` length, used because no last remembered
-	 *             size exists yet. The arm is working as designed and the length is a guess.
-	 *   padding   the root's own padding and nothing else, which is a remembered size of ZERO,
-	 *             recorded while the root was mounted and still empty. That is the trap.
-	 *
-	 * They have to be told apart or the probe attributes one to the other, and on this app they
-	 * are close enough to collide: the user root's fallback is 60px against 40px of padding. So
-	 * each is matched against its OWN target height, the fallback first so that it wins ties, and
-	 * a root that is neither is counted as neither. A single `height <= 64` bucket put a user root
-	 * sitting exactly on its fallback into both counters at once. */
+	/* Per role, the two heights a skipped root can land on, meaning OPPOSITE things: `fallback` is the
+	 * declared `contain-intrinsic-size`, used because no last remembered size exists yet (working as
+	 * designed); `padding` is the root's own padding alone, a remembered size of ZERO recorded while
+	 * the root was mounted and empty, which is the trap. On this app they collide -- the user root's
+	 * fallback is 60px against 40px of padding -- so each is matched against its OWN target height,
+	 * fallback first so it wins ties, and a root that is neither is counted as neither. A single
+	 * `height <= 64` bucket put a user root sitting exactly on its fallback into both counters. */
 	var ROLE_PX = {
 		assistant: { fallback: 300, padding: 18 },
 		user: { fallback: 60, padding: 40 }
 	};
-	/* `getBoundingClientRect().height` is the BORDER BOX, so both targets carry the root's own
-	 * padding: an assistant root on its 300px fallback measures 318, and one whose remembered
-	 * size is zero measures 18. Comparing the rect against the bare declared length instead left
-	 * `fallbackBite` structurally pinned at zero, which reads as "the fallback is never used" no
-	 * matter what the browser did. */
+	/* `getBoundingClientRect().height` is the BORDER BOX, so both targets carry the root's padding: an
+	 * assistant root on its 300px fallback measures 318. Comparing against the bare declared length
+	 * pinned `fallbackBite` at zero, reading as "the fallback is never used". */
 	function targetHeight(px, which) {
 		return (which === "fallback" ? px.fallback : 0) + px.padding;
 	}
-	/* Half the gap between the two smallest interesting heights, so neither test can reach the
-	 * other's target. Sub-pixel layout means an exact equality test would miss. */
+	/* Half the gap between the two smallest interesting heights, so neither test can reach the other's
+	 * target; sub-pixel layout means an exact equality test would miss. */
 	var PX_EPS = 2;
 
 	if (typeof window === "undefined" || !window.document) {
@@ -112,8 +71,8 @@
 	var doc = window.document;
 	var watched = [];
 	var watchedSet = typeof WeakSet === "function" ? new WeakSet() : null;
-	/* element -> its record, so a sample can ask whether THIS root is currently skipped. Weak so
-	 * that a root the app has thrown away is not held alive by the probe. */
+	/* element -> its record, so a sample can ask whether THIS root is skipped. Weak so a discarded root
+	 * is not held alive by the probe. */
 	var recOf = typeof WeakMap === "function" ? new WeakMap() : null;
 	var ev = { stateChange: 0, skip: 0, unskip: 0, watchers: 0, listenerErrors: 0 };
 	var seq = 0;
@@ -156,8 +115,8 @@
 		return a.bottom > b.top && a.top < b.bottom && a.right > b.left && a.left < b.right;
 	}
 
-	/* Attached BEFORE anything is read, and exactly once per element. The event is the only
-	 * signal here that no amount of author CSS can fake. */
+	/* Attached BEFORE anything is read and exactly once per element: the one signal here that no author
+	 * CSS can fake. */
 	function watch(el) {
 		try {
 			if (watchedSet) {
@@ -196,13 +155,10 @@
 
 	/* How many of this element's first `cap` element descendants generate a layout box.
 	 *
-	 * A KNOWN FALSE NEGATIVE, KEPT ON PURPOSE. The reasoning is that a skipped subtree is not laid
-	 * out, so its descendants have no boxes. The reasoning is correct and the measurement is still
-	 * useless, because ASKING is what breaks it: `getClientRects()` on content inside a locked
-	 * subtree makes Chromium render that subtree in order to answer, so the probe unlocks exactly
-	 * what it came to observe. Measured on a 100K thread this returned 0 off-screen unrendered
-	 * roots while the event counter recorded 22 roots simultaneously in the skipped state. Read
-	 * alone it is a clean, confident, wrong "the arm did not fire". Use `ev_skip`. */
+	 * A KNOWN FALSE NEGATIVE, KEPT ON PURPOSE. A skipped subtree is not laid out, so its descendants
+	 * have no boxes -- but ASKING breaks it: `getClientRects()` inside a locked subtree makes Chromium
+	 * render it to answer. On a 100K thread this returned 0 off-screen unrendered roots while the event
+	 * counter recorded 22 roots simultaneously skipped. Use `ev_skip`. */
 	function descendantBoxes(el, cap) {
 		var kids;
 		try {
@@ -224,10 +180,8 @@
 		return n;
 	}
 
-	/* Whether the browser last told us THIS root is skipping its contents.
-	 *
-	 * `null` means no transition has been seen, which is not the same as "rendered" and must not
-	 * be read as either. Callers that care about the difference check for `true` explicitly. */
+	/* Whether the browser last told us THIS root is skipping its contents. `null` means no transition
+	 * has been seen, which is not "rendered"; callers that care check for `true` explicitly. */
 	function skippedState(el) {
 		var rec = null;
 		try {
@@ -309,20 +263,15 @@
 			var r = rect(el);
 			if (r) {
 				heights.push(Math.round(r.height));
-				/* Two MUTUALLY EXCLUSIVE buckets, in priority order. `content-visibility: auto`
-				 * imposes size containment while skipping, so a skipped root's height is its
-				 * padding plus its intrinsic size. Landing on the declared <length> means no
-				 * remembered size exists yet; landing on the padding alone means one exists and
-				 * it is ZERO, recorded while the root was mounted and still empty. The fallback
-				 * is tested first and wins ties, because a root sitting on its fallback is
-				 * behaving exactly as the declaration asks and must never be charged to the
+				/* Two MUTUALLY EXCLUSIVE buckets, in priority order: a skipped root's height is its padding plus
+				 * its intrinsic size, so landing on the declared <length> means no remembered size exists yet
+				 * and landing on the padding alone means one exists and is ZERO. The fallback is tested first
+				 * and wins ties, since such a root behaves exactly as declared and must not be charged to the
 				 * trap. Anything else is counted as neither. */
-				/* ONLY WHILE SKIPPED. `content-visibility: auto` computes to `auto` whether or
-				 * not the element is currently skipping, and size containment applies only while
-				 * it is. An armed root that is on screen has its ordinary rendered height, and if
-				 * that height happens to land within the tolerance of a role target it would be
-				 * charged to the remembered-size trap. Ordinary geometry must not be able to
-				 * masquerade as the finding. */
+				/* ONLY WHILE SKIPPED: `content-visibility: auto` computes to `auto` whether or not the element
+				 * is skipping, and size containment applies only while it is. An on-screen armed root has its
+				 * ordinary rendered height, which must not be able to land in a role target and masquerade as
+				 * the finding. */
 				var px = ROLE_PX[roleOf(el)];
 				if (cv === "auto" && px && skippedState(el) === true) {
 					if (Math.abs(r.height - targetHeight(px, "fallback")) <= PX_EPS) {
@@ -332,8 +281,8 @@
 					}
 				}
 			}
-			/* The geometry question is asked only of armed roots, and only of as many as can be
-			 * asked cheaply: this forces layout, and the probe must not become the load. */
+			/* Asked only of armed roots, and only of as many as can be asked cheaply: this forces layout, and
+			 * the probe must not become the load. */
 			if (cv === "auto" && r && vpRect && scanned < MAX_ROOTS_SCANNED) {
 				scanned += 1;
 				var hasOwnBox = r.width > 0 || r.height > 0;
@@ -366,13 +315,10 @@
 			}
 		}
 
-		/* CONNECTED roots only, and the detached ones are dropped as we go.
-		 *
-		 * `thread_reopen` is in the film: it tears the thread down and rebuilds it, so the old
-		 * roots leave the document. A detached root receives no further transitions, so one whose
-		 * last event said `skipped` would go on being counted in `skippedNow` for the rest of the
-		 * session, reporting roots as skipped that are not in the page at all. Pruning here also
-		 * stops `watched` growing a strong reference per root for the life of a long run. */
+		/* CONNECTED roots only, dropping the detached ones as we go. `thread_reopen` rebuilds the thread,
+		 * so old roots leave the document and receive no further transitions; one whose last event said
+		 * `skipped` would be counted in `skippedNow` for the rest of the session. Pruning also stops
+		 * `watched` growing a strong reference per root. */
 		var live = [];
 		for (i = 0; i < watched.length; i++) {
 			var wel = watched[i].el;
@@ -430,27 +376,20 @@
 
 	window.__cvPotSample = sample;
 
-	/* THE LISTENER HAS TO EXIST BEFORE THE ELEMENT'S FIRST TRANSITION, and polling cannot
-	 * guarantee that.
+	/* THE LISTENER HAS TO EXIST BEFORE THE ELEMENT'S FIRST TRANSITION, and polling cannot guarantee
+	 * that. `contentvisibilityautostatechange` fires on a CHANGE: a root inserted off screen becomes
+	 * skipped once and never changes again while the user stays put, so on a two-second tick every
+	 * root mounted inside the first tick emits its only event into a void and `ev_skip` stays zero --
+	 * the false NOT RUN this file exists to prevent. A whole thread can mount inside two seconds.
 	 *
-	 * `contentvisibilityautostatechange` fires on a CHANGE of state. A root that is inserted
-	 * off screen becomes skipped once, at its first lifecycle update, and then never changes
-	 * again while the user stays where they are. If the listener is attached on a two-second
-	 * tick, every root mounted and skipped inside that first tick emits its only event into a
-	 * void, `ev_skip` stays at zero, and the probe reports precisely the false NOT RUN it was
-	 * written to prevent. A whole thread can mount inside two seconds; a seeded one does.
+	 * So roots are adopted at INSERTION, from a MutationObserver installed before the app boots; its
+	 * callback runs in a microtask before the next lifecycle update. The interval is kept because a
+	 * root can acquire the property later without being re-inserted, and `adoptAll` is idempotent.
 	 *
-	 * So roots are adopted at INSERTION, from a MutationObserver installed before the app boots.
-	 * The observer callback runs in a microtask after the mutation and before the next lifecycle
-	 * update, which is early enough. The interval is kept, because a root can also acquire the
-	 * property later without being re-inserted, and `adoptAll` is idempotent.
-	 *
-	 * OBSERVE THE DOCUMENT, NOT `documentElement`. An init script is evaluated after the Document
-	 * exists but before the page's own scripts run, and at that instant the parser may not have
-	 * created the root element yet. `observe(null, ...)` throws, the catch below would swallow it,
-	 * and adoption would silently fall back to the two-second tick: the exact false zero this
-	 * whole arrangement exists to prevent, reintroduced by the fix for it. A Document node is a
-	 * valid target and it always exists here. */
+	 * OBSERVE THE DOCUMENT, NOT `documentElement`: an init script runs after the Document exists but
+	 * possibly before the parser creates the root element, and `observe(null, ...)` would throw into
+	 * the catch below, silently falling back to the tick -- the same false zero, reintroduced by the
+	 * fix for it. */
 	function adoptAll() {
 		var roots = all(MESSAGE_SELECTOR);
 		for (var i = 0; i < roots.length; i++) {
@@ -458,10 +397,9 @@
 		}
 	}
 
-	/* Only the ADDED NODES, never a document-wide re-scan. Streaming produces thousands of
-	 * mutations a second, and a `querySelectorAll` per mutation would make this probe the load
-	 * it is trying to observe. `watch` is idempotent, so a node reached twice costs a WeakSet
-	 * lookup. */
+	/* Only the ADDED NODES, never a document-wide re-scan: streaming produces thousands of mutations a
+	 * second and a `querySelectorAll` per mutation would make this probe the load. `watch` is
+	 * idempotent, so a node reached twice costs a WeakSet lookup. */
 	function adoptAdded(records) {
 		for (var i = 0; i < records.length; i++) {
 			var added = records[i].addedNodes;

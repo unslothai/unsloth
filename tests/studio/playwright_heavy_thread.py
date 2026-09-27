@@ -132,8 +132,8 @@ from _playwright_robust import (  # noqa: E402
 
 PORT = int(os.environ.get("SMOKE_PORT", "5215"))
 # Exported-but-empty counts as unset, else we skip the server and drive "" as the URL.
-# rstrip("/"): a trailing slash makes the anchored /api/ route regex below never match, silently
-# turning the stubbed fan-out back into live HTTP.
+# rstrip("/"): a trailing slash makes the anchored /api/ route regex below never match, silently turning the stubbed
+# fan-out back into live HTTP.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip().rstrip("/")
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
@@ -141,9 +141,8 @@ LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-heavy-thread"))
 OUT.mkdir(parents = True, exist_ok = True)
 
-# Characters of thread content, not messages. Sorted: the growth check reads the first and last
-# entries as smallest and largest, so an unsorted override would invert every ratio and report a
-# good run as measuring nothing.
+# Characters of thread content, not messages. Sorted: the growth check reads the first and last entries as smallest
+# and largest, so an unsorted override would invert every ratio and report a good run as measuring nothing.
 SIZES = sorted(
     int(n) for n in os.environ.get("SMOKE_HEAVY_CHARS", "25000,100000,300000").split(",")
 )
@@ -153,11 +152,11 @@ ENGINES = [
     if e.strip()
 ]
 # Every action set is run this many times on the seeded page and the table reports the MEDIAN.
-# The first repetition is systematically the slowest (cold Shiki cache, cold layout), which is
-# exactly why the headline is a median rather than a mean or a single shot.
+# The first repetition is systematically the slowest (cold Shiki cache, cold layout), which is exactly why the headline
+# is a median rather than a mean or a single shot.
 REPEATS = int(os.environ.get("SMOKE_HEAVY_REPEATS", "3"))
-# Chromium only, and off by default. Throttling is a CDP feature, so switching it on makes the
-# chromium column incomparable with the other two.
+# Chromium only, and off by default. Throttling is a CDP feature, so switching it on makes the chromium column
+# incomparable with the other two.
 CPU_THROTTLE_RATE = float(os.environ.get("SMOKE_CPU_THROTTLE", "1"))
 
 KEYSTROKES = int(os.environ.get("SMOKE_KEYSTROKES", "5"))
@@ -169,22 +168,22 @@ ACTION_TIMEOUT_MS = int(os.environ.get("SMOKE_ACTION_TIMEOUT_MS", "120000"))
 # action that never happened and nothing else, so it has to stay well above the slowest honest
 # measurement or a very slow open is reported as "never opened".
 SETTLE_TIMEOUT_MS = int(os.environ.get("SMOKE_SETTLE_TIMEOUT_MS", "120000"))
-# How long the highlighter has to stay still before a re-open counts as finished. Four polls of
-# the 250ms interval wait_for_highlighting_settled() uses, because that is what was MEASURED to be
-# needed: a gate that released after one 250ms lull released mid-rebuild. The grace is not charged
-# to the action -- quietUntilIdle() reports the time of the last activity, not of the timeout.
+# How long the highlighter has to stay still before a re-open counts as finished.
+# Four polls of the 250ms interval wait_for_highlighting_settled() uses, because that is what was MEASURED to be needed:
+# a gate that released after one 250ms lull released mid-rebuild. The grace is not charged to the action --
+# quietUntilIdle() reports the time of the last activity, not of the timeout.
 HIGHLIGHT_GRACE_MS = int(os.environ.get("SMOKE_HIGHLIGHT_GRACE_MS", "1000"))
-# How often the settle loop is allowed to count highlighted tokens. It is a document-wide query,
-# so per frame it would be an O(nodes) cost inside the region being timed, growing with the thread.
+# How often the settle loop is allowed to count highlighted tokens. It is a document-wide query, so per frame it would
+# be an O(nodes) cost inside the region being timed, growing with the thread.
 HIGHLIGHT_PROBE_MS = int(os.environ.get("SMOKE_HIGHLIGHT_PROBE_MS", "100"))
 ACTIONS = ("keystroke", "scroll", "jump", "menu", "delete", "reopen")
 
 # Installed into every page before anything else runs.
 #
 # The rAF wrapper COUNTS, it does not pump. Replacing rAF with a fixed timer -- which
-# playwright_chat_autoscroll.py does on purpose, because it counts frames -- would destroy every
-# time-to-paint number this file exists to read. The harness's own waits use the unwrapped
-# reference, so __rafCount stays a count of the page's frames rather than of this file's.
+# playwright_chat_autoscroll.py does on purpose, because it counts frames -- would destroy every time-to-paint number
+# this file exists to read. The harness's own waits use the unwrapped reference, so __rafCount stays a count of the
+# page's frames rather than of this file's.
 RECORDER_INIT = """
 (() => {
   const nativeRaf = window.requestAnimationFrame.bind(window);
@@ -404,9 +403,9 @@ def info(message: str) -> None:
 # Each one brackets itself with __hv.begin()/__hv.end(), so the recorder window is exactly the
 # action rather than the action plus a CDP round trip.
 
-# One character through the native value setter plus an input event: what the browser leaves
-# behind after a real keypress, and what React's controlled textarea reacts to. Resolved on the
-# second rAF, which is the frame that has painted it.
+# One character through the native value setter plus an input event: what the browser leaves behind after a real
+# keypress, and what React's controlled textarea reacts to. Resolved on the second rAF, which is the frame that has
+# painted it.
 KEYSTROKE_JS = """
 async (count) => {
   const api = window.__heavyThread;
@@ -487,11 +486,10 @@ async ([steps, stepPx, settleMs]) => {
 }
 """
 
-# A wheel gesture of fixed length traverses a fixed number of pixels, so it is comparable across
-# sizes -- and, measured, it turns out to be nearly free at any size, because the layout was
-# already done at mount. That is a real answer, but it is only half of "scrolling". The other half
-# is the jump: dragging the scrollbar or hitting Home moves the viewport to a region the compositor
-# has nothing for, which is what a user does when they go looking for an earlier answer.
+# A wheel gesture of fixed length traverses a fixed number of pixels, so it is comparable across sizes -- and, measured,
+# it turns out to be nearly free at any size, because the layout was already done at mount. That is a real answer, but
+# it is only half of "scrolling". The other half is the jump: dragging the scrollbar or hitting Home moves the viewport
+# to a region the compositor has nothing for, which is what a user does when they go looking for an earlier answer.
 JUMP_JS = """
 async (settleMs) => {
   const api = window.__heavyThread;
@@ -527,17 +525,18 @@ async (settleMs) => {
 }
 """
 
-# Radix portals the menu to document.body and puts the body on the modal layer, which is the
-# fan-out under suspicion. bodyPointerEvents proves the open really took that path.
+# Radix portals the menu to document.body and puts the body on the modal layer, which is the fan-out under suspicion.
+# bodyPointerEvents proves the open really took that path.
 #
-# The trigger opens on `pointerdown`, not on `click`: an element.click() leaves the menu shut and
-# the whole measurement silently reads zero. Hence the pointer pair.
+# The trigger opens on `pointerdown`, not on `click`: an element.click() leaves the menu shut and the whole measurement
+# silently reads zero. Hence the pointer pair.
 #
-# Everything this window scans, it scans a FIXED number of times: two observer queries, one per
-# portal mutation, and the two censuses below, once each. Measured on Chromium at 300K that is
-# 2.7ms of a 3208ms open+close, against 0.3ms of 375ms at 25K -- 0.08% of the number at both
-# ends, so the share does not grow with the axis. Removing them entirely was measured too, on one
-# page, alternating with the version above: 3389ms against 3394ms at 300K.
+# Everything this window scans, it scans a FIXED number of times: two observer queries, one per portal mutation, and the
+# two censuses below, once each.
+# Measured on Chromium at 300K that is 2.7ms of a 3208ms open+close, against 0.3ms of 375ms at 25K -- 0.08% of the
+# number at both ends, so the share does not grow with the axis.
+# Removing them entirely was measured too, on one page, alternating with the version above: 3389ms against 3394ms at
+# 300K.
 MENU_JS = """
 async (timeoutMs) => {
   const api = window.__heavyThread;
@@ -629,28 +628,25 @@ async (timeoutMs) => {
 }
 """
 
-# Leaving a thread and coming back. The runtime keeps the messages; the Thread subtree is torn
-# down and rebuilt, which is every markdown block, every Shiki fence and every action bar mounted
-# again from nothing. This is the action users describe as "it hangs when I click back into the
-# conversation", and it is the one that has no incremental path at all.
+# Leaving a thread and coming back. The runtime keeps the messages; the Thread subtree is torn down and rebuilt, which
+# is every markdown block, every Shiki fence and every action bar mounted again from nothing. This is the action users
+# describe as "it hangs when I click back into the conversation", and it is the one that has no incremental path at all.
 #
-# What comes back is the thread with its COMPLETED TOOL CARDS SHUT, because that is what the app
-# does: tool-ui-python.tsx mounts with `defaultOpen={isRunning}` and tool-ui-code-execution.tsx
-# initialises its `open` state from the same false flag, so a finished card remounts collapsed.
-# The panes are therefore in the census this cell prints and not in the rebuild it times, and the
-# gap was measured rather than assumed: 3999 DOM nodes expanded against 3981 rebuilt at 25K, and
-# 42873 against 42675 at 300K. That is 0.45% and 0.46% of the tree, the same fraction at both
-# ends, so it moves the ratio by nothing. Highlighted tokens are IDENTICAL in the two states
-# (3216 and 35086), because the Shiki-highlighted cell renders outside the collapsible by design
-# (#7165) and what is inside it is a plain <pre>: the settle probe below sees the same signal
-# either way. Expanding them inside the window would mean a document-wide querySelectorAll for
-# the triggers plus one synthetic click per card, 22 of them at 300K -- harness work that grows
-# with the axis, to time a state the app never rebuilds into.
+# What comes back is the thread with its COMPLETED TOOL CARDS SHUT, because that is what the app does:
+# tool-ui-python.tsx mounts with `defaultOpen={isRunning}` and tool-ui-code-execution.tsx initialises its `open` state
+# from the same false flag, so a finished card remounts collapsed.
+# The panes are therefore in the census this cell prints and not in the rebuild it times, and the gap was measured
+# rather than assumed: 3999 DOM nodes expanded against 3981 rebuilt at 25K, and 42873 against 42675 at 300K.
+# That is 0.45% and 0.46% of the tree, the same fraction at both ends, so it moves the ratio by nothing.
+# Highlighted tokens are IDENTICAL in the two states (3216 and 35086), because the Shiki-highlighted cell renders
+# outside the collapsible by design (#7165) and what is inside it is a plain <pre>: the settle probe below sees the same
+# signal either way. Expanding them inside the window would mean a document-wide querySelectorAll for the triggers plus
+# one synthetic click per card, 22 of them at 300K -- harness work that grows with the axis, to time a state the app
+# never rebuilds into.
 #
-# The two messageCount() calls this makes inside the window are the harness's whole footprint in
-# the number: measured on Chromium at 300K, 0.4ms of a 2292ms re-open, and 0.0ms of 363ms at 25K.
-# The loop cannot poll more often than that because the rebuild is one blocking commit, so the
-# rAF the loop waits on does not fire during it.
+# The two messageCount() calls this makes inside the window are the harness's whole footprint in the number: measured on
+# Chromium at 300K, 0.4ms of a 2292ms re-open, and 0.0ms of 363ms at 25K. The loop cannot poll more often than that
+# because the rebuild is one blocking commit, so the rAF the loop waits on does not fire during it.
 REOPEN_JS = """
 async ([timeoutMs, settleMs, graceMs, probeEveryMs]) => {
   const api = window.__heavyThread;
@@ -778,10 +774,9 @@ def cdp_counters(before: dict[str, float], after: dict[str, float]) -> dict[str,
 def long_task_summary(page) -> dict[str, float | None]:
     """CHROMIUM-ONLY. `supported` is the point: without it, an engine with no Long Tasks API
     reports zero jank in exactly the same shape as an engine that had none."""
-    # PerformanceObserver callbacks are delivered on a later task, so the entry for the long task
-    # at the tail of an action is not in the array yet. Yield once before reading, or the worst
-    # entry is silently dropped -- flakily, and most often at large sizes where that tail task is
-    # longest.
+    # PerformanceObserver callbacks are delivered on a later task, so the entry for the long task at the tail of an
+    # action is not in the array yet. Yield once before reading, or the worst entry is silently dropped -- flakily, and
+    # most often at large sizes where that tail task is longest.
     got = page.evaluate(
         """async () => {
             await new Promise((r) => setTimeout(r, 0));
@@ -844,15 +839,13 @@ def run_action(page, cdp, name: str, script: str, arg) -> dict:
 
 # The gate that says expandTools() really mounted the result panes.
 #
-# It reads codeExecutionPanes, which is `[data-slot="tool-fallback-content"] pre`, and NOT
-# collapsibleOutputs, which is the content element itself. Radix keeps that element in the tree
-# for its collapse animation, so it is present while the card is shut: measured on this tree at
-# 300K characters, immediately after seeding and BEFORE any expandTools() call, collapsibleOutputs
-# was already 22 of the 22 expected while codeExecutionPanes was 0. A `collapsibleOutputs >= n`
-# gate is therefore satisfied by a thread of closed cards -- it cannot fail, and it released the
-# highlighter wait below before the fences it exists to sequence had mounted. The pane's <pre> is
-# a child of that element, so it appears only once the card is really open: 0 collapsed, 22
-# expanded, at both sizes on all three engines.
+# It reads codeExecutionPanes, which is `[data-slot="tool-fallback-content"] pre`, and NOT collapsibleOutputs, which is
+# the content element itself. Radix keeps that element in the tree for its collapse animation, so it is present while
+# the card is shut: measured on this tree at 300K characters, immediately after seeding and BEFORE any expandTools()
+# call, collapsibleOutputs was already 22 of the 22 expected while codeExecutionPanes was 0. A `collapsibleOutputs >= n`
+# gate is therefore satisfied by a thread of closed cards -- it cannot fail, and it released the highlighter wait below
+# before the fences it exists to sequence had mounted. The pane's <pre> is a child of that element, so it appears only
+# once the card is really open: 0 collapsed, 22 expanded, at both sizes on all three engines.
 EXPANDED_PANES_GATE_JS = "(n) => window.__heavyThread.counts().codeExecutionPanes >= n"
 
 
@@ -879,11 +872,11 @@ def build_fixture(page) -> None:
 def one_repetition(page, cdp) -> dict[str, dict]:
     """The five scripted actions, once, in the order a user meets them."""
     rep: dict[str, dict] = {}
-    # The previous repetition ended by re-opening the thread, which throws away every highlighted
-    # fence and starts Shiki again, and by deleting a message, which the restore below puts back.
-    # Without this wait, repetitions 2 and 3 measure a thread that is still building itself:
-    # measured on Chromium at 300K, the scroll gesture read 667ms on the first repetition and
-    # 1100ms on the two that followed, and the difference was the re-highlighting, not the scroll.
+    # The previous repetition ended by re-opening the thread, which throws away every highlighted fence and starts Shiki
+    # again, and by deleting a message, which the restore below puts back.
+    # Without this wait, repetitions 2 and 3 measure a thread that is still building itself: measured on Chromium at
+    # 300K, the scroll gesture read 667ms on the first repetition and 1100ms on the two that followed, and the
+    # difference was the re-highlighting, not the scroll.
     build_fixture(page)
     rep["keystroke"] = run_action(page, cdp, "keystroke", KEYSTROKE_JS, KEYSTROKES)
     rep["scroll"] = run_action(
@@ -896,8 +889,8 @@ def one_repetition(page, cdp) -> dict[str, dict]:
     rep["jump"] = run_action(page, cdp, "jump", JUMP_JS, SETTLE_TIMEOUT_MS)
 
     # The action bar is hover-revealed, so put the pointer on the message before reaching for it.
-    # behavior: "instant" -- the viewport carries scroll-smooth, so the default animates and at
-    # large sizes leaves that animation in flight inside the menu counters.
+    # behavior: "instant" -- the viewport carries scroll-smooth, so the default animates and at large sizes leaves that
+    # animation in flight inside the menu counters.
     page.evaluate(
         """() => { const m = window.__heavyThread.lastAssistantMessage();
             if (m) m.scrollIntoView({ block: "center", behavior: "instant" }); }"""
@@ -942,8 +935,8 @@ def one_repetition(page, cdp) -> dict[str, dict]:
     return rep
 
 
-# Portable headline per action, plus the action's own DOM-observable duration. `floored` marks a
-# value clocked across a double rAF, which carries the ~33ms vsync floor.
+# Portable headline per action, plus the action's own DOM-observable duration. `floored` marks a value clocked across
+# a double rAF, which carries the ~33ms vsync floor.
 HEADLINE = {
     "keystroke": ("median_sample_ms", True),
     "scroll": ("gestureMs", False),
@@ -977,13 +970,13 @@ def summarise(reps: list[dict[str, dict]]) -> dict[str, dict]:
                     numeric_keys.add(key)
         for key in sorted(numeric_keys):
             merged[key] = median([r.get(key) for r in rows])
-        # Values that are not numbers are proofs the action really happened, not timings, so the
-        # last repetition's is kept verbatim rather than aggregated.
+        # Values that are not numbers are proofs the action really happened, not timings, so the last repetition's is
+        # kept verbatim rather than aggregated.
         for key in ("domText", "runtimeText", "bodyPointerEvents", "bodyPointerEventsAfterClose"):
             if key in rows[-1]:
                 merged[key] = rows[-1][key]
-        # The headline value from each repetition, unaggregated, so a median can be checked
-        # against the spread it came from rather than taken on trust.
+        # The headline value from each repetition, unaggregated, so a median can be checked against the spread it came
+        # from rather than taken on trust.
         merged["per_repetition"] = [r.get(HEADLINE[action][0]) for r in rows]
         out[action] = merged
     return out
@@ -993,21 +986,19 @@ def measure_cell(context, engine: str, size: int) -> dict:
     """Seed a fresh page to `size` characters of content and run the action set REPEATS times."""
     page = context.new_page()
     result: dict = {"chars_requested": size, "engine": engine}
-    # A request that escapes to the server, or a warning storm, is work this harness would be
-    # charging to the app once per message. Both are cleared after seeding, so what is asserted on
-    # is the measured actions rather than page load.
+    # A request that escapes to the server, or a warning storm, is work this harness would be charging to the app once
+    # per message. Both are cleared after seeding, so what is asserted on is the measured actions rather than page load.
     #
     # startswith, not `"/api/" in url`: vite serves the app's own source modules from paths like
-    # /src/features/chat/api/chat-api.ts, and a substring match counts dozens of those as network
-    # calls. Same trap the route regex is anchored to avoid.
+    # /src/features/chat/api/chat-api.ts, and a substring match counts dozens of those as network calls. Same trap the
+    # route regex is anchored to avoid.
     api_prefix = f"{BASE}/api/"
     stray_requests: list[str] = []
     console_warnings: list[str] = []
-    # Severity kept SEPARATE from the warning list. The allowance below exists for Gecko's two
-    # scroll-anchoring notices, which are the engine describing itself. An application exception
-    # is not chatter: a single console.error or an uncaught pageerror inside a measured
-    # interaction means the interaction did not do what the row says it did, and folding those
-    # into the same list let one pass under a "> 4" threshold and exit 0.
+    # Severity kept SEPARATE from the warning list. The allowance below exists for Gecko's two scroll-anchoring
+    # notices, which are the engine describing itself. An application exception is not chatter: a single console.error
+    # or an uncaught pageerror inside a measured interaction means the interaction did not do what the row says it did,
+    # and folding those into the same list let one pass under a "> 4" threshold and exit 0.
     console_errors: list[str] = []
     page.on(
         "request",
@@ -1032,29 +1023,29 @@ def measure_cell(context, engine: str, size: int) -> dict:
             cdp = context.new_cdp_session(page)
             cdp.send("Performance.enable")
 
-        # Seeding unthrottled and untimed: this measures interaction cost at a thread size, not
-        # the cost of building the thread.
+        # Seeding unthrottled and untimed: this measures interaction cost at a thread size, not the cost of building
+        # the thread.
         plan = page.evaluate("(n) => window.__heavyThread.seed(n)", size)
         result["plan"] = plan
-        # Single-selector gates. counts() walks every element in the document, so polling it per
-        # frame makes seeding superlinear in the thing being seeded.
+        # Single-selector gates. counts() walks every element in the document, so polling it per frame makes seeding
+        # superlinear in the thing being seeded.
         page.wait_for_function(
             "(n) => window.__heavyThread.messageCount() >= n",
             arg = plan["messages"],
             timeout = SEED_TIMEOUT_MS,
         )
-        # Radix unmounts collapsed content, so a thread of closed tool cards carries no result
-        # panes at all. Open them before the census: a user who has just watched those tools run
-        # is looking at them open, and the closed thread is a different fixture.
+        # Radix unmounts collapsed content, so a thread of closed tool cards carries no result panes at all. Open them
+        # before the census: a user who has just watched those tools run is looking at them open, and the closed thread
+        # is a different fixture.
         result["tool_triggers_expanded"] = page.evaluate("() => window.__heavyThread.expandTools()")
         page.wait_for_function(
             EXPANDED_PANES_GATE_JS,
             arg = max(1, result["tool_triggers_expanded"]),
             timeout = SEED_TIMEOUT_MS,
         )
-        # Shiki is async and per block, and a <pre> exists before it is highlighted, so counting
-        # code blocks gates nothing. Wait for the token count to stop moving instead: unfinished
-        # highlighting would otherwise land in the keystroke window, the first action measured.
+        # Shiki is async and per block, and a <pre> exists before it is highlighted, so counting code blocks gates
+        # nothing. Wait for the token count to stop moving instead: unfinished highlighting would otherwise land in the
+        # keystroke window, the first action measured.
         wait_for_highlighting_settled(page, SEED_TIMEOUT_MS)
         result["counts"] = page.evaluate("window.__heavyThread.counts()")
         result["viewport"] = page.evaluate("window.__heavyThread.viewportMetrics()")
@@ -1087,16 +1078,14 @@ def measure_cell(context, engine: str, size: int) -> dict:
         # Cumulative over seeding and every action: a liveness check, not attributable to any one.
         result["raf_callbacks"] = page.evaluate("window.__rafCount")
         result["stray_api_requests"] = len(stray_requests)
-        # The URLs, not only how many. A count alone says an interaction paid for a
-        # round trip without saying which one, so the failure names a symptom and
-        # nothing else -- the reader has to bisect the frontend to learn what the
-        # harness already knew and threw away. Deduplicated and capped: the point is
-        # to name the endpoints, and a per-message request would otherwise print
-        # hundreds of copies of one line.
+        # The URLs, not only how many. A count alone says an interaction paid for a round trip without saying which
+        # one, so the failure names a symptom and nothing else -- the reader has to bisect the frontend to learn what
+        # the harness already knew and threw away. Deduplicated and capped: the point is to name the endpoints, and a
+        # per-message request would otherwise print hundreds of copies of one line.
         result["stray_api_urls"] = sorted(set(stray_requests))[:8]
-        # Answered inside the page by the smoke entry's allowlist. Reported rather than hidden:
-        # these cost no round trip, but they are real requests the app makes and the number
-        # should not vanish just because the harness declines to pay for them.
+        # Answered inside the page by the smoke entry's allowlist. Reported rather than hidden: these cost no round
+        # trip, but they are real requests the app makes and the number should not vanish just because the harness
+        # declines to pay for them.
         result["stubbed_api_requests"] = len(page.evaluate("window.__stubbedApi || []"))
         result["console_warnings"] = len(console_warnings)
         result["first_console_warning"] = console_warnings[0] if console_warnings else "-"
@@ -1122,16 +1111,16 @@ def run() -> dict:
             info(f"engine {engine}")
             launcher = getattr(p, engine)
             kwargs = {"headless": os.environ.get("SMOKE_HEADLESS", "1") == "1"}
-            # Chromium-only flags. Passing them to Firefox or WebKit is not "ignored", it is a
-            # launch failure, which would read as "this engine is unavailable".
+            # Chromium-only flags. Passing them to Firefox or WebKit is not "ignored", it is a launch failure, which
+            # would read as "this engine is unavailable".
             if engine == "chromium":
                 kwargs["args"] = chromium_launch_args()
             browser = launcher.launch(**kwargs)
             results["by_engine"][engine] = {"version": browser.version, "by_size": {}}
             context = browser.new_context(viewport = {"width": 1440, "height": 900})
             context.add_init_script(RECORDER_INIT)
-            # Anchored at the origin so it cannot swallow vite's own module URLs, which live
-            # under src/features/**/api/ and would otherwise match a bare "/api/" pattern.
+            # Anchored at the origin so it cannot swallow vite's own module URLs, which live under src/features/**/api/
+            # and would otherwise match a bare "/api/" pattern.
             context.route(
                 re.compile(rf"^{re.escape(BASE)}/api/"),
                 lambda route: route.fulfill(
@@ -1142,11 +1131,10 @@ def run() -> dict:
             )
             for size in SIZES:
                 info(f"measuring {engine} at {size} chars")
-                # A renderer that dies mid-cell used to take the whole matrix with it: nine cells
-                # of work thrown away because one WebKit page ran out of memory at 300K on a
-                # loaded machine. The cell is recorded as crashed, the run continues, and
-                # harness_failures reports it -- a crash is still a failure, it is just no longer
-                # a failure that destroys the eight measurements that did work.
+                # A renderer that dies mid-cell used to take the whole matrix with it: nine cells of work thrown away
+                # because one WebKit page ran out of memory at 300K on a loaded machine. The cell is recorded as
+                # crashed, the run continues, and harness_failures reports it -- a crash is still a failure, it is just
+                # no longer a failure that destroys the eight measurements that did work.
                 try:
                     cell = measure_cell(context, engine, size)
                 except Exception as exc:  # noqa: BLE001 - the message is the whole point
@@ -1162,11 +1150,11 @@ def run() -> dict:
     return results
 
 
-# Every recorded metric appears here. That is the rule the harnesses in this directory are held
-# to: a metric that is recorded and never read is how one goes false-green, and
-# tests/studio/test_heavy_thread_harness_contract.py fails if anything recorded below is missing.
-# CHROMIUM-ONLY rows are labelled in their own name, because off Chromium they print `-` and a
-# `-` that means "not supported here" must not read as "zero".
+# Every recorded metric appears here.
+# That is the rule the harnesses in this directory are held to: a metric that is recorded and never read is how one goes
+# false-green, and tests/studio/test_heavy_thread_harness_contract.py fails if anything recorded below is missing.
+# CHROMIUM-ONLY rows are labelled in their own name, because off Chromium they print `-` and a `-` that means "not
+# supported here" must not read as "zero".
 def _action(action: str, key: str):
     return lambda r: r["actions"][action][key]
 
@@ -1202,9 +1190,9 @@ TABLE_ROWS = (
     ("messages rendered", lambda r: r["counts"]["messages"]),
     ("dom nodes", lambda r: r["counts"]["domNodes"]),
     ("code blocks", lambda r: r["counts"]["codeBlocks"]),
-    # Side by side deliberately: `code chars` is what the fixture built and does not move when a
-    # fence defers, while `highlighted tokens` and `deferred fences` are how much of it the
-    # viewport reached. Only the first is a statement about the fixture.
+    # Side by side deliberately: `code chars` is what the fixture built and does not move when a fence defers, while
+    # `highlighted tokens` and `deferred fences` are how much of it the viewport reached. Only the first is a statement
+    # about the fixture.
     ("code chars", lambda r: r["counts"].get("codeChars", 0)),
     ("highlighted tokens", lambda r: r["counts"]["highlightedTokens"]),
     ("fence blocks", lambda r: r["counts"].get("fenceBlocks", 0)),
@@ -1310,8 +1298,8 @@ def print_table(results: dict) -> None:
                 cells.append("-")
         rows.append((name, cells))
     label_width = max(len(name) for name, _ in rows) + 2
-    # From the widest cell, not a constant: a fixed width silently runs the columns together on
-    # the one row that overflows it, which is the row you were reading.
+    # From the widest cell, not a constant: a fixed width silently runs the columns together on the one row that
+    # overflows it, which is the row you were reading.
     headers = [f"{engine[:4]}/{int(size) // 1000}K" for engine, size in columns]
     cell_width = max([len(c) for _, cells in rows for c in cells] + [len(h) for h in headers]) + 2
     header = "".ljust(label_width) + "".join(h.rjust(cell_width) for h in headers)
@@ -1323,30 +1311,29 @@ def print_table(results: dict) -> None:
 
 # The double-rAF waits inside `reopen ms` that are OBSERVATION rather than latency.
 #
-# Exactly one. Reopening is driven by a React state update, so the count check immediately after
-# openThread() always still sees the unmounted tree, and the loop always pays one __nextPaint()
-# before a completed reopen can be seen at all. That wait is the instrument, not the application,
-# and it comes out of the number.
+# Exactly one. Reopening is driven by a React state update, so the count check immediately after openThread() always
+# still sees the unmounted tree, and the loop always pays one __nextPaint() before a completed reopen can be seen at
+# all. That wait is the instrument, not the application, and it comes out of the number.
 #
-# Every FURTHER wait the loop pays is not overhead. The poll runs in the same rAF queue as the
-# application's own commits, so on a build that brings a long thread back over several animation
-# frames those waits ARE the application mounting rows, and the time inside them is real
-# convergence latency that a reader waits through.
+# Every FURTHER wait the loop pays is not overhead. The poll runs in the same rAF queue as the application's own
+# commits, so on a build that brings a long thread back over several animation frames those waits ARE the application
+# mounting rows, and the time inside them is real convergence latency that a reader waits through.
 #
-# This is why the count is a constant and not `_floor_from("reopen", "paintWaits")`. The measured
-# count is 1 on a build that rebuilds in one commit and rises with thread size on one that mounts
-# progressively (1 at 25K, 8 at 100K, 24 at 300K on a 220-message fixture), so subtracting all of
-# them removed ~33ms from one arm's 300K cell and ~800ms from the other's. That is asymmetric
-# between the two arms of a comparison AND grows with the axis being varied: it reported a reopen
-# curve that rises faster than the single-commit build's (7.60x against 7.08x from 25K to 300K) as
-# one that rises slower (5.07x), which is the opposite sign. A floor exists to remove a CONSTANT
-# the instrument adds, and the moment it tracks the thing being measured it is no longer a floor.
+# This is why the count is a constant and not `_floor_from("reopen", "paintWaits")`.
+# The measured count is 1 on a build that rebuilds in one commit and rises with thread size on one that mounts
+# progressively (1 at 25K, 8 at 100K, 24 at 300K on a 220-message fixture), so subtracting all of them removed ~33ms
+# from one arm's 300K cell and ~800ms from the other's.
+# That is asymmetric between the two arms of a comparison AND grows with the axis being varied: it reported a reopen
+# curve that rises faster than the single-commit build's (7.60x against 7.08x from 25K to 300K) as one that rises slower
+# (5.07x), which is the opposite sign.
+# A floor exists to remove a CONSTANT the instrument adds, and the moment it tracks the thing being measured it is no
+# longer a floor.
 REOPEN_OBSERVATION_FLOOR = 1
-# `<action> wall ms` spans the whole recorder window and normally takes the window's measured
-# `paint_waits`, because for every other action those waits are harness-imposed idle time between
-# driven steps. Reopen is the exception for the reason above: its window holds the close loop and
-# the reopen loop, and on a progressive-mount build the reopen loop's waits are the application's
-# commit frames. The observation floors in that window are the two terminal waits, one per loop.
+# `<action> wall ms` spans the whole recorder window and normally takes the window's measured `paint_waits`, because
+# for every other action those waits are harness-imposed idle time between driven steps. Reopen is the exception for
+# the reason above: its window holds the close loop and the reopen loop, and on a progressive-mount build the reopen
+# loop's waits are the application's commit frames. The observation floors in that window are the two terminal waits,
+# one per loop.
 WALL_FLOOR_OVERRIDES = {"reopen": 1 + REOPEN_OBSERVATION_FLOOR}
 
 
@@ -1357,39 +1344,37 @@ def _wall_floor(action: str):
     return _floor_from(action, "paint_waits") if override is None else override
 
 
-# Growth axes: the whole point of the harness is that these rise with content. The third field is
-# HOW MANY double-rAF waits the metric is clocked across; each one carries its own ~33ms vsync
-# floor, and left in, that floor compresses every ratio towards 1 and lets a real regression sit
-# under the threshold. `menu open+close ms` is the sum of two independently floored timings, so it
-# carries two.
+# Growth axes: the whole point of the harness is that these rise with content. The third field is HOW MANY double-rAF
+# waits the metric is clocked across; each one carries its own ~33ms vsync floor, and left in, that floor compresses
+# every ratio towards 1 and lets a real regression sit under the threshold. `menu open+close ms` is the sum of two
+# independently floored timings, so it carries two.
 GROWTH_AXES = tuple(
     [(f"{a} longest stall ms", _action(a, "longest_stall_ms"), 0) for a in ACTIONS]
     + [(f"{a} worst frame ms", _action(a, "worst_frame_ms"), 0) for a in ACTIONS]
     + [(f"{a} frames over 33ms", _action(a, "frames_over_33"), 0) for a in ACTIONS]
-    # The floor is READ from the row, not declared: every one of these windows crosses a
-    # different number of mandatory double-rAF waits, and declaring 0 for all of them left
-    # roughly `paint_waits * paint_floor_ms` of constant baseline in both ends of the ratio.
-    # MENU_JS is the clearest case: it opens the recorder before opening the menu and closes it
-    # after closing it, so it crosses the same two waits `menu open+close ms` correctly declares,
-    # and `menu wall ms` was declaring none of them. The one exception is in WALL_FLOOR_OVERRIDES:
-    # reading the row is only right while the waits in the window are the harness idling between
-    # driven steps, and reopen's are not.
+    # The floor is READ from the row, not declared: every one of these windows crosses a different number of mandatory
+    # double-rAF waits, and declaring 0 for all of them left roughly `paint_waits * paint_floor_ms` of constant baseline
+    # in both ends of the ratio.
+    # MENU_JS is the clearest case: it opens the recorder before opening the menu and closes it after closing it, so it
+    # crosses the same two waits `menu open+close ms` correctly declares, and `menu wall ms` was declaring none of them.
+    # The one exception is in WALL_FLOOR_OVERRIDES: reading the row is only right while the waits in the window are the
+    # harness idling between driven steps, and reopen's are not.
     + [(f"{a} wall ms", _action(a, "wall_ms"), _wall_floor(a)) for a in ACTIONS]
     + [
-        # The rule for the entries below: an axis measured from `__hv.startedAt` spans the WHOLE
-        # recorder window, so it carries every double-rAF wait in it and takes the measured
-        # `paint_waits`. An axis measured from a later mark carries only its own and keeps a
-        # declared count. Both kinds are here on purpose and the difference is not cosmetic.
+        # The rule for the entries below: an axis measured from `__hv.startedAt` spans the WHOLE recorder window, so it
+        # carries every double-rAF wait in it and takes the measured `paint_waits`. An axis measured from a later mark
+        # carries only its own and keeps a declared count. Both kinds are here on purpose and the difference is not
+        # cosmetic.
         #
-        # gestureMs is `performance.now() - __hv.startedAt`, and BOTH settle figures come from
-        # `quiet()` / `quietUntilIdle()`, which return `... - this.startedAt` rather than the time
-        # they themselves took. All three therefore contained the scroll's twenty paint waits and
-        # declared none of them, leaving ~20 vsync floors in both ends of those ratios, which
-        # compresses them hard enough to report a real size-dependent regression as flat.
+        # gestureMs is `performance.now() - __hv.startedAt`, and BOTH settle figures come from `quiet()` /
+        # `quietUntilIdle()`, which return `... - this.startedAt` rather than the time they themselves took. All three
+        # therefore contained the scroll's twenty paint waits and declared none of them, leaving ~20 vsync floors in
+        # both ends of those ratios, which compresses them hard enough to report a real size-dependent regression as
+        # flat.
         #
-        # Counted at runtime rather than written in: the twenty come from a LOOP, so the literal
-        # `__nextPaint()` count in the source is one, and any hand-declared number here would have
-        # been wrong in the same way the old zero was.
+        # Counted at runtime rather than written in: the twenty come from a LOOP, so the literal `__nextPaint()` count
+        # in the source is one, and any hand-declared number here would have been wrong in the same way the old zero
+        # was.
         ("keystroke median ms", _action("keystroke", "median_sample_ms"), 1),
         ("scroll gesture ms", _action("scroll", "gestureMs"), _floor_from("scroll", "paint_waits")),
         ("scroll settle ms", _action("scroll", "settleMs"), _floor_from("scroll", "paint_waits")),
@@ -1398,9 +1383,9 @@ GROWTH_AXES = tuple(
         # the number never contained.
         ("jump painted ms", _action("jump", "paintedMs"), 1),
         ("jump settle ms", _action("jump", "settleMs"), _floor_from("jump", "paint_waits")),
-        # Also NOT paint_waits: MENU_JS awaits no paint at all, and its two floors come from
-        # settle() reading the pre-MutationObserver state on entry, once for open and once for
-        # close. The window count is zero here and would remove a floor that is really there.
+        # Also NOT paint_waits: MENU_JS awaits no paint at all, and its two floors come from settle() reading the
+        # pre-MutationObserver state on entry, once for open and once for close. The window count is zero here and would
+        # remove a floor that is really there.
         ("menu open+close ms", _action("menu", "open_close_ms"), 2),
         ("delete ms", _action("delete", "ms"), 1),
         # The OBSERVATION floor only, and deliberately a constant rather than the measured
@@ -1411,9 +1396,8 @@ GROWTH_AXES = tuple(
         ("reopen ms", _action("reopen", "ms"), REOPEN_OBSERVATION_FLOOR),
     ]
 )
-# A ratio at or below this from the smallest size to the largest means the axis did not respond
-# to twelve times the content. That is not a flat curve, it is an axis that is not measuring the
-# thing being varied.
+# A ratio at or below this from the smallest size to the largest means the axis did not respond to twelve times the
+# content. That is not a flat curve, it is an axis that is not measuring the thing being varied.
 DISCRIMINATION_RATIO = float(os.environ.get("SMOKE_DISCRIMINATION_RATIO", "1.5"))
 # What a counter that starts at zero has to REACH before its rise counts as an answer. A ratio
 # cannot be formed against zero, so DISCRIMINATION_RATIO does not apply to these axes at all and
@@ -1422,18 +1406,16 @@ DISCRIMINATION_RATIO = float(os.environ.get("SMOKE_DISCRIMINATION_RATIO", "1.5")
 # what an unloaded machine produces on its own, and the CI configuration runs a single repetition
 # so there is no median to average that away.
 ZERO_BASED_MIN_RISE = int(os.environ.get("SMOKE_ZERO_BASED_MIN_RISE", "5"))
-# Which axes are COUNTS. Stated, not inferred. The zero branch below used to key on `floored`,
-# which only identifies a timing that had a paint floor subtracted; an UNFLOORED timing such as
-# `longest stall ms` or `worst frame ms` is zero at the smallest size whenever the action ends
-# before the recorder produces a sample, and it was then treated as a dropped-frame counter, so a
-# noisy 5ms at the largest size read as a rise of 5 and discriminated. `harness_failures` accepts
-# any one discriminating axis, so that stray millisecond could carry the run.
+# Which axes are COUNTS. Stated, not inferred. The zero branch below used to key on `floored`, which only identifies a
+# timing that had a paint floor subtracted; an UNFLOORED timing such as `longest stall ms` or `worst frame ms` is zero
+# at the smallest size whenever the action ends before the recorder produces a sample, and it was then treated as a
+# dropped-frame counter, so a noisy 5ms at the largest size read as a rise of 5 and discriminated.
+# `harness_failures` accepts any one discriminating axis, so that stray millisecond could carry the run.
 #
 # A count is a count of events. Only `frames over 33ms` is one; every other axis is milliseconds.
 COUNTER_AXES = frozenset(f"{a} frames over 33ms" for a in ACTIONS)
-# Engine chatter is tolerated up to this many warnings per size. Gecko's two scroll-anchoring
-# notices are what this number exists for; anything the app emits per message would be two orders
-# of magnitude above it at 220 messages.
+# Engine chatter is tolerated up to this many warnings per size. Gecko's two scroll-anchoring notices are what this
+# number exists for; anything the app emits per message would be two orders of magnitude above it at 220 messages.
 CONSOLE_WARNING_ALLOWANCE = int(os.environ.get("SMOKE_CONSOLE_WARNING_ALLOWANCE", "4"))
 
 
@@ -1445,10 +1427,10 @@ def resolve_floor(floored, row: dict) -> float:
     not JSON serializable`, which failed every complete run AFTER all the measurements were taken.
     Nothing in the unit tests caught it because none of them serialise the report.
     """
-    # NOT int(). `summarise` takes a median across repetitions, so an even-repetition run whose
-    # repetitions paid 1 and 2 waits reports 1.5, and truncating that to 1 left half a vsync floor
-    # in the wall-clock axis and published a distorted ratio. The documented two-repetition
-    # configurations are exactly the ones that produce halves. A float serialises fine.
+    # NOT int(). `summarise` takes a median across repetitions, so an even-repetition run whose repetitions paid 1 and 2
+    # waits reports 1.5, and truncating that to 1 left half a vsync floor in the wall-clock axis and published a
+    # distorted ratio. The documented two-repetition configurations are exactly the ones that produce halves. A float
+    # serialises fine.
     value = floored(row) if callable(floored) else floored
     return value if isinstance(value, (int, float)) else 0
 
@@ -1492,8 +1474,8 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
         per_axis: dict[str, dict] = {}
         for name, pick, floored in GROWTH_AXES:
             small, large = growth(cells, pick, floored, results["sizes"])
-            # Resolved here, once, so what lands in the JSON is the count that was actually
-            # subtracted at each end rather than the thing that computes it.
+            # Resolved here, once, so what lands in the JSON is the count that was actually subtracted at each end
+            # rather than the thing that computes it.
             floor_counts = [
                 resolve_floor(floored, cells.get(str(size), {}))
                 for size in (results["sizes"][0], results["sizes"][-1])
@@ -1508,13 +1490,12 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                 }
                 continue
             if small <= 0:
-                # A COUNT that is 0 at the smallest size and 4 at the largest has no ratio and has
-                # still answered the question, so it counts as discriminating when it really rose.
+                # A COUNT that is 0 at the smallest size and 4 at the largest has no ratio and has still answered the
+                # question, so it counts as discriminating when it really rose.
                 #
-                # A TIMING does not get that credit. `floored` means the value had the ~33ms vsync
-                # floor subtracted from it, so a zero or negative here says the action resolved at
-                # or under one frame at the smallest size, which is a metric with no room to move
-                # rather than a metric that grew from nothing.
+                # A TIMING does not get that credit. `floored` means the value had the ~33ms vsync floor subtracted
+                # from it, so a zero or negative here says the action resolved at or under one frame at the smallest
+                # size, which is a metric with no room to move rather than a metric that grew from nothing.
                 if floored:
                     per_axis[name] = {
                         "small": small,
@@ -1533,9 +1514,9 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                 # `harness_failures` accepts any ONE discriminating axis, so that stray frame
                 # could carry the whole verdict while every latency axis was flat or broken.
                 if name not in COUNTER_AXES:
-                    # A timing that reads zero at the smallest size did not "grow from nothing",
-                    # it resolved below what the recorder can see. ZERO_BASED_MIN_RISE is a count
-                    # of events and means nothing applied to milliseconds.
+                    # A timing that reads zero at the smallest size did not "grow from nothing", it resolved below what
+                    # the recorder can see.
+                    # ZERO_BASED_MIN_RISE is a count of events and means nothing applied to milliseconds.
                     per_axis[name] = {
                         "small": small,
                         "large": large,
@@ -1568,12 +1549,11 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                 }
                 continue
             ratio = round(large / small, 2)
-            # The noise floor applies to a counter whatever its baseline. A dropped-frame count
-            # going 1 -> 2 is a ratio of 2.0 and cleared DISCRIMINATION_RATIO, and since
-            # harness_failures accepts any single discriminating axis, that one incidental frame
-            # could carry the CI smoke while every latency axis was flat. A ratio is only
-            # meaningful once there are enough events for the ratio to be about the content
-            # rather than about one frame either way.
+            # The noise floor applies to a counter whatever its baseline. A dropped-frame count going 1 -> 2 is a ratio
+            # of 2.0 and cleared DISCRIMINATION_RATIO, and since harness_failures accepts any single discriminating
+            # axis, that one incidental frame could carry the CI smoke while every latency axis was flat. A ratio is
+            # only meaningful once there are enough events for the ratio to be about the content rather than about one
+            # frame either way.
             noisy_counter = name in COUNTER_AXES and large < ZERO_BASED_MIN_RISE
             per_axis[name] = {
                 "small": small,
@@ -1617,14 +1597,13 @@ def print_growth(results: dict, report: dict) -> None:
 
 
 # The declared double-rAF count for each axis whose action reports how many it actually paid.
-# GROWTH_AXES holds the declaration; the action holds the observation; a harness that subtracts a
-# floor the metric never waited out invents time it never spent. Only reopen reports its waits
-# today, so only reopen is checkable here; the entry exists so adding a counter to another action
-# wires it in by name.
+# GROWTH_AXES holds the declaration; the action holds the observation; a harness that subtracts a floor the metric
+# never waited out invents time it never spent. Only reopen reports its waits today, so only reopen is checkable here;
+# the entry exists so adding a counter to another action wires it in by name.
 #
-# The check is a LOWER BOUND, not equality. Paying more waits than are subtracted is the normal
-# state of a progressive mount and is not a fault: those extra waits are the application
-# committing rows, and REOPEN_OBSERVATION_FLOOR keeps them in the number on purpose.
+# The check is a LOWER BOUND, not equality. Paying more waits than are subtracted is the normal state of a progressive
+# mount and is not a fault: those extra waits are the application committing rows, and REOPEN_OBSERVATION_FLOOR keeps
+# them in the number on purpose.
 # axis name in GROWTH_AXES -> (action, the field on that action reporting its own wait count)
 FLOOR_COUNTERS = {"reopen ms": ("reopen", "paintWaits")}
 
@@ -1652,9 +1631,9 @@ def floor_declaration_problems(results: dict) -> list[str]:
                 continue
             for axis_name, (action, counter) in FLOOR_COUNTERS.items():
                 measured = row.get("actions", {}).get(action) or {}
-                # An action that did not run is already reported by harness_failures, with the
-                # reason. Reporting it again here as an unverified floor would be a second
-                # failure for one cause, and would bury the real one.
+                # An action that did not run is already reported by harness_failures, with the reason. Reporting it
+                # again here as an unverified floor would be a second failure for one cause, and would bury the real
+                # one.
                 if not measured.get("ran", True):
                     continue
                 observed = measured.get(counter)
@@ -1695,9 +1674,9 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                 continue
             counts = row["counts"]
             plan = row["plan"]
-            # A request reaching the server is a round trip to another process inside a region
-            # being timed, once per message. A warning storm is the same cost via the console
-            # channel. Both scale with content, so both would forge the curve.
+            # A request reaching the server is a round trip to another process inside a region being timed, once per
+            # message. A warning storm is the same cost via the console channel. Both scale with content, so both would
+            # forge the curve.
             if row["stray_api_requests"]:
                 urls = row.get("stray_api_urls") or []
                 named = ", ".join(urls) if urls else "(urls not recorded)"
@@ -1706,20 +1685,18 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                     f"during the measured actions; the timings include a round trip per "
                     f"request. Endpoints: {named}"
                 )
-            # Console output from inside a timed region is serialised over the debugging channel,
-            # so a warning the app emits once per message would both cost time and grow like the
-            # signal. The instrument for that is an ABSOLUTE cap, not a growth check: at 220
-            # messages a per-message warning is in the hundreds, while what an engine says about
-            # itself is a handful. Firefox 153 emits exactly two "Scroll anchoring was disabled
-            # in a scroll container" notices once the container is large enough, which is zero at
-            # 25K and two at both 100K and 300K -- a growth check fails on that and would leave
-            # this harness unable to report a Gecko number at all. The count and the first
-            # message are printed per size either way, so a reader can see what was tolerated.
-            # NO allowance. The paragraph above is about engine chatter, which is the engine
-            # describing itself; an application exception is not that. One console.error or one
-            # uncaught pageerror inside a measured interaction means the interaction did not do
-            # what the row says it did, so its timing is not a measurement of the labelled thing.
-            # Sharing one list with the warnings let exactly one such error sit under the "> 4"
+            # Console output from inside a timed region is serialised over the debugging channel, so a warning the app
+            # emits once per message would both cost time and grow like the signal.
+            # The instrument for that is an ABSOLUTE cap, not a growth check: at 220 messages a per-message warning is
+            # in the hundreds, while what an engine says about itself is a handful.
+            # Firefox 153 emits exactly two "Scroll anchoring was disabled in a scroll container" notices once the
+            # container is large enough, which is zero at 25K and two at both 100K and 300K -- a growth check fails on
+            # that and would leave this harness unable to report a Gecko number at all. The count and the first message
+            # are printed per size either way, so a reader can see what was tolerated.
+            # NO allowance. The paragraph above is about engine chatter, which is the engine describing itself; an
+            # application exception is not that. One console.error or one uncaught pageerror inside a measured
+            # interaction means the interaction did not do what the row says it did, so its timing is not a measurement
+            # of the labelled thing. Sharing one list with the warnings let exactly one such error sit under the "> 4"
             # threshold and the run exit 0 with the timings published.
             for phase, count, first in (
                 ("seeding", row.get("seed_console_errors", 0), row.get("first_seed_error", "-")),
@@ -1751,15 +1728,13 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                     f"{where} rendered {counts['messages']} of {plan['messages']} messages; the "
                     "seed did not land"
                 )
-            # The fixture IS the measurement. A thread of plain paragraphs would be cheap for
-            # reasons the app is not, so every kind the user report names has to be on screen,
-            # in proportion, at every size.
+            # The fixture IS the measurement. A thread of plain paragraphs would be cheap for reasons the app is not,
+            # so every kind the user report names has to be on screen, in proportion, at every size.
             #
-            # Counted against the page's own per-cycle expectation rather than against zero. The
-            # renderer drops content silently in more than one place -- an image part whose data
-            # URL is not base64 PNG/JPEG/GIF/WebP is discarded with a console.warn -- and a
-            # fixture that has quietly lost a whole kind still produces a rising curve, of
-            # something else.
+            # Counted against the page's own per-cycle expectation rather than against zero. The renderer drops content
+            # silently in more than one place -- an image part whose data URL is not base64 PNG/JPEG/GIF/WebP is
+            # discarded with a console.warn -- and a fixture that has quietly lost a whole kind still produces a rising
+            # curve, of something else.
             for key, per_cycle in plan["expectedPerCycle"].items():
                 want = per_cycle * plan["cycles"]
                 if counts.get(key, 0) < want:
@@ -1772,12 +1747,11 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                 failures.append(f"{where} highlighted nothing; Shiki never ran")
             # DEFERRAL IS EXPECTED. AN UNHIGHLIGHTED MOUNTED FENCE IS NOT.
             #
-            # A floor on total tokens no longer separates "settled" from "the reader is not looking
-            # at most of the code", so ask per block: a fence is either a deferred shell, which is
-            # a named state with an attribute, or highlighted. The third state -- mounted, not
-            # deferred, still on streamdown's fallback -- lasts a frame while the highlighter's
-            # passive effect runs, and a settled thread must hold none. Stricter than the total it
-            # replaces, which one stuck block passed as long as the others made the count up.
+            # A floor on total tokens no longer separates "settled" from "the reader is not looking at most of the
+            # code", so ask per block: a fence is either a deferred shell, which is a named state with an attribute, or
+            # highlighted. The third state -- mounted, not deferred, still on streamdown's fallback -- lasts a frame
+            # while the highlighter's passive effect runs, and a settled thread must hold none. Stricter than the total
+            # it replaces, which one stuck block passed as long as the others made the count up.
             stuck = counts.get("unhighlightedMountedFences", 0)
             if stuck:
                 failures.append(
@@ -1795,11 +1769,10 @@ def harness_failures(results: dict, report: dict) -> list[str]:
             for name in ACTIONS:
                 if not actions[name].get("ran"):
                     failures.append(f"{where} could not run the {name} action at all")
-            # A null settle time is the settle loop giving up: the page never produced a calm
-            # window inside SETTLE_TIMEOUT_MS. It is NOT "this engine does not report that",
-            # but it prints as the same `-`, and the axis it feeds merely becomes "not
-            # recorded" -- so another axis can carry the discrimination check and the run exits
-            # 0 having timed out without measuring settlement.
+            # A null settle time is the settle loop giving up: the page never produced a calm window inside
+            # SETTLE_TIMEOUT_MS. It is NOT "this engine does not report that", but it prints as the same `-`, and the
+            # axis it feeds merely becomes "not recorded" -- so another axis can carry the discrimination check and the
+            # run exits 0 having timed out without measuring settlement.
             for name in ("scroll", "jump", "reopen"):
                 settling = actions[name]
                 if settling.get("ran") and settling.get("settleMs") is None:
@@ -1810,22 +1783,20 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                     )
             keystroke = actions["keystroke"]
             if keystroke.get("ran"):
-                # The DOM value is what the harness itself wrote, so it proves nothing on its
-                # own. Only the runtime's copy shows the keystroke reached React rather than just
-                # the textarea, and a keystroke that reached nothing still reports the ~33ms
-                # paint floor, which reads as a plausible timing.
+                # The DOM value is what the harness itself wrote, so it proves nothing on its own. Only the runtime's
+                # copy shows the keystroke reached React rather than just the textarea, and a keystroke that reached
+                # nothing still reports the ~33ms paint floor, which reads as a plausible timing.
                 if keystroke["runtimeText"] != keystroke["domText"]:
                     failures.append(
                         f"{where} typed {keystroke['domText']!r} into the DOM but the runtime "
                         f"holds {keystroke['runtimeText']!r}; the keystroke never reached the "
                         "composer state"
                     )
-                # Sitting on the paint floor is NOT a harness failure here, and the reason is a
-                # finding rather than an excuse: the character reaches the composer and paints on
-                # the very next frame at every size, while the thread churns for another 180ms
-                # afterwards. `runtimeText == domText` above is what proves the keystroke landed;
-                # the floor comparison only says this particular axis has no room to move, which
-                # the growth report states per axis.
+                # Sitting on the paint floor is NOT a harness failure here, and the reason is a finding rather than an
+                # excuse: the character reaches the composer and paints on the very next frame at every size, while the
+                # thread churns for another 180ms afterwards. `runtimeText == domText` above is what proves the
+                # keystroke landed; the floor comparison only says this particular axis has no room to move, which the
+                # growth report states per axis.
             scroll = actions["scroll"]
             # Equal travel at every size or the columns are not the same gesture.
             if scroll.get("ran") and scroll["scrolledPx"] < SCROLL_STEPS * SCROLL_STEP_PX * 0.9:
@@ -1836,9 +1807,9 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                 )
             jumped = actions["jump"]
             if jumped.get("ran"):
-                # Unlike the gesture, the jump is DELIBERATELY not the same distance at every
-                # size: it is bottom to top, which is the point. What has to hold is that it
-                # arrived, or the column is timing a scroll that did not move.
+                # Unlike the gesture, the jump is DELIBERATELY not the same distance at every size: it is bottom to
+                # top, which is the point. What has to hold is that it arrived, or the column is timing a scroll that
+                # did not move.
                 if jumped["landedAt"] > 1:
                     failures.append(
                         f"{where} jumped to the top of the thread and landed at "
@@ -1882,9 +1853,9 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                         "of a thread that never left"
                     )
 
-        # A modal menu puts the body on the modal layer and a non-modal one does not, and the two
-        # cost wildly different amounts. Either is a legitimate tree, but a run that mixes them
-        # across sizes is comparing columns measured on different mechanisms.
+        # A modal menu puts the body on the modal layer and a non-modal one does not, and the two cost wildly different
+        # amounts. Either is a legitimate tree, but a run that mixes them across sizes is comparing columns measured on
+        # different mechanisms.
         layers = {
             results["by_engine"][engine]["by_size"][str(size)]
             .get("actions", {})

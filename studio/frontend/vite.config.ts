@@ -4,11 +4,31 @@
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { type Plugin, defineConfig } from "vite";
+
+function smokeModuleDelay(): Plugin {
+  const match = process.env.SMOKE_MODULE_DELAY_MATCH;
+  const delayMs = Number(process.env.SMOKE_MODULE_DELAY_MS ?? "0");
+  return {
+    name: "smoke-module-delay",
+    configureServer(server) {
+      if (!match || !Number.isFinite(delayMs) || delayMs <= 0) return;
+      server.middlewares.use((request, _response, next) => {
+        if (!request.url?.includes(match)) {
+          next();
+          return;
+        }
+        setTimeout(next, delayMs);
+      });
+    },
+  };
+}
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  // Reasoning's highlighter loads only the grammar it needs in its module worker.
+  worker: { format: "es" },
+  plugins: [react(), tailwindcss(), smokeModuleDelay()],
   // Keep an unrelated PostCSS config in an ancestor directory from leaking
   // into Unsloth installs. Tailwind is provided by its dedicated Vite plugin.
   css: {
@@ -65,6 +85,16 @@ export default defineConfig({
   build: {
     commonjsOptions: {
       include: [/node_modules/, /@dagrejs\/dagre/, /@dagrejs\/graphlib/],
+    },
+    rolldownOptions: {
+      // import() of a module the app already imports statically defers nothing, and it splits
+      // that module's graph into extra startup chunks (#11588). Fail the build rather than warn.
+      onLog(level, log, handler) {
+        if (log.code === "INEFFECTIVE_DYNAMIC_IMPORT") {
+          throw new Error(log.message);
+        }
+        handler(level, log);
+      },
     },
   },
 });

@@ -19,6 +19,18 @@ import pytest
 from unsloth_cli import _studio_runtime_gate as gate
 
 
+def _shared_setup_1(monkeypatch, payload):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode = 0,
+            stdout = json.dumps(payload),
+            stderr = "",
+        ),
+    )
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STUDIO_COMMAND = REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 
@@ -61,9 +73,15 @@ def test_runtime_gate_handoff_is_one_shot(monkeypatch):
     assert gate.consume_runtime_gate_handoff() is False
 
 
+def test_runtime_gate_acquire_is_one_shot(monkeypatch):
+    monkeypatch.setenv(gate._RUNTIME_GATE_ACQUIRE_ENV, "1")
+    assert gate.consume_runtime_gate_acquire() is True
+    assert gate.consume_runtime_gate_acquire() is False
+
+
 def test_terminal_launch_boundaries_use_the_runtime_gate():
     source = STUDIO_COMMAND.read_text(encoding = "utf-8")
-    assert source.count("with _studio_runtime_launch_guard(") >= 4
+    assert source.count("with _studio_runtime_launch_guard(") >= 5
     assert "runtime_gate_child_environment()" in source
     assert "runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()" in source
 
@@ -93,6 +111,53 @@ def test_terminal_setup_holds_the_gate_through_environment_mutation():
     launcher = body.index("_WindowsLauncherUpdateTransaction()", idle_scan)
     setup = body.index("_run_setup_script(", launcher)
     assert consume < guard < idle_scan < launcher < setup
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX flock is required")
+def test_posix_runtime_gate_blocks_another_process_and_recovers(tmp_path):
+    script = """
+import sys
+from pathlib import Path
+from unsloth_cli import _studio_runtime_gate as gate
+try:
+    with gate.studio_runtime_launch_guard(Path(sys.argv[1])):
+        pass
+except gate.StudioRuntimeGateBusy:
+    raise SystemExit(7)
+"""
+    with gate.studio_runtime_launch_guard(tmp_path) as acquired:
+        assert acquired is True
+        blocked = subprocess.run([sys.executable, "-c", script, str(tmp_path)], check = False)
+        assert blocked.returncode == 7
+
+    recovered = subprocess.run([sys.executable, "-c", script, str(tmp_path)], check = False)
+    assert recovered.returncode == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX flock is required")
+def test_posix_runtime_gate_waits_for_parent_handoff(tmp_path):
+    script = """
+import sys
+from pathlib import Path
+from unsloth_cli import _studio_runtime_gate as gate
+print("waiting", flush=True)
+with gate.studio_runtime_launch_guard(Path(sys.argv[1]), wait=True):
+    print("acquired", flush=True)
+"""
+    with gate.studio_runtime_launch_guard(tmp_path):
+        child = subprocess.Popen(
+            [sys.executable, "-c", script, str(tmp_path)],
+            stdout = subprocess.PIPE,
+            text = True,
+        )
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "waiting"
+        with pytest.raises(subprocess.TimeoutExpired):
+            child.wait(timeout = 0.2)
+
+    stdout, _ = child.communicate(timeout = 5)
+    assert child.returncode == 0
+    assert stdout.strip() == "acquired"
 
 
 def test_interrupted_windows_setup_kills_tree_before_return(monkeypatch):
@@ -172,15 +237,7 @@ def test_idle_scan_excludes_verified_launcher_and_blocks_another_managed_image(
             "ExecutablePath": str(managed_launcher),
         },
     ]
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode = 0,
-            stdout = json.dumps(payload),
-            stderr = "",
-        ),
-    )
+    _shared_setup_1(monkeypatch, payload)
     gate.ensure_managed_environment_is_idle(studio_home)
     payload.append(
         {
@@ -196,8 +253,8 @@ def test_idle_scan_excludes_verified_launcher_and_blocks_another_managed_image(
 
 @pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")
 def test_idle_scan_excludes_the_venv_python_redirector(tmp_path, monkeypatch):
-    # install.ps1 runs `Scripts\unsloth.exe studio setup` and Tauri runs the venv
-    # interpreter, so both arrive through the redirector and would self-block.
+    # install.ps1 runs `Scripts\unsloth.exe studio setup` and Tauri runs the venv interpreter, so both arrive through
+    # the redirector and would self-block.
     studio_home = tmp_path / "studio"
     scripts = studio_home / "unsloth_studio" / "Scripts"
     managed_python = scripts / "python.exe"
@@ -229,15 +286,7 @@ def test_idle_scan_excludes_the_venv_python_redirector(tmp_path, monkeypatch):
         },
     ]
     monkeypatch.setattr(sys, "executable", str(managed_python))
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode = 0,
-            stdout = json.dumps(payload),
-            stderr = "",
-        ),
-    )
+    _shared_setup_1(monkeypatch, payload)
     gate.ensure_managed_environment_is_idle(studio_home)
 
     # Tauri runs the redirector directly, with no shim above it.
@@ -288,15 +337,7 @@ def test_idle_scan_does_not_exclude_managed_parent_of_updater(tmp_path, monkeypa
             "ExecutablePath": str(managed_python),
         },
     ]
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode = 0,
-            stdout = json.dumps(payload),
-            stderr = "",
-        ),
-    )
+    _shared_setup_1(monkeypatch, payload)
 
     with pytest.raises(RuntimeError, match = rf"PID {managed_parent_pid}"):
         gate.ensure_managed_environment_is_idle(studio_home)
@@ -323,15 +364,7 @@ def test_idle_scan_blocks_exact_outer_shim(tmp_path, monkeypatch):
             "ExecutablePath": str(outer_shim),
         },
     ]
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode = 0,
-            stdout = json.dumps(payload),
-            stderr = "",
-        ),
-    )
+    _shared_setup_1(monkeypatch, payload)
     with pytest.raises(RuntimeError, match = rf"PID {consumer_pid}"):
         gate.ensure_managed_environment_is_idle(studio_home)
 

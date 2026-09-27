@@ -11,9 +11,17 @@ import {
   watchMathBlockContainmentOverride,
 } from "./components/assistant-ui/math-block-containment";
 import { fetchDeviceType } from "./config/env";
+import { refreshSession } from "./features/auth/api";
+import {
+  applyInterfaceScaleBeforeFirstPaint,
+  useInterfaceScaleStore,
+} from "./features/settings/stores/interface-scale-store";
 import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
+import { setHubSessionRefresh } from "./lib/hf-endpoint";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
+
+setHubSessionRefresh(refreshSession);
 
 const rootElement = document.getElementById("root");
 if (!rootElement) {
@@ -30,6 +38,11 @@ if (isTauri) {
 const uaLower = navigator.userAgent.toLowerCase();
 if (uaLower.includes("linux") && !uaLower.includes("android")) {
   document.documentElement.classList.add("render-linux");
+}
+
+// index.css keys off this to restore ::-webkit-scrollbar styling on Windows.
+if (uaLower.includes("windows")) {
+  document.documentElement.classList.add("client-windows");
 }
 
 // Whether off-screen maths takes containment. ON by default, subject to a feature detect for the
@@ -54,8 +67,13 @@ function renderApp(): void {
 }
 
 const localeInitialization = initializeLocale();
-if (typeof localeInitialization !== "string") {
-  localeInitialization.then(renderApp);
+const interfaceScaleInitialization = applyInterfaceScaleBeforeFirstPaint(
+  useInterfaceScaleStore.getState().scale,
+);
+if (typeof localeInitialization !== "string" || isTauri) {
+  Promise.all([localeInitialization, interfaceScaleInitialization]).then(
+    renderApp,
+  );
 } else {
   renderApp();
 }

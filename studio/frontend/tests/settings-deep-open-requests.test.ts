@@ -70,6 +70,14 @@ test("reopening on Data does not drop a deep-open still in flight", () => {
   assert.equal(store.getState().archivedRequested, "images");
 });
 
+test("the audio shelf deep-opens like the other media shelves", () => {
+  reset();
+  store.getState().openArchivedMedia("audio");
+  assert.equal(store.getState().open, true);
+  assert.equal(store.getState().activeTab, "data");
+  assert.equal(store.getState().archivedRequested, "audio");
+});
+
 test("consuming it clears it, so a later visit to Data is an ordinary one", () => {
   reset();
   store.getState().openArchivedChats();
@@ -125,13 +133,19 @@ test("consuming a scroll target clears it", () => {
   assert.equal(store.getState().scrollTarget, null);
 });
 
-test("the canvas network target lands on Chat and stays until Chat reads it", () => {
-  reset();
-  store.getState().openDialog("chat", { scrollTarget: "chat-canvas-network" });
-  assert.equal(store.getState().activeTab, "chat");
-  assert.equal(store.getState().scrollTarget, "chat-canvas-network");
-  store.getState().setActiveTab("about");
-  assert.equal(store.getState().scrollTarget, null);
+test("canvas network and Library storage land on their tab and stay until it reads them", () => {
+  for (const [tab, target, from] of [
+    ["chat", "chat-canvas-network", null],
+    ["library", "library-storage", "data"],
+  ] as const) {
+    reset();
+    if (from) store.getState().openDialog(from);
+    store.getState().openDialog(tab, { scrollTarget: target });
+    assert.equal(store.getState().activeTab, tab);
+    assert.equal(store.getState().scrollTarget, target);
+    store.getState().setActiveTab(from ?? "about");
+    assert.equal(store.getState().scrollTarget, null);
+  }
 });
 
 test("a deep link can provide a stable focus fallback", () => {

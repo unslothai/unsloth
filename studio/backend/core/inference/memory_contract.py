@@ -119,23 +119,19 @@ def build_memory_estimate(
     """
     resident = int(getattr(breakdown, "weights_bytes", 0) or 0)
     quant = int(quant_file_bytes or 0)
-    # Deliberately NOT clamped against `resident`, though the quant file is by
-    # definition one of the resident files and so cannot really be larger.
-    #
-    # The two figures do not come from the same place. `resident` is what the
-    # planner measured from the files it opened; `quant` is what resolved the
-    # user's chosen file, which may be a listing size or a stat of a different
-    # path. They agree in production and diverge whenever anything stubs one
-    # side, and a clamp there does not catch a bug -- it silently replaces the
-    # caller's real number with an unrelated one. The first draft of this
-    # function clamped, and the contract-freeze suite caught it truncating a
-    # 4.1 GB quant to 373 bytes.
+    # Deliberately NOT clamped against `resident`, though the quant file is by definition one of the resident files and
+    # so cannot really be larger. The two figures do not come from the same place. `resident` is what the planner
+    # measured from the files it opened; `quant` is what resolved the user's chosen file, which may be a listing size or
+    # a stat of a different path. They agree in production and diverge whenever anything stubs one side, and a clamp
+    # there does not catch a bug -- it silently replaces the caller's real number with an unrelated one. The first draft
+    # of this function clamped, and the contract-freeze suite caught it truncating a 4.1 GB quant to 373 bytes.
     return MemoryEstimate(
         available = True,
         reason = None,
         quant_file_bytes = quant,
         resident_files_bytes = resident,
         kv_bytes = int(getattr(breakdown, "kv_bytes", 0) or 0),
+        kv_checkpoint_bytes = int(getattr(breakdown, "kv_checkpoint_bytes", 0) or 0),
         compute_bytes = (
             int(getattr(breakdown, "compute_bytes", 0) or 0)
             if isinstance(compute_bytes, _Unset)
@@ -151,8 +147,8 @@ def build_memory_estimate(
             if isinstance(total_bytes, _Unset)
             else int(total_bytes or 0)
         ),
-        # Not `or 0`: zero is a real answer (an all-CPU launch) and must survive
-        # distinct from None. See the field's own description.
+        # Not `or 0`: zero is a real answer (an all-CPU launch) and must survive distinct from None. See the field's own
+        # description.
         gpu_bytes = (
             (None if getattr(breakdown, "gpu_bytes", None) is None else int(breakdown.gpu_bytes))
             if isinstance(gpu_bytes, _Unset)
@@ -190,6 +186,7 @@ def project_estimate_memory_response(estimate: MemoryEstimate) -> dict:
         # The aggregate meaning. See the module docstring.
         "weights_bytes": estimate.resident_files_bytes,
         "kv_bytes": estimate.kv_bytes,
+        "kv_checkpoint_bytes": estimate.kv_checkpoint_bytes,
         "compute_bytes": estimate.compute_bytes,
         "drafter_runtime_bytes": estimate.drafter_runtime_bytes,
         "drafter_runtime_gpu_bytes": estimate.drafter_runtime_gpu_bytes,

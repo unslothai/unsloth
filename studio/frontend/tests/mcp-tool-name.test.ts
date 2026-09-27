@@ -7,7 +7,34 @@ import test from "node:test";
 import {
   formatMcpToolName,
   mcpServerFromProvenance,
+  mcpToolFromProvenance,
 } from "../src/features/chat/utils/mcp-tool-name.ts";
+
+test("an aliased MCP tool shows the real tool name stamped in provenance", () => {
+  const provenance = {
+    mcp_server: "Backstage Catalog",
+    mcp_tool: "catalog.get-catalog-entity",
+  };
+  assert.equal(
+    formatMcpToolName(
+      "mcp__0123456789abcdef__catalog_get-catalog-entity_b9d734f2",
+      mcpServerFromProvenance(provenance),
+      mcpToolFromProvenance(provenance),
+    ),
+    "Backstage Catalog · catalog.get-catalog-entity",
+  );
+});
+
+test("reads mcp_tool from provenance, string-only", () => {
+  assert.equal(
+    mcpToolFromProvenance({ mcp_tool: "catalog.get-catalog-entity" }),
+    "catalog.get-catalog-entity",
+  );
+  assert.equal(mcpToolFromProvenance({ mcp_tool: "" }), undefined);
+  assert.equal(mcpToolFromProvenance({ mcp_tool: 3 }), undefined);
+  assert.equal(mcpToolFromProvenance({ mcp_server: "GitHub" }), undefined);
+  assert.equal(mcpToolFromProvenance(undefined), undefined);
+});
 
 test("formats an MCP name with the stamped server name", () => {
   assert.equal(

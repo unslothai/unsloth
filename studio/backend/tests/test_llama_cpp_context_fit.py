@@ -78,6 +78,7 @@ except ImportError:
 from core.inference.llama_cpp import (
     _AUTO_OFFLOAD_CTX,
     _APPLE_UNIFIED_MEMORY_FRACTION,
+    _APPLE_WIRED_CEILING_FRACTION,
     _CTX_FIT_VRAM_FRACTION,
     LlamaCppBackend,
     classify_gpu_offload_lines,
@@ -274,6 +275,16 @@ def _drive(
     }
 
 
+def _drive_native(
+    *args,
+    n_ctx = 0,
+    native_ctx = 131072,
+    **kwargs,
+):
+    """_drive with n_ctx = 0, which is Auto context: the branch that caps to native_ctx."""
+    return _drive(*args, n_ctx = n_ctx, native_ctx = native_ctx, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Auto mode, model weights exceed VRAM  (Bug A guard)
 # ---------------------------------------------------------------------------
@@ -283,12 +294,7 @@ class TestAutoModeWeightsExceedVRAM:
     """``n_ctx == 0`` on a model whose weights don't fit anywhere."""
 
     def test_minimax_like_single_gpu(self):
-        plan = _drive(
-            n_ctx = 0,
-            model_gib = 131,
-            gpus = [(0, 97_000)],
-            native_ctx = 196608,
-        )
+        plan = _drive_native(model_gib = 131, gpus = [(0, 97_000)], native_ctx = 196608)
         assert plan["c_arg"] == _AUTO_OFFLOAD_CTX
         assert plan["use_fit"] is True
         assert plan["gpu_indices"] is None
@@ -297,11 +303,9 @@ class TestAutoModeWeightsExceedVRAM:
         assert plan["max_available_ctx"] == 196608
 
     def test_multi_gpu_all_subsets_fail(self):
-        plan = _drive(
-            n_ctx = 0,
+        plan = _drive_native(
             model_gib = 400,
             gpus = [(0, 80_000), (1, 80_000), (2, 80_000), (3, 80_000)],
-            native_ctx = 131072,
         )
         assert plan["c_arg"] == _AUTO_OFFLOAD_CTX
         assert plan["use_fit"] is True
@@ -309,8 +313,7 @@ class TestAutoModeWeightsExceedVRAM:
 
     def test_no_kv_metadata_auto(self):
         """File-size-only fallback path uses the same 8192 default."""
-        plan = _drive(
-            n_ctx = 0,
+        plan = _drive_native(
             model_gib = 131,
             gpus = [(0, 97_000)],
             native_ctx = 196608,
@@ -331,23 +334,13 @@ class TestExplicitCtxRespectsUser:
     def test_fittable_weights_oversized_kv(self):
         # 8 GB weights + 131k ctx KV on 24 GB VRAM. Budget = 21.6 GB, KV
         # at 131k >> 13.6 GB remaining, so _select_gpus flips use_fit=True.
-        plan = _drive(
-            n_ctx = 131072,
-            model_gib = 8,
-            gpus = [(0, 24_000)],
-            native_ctx = 131072,
-        )
+        plan = _drive_native(n_ctx = 131072, model_gib = 8, gpus = [(0, 24_000)])
         assert plan["c_arg"] == 131072
         assert plan["use_fit"] is True
         assert plan["gpu_indices"] is None
 
     def test_explicit_that_fits_uses_ngl(self):
-        plan = _drive(
-            n_ctx = 8192,
-            model_gib = 8,
-            gpus = [(0, 24_000)],
-            native_ctx = 131072,
-        )
+        plan = _drive_native(n_ctx = 8192, model_gib = 8, gpus = [(0, 24_000)])
         assert plan["c_arg"] == 8192
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0]
@@ -390,8 +383,7 @@ class TestExplicitCtxRespectsUser:
 
 class TestExtraArgsCtxOverride:
     def test_ctx_size_extra_honored_over_auto(self):
-        plan = _drive(
-            n_ctx = 0,
+        plan = _drive_native(
             model_gib = 131,
             gpus = [(0, 97_000)],
             native_ctx = 196608,
@@ -403,8 +395,7 @@ class TestExtraArgsCtxOverride:
         assert plan["use_fit"] is True
 
     def test_ctx_size_short_alias_honored_over_auto(self):
-        plan = _drive(
-            n_ctx = 0,
+        plan = _drive_native(
             model_gib = 131,
             gpus = [(0, 97_000)],
             native_ctx = 196608,
@@ -414,11 +405,10 @@ class TestExtraArgsCtxOverride:
         assert plan["use_fit"] is True
 
     def test_ctx_size_extra_wins_over_first_class_field(self):
-        plan = _drive(
+        plan = _drive_native(
             n_ctx = 4096,
             model_gib = 8,
             gpus = [(0, 24_000)],
-            native_ctx = 131072,
             extra_args = ["--ctx-size", "128000"],
         )
         assert plan["original_ctx"] == 128000
@@ -432,36 +422,22 @@ class TestExtraArgsCtxOverride:
 
 class TestFittableAutoPickRegressions:
     def test_small_model_one_gpu(self):
-        plan = _drive(
-            n_ctx = 0,
-            model_gib = 8,
-            gpus = [(0, 24_000)],
-            native_ctx = 131072,
-            kv_per_token_bytes = 8192,
-        )
+        plan = _drive_native(model_gib = 8, gpus = [(0, 24_000)], kv_per_token_bytes = 8192)
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0]
         assert plan["c_arg"] > FIT_MIN_CTX
 
     def test_medium_model_needs_multi_gpu(self):
-        plan = _drive(
-            n_ctx = 0,
+        plan = _drive_native(
             model_gib = 60,
             gpus = [(0, 40_000), (1, 40_000)],
-            native_ctx = 131072,
             kv_per_token_bytes = 8192,
         )
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0, 1]
 
     def test_no_kv_metadata_fittable_auto(self):
-        plan = _drive(
-            n_ctx = 0,
-            model_gib = 8,
-            gpus = [(0, 24_000)],
-            native_ctx = 131072,
-            can_estimate_kv = False,
-        )
+        plan = _drive_native(model_gib = 8, gpus = [(0, 24_000)], can_estimate_kv = False)
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0]
 
@@ -477,23 +453,16 @@ class TestTightFitPinsToGPU:
     def test_rtx_4090_qwen_24gb_class(self):
         # noahterbest's #5106 log: 20.8 GB model on 22805 MiB free GPU,
         # ctx=4096 -> ~94% utilization, ~1.4 GiB headroom.
-        plan = _drive(
-            n_ctx = 0,
-            model_gib = 20.8,
-            gpus = [(0, 22_805)],
-            native_ctx = 131072,
-            kv_per_token_bytes = 25_000,
-        )
+        plan = _drive_native(model_gib = 20.8, gpus = [(0, 22_805)], kv_per_token_bytes = 25_000)
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0]
 
     def test_explicit_ctx_at_94_pct_pins_to_gpu(self):
         # Explicit-ctx branch must agree with auto-ctx on headroom.
-        plan = _drive(
+        plan = _drive_native(
             n_ctx = 4096,
             model_gib = 20.8,
             gpus = [(0, 22_805)],
-            native_ctx = 131072,
             kv_per_token_bytes = 25_000,
         )
         assert plan["use_fit"] is False
@@ -501,11 +470,10 @@ class TestTightFitPinsToGPU:
 
     def test_genuine_overflow_still_uses_fit(self):
         # Beyond 95% must still defer to --fit on.
-        plan = _drive(
+        plan = _drive_native(
             n_ctx = 4096,
             model_gib = 23,
             gpus = [(0, 22_000)],
-            native_ctx = 131072,
             kv_per_token_bytes = 25_000,
         )
         assert plan["use_fit"] is True
@@ -860,6 +828,89 @@ class TestAppleUnifiedMemoryBudget:
         assert LlamaCppBackend._apple_metal_memory_budget_bytes() == 0
 
 
+# Unpatched: conftest pins the probe to 0.
+_REAL_WIRED_CEILING = LlamaCppBackend.__dict__["_apple_metal_wired_ceiling_bytes"].__func__
+
+
+def _install_wired_probes(monkeypatch, *, sysctl_mb, working_set, in_use):
+    """``sysctl_mb`` or ``in_use`` of None is an unreadable probe."""
+    from core.inference import llama_cpp as _llama_cpp
+    from utils.hardware import hardware as _hardware
+
+    _force_apple(monkeypatch)
+    _install_fake_mlx(monkeypatch, working_set)
+    sysctl_out = "" if sysctl_mb is None else f"{sysctl_mb}\n"
+    monkeypatch.setattr(
+        _llama_cpp.subprocess,
+        "run",
+        lambda *a, **k: _types.SimpleNamespace(stdout = sysctl_out),
+    )
+    monkeypatch.setattr(
+        _hardware,
+        "_read_apple_gpu_stats",
+        lambda: {} if in_use is None else {"vram_used_bytes": in_use},
+    )
+
+
+class TestAppleWiredCeiling:
+    def test_zero_off_apple_silicon(self, monkeypatch):
+        import platform as _platform
+
+        _install_wired_probes(monkeypatch, sysctl_mb = 0, working_set = 48 * GIB, in_use = 2 * GIB)
+        monkeypatch.setattr(_platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_platform, "machine", lambda: "x86_64")
+        assert _REAL_WIRED_CEILING() == 0
+
+    def test_the_working_set_is_the_limit_by_default(self, monkeypatch):
+        _install_wired_probes(monkeypatch, sysctl_mb = 0, working_set = 48 * GIB, in_use = 2 * GIB)
+        assert _REAL_WIRED_CEILING() == int(46 * GIB * _APPLE_WIRED_CEILING_FRACTION)
+
+    def test_older_mlx_reads_the_legacy_alias(self, monkeypatch):
+        _install_wired_probes(monkeypatch, sysctl_mb = 0, working_set = 48 * GIB, in_use = 2 * GIB)
+        mlx_core = sys.modules["mlx.core"]
+        mlx_core.metal.device_info = mlx_core.device_info
+        monkeypatch.delattr(mlx_core, "device_info")
+        assert _REAL_WIRED_CEILING() == int(46 * GIB * _APPLE_WIRED_CEILING_FRACTION)
+
+    def test_a_set_sysctl_limit_wins(self, monkeypatch):
+        _install_wired_probes(
+            monkeypatch, sysctl_mb = 56 * 1024, working_set = 48 * GIB, in_use = 2 * GIB
+        )
+        assert _REAL_WIRED_CEILING() == int(54 * GIB * _APPLE_WIRED_CEILING_FRACTION)
+
+    def test_unread_gpu_memory_is_unresolved_not_zero(self, monkeypatch):
+        _install_wired_probes(monkeypatch, sysctl_mb = 0, working_set = 48 * GIB, in_use = None)
+        assert _REAL_WIRED_CEILING() == 0
+
+    def test_unread_sysctl_is_unresolved_not_the_default(self, monkeypatch):
+        _install_wired_probes(monkeypatch, sysctl_mb = None, working_set = 48 * GIB, in_use = 2 * GIB)
+        assert _REAL_WIRED_CEILING() == 0
+
+    def test_no_readable_limit_is_unresolved(self, monkeypatch):
+        _install_wired_probes(monkeypatch, sysctl_mb = 0, working_set = 0, in_use = 2 * GIB)
+        assert _REAL_WIRED_CEILING() == 0
+
+    @pytest.mark.parametrize(
+        "counter,expected",
+        [
+            ("", 0),
+            ('"In use system memory"=2147483648,', int(46 * GIB * _APPLE_WIRED_CEILING_FRACTION)),
+        ],
+    )
+    def test_ioreg_resolves_only_with_the_in_use_counter(self, monkeypatch, counter, expected):
+        _force_apple(monkeypatch)
+        _install_fake_mlx(monkeypatch, 48 * GIB)
+        block = f'"PerformanceStatistics" = {{"Device Utilization %"=3,{counter}"Alloc system memory"=1}}'
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "ioreg":
+                return _types.SimpleNamespace(stdout = block.encode())
+            return _types.SimpleNamespace(stdout = "0\n")
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        assert _REAL_WIRED_CEILING() == expected
+
+
 class TestAppleContextCap:
     """The real ``_fit_context_to_vram`` against the reporter's M3 Pro case."""
 
@@ -894,8 +945,7 @@ class TestAppleBranchEndToEnd:
     """Drive the Apple elif glue (cap / floor / explicit) via _drive, no GPU."""
 
     def test_auto_context_capped_below_native(self):
-        plan = _drive(
-            n_ctx = 0,
+        plan = _drive_native(
             model_gib = 15.7,
             gpus = [],
             native_ctx = 262144,
@@ -909,8 +959,7 @@ class TestAppleBranchEndToEnd:
 
     def test_floors_to_fallback_when_weights_exceed_budget(self):
         # Weights alone exceed budget: ctx can't help, so floor to 4096.
-        plan = _drive(
-            n_ctx = 0,
+        plan = _drive_native(
             model_gib = 100,
             gpus = [],
             native_ctx = 262144,
@@ -979,8 +1028,7 @@ class TestAppleNoKvMetadataFloor:
     """Sparse KV metadata keeps Apple's safety floor instead of native context."""
 
     def test_sparse_kv_floors_auto_context(self):
-        plan = _drive(
-            n_ctx = 0,
+        plan = _drive_native(
             model_gib = 15.7,
             gpus = [],
             native_ctx = 262144,

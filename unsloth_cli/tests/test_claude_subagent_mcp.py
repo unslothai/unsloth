@@ -260,6 +260,7 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8888"
     assert child_env["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-test"
     assert child_env["ANTHROPIC_MODEL"] == "unsloth/model-GGUF:Q4_K_M"
+    assert child_env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "32768"
     assert child_env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "32768"
     assert child_env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "90"
     assert "ANTHROPIC_API_KEY" not in child_env
@@ -347,8 +348,8 @@ def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
     assert command[command.index("--permission-mode") + 1] == "plan"
     disallowed = command[command.index("--disallowedTools") + 1]
     assert disallowed == "AskUserQuestion,EnterPlanMode,Edit,Write,NotebookEdit,Bash"
-    # Bash matters: plan mode routes it through a classifier served by this same
-    # local model, so without the deny a "read-only" child can still write files.
+    # Bash matters: plan mode routes it through a classifier served by this same local model, so
+    # without the deny a "read-only" child can still write files.
     prompt = command[command.index("--append-system-prompt") + 1]
     assert "read-only local coding subagent" in prompt
 
@@ -480,8 +481,8 @@ def test_result_parser_accepts_diagnostics_before_json():
 
 
 def test_child_is_stopped_when_it_produces_nothing_before_the_deadline(monkeypatch, tmp_path):
-    # A local server that accepts and never answers used to block the child, and
-    # the parent waiting on it, indefinitely. Measured past 400s before this.
+    # A local server that accepts and never answers used to block the child, and the parent waiting on
+    # it, indefinitely. Measured past 400s before this.
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_TIMEOUT", "0.3")
     _stub_env(monkeypatch, tmp_path)
     stopped = []
@@ -514,8 +515,8 @@ def test_timeout_can_be_disabled(monkeypatch):
 
 
 def test_local_child_is_spawned_through_the_shim_resolver(monkeypatch, tmp_path):
-    # Pins the wiring: a Windows .cmd must reach the npm parser, not Popen (#9167).
-    # The parser behaviour itself is covered in test_start.py.
+    # Pins the wiring: a Windows .cmd must reach the npm parser, not Popen (#9167). The parser
+    # behaviour itself is covered in test_start.py.
     _stub_env(monkeypatch, tmp_path)
     monkeypatch.setattr(bridge.shutil, "which", lambda _: r"C:\\nodejs\\claude.cmd")
     captured = {}

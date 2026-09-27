@@ -156,14 +156,13 @@ class _Page:
         *_a,
         **_k,
     ):
-        # The end of the thread, which `thread_reopen` reads out of the DOM before it touches
-        # anything so that it has a string to recognise the rebuilt thread by. It has to be a
-        # string here or the action refuses on that precondition and never reaches the transition
-        # this file is about.
+        # The end of the thread, which `thread_reopen` reads out of the DOM before it touches anything so
+        # it has a string to recognise the rebuilt thread by. It has to be a string here or the action
+        # refuses on that precondition.
         if "data-role=" in script and "user" in script:
             return "studiobench turn 8: continue with unit 3"
-        # Otherwise a thread with messages in it, so `thread_reopen` gets past its own precondition
-        # and reaches the transition under test.
+        # Otherwise a thread with messages in it, so `thread_reopen` gets past its own precondition and
+        # reaches the transition under test.
         return 18
 
     def wait_for_timeout(self, _ms):
@@ -244,9 +243,9 @@ class _RunningPage:
         return 18
 
     def wait_for_timeout(self, ms):
-        # Actually sleeps, like Playwright's. A no-op here lets the bounded wait spin thousands of
-        # times inside its deadline, which exhausted the scripted reply and made a test about a
-        # reply that never lands pass for the opposite reason.
+        # Actually sleeps, like Playwright's. A no-op lets the bounded wait spin thousands of times inside
+        # its deadline, which exhausted the scripted reply and made a test about a reply that never lands
+        # pass for the opposite reason.
         self.waits += 1
         time.sleep(ms / 1000.0)
 

@@ -62,24 +62,24 @@ _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "temp", "b
 
 # Calls that can only be a deliberate fatal fault, keyed by the trailing attribute.
 # `arg0` is a required literal first argument, `owners` a set of acceptable receivers.
-# `abort` needs the receiver check: Playwright's `route.abort()` and a thread's
-# `.abort()` are ordinary calls that share the name and crash nothing.
+# `abort` needs the receiver check: Playwright's `route.abort()` and a thread's `.abort()` are ordinary calls that share
+# the name and crash nothing.
 _CRASH_CALLS = {
     "string_at": {"arg0": 0},  # ctypes.string_at(0) -> strlen(NULL) -> SIGSEGV
     "abort": {"owners": ("os", "ctypes", "libc", "CDLL")},  # -> SIGABRT
     "_sigsegv": {},  # faulthandler._sigsegv()
 }
 
-# Textual form of the same, for snippets handed to a child interpreter.
 _CRASH_MARKERS = ("string_at(0)", "os.abort()", "_sigsegv(")
 
-# Only a deliberate crash when aimed at a core-dumping signal. `raise_signal(signum)`
-# re-raising SIGINT after restoring the default handler is the normal terminal-prompt
-# idiom and must not be flagged.
+# Only a deliberate crash when aimed at a core-dumping signal.
+# `raise_signal(signum)` re-raising SIGINT after restoring the default handler is the normal terminal-prompt idiom and
+# must not be flagged.
 _SIGNAL_DIRECTED = ("raise_signal(", "os.kill(", ".kill(")
 _DIRECTED_NAMES = {"raise_signal", "kill"}
-# Which argument carries the signal. Checking every argument read the PID in
-# `os.kill(11, signal.SIGKILL)` as SIGSEGV and failed CI over a call that cannot dump.
+# Which argument carries the signal.
+# Checking every argument read the PID in `os.kill(11, signal.SIGKILL)` as SIGSEGV and failed CI over a call that cannot
+# dump.
 _SIGNAL_ARG_INDEX = {"raise_signal": 0, "kill": 1}
 
 # A signal aimed at self dumps core only for these. SIGKILL, SIGTERM and SIGINT do not,
@@ -93,14 +93,12 @@ _FATAL_SIGNAL_RE = re.compile(r"\b(?:" + "|".join(_FATAL_SIGNALS) + r")\b")
 
 _PR_SET_DUMPABLE = 4
 
-# Raw-text prefilter, so only files that could match are parsed (32 of ~1050, ~1.5s
-# against ~9s). Deliberately looser than `_CRASH_MARKERS`: it only decides what to
-# parse, so it should over-match and leave precision to the AST checks. Matching
-# `string_at(0)` exactly once skipped `string_at( 0)` before it was ever parsed.
+# Raw-text prefilter, so only files that could match are parsed (32 of ~1050, ~1.5s against ~9s).
+# Deliberately looser than `_CRASH_MARKERS`: it only decides what to parse, so it should over-match and leave
+# precision to the AST checks. Matching `string_at(0)` exactly once skipped `string_at( 0)` before it was ever parsed.
 _PREFILTER = ("string_at(", "abort(", "_sigsegv(") + _SIGNAL_DIRECTED
-# An aliased import carries none of the shapes above: `from os import abort as die`
-# then `die()` has no "abort(" anywhere. The import spelling is the one text such a
-# file must contain, so match that too.
+# An aliased import carries none of the shapes above: `from os import abort as die` then `die()` has no "abort("
+# anywhere. The import spelling is the one text such a file must contain, so match that too.
 _PREFILTER += ("import abort", "import string_at", "import raise_signal", "import kill")
 
 
@@ -153,8 +151,7 @@ def _called_name(node):
     return None
 
 
-# Matched after stripping underscores and case, so `_libc`, `LibC` and `libc` are one
-# name. `tools._libc.prctl(...)` is the convention in test_bypass_permissions.py.
+# Matched after stripping underscores and case, so `_libc`, `LibC` and `libc` are one name.
 _LIBC_NAMES = ("cdll", "ctypes", "libc")
 
 
@@ -193,8 +190,8 @@ def _prctl_dumpable_value(node, libc = ()):
     """
     if _called_name(node) != "prctl" or len(node.args) < 2:
         return None
-    # The receiver matters: a test's `fake.prctl(4, 1)` mock touches no kernel state, and
-    # crediting it let a mock override the real suppression on the line above.
+    # The receiver matters: a test's `fake.prctl(4, 1)` mock touches no kernel state, and crediting it let a mock
+    # override the real suppression on the line above.
     if not isinstance(node.func, ast.Attribute) or not _is_libc_handle(node.func.value, libc):
         return None
     cmd, value = node.args[0], node.args[1]
@@ -324,16 +321,16 @@ def _snippets(tree):
         env,
         depth = 0,
     ):
-        # A deeply nested literal is not a command vector, and recursing all the way
-        # into one raised RecursionError out of a file the scan only wanted to skim.
+        # A deeply nested literal is not a command vector, and recursing all the way into one raised RecursionError out
+        # of a file the scan only wanted to skim.
         if depth > _MAX_COLLECT_DEPTH:
             return
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             out.append(node.value)
         elif isinstance(node, ast.JoinedStr):
-            # An f-string reaches the child as a script like any other. Keep its
-            # literal parts: the interpolations cannot be known here, and dropping the
-            # whole thing let `f"import os; os.abort(); print({v})"` through unread.
+            # An f-string reaches the child as a script like any other. Keep its literal parts: the interpolations
+            # cannot be known here, and dropping the whole thing let `f"import os; os.abort(); print({v})"` through
+            # unread.
             out.append(
                 "".join(
                     part.value
@@ -346,9 +343,6 @@ def _snippets(tree):
                 out.append(env[node.id])
             elif node.id in sequences:
                 # `CMD = [sys.executable, "-c", SCRIPT]` then `subprocess.run(CMD)`.
-                # A command vector built once and passed by name is ordinary
-                # subprocess usage, and folding only strings meant the child script
-                # inside it was never read.
                 for element in sequences[node.id]:
                     collect(element, env, depth + 1)
         elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
@@ -422,15 +416,15 @@ def _is_crash_call(node, aliases = None) -> bool:
         return False
     # Only the signal argument, so a PID never reads as a signal.
     signal_argument = node.args[index]
-    # A string delivers nothing: `raise_signal("SIGQUIT")` is a TypeError, and the
-    # quoted name survives unparsing and matched as though it were the symbol.
+    # A string delivers nothing: `raise_signal("SIGQUIT")` is a TypeError, and the quoted name survives unparsing and
+    # matched as though it were the symbol.
     if isinstance(signal_argument, ast.Constant) and isinstance(signal_argument.value, str):
         return False
     rendered = ast.unparse(signal_argument)
     if _FATAL_SIGNAL_RE.search(rendered):
         return True
-    # Numeric signals. `signal.raise_signal(11)` and `os.kill(pid, 6)` dump exactly the
-    # same core as the named forms, so matching only symbolic names missed them.
+    # Numeric signals. `signal.raise_signal(11)` and `os.kill(pid, 6)` dump exactly the same core as the named forms,
+    # so matching only symbolic names missed them.
     return (
         isinstance(signal_argument, ast.Constant) and signal_argument.value in _FATAL_SIGNAL_NUMBERS
     )
@@ -448,8 +442,8 @@ def _enclosing_scopes(tree):
             walk(next_scope, child)
             if not is_scope:
                 continue
-            # Defaults and annotations run where the def sits, so they belong to the
-            # enclosing scope. A further scope nested inside one of them keeps its own.
+            # Defaults and annotations run where the def sits, so they belong to the enclosing scope.
+            # A further scope nested inside one of them keeps its own.
             for part in _definition_time(child):
                 for inner in ast.walk(part):
                     if owner.get(id(inner)) is child:
@@ -567,8 +561,8 @@ def _helper_leaves_dumpable(
     libc = (),
 ):
     """What a bare call to a local helper leaves dumpability at, else None."""
-    # Bare calls only, as in _suppressed: `obj.restore()` shares its trailing name with
-    # a local `def restore` but need not be it.
+    # Bare calls only, as in _suppressed: `obj.restore()` shares its trailing name with a local `def restore` but need
+    # not be it.
     if not isinstance(call.func, ast.Name):
         return None
     target = functions.get(call.func.id)
@@ -580,8 +574,8 @@ def _helper_leaves_dumpable(
     # Calling an `async def` builds a coroutine and runs none of its body.
     if isinstance(target, ast.AsyncFunctionDef) and not _is_awaited(call, scope):
         return None
-    # Body only: a default or decorator on the helper ran at definition time, so it is
-    # not something calling the helper does again.
+    # Body only: a default or decorator on the helper ran at definition time, so it is not something calling the helper
+    # does again.
     writes = [
         w
         for statement in target.body
@@ -629,14 +623,14 @@ def _suppressed(
     position = _position(node)
     if _clears_dumpable_before(scope, position, inherited, functions, libc):
         return True
-    # Following one level of local helper covers `suppress_core()` then the fault,
-    # which is the natural shape once more than one test needs this.
+    # Following one level of local helper covers `suppress_core()` then the fault, which is the natural shape once more
+    # than one test needs this.
     for called in _iter_executable(scope):
         if not isinstance(called, ast.Call) or _position(called) >= position:
             continue
-        # Bare calls only. `obj.suppress_core()` shares its trailing name with a local
-        # `def suppress_core`, and crediting the local one there means an object method
-        # that may clear nothing at all is taken as proof the fault is covered.
+        # Bare calls only. `obj.suppress_core()` shares its trailing name with a local `def suppress_core`, and
+        # crediting the local one there means an object method that may clear nothing at all is taken as proof the fault
+        # is covered.
         if not isinstance(called.func, ast.Name):
             continue
         target = functions.get(called.func.id)
@@ -727,12 +721,12 @@ def _bindings_before(tree, scope, position):
     the old value on `if False: INNER = "pass"` lost the crash it replaced.
     """
     env, maybe = {}, {}
-    # Python binds a name locally for the whole function if it is assigned anywhere in
-    # it, so a global of that name is never what the body reads, even above the assign.
+    # Python binds a name locally for the whole function if it is assigned anywhere in it, so a global of that name is
+    # never what the body reads, even above the assign.
     shadowed = _rebound_names(scope) if scope is not tree else ()
     for owner_scope in (tree, scope) if scope is not tree else (tree,):
-        # A nested scope runs after the module body, so a global assigned below the
-        # `def` is still bound by the time the call gets there.
+        # A nested scope runs after the module body, so a global assigned below the `def` is still bound by the time the
+        # call gets there.
         limit = _AFTER_EVERYTHING if owner_scope is tree and scope is not tree else position
         for node, certain in _assignments_before(owner_scope, limit):
             pair = _assigned_pair(node)
@@ -782,8 +776,8 @@ def _nested_scripts(tree, inherited = False):
             argument = node.args[0] if node.args else None
             # Bindings AT the exec, so a name reused afterwards is not what runs.
             env, maybe = _bindings_before(tree, scope, _position(node))
-            # Same interpreter, so dumpability carries into the payload, including
-            # a restore a helper made between the clear and the exec.
+            # Same interpreter, so dumpability carries into the payload, including a restore a helper made between the
+            # clear and the exec.
             carried = _clears_dumpable_before(
                 scope,
                 _position(node),
@@ -905,8 +899,8 @@ If you only need the child to vanish rather than to take a specific signal, use
 SIGKILL instead. SIGKILL never produces a core."""
 
 
-# Each of these is a way the detector was fooled before, kept as a fixture so the fix
-# stays fixed. `want_violations` is whether the file should be reported.
+# Each of these is a way the detector was fooled before, kept as a fixture so the fix stays fixed.
+# `want_violations` is whether the file should be reported.
 _FIXTURES = {
     "crash_written_as_real_code": (
         "import ctypes\ndef child():\n    ctypes.string_at(0)\n",
@@ -1057,8 +1051,8 @@ _FIXTURES = {
         "def go(route, task):\n    route.abort('failed')\n    task.abort()\n",
         False,  # Playwright and friends share the name and crash nothing
     ),
-    # Seven more the detector got wrong, each found by reading it rather than by a
-    # failing run. Four let a real core dump through; three failed CI on safe code.
+    # Seven more the detector got wrong, each found by reading it rather than by a failing run. Four let a real core
+    # dump through; three failed CI on safe code.
     "a_pid_that_looks_like_a_signal": (
         "import os, signal\ndef stop():\n    os.kill(11, signal.SIGKILL)\n",
         False,  # 11 is the PID here, and SIGKILL never dumps

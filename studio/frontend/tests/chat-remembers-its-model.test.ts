@@ -8,11 +8,12 @@
 // be honoured.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  atDefaultUiScale,
   installLocalStorageFake,
+  readText,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -26,8 +27,12 @@ const {
 const { chatLocalModelOptions } = await import(
   "../src/features/chat/local-model-options.ts"
 );
-const { DEFAULT_PER_MODEL_CONFIG, resolveInitialConfig, savePerModelConfig } =
-  await import("../src/features/model-picker/model-config/per-model-config.ts");
+const {
+  DEFAULT_PER_MODEL_CONFIG,
+  resolveInitialConfig,
+  resolveResidentInitialConfig,
+  savePerModelConfig,
+} = await import("../src/features/model-picker/model-config/per-model-config.ts");
 const { shouldPersistResolvedQueuedModel } = await import(
   "../src/features/chat/utils/queued-chat-run-settings.ts"
 );
@@ -35,22 +40,18 @@ const { wantsDownloadManagerStaging } = await import(
   "../src/features/chat/utils/model-download-staging.ts"
 );
 
-function read(path: string): string {
-  return readFileSync(new URL(path, import.meta.url), "utf8");
-}
-
-const notice = read("../src/features/chat/components/chat-model-notice.tsx");
-const page = read("../src/features/chat/chat-page.tsx");
-const runtimeProvider = read("../src/features/chat/runtime-provider.tsx");
-const adapter = read("../src/features/chat/api/chat-adapter.ts");
-const chatApi = read("../src/features/chat/api/chat-api.ts");
-const types = read("../src/features/chat/types.ts");
-const thread = read("../src/components/assistant-ui/thread.tsx");
-const researchPanel = read(
+const notice = atDefaultUiScale(readText("../src/features/chat/components/chat-model-notice.tsx"));
+const page = atDefaultUiScale(readText("../src/features/chat/chat-page.tsx"));
+const runtimeProvider = atDefaultUiScale(readText("../src/features/chat/runtime-provider.tsx"));
+const adapter = atDefaultUiScale(readText("../src/features/chat/api/chat-adapter.ts"));
+const chatApi = atDefaultUiScale(readText("../src/features/chat/api/chat-api.ts"));
+const types = atDefaultUiScale(readText("../src/features/chat/types.ts"));
+const thread = atDefaultUiScale(readText("../src/components/assistant-ui/thread.tsx"));
+const researchPanel = readText(
   "../src/features/chat/components/research-activity-panel.tsx",
 );
-const artifact = read("../src/features/chat/artifacts/artifact-surface.tsx");
-const switchSource = read(
+const artifact = atDefaultUiScale(readText("../src/features/chat/artifacts/artifact-surface.tsx"));
+const switchSource = readText(
   "../src/features/chat/components/chat-model-notice-switch.ts",
 );
 
@@ -253,7 +254,7 @@ test("the conversation reserves the space the notice overlay takes", () => {
   // 0px so every surface without a notice keeps exactly the padding it had.
   assert.match(
     thread,
-    /pt-\[calc\(var\(--studio-content-top-inset,0px\)\+48px\+var\(--studio-chat-notice-height,0px\)\)\]/,
+    /pt-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\+var\(--studio-chat-notice-height,0px\)\)\]/,
   );
   // And the fade moves down with it, or it would dissolve behind the opaque bar.
   const fade = slice(page, "chat-header-fade", '"');
@@ -304,15 +305,18 @@ test("the canvas panel reserves the notice's height too", () => {
   // preview/source tabs and the close control sit in exactly that band, and the
   // notice is opaque and takes pointer events at z-30. Same fix as the research
   // panel, and 0px whenever no notice is on screen.
+  // The 90 and the 122 now carry the UI scale, minus the content inset, which
+  // is window chrome and stays fixed. At the default both come to what they
+  // were, so the geometry this test describes is unchanged.
   const panel = slice(artifact, 'variant === "panel"', "aria-label=");
   assert.match(
     panel,
-    /marginTop:\s*\n?\s*"calc\(90px \+ var\(--studio-chat-notice-height, 0px\)\)"/,
+    /marginTop:\s*\n?\s*"calc\(var\(--studio-content-top-inset, 0px\) \+ \(90px - var\(--studio-content-top-inset, 0px\)\) \* var\(--ui-space-scale, 1\) \+ var\(--studio-chat-notice-height, 0px\)\)"/,
   );
   // Both edges move, or the panel keeps its height and overflows the bottom.
   assert.match(
     panel,
-    /height:\s*\n?\s*"calc\(100% - 122px - var\(--studio-chat-notice-height, 0px\)\)"/,
+    /height:\s*\n?\s*"calc\(100% - var\(--studio-content-top-inset, 0px\) - \(122px - var\(--studio-content-top-inset, 0px\)\) \* var\(--ui-space-scale, 1\) - var\(--studio-chat-notice-height, 0px\)\)"/,
   );
   // The class list must not still carry the fixed geometry the style replaces.
   assert.doesNotMatch(panel, /mt-\[90px\]/);
@@ -378,7 +382,7 @@ test("a queued empty-model send backfills its resolved GGUF variant", () => {
     /queuedEmptyModelRuntime !== null[\s\S]{0,100}queuedEmptyModelRuntime\.activeGgufVariant[\s\S]{0,80}liveRuntime\.activeGgufVariant/,
   );
   assert.match(adapter, /params\.checkpoint,\s*runtime\.activeGgufVariant/);
-  const queuedSettings = read(
+  const queuedSettings = readText(
     "../src/features/chat/utils/queued-chat-run-settings.ts",
   );
   assert.match(queuedSettings, /"activeGgufVariant"/);
@@ -502,6 +506,16 @@ test("switching back to a hub GGUF loads it instead of staging a download", () =
   assert.match(
     page,
     /const wantManagerStaging = wantsDownloadManagerStaging\(selection\);/,
+  );
+
+  const stage = slice(
+    page,
+    "const stageOrLoad = useCallback",
+    "if (store.modelLoading)",
+  );
+  assert.match(
+    stage,
+    /const wantManagerStaging = wantsDownloadManagerStaging\(selection\);[\s\S]*if \(wantManagerStaging\) \{[\s\S]*dismissStartToastsForModelSelection\(\)/,
   );
 });
 
@@ -639,12 +653,40 @@ test("the switch back leaves the remembered config to stageOrLoad", () => {
   );
   assert.match(
     remembered,
-    /resolveInitialConfig\(selection\.id, selection\.ggufVariant\)/,
+    /resolveResidentInitialConfig\(\s*selection\.id,\s*selection\.ggufVariant,?\s*\)/,
   );
   assert.equal(
-    resolveInitialConfig(selection.id, selection.ggufVariant).config
+    resolveResidentInitialConfig(selection.id, selection.ggufVariant).config
       .customContextLength,
     32768,
+  );
+});
+
+test("switch back recovers a repo-keyed context through a snapshot path", () => {
+  store.clear();
+  const snapshotPath =
+    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
+  const repoId = "unsloth/Repo-GGUF";
+  assert.ok(
+    savePerModelConfig(repoId, "Q4_K_M", {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      customContextLength: 32768,
+    }),
+  );
+  assert.equal(resolveInitialConfig(snapshotPath, "Q4_K_M").remembered, false);
+  assert.equal(
+    resolveResidentInitialConfig(snapshotPath, "Q4_K_M").config
+      .customContextLength,
+    32768,
+  );
+  const remembered = slice(
+    page,
+    "const rememberedConfigFor = useCallback",
+    "const isExternalModel",
+  );
+  assert.match(
+    remembered,
+    /resolveResidentInitialConfig\(\s*selection\.id,\s*selection\.ggufVariant,?\s*\)/,
   );
 });
 

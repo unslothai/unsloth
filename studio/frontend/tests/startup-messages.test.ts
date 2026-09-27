@@ -5,6 +5,7 @@ import {
   INITIAL_STARTUP_MESSAGE,
   installProgressMessage,
   STATUS_MESSAGE_ROTATION_MS,
+  UPDATE_STARTUP_MESSAGE,
   startupMessageFromLog,
   startupWaitingMessage,
 } from "../src/components/tauri/startup-messages.ts";
@@ -66,4 +67,16 @@ test("nearly done only appears after the backend starts its server", () => {
 
 test("status copy rotates every five seconds", () => {
   assert.equal(STATUS_MESSAGE_ROTATION_MS, 5_000);
+});
+
+test("the update wait keeps its copy until the backend starts", () => {
+  assert.equal(startupWaitingMessage(UPDATE_STARTUP_MESSAGE, 3), "Finishing update...");
+  assert.equal(
+    startupMessageFromLog(UPDATE_STARTUP_MESSAGE, "unrelated output"),
+    UPDATE_STARTUP_MESSAGE,
+  );
+  assert.equal(
+    startupMessageFromLog(UPDATE_STARTUP_MESSAGE, "  - Starting server..."),
+    "Nearly done...",
+  );
 });

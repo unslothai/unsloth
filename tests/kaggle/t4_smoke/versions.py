@@ -18,8 +18,7 @@ wrapped, since dying while collecting diagnostics reports nothing at all.
 
 from __future__ import annotations
 
-# Libraries whose version bumps this CI exists to detect. Order is report
-# order: runtime stack first, Unsloth packages last.
+# Libraries whose version bumps this CI exists to detect.
 GOAL_PACKAGES = (
     "torch",
     "transformers",
@@ -31,19 +30,12 @@ GOAL_PACKAGES = (
     "triton",
     "xformers",
     "datasets",
-    # The transitive runtime packages the canary and frontier resolutions are
-    # allowed to move, which are not optional extras here: the frontier leg
-    # installs transformers and trl WITH their dependencies precisely so pip
-    # repairs them, and legs.py records the resolution doing it -- "Would
-    # install datasets-5.0.1 huggingface_hub-1.27.0 transformers-5.15.0
-    # trl-1.9.2", and before that the two errors that forced the change,
-    # "tokenizers<=0.23.0,>=0.22.0 is required, but found tokenizers==0.23.1"
-    # and "safetensors>=0.8.0 is required, but found safetensors==0.7.0".
-    #
-    # Left out, a red canary attributable to one of them produced a comparison
-    # table with nothing in it that differed: the table showed the packages the
-    # leg names and the failure was in a package it moved. Attribution is the
-    # only reason to run the canary at all.
+    # The transitive runtime packages the canary and frontier resolutions are allowed to move, which are not optional
+    # extras here: the frontier leg installs transformers and trl WITH their dependencies precisely so pip repairs them,
+    # and legs.py records the resolution doing it
+    # "Would install datasets-5.0.1 huggingface_hub-1.27.0 transformers-5.15.0 trl-1.9.2", and before that the two
+    # errors that forced the change, "tokenizers<=0.23.0,>=0.22.0 is required, but found tokenizers==0.23.1" and
+    # "safetensors>=0.8.0 is required, but found safetensors==0.7.0".
     "tokenizers",
     "safetensors",
     "huggingface_hub",
