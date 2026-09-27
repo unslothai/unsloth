@@ -480,7 +480,6 @@ test("BACKWARDS COMPAT: an old record still pins under the new code, on either b
   assert.equal(isDefaultConfig(config), false);
 });
 
-// 3.5 is the only width that is not also an mx.quantize one, so nothing else constrains it.
 test("the fractional TurboQuant choice survives the saved model record", () => {
   store.clear();
   savePerModelConfig(MODEL, null, { ...DEFAULT_PER_MODEL_CONFIG, mlxKvQuant: "tq-3.5" });

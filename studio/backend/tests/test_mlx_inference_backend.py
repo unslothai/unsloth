@@ -2999,22 +2999,16 @@ def test_kv_quant_status_applies_only_when_eligible(monkeypatch):
         (3.5, True),
     ]
 
-    # A text LoRA's modules address the text model, which the detour renames; vision is already there.
     refuse = mlx_inference._turboquant_refusal
     assert refuse(is_vision = False, is_distributed = False, is_lora = True)
     assert refuse(is_vision = False, is_distributed = True, is_lora = False)
     assert not refuse(is_vision = False, is_distributed = False, is_lora = False)
     assert not refuse(is_vision = True, is_distributed = True, is_lora = True)
 
-    # The scheme has to ride along, or the uniform quantizer serves that same number instead.
-    # TurboQuant is the one path handed a width; the pre-converted cache the uniform path sends
-    # instead is asserted against a real stack in the prompt-cache test below.
     turbo = mlx_inference.MLXInferenceBackend()
     turbo._kv_quant = {"kv_bits": 3.5}
     turbo._turboquant = True
     width = {"kv_bits": 3.5, "kv_quant_scheme": "turboquant", "quantized_kv_start": 0}
-    # The width is what the runtime converts from, so it travels on its own rather than with the
-    # cache: a turn that reuses one would otherwise generate unquantized with the setting still on.
     assert turbo._kv_runtime_quant_kwargs() == width
     assert turbo._kv_quant_generate_kwargs() == {}
 
@@ -3187,15 +3181,12 @@ def test_kv_quant_probe_reports_what_the_runtime_would_really_do(monkeypatch):
     assert elig(lambda: [lm_cache.KVCache()], dim = 80) == "refused"
     # A container the quantizer never descends into is skipped, not fatal.
     assert elig(lambda: [lm_cache.CacheList(lm_cache.KVCache())]) == "none"
-    # Gemma 4's layout: the rotating window keeps its ring, the full layers convert.
     windowed = lambda: [lm_cache.KVCache(), lm_cache.RotatingKVCache(max_size = 8)]
     assert elig(windowed) == "partial"
     assert "sliding-window" in verdict(windowed)[1]
-    # A skip the window does not explain falls back to the general reason.
     mixed = lambda: windowed() + [lm_cache.CacheList(lm_cache.KVCache())]
     assert verdict(mixed)[0] == "partial" and "sliding-window" not in verdict(mixed)[1]
     assert elig(lambda: [lm_cache.RotatingKVCache(max_size = 8)]) == "none"
-    # Attention that rejects the converted entry fails in the probe's second pass.
     assert elig(windowed, attends_quantized = False) == "refused"
     # Mixed quantizable/non-quantizable is a real success, reported as partial.
     assert elig(lambda: [lm_cache.KVCache(), lm_cache.CacheList(lm_cache.KVCache())]) == "partial"
@@ -3732,7 +3723,6 @@ def test_generate_kwargs_and_history_carry_a_pre_quantized_cache_and_no_kv_bits(
     from core.inference.mlx_inference import MLXInferenceBackend
 
     backend = MLXInferenceBackend()
-    # Rotating first, so a conversion that only reads the leading entry is visible.
     backend._model = _tiny_lm(lambda: [lm_cache.RotatingKVCache(max_size = 8), lm_cache.KVCache()])
     backend._kv_quant = {"kv_bits": None}
     assert backend._kv_quant_generate_kwargs() == {}
@@ -3744,7 +3734,6 @@ def test_generate_kwargs_and_history_carry_a_pre_quantized_cache_and_no_kv_bits(
     assert isinstance(rotating, lm_cache.RotatingKVCache)
     assert isinstance(full, lm_cache.QuantizedKVCache) and full.bits == 4
 
-    # The prompt-cache history hands out the same shape for a fresh conversation.
     cache, rest = backend._prompt_cache().fetch(backend._model, "key", [1, 2, 3])
     assert isinstance(cache[1], lm_cache.QuantizedKVCache) and rest == [1, 2, 3]
 
@@ -4734,7 +4723,6 @@ def test_turboquant_leaves_every_cache_for_the_runtime_to_build():
     from core.inference.mlx_inference import MLXInferenceBackend
 
     backend = MLXInferenceBackend()
-    # A fresh stack each time: the converter replaces entries in place.
     kinds = lambda: [
         type(entry).__name__
         for entry in backend._prepare_kv_entries([lm_cache.KVCache(), lm_cache.KVCache()])
@@ -4743,11 +4731,9 @@ def test_turboquant_leaves_every_cache_for_the_runtime_to_build():
     backend._kv_quant = {"kv_bits": 3.5}
     backend._turboquant = True
     assert kinds() == ["KVCache"] * 2
-    # An integer width takes the same path, so the rule is the scheme and not the arithmetic.
     backend._kv_quant = {"kv_bits": 4}
     assert kinds() == ["KVCache"] * 2
 
-    # The uniform path still converts, which is what the scheme is choosing between.
     backend._turboquant = False
     assert kinds() == ["QuantizedKVCache"] * 2
 
@@ -4825,8 +4811,6 @@ def test_turboquant_sends_its_width_on_the_reused_cache_turn_too(monkeypatch):
         assert kwargs["kv_bits"] == 3.5
         assert kwargs["kv_quant_scheme"] == "turboquant"
         assert kwargs["quantized_kv_start"] == 0
-    # The reused turn still carries its cache, and the fresh one builds none of its own: the width
-    # is what quantizes here, so a second cache would only discard the reuse.
     assert "prompt_cache" in reused and "prompt_cache" not in fresh
 
 

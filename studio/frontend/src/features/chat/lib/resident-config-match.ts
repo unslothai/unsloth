@@ -267,7 +267,6 @@ const SETTING_CHECKS: SettingCheck[] = [
   {
     mlxComparable: true,
     pinned: () => true,
-    // Normalized: the backend spells Auto "auto" and the control spells it null.
     agrees: (c, s) =>
       (c.mlxKvQuant ?? null) === normalizeMlxKvQuant(s.mlx_kv_quant_requested),
   },

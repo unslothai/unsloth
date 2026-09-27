@@ -259,7 +259,6 @@ export const KV_CACHE_DTYPES = [
   "f32",
 ] as const;
 
-// Widths, not dtypes; TurboQuant's repeat mx.quantize's numbers, so the scheme rides in the value.
 export const MLX_KV_QUANTS = [
   "8",
   "6",
@@ -1052,7 +1051,6 @@ function normalize(raw: unknown): PerModelConfig {
  *  client reconstructs anyway, and stamping every record v4 would put the whole store out of reach.
  *  The tuning group and the reasoning pair follow the same rule. */
 function storedSchemaVersion(normalized: PerModelConfig): number {
-  // A width the superseded mlxKvBits could also spell still stamps v7: that spelling is gone.
   if (normalized.mlxKvQuant != null) {
     return STORAGE_SCHEMA_VERSION;
   }

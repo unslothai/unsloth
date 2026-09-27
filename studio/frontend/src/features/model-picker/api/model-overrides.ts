@@ -311,7 +311,6 @@ export function fromApiOverride(
   // auto-switch max_seq_length first. So a row stating either field owns both.
   const serverStatesPin =
     override.custom_context_length != null || override.max_seq_length != null;
-  // Naming either field is the statement: null asked for an unquantized cache.
   const serverStatesKvQuant =
     "mlx_kv_quant" in override || "mlx_kv_bits" in override;
   const normalized = normalizePerModelConfig({

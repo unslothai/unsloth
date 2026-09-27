@@ -34,7 +34,6 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
       mlxKvQuantNote: null,
     };
   }
-  // Requested, not applied: a refusal has a reason but no width.
   const requested = normalizeMlxKvQuant(resp.mlx_kv_quant_requested);
   return {
     mlxKvQuant: requested,

@@ -896,7 +896,6 @@ def set_model_override(
         coupled_fields = (
             # The pin and its index space are one value: filling the qualifier onto ids this browser did not write relabels them.
             ("gpu_ids", "gpu_index_kind"),
-            # Two names for one setting: a row holding either is already set.
             ("mlx_kv_quant", "mlx_kv_bits"),
         ),
     )

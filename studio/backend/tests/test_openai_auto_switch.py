@@ -9038,7 +9038,6 @@ def test_mlx_kv_quant_survives_the_whole_override_projection():
     assert settings.model_override_load_kwargs(both, is_gguf = False) == {}
     assert LoadRequest(model_path = "unsloth/A", **both).mlx_kv_quant == "auto"
 
-    # Folded before storage sees it: an explicit null is Auto, not a payload predating the setting.
     def _folded(**kw):
         payload = settings_route.ModelOverridePayload(model_id = "m", **kw)
         return payload.mlx_kv_quant, payload.mlx_kv_bits

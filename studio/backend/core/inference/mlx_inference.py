@@ -1381,7 +1381,6 @@ PROMPT_CACHE_ENTRIES = 6
 
 # Every bit width mx.quantize supports; unrelated to llama.cpp's cache_type_kv names.
 MLX_KV_BITS_CHOICES = (8, 6, 5, 4, 3, 2)
-# TurboQuant's own widths: 3.5 is 3-bit keys beside 4-bit values, with no mx.quantize equivalent.
 MLX_TURBOQUANT_BITS_CHOICES = (4, 3.5, 3, 2)
 # Quantization group size; a head dim that is not a multiple makes mx.quantize raise.
 MLX_KV_GROUP_SIZE = 64
@@ -1390,12 +1389,10 @@ MLX_KV_QUANT_NO_REUSE = (
     "The installed mlx-lm cannot measure a quantized cache entry, so prompt-cache "
     "reuse across turns is disabled while this is on."
 )
-# A limited cache is rotating in every layer, so nothing in it could be quantized.
 MLX_KV_QUANT_PINNED_CONTEXT = (
     "Context Length is set for this model, which limits the KV cache, and a limited "
     "cache cannot be quantized. Reset it to quantize instead."
 )
-# Yields, not failures: a load that cannot take the detour serves the model without the setting.
 MLX_TURBOQUANT_DISTRIBUTED_TEXT = (
     "TurboQuant is not available for this model under distributed inference. Run it on a "
     "single device, or turn TurboQuant off."
@@ -1592,7 +1589,6 @@ def _kv_quant_probe(language_model, entries, bits):
         # Verdict already known, so skip the cost of a full model call.
         return 0, skipped, None, True
 
-    # The forward passes below draw random numbers, so keep sampled output stable.
     rng_key = _mlx_rng_key_words()
     try:
         try:
@@ -1610,7 +1606,6 @@ def _kv_quant_probe(language_model, entries, bits):
             mx.eval([getattr(entry, "state", None) for entry in entries])
         except Exception as exc:
             return 0, 0, f"it cannot attend over a quantized cache ({type(exc).__name__})", True
-        # Same helper insertion uses, so the caveat matches what insertion sees.
         retainable = all(_kv_entry_nbytes(entries[index]) is not None for index in targets)
         return len(targets), skipped, None, retainable
     finally:
@@ -3094,7 +3089,6 @@ class MLXInferenceBackend:
                 **load_kwargs,
             )
         except Exception as exc:
-            # Vision has no other runtime, so only there is a detour failure the load's failure.
             if is_vision or not use_vlm:
                 raise
             logger.warning(
@@ -3134,7 +3128,6 @@ class MLXInferenceBackend:
             self._model, max_seq_length
         )
         self._served_context = _served_ctx
-        # Classified now so a cache the model cannot attend over is refused here, not on a token.
         self._kv_quant, self._kv_cache_window, _ctx_enforced = self._resolve_kv_policy(
             use_vlm, kv_bits, max_seq_length, _served_ctx
         )
@@ -3434,8 +3427,7 @@ class MLXInferenceBackend:
         full_messages = self._with_system_prompt(messages, system_prompt)
 
         if self._is_vlm:
-            # Through the processor, as an mlx-vlm generation renders; images=None because an
-            # image anywhere makes the structured-item check raise, and the caller declines.
+            # images=None: an image anywhere makes the structured-item check raise.
             prompt, _target, _markers = self._render_vlm_prompt(
                 full_messages,
                 None,
@@ -4327,7 +4319,6 @@ class MLXInferenceBackend:
 
         yield from normalize_reasoning_snapshots(
             _stream_vlm_snapshots(),
-            # No detection source: a target here would detect the renderer's own answer away.
             cancel_event = cancel_event,
             markers = vlm_reasoning_markers,
             tools = tools,
