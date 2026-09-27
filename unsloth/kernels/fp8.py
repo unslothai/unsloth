@@ -595,7 +595,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             and rowwise
             and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
             and x.shape[-1] == weight.shape[1]
-            # Decode-sized calls: compiled dequant + GEMV beats quantizing the activation (Qwen3-8B decode +5%).
+            # Decode-sized calls: compiled dequant + GEMV beats quantizing the activation.
             and x.numel() > 64 * x.shape[-1]
         ):
             output_shape = (*x.shape[:-1], -1)
