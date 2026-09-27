@@ -1161,6 +1161,9 @@ _hub_model_info_scope: ContextVar[Optional[_HubModelInfoScope]] = ContextVar(
 
 # Bound the Hub lookup so a DNS-dead session fails fast to the cache instead of hanging on retries.
 _HUB_MODEL_INFO_TIMEOUT = 15.0
+# The GGUF listing picks the whole route, and it was unbounded before the bound above: a link
+# slower than 15s could never pass three identical reads and the repo fell to Transformers.
+_GGUF_LISTING_TIMEOUTS = (_HUB_MODEL_INFO_TIMEOUT, 30.0, 60.0)
 
 
 @_contextlib.contextmanager
@@ -1204,6 +1207,23 @@ def _hub_model_info(
     if scope is not None:
         scope[key] = info
     return info
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    return any("Timeout" in cls.__name__ for cls in type(exc).__mro__)
+
+
+def _hub_model_info_slow_link(repo_id: str, hf_token: HfTokenArg = None, *, files_metadata: bool = False):
+    """``_hub_model_info``, re-read with the next ``_GGUF_LISTING_TIMEOUTS`` bound only after a
+    timeout; a refusal or a dead DNS still fails on the first attempt."""
+    for attempt, timeout in enumerate(_GGUF_LISTING_TIMEOUTS):
+        try:
+            return _hub_model_info(repo_id, hf_token, files_metadata = files_metadata, timeout = timeout)
+        except Exception as e:
+            if attempt == len(_GGUF_LISTING_TIMEOUTS) - 1 or not _is_timeout_error(e):
+                raise
 
 
 # Revision-less entries keep the historical 3-part key; pinned entries append revision.
@@ -3053,7 +3073,7 @@ def list_gguf_variants(
         return cached if cached is not None else ([], False)
 
     try:
-        info = _hub_model_info(repo_id, hf_token, files_metadata = True)
+        info = _hub_model_info_slow_link(repo_id, hf_token, files_metadata = True)
     except Exception as e:
         # Permanent errors (deleted/gated/bad revision) must surface; stale cache would mask the
         # real cause. Matches the early return in ``detect_gguf_model_remote``.
@@ -3364,9 +3384,13 @@ _GGUF_REPO_NAME_RE = _re.compile(r"(?:^|[-_.])gguf(?:$|[-_.])", _re.IGNORECASE)
 
 
 def _looks_like_gguf_repo(repo_id: str, gguf_variant: Optional[str] = None) -> bool:
-    if gguf_variant:
+    if _GGUF_REPO_NAME_RE.search(repo_id.rstrip("/").rsplit("/", 1)[-1]):
         return True
-    return bool(_GGUF_REPO_NAME_RE.search(repo_id.rstrip("/").rsplit("/", 1)[-1]))
+    # A variant echoed back for a cached Transformers repo must still reach Transformers,
+    # which can load it from that cache.
+    return bool(gguf_variant) and not any(
+        (snap / "config.json").is_file() for snap in _iter_hf_cache_snapshots(repo_id)
+    )
 
 
 def _gguf_repo_unreadable_message(repo_id: str, error: Optional[Exception]) -> str:
@@ -3391,7 +3415,7 @@ def _gguf_repo_unreadable_message(repo_id: str, error: Optional[Exception]) -> s
 def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Optional[str]:
     """Return the best GGUF filename in a HF repo, or None.
 
-    Retries (3 attempts, 1s/2s/4s backoff) on transient HF Hub failures: a
+    Retries (3 attempts bounded 15s/30s/60s, 1s/2s backoff) on transient HF Hub failures: a
     silent None would make the caller treat a GGUF-only repo as non-GGUF and
     fall through to MLX on Apple Silicon. Offline falls back to the local cache.
     A None from a failed Hub read (not from a listing without GGUFs) is also
@@ -3401,9 +3425,9 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
         return _detect_gguf_from_hf_cache(repo_id)
 
     last_err: Optional[Exception] = None
-    for attempt in range(3):
+    for attempt, timeout in enumerate(_GGUF_LISTING_TIMEOUTS):
         try:
-            info = _hub_model_info(repo_id, hf_token)
+            info = _hub_model_info(repo_id, hf_token, timeout = timeout)
             repo_files = []
             for sibling in info.siblings:
                 fname = sibling.rfilename

@@ -176,3 +176,54 @@ def test_public_detect_signature_unchanged_outside_from_identifier(monkeypatch):
 )
 def test_looks_like_gguf_repo(repo_id, expected):
     assert _looks_like_gguf_repo(repo_id) is expected
+
+
+def test_variant_for_a_cached_transformers_repo_still_reaches_transformers(monkeypatch, _isolated):
+    _cache(_isolated, "org/some-model", "config.json")
+    monkeypatch.setattr(huggingface_hub, "model_info", _hub(OSError("proxy refused")))
+    config = ModelConfig.from_identifier("org/some-model", gguf_variant = "Q4_K_M")
+    assert config is not None and not config.is_gguf
+
+
+def test_slow_link_recovers_on_a_longer_bound(monkeypatch):
+    timeouts = []
+
+    def model_info(repo_id, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        if len(timeouts) == 1:
+            raise TimeoutError("read timed out")
+        return SimpleNamespace(siblings = [SimpleNamespace(rfilename = GGUF)])
+
+    monkeypatch.setattr(huggingface_hub, "model_info", model_info)
+    config = ModelConfig.from_identifier(REPO)
+    assert config.is_gguf
+    # The retry after a timeout is not the same 15s read that just failed (#10230).
+    assert timeouts[:2] == [15.0, 30.0]
+
+
+def test_listing_bounds_escalate_and_a_refusal_is_not_retried(monkeypatch):
+    timeouts = []
+
+    def timing_out(repo_id, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        raise TimeoutError("read timed out")
+
+    monkeypatch.setattr(huggingface_hub, "model_info", timing_out)
+    assert detect_gguf_model_remote(REPO) is None
+    assert timeouts == [15.0, 30.0, 60.0]
+
+    timeouts.clear()
+    with pytest.raises(TimeoutError):
+        mc._hub_model_info_slow_link(REPO)
+    assert timeouts == [15.0, 30.0, 60.0]
+
+    calls = []
+
+    def refused(repo_id, **kwargs):
+        calls.append(kwargs.get("timeout"))
+        raise RepositoryNotFoundError("401 Client Error")
+
+    monkeypatch.setattr(huggingface_hub, "model_info", refused)
+    with pytest.raises(RepositoryNotFoundError):
+        mc._hub_model_info_slow_link(REPO)
+    assert calls == [15.0]
