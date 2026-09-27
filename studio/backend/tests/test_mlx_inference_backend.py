@@ -5180,10 +5180,6 @@ def test_advance_before_the_first_mask_raises_rather_than_dropping_the_token(tin
         constraint.advance(tiny_tokenizer.encode("{", add_special_tokens = False)[0])
 
 
-def test_mlx_vlm_recovers_native_tool_tokens_like_the_text_path(monkeypatch):
-    from core.inference import mlx_inference
-
-
 def _uncopyable_naive_detokenizer(detokenizers):
     """mlx-vlm's naive detokenizer as it behaves BELOW 0.6.0, which is where ``__copy__`` arrived.
 
@@ -7071,3 +7067,68 @@ def test_a_random_model_decoding_through_mlx_lm_emits_only_the_schema():
     document = json.loads(text)
     assert document["a"] in ("x", "y") and isinstance(document["b"], bool)
     assert set(document) == {"a", "b"}
+
+
+def _constrained_vlm_reply(
+    monkeypatch,
+    pieces,
+    *,
+    allows_reasoning,
+    markers,
+    specials = (),
+):
+    """Snapshots ``_generate_vlm`` yields for scripted text under a stand-in grammar."""
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(MODEL_CONFIG = {}, apply_chat_template = None)
+    mlx_vlm.stream_generate = lambda *_a, **_k: iter(
+        [SimpleNamespace(text = piece, prompt_tokens = 1, generation_tokens = 1) for piece in pieces]
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_a, **_k: "user: hi\nassistant: <think>\n",
+    )
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
+    )
+    monkeypatch.setattr(
+        mlx_inference, "detect_reasoning_channel_markers", lambda *_a, **_k: markers
+    )
+    monkeypatch.setattr(
+        mlx_inference,
+        "_build_grammar_constraint",
+        lambda *_a, **_k: SimpleNamespace(allows_reasoning = allows_reasoning),
+    )
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_k: None)
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_is_diffusion", lambda _model: False)
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
+    backend._processor = SimpleNamespace(chat_template = "template", all_special_tokens = specials)
+    args = ([{"role": "user", "content": "hi"}], [], 0.7, 0.9, 40, 0.01, 64, 1.0, None)
+    return list(backend._generate_vlm(*args, response_format = {"type": "json_object"}))
+
+
+def test_a_document_only_vlm_reply_is_not_rewritten_by_the_reasoning_normalizer(monkeypatch):
+    document = '{"city":"<think>Paris</think>"}'
+    snapshots = _constrained_vlm_reply(
+        monkeypatch,
+        [document[:12], document[12:]],
+        allows_reasoning = False,
+        markers = ("<think>", "</think>"),
+    )
+    assert snapshots[-1] == document
+
+
+def test_an_allowed_vlm_reasoning_block_keeps_its_opener_when_the_closer_is_special(monkeypatch):
+    snapshots = _constrained_vlm_reply(
+        monkeypatch,
+        ["x", "</think>", '{"a":1}'],
+        allows_reasoning = True,
+        markers = None,
+        specials = ("</think>",),
+    )
+    assert snapshots[-1] == '<think>\nx</think>{"a":1}'

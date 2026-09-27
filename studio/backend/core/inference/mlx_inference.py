@@ -3956,6 +3956,10 @@ class MLXInferenceBackend:
         document_only = constraint is not None and not constraint.allows_reasoning
         if document_only:
             prefill = ""
+        elif constraint is not None:
+            # The grammar let a special </think> close the block and this text keeps it, so the
+            # opener must be re-emitted too or the route reads the whole reply as content.
+            prefill = detect_think_prefill(prompt, preserves_think_close = True)
         if constraint is not None and _vlm_generation_is_diffusion(self._model):
             from core.inference.grammar_constraint import ResponseFormatError
             raise ResponseFormatError(
@@ -4139,16 +4143,21 @@ class MLXInferenceBackend:
                             ),
                         )
 
-        yield from normalize_reasoning_snapshots(
-            _stream_vlm_snapshots(),
-            None if document_only else chat_target,
-            cancel_event,
-            markers = vlm_reasoning_markers,
-            tools = tools,
-            prompt = prompt,
-            continued = vlm_continued,
-            ended = lambda: stopped,
-        )
+        if document_only:
+            # Explicit markers override a None tokenizer, so skip the normalizer outright: it
+            # would rewrite marker text inside the document.
+            yield from _stream_vlm_snapshots()
+        else:
+            yield from normalize_reasoning_snapshots(
+                _stream_vlm_snapshots(),
+                chat_target,
+                cancel_event,
+                markers = vlm_reasoning_markers,
+                tools = tools,
+                prompt = prompt,
+                continued = vlm_continued,
+                ended = lambda: stopped,
+            )
         if stopped:
             self._mark_stopped()
 
