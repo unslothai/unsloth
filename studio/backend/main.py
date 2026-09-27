@@ -663,7 +663,6 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         return
     _start_linked_folder_auto_sync(generation)
 
-    # Sweep chat originals in every account: pending sweep timers died with the last process.
     try:
         from core import chat_originals
         from core.training.account_jobs import startup_reconciliation_accounts

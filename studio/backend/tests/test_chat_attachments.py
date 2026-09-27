@@ -371,7 +371,6 @@ def test_attachment_file_serves_text_parts(tmp_path, monkeypatch):
     }
     _seed(tmp_path, monkeypatch, [attachment])
     response = chat_history.get_attachment_file("msg-1", "att-txt", current_subject = "unsloth")
-    # Served as the file reads, without the wrappers chat adds for the model.
     assert response.body.decode("utf-8") == "first\nsecond\nthird"
     assert response.media_type.startswith("text/plain")
 
@@ -690,7 +689,6 @@ def test_a_sweep_rechecks_a_stale_snapshot_before_removing(tmp_path, monkeypatch
         "original": {"sha256": sha256, "sizeBytes": size},
     }
     studio_db.upsert_chat_message(_message("msg-1", attachments = [attachment]))
-    # A fork committed after the scan's snapshot: the file is still referenced.
     monkeypatch.setattr(studio_db, "referenced_chat_original_hashes", lambda: set())
     assert chat_originals.sweep(force = True) == 0
     assert path.is_file()

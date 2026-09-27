@@ -364,7 +364,6 @@ def test_an_original_sent_many_times_counts_once_toward_disk_usage(client, monke
         ],
     )
     items = _items(client)[0]
-    # Each message's extracted text counts; the original only once, and only while on disk.
     usage = [items[f"attachment:m:{name}"]["storageBytes"] for name in "abcde"]
     assert usage == [1050, 50, 1050, 50, 50]
     assert all(items[f"attachment:m:{name}"]["sizeBytes"] == 1000 for name in "abcde")
@@ -686,9 +685,7 @@ def test_an_export_links_to_its_run_only_through_studio_metadata(tmp_path, monke
     run_id = lambda name: library._model_run_id(
         str(exports / name / "model.gguf"), "exported", runs
     )
-    # No metadata: a copied-in folder claims nothing, whatever its name.
     assert run_id("foo-GGUF") is None
-    # An older Studio export falls back to its name; a newer one names its checkpoint.
     assert (run_id("foo-merged"), run_id("renamed")) == ("run-foo", "run-bar")
 
 

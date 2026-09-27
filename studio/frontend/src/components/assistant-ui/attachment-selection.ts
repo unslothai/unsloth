@@ -4,7 +4,6 @@
 import { documentKind, isMarkdown, sheetDelimiter } from "@/components/file-viewer/kind";
 import { isAudioAttachment } from "@/features/chat/attachment-content";
 
-/** "document": shown as it looks (pages, a grid, slides or rendered markdown), not as text. */
 export type AttachmentPreviewKind = "image" | "audio" | "text" | "document";
 
 export type AttachmentAudioPart = { data: string; format: string };
@@ -24,11 +23,9 @@ export type AttachmentSelection = {
   image: string | undefined;
   audio: AttachmentAudioPart | undefined;
   text: string | undefined;
-  /** A sent document whose original file the server kept (features/chat/attachment-originals). */
   hasOriginal: boolean;
 };
 
-/** Whether the viewer has content: the file, a kept original, or full text (markdown, CSV). */
 function isViewableDocument(
   name: string,
   contentType: string | undefined,

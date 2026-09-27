@@ -423,11 +423,9 @@ def _attachment_items() -> list[dict]:
     from storage.studio_db import list_chat_attachments
 
     items = []
-    # One file on disk however many messages sent it, so disk usage counts each original once.
     counted: set[str] = set()
     for attachment in list_chat_attachments():
         content_type = str(attachment.get("contentType") or "").split(";", 1)[0].strip().lower()
-        # A document sent with its original file (core.chat_originals) serves that file, not text.
         has_bytes = (
             attachment.get("type") in ("image", "audio")
             or content_type.startswith(("image/", "audio/", "video/"))
@@ -449,7 +447,6 @@ def _attachment_items() -> list[dict]:
                 pair_id = attachment.get("pairId"),
             )
         )
-        # Disk usage: the extracted text in the database, plus the original the first time it appears.
         sha256 = attachment.get("originalSha256")
         if sha256:
             text_bytes = attachment.get("textBytes") or 0
@@ -626,7 +623,6 @@ def _export_metadata(path: str, root: Path) -> Optional[dict]:
         meta = here / "export_metadata.json"
         if meta.is_file():
             try:
-                # Studio writes a few hundred bytes; one past the bound is not Studio's.
                 with open(meta, "rb") as handle:
                     raw = handle.read(_MAX_EXPORT_METADATA_BYTES + 1)
                 if len(raw) > _MAX_EXPORT_METADATA_BYTES:
@@ -2152,7 +2148,6 @@ def delete_item(item_id: str, fingerprint: Optional[str] = None) -> bool:
     with _overlay_lock:
         deleted = _delete_item(item_id, fingerprint)
     if deleted and item_id.startswith("attachment:"):
-        # May have held the last reference to an original. Swept outside the lock.
         from core import chat_originals
         chat_originals.sweep()
     return deleted

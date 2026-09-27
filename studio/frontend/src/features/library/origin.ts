@@ -11,8 +11,6 @@ export interface LibraryOrigin {
   open: () => void;
 }
 
-/** Where an item was made or shared: its chat, project, training run or media history.
- *  Direct Library uploads have none. */
 export function useLibraryOrigin(): (item: LibraryItem) => LibraryOrigin | null {
   const navigate = useNavigate();
   return (item) => {

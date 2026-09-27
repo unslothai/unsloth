@@ -18,7 +18,6 @@ import { type FC, type PropsWithChildren, useEffect, useRef, useState } from "re
 
 const SCALES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
-/** `plain`: stored text when the original is gone. `text`/`plain` are capped (`truncated`); `blob` is whole. */
 type Loaded = { blob?: Blob; text?: string; plain?: string; truncated?: boolean; error?: boolean };
 
 const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; scale: number }> = ({
@@ -61,7 +60,6 @@ const DocumentDialog: FC<
     source: AttachmentSource;
     load: () => Promise<Blob>;
     redactFromReload: boolean;
-    /** A text response is the stored text: the server serves that when the original is gone. */
     textFallback?: boolean;
   }>
 > = ({ children, source, load, redactFromReload, textFallback = false }) => {
@@ -131,7 +129,6 @@ const DocumentDialog: FC<
         actions={{
           onDownload: blob
             ? () =>
-                // The stored text, when the original is gone: saved as text, not under the document's type.
                 void (loaded?.plain !== undefined
                   ? downloadFile(blob, `${source.name.replace(/\.[^.]+$/, "")}.txt`, "text/plain")
                   : downloadFile(blob, source.name, source.contentType || undefined))
@@ -179,7 +176,6 @@ export const AttachmentDocumentDialog: FC<
       </DocumentDialog>
     );
   }
-  // A sent CSV or note keeps the whole file as its text, inside the attachment's wrapper.
   if (!source.hasOriginal && text !== undefined) {
     return (
       <DocumentDialog

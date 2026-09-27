@@ -30,7 +30,6 @@ from utils.paths.storage_roots import account_path, ensure_account_dir
 
 logger = get_logger(__name__)
 
-# The documents a chat can show as pages or a grid. Anything else keeps its text alone.
 EXTENSIONS = frozenset({".pdf", ".docx", ".xlsx", ".xlsm", ".pptx"})
 MAX_BYTES = 50 * 1024 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -39,9 +38,7 @@ _SWEEP_INTERVAL_SECONDS = 600
 _sweep_lock = threading.Lock()
 # Held across save-publish and sweep check-and-remove, so a sweep never removes a just-refreshed file.
 _file_lock = threading.Lock()
-# Per originals folder: each account has its own, and one account's sweep must not delay another's.
 _last_sweep: dict[Path, float] = {}
-# Pending sweeps per folder (when, which account); one thread serves them all.
 _due: dict[Path, tuple[float, contextvars.Context]] = {}
 _due_changed = threading.Condition()
 _worker: Optional[threading.Thread] = None
@@ -121,7 +118,6 @@ def sweep(force: bool = False) -> int:
         if not throttled:
             _last_sweep[directory] = now
     if throttled:
-        # A file uploaded now still needs a sweep once it ages past the grace period.
         _schedule(directory)
         return 0
     try:
@@ -135,7 +131,6 @@ def sweep(force: bool = False) -> int:
                     continue
                 if not (is_original or entry.name.endswith(".tmp")):
                     continue
-                # Unreferenced originals and crashed-upload temps; stat again under the lock.
                 with _file_lock:
                     try:
                         mtime = os.stat(entry.path).st_mtime

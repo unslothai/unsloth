@@ -17,15 +17,11 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 const MAX_PAGE_WIDTH = 880;
 const PAGE_GAP = 16;
 const EDGE = 24;
-// Canvas bound: an extreme MediaBox would otherwise ask for more pixels than a browser holds.
 const MAX_CANVAS_PIXELS = 32 * 1024 * 1024;
 const MAX_CANVAS_SIDE = 16384;
-// PDF.js skips larger images before decoding; a 600dpi letter/A4 scan still fits.
 const PDF_OPTIONS = { maxImageSize: 64 * 1024 * 1024 };
 const MIN_PIXEL_RATIO = 0.1;
-// A page with more text runs than this shows without its text layer: each is a positioned span.
 const MAX_TEXT_ITEMS = 20_000;
-// PDF.js holds every operation it reads, and a small stream can hold millions.
 const MAX_PAGE_OPERATIONS = 1_000_000;
 const MAX_PDF_PAGES = 10_000;
 const clampAspect = (aspect: number) => Math.min(Math.max(aspect, 0.05), 20);
@@ -37,11 +33,9 @@ type PdfDocument = {
   }>;
 };
 
-// Pages found past the operation bound, by document, so one scrolled back to is not drawn again.
 const overflowed = new WeakMap<object, Set<number>>();
 const PageOverflow = createContext<() => void>(() => {});
 
-/** react-pdf's canvas, drawn the same way, but stopped once a page passes MAX_PAGE_OPERATIONS. */
 function PdfCanvas() {
   const context = usePageContext();
   const onOverflow = useContext(PageOverflow);
@@ -76,13 +70,11 @@ function PdfCanvas() {
     });
     task.promise.catch(() => {
       if (!over) return;
-      // Frees the operations read so far, once the stream behind them is stopped.
       page.cleanup();
       onOverflow();
     });
     return () => {
       task.cancel();
-      // react-pdf keeps operations and images until the document closes; free them on unmount.
       page.cleanup();
       canvas.width = 0;
       canvas.height = 0;
@@ -107,7 +99,6 @@ function PdfPage({ pdf, index, width, aspect }: { pdf: PdfDocument; index: numbe
       live = false;
     };
   }, [pdf, index]);
-  // The page whose text runs were counted and found within the bound: its text layer is added then.
   const [selectable, setSelectable] = useState<number | null>(null);
   useEffect(() => {
     let live = true;
@@ -235,7 +226,6 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
         onLoadError={() => setFailed(file)}
         loading={<Spinner className="mx-auto mt-24 size-6" />}
       >
-        {/* Keyed on the size, so the virtualizer measures afresh. */}
         {available > 0 && pdf && (
           <PdfPages
             key={`${width}:${aspect}`}

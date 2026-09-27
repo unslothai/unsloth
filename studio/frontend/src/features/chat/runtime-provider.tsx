@@ -267,7 +267,6 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const threadIds = this.getThreadIds();
     const reservationToken = findPreStreamRunReservation(threadIds);
-    // Read now: extraction can take a while, and the send belongs to the chat and account as they were.
     const { incognito } = useChatRuntimeStore.getState();
     const epoch = getAuthSessionEpoch();
     try {
@@ -590,13 +589,11 @@ class OfficeAttachmentAdapter implements AttachmentAdapter {
   ].join(",");
 
   private label(name: string, type: string): "XLSX" | "PPTX" {
-    // Own keys only, so ".constructor" finds nothing.
     const extension = name.split(".").pop()?.toLowerCase() ?? "";
     const byName = Object.hasOwn(OFFICE_LABELS, extension) ? OFFICE_LABELS[extension] : undefined;
     return byName ?? (type.includes("presentationml") ? "PPTX" : "XLSX");
   }
 
-  // Read at add: the composer drops the typed message before send(), so refuse unreadable files here.
   private readonly texts = new Map<string, string>();
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
@@ -850,7 +847,6 @@ function cloneAttachments(
   if (!Array.isArray(attachments)) {
     return [];
   }
-  // A temporary chat's in-memory File has no JSON form; persistAttachmentOriginals uploads it.
   return JSON.parse(JSON.stringify(attachments.map((attachment) => ({ ...attachment, file: undefined }))));
 }
 
@@ -1477,7 +1473,6 @@ export async function persistTemporaryThread({
     });
     const epoch = getAuthSessionEpoch();
     const records: MessageRecord[] = await Promise.all(parentsFirst(messages).map(async ({ parentId, message }) => {
-      // Documents kept in memory are uploaded now, before the File is lost to JSON.
       const attachments =
         message.role === "user"
           ? cloneAttachments(await persistAttachmentOriginals(message.attachments, epoch))

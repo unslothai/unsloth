@@ -46,7 +46,6 @@ const useFileSrc = (file: File | undefined): string | undefined => {
 export const useAttachmentSource = (): AttachmentSource => {
   const source = useAuiState(useShallow(selectAttachmentSource));
 
-  // A document is read by its viewer, from the File itself; only media needs a URL.
   const fileSrc = useFileSrc(
     source.kind === "text" || source.kind === "document" ? undefined : source.file,
   );

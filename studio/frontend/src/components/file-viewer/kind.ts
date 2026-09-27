@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** The document types rendered as pages or a grid rather than as text. */
 export type DocumentKind = "pdf" | "docx" | "sheet" | "slides";
 
 const EXTENSION_KINDS: Record<string, DocumentKind> = {
@@ -14,7 +13,6 @@ const EXTENSION_KINDS: Record<string, DocumentKind> = {
   pptx: "slides",
 };
 
-// For a file picked without its extension.
 const TYPE_KINDS: Record<string, DocumentKind> = {
   "application/pdf": "pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
@@ -25,7 +23,6 @@ const TYPE_KINDS: Record<string, DocumentKind> = {
   "text/tab-separated-values": "sheet",
 };
 
-// Own keys only: a name ending ".constructor" must not find Object.prototype's.
 function lookUp(table: Record<string, DocumentKind>, key: string): DocumentKind | undefined {
   return Object.hasOwn(table, key) ? table[key] : undefined;
 }
@@ -50,7 +47,6 @@ const DELIMITERS: Record<string, "," | "\t"> = {
   "text/tab-separated-values": "\t",
 };
 
-/** A CSV or TSV's delimiter, by extension or else MIME type; null for any other file. */
 export function sheetDelimiter(name: string, contentType = ""): "," | "\t" | null {
   const extension = extensionOf(name);
   const key = lookUp(EXTENSION_KINDS, extension) ? extension : mimeOf(contentType);
@@ -60,10 +56,8 @@ export function sheetDelimiter(name: string, contentType = ""): "," | "\t" | nul
 const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdx"]);
 const MARKDOWN_TYPES = new Set(["text/markdown", "text/x-markdown"]);
 
-/** Markdown, by extension or MIME type: shown rendered rather than as its source. */
 export function isMarkdown(name: string, contentType = ""): boolean {
   return MARKDOWN_EXTENSIONS.has(extensionOf(name)) || MARKDOWN_TYPES.has(mimeOf(contentType));
 }
 
-/** Documents past this are offered as a download instead: each viewer parses on the main thread. */
 export const MAX_DOCUMENT_PREVIEW_BYTES = 50 * 1024 * 1024;

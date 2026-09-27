@@ -891,7 +891,6 @@ class ExportBackend:
                 if self.current_checkpoint
                 else None
             )
-            # The local checkpoint exported, so Library can link the export to its training run.
             source = self.current_checkpoint
             metadata = {
                 "base_model": base_model,

@@ -981,7 +981,6 @@ def _decode_attachment_base64(payload: str) -> bytes:
         raise HTTPException(status_code = 422, detail = "Attachment data is corrupt") from exc
 
 
-# The wrappers chat puts around attachment text for the model (features/chat/attachment-content.ts).
 _ATTACHMENT_TAG_RE = re.compile(r"<attachment name=[^\n]*>\n(.*)\n</attachment>", re.DOTALL)
 _ATTACHMENT_LABEL_RE = re.compile(r"\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX): [^\n]*\]\n")
 
@@ -1048,7 +1047,6 @@ def get_attachment_file(
     if attachment is None:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
 
-    # Opaque bytes, as Library uploads are served: the viewer reads them, nothing renders them.
     original = chat_originals.path_for(attachment)
     if original is not None:
         return FileResponse(
@@ -1450,7 +1448,6 @@ def save_thread_message(
             log = logger,
             headers = _conflict_headers(exc),
         ) from exc
-    # A save can replace the message's attachments, taking the last reference to an original.
     chat_originals.sweep()
     return ChatMessage(**saved)
 
@@ -1492,7 +1489,6 @@ def replace_thread_messages(
             log = logger,
             headers = _conflict_headers(exc),
         ) from exc
-    # A removed or rewritten message can take the last reference to a kept original with it.
     chat_originals.sweep()
     return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced])
 

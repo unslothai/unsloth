@@ -627,13 +627,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
-    # Version 4 filled it in: the stored original of a document sent in chat (core.chat_originals).
     inventory_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(chat_attachment_inventory)")
     }
     if "original_sha256" not in inventory_columns:
         conn.execute("ALTER TABLE chat_attachment_inventory ADD COLUMN original_sha256 TEXT")
-    # Version 5: a kept original's extracted text, stored in the database alongside it.
     if "text_bytes" not in inventory_columns:
         conn.execute("ALTER TABLE chat_attachment_inventory ADD COLUMN text_bytes INTEGER")
     conn.execute(
@@ -4517,7 +4515,6 @@ def list_chat_attachments_page(
 
     has_more = len(rows) > limit
     page_rows = rows[:limit]
-    # Only an original still on disk counts: a restored backup keeps the hash but not the file.
     originals = chat_originals.originals_dir()
     attachments = [
         {

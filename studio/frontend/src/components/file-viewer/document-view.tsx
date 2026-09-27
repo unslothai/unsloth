@@ -5,11 +5,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { Suspense, lazy } from "react";
 import type { DocumentKind } from "./kind";
 
-// Split out: pdf.js and the OOXML readers load only when a document is opened.
 const PdfView = lazy(() => import("./pdf-view"));
 const OfficeView = lazy(() => import("./office-view"));
 
-/** A PDF, Word document, spreadsheet or deck, with `scale` 1 fitting the page to the pane. */
 export function DocumentView({
   file,
   kind,
@@ -20,7 +18,6 @@ export function DocumentView({
   file: Blob;
   kind: DocumentKind;
   name: string;
-  /** Tells a CSV or TSV from a workbook when the name has no extension. */
   contentType?: string;
   scale?: number;
 }) {

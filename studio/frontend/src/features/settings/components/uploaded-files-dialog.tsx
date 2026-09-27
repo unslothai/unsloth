@@ -259,8 +259,6 @@ const EXT_BY_MIME: Record<string, string> = {
 };
 
 // Name the save after the bytes the route actually returns. Uploaded documents come back as
-// extracted text, so text/plain is .txt, unless the upload was a text file the chat keeps whole
-// (CSV, markdown, code), which comes back as itself. Managed content parts arrive named "Chat image"/"Chat audio"
 // with no extension at all, which the OS cannot recognise. A dot at index 0 is a dotfile (.env),
 // not an extension: treating it as one would strip the whole name and save a bare ".txt".
 function extensionStart(name: string): number {

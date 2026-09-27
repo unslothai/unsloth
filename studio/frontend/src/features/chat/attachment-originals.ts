@@ -9,9 +9,7 @@ export interface ChatAttachmentOriginal {
   sizeBytes: number;
 }
 
-// As the server keeps: the documents a viewer shows as pages, a grid or slides.
 const ORIGINAL_EXTENSIONS = /\.(pdf|docx|xlsx|xlsm|pptx)$/i;
-// A document picked by type alone still keeps its original, named for the server's extension check.
 const ORIGINAL_TYPES: Record<string, string> = {
   "application/pdf": "pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
@@ -34,7 +32,6 @@ export function attachmentOriginal(attachment: unknown): ChatAttachmentOriginal 
   return typeof sha256 === "string" && typeof sizeBytes === "number" ? { sha256, sizeBytes } : null;
 }
 
-/** `temporary` and `epoch` (auth session) are as of send start; upload errors are ignored. */
 export async function withAttachmentOriginal(
   pending: PendingAttachment,
   complete: CompleteAttachment,
@@ -52,7 +49,6 @@ export async function withAttachmentOriginal(
   }
 }
 
-/** Uploads in-memory files of a temporary chat being saved (File does not serialize). */
 export async function persistAttachmentOriginals(
   attachments: readonly CompleteAttachment[] | undefined,
   epoch: number,

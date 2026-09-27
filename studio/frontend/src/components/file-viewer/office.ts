@@ -5,14 +5,11 @@ import { Inflate, type Unzipped, inflateSync, strFromU8, unzipSync } from "fflat
 
 
 const MAX_UNPACKED_BYTES = 200 * 1024 * 1024;
-// Parsed-part DOM ceiling, as for a Word document's XML.
 const MAX_XML_PART_BYTES = 10 * 1024 * 1024;
 const MAX_ZIP_ENTRIES = 100_000;
 export const MAX_SHEET_ROWS = 5000;
 export const MAX_SHEET_COLUMNS = 200;
-// Cell budget across all sheets; each row also costs one.
 const MAX_WORKBOOK_CELLS = MAX_SHEET_ROWS * (MAX_SHEET_COLUMNS + 1);
-// Visible sheets read: empty ones cost no cells, but each is a tab and an inflate.
 const MAX_SHEETS = 100;
 
 export interface SheetCell {
@@ -37,7 +34,6 @@ interface ZipEntry {
   method: number;
 }
 
-/** Central directory (ZIP64 included): part name to data offset. Null if unparsable (unzipSync fallback). */
 function zipIndex(bytes: Uint8Array, view: DataView): Map<string, ZipEntry> | null {
   let end = bytes.length - 22;
   const stop = Math.max(0, end - 0xffff);
@@ -47,7 +43,6 @@ function zipIndex(bytes: Uint8Array, view: DataView): Map<string, ZipEntry> | nu
   let at = view.getUint32(end + 16, true);
   const u64 = (offset: number) => (offset + 8 <= bytes.length ? Number(view.getBigUint64(offset, true)) : Number.NaN);
   if (count === 0xffff || at === 0xffffffff) {
-    // ZIP64: the real count and directory offset are in the record its locator points at.
     const locator = end - 20;
     if (locator < 0 || view.getUint32(locator, true) !== 0x07064b50) return null;
     const record = u64(locator + 8);
@@ -56,7 +51,6 @@ function zipIndex(bytes: Uint8Array, view: DataView): Map<string, ZipEntry> | nu
     at = u64(record + 48);
     if (!Number.isSafeInteger(count) || !Number.isSafeInteger(at)) return null;
   }
-  // A ZIP64 directory can list millions of empty entries, each indexed before any other bound applies.
   if (count > MAX_ZIP_ENTRIES) throw new Error("File is too large to preview.");
   const utf8 = new TextDecoder();
   const index = new Map<string, ZipEntry>();
@@ -68,7 +62,6 @@ function zipIndex(bytes: Uint8Array, view: DataView): Map<string, ZipEntry> | nu
     const nameEnd = at + 46 + view.getUint16(at + 28, true);
     const extraEnd = nameEnd + view.getUint16(at + 30, true);
     if (size === 0xffffffff || originalSize === 0xffffffff || offset === 0xffffffff) {
-      // The ZIP64 extra field (0x0001) holds, in order, the 64-bit values that did not fit.
       let field = -1;
       for (let extra = nameEnd; extra + 4 <= extraEnd; extra += 4 + view.getUint16(extra + 2, true)) {
         if (view.getUint16(extra, true) === 1) {
@@ -88,7 +81,6 @@ function zipIndex(bytes: Uint8Array, view: DataView): Map<string, ZipEntry> | nu
       if (![size, originalSize, offset].every(Number.isSafeInteger)) return null;
     }
     const raw = bytes.subarray(at + 46, nameEnd);
-    // Bit 11 marks a UTF-8 name; otherwise one byte a character, as unzipSync reads it.
     const name = view.getUint16(at + 8, true) & 0x800 ? utf8.decode(raw) : String.fromCharCode(...raw);
     index.set(name, { offset, size, originalSize, method: view.getUint16(at + 10, true) });
     at = extraEnd + view.getUint16(at + 32, true);
@@ -106,7 +98,6 @@ function inflateEntry(bytes: Uint8Array, view: DataView, entry: ZipEntry): Uint8
   throw new Error(`Unsupported ZIP compression method ${entry.method}.`);
 }
 
-/** Lazily inflates named parts from a once-built index; the unpacked total counts across calls. */
 type Reader = ((names: Iterable<string>, limit?: number) => Unzipped) & {
   size: (name: string) => number | undefined;
   head: (name: string, max: number) => Uint8Array | undefined;
@@ -137,7 +128,6 @@ function archive(bytes: Uint8Array): Reader {
       }
       return sizes.get(name);
     };
-    // Unindexed, a part cannot be inflated in pieces: one past `max` is refused rather than read whole.
     const head = (name: string, max: number) => {
       if ((size(name) ?? 0) > max) throw new Error("File is too large to preview.");
       return read([name])[name];
@@ -172,7 +162,6 @@ function archive(bytes: Uint8Array): Reader {
   return Object.assign(read, { size: (name: string) => index.get(name)?.originalSize, head, open });
 }
 
-/** A part inflated a piece at a time, only as far as it is read, up to `max` bytes. */
 export interface Growing {
   data: Uint8Array;
   done: boolean;
@@ -261,7 +250,6 @@ function relationships(files: Unzipped, part: string): Map<string, string> {
   return new Map(relationshipList(files, part).map((rel) => [rel.id, rel.path]));
 }
 
-/** The package's main part (workbook, presentation) as _rels/.rels names it, else where it usually is. */
 function mainPart(read: Reader, fallback: string): string {
   const root = read(["_rels/.rels"], MAX_XML_PART_BYTES);
   const path = relationshipList(root, "").find((rel) => rel.type.endsWith("/officeDocument"))?.path;
@@ -283,7 +271,6 @@ function resolvePath(dir: string, target: string): string {
   return out.join("/");
 }
 
-/** An `r:`-prefixed attribute, by its namespace: a slide id carries both `id` and `r:id`. */
 function relId(node: Element, name: string): string | null {
   for (const attr of Array.from(node.attributes)) {
     if (attr.localName === name && attr.namespaceURI?.endsWith("/relationships")) return attr.value;
@@ -293,7 +280,6 @@ function relId(node: Element, name: string): string | null {
 
 
 const BUILTIN_FORMATS: Record<number, string> = {
-  // 5 to 8 are locale currency formats, left out of files: the en-US ones.
   5: '"$"#,##0_);("$"#,##0)',
   6: '"$"#,##0_);[Red]("$"#,##0)',
   7: '"$"#,##0.00_);("$"#,##0.00)',
@@ -340,7 +326,6 @@ function memo<T>(compute: (code: string) => T): (code: string) => T {
   return (code) => {
     let value = cache.get(code);
     if (value === undefined) {
-      // Bounded: a workbook's own formats (MAX_NUM_FMTS) always fit, so none evicts its own.
       if (cache.size >= 8192) cache.clear();
       value = compute(code);
       cache.set(code, value);
@@ -359,11 +344,9 @@ const dateTokens = memo((code) => {
   };
 });
 
-/** `m` is minutes after an hour or before a second, otherwise the month. */
 function formatDate(serial: number, code: string): string | null {
   const { tokens, kinds, twelve, fraction } = dateTokens(code);
   const unit = 1000 / 10 ** fraction;
-  // The 1900 system counts a 29 February 1900 that never was (serial 60), so earlier serials run a day ahead.
   const whole = Math.floor(serial);
   const shifted = serial < 60 ? serial + 1 : serial;
   const date = new Date(Math.round(((shifted - 25569) * 86400000) / unit) * unit);
@@ -377,7 +360,6 @@ function formatDate(serial: number, code: string): string | null {
         case "y":
           return n <= 2 ? pad(date.getUTCFullYear() % 100) : String(date.getUTCFullYear());
         case "d": {
-          // Weekdays by serial, as Excel counts them: serial 1 is a Sunday.
           const weekday = DAYS[(((whole + 6) % 7) + 7) % 7]!;
           const day = whole === 60 ? 29 : date.getUTCDate();
           if (n >= 4) return weekday;
@@ -412,15 +394,12 @@ function formatDate(serial: number, code: string): string | null {
     .join("");
 }
 
-/** Fraction formats (# ?/?, ?/?, # ?/8); null when the format has none. */
 const fractionShape = memo((format) =>
-  // Quoted and escaped text blanked, same length: 0 "0/0" is a number and a literal.
   /(?:([0#?]+)\s+)?[0#?]+\s*\/\s*([1-9]\d*|[0#?]+)/.exec(format.replace(/"[^"]*"|\\./g, (text) => "\u0001".repeat(text.length))),
 );
 
 const unquote = (format: string) => format.replace(/"([^"]*)"/g, "$1").replace(/\\(.)/g, "$1");
 
-/** Continued fractions: trying every denominator of # ?????????/????????? is a billion steps. */
 function closestFraction(x: number, maxDen: number): [number, number] {
   let [p0, q0, p1, q1] = [0, 1, 1, 0];
   let v = x;
@@ -432,7 +411,6 @@ function closestFraction(x: number, maxDen: number): [number, number] {
     if (v - a < 1e-12) break;
     v = 1 / (v - a);
   }
-  // The best semiconvergent can beat the last convergent that fits.
   const k = Math.floor((maxDen - q0) / q1);
   const [ps, qs] = [p0 + k * p1, q0 + k * q1];
   return Math.abs(x - ps / qs) < Math.abs(x - p1 / q1) - 1e-12 ? [ps, qs] : [p1, q1];
@@ -466,14 +444,12 @@ function formatFraction(value: number, format: string): string | null {
   return `${value < 0 ? "-" : ""}${unquote(format.slice(0, at))}${body}${unquote(format.slice(at + text.length))}`.trim();
 }
 
-/** An elapsed-time format ([h]:mm:ss, [mm]:ss, [ss]): the bracketed unit counts past its usual range. */
 function formatElapsed(value: number, format: string): string {
   const tokens: string[] = format.match(/"[^"]*"|\\.|\[[hms]+\]|h+|m+|s+|\.0+|[\s\S]/gi) ?? [];
   const digits = tokens.find((token) => /^\.0+$/.test(token))?.length ?? 1;
   const scale = 10 ** (digits - 1);
   const ticks = Math.round(Math.abs(value) * 86400 * scale);
   const total = Math.floor(ticks / scale);
-  // As wide as the placeholder: [h]:m:s shows one hour as 1:0:0, [hh]:mm:ss as 01:00:00.
   const pad = (n: number, width: number) => String(n).padStart(Math.min(width, 2), "0");
   const out = tokens
     .map((token) => {
@@ -494,7 +470,6 @@ function formatElapsed(value: number, format: string): string {
 }
 
 function generalText(value: number): string {
-  // 15 significant digits, as Excel stores: drops binary noise such as 0.30000000000000004.
   return String(Number.isInteger(value) ? value : Number(value.toPrecision(15)));
 }
 
@@ -529,7 +504,6 @@ const digitLayout = memo((format) => {
 
 function placeDigits(number: number, format: string): string {
   const { dot, whole, part, first, places, grouped, zeros, before, after } = digitLayout(format);
-  // Excel shows 15 significant digits; toFixed takes at most 100 places.
   const shown = number ? 14 - Math.floor(Math.log10(Math.abs(number))) : 100;
   const [intDigits = "", fracDigits = ""] = number
     .toFixed(Math.max(0, Math.min(places.length, shown, 100)))
@@ -553,7 +527,6 @@ function placeDigits(number: number, format: string): string {
   }
   if (dot === -1) return integer;
   const digits = fracDigits.padEnd(places.length, "0").split("");
-  // Trailing zeros: a # drops its own, a ? leaves a space.
   for (let i = places.length - 1; i >= 0 && digits[i] === "0" && places[i] !== "0"; i--) {
     digits[i] = emptyPlaceholder(places[i]!);
   }
@@ -585,7 +558,6 @@ function meets(value: number, section: string | undefined): boolean | null {
   }
 }
 
-/** Section for `value` (pos;neg;zero, or first matching [cond]) and whether to prefix a minus. */
 function pickSection(value: number, sections: string[]): { index: number; sign: string } {
   const first = meets(value, sections[0]);
   const second = meets(value, sections[1]);
@@ -593,14 +565,12 @@ function pickSection(value: number, sections: string[]): { index: number; sign: 
     const index = value < 0 && sections.length > 1 ? 1 : value === 0 && sections.length > 2 ? 2 : 0;
     return { index, sign: value < 0 && index === 0 ? "-" : "" };
   }
-  // A conditional section shows the value's own sign.
   const sign = value < 0 ? "-" : "";
   if (first) return { index: 0, sign };
   if (second || (second === null && sections.length > 1)) return { index: 1, sign };
   return { index: Math.min(2, sections.length - 1), sign };
 }
 
-/** `date1904`: dates count from 1904, 1,462 days after the 1900 system. */
 const splitSections = memo((code) => {
   const sections: string[] = [];
   let start = 0;
@@ -624,7 +594,6 @@ type SectionKind = "elapsed" | "date" | "literal" | "scientific" | "number";
 const SCALE_COMMAS = /([0#?])(,+)(?=\.|[^0#?]*$)/;
 
 const readSection = memo((section) => {
-  // Currency tags keep their symbol; [Red], _x, *x go but not [h]/[m]/[s]; only outside quotes.
   const tagged = (section.match(/"[^"]*"|\\[\s\S]|\[[^\]]*\]|[_*][\s\S]?|[\s\S]/g) ?? [])
     .map((token) => {
       if (token[0] === "_" || token[0] === "*") return "";
@@ -662,16 +631,13 @@ function exponentAt(format: string): number {
   return -1;
 }
 
-/** Scientific form (1.23E+03), literals kept (`0.00E+00 "kg"`). E- shows only a negative sign. */
 function formatScientific(value: number, format: string): string {
   const at = exponentAt(format);
   const mantissaFormat = format.slice(0, at);
   const exponentFormat = format.slice(at + 2);
   const tokens: string[] = mantissaFormat.match(/"[^"]*"|\\.|[0#?.]|[^"\\0#?.]+/g) ?? [];
   const dot = tokens.indexOf(".");
-  // At most toExponential's 100 places; placeDigits pads the rest with zeros.
   const places = Math.min(dot === -1 ? 0 : tokens.slice(dot + 1).filter(isPlaceholder).length, 100);
-  // Several integer placeholders step the exponent: ##0.0E+0 is engineering notation.
   const step = Math.max(1, (dot === -1 ? tokens : tokens.slice(0, dot)).filter(isPlaceholder).length);
   const [normalized = "0", exponentText = "0"] = value.toExponential(places).split("e");
   let mantissa = normalized;
@@ -679,7 +645,6 @@ function formatScientific(value: number, format: string): string {
   if (step > 1 && value !== 0) {
     exponent = Math.floor(Math.log10(value) / step) * step;
     mantissa = (value / 10 ** exponent).toFixed(places);
-    // Rounding can carry into the next step: 999.96 in ##0.0E+0 is 1.0E+3.
     if (Number(mantissa) >= 10 ** step) {
       exponent += step;
       mantissa = (value / 10 ** exponent).toFixed(places);
@@ -697,7 +662,6 @@ export function formatNumber(value: number, rawCode: string | undefined, date190
   if (kind === "elapsed") return `${sign}${formatElapsed(Math.abs(value), tagged)}`;
   if (kind === "date") return formatDate(date1904 ? value + 1462 : value, tagged) ?? generalText(value);
   if (kind === "literal") return `${sign}${code.replace(/general/i, generalText(Math.abs(value)))}`.trim();
-  // Scaling applies whatever the shape; the section writes its own sign.
   const number = (Math.abs(value) * 100 ** percents) / scale;
   const unscaled = (format: string) => (scale === 1 ? format : format.replace(SCALE_COMMAS, "$1"));
   if (kind === "scientific") return `${sign}${formatScientific(number, unscaled(tagged)).trim()}`;
@@ -706,7 +670,6 @@ export function formatNumber(value: number, rawCode: string | undefined, date190
   return `${sign}${placeDigits(number, tagged).trim()}`;
 }
 
-/** Text section (fourth, or lone with @): 0;0;0;"SKU-"@ shows ABC as SKU-ABC. */
 function formatText(text: string, rawCode: string | undefined): string {
   if (!rawCode || rawCode === "@" || rawCode === "General") return text;
   const sections = splitSections(rawCode);
@@ -741,7 +704,6 @@ interface CellStyle {
   italic?: boolean;
 }
 
-/** East Asian built-in dates (27-36, 50-58), absent from files: shown as the nearest standard ones. */
 function localeFormat(id: number): string | undefined {
   if (id === 32) return "h:mm";
   if (id === 33) return "h:mm:ss";
@@ -750,7 +712,6 @@ function localeFormat(id: number): string | undefined {
 
 const isOn = (flag: Element) => !["0", "false", "off"].includes(flag.getAttribute("val") ?? "");
 
-// Headroom over Excel's 255-char codes and ~250 custom formats a workbook.
 const MAX_FORMAT_CODE = 1024;
 const MAX_NUM_FMTS = 1000;
 
@@ -760,7 +721,6 @@ function readStyles(doc: Document | null): { styles: CellStyle[]; cut: boolean }
   let cut = false;
   for (const [index, fmt] of all(doc, "numFmt").entries()) {
     const code = fmt.getAttribute("formatCode") ?? "";
-    // Past Excel's own limits a format is read as General: the formatters cache by code, across files.
     const kept = index < MAX_NUM_FMTS && code.length <= MAX_FORMAT_CODE;
     cut ||= !kept;
     formats.set(Number(fmt.getAttribute("numFmtId")), kept ? code : "General");
@@ -781,16 +741,13 @@ function readStyles(doc: Document | null): { styles: CellStyle[]; cut: boolean }
   return { styles, cut };
 }
 
-// A cell (B2, $b$2), a whole column (A:A) or a whole row (1:1), after anything but a name's letters.
 const REFERENCE =
   /(^|[^A-Za-z0-9_.$])(?:(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![\d(A-Za-z_!])|(\$?)([A-Za-z]{1,3}):(\$?)([A-Za-z]{1,3})(?![\w(!.])|(\$?)(\d+):(\$?)(\d+)(?![\d.]))/g;
 
-/** Shifts relative refs of a shared formula; $-anchored parts and quoted text stay. */
 function shiftFormula(formula: string, rows: number, columns: number): string {
   const column = (abs: string, name: string) =>
     abs + (abs ? name.toUpperCase() : columnName(columnIndex(name.toUpperCase()) + columns));
   const row = (abs: string, n: string) => abs + (abs ? n : String(Number(n) + rows));
-  // Quoted text, sheet names, structured table refs and linked books ([1]) stay.
   return formula
     .split(/("(?:[^"]|"")*"|'(?:[^']|'')*'|\[(?:[^[\]']|'.|\[(?:[^[\]']|'.)*\])*\])/)
     .map((part, index) =>
@@ -806,7 +763,6 @@ function shiftFormula(formula: string, rows: number, columns: number): string {
     .join("");
 }
 
-// Worksheet XML read as text: several times faster than DOMParser on large sheets.
 
 const NAMED_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
 const ENTITY = /&(?:#x([0-9a-f]+)|#(\d+)|(amp|lt|gt|quot|apos));|<!\[CDATA\[([\s\S]*?)\]\]>/gi;
@@ -836,7 +792,6 @@ function attribute(attributes: string, name: string): string | null {
 const openTag = (name: string) => new RegExp(`<(?:[\\w.-]+:)?${name}(?=[\\s/>])([^>]*?)(/)?>`, "g");
 const closeTag = (name: string) => new RegExp(`</(?:[\\w.-]+:)?${name}\\s*>`, "g");
 
-/** [attributes, inner text] per element; an unclosed element ends the scan (else quadratic). */
 function* elements(text: string, open: RegExp, close: RegExp): Generator<[string, string]> {
   open.lastIndex = 0;
   for (let match = open.exec(text); match; match = open.exec(text)) {
@@ -867,7 +822,6 @@ const SHEET_DATA = /<(?:[\w.-]+:)?sheetData[\s/>]/;
 
 const MARKUP = /<!\[CDATA\[([\s\S]*?)\]\]>|<!--[\s\S]*?-->/g;
 
-/** CDATA escaped and comments dropped so neither hides a tag from the scan. */
 function flattenMarkup(text: string): string {
   if (!text.includes("<!")) return text;
   return text.replace(MARKUP, (_, cdata?: string) =>
@@ -886,7 +840,6 @@ function stringText(xmlText: string): string {
 
 const isTrue = (value: string | null) => value === "1" || value === "true";
 
-// Excel's own limit on a cell's text; MAX_CELL_BYTES of XML covers it, entities and all.
 const MAX_CELL_TEXT = 32_767;
 const MAX_CELL_BYTES = MAX_CELL_TEXT * 10;
 
@@ -916,7 +869,6 @@ function readSheet(
   }
   if (dataAt === -1) return { name, rows, widths, truncated: false, hidden };
   const data = text.slice(dataAt);
-  // Shared formulas: the master cell holds the text and comes before the cells sharing it.
   const shared = new Map<string, { formula: string; row: number; col: number }>();
   let truncated = false;
   let nextRow = 0;
@@ -928,7 +880,6 @@ function readSheet(
       break;
     }
     budget.cells--;
-    // Hidden rows skipped, but still read as shared formula masters.
     const rowHidden = isTrue(attribute(rowAttrs, "hidden"));
     if (rowHidden) hidden.rows.add(r);
     if (rowHidden && !rowBody.includes("shared")) continue;
@@ -958,7 +909,6 @@ function readSheet(
       const cellStyle = style(Number(attribute(attrs, "s") ?? 0)) ?? {};
       let value = raw;
       let numeric = false;
-      // An empty string cache is a result; an empty numeric cache is uncalculated (openpyxl).
       if (raw === "" && formula && !(type === "str" && cached)) value = `=${formula}`;
       else if (type === "s" || type === "inlineStr" || type === "str") {
         value = formatText(type === "s" ? string(Number(raw)) : type === "inlineStr" ? stringText(body) : raw, cellStyle.format);
@@ -976,14 +926,11 @@ function readSheet(
   return { name, rows, widths, truncated, hidden };
 }
 
-// Sheet parts past this are decoded only up to the rows kept.
 const SHEET_CUT_BYTES = 1024 * 1024;
-// Upper bound on sheet XML read, since a row may hold 16,384 cells.
 const MAX_SHEET_XML_BYTES = 64 * 1024 * 1024;
 
 const SHEET_DATA_CLOSE = Array.from("sheetData>", (char) => char.charCodeAt(0));
 
-/** Byte offset after the `rows`th `</row>`, -1 if the part ends first; `closed` if </sheetData> comes first. */
 function rowsEnd(bytes: Uint8Array, rows: number): { end: number; capped: boolean; closed?: number } {
   let count = 0;
   let last = -1;
@@ -1016,7 +963,6 @@ function rowsEnd(bytes: Uint8Array, rows: number): { end: number; capped: boolea
 function sheetText(bytes: Uint8Array, rows: number, whole = true): { text: string; cut: boolean } {
   if (bytes.length <= SHEET_CUT_BYTES) return { text: strFromU8(bytes), cut: false };
   const { end, capped, closed } = rowsEnd(bytes, rows);
-  // Every row, before sheetData closes: what follows (merges, formatting) is not needed.
   if (closed !== undefined) return { text: strFromU8(bytes.subarray(0, closed)), cut: false };
   if (end === -1) {
     return bytes.length > MAX_SHEET_XML_BYTES || capped
@@ -1038,7 +984,6 @@ function indexOfBytes(bytes: Uint8Array, seq: number[], from: number): number {
   return -1;
 }
 
-/** Closing `>` of a CDATA/comment at `i`; `i` if none opens there, -1 if unclosed. */
 function skipMarkup(bytes: Uint8Array, i: number): number {
   if (bytes[i + 1] !== 0x21) return i;
   const close = bytes[i + 2] === 0x5b ? CDATA_END : bytes[i + 2] === 0x2d ? COMMENT_END : null;
@@ -1047,7 +992,6 @@ function skipMarkup(bytes: Uint8Array, i: number): number {
   return at === -1 ? -1 : at + 2;
 }
 
-/** Next start (or `closing` end) tag `name`, any prefix, from byte `from`. */
 function findTag(bytes: Uint8Array, from: number, name: string, closing: boolean) {
   for (let i = bytes.indexOf(0x3c, from); i !== -1; i = bytes.indexOf(0x3c, i + 1)) {
     const skipped = skipMarkup(bytes, i);
@@ -1075,12 +1019,9 @@ function findTag(bytes: Uint8Array, from: number, name: string, closing: boolean
   return null;
 }
 
-/** Shared strings scanned lazily up to the highest index used, each decoded alone. */
-// Indexed strings cap (8 bytes each); past it reads as cut.
 const MAX_SHARED_STRINGS = 2_000_000;
 
 function sharedStrings(part: Growing | undefined): (index: number) => string | undefined {
-  // Flat offset arrays: a million skipped strings cost 8 MB, not a million objects.
   let starts = new Uint32Array(1024);
   let ends = new Uint32Array(1024);
   let count = 0;
@@ -1108,7 +1049,6 @@ function sharedStrings(part: Growing | undefined): (index: number) => string | u
     if (!part || !Number.isInteger(index) || index < 0 || index >= count) return "";
     let text = texts.get(index);
     if (text === undefined) {
-      // A cell's worth of XML at most: a string cut there ends in an open run, which still reads.
       const start = starts[index]!;
       text = stringText(strFromU8(part.data.subarray(start, Math.min(ends[index]!, start + MAX_CELL_BYTES))));
       texts.set(index, text);
@@ -1123,14 +1063,10 @@ function grow(array: Uint32Array): Uint32Array<ArrayBuffer> {
   return next;
 }
 
-// A style section past this is skipped: real ones are far smaller, even at Excel's 64,000 formats.
 const MAX_STYLE_SECTION_BYTES = 16 * 1024 * 1024;
-// And its tags: Excel's 64,000 cell formats, each with a child or two, fit.
 const MAX_STYLE_SECTION_TAGS = 200_000;
-// A styles part past this is not read: its cells show unstyled, their sheets marked cut.
 const MAX_STYLES_BYTES = 3 * MAX_STYLE_SECTION_BYTES;
 
-/** Only numFmts, fonts and cellXfs, each found by a byte scan and decoded alone. */
 function styleSections(bytes: Uint8Array | undefined): { doc: Document | null; cut: boolean } {
   const root = bytes && findTag(bytes, 0, "styleSheet", false);
   if (!bytes || !root || root.empty) return { doc: null, cut: false };
@@ -1141,7 +1077,6 @@ function styleSections(bytes: Uint8Array | undefined): { doc: Document | null; c
     const end = start && !start.empty ? findTag(bytes, start.end, name, true) : null;
     if (!start || !end) return "";
     if (end.end - start.start > MAX_STYLE_SECTION_BYTES) return ((cut = true), "");
-    // Counted before it is parsed: tiny elements would build a DOM far larger than the bytes.
     let tags = 0;
     for (let at = start.start; at < end.end && tags <= MAX_STYLE_SECTION_TAGS; at++) {
       if (bytes[at] === 0x3c) tags++;
@@ -1207,7 +1142,6 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
   return sheets;
 }
 
-/** RFC 4180 fields: quoted values may hold the delimiter, quotes ("") and line breaks. */
 export function readDelimited(text: string, delimiter: string, name: string): Sheet {
   const rows: (SheetCell | undefined)[][] = [];
   let row: (SheetCell | undefined)[] = [];
@@ -1221,7 +1155,6 @@ export function readDelimited(text: string, delimiter: string, name: string): Sh
     } else truncated = true;
     field = "";
   };
-  // A field stops growing at a cell's worth, as an XLSX cell does.
   const append = (char: string) => {
     if (field.length < MAX_CELL_TEXT) field += char;
     else truncated = true;
@@ -1268,7 +1201,6 @@ export interface SlideBox {
   placeholder?: string;
   paragraphs?: { text: string; size?: number; bold?: boolean; align?: string; bullet?: boolean }[];
   image?: Blob;
-  /** How much of the picture is cut from each edge, as fractions of it; negative insets it. */
   crop?: { l: number; t: number; r: number; b: number };
   table?: string[][];
   caption?: string;
@@ -1300,7 +1232,6 @@ const imageType = (path: string) => {
   return Object.hasOwn(IMAGE_TYPES, extension) ? IMAGE_TYPES[extension] : undefined;
 };
 
-/** Declared image types for pictures without a known extension (image1.bin). */
 function packageImageTypes(read: Reader): (path: string) => string | undefined {
   const name = "[Content_Types].xml";
   const doc = xml(read([name], MAX_XML_PART_BYTES), name);
@@ -1336,7 +1267,6 @@ function imagePixels(b: Uint8Array): number | undefined {
   if (b.length >= 24 && ascii(1, "PNG")) return view.getUint32(16) * view.getUint32(20);
   if (b.length >= 10 && ascii(0, "GIF8")) return view.getUint16(6, true) * view.getUint16(8, true);
   if (b.length >= 26 && ascii(0, "BM")) {
-    // A 12-byte core header holds 16-bit sizes; later ones 32-bit, the height signed.
     if (view.getUint32(14, true) === 12) return view.getUint16(18, true) * view.getUint16(20, true);
     return Math.abs(view.getInt32(18, true)) * Math.abs(view.getInt32(22, true));
   }
@@ -1350,7 +1280,6 @@ function imagePixels(b: Uint8Array): number | undefined {
     return undefined;
   }
   if (b[0] === 0xff && b[1] === 0xd8) {
-    // Segments up to the frame header (SOF0 to SOF15, less DHT, JPG and DAC), which holds the size.
     for (let at = 2; at + 9 <= b.length; ) {
       if (b[at] !== 0xff) return undefined;
       const marker = b[at + 1]!;
@@ -1364,7 +1293,6 @@ function imagePixels(b: Uint8Array): number | undefined {
   return undefined;
 }
 
-/** Decoded pixels of a raster within MAX_PICTURE_PIXELS, else undefined; never SVG (unbounded cost, Office keeps a PNG). */
 export function picturePixels(bytes: Uint8Array): number | undefined {
   const pixels = imagePixels(bytes);
   return pixels !== undefined && pixels <= MAX_PICTURE_PIXELS ? pixels : undefined;
@@ -1417,7 +1345,6 @@ function readDiagram(doc: Document, limit: number): NonNullable<SlideBox["paragr
   return paragraphs;
 }
 
-/** Chart cached data in at most `budget` cells: series header, a row a category, "…" row when cut. */
 function readChart(doc: Document, budget: number): { caption?: string; table: string[][] } | null {
   const serNodes = all(doc, "ser");
   const width = Math.min(serNodes.length, MAX_CHART_SERIES) + 1;
@@ -1471,7 +1398,6 @@ function point(xfrm: Element | undefined, name: string, a: string, b: string): [
   return node ? [Number(node.getAttribute(a)) || 0, Number(node.getAttribute(b)) || 0] : undefined;
 }
 
-/** A picture's srcRect, in thousandths of a percent. The picture is stretched over its frame. */
 function readCrop(pic: Element): SlideBox["crop"] {
   const rect = first(pic, "srcRect");
   const side = (name: string) => {
@@ -1493,7 +1419,6 @@ function readFrame(shape: Element, cx: number, cy: number): SlideBox["frame"] {
   let rot = degrees(xfrm);
   let flipH = isTrue(xfrm?.getAttribute("flipH") ?? null);
   let flipV = isTrue(xfrm?.getAttribute("flipV") ?? null);
-  // Map group child space (chOff, chExt) out to the slide; flips mirror, rotations turn about the group centre.
   for (let group = shape.parentElement; group; group = group.parentElement) {
     if (group.localName !== "grpSp") continue;
     const box = children(group, "grpSpPr").flatMap((props) => children(props, "xfrm"))[0];
@@ -1543,7 +1468,6 @@ function degrees(xfrm: Element | undefined): number {
   return Number(xfrm?.getAttribute("rot")) / 60000 || 0;
 }
 
-/** `images: false` reads text only; only parts visible slides use are inflated. */
 export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   const read = archive(bytes);
   const main = mainPart(read, "ppt/presentation.xml");
@@ -1559,14 +1483,12 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   const slides: Slide[] = [];
   const pictures = new Map<string, { image: Blob; pixels: number }>();
   let pictureBytes = 0;
-  // By extension, else as [Content_Types].xml declares the part (read once, when first needed).
   let declared: ((path: string) => string | undefined) | undefined;
   const pictureType = (path: string) => imageType(path) ?? (declared ??= packageImageTypes(read))(path);
   let truncated = false;
   let textLeft = MAX_DECK_TEXT;
   for (const [index, path] of slidePaths.entries()) {
     if (!path) continue;
-    // Past this a slide is not parsed, its DOM too large to build: it shows as cut.
     if ((read.size(path) ?? 0) > MAX_XML_PART_BYTES) {
       if (slides.length === MAX_SLIDES) {
         truncated = true;
@@ -1577,17 +1499,14 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
     }
     const part = read([path, relsPath(path)], MAX_XML_PART_BYTES);
     const slideXml = part[path];
-    // Hidden slides skipped, read from the root tag without parsing.
     if (!slideXml || HIDDEN_SLIDE.test(strFromU8(slideXml.subarray(0, 16384)))) continue;
     if (slides.length === MAX_SLIDES) {
       truncated = true;
       break;
     }
     const doc = xml(part, path);
-    // The root's own flag, for one whose attributes lie past the prefix read above.
     if (!doc || ["0", "false"].includes(doc.documentElement.getAttribute("show")?.trim() ?? "")) continue;
     const slideRelList = relationshipList(part, path);
-    // Charts, diagrams, pictures read per frame; one past the part ceiling marks the slide cut.
     const partDoc = (partPath: string) => {
       if ((read.size(partPath) ?? 0) > MAX_XML_PART_BYTES) {
         cut = true;
@@ -1610,7 +1529,6 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       if (!body) return false;
       if (left <= 0) return (cut = true);
       const paragraphs: NonNullable<SlideBox["paragraphs"]> = [];
-      // Read only as far as the budget: a shape can hold far more paragraphs than are kept.
       const list = body.getElementsByTagNameNS("*", "p");
       for (let i = 0, p = list.item(0); p; p = list.item(++i)) {
         const text = paragraphText(p);
@@ -1639,7 +1557,6 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
         paragraphs,
       });
     };
-    // Tables, charts and SmartArt sit in a graphicFrame. A chart shows its cached data.
     const addFrame = (frame: Element): boolean => {
       if (left <= 0) return (cut = true);
       const place = () => readFrame(frame, cx, cy) ?? { x: 0.05, y: 0.25, w: 0.9, h: 0.65 };
@@ -1674,7 +1591,6 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       if (left <= 0) return (cut = true);
       let picture = pictures.get(target);
       if (!picture) {
-        // Pictures stay with the deck, so their bytes are bounded across it.
         if (pictureBytes + (read.size(target) ?? 0) > MAX_DECK_IMAGE_BYTES) {
           cut = true;
           return false;
@@ -1699,7 +1615,6 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       boxes.push({ frame: readFrame(pic, cx, cy), image: picture.image, crop: readCrop(pic) });
       return false;
     };
-    // In document order, as PowerPoint stacks them: a later shape draws over an earlier one.
     const walk = (parent: Element): boolean => {
       for (let node = parent.firstElementChild; node; node = node.nextElementSibling) {
         const name = node.localName;
