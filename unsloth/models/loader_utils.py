@@ -1359,6 +1359,20 @@ def _compressed_tensors_fp8_block_size(module, weights):
     return block
 
 
+def _save_compressed_tensors_scale_shape(module, state_dict, prefix, local_metadata):
+    # Saved checkpoints keep the config's scale shape; a per-tensor scale was broadcast per row.
+    key = prefix + "weight_scale"
+    shape = getattr(module, "_unsloth_ct_scale_shape", None)
+    scale = state_dict.get(key)
+    if shape is None or scale is None or tuple(scale.shape) == shape:
+        return state_dict
+    numel = 1
+    for n in shape:
+        numel *= n
+    state_dict[key] = scale.reshape(-1)[:1].reshape(shape) if numel == 1 else scale.reshape(shape)
+    return state_dict
+
+
 def _unsloth_compressed_tensors_fp8_forward(self, input):
     from unsloth.kernels.fp8 import can_use_fp8_rowwise_gemv, fp8_linear, fp8_rowwise_gemv
 
@@ -1414,10 +1428,14 @@ def _route_compressed_tensors_fp8_to_unsloth(model):
     converted = 0
     for module, block in routable:
         scale = module.weight_scale
+        scale_shape = tuple(scale.shape)
         if scale.numel() == 1:
             scale.data = scale.data.reshape(1, 1).expand(module.weight.shape[0], 1).contiguous()
         elif scale.dim() == 1:
             scale.data = scale.data.view(-1, 1)
+        if tuple(scale.shape) != scale_shape:
+            module._unsloth_ct_scale_shape = scale_shape
+            module._register_state_dict_hook(_save_compressed_tensors_scale_shape)
         module.weight.requires_grad_(False)
         scale.requires_grad_(False)
         if block != [1, module.weight.shape[1]]:

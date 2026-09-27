@@ -141,6 +141,22 @@ def test_block_fp8_is_opt_in(monkeypatch):
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
 
 
+@pytest.mark.parametrize("strategy", ["tensor", "channel"])
+def test_routed_scale_saves_in_the_checkpoint_shape(strategy):
+    from unsloth.models.loader_utils import _route_compressed_tensors_fp8_to_unsloth
+
+    model, _ = _ct_model(384, 256, strategy)
+    before = {k: v.clone() for k, v in model.state_dict().items() if k.endswith("weight_scale")}
+    if strategy == "channel":
+        model.lin.weight_scale.data = model.lin.weight_scale.data.reshape(-1)
+        before["lin.weight_scale"] = before["lin.weight_scale"].reshape(-1)
+    assert _route_compressed_tensors_fp8_to_unsloth(model) == 1
+    after = model.state_dict()
+    for key, value in before.items():
+        assert after[key].shape == value.shape
+        assert torch.equal(after[key], value)
+
+
 def test_per_tensor_scale_routes_as_per_row():
     from unsloth.models.loader_utils import _route_compressed_tensors_fp8_to_unsloth
 
@@ -289,3 +305,18 @@ def test_compiled_block_fp8_linear_passes_the_input_gradient():
     (dX,) = torch.autograd.grad(fp8_linear(X, W, s).float().sum(), X)
     dX_ref = torch.ones(2, 5, 256, device = "cuda") @ ref
     assert float((dX.float() - dX_ref).norm() / dX_ref.norm()) < 0.01
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_rowwise_dequant_fallback_follows_the_input_dtype(dtype, monkeypatch):
+    from unsloth.kernels import fp8
+
+    monkeypatch.setattr(fp8, "_has_fbgemm_rowwise", lambda: False)
+    W = (torch.randn(256, 512, device = "cuda") * 0.05).to(torch.float8_e4m3fn)
+    s = torch.rand(256, 1, device = "cuda") * 0.01 + 0.001
+    X = torch.randn(3, 512, device = "cuda", dtype = dtype, requires_grad = True)
+    y = fp8.FbgemmFp8Linear_matmul.apply(X, W, s, None)
+    (dX,) = torch.autograd.grad(y.float().sum(), X)
+    ref = W.float() * s
+    assert y.dtype == dtype and dX.dtype == dtype
+    assert float((y.float() - X.float() @ ref.t()).norm() / (X.float() @ ref.t()).norm()) < 0.01

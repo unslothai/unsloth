@@ -632,7 +632,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             del x_quantized, x_scale
         elif weight_scale.shape[0] in (weight.shape[0], weight.shape[1]):
             # Transposed, non-divisible-by-8 (Qwen 2.5 VL 7B 3420x1280), no FBGEMM, or pre-sm89: dequant.
-            W_deq = weight_dequant(weight, weight_scale).T
+            W_deq = weight_dequant(weight, weight_scale, x.dtype).T
             output = torch_matmul(x, W_deq)
             output = output + bias if bias is not None else output
             del W_deq
@@ -647,7 +647,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
+        W_deq = weight_dequant(ctx.weight, ctx.weight_scale, grad_output.dtype)
         grad_X = torch_matmul(grad_output, W_deq)
         del W_deq
         return grad_X, None, None, None, None
