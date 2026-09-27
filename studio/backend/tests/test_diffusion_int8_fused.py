@@ -28,6 +28,20 @@ needs_cuda = pytest.mark.skipif(
 )
 
 
+def _require_int8tensor(module):
+    """Skip when this torchao's int8 config built the legacy tensor (torchao <= 0.17 ships the ``Int8Tensor`` class
+    but its config does not use it); the fused path then keeps the stock forward, so there is nothing to compare."""
+    for m in module.modules():
+        if isinstance(m, torch.nn.Linear) and type(m.weight).__name__ not in (
+            "Parameter",
+            "Tensor",
+        ):
+            if type(m.weight).__name__ != "Int8Tensor":
+                pytest.skip(f"torchao int8 config builds {type(m.weight).__name__}, not Int8Tensor")
+            return module
+    return module
+
+
 @pytest.fixture(autouse = True)
 def _clean_env(monkeypatch):
     monkeypatch.delenv(fused.INT8_FUSED_ENV, raising = False)
@@ -156,7 +170,7 @@ def _quantized_ff(
     for p in ff.parameters():
         p.data.normal_(0, 0.05)
     quantize_(ff, Int8DynamicActivationInt8WeightConfig())
-    return ff
+    return _require_int8tensor(ff)
 
 
 @needs_cuda
@@ -238,6 +252,7 @@ def test_flux_single_block_bit_identical_to_stock_eager():
         Int8DynamicActivationInt8WeightConfig(),
         filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and "norm" not in fqn,
     )
+    _require_int8tensor(blk)
     hid = torch.randn(1, 200, 256, device = "cuda", dtype = torch.bfloat16)
     enc = torch.randn(1, 40, 256, device = "cuda", dtype = torch.bfloat16)
     temb = torch.randn(1, 256, device = "cuda", dtype = torch.bfloat16)
@@ -265,7 +280,7 @@ def _quantize(module):
     for p in module.parameters():
         p.data.normal_(0, 0.05)
     quantize_(module, Int8DynamicActivationInt8WeightConfig())
-    return module
+    return _require_int8tensor(module)
 
 
 @needs_cuda
@@ -614,6 +629,7 @@ def test_int8_flux_under_fbcache_renders_through_the_fused_kernel():
         and "single_transformer_blocks" in fqn
         and "norm" not in fqn,
     )
+    _require_int8tensor(model)
     ref_model = copy.deepcopy(model)
     g = torch.Generator(device = "cuda").manual_seed(1)
     kwargs = dict(

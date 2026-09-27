@@ -102,6 +102,10 @@ def test_compiled_block_stays_within_the_compile_floor(quant):
     if quant == "int8":
         pytest.importorskip("torchao.quantization")
     blk = _block(quant)
+    if quant == "int8" and type(blk.attention.to_q.weight).__name__ != "Int8Tensor":
+        pytest.skip(
+            "this torchao's int8 config builds the legacy tensor, which keeps the stock projections"
+        )
     x, mask, freqs, adaln = _inputs()
     with torch.no_grad():
         eager = blk(x, mask, freqs, adaln)
