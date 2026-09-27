@@ -87,13 +87,17 @@ async def colab_capability():
 
 
 @router.get(
-    "/colab/launch", response_model = Optional[ColabLaunchJob], dependencies = [Depends(_require_owner_ui)]
+    "/colab/launch",
+    response_model = Optional[ColabLaunchJob],
+    dependencies = [Depends(_require_owner_ui)],
 )
 async def colab_launch_status():
     return colab_launcher.current_job()
 
 
-@router.post("/colab/launch", response_model = ColabLaunchJob, dependencies = [Depends(_require_owner_ui)])
+@router.post(
+    "/colab/launch", response_model = ColabLaunchJob, dependencies = [Depends(_require_owner_ui)]
+)
 async def colab_launch(payload: ColabLaunchRequest):
     try:
         return await asyncio.to_thread(colab_launcher.start_launch, payload.gpu, payload.name)
@@ -102,7 +106,9 @@ async def colab_launch(payload: ColabLaunchRequest):
 
 
 @router.post(
-    "/colab/launch/cancel", response_model = Optional[ColabLaunchJob], dependencies = [Depends(_require_owner_ui)]
+    "/colab/launch/cancel",
+    response_model = Optional[ColabLaunchJob],
+    dependencies = [Depends(_require_owner_ui)],
 )
 async def colab_launch_cancel():
     return colab_launcher.cancel_launch()
@@ -139,7 +145,9 @@ async def create_linked_instance(payload: LinkedInstanceCreate):
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
 
-@router.patch("/{instance_id}", response_model = LinkedInstance, dependencies = [Depends(_require_owner_ui)])
+@router.patch(
+    "/{instance_id}", response_model = LinkedInstance, dependencies = [Depends(_require_owner_ui)]
+)
 async def update_linked_instance(instance_id: str, payload: LinkedInstanceUpdate):
     base_url = await _normalized_url(payload.base_url) if payload.base_url is not None else None
     try:

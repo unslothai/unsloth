@@ -25329,7 +25329,6 @@ class _DroppedFrameKeepalive:
         return True
 
 
-
 async def _forward_linked(request: Request, path: str, linked: tuple, subject: str):
     return await linked_instances.forward(
         request, path, linked, subject = subject, via_api_key = _request_used_api_key(request)
@@ -30884,7 +30883,9 @@ async def openai_list_models(
 
 @router.get("/models/{model_id:path}")
 async def openai_retrieve_model(
-    model_id: str, current_subject: str = Depends(get_current_subject), request: Request = None
+    model_id: str,
+    current_subject: str = Depends(get_current_subject),
+    request: Request = None,
 ):
     """
     OpenAI-compatible single-model retrieval endpoint (``GET /v1/models/{id}``).

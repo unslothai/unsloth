@@ -64,7 +64,14 @@ CAPACITY_MARKERS = (
     "session count",
     "quota exceeded",
 )
-AUTH_MARKERS = ("401", "403", "unauthenticated", "unauthorized", "invalid credentials", "reauthentication")
+AUTH_MARKERS = (
+    "401",
+    "403",
+    "unauthenticated",
+    "unauthorized",
+    "invalid credentials",
+    "reauthentication",
+)
 
 # Runs on the VM, inside the kernel. Same install as the Colab notebook.
 INSTALL_SCRIPT = """
@@ -191,7 +198,10 @@ class Runner:
             return [
                 shutil.which("wsl.exe") or "wsl.exe",
                 *(["-d", self.distro] if self.distro else []),
-                "-e", "bash", "-lc", script,
+                "-e",
+                "bash",
+                "-lc",
+                script,
             ]
         return ["bash", "-lc", script]
 
@@ -249,11 +259,13 @@ def run_shell(
     timer.start()
     watcher = None
     if cancel is not None:
+
         def _watch() -> None:
             while proc.poll() is None:
                 if cancel.wait(0.5):
                     _kill("cancel")
                     return
+
         watcher = threading.Thread(target = _watch, daemon = True)
         watcher.start()
     if stdin is not None:
@@ -273,7 +285,9 @@ def run_shell(
         proc.wait()
     finally:
         timer.cancel()
-    return ShellResult(proc.returncode if proc.returncode is not None else -1, "\n".join(tail), killed["timeout"])
+    return ShellResult(
+        proc.returncode if proc.returncode is not None else -1, "\n".join(tail), killed["timeout"]
+    )
 
 
 def _terminate(proc: subprocess.Popen) -> None:
@@ -339,13 +353,19 @@ def capability(runner: Optional[Runner] = None) -> dict:
     try:
         result = run_shell(runner, PROBE_SCRIPT, timeout = PROBE_TIMEOUT)
     except LaunchError as exc:
-        return {**base, "state": "unsupported", "ready": False, "message": str(exc), "setup": setup_commands("unsupported", has_uv = False)}
+        return {
+            **base,
+            "state": "unsupported",
+            "ready": False,
+            "message": str(exc),
+            "setup": setup_commands("unsupported", has_uv = False),
+        }
     facts: dict[str, str] = {}
     other: list[str] = []
     for line in result.output.splitlines():
         line = _clean(line)
         if line.startswith(PROBE_MARKER):
-            key, _, value = line[len(PROBE_MARKER):].partition("=")
+            key, _, value = line[len(PROBE_MARKER) :].partition("=")
             facts[key] = value
         elif line.strip():
             other.append(line)
@@ -389,15 +409,22 @@ def parse_link(output: str) -> dict:
         line = line.strip()
         if line.startswith(LINK_MARKER):
             try:
-                payload = json.loads(line[len(LINK_MARKER):])
+                payload = json.loads(line[len(LINK_MARKER) :])
             except ValueError:
                 payload = None
     if not isinstance(payload, dict):
         raise LaunchError("The Colab VM never reported a link for Unsloth Studio.")
     if payload.get("error"):
-        raise LaunchError(f"Unsloth Studio did not start on the Colab VM: {_clean(str(payload['error']))}")
+        raise LaunchError(
+            f"Unsloth Studio did not start on the Colab VM: {_clean(str(payload['error']))}"
+        )
     url, key = payload.get("url"), payload.get("api_key")
-    if not isinstance(url, str) or not url.startswith("https://") or not isinstance(key, str) or not key:
+    if (
+        not isinstance(url, str)
+        or not url.startswith("https://")
+        or not isinstance(key, str)
+        or not key
+    ):
         raise LaunchError("The Colab VM reported an incomplete link.")
     return {"url": url, "api_key": key}
 
@@ -500,7 +527,14 @@ def cancel_launch() -> Optional[dict]:
     return current_job()
 
 
-def _step(job: LaunchJob, runner: Runner, script: str, *, stdin: Optional[str] = None, timeout: float) -> ShellResult:
+def _step(
+    job: LaunchJob,
+    runner: Runner,
+    script: str,
+    *,
+    stdin: Optional[str] = None,
+    timeout: float,
+) -> ShellResult:
     if job.cancel.is_set():
         raise Cancelled()
 
@@ -509,7 +543,9 @@ def _step(job: LaunchJob, runner: Runner, script: str, *, stdin: Optional[str] =
         if line and not line.startswith(LINK_MARKER):
             job.add(line)
 
-    result = run_shell(runner, script, stdin = stdin, timeout = timeout, on_line = on_line, cancel = job.cancel)
+    result = run_shell(
+        runner, script, stdin = stdin, timeout = timeout, on_line = on_line, cancel = job.cancel
+    )
     if job.cancel.is_set():
         raise Cancelled()
     if result.timed_out:
@@ -532,7 +568,12 @@ def _run_job(job: LaunchJob) -> None:
         )
         allocated = True
         job.add(f"Allocating a Colab {job.gpu} VM ({job.session})...")
-        result = _step(job, runner, _colab(job.session, auth, "new", "-s", job.session, "--gpu", job.gpu), timeout = ALLOCATE_TIMEOUT)
+        result = _step(
+            job,
+            runner,
+            _colab(job.session, auth, "new", "-s", job.session, "--gpu", job.gpu),
+            timeout = ALLOCATE_TIMEOUT,
+        )
         if result.returncode != 0:
             kind = classify(result.output)
             if kind == "capacity":
@@ -548,19 +589,41 @@ def _run_job(job: LaunchJob) -> None:
         job.stage = "installing"
         install = INSTALL_SCRIPT.format(repo = REPO_URL, branch = REPO_BRANCH)
         result = _step(
-            job, runner,
-            _colab(job.session, auth, "exec", "-s", job.session, "-", "--timeout", str(INSTALL_CELL_TIMEOUT)),
-            stdin = install, timeout = INSTALL_CELL_TIMEOUT + 300,
+            job,
+            runner,
+            _colab(
+                job.session,
+                auth,
+                "exec",
+                "-s",
+                job.session,
+                "-",
+                "--timeout",
+                str(INSTALL_CELL_TIMEOUT),
+            ),
+            stdin = install,
+            timeout = INSTALL_CELL_TIMEOUT + 300,
         )
         # `colab exec` exits 0 even when the cell raised; only the marker counts.
         if INSTALL_OK not in result.output:
-            raise LaunchError(f"Installing Unsloth Studio on the VM failed: {_last_line(result.output)}")
+            raise LaunchError(
+                f"Installing Unsloth Studio on the VM failed: {_last_line(result.output)}"
+            )
 
         job.stage = "starting"
         start = START_SCRIPT.format(launcher = LAUNCHER_SCRIPT)
         # The printed link carries the API key, so drop the CLI's local history of this session.
         script = (
-            _colab(job.session, auth, "exec", "-s", job.session, "-", "--timeout", str(START_CELL_TIMEOUT))
+            _colab(
+                job.session,
+                auth,
+                "exec",
+                "-s",
+                job.session,
+                "-",
+                "--timeout",
+                str(START_CELL_TIMEOUT),
+            )
             + f"; rc=$?; rm -f {HISTORY_DIR}/{job.session}.jsonl; exit $rc"
         )
         result = _step(job, runner, script, stdin = start, timeout = START_CELL_TIMEOUT + 120)
@@ -613,7 +676,9 @@ def _stop_session(session: str, *, drop_link: bool) -> None:
     auth = record.get("auth") if record else None
     result = run_shell(runner, _colab(session, auth, "stop", "-s", session), timeout = STOP_TIMEOUT)
     if result.timed_out or (result.returncode != 0 and "not found" not in result.output.lower()):
-        status = run_shell(runner, _colab(session, auth, "status", "-s", session), timeout = PROBE_TIMEOUT)
+        status = run_shell(
+            runner, _colab(session, auth, "status", "-s", session), timeout = PROBE_TIMEOUT
+        )
         if status.timed_out or session_alive(status.output, session):
             raise LaunchError(f"colab stop failed: {_last_line(result.output)}")
     if record and drop_link and record.get("instance_id"):

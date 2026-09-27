@@ -43,19 +43,40 @@ def isolated_databases(tmp_path, monkeypatch):
 class FakeColab:
     """Stands in for bash + the colab CLI; answers by what the script asks for."""
 
-    def __init__(self, *, probe = READY_PROBE, new = (0, "[colab] Session READY."), install = None, start = None):
+    def __init__(
+        self,
+        *,
+        probe = READY_PROBE,
+        new = (0, "[colab] Session READY."),
+        install = None,
+        start = None,
+    ):
         self.probe = probe
         self.new = new
         self.install = install if install is not None else (0, "Installing...\n" + cl.INSTALL_OK)
-        self.start = start if start is not None else (
-            0, "booting\n" + cl.LINK_MARKER + json.dumps({"url": TUNNEL, "api_key": REMOTE_KEY})
+        self.start = (
+            start
+            if start is not None
+            else (
+                0,
+                "booting\n" + cl.LINK_MARKER + json.dumps({"url": TUNNEL, "api_key": REMOTE_KEY}),
+            )
         )
         self.calls: list[tuple[str, str]] = []
         self.stop_rc = (0, "[colab] Session terminated.")
         self.status_rc = (0, "[colab] Session 'x' not found.")
         self.on_install = None
 
-    def __call__(self, runner, script, *, stdin = None, timeout, on_line = None, cancel = None):
+    def __call__(
+        self,
+        runner,
+        script,
+        *,
+        stdin = None,
+        timeout,
+        on_line = None,
+        cancel = None,
+    ):
         if script == cl.PROBE_SCRIPT:
             kind, (rc, out) = "probe", (0, self.probe)
         elif " new " in script:
@@ -96,8 +117,14 @@ def test_parse_link_reads_the_marker_line():
     [
         ("no marker here", "never reported"),
         (cl.LINK_MARKER + "{not json", "never reported"),
-        (cl.LINK_MARKER + json.dumps({"error": "RuntimeError: tunnel " + REMOTE_KEY}), "did not start"),
-        (cl.LINK_MARKER + json.dumps({"url": "http://x.trycloudflare.com", "api_key": "k"}), "incomplete"),
+        (
+            cl.LINK_MARKER + json.dumps({"error": "RuntimeError: tunnel " + REMOTE_KEY}),
+            "did not start",
+        ),
+        (
+            cl.LINK_MARKER + json.dumps({"url": "http://x.trycloudflare.com", "api_key": "k"}),
+            "incomplete",
+        ),
         (cl.LINK_MARKER + json.dumps({"url": TUNNEL}), "incomplete"),
     ],
 )
@@ -119,14 +146,26 @@ def test_status_not_found_exits_zero_but_is_not_alive():
 @pytest.mark.parametrize(
     "probe, state, setup_has",
     [
-        ("UNSLOTH_PROBE cli=missing", "missing_cli", "curl -LsSf https://astral.sh/uv/install.sh | sh"),
-        ("UNSLOTH_PROBE uv=yes\nUNSLOTH_PROBE cli=/c\nUNSLOTH_PROBE auth=none", "signed_out", "colab --auth oauth2 sessions"),
+        (
+            "UNSLOTH_PROBE cli=missing",
+            "missing_cli",
+            "curl -LsSf https://astral.sh/uv/install.sh | sh",
+        ),
+        (
+            "UNSLOTH_PROBE uv=yes\nUNSLOTH_PROBE cli=/c\nUNSLOTH_PROBE auth=none",
+            "signed_out",
+            "colab --auth oauth2 sessions",
+        ),
         (
             "UNSLOTH_PROBE cli=/c\nUNSLOTH_PROBE auth=oauth2\nUNSLOTH_PROBE sessions_rc=1\nAborted.",
             "signed_out",
             "colab --auth oauth2 sessions",
         ),
-        ("UNSLOTH_PROBE cli=/c\nUNSLOTH_PROBE kernel_client=bad", "kernel_client", "jupyter-kernel-client"),
+        (
+            "UNSLOTH_PROBE cli=/c\nUNSLOTH_PROBE kernel_client=bad",
+            "kernel_client",
+            "jupyter-kernel-client",
+        ),
         ("", "unsupported", "wsl --install -d Ubuntu-24.04"),
         (READY_PROBE, "ready", None),
     ],
@@ -144,8 +183,13 @@ def test_capability_states(monkeypatch, probe, state, setup_has):
 
 
 def test_capability_with_uv_skips_the_uv_installer(monkeypatch):
-    monkeypatch.setattr(cl, "run_shell", FakeColab(probe = "UNSLOTH_PROBE uv=yes\nUNSLOTH_PROBE cli=missing"))
-    assert cl.capability()["setup"] == ["uv tool install google-colab-cli", "colab --auth oauth2 sessions"]
+    monkeypatch.setattr(
+        cl, "run_shell", FakeColab(probe = "UNSLOTH_PROBE uv=yes\nUNSLOTH_PROBE cli=missing")
+    )
+    assert cl.capability()["setup"] == [
+        "uv tool install google-colab-cli",
+        "colab --auth oauth2 sessions",
+    ]
 
 
 def test_no_wsl_on_windows_is_unsupported(monkeypatch):
@@ -160,7 +204,9 @@ def test_no_wsl_on_windows_is_unsupported(monkeypatch):
 def test_colab_flags_are_global_and_auth_is_passed():
     script = cl._colab("unsloth-a", "oauth2", "exec", "-s", "unsloth-a", "-")
     colab_part = script.split("&& ", 1)[1]
-    assert colab_part.startswith("colab --config ~/.config/unsloth-studio/colab/unsloth-a.json --auth oauth2 exec")
+    assert colab_part.startswith(
+        "colab --config ~/.config/unsloth-studio/colab/unsloth-a.json --auth oauth2 exec"
+    )
     assert "--env" not in script
 
 
@@ -189,7 +235,11 @@ def test_launch_links_the_vm_and_never_exposes_the_key(monkeypatch):
     assert instance["base_url"] == TUNNEL and job.instance_id == instance["id"]
     assert linked_instances_db.get_api_key(instance["id"]) == REMOTE_KEY
     record = linked_instances_db.get_colab_session("unsloth-colab-l4")
-    assert record["instance_id"] == instance["id"] and record["gpu"] == "L4" and record["auth"] == "oauth2"
+    assert (
+        record["instance_id"] == instance["id"]
+        and record["gpu"] == "L4"
+        and record["auth"] == "oauth2"
+    )
 
     public = json.dumps(job.public())
     assert REMOTE_KEY not in public and "sk-unsloth-" not in public
@@ -206,7 +256,9 @@ def test_a_key_in_ordinary_output_is_redacted(monkeypatch):
 
 
 def test_install_that_exits_zero_without_the_marker_fails_and_stops_the_vm(monkeypatch):
-    fake = FakeColab(install = (0, "Traceback (most recent call last):\nCalledProcessError: git clone"))
+    fake = FakeColab(
+        install = (0, "Traceback (most recent call last):\nCalledProcessError: git clone")
+    )
     monkeypatch.setattr(cl, "run_shell", fake)
     job = _job()
     cl._run_job(job)
@@ -227,7 +279,13 @@ def test_capacity_error_names_the_gpu_and_stops(monkeypatch):
 
 
 def test_start_error_is_reported_and_stops(monkeypatch):
-    fake = FakeColab(start = (0, cl.LINK_MARKER + json.dumps({"error": "RuntimeError: the Cloudflare tunnel did not produce a URL"})))
+    fake = FakeColab(
+        start = (
+            0,
+            cl.LINK_MARKER
+            + json.dumps({"error": "RuntimeError: the Cloudflare tunnel did not produce a URL"}),
+        )
+    )
     monkeypatch.setattr(cl, "run_shell", fake)
     job = _job()
     cl._run_job(job)
@@ -272,7 +330,10 @@ def test_a_failed_stop_keeps_the_record_only_while_status_shows_the_vm(monkeypat
     cl._run_job(_job())
 
     fake.stop_rc = (1, "ConnectionError: network down")
-    fake.status_rc = (0, "[unsloth-colab-l4] https://x.colab.dev | Hardware: L4 | Shape: STANDARD | Variant: GPU")
+    fake.status_rc = (
+        0,
+        "[unsloth-colab-l4] https://x.colab.dev | Hardware: L4 | Shape: STANDARD | Variant: GPU",
+    )
     with pytest.raises(cl.LaunchError):
         cl.stop_session("unsloth-colab-l4")
     assert len(cl.list_sessions()) == 1 and len(linked_instances_db.list_instances()) == 1
