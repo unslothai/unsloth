@@ -32,15 +32,12 @@ export function startLibraryChat(
   handoff: LibraryChatHandoff,
 ): void {
   const nonce = createModelConfigHandoffRequestId();
-  const epoch = getAuthSessionEpoch();
   resetToNewChat();
   // Offered once the new chat is on screen: drained earlier it would attach to the old thread's composer.
   void navigate({ to: "/chat", search: { new: nonce } }).then(() => {
-    requestAnimationFrame(() => {
-      // Sign-out clears the handoff store; a late offer must not refill it for the next account.
-      if (getAuthSessionEpoch() !== epoch) return;
-      useLibraryChatHandoffStore.getState().offer(`single:${nonce}`, handoff);
-    });
+    requestAnimationFrame(() =>
+      useLibraryChatHandoffStore.getState().offer(`single:${nonce}`, handoff),
+    );
   });
 }
 

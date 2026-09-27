@@ -13,7 +13,6 @@ import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { type MediaViewerActions, MediaViewer, ScaleMenu } from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import { attachmentBodyText, fetchChatAttachmentBlob, truncateAttachmentPreviewText } from "@/features/chat";
-import { getAuthSessionEpoch } from "@/features/auth";
 import { startLibraryChat } from "@/features/library";
 import { useT } from "@/i18n";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
@@ -30,13 +29,6 @@ import {
   useRef,
   useState,
 } from "react";
-
-// Null once the account changed while loading: its bytes must not reach the next account.
-async function loadInSession(load: () => Promise<Blob>): Promise<Blob | null> {
-  const epoch = getAuthSessionEpoch();
-  const blob = await load();
-  return getAuthSessionEpoch() === epoch ? blob : null;
-}
 
 /** Opens an attachment in the Library's viewer; `load` is read on click, so nothing is copied until asked. */
 export const AttachmentViewer: FC<{
@@ -82,9 +74,8 @@ export const AttachmentViewer: FC<{
             label: t("library.menu.chatAboutThis"),
             icon: MessageCircleIcon,
             onClick: () =>
-              void loadInSession(load)
+              void load()
                 .then((blob) => {
-                  if (!blob) return;
                   const file = new File([blob], name, { type: contentType || blob.type });
                   onOpenChange(false);
                   startLibraryChat(navigate, { files: [file] });
@@ -94,8 +85,8 @@ export const AttachmentViewer: FC<{
         : undefined,
     onDownload: load
       ? () =>
-          void loadInSession(load)
-            .then((blob) => blob && downloadFile(blob, name, contentType || undefined))
+          void load()
+            .then((blob) => downloadFile(blob, name, contentType || undefined))
             .catch(() => toast.error(t("library.toast.downloadFailed", { name })))
       : undefined,
   };
