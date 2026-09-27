@@ -17,8 +17,12 @@ from core.inference import diffusion_vae_single_frame as sf  # noqa: E402
 def _tiny_vae():
     torch.manual_seed(0)
     vae = autoencoders.AutoencoderKLQwenImage(
-        base_dim = 16, z_dim = 4, dim_mult = [1, 2, 2], num_res_blocks = 1,
-        temperal_downsample = [False, True], attn_scales = [],
+        base_dim = 16,
+        z_dim = 4,
+        dim_mult = [1, 2, 2],
+        num_res_blocks = 1,
+        temperal_downsample = [False, True],
+        attn_scales = [],
     )
     return vae.float().eval()
 

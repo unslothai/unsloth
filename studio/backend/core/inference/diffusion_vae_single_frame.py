@@ -47,7 +47,11 @@ def single_frame_disabled() -> bool:
     return (os.environ.get(SINGLE_FRAME_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
-def _conv_forward(self: Any, x: Any, cache_x: Any = None) -> Any:
+def _conv_forward(
+    self: Any,
+    x: Any,
+    cache_x: Any = None,
+) -> Any:
     """``QwenImageCausalConv3d.forward`` with the one-frame, no-cache case as a 2D conv."""
     import torch.nn.functional as F
 
@@ -96,7 +100,11 @@ def _tiles(vae: Any, z: Any, sample_space: bool) -> bool:
     return z.shape[-1] > w or z.shape[-2] > h
 
 
-def _fast_decode(self: Any, z: Any, return_dict: bool = True) -> Any:
+def _fast_decode(
+    self: Any,
+    z: Any,
+    return_dict: bool = True,
+) -> Any:
     stock = self._unsloth_stock_decode
     if not _single_frame(self, z) or _tiles(self, z, False):
         return stock(z, return_dict = return_dict)
@@ -148,7 +156,11 @@ def install(vae: Any, logger: Any = None) -> bool:
         vae._unsloth_sf_gate = gate
         vae._unsloth_stock_decode = vae._decode
         vae._decode = types.MethodType(_fast_decode, vae)
-        if callable(getattr(vae, "_encode", None)) and hasattr(vae, "encoder") and hasattr(vae, "quant_conv"):
+        if (
+            callable(getattr(vae, "_encode", None))
+            and hasattr(vae, "encoder")
+            and hasattr(vae, "quant_conv")
+        ):
             vae._unsloth_stock_encode = vae._encode
             vae._encode = types.MethodType(_fast_encode, vae)
         vae._unsloth_single_frame = True
@@ -157,5 +169,9 @@ def install(vae: Any, logger: Any = None) -> bool:
             logger.warning("diffusion.vae: single-frame path not armed: %s", exc)
         return False
     if logger is not None:
-        logger.info("diffusion.vae: single-frame 2D path armed on %s (%d causal convs)", type(vae).__name__, len(convs))
+        logger.info(
+            "diffusion.vae: single-frame 2D path armed on %s (%d causal convs)",
+            type(vae).__name__,
+            len(convs),
+        )
     return True
