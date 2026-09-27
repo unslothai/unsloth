@@ -292,6 +292,7 @@ export {
   repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
 } from "./attachment-content";
+export { normalizeChatImage } from "./image-normalize";
 export {
   ATTACHMENT_KIND_ICON_CLASS,
   ATTACHMENT_KIND_ICONS,
