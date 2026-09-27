@@ -69,6 +69,8 @@ def test_apply_speed_optims_leaves_cudnn_benchmark_alone_for_qwen_image_21(monke
     monkeypatch.setattr(ds_mod, "compile_eligible", lambda *a, **k: False)
     target = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
     family = types.SimpleNamespace(name = "qwen-image-2.1", supports_torch_compile = True)
-    applied = ds_mod.apply_speed_optims(pipe, target, is_gguf = False, family = family, speed_mode = "default")
+    applied = ds_mod.apply_speed_optims(
+        pipe, target, is_gguf = False, family = family, speed_mode = "default"
+    )
     assert applied["cudnn_benchmark"] is False and enabled == []
     assert applied["channels_last"] is False

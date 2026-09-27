@@ -1649,7 +1649,6 @@ def test_stream_merging_dit_compiles_dynamic_once_inductor_proves_the_split(monk
 
 def test_divisibility_proof_probe_never_raises(monkeypatch):
     from core.inference import diffusion_inductor_backports as bp
-
     monkeypatch.setattr(bp, "proof_available", lambda: (_ for _ in ()).throw(RuntimeError("probe")))
     assert ds_mod._divisibility_proof_available() is False
 
