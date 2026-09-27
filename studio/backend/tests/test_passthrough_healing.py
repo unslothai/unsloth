@@ -1653,7 +1653,9 @@ def test_every_post_decode_reinterpreter_is_handed_the_request_s_own_contract():
 
     names = ("heal_gate", "nudge_enabled")
     forwards = ('body.get("response_format")', "_extract_response_format(payload)")
-    source = (Path(__file__).resolve().parents[1] / "routes/inference.py").read_text()
+    source = (Path(__file__).resolve().parents[1] / "routes/inference.py").read_text(
+        encoding = "utf-8"
+    )
     calls, missing = [], []
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Call):
