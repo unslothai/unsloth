@@ -2013,11 +2013,7 @@ def _kv_window_enforced(model, is_vlm, window):
         return None
 
 
-def _kv_quant_status(
-    requested_bits,
-    model,
-    is_vlm,
-):
+def _kv_quant_status(requested_bits, model, is_vlm):
     """Resolve a requested bit width against this model into a status dict."""
     status = {
         "requested_kv_bits": requested_bits,
