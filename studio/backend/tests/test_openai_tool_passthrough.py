@@ -5043,8 +5043,7 @@ class TestGgufVisionToolRouting:
         assert "".join(d.get("content", "") for d in deltas) == "done"
 
     def test_a_tool_heartbeat_is_not_sent_as_a_stall_keepalive(self, monkeypatch):
-        # A durable run renews its lease on the tool heartbeat and never on `: keep-alive`, so a
-        # silent tool relayed as a keep-alive is reaped at the lease timeout.
+        # Durable runs renew their lease on the tool heartbeat, never on `: keep-alive`.
         import routes.inference as inf_mod
 
         def _tools(**_kwargs):
