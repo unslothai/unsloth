@@ -429,7 +429,11 @@ test("Move to names what a row leaves, and its lists scroll inside the window", 
   }
   // Each group's list scrolls past about seven rows, with no scrollbar to eat the right padding,
   // and the submenu as a whole stays inside the window.
-  assert.match(APP_SIDEBAR, /const MOVE_TO_LIST =\n\s*"no-scrollbar max-h-\[calc\(260px\*var\(--ui-space-scale,1\)\)\] overflow-y-auto overscroll-contain";/);
+  assert.match(APP_SIDEBAR, /const MOVE_TO_LIST =\n\s*"no-scrollbar -my-0\.5 max-h-\[calc\(260px\*var\(--ui-space-scale,1\)\)\] overflow-y-auto overscroll-contain";/);
+  // Rows keep one gap across the list's ends, and Remove reads with an X like a close.
+  assert.match(APP_SIDEBAR, /const MENU_ROW_MARGIN_PX = 2;/);
+  assert.equal((APP_SIDEBAR.match(/icon=\{Cancel01Icon\}[^\n]*\n\s*<span className="truncate">/g) ?? []).length, 2);
+  assert.doesNotMatch(APP_SIDEBAR, /MinusSignCircleIcon/);
   assert.match(APP_SIDEBAR, /const MOVE_TO_MENU =\n\s*"max-h-\[var\(--radix-dropdown-menu-content-available-height,var\(--radix-context-menu-content-available-height\)\)\] overflow-y-auto";/);
   assert.equal((APP_SIDEBAR.match(/<div className=\{MOVE_TO_LIST\}>/g) ?? []).length, 2);
   assert.equal((APP_SIDEBAR.match(/sidebar-menu w-52", MOVE_TO_MENU\)/g) ?? []).length, 2);

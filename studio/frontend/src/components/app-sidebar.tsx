@@ -129,7 +129,6 @@ import {
   LeftToRightListBulletIcon,
   ArrowUpDownIcon,
   LayerIcon,
-  MinusSignCircleIcon,
 } from "@hugeicons/core-free-icons";
 import {
   MessageCircleIcon,
@@ -385,8 +384,10 @@ const DROP_INTO_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absol
 // padding and leave the hover pill off centre.
 const MOVE_TO_MENU =
   "max-h-[var(--radix-dropdown-menu-content-available-height,var(--radix-context-menu-content-available-height))] overflow-y-auto";
+// A scroller keeps its rows' 2px margins (MENU_ROW_MARGIN_PX) from meeting the rows outside it,
+// which doubled the gap at both its ends; -my-0.5 gives that 2px back.
 const MOVE_TO_LIST =
-  "no-scrollbar max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
+  "no-scrollbar -my-0.5 max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
 // Folder rows match their hover pill.
 const DROP_INTO_ROW_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
 // The menu keeps a 1px gap between rows. A pointer resting on that gap would hit the section
@@ -4154,7 +4155,7 @@ export function AppSidebar() {
             It names the section, unless a selection is spread over several. */}
         {config.anyFiled && (
           <P.Item onSelect={() => fileSectionTarget(target, null)}>
-            <HugeiconsIcon icon={MinusSignCircleIcon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-icon" />
             <span className="truncate">
               {leaving
                 ? t("shell.sections.removeFrom", { name: leaving.name })
@@ -4444,7 +4445,7 @@ export function AppSidebar() {
                     and named after it. */}
                 {item.projectId && (
                   <P.Item onSelect={() => void moveChatToProject(item, null)}>
-                    <HugeiconsIcon icon={MinusSignCircleIcon} strokeWidth={1.75} className="size-icon" />
+                    <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-icon" />
                     <span className="truncate">
                       {(() => {
                         const leaving = projects.find((project) => project.id === item.projectId);
