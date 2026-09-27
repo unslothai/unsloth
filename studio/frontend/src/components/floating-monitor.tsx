@@ -3,11 +3,19 @@
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
+
 import {
   useMonitorFrameStore,
   useMonitorOverlayStore,
 } from "@/features/settings";
+import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
+import { useChatSettingsWidth } from "@/hooks/use-chat-settings-width";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import {
@@ -15,6 +23,7 @@ import {
   useFloatingPanelZIndex,
 } from "@/lib/floating-panel-order";
 import { cn } from "@/lib/utils";
+import { useRouterState } from "@tanstack/react-router";
 import { CpuIcon, GripVerticalIcon, XIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import {
@@ -24,7 +33,15 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
+
+import {
+  FLOATING_MONITOR_WIDTH,
+  floatingMonitorConstraintStyle,
+  getFloatingMonitorLayout,
+} from "./floating-monitor-layout";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 
 interface MonitorLayout {
   left: number;
@@ -97,7 +114,11 @@ function naturalWidth(monitor: HTMLDivElement): number {
   return width;
 }
 
-function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
+function useMonitorLayout(
+  constraintsElement: HTMLDivElement | null,
+  narrowed: boolean,
+  hidden: boolean,
+) {
   // This panel's claim on the shared frame. Reopening the monitor mid-exit
   // mounts the replacement while the old panel is still animating out, and the
   // old one unmounts last, so its cleanup must only clear its own frame.
@@ -107,12 +128,22 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
   const contentRef = useRef<HTMLDivElement>(null);
   const dragSessionRef = useRef<DragSession | null>(null);
   const dragFrameRef = useRef(0);
-  const hasDraggedRef = useRef(false);
+  const hasDraggedLeftRef = useRef(false);
+  const hasDraggedTopRef = useRef(false);
   const preferredWidthRef = useRef<number | null>(null);
   const preferredHeightRef = useRef<number | null>(null);
   const surfaceWidthRef = useRef(0);
+  const narrowedRef = useRef(narrowed);
+  const hiddenRef = useRef(hidden);
+  // The user's own placement while the container is at full width. Cleared when
+  // they drag while it is narrowed, which is a newer choice, not a clamp.
+  const chosenLeftRef = useRef<number | null>(null);
+  const restoreLeftRef = useRef<number | null>(null);
   const remeasureRef = useRef(0);
   const [layout, setLayout] = useState<MonitorLayout | null>(null);
+  // Reconcile normally arrives from the observers. A transition that leaves the
+  // constraint geometry untouched -- suppressed to undocked -- fires none.
+  const reconcileRef = useRef<(() => void) | null>(null);
 
   useLayoutEffect(() => {
     const monitor = monitorRef.current;
@@ -160,9 +191,8 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       }
 
       const width = Math.min(desiredWidth, constraintsBox.width);
-      // Clamp position against the height actually rendered. A hand-resized
-      // panel keeps its own height and scrolls, so growing content must not
-      // drag it upwards and leave a gap below.
+      // Clamp position against the height actually rendered. A hand-resized panel keeps its own
+      // height and scrolls, so growing content must not drag it upwards and leave a gap below.
       const height = Math.min(
         monitor.style.height ? monitorBox.height : desiredHeight,
         constraintsBox.height,
@@ -171,8 +201,18 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       const maxTop = Math.max(0, constraintsBox.height - height);
       const currentLeft = monitorBox.left - constraintsBox.left;
       const currentTop = monitorBox.top - constraintsBox.top;
-      const left = place(hasDraggedRef.current, currentLeft, maxLeft);
-      const top = place(hasDraggedRef.current, currentTop, maxTop);
+      // A restored position is a deliberate left the constraint had clamped
+      // away, so it replaces `place()` for exactly one pass.
+      const restoreTo = restoreLeftRef.current;
+      const left =
+        restoreTo === null
+          ? place(hasDraggedLeftRef.current, currentLeft, maxLeft)
+          : clamp(restoreTo, 0, maxLeft);
+      restoreLeftRef.current = null;
+      if (!narrowedRef.current && hasDraggedLeftRef.current) {
+        chosenLeftRef.current = left;
+      }
+      const top = place(hasDraggedTopRef.current, currentTop, maxTop);
 
       const session = dragSessionRef.current;
       if (session) {
@@ -185,17 +225,18 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       }
 
       // Publish the real box so the overlay stack can keep clear of it.
-      useMonitorFrameStore.getState().setFrame(publisher, {
-        left: monitorBox.left,
-        top: monitorBox.top,
-        right: monitorBox.right,
-        bottom: monitorBox.bottom,
-      });
+      if (!hiddenRef.current) {
+        useMonitorFrameStore.getState().setFrame(publisher, {
+          left: monitorBox.left,
+          top: monitorBox.top,
+          right: monitorBox.right,
+          bottom: monitorBox.bottom,
+        });
+      }
 
       setLayout((current) => {
-        // Mid-drag the offset lives in a transform, and the measured box
-        // already includes it, so committing left/top here would apply it
-        // twice. finishDrag lands the position instead.
+        // Mid-drag the offset lives in a transform, and the measured box already includes it, so
+        // committing left/top here would apply it twice. finishDrag lands the position instead.
         const held = session && current ? current : null;
         const restLeft = held?.left ?? left;
         const restTop = held?.top ?? top;
@@ -211,6 +252,7 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       });
     };
 
+    reconcileRef.current = reconcileGeometry;
     reconcileGeometry();
     const observer = new ResizeObserver(reconcileGeometry);
     observer.observe(constraints);
@@ -222,6 +264,7 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     }
     return () => {
       observer.disconnect();
+      reconcileRef.current = null;
       useMonitorFrameStore.getState().clearFrame(publisher);
       if (remeasureRef.current) {
         cancelAnimationFrame(remeasureRef.current);
@@ -234,15 +277,40 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     };
   }, [constraintsElement, publisher]);
 
-  // ResizeObserver never fires for a position-only change, so dragging alone
-  // would leave the published frame at the monitor's old corner and the overlay
-  // stack dodging where it used to be. Re-publish once each layout is committed,
-  // which after a drag is on release: the frames in between are a transform, and
-  // republishing through them would re-render every overlay in the stack for
-  // each one, which is most of what made dragging feel heavy.
+  // Narrowing clamps the monitor left, and `place()` keeps the clamped spot.
+  // The position the user did drag to is put back when the container widens.
+  // Settled in a layout effect, before the next observation can reconcile.
+  // The API monitor treats any published frame as a live obstacle, so an
+  // invisible resource monitor must not keep publishing its box. Visibility and
+  // aria-hidden fire no ResizeObserver, so `hidden` also feeds the republish
+  // below: it is what restores the box once the monitor is on screen again.
   useLayoutEffect(() => {
+    hiddenRef.current = hidden;
+    if (hidden) {
+      useMonitorFrameStore.getState().clearFrame(publisher);
+    }
+  }, [hidden, publisher]);
+
+  useLayoutEffect(() => {
+    if (narrowedRef.current === narrowed) {
+      return;
+    }
+    narrowedRef.current = narrowed;
+    if (!narrowed) {
+      restoreLeftRef.current = chosenLeftRef.current;
+      reconcileRef.current?.();
+    }
+  }, [narrowed]);
+
+  // ResizeObserver never fires for a position-only change, so dragging alone would leave the
+  // published frame at the monitor's old corner and the overlay stack dodging where it used to be.
+  // Re-publish once each layout is committed, which after a drag is on release: the frames in
+  // between are a transform, and republishing through them would re-render every overlay in the
+  // stack for each one, which is most of what made dragging feel heavy.
+  useLayoutEffect(() => {
+    void layout;
     const monitor = monitorRef.current;
-    if (!(monitor && constraintsElement)) {
+    if (!(monitor && constraintsElement) || hiddenRef.current) {
       return;
     }
     const box = monitor.getBoundingClientRect();
@@ -252,7 +320,7 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       right: box.right,
       bottom: box.bottom,
     });
-  }, [layout, constraintsElement, publisher]);
+  }, [layout, constraintsElement, publisher, hidden]);
 
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     const monitor = monitorRef.current;
@@ -265,7 +333,6 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     const monitorBox = monitor.getBoundingClientRect();
     const left = monitorBox.left - constraintsBox.left;
     const top = monitorBox.top - constraintsBox.top;
-    hasDraggedRef.current = true;
 
     // Native resize records attempted inline dimensions even when max-width
     // or max-height hides them. Normalize only hidden dimensions so an
@@ -301,10 +368,9 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
-  // One paint per frame, and through a transform rather than left/top. The
-  // panel is backdrop-blurred, so every layout-driven move re-sampled what is
-  // behind it; a trackpad also reports moves faster than the display refreshes,
-  // so most of those renders were never shown.
+  // One paint per frame, and through a transform rather than left/top. The panel is
+  // backdrop-blurred, so every layout-driven move re-sampled what is behind it; a trackpad also
+  // reports moves faster than the display refreshes, so most of those renders were never shown.
   function paintDrag() {
     dragFrameRef.current = 0;
     const session = dragSessionRef.current;
@@ -323,6 +389,9 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       return;
     }
 
+    // Horizontal placement is chosen on release. An intermediate move that
+    // returns to its starting X must leave an anchored monitor anchored.
+    const previousTop = session.top;
     const left = clamp(
       session.left + event.clientX - session.startX,
       0,
@@ -333,6 +402,9 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       0,
       session.maxTop,
     );
+    if (top !== previousTop) {
+      hasDraggedTopRef.current = true;
+    }
     session.startX = event.clientX;
     session.startY = event.clientY;
     session.left = left;
@@ -351,8 +423,15 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       cancelAnimationFrame(dragFrameRef.current);
       dragFrameRef.current = 0;
     }
-    const { left, top, constraintsWidth, constraintsHeight } = session;
+    const { left, top, baseLeft, constraintsWidth, constraintsHeight } =
+      session;
     dragSessionRef.current = null;
+    // Only the released horizontal position is a new choice. Returning to the
+    // starting X keeps the saved full-width position even after intermediate moves.
+    if (left !== baseLeft) {
+      hasDraggedLeftRef.current = true;
+      chosenLeftRef.current = narrowedRef.current ? null : left;
+    }
     // Written to the node as well as to state, in this order, so handing the
     // offset back to left/top cannot show a frame at the spot it started from.
     const monitor = monitorRef.current;
@@ -417,13 +496,23 @@ function formatGiB(value: number): string {
 }
 
 interface FloatingMonitorPanelProps {
+  dockedBesideRunSettings: boolean;
   onClose: () => void;
+  settingsWidth: number;
+  onRenderedWidth: (width: number) => void;
+  suppressed: boolean;
   systemInfo: ReturnType<typeof useSystemInfo>;
+  /** The live `--ui-space-scale`; the resize handle's clearance follows it. */
+  uiSpaceScale: number;
 }
-
 function FloatingMonitorPanel({
+  dockedBesideRunSettings,
   onClose,
+  onRenderedWidth,
+  settingsWidth,
+  suppressed,
   systemInfo,
+  uiSpaceScale,
 }: FloatingMonitorPanelProps) {
   const t = useT();
   const [constraintsElement, setConstraintsElement] =
@@ -436,7 +525,25 @@ function FloatingMonitorPanel({
     startDrag,
     updateDrag,
     finishDrag,
-  } = useMonitorLayout(constraintsElement);
+  } = useMonitorLayout(
+    constraintsElement,
+    dockedBesideRunSettings || suppressed,
+    suppressed,
+  );
+
+  // offsetWidth, not the bounding rect: the panel animates in from scale 0.94, and
+  // a rect read through that transform is short of the width it settles at.
+  useEffect(() => {
+    const monitor = monitorRef.current;
+    if (!monitor) {
+      return;
+    }
+    const measure = () => onRenderedWidth(monitor.offsetWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(monitor);
+    return () => observer.disconnect();
+  }, [monitorRef, onRenderedWidth]);
 
   const zIndex = useFloatingPanelZIndex("resource-monitor");
   const raisePanel = useFloatingPanelOrderStore((state) => state.raise);
@@ -461,16 +568,18 @@ function FloatingMonitorPanel({
     systemInfo.inference_gpu.backend !== systemInfo.gpu.backend
       ? systemInfo.inference_gpu
       : null;
+  const memoryDisplay = gpuMemoryDisplay(displayedGpu);
+  const inferenceDisplay = gpuMemoryDisplay(separateInferenceGpu);
   const inferenceVramTotal = separateInferenceGpu
-    ? aggregateGpuMemoryTotalGb(separateInferenceGpu.devices)
+    ? aggregateGpuMemoryTotalGb(inferenceDisplay.usageDevices)
     : 0;
-  const devices = displayedGpu?.devices ?? [];
+  const devices = memoryDisplay.usageDevices;
   const memoryTotals = gpuMemoryTotalsGb(devices);
   const vramTotal = memoryTotals.total;
   const hasSharedPool = memoryTotals.shared > 0;
   // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
   // readout. The host figure can still be known when no device's is (#7452).
-  const resolvedVramUsed = resolveGpuVramUsedGb(displayedGpu);
+  const resolvedVramUsed = resolveGpuVramUsedGb(memoryDisplay.usageGpu);
   const vramUsageKnown = resolvedVramUsed !== null;
   const vramUsed = resolvedVramUsed ?? 0;
   const vramPercent = clampPercent(
@@ -478,23 +587,38 @@ function FloatingMonitorPanel({
   );
   const unknownLabel = t("settings.resources.environment.unknown");
 
-  const hasGpu = (displayedGpu?.available ?? false) && devices.length > 0;
+  const hasGpu =
+    (displayedGpu?.available ?? false) &&
+    (displayedGpu?.devices.length ?? 0) > 0;
 
-  // The container sits on the floating panel layer, above the bottom-right
-  // overlay stack. The stack is anchored to that same corner and does not move
-  // for this monitor, so the two can overlap. The stack is passive status; this
-  // is a window being dragged, resized and closed, so it wins. Still below the
-  // startup screen and tooltips. See lib/z-layers.
-  //
-  // The API monitor panel shares this layer rather than sitting under it, and
-  // whichever of the two the user touched last is the one in front.
+  // The container sits on the floating panel layer, above the bottom-right overlay stack. The stack
+  // is anchored to that same corner and does not move for this monitor, so the two can overlap. The
+  // stack is passive status; this is a window being dragged, resized and closed, so it wins. Still
+  // below the startup screen and tooltips. See lib/z-layers. The API monitor panel shares this
+  // layer rather than sitting under it, and whichever of the two the user touched last is the one
+  // in front.
   return (
     <div
       ref={setConstraintsElement}
-      className="pointer-events-none fixed inset-4"
-      style={{ zIndex }}
+      // The panel stays mounted while suppressed: the settings sheet is a
+      // temporary overlay, and unmounting would throw away the position and the
+      // browser-owned resize dimensions the user set. `invisible` keeps the box
+      // (and the observers watching it) while taking it off the screen.
+      aria-hidden={suppressed || undefined}
+      className={cn(
+        "pointer-events-none fixed inset-y-4 left-4",
+        suppressed && "invisible",
+        dockedBesideRunSettings ? undefined : "right-4",
+      )}
+      style={floatingMonitorConstraintStyle({
+        zIndex,
+        dockedBesideRunSettings,
+        settingsWidth,
+        uiSpaceScale,
+      })}
     >
       <motion.div
+        {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
         ref={monitorRef}
         onPointerDownCapture={() => raisePanel("resource-monitor")}
         initial={{ opacity: 0 }}
@@ -576,7 +700,7 @@ function FloatingMonitorPanel({
               />
             </div>
 
-            {hasGpu && (
+            {hasGpu && devices.length > 0 && (
               <div className="space-y-1">
                 <div className="flex justify-between text-ui-11 font-medium font-mono">
                   <span className="truncate flex-1 pr-2">
@@ -612,18 +736,51 @@ function FloatingMonitorPanel({
                 />
               </div>
             )}
+            {hasGpu && memoryDisplay.sharedDevices.length > 0 && (
+              <div className="space-y-1 text-xs">
+                <div className="font-medium">
+                  {t("settings.resources.gpu.sharedWithSystemRam")}
+                </div>
+                <div className="font-mono text-muted-foreground">
+                  {t("settings.resources.gpu.estimatedAvailable", {
+                    value:
+                      memoryDisplay.sharedAvailableGb === null
+                        ? unknownLabel
+                        : formatGiB(memoryDisplay.sharedAvailableGb),
+                  })}
+                </div>
+              </div>
+            )}
             {separateInferenceGpu && (
-              <div className="flex justify-between gap-2 text-ui-11 font-mono">
-                <span className="text-muted-foreground">
+              <div className="space-y-1 border-t border-border/60 pt-2 text-ui-11">
+                <span className="block font-medium text-muted-foreground">
                   {t("settings.resources.gpu.ggufInference")}
                 </span>
-                <span className="uppercase text-foreground">
-                  {separateInferenceGpu.backend ?? "GPU"}
-                  {separateInferenceGpu.available
-                    ? inferenceVramTotal
-                      ? ` · ${formatGiB(inferenceVramTotal)}`
-                      : ""
-                    : ` · ${t("settings.resources.gpu.unavailable")}`}
+                <span className="block font-mono text-foreground">
+                  {separateInferenceGpu.backend?.toUpperCase() ?? "GPU"}
+                  {separateInferenceGpu.available ? (
+                    inferenceVramTotal ? (
+                      <span className="block">
+                        {t("settings.resources.gpu.vramUtilization")}:{" "}
+                        {formatGiB(inferenceVramTotal)}
+                      </span>
+                    ) : (
+                      ""
+                    )
+                  ) : (
+                    ` · ${t("settings.resources.gpu.unavailable")}`
+                  )}
+                  {separateInferenceGpu.available &&
+                    inferenceDisplay.sharedDevices.length > 0 && (
+                      <span className="block normal-case">
+                        {t("settings.resources.gpu.sharedEstimatedAvailable", {
+                          value:
+                            inferenceDisplay.sharedAvailableGb === null
+                              ? unknownLabel
+                              : formatGiB(inferenceDisplay.sharedAvailableGb),
+                        })}
+                      </span>
+                    )}
                 </span>
               </div>
             )}
@@ -635,13 +792,115 @@ function FloatingMonitorPanel({
 }
 
 export function FloatingMonitor() {
+  const uiSpaceScale = useUiSpaceScale();
   const { isOpen, setIsOpen } = useMonitorOverlayStore();
-  const systemInfo = useSystemInfo({ enabled: isOpen, pollMs: 5000 });
+  const settingsPanelOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isMobile = useIsMobile();
+  // The panel's own rendered width: it is user-resizable from 248 to 560 px, so the
+  // docked offset has to come from the same value the panel paints at.
+  const { width: committedSettingsWidth } = useChatSettingsWidth();
+  const { pinned } = useSidebarPin();
+  const { width: committedSidebarWidth } = useSidebarWidth();
+  const isChatRoute = pathname === "/chat";
+
+  // Dragging the panel's edge paints `--chat-settings-width` straight onto the
+  // <aside> and commits to the store only on pointer up, so the store trails the
+  // panel by a whole drag. The monitor has to clear what is on screen, so it
+  // follows the painted width and falls back to the committed one.
+  const [paintedSettingsWidth, setPaintedSettingsWidth] = useState(0);
+  useEffect(() => {
+    if (!(isChatRoute && settingsPanelOpen)) {
+      setPaintedSettingsWidth(0);
+      return;
+    }
+    const panel = document.querySelector('[data-slot="chat-settings-panel"]');
+    if (!panel) {
+      setPaintedSettingsWidth(0);
+      return;
+    }
+    const measure = () => {
+      if (panel.isConnected) {
+        setPaintedSettingsWidth(panel.getBoundingClientRect().width);
+      }
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [isChatRoute, settingsPanelOpen, isMobile]);
+
+  // Same lag as the settings panel: the sidebar paints per frame and commits
+  // on release, so a docked monitor could sit under a grown sidebar.
+  const [paintedSidebarWidth, setPaintedSidebarWidth] = useState(0);
+  // Unpinning still holds the collapsed icon rail as a column on the web shell;
+  // `collapseToZero` is desktop-app only, and that rail is the one unpinned
+  // state that takes the monitor's room.
+  const [sidebarHoldsRail, setSidebarHoldsRail] = useState(false);
+  useEffect(() => {
+    const sidebar = document.querySelector('[data-slot="sidebar"]');
+    if (!sidebar) {
+      setPaintedSidebarWidth(0);
+      setSidebarHoldsRail(false);
+      return;
+    }
+    const measure = () => {
+      if (sidebar.isConnected) {
+        setPaintedSidebarWidth(sidebar.getBoundingClientRect().width);
+        setSidebarHoldsRail(
+          sidebar.getAttribute("data-collapsible") === "icon",
+        );
+      }
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(sidebar);
+    return () => observer.disconnect();
+  }, [isMobile]);
+
+  // `useIsMobile` only notifies when the 768 px breakpoint is crossed, and the
+  // two width stores stop notifying at their maxima, so the capacity decision
+  // needs its own subscription or a plain resize never re-evaluates it.
+  const viewportWidth = useSyncExternalStore(
+    (onChange) => {
+      window.addEventListener("resize", onChange);
+      return () => window.removeEventListener("resize", onChange);
+    },
+    () => window.innerWidth,
+    () => 0,
+  );
+
+  const settingsWidth =
+    paintedSettingsWidth > 0 ? paintedSettingsWidth : committedSettingsWidth;
+  const pinnedSidebarWidth =
+    paintedSidebarWidth > 0 ? paintedSidebarWidth : committedSidebarWidth;
+  // A pinned sidebar holds its column; an unpinned one overlays the content, but
+  // the web shell still paints its collapsed icon rail as a column, so reserve
+  // that measured rail while it really is one.
+  const unpinnedSidebarWidth = sidebarHoldsRail ? paintedSidebarWidth : 0;
+  const sidebarWidth = pinned ? pinnedSidebarWidth : unpinnedSidebarWidth;
+  // The panel is natively resizable, so what it renders is what docking has to
+  // reserve. Before the first measure the constant is the floor.
+  const [monitorWidth, setMonitorWidth] = useState(FLOATING_MONITOR_WIDTH);
+  const { visible, suppressed, dockedBesideRunSettings } =
+    getFloatingMonitorLayout({
+      isOpen,
+      isMobile,
+      isChatRoute,
+      settingsPanelOpen,
+      settingsWidth,
+      sidebarWidth,
+      viewportWidth,
+      monitorWidth,
+      uiSpaceScale,
+    });
+  const systemInfo = useSystemInfo({ enabled: visible, pollMs: 5000 });
   const [panelKey, setPanelKey] = useState(0);
   const wasOpenRef = useRef(isOpen);
 
   // Each visible panel owns native inline resize state. Advance the key on
   // close so reopening during the exit animation still mounts fresh geometry.
+  // Docking and the mobile yield are not closes, so they do not advance it.
   useEffect(() => {
     if (wasOpenRef.current && !isOpen) {
       setPanelKey((current) => current + 1);
@@ -651,9 +910,17 @@ export function FloatingMonitor() {
 
   return (
     <AnimatePresence>
-      {isOpen && (
+      {(visible || suppressed) && (
         <FloatingMonitorPanel
           key={panelKey}
+          // The mobile sheet covers the panel rather than closing it, so the
+          // panel is kept mounted and invisible: the position and the size the
+          // user set survive the sheet being opened and closed.
+          suppressed={suppressed}
+          dockedBesideRunSettings={dockedBesideRunSettings}
+          settingsWidth={settingsWidth}
+          uiSpaceScale={uiSpaceScale}
+          onRenderedWidth={setMonitorWidth}
           systemInfo={systemInfo}
           onClose={() => setIsOpen(false)}
         />

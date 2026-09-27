@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
 # Install one coding-agent CLI for the Local Agent Guides CI. Isolated as
 # failure class (b) "agent package install failed": npm/curl flakiness here
 # is the single biggest source of false reds, so installs retry with
 # backoff and the only ::error:: this script can emit is class (b). The
 # install recipes mirror the install_hint strings in
 # unsloth_cli/commands/start.py at HEAD.
-#
 # Usage: agent-guides-install.sh <agent>
 #   agent in: claude codex hermes openclaw opencode pi dsh
 set -uo pipefail
@@ -38,18 +36,50 @@ npm_retry() {
   return 1
 }
 
+# An installer option written as ?--flag is one we pass only to save time, and it
+# is kept only while the downloaded installer still parses it as a case label: a
+# line that opens with it, alone or among |-joined alternatives, so a comment or
+# help text that still names a removed option does not count.
+# These installers track the vendor's main branch and treat any unknown option as
+# fatal, so a vendor dropping a nicety turned every PR red: hermes removed
+# --no-skills on 2026-09-24. Everything else is required and passed as written.
+installer_args() {
+  local script="$1"; shift
+  local arg flag
+  for arg in "$@"; do
+    if [[ "$arg" == \?* ]]; then
+      flag="${arg#\?}"
+      if grep -qE -- "^[[:space:]]*\(?([^[:space:]#|()]+\|)*${flag}(\|[^[:space:]|()]+)*\)" "$script"; then
+        printf '%s\n' "$flag"
+      else
+        echo "[install] the installer no longer takes $flag; installing without it" | tee -a "$LOG" >&2
+      fi
+    else
+      printf '%s\n' "$arg"
+    fi
+  done
+}
+
 # curl|bash installers, retried at the curl layer. We download to a temp file
 # first and only execute on a fully successful fetch, so a truncated download
 # (network hiccup mid-stream) can never run a half-written installer.
 curl_bash() {
   local url="$1"; shift
   local i tmp
+  local arg
+  local -a args
   tmp="$(mktemp)"
   for i in 1 2 3; do
-    if curl -fsSL --retry 3 --retry-delay 5 "$url" -o "$tmp" 2>>"$LOG" \
-        && bash "$tmp" "$@" >> "$LOG" 2>&1; then
-      rm -f "$tmp"
-      return 0
+    if curl -fsSL --retry 3 --retry-delay 5 "$url" -o "$tmp" 2>>"$LOG"; then
+      args=()
+      # A read loop: the bash 3.2 macOS ships has no builtin that reads lines into an array.
+      while IFS= read -r arg; do
+        args+=("$arg")
+      done < <(installer_args "$tmp" "$@")
+      if bash "$tmp" ${args[@]+"${args[@]}"} >> "$LOG" 2>&1; then
+        rm -f "$tmp"
+        return 0
+      fi
     fi
     echo "[install] curl|bash $url attempt $i failed; backing off $((i * 10))s" | tee -a "$LOG"
     sleep "$((i * 10))"
@@ -97,7 +127,7 @@ case "$AGENT" in
     # start.py install_hint:
     #   curl -fsSL .../NousResearch/hermes-agent/main/scripts/install.sh | bash
     curl_bash "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh" \
-      --non-interactive --skip-setup --skip-browser --no-skills \
+      --non-interactive '?--skip-setup' '?--skip-browser' '?--no-skills' \
       || install_fail "hermes installer failed"
     echo "$HOME/.local/bin" >> "$GITHUB_PATH"
     ;;

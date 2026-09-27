@@ -5,27 +5,16 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-PASS=0
-FAIL=0
-
 # The escape block, from its guard to the first dedented `fi`.
 awk '/^if \[ "\$_SKIP_PYTHON_DEPS" = true \] && \[ -x "\$VENV_DIR\/bin\/python" \]; then/ {on=1}
      on {print}
      on && /^fi$/ {exit}' "$SETUP_SH" > "$WORK/escape.sh"
 grep -q -- "--amd-torch-needs-dependency-pass" "$WORK/escape.sh" || {
     echo "FATAL: AMD escape block not found in $SETUP_SH" >&2; exit 1; }
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"; PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"; FAIL=$((FAIL + 1))
-    fi
-}
 
 VENV_DIR="$WORK/venv"
 mkdir -p "$VENV_DIR/bin"

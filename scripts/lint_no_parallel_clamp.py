@@ -41,9 +41,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCAN_DIR = REPO_ROOT / "studio" / "backend"
 
-# Aliases the same count travels under: the route resolves a request into `_n_parallel`,
-# and a request that names no count resolves to `llama_parallel_slots`, so a clamp on
-# either reduces the user's slots under a different name.
+# Aliases the same count travels under: the route resolves a request into `_n_parallel`, and a request that names no
+# count resolves to `llama_parallel_slots`, so a clamp on either reduces the user's slots under a different name.
 SLOT_NAMES = frozenset({"n_parallel", "_n_parallel", "llama_parallel_slots"})
 ALLOW_MARKER = "# allow-slot-clamp:"
 SKIP_PARTS = frozenset({"tests", ".venv", "venv", "build", "dist", "node_modules", "__pycache__"})

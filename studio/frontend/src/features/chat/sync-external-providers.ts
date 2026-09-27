@@ -8,17 +8,25 @@ import {
 
 import {
   type ProviderRegistryEntry,
+  fetchModelCatalog,
   listProviderConfigs,
+  listProviderModelCapabilities,
   listProviderRegistry,
   migrateProviderApiKey,
   updateProviderConfig,
 } from "./api/providers-api";
 import {
+  modelsDevCatalogFetchedAt,
+  providerModelCatalogFetchedAt,
+  setModelsDevCatalog,
+  setProviderModelCatalog,
+} from "./model-catalog";
+import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
+  CUSTOM_PROVIDER_DISPLAY_NAME,
   CUSTOM_PROVIDER_PRESETS,
   type ExternalProviderConfig,
   getExternalProviderApiKey,
-  isCustomProviderType,
   isPromptCacheTtl,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   pruneExternalProviderApiKeys,
@@ -44,45 +52,60 @@ const OPENROUTER_EXCLUDED_MODELS = new Set([
   "recraft/recraft-v4-pro",
 ]);
 
-function normalizeUrl(input: string): string {
-  return input.trim().replace(/\/+$/, "");
+function parseHttpEndpointHost(
+  input: string | null | undefined,
+): string | null {
+  const value = (input ?? "").trim();
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed.hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
+function isOpenAIManagedEndpoint(input: string | null | undefined): boolean {
+  const host = parseHttpEndpointHost(input);
+  return (
+    host === "api.openai.com" ||
+    host?.endsWith(".openai.azure.com") === true ||
+    host?.endsWith(".services.ai.azure.com") === true
+  );
 }
 
 export function resolveUiProviderTypeFromConfig(
   configProviderType: string,
   configDisplayName: string | null | undefined,
   configBaseUrl: string | null | undefined,
-  registryRows: ProviderRegistryEntry[],
-  existingProviderType: string | undefined,
+  _registryRows: ProviderRegistryEntry[],
+  _existingProviderType: string | undefined,
 ): string {
-  if (existingProviderType && isCustomProviderType(existingProviderType)) {
-    return existingProviderType;
-  }
   if (configProviderType !== CUSTOM_BACKEND_PROVIDER_TYPE) {
     return configProviderType;
   }
+  // Names are editable labels, not provider identity. Repair stale local custom state before
+  // applying any legacy heuristic when the saved endpoint is OpenAI-managed.
+  if (isOpenAIManagedEndpoint(configBaseUrl)) {
+    return CUSTOM_BACKEND_PROVIDER_TYPE;
+  }
   const displayName = (configDisplayName ?? "").trim().toLowerCase();
+  if (displayName === CUSTOM_PROVIDER_DISPLAY_NAME.toLowerCase()) {
+    return LEGACY_CUSTOM_PROVIDER_TYPE;
+  }
   const matchingCustomPreset = CUSTOM_PROVIDER_PRESETS.find(
     (preset) => preset.displayName.toLowerCase() === displayName,
   );
   if (matchingCustomPreset) {
     return matchingCustomPreset.providerType;
   }
-  const openAiRegistry = registryRows.find(
-    (entry) => entry.provider_type === CUSTOM_BACKEND_PROVIDER_TYPE,
-  );
-  if (!openAiRegistry) {
-    return configProviderType;
-  }
-  const openAiDisplayName = openAiRegistry.display_name.trim().toLowerCase();
-  if (displayName.length > 0 && displayName !== openAiDisplayName) {
-    return LEGACY_CUSTOM_PROVIDER_TYPE;
-  }
-  const configUrl = normalizeUrl(configBaseUrl ?? "");
-  const defaultUrl = normalizeUrl(openAiRegistry.base_url ?? "");
-  if (configUrl.length > 0 && configUrl !== defaultUrl) {
-    return LEGACY_CUSTOM_PROVIDER_TYPE;
-  }
+  // A non-OpenAI hostname can be a corporate proxy for the real OpenAI API. Without a
+  // built-in legacy label there is no safe way to infer that the saved row was custom.
   return configProviderType;
 }
 
@@ -116,10 +139,9 @@ export function pruneProviderModelIds(
   providerType: string,
   modelIds: string[],
 ): string[] {
-  // Anthropic has no entry: a `-YYYYMMDD` id is the canonical name for the
-  // whole pre-4.6 generation, not a snapshot. This mirrored the backend
-  // denylist and outlived it, stripping those ids from the server catalog,
-  // the seeds and saved selections alike.
+  // Anthropic has no entry: a `-YYYYMMDD` id is the canonical name for the whole pre-4.6
+  // generation, not a snapshot. This mirrored the backend denylist and outlived it, stripping those
+  // ids from the server catalog, the seeds and saved selections alike.
   if (providerType === "openai") {
     return modelIds.filter((id) => !OPENAI_DEPRECATED_MODELS.has(id));
   }
@@ -289,6 +311,7 @@ export async function syncExternalProvidersFromBackend(
         backendProviderType: config.provider_type,
         name: config.display_name,
         baseUrl: config.base_url ?? "",
+        apiType: config.api_type ?? "chat_completions",
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,
@@ -312,5 +335,58 @@ export async function syncExternalProvidersFromBackend(
   if (isCurrent && !isCurrent()) return existingProviders;
 
   await settleTasksIfCurrent(backfillTasks, isCurrent);
+  void refreshProviderModelCatalogs(syncedProviders, isCurrent);
   return syncedProviders;
+}
+
+const MODEL_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
+// The live catalog is stored per provider type, so only the provider's own endpoint may write it; a connection
+// pointed at a compatible gateway keeps the built-in tables instead of overwriting OpenRouter's entries.
+const MODEL_CATALOG_PROVIDER_BASE_URLS: Record<string, string> = {
+  openrouter: "https://openrouter.ai/api/v1",
+};
+
+function usesProviderCatalogEndpoint(provider: ExternalProviderConfig): boolean {
+  const expected = MODEL_CATALOG_PROVIDER_BASE_URLS[provider.providerType];
+  if (!expected) return false;
+  const baseUrl = (provider.baseUrl ?? "").trim().replace(/\/+$/, "").toLowerCase();
+  return baseUrl === "" || baseUrl === expected;
+}
+
+export async function refreshProviderModelCatalogs(
+  providers: readonly ExternalProviderConfig[],
+  isCurrent?: () => boolean,
+): Promise<void> {
+  const modelsDevAge = modelsDevCatalogFetchedAt();
+  if (
+    providers.length > 0 &&
+    (modelsDevAge == null || Date.now() - modelsDevAge * 1000 >= MODEL_CATALOG_TTL_MS)
+  ) {
+    try {
+      const catalog = await fetchModelCatalog();
+      if (isCurrent && !isCurrent()) return;
+      setModelsDevCatalog(catalog);
+    } catch {
+      // Offline: the bundled snapshot answers until the next sync.
+    }
+  }
+  for (const provider of providers) {
+    const providerType = provider.providerType;
+    if (!usesProviderCatalogEndpoint(provider)) continue;
+    // A successful fetch makes the catalog fresh, so later connections of the same type skip;
+    // a failed one leaves it stale and the next connection gets a turn.
+    const fetchedAt = providerModelCatalogFetchedAt(providerType);
+    if (fetchedAt != null && Date.now() - fetchedAt < MODEL_CATALOG_TTL_MS) continue;
+    try {
+      const models = await listProviderModelCapabilities({
+        providerType,
+        providerId: provider.id,
+        apiKey: "",
+      });
+      if (isCurrent && !isCurrent()) return;
+      if (models.length > 0) setProviderModelCatalog(providerType, models);
+    } catch {
+      // Offline or unauthorized: the built-in tables answer until the next sync.
+    }
+  }
 }

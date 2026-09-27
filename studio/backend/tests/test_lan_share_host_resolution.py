@@ -132,6 +132,18 @@ def test_direct_server_url_is_the_lan_address(monkeypatch):
     assert _direct_server_url("0.0.0.0", 8888) == f"http://{LAN_IP}:8888"
 
 
+@pytest.mark.parametrize(
+    "host, authority",
+    [
+        ("192.168.1.7", "192.168.1.7"),
+        ("::1", "[::1]"),
+        ("fe80::1234%eth0", "[fe80::1234%25eth0]"),
+    ],
+)
+def test_direct_server_url_formats_specific_bind_addresses(host, authority):
+    assert _direct_server_url(host, 8889) == f"http://{authority}:8889"
+
+
 def test_direct_server_url_is_unset_when_no_lan_address_is_detectable(monkeypatch):
     """Never publish the wildcard: the frontend prefers any non-null server_url
     over the origin the client actually reached, so http://0.0.0.0:8888 would be

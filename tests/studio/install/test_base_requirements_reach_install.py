@@ -126,7 +126,13 @@ class TestSharedBaseSelection:
 
 
 class TestSharedBasePhase:
-    def _run(self, req: Path | None, *, skip_base: bool) -> tuple[list[Path], list[str]]:
+    def _run(
+        self,
+        req: Path | None,
+        *,
+        skip_base: bool,
+        satisfied: bool = False,
+    ) -> tuple[list[Path], list[str]]:
         installs: list[Path] = []
         progress: list[str] = []
 
@@ -146,6 +152,9 @@ class TestSharedBasePhase:
             "_step": lambda *_args, **_kwargs: None,
             "_LABEL": "python",
             "pip_install": record_install,
+            # The skip gate, stubbed: this class pins that the shared file reaches BOTH core paths.
+            "_requirements_satisfied": lambda *_args, **_kwargs: satisfied,
+            "_record_step": lambda *_args, **_kwargs: None,
         }
         exec(compile(module, "<shared base phase>", "exec"), namespace)
         return installs, progress
@@ -156,6 +165,16 @@ class TestSharedBasePhase:
         req.write_text(_EXTRA_PIN + "\n", encoding = "utf-8")
         installs, _progress = self._run(req, skip_base = skip_base)
         assert installs == [req]
+
+    @pytest.mark.parametrize("skip_base", [False, True])
+    def test_an_already_satisfied_file_still_spends_the_slot(self, tmp_path, skip_base):
+        """A skipped step must cost nothing but its progress slot: the denominator
+        cannot depend on how much of the install was already there."""
+        req = tmp_path / "base.txt"
+        req.write_text(_EXTRA_PIN + "\n", encoding = "utf-8")
+        installs, progress = self._run(req, skip_base = skip_base, satisfied = True)
+        assert installs == []
+        assert progress == (["base requirements (satisfied, skipped)"] if skip_base else [])
 
     def test_shell_handoff_owns_the_progress_slot_when_shared_work_exists(self, tmp_path):
         req = tmp_path / "base.txt"

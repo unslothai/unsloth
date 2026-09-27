@@ -69,7 +69,7 @@ const AUDIO_NAME_RE = new RegExp(
 // read as an image generator from its name alone. Video is matched FIRST below, since
 // "HunyuanVideo" and "hunyuanimage" share a stem and the video families are narrower. These
 // end on a letter boundary rather than END, since a family stem runs into its version
-// ("flux1", "sd3"); without it "fluxion-7b" and "SVDQuant" read as generators.
+// ("flux1", "sd3", "Wan2.2"); without it "fluxion-7b" and "SVDQuant" read as generators.
 const FAMILY_END = "(?![a-z])";
 const IMAGE_GEN_NAME_RE = new RegExp(
   `${SEP}(?:flux|sdxl|sd3|stable[-_]?diffusion|z[-_]?image|qwen[-_]?image|hidream|ideogram|lumina|hunyuanimage|krea|kolors|playground|pixart)${FAMILY_END}`,

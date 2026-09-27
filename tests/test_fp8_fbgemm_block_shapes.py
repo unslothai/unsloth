@@ -102,8 +102,9 @@ def _rel_err(out, ref):
 
 def test_output_tile_grid_battery_matches_reference():
     skip_without_fbgemm()
-    # Both dispatch buckets' former failure zones plus safe shapes. On fbgemm
-    # <=1.3.0 the bad ones hit ~0.7 rel error; healthy quant noise is ~0.04.
+    # Both dispatch buckets' former failure zones plus safe shapes.
+    # On fbgemm <=1.3.0 the bad ones hit ~0.7 rel error;
+    # healthy quant noise is ~0.04.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)
@@ -188,8 +189,8 @@ def test_non_square_block_uses_dequant_fallback():
 
 @pytest.mark.parametrize("kind", ["per_tensor", "per_tensor_2d", "bf16_scale", "strided_3d"])
 def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
-    # All four used to reach f8f8bf16_blockwise and raise: no block grid to unpack
-    # (0-dim or (1, 1)), a non-float32 scale, and a strided view no .view() flattens.
+    # All four used to reach f8f8bf16_blockwise and raise: no block grid to unpack (0-dim or (1, 1)), a non-float32
+    # scale, and a strided view no .view() flattens.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)
@@ -223,8 +224,8 @@ def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
 @pytest.mark.parametrize("block", [[128, 64], [64, 128]])  # square stays on the kernel
 @pytest.mark.parametrize("N,K", [(256, 512), (256, 256)])
 def test_transposed_weight_swaps_block_axes(block, N, K):
-    # fast_lora's backward passes downW.t(), whose block axes are swapped too. At
-    # N == K both grids validate, which is where a rectangular block mis-scaled dX.
+    # fast_lora's backward passes downW.t(), whose block axes are swapped too. At N == K both grids validate, which is
+    # where a rectangular block mis-scaled dX.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)

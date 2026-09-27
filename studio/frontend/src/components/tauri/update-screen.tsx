@@ -29,7 +29,7 @@ function Logo() {
         src="/sticker.png"
         alt=""
         aria-hidden="true"
-        className="h-[60px] w-[60px] object-contain"
+        className="h-[calc(60px*var(--ui-space-scale,1))] w-[calc(60px*var(--ui-space-scale,1))] object-contain"
       />
       <span
         className="text-ui-50 font-semibold leading-none tracking-[-0.02em] text-foreground"

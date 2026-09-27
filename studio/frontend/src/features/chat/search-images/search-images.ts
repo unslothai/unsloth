@@ -293,8 +293,9 @@ export function placeSubjectImages(
 }
 
 // Split marker from subject, and never let two whitespace quantifiers span the same run: the
-// single-regex form backtracked at ~O(n^3.5), so 250 spaces in one bullet froze the thread
-// for 13s. The body is anchored on non-space edges so the surrounding runs cannot overlap.
+// single-regex form nested `\s+`, `\s*` and a body class that also matched spaces, which
+// backtracked at ~O(n^3.5), so 250 spaces in one bullet froze the thread for 13s. The body is
+// anchored on non-space edges so the surrounding runs cannot overlap.
 const LIST_ITEM_MARKER_RE = /^[ \t]*(?:\d{1,2}[.)]|[-*+•])[ \t]+/;
 const LIST_ITEM_RE =
   /^(?:\*\*|__)?[ \t\r]*([^\s*_\n][^*_\n]{0,58}?[^\s*_\n])(?:[ \t\r]*(?:\*\*|__))?[ \t\r]*(?::|[-–—][ \t\r]|\(|$)/;

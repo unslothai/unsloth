@@ -373,7 +373,7 @@ def test_truncated_mcp_call_card_carries_server_display_name(tmp_path, monkeypat
     from storage import mcp_servers_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
 
     turn = [
@@ -404,7 +404,7 @@ def test_budget_exhausted_mcp_card_carries_server_display_name(tmp_path, monkeyp
     from storage import mcp_servers_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
 
     turns = [

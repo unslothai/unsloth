@@ -12,6 +12,7 @@ const CHAT_LOCAL_SOURCES: ReadonlySet<LocalModelInfo["source"]> = new Set([
   "lmstudio",
   "models_dir",
   "ollama",
+  "hermes",
   "custom",
 ]);
 
@@ -21,6 +22,8 @@ function baseModelLabel(source: LocalModelInfo["source"]): string {
       return "LM Studio";
     case "ollama":
       return "Ollama";
+    case "hermes":
+      return "Hermes";
     case "custom":
       return "Custom Folders";
     default:

@@ -102,11 +102,10 @@ export function remoteAccessStopDisconnectsOrigin(
   );
 }
 
-// A Stop sent from the tunnel's own origin is answered with a terminal off, then
-// that origin dies. Polls landing during teardown still report "stopping", a state
-// this origin can never see resolve, so they must not overwrite the terminal off.
-// One that can still stop the connector proves teardown was abandoned, so the
-// origin is staying up and polls lead again.
+// A Stop sent from the tunnel's own origin is answered with a terminal off, then that origin dies.
+// Polls landing during teardown still report "stopping", a state this origin can never see resolve,
+// so they must not overwrite the terminal off. One that can still stop the connector proves
+// teardown was abandoned, so the origin is staying up and polls lead again.
 export function remoteAccessSelfStopPoll(
   next: RemoteAccessStatus,
   expectingDisconnect: boolean,

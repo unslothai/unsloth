@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -40,13 +41,16 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
+    goto_with_socket_backoff,
     install_wall_clock_watchdog,
+    report_failing_step,
+    step_budget_s,
     wait_for_health,
+    wait_for_settled,
 )
 
-# The wall this suite did not have, matching playwright_chat_ui.py and
-# playwright_extra_ui.py. It has six raw `page.evaluate` calls, which take no
-# `timeout=` at all, and it runs mid-lane on Windows sharing a server with the
+# The wall this suite did not have, matching playwright_chat_ui.py and playwright_extra_ui.py. It has six raw
+# `page.evaluate` calls, which take no `timeout=` at all, and it runs mid-lane on Windows sharing a server with the
 # suite before it -- so a wedge here stalled the lane with nothing printed.
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 
@@ -59,14 +63,15 @@ ART.mkdir(parents = True, exist_ok = True)
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
-# The web check fires 5s after mount and the llama.cpp one after 1s; this is
-# the ceiling on waiting for them, not the wait itself.
+# The web check fires 5s after mount and the llama.cpp one after 1s; this is the ceiling on waiting for them, not the
+# wait itself.
 SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLE_MS", "9000"))
-# What the cards need after they mount, to animate in and lay out.
-SETTLED_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLED_MS", "900"))
+# The ceiling on the cards animating in and laying out after they mount. Waited for as a condition (every card holds
+# one box with nothing animating for a few frames), so this is how long a card may take, not how long each one does.
+SETTLED_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLED_MS", "10000"))
 
-# Must match the name use-web-update-check.ts reads. Kept short rather than zero so the
-# card still arrives after first paint, which is the situation the layout checks exist for.
+# Must match the name use-web-update-check.ts reads. Kept short rather than zero so the card still arrives after
+# first paint, which is the situation the layout checks exist for.
 E2E_DELAY_GLOBAL = "__unslothE2EWebUpdateDelayMs"
 E2E_DELAY_MS = int(os.environ.get("STUDIO_UI_BANNER_UPDATE_DELAY_MS", "150"))
 
@@ -186,8 +191,7 @@ WHISPER_STATUS = dict(
     },
 )
 
-# 921x534 and 768x500 are where the report reproduces; the taller ones prove the
-# fix costs nothing when there is room.
+# 921x534 and 768x500 are where the report reproduces; the taller ones prove the fix costs nothing when there is room.
 VIEWPORTS = [
     (1440, 900),
     (1280, 830),
@@ -199,17 +203,15 @@ VIEWPORTS = [
 ]
 ROUTES = [("new chat", "/"), ("train", "/train"), ("model hub", "/model-hub")]
 
-# Real display and window sizes, walked by RESIZING one already-loaded page
-# rather than booting one each: a resize is what a maximise, an unmaximise, a
-# restore from the dock and a drag of the window edge all are, so this is the
-# cheap sweep and the realistic one at the same time. Ordered largest first so
-# the run starts from the roomiest layout and squeezes.
+# Real display and window sizes, walked by RESIZING one already-loaded page rather than booting one each: a resize is
+# what a maximise, an unmaximise, a restore from the dock and a drag of the window edge all are, so this is the cheap
+# sweep and the realistic one at the same time. Ordered largest first so the run starts from the roomiest layout and
+# squeezes.
 #
-# 3840x2160 and 2560x1440 are maximised on a 4K and a QHD display; 1920x1080 is
-# the commonest desktop there is; 1512x982 and 1440x900 are the default scaled
-# resolutions of a 14in MacBook Pro and a MacBook Air; 1366x768 is the commonest
-# Windows laptop; 900x600 is the desktop app's own minimum window; the rest are
-# ordinary small windows down to a phone in portrait.
+# 3840x2160 and 2560x1440 are maximised on a 4K and a QHD display; 1920x1080 is the commonest desktop there is;
+# 1512x982 and 1440x900 are the default scaled resolutions of a 14in MacBook Pro and a MacBook Air; 1366x768 is the
+# commonest Windows laptop; 900x600 is the desktop app's own minimum window; the rest are ordinary small windows down
+# to a phone in portrait.
 RESIZE_SWEEP = [
     (3840, 2160),
     (2560, 1440),
@@ -236,13 +238,19 @@ RESIZE_SWEEP = [
     (320, 568),
 ]
 
-# What a resize needs before it has settled: the ResizeObserver, the placement
-# it feeds, and the reflow after that. Nothing is fetched, so this is short.
-RESIZE_SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_RESIZE_MS", "700"))
+# The ceiling on a resize settling: the ResizeObserver, the placement it feeds, and the reflow after that. Waited for
+# as a condition, like SETTLED_MS.
+RESIZE_SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_RESIZE_MS", "10000"))
+
+# Per-phase ceilings. A phase that overruns its own stops the run there, named, instead of every later phase waiting out
+# its own timeouts until the 720s wall. A viewport pass boots three routes at up to SETTLE_MS each; the resize sweep
+# walks 23 sizes. Stretched by STUDIO_PW_STEP_BUDGET_SCALE for slower lanes.
+PHASE_BUDGET_S = step_budget_s(180)
+SWEEP_BUDGET_S = step_budget_s(420)
 
 # The four runtime status endpoints the loaded models card reads, shaped as
-# tests/studio/playwright_loaded_models_indicator.py has them. Only chat holds
-# anything: one loaded model is all it takes to put the card in the rail.
+# tests/studio/playwright_loaded_models_indicator.py has them. Only chat holds anything: one loaded model is all it
+# takes to put the card in the rail.
 CHAT_LOADED = {
     "active_model": "unsloth/Qwen3-4B",
     "loaded": ["unsloth/Qwen3-4B"],
@@ -271,17 +279,20 @@ NOTHING_STT = {
     "gguf": {"loaded_model": None, "device": None},
 }
 
-# Short windows on the chat route: the ones where the rail used to leave its
-# corner. Two is enough, since what is being checked does not vary with size.
+# Short windows on the chat route: the ones where the rail used to leave its corner. Two is enough, since what is
+# being checked does not vary with size.
 INDICATOR_VIEWPORTS = [(921, 534), (768, 500)]
 
 # One roomy viewport and one capped viewport.
 NO_PREVIEW_VIEWPORTS = [(1440, 900), (921, 534)]
 
-# Where the rail actually is, against the corner it is anchored to. It was
-# placed from JS for a while, lifting clear of the boxes in the frame store,
-# and drifted to the middle and the top of the window as those boxes and its
-# own cards changed. Nothing on the page may move it now.
+# Where the cards sit, off both edges. The rail carries a shadow gutter, so this
+# is the cards' inset and not the rail's own box; see RAIL_CORNER below.
+CORNER_INSET_PX = 16
+
+# Where the rail actually is, against the corner it is anchored to. It was placed from JS for a while, lifting clear
+# of the boxes in the frame store, and drifted to the middle and the top of the window as those boxes and its own
+# cards changed. Nothing on the page may move it now.
 RAIL_CORNER = """
 () => {
   const card = document.querySelector('[data-testid="web-update-banner"]');
@@ -289,9 +300,10 @@ RAIL_CORNER = """
   const rail = card.parentElement;
   const a = rail.getBoundingClientRect();
   // Cards in the rail's own flow. A dragged loaded models card is `fixed`
-  // somewhere else and says nothing about the rail.
+  // somewhere else and says nothing about the rail; `relative` and `sticky`
+  // still take part in layout, so only the out-of-flow pair is excluded.
   const flowed = Array.from(rail.children).filter(
-    (kid) => getComputedStyle(kid).position === 'static',
+    (kid) => !['absolute', 'fixed'].includes(getComputedStyle(kid).position),
   );
   return {
     rail: {top: Math.round(a.top), bottom: Math.round(a.bottom),
@@ -337,44 +349,53 @@ RAIL_CORNER = """
 }
 """
 
-# A minimised window has no layout to photograph, so what is actually testable
-# is the RESTORE: the geometry is measured by a ResizeObserver and cached in
-# React state, and a window that goes away and comes back is exactly how a stale
-# measurement would survive. Each pair is (parked, restored).
+# A minimised window has no layout to photograph, so what is actually testable is the RESTORE: the geometry is
+# measured by a ResizeObserver and cached in React state, and a window that goes away and comes back is exactly how a
+# stale measurement would survive. Each pair is (parked, restored).
 RESTORE_CYCLES = [((320, 400), (1920, 1080)), ((320, 400), (900, 600))]
 
-# `spot` is the same suite cut down to what a SECOND browser engine is worth
-# running: the viewports that reproduce, one route, no resize sweep and no type
-# pass. Chromium runs `full`; Firefox and WebKit run this, because the job they
-# share has minutes rather than tens of minutes to spare and a third full pass
-# would mostly re-answer questions the first one already answered.
+# `spot` is the same suite cut down to what a SECOND browser engine is worth running: the viewports that reproduce,
+# one route, no resize sweep and no type pass. Chromium runs `full`; Firefox and WebKit run this, because the job they
+# share has minutes rather than tens of minutes to spare and a third full pass would mostly re-answer questions the
+# first one already answered.
 SCOPE = os.environ.get("STUDIO_UI_BANNER_SCOPE", "full").lower()
 SPOT = SCOPE == "spot"
 
 # The two that squeeze the rail hardest, re-run at the largest UI font size.
-# The whole matrix again would not fit the job's budget and would say the same
-# thing three times over.
-# 320x480 is not a spare small size, it is the one that bites. Below 384px the
-# card's action pair wraps onto a row of its own on top of the notes toggle's,
-# and at the 20px setting that is a whole extra row: 259px where the wide card
-# needs 209. The height matters as much as the width, because the harm needs a
-# rail cap BETWEEN the two. At 320x480 the cap is 293px, so a 209px floor let
-# the card shrink to 209 and its own overflow-hidden surface cut 34px off Copy
-# command; at 320x568 the cap is 528px and nothing is squeezed at all.
+# The whole matrix again would not fit the job's budget and would say the same thing three times over.
+# 320x480 is not a spare small size, it is the one that bites.
+# Below 384px the card's action pair wraps onto a row of its own on top of the notes toggle's, and at the 20px setting
+# that is a whole extra row: 259px where the wide card needs 209.
+# The height matters as much as the width, because the harm needs a rail cap BETWEEN the two.
+# At 320x480 the cap is 293px, so a 209px floor let the card shrink to 209 and its own overflow-hidden surface cut 34px
+# off Copy command;
+# at 320x568 the cap is 528px and nothing is squeezed at all.
 FONT_SCALE_VIEWPORTS = [(921, 534), (390, 500), (320, 480)]
-# appearance-custom-store.ts: UI_FONT_SIZE_RANGE, UI_FONT_SIZE_CSS_BASE and the
-# persist version. Kept in step by test_update_release_notes.py.
+# appearance-custom-store.ts: UI_FONT_SIZE_RANGE, UI_FONT_SIZE_CSS_BASE and the persist version.
+# Kept in step by test_update_release_notes.py.
 UI_FONT_SIZE_MAX = 20
 UI_FONT_SIZE_DEFAULT = 15
 UI_FONT_SIZE_CSS_BASE = 16
+# --ui-font-scale as a number, read through a length since the property itself is a calc().
+# --ui-space-scale the same way: the card's max width is calc(448px * var(--ui-space-scale, 1)) since #11648.
+UI_SPACE_SCALE_JS = "(() => { const probe = document.createElement('div'); probe.style.cssText = 'position:absolute;visibility:hidden;width:calc(10000px * var(--ui-space-scale, 1))'; document.body.appendChild(probe); const px = parseFloat(getComputedStyle(probe).width); probe.remove(); return String(px / 10000); })()"
+UI_FONT_SCALE_JS = "(() => { const probe = document.createElement('div'); probe.style.cssText = 'position:absolute;visibility:hidden;width:calc(10000px * var(--ui-font-scale, 1))'; document.body.appendChild(probe); const px = parseFloat(getComputedStyle(probe).width); probe.remove(); return String(px / 10000); })()"
 APPEARANCE_STORE_VERSION = 5
 
 failures: list[str] = []
 checks = [0]
+_watchdog = [None]
 
 
 def info(s: str) -> None:
     print(f"[banner] {s}", flush = True)
+
+
+def phase(name: str, budget_s: float = PHASE_BUDGET_S) -> None:
+    """Start phase `name`; it may run `budget_s` before the run stops, naming it."""
+    info(f"STEP {name}")
+    if _watchdog[0] is not None:
+        _watchdog[0].begin_step(name, budget_s)
 
 
 def check(
@@ -472,7 +493,18 @@ MEASURE = """
   const snooze = q('[data-testid="web-update-snooze-button"]');
   const copy = q('[data-testid="web-update-copy-button"]');
   const footer = snooze ? snooze.closest('div').parentElement : null;
-  const rail = card ? card.parentElement : (llama ? llama.parentElement : null);
+  // By its own handle, not through whichever banner happens to be up: reaching
+  // the rail via a card finds nothing when no card is up, and "no cards" is a
+  // state the download panel and the loaded models card have to be judged in.
+  const rail = document.querySelector('[data-testid="overlay-rail"]')
+            || (card ? card.parentElement : (llama ? llama.parentElement : null));
+  // Cards in the rail's own flow. A dragged loaded models card is `fixed`
+  // somewhere else and says nothing about the rail; `relative` and `sticky`
+  // still take part in layout, so only the out-of-flow pair is excluded.
+  const flowed = rail
+    ? [...rail.children].filter(
+        (kid) => !['absolute', 'fixed'].includes(getComputedStyle(kid).position))
+    : [];
   // The clipper is the card's inner surface, the one with overflow-hidden; the
   // rail-facing root above it is overflow-visible and clips nothing.
   const surface = card ? card.firstElementChild : null;
@@ -482,6 +514,30 @@ MEASURE = """
     // fold the reader can scroll to; what the card hides is gone for good.
     card: rect(card), llama: rect(llama),
     cardDead: dead(card), llamaDead: dead(llama),
+    // Every card in the rail, not only the two update banners. #10117 put an
+    // ungated floor on a card that had none the day before, so naming the cards
+    // to check is naming the ones that have already gone wrong.
+    railCards: flowed.map((kid) => ({
+      // Enough to name the offender in the failure without opening a browser.
+      tag: kid.tagName.toLowerCase(),
+      testid: kid.getAttribute('data-testid'),
+      cls: (kid.getAttribute('class') || '').slice(0, 120),
+      painted: kid.firstElementChild
+        ? (kid.firstElementChild.getAttribute('class') || '').slice(0, 80)
+        : null,
+      dead: dead(kid),
+    })),
+    // Where the bottom-most card ACTUALLY paints, against the corner it is
+    // anchored to. `fromBottom` in RAIL_CORNER comes off the rail's padding
+    // box, which is `fixed bottom-0` and so reports the intended offset however
+    // much dead air sits inside the last card. That is why the rail passed its
+    // own corner check all through #10117. This reads the painted surface.
+    lastPaintedFromBottom: (() => {
+      const last = flowed[flowed.length - 1];
+      const paint = last && (last.firstElementChild || last);
+      if (!paint) return null;
+      return Math.round((innerHeight - paint.getBoundingClientRect().bottom) * 10) / 10;
+    })(),
     // The same two, as much of them as the rail is SHOWING. Containment is
     // asked of these: a card the rail has folded away is not on screen at all,
     // and judging its unclipped rect against the viewport fails it for being
@@ -491,6 +547,11 @@ MEASURE = """
     toggle: clip(toggle, surface),
     snooze: clip(snooze, surface),
     copy: clip(copy, surface),
+    // The same three unclipped, so a control the card has cut DOWN is as visible
+    // here as one it cut away. Half a button is not the button the card promises.
+    toggleWhole: rect(toggle),
+    snoozeWhole: rect(snooze),
+    copyWhole: rect(copy),
     footer: rect(footer),
     llamaText: llama ? (llama.innerText || '') : '',
     // pointer-events-none costs the rail its scrollbar, so it may only be
@@ -597,9 +658,8 @@ def overlap(a: dict | None, b: dict | None) -> float:
 
 
 def inside(box: dict | None, viewport: dict) -> bool:
-    # A missing box is not "inside": clip() returns None for an element that is
-    # entirely hidden, and reading that as a pass would make this whole suite
-    # green on the one failure it exists to catch.
+    # A missing box is not "inside": clip() returns None for an element that is entirely hidden, and reading that as a
+    # pass would make this whole suite green on the one failure it exists to catch.
     if not box:
         return False
     return (
@@ -625,8 +685,8 @@ def measure(page, label: str) -> dict:
         f"card={facts['card']} llama={facts['llama']}",
     )
     for name in ("card", "llama", "footer", "toggle"):
-        # As shown, where the rail can hide it; as measured otherwise. A card
-        # entirely under the fold is None here and is the reach check's to make.
+        # As shown, where the rail can hide it; as measured otherwise. A card entirely under the fold is None here and
+        # is the reach check's to make.
         shown = facts.get(f"{name}Shown", facts[name]) if name in ("card", "llama") else facts[name]
         if name in ("card", "llama") and shown is None:
             continue
@@ -635,8 +695,8 @@ def measure(page, label: str) -> dict:
             inside(shown, view),
             f"{name}={shown} viewport={view}",
         )
-    # Anything the rail is holding under its fold has to come back when the
-    # rail is scrolled to it, and land on screen when it does.
+    # Anything the rail is holding under its fold has to come back when the rail is scrolled to it, and land on screen
+    # when it does.
     reach = page.evaluate(REACH, REACHABLE)
     for name, seen in (reach or {}).items():
         if seen is None:
@@ -648,55 +708,70 @@ def measure(page, label: str) -> dict:
             f"{name}={seen}",
         )
     if facts["cardLayoutWidth"] is not None:
-        # 448px is the card's max width and 2rem the viewport inset it keeps.
-        want = min(448, view["width"] - 32)
-        # Asked of the layout box, not the painted one. A scrollbar that takes
-        # its width out of the rail's content box shrinks the card's layout
-        # width, which is the whole subject here; the card's enter animation
-        # (opacity 0, y 12, scale .96 -- see components/*/update-banner.tsx)
-        # shrinks only the painted one, and measuring that raced the animation
-        # rather than the scrollbar. 448 * 0.96 = 430.08, which is exactly the
-        # 430 this reported on the WebKit leg while its own borderBox read 448
+        # 448px at the default size is the card's max width, scaled with the UI since #11648, and 2rem the
+        # viewport inset it keeps.
+        space = float(page.evaluate("() => " + UI_SPACE_SCALE_JS))
+        want = min(448 * space, view["width"] - 32)
+        # Asked of the layout box, not the painted one. A scrollbar that takes its width out of the rail's content box
+        # shrinks the card's layout width, which is the whole subject here; the card's enter animation (opacity 0,
+        # y 12, scale .96 -- see components/*/update-banner.tsx) shrinks only the painted one, and measuring that
+        # raced the animation rather than the scrollbar.
+        # 448 * 0.96 = 430.08, which is exactly the 430 this reported on the WebKit leg while its own borderBox read 448
         # and railGutter read 0.
         check(
             f"{label}: the card keeps its full width whatever the scrollbar does",
             abs(facts["cardLayoutWidth"] - want) <= 1,
-            f"cardLayoutWidth={facts['cardLayoutWidth']} want={want} "
+            f"cardLayoutWidth={facts['cardLayoutWidth']} want={want} spaceScale={space} "
             f"cardPaintedWidth={facts['cardWidth']} "
             f"railGutter={facts['railGutterPx']} scrolls={facts['railScrolls']} "
             f"why={json.dumps(facts['widthWhy'], sort_keys = True)}",
         )
     if facts["railScrolls"] is not None:
         scrolls = facts["railScrolls"]
-        # Click-through in every state, scrolling or not. It used to take pointer
-        # input while it scrolled, which needed the JS that also placed it. The
-        # fold is reached by wheeling over a card, whose nearest scrollable
-        # ancestor is the rail, or by focus, which scrolls it into view.
+        # Click-through in every state, scrolling or not. It used to take pointer input while it scrolled, which needed
+        # the JS that also placed it. The fold is reached by wheeling over a card, whose nearest scrollable ancestor is
+        # the rail, or by focus, which scrolls it into view.
         check(
             f"{label}: the rail stays click-through",
             facts["railPointerEvents"] == "none",
             f"scrolls={scrolls} pointerEvents={facts['railPointerEvents']} "
             f"why={json.dumps(facts['widthWhy'], sort_keys = True)}",
         )
-        # The gutter is the widest part of the rail that no card covers, so it
-        # is where a swallowed click would show up first.
+        # The gutter is the widest part of the rail that no card covers, so it is where a swallowed click would show up
+        # first.
         check(
             f"{label}: the rail's gutter never swallows a click",
             facts["gutterIsRail"] is False,
             f"scrolls={scrolls} gutterIsRail={facts['gutterIsRail']}",
         )
-    # A floor must not leave unpainted space around a compact card.
-    for name in ("card", "llama"):
-        hole = facts[f"{name}Dead"]
+    # The rail is bottom-anchored, so one card's dead space lifts the rest off the corner.
+    cards = facts["railCards"]
+    check(
+        f"{label}: the rail has cards to judge",
+        len(cards) > 0,
+        f"railCards={cards}, so every dead-space check below passed vacuously",
+    )
+    for index, kid in enumerate(cards):
+        hole = kid["dead"]
         if hole is None:
             continue
+        who = kid["testid"] or kid["cls"] or f"{kid['tag']}#{index}"
         check(
-            f"{label}: the {name}'s slot reserves no height it does not paint",
+            f"{label}: {who} reserves no height it does not paint",
             hole["above"] <= 1.0 and hole["below"] <= 1.0,
-            f"{name}Dead={hole}",
+            f"dead={hole} painted-child={kid['painted']}",
         )
-    # The notes are allowed to yield all of their height, and do; the controls
-    # are not, and a card clipped to nothing is the failure being tested for.
+    # Measured off the card the reader sees. Not while scrolling: under the cap the
+    # bottom card is wherever the scroll position puts it, which REACH covers.
+    if cards and not facts["railScrolls"]:
+        check(
+            f"{label}: the bottom card is on the corner, not floating above it",
+            facts["lastPaintedFromBottom"] == CORNER_INSET_PX,
+            f"lastPaintedFromBottom={facts['lastPaintedFromBottom']} "
+            f"(want {CORNER_INSET_PX}) last={cards[-1]}",
+        )
+    # The notes are allowed to yield all of their height, and do; the controls are not, and a card clipped to nothing is
+    # the failure being tested for.
     for name in ("card", "llama", "toggle", "snooze", "copy"):
         box = facts[name]
         check(
@@ -704,7 +779,65 @@ def measure(page, label: str) -> dict:
             box is not None and box["height"] > 1.0 and box["width"] > 1.0,
             f"{name}={box}",
         )
+    # Clipped to nothing is the loud version. A control the card has cut DOWN is the same
+    # defect one viewport earlier: at the 20px setting the card's floor was a constant that
+    # stopped covering its own content, so the action row overflowed and the last button was
+    # sliced before it disappeared. Asking only that something is left lets the slicing
+    # through, and the slicing is what says the floor is wrong.
+    for name in ("toggle", "snooze", "copy"):
+        box, whole = facts[name], facts[f"{name}Whole"]
+        check(
+            f"{label}: the card shows all of its own {name}",
+            box is not None
+            and whole is not None
+            and box["height"] >= whole["height"] - 1.0
+            and box["width"] >= whole["width"] - 1.0,
+            f"{name}={box} whole={whole}",
+        )
     return facts
+
+
+# #9849 made the Downloads overlay always mount, and was reverted by #10298.
+DOWNLOADS = """
+() => {
+  const rail = document.querySelector('[data-testid="overlay-rail"]');
+  if (!rail) return null;
+  return {
+    // The panel and its collapsed FAB. Neither may exist with no jobs.
+    panels: document.querySelectorAll('.hub-download-panel, .hub-download-fab').length,
+    // Slots, not pixels: a panel that renders a wrapper around nothing is
+    // invisible but still takes a flex slot and its gap-2, which pushes the
+    // card that is meant to hold the corner up off it.
+    cards: [...rail.children].filter(
+      (kid) => !['absolute', 'fixed'].includes(getComputedStyle(kid).position)).length,
+  };
+}
+"""
+
+
+def check_downloads_absent(page, label: str, expected_cards: int) -> None:
+    """With no transfers, the Downloads overlay must not be in the rail at all."""
+    seen = page.evaluate(DOWNLOADS)
+    check(
+        f"{label}: the rail is reachable by its own handle",
+        seen is not None,
+        "no [data-testid=overlay-rail] on the page, so the two checks below prove nothing",
+    )
+    if seen is None:
+        return
+    check(
+        f"{label}: no Downloads overlay while there is nothing downloading",
+        seen["panels"] == 0,
+        f"{seen['panels']} download panel(s) mounted with an empty job list, "
+        "which is the permanent corner FAB from #9849",
+    )
+    # An exact count: a bare absence also holds when the selector has rotted.
+    check(
+        f"{label}: the rail holds exactly the cards that are up",
+        seen["cards"] == expected_cards,
+        f"cards={seen['cards']} want={expected_cards}; an extra slot is an "
+        "overlay mounting when it has nothing to show",
+    )
 
 
 def stub(payload: dict):
@@ -754,24 +887,56 @@ def settle_stack(
         seen = now
         if stable >= 2:
             return
+        # Kept: the poll interval of this stability loop, which already ends as soon as the rail holds still.
         page.wait_for_timeout(gap_ms)
 
 
+def settle_cards(page, timeout_ms: int = SETTLED_MS) -> None:
+    """Wait for the rail and each card in it to hold one box with nothing animating.
+
+    Replaces a fixed pause after mount or resize: it ends as soon as the stack is still, and on a runner slow enough
+    that the pause was not enough it keeps waiting instead of measuring mid-transition. A stack that never settles is
+    reported and measured anyway, so the checks, not this wait, say what is wrong with it.
+    """
+    for selector in (
+        '[data-testid="overlay-rail"]',
+        '[data-testid="web-update-banner"]',
+        '[data-testid="llama-update-banner"]',
+    ):
+        target = page.locator(selector)
+        if target.count() == 0:
+            continue
+        # In short slices, each on a freshly resolved element: wait_for_settled holds one element handle, and a card
+        # React remounts mid-wait leaves that handle detached, which would read as "never settled" until the timeout.
+        deadline = time.monotonic() + timeout_ms / 1000
+        while True:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                info(f"WARN {selector} did not settle within {timeout_ms}ms; measuring anyway")
+                break
+            if target.count() == 0:
+                break
+            try:
+                wait_for_settled(target, timeout_ms = min(2_000, remaining_ms))
+                break
+            except PlaywrightTimeoutError:
+                continue
+
+
 def boot(page, path: str) -> None:
-    page.goto(f"{BASE}{path}", wait_until = "domcontentloaded")
-    # Both cards are on a timer, so wait for them rather than for the worst case: this
-    # step runs 24 times and the job it shares has minutes, not tens of minutes, to
-    # spare. The app card's 5s is shortened to E2E_DELAY_MS by the seed script, llama.cpp
-    # keeps its 1s, and both still mount after first paint.
+    goto_with_socket_backoff(page, f"{BASE}{path}", wait_until = "domcontentloaded")
+    # Both cards are on a timer, so wait for them rather than for the worst case: this step runs 24 times and the job it
+    # shares has minutes, not tens of minutes, to spare. The app card's 5s is shortened to E2E_DELAY_MS by the seed
+    # script, llama.cpp keeps its 1s, and both still mount after first paint.
     for testid in ("web-update-banner", "llama-update-banner"):
         try:
             page.wait_for_selector(f'[data-testid="{testid}"]', state = "attached", timeout = SETTLE_MS)
         except PlaywrightTimeoutError:
-            # Let the caller's own checks report the missing card; a bare
-            # timeout here would say nothing about which one or where.
+            # Let the caller's own checks report the missing card; a bare timeout here would say nothing about which one
+            # or where.
             pass
     # The banners animate in, and a box measured mid-transition is not the box.
-    page.wait_for_timeout(SETTLED_MS)
+    settle_cards(page)
     settle_stack(page)
     landed = page.evaluate("location.pathname")
     if landed.startswith(("/login", "/change-password")):
@@ -856,8 +1021,8 @@ def exercise_llama_changelog(page, label: str) -> None:
 
 def main() -> int:
     wait_for_health(BASE, timeout = 60.0, info = info)
-    # OLD is already NEW on a rerun, or when an earlier suite in the same job
-    # rotated it, and that login fails before the rotation below can be skipped.
+    # OLD is already NEW on a rerun, or when an earlier suite in the same job rotated it, and that login fails before
+    # the rotation below can be skipped.
     try:
         token = api("/api/auth/login", {"username": "unsloth", "password": OLD})["access_token"]
     except urllib.error.HTTPError as exc:
@@ -880,14 +1045,12 @@ def main() -> int:
     # add_init_script takes raw source, not a function to call.
     seed_js = (
         "(() => {"
-        # The app arms its update check on a 5s timer so the request stays off the
-        # critical path at launch. This suite boots a fresh page for every case it
-        # measures and waits out that timer each time before the card it is measuring
-        # exists, which was over two and a half minutes of a five minute step. The
-        # override is read at mount from a global that exists only here, so the shortened
-        # delay reaches no build and no browser but this one, and it stays a timer rather
-        # than becoming synchronous, because a card that mounts on the first frame would
-        # not exercise the late-mount reflow this file is about.
+        # The app arms its update check on a 5s timer so the request stays off the critical path at launch. This suite
+        # boots a fresh page for every case it measures and waits out that timer each time before the card it is
+        # measuring exists, which was over two and a half minutes of a five minute step. The override is read at mount
+        # from a global that exists only here, so the shortened delay reaches no build and no browser but this one, and
+        # it stays a timer rather than becoming synchronous, because a card that mounts on the first frame would not
+        # exercise the late-mount reflow this file is about.
         f"  window.{E2E_DELAY_GLOBAL} = {E2E_DELAY_MS};"
         f"  localStorage.setItem('unsloth_auth_token', {json.dumps(session['access_token'])});"
         f"  localStorage.setItem('unsloth_refresh_token', {json.dumps(session.get('refresh_token', ''))});"
@@ -903,11 +1066,15 @@ def main() -> int:
         return 1
 
     with sync_playwright() as p:
-        install_wall_clock_watchdog(
+        # begin_step() restarts the inactivity budget, so the same number is also passed as the total no phase can
+        # move: the wall stays the whole-run cap it always was.
+        _watchdog[0] = install_wall_clock_watchdog(
             WALL_TIMEOUT_S,
             label = "ui-update-banner",
             info = info,
+            total_deadline_s = WALL_TIMEOUT_S,
         )
+        report_failing_step(_watchdog[0], label = "ui-update-banner")
         launch_kwargs: dict = {"headless": True}
         if PLAYWRIGHT_BROWSER == "chromium":
             launch_kwargs["args"] = chromium_launch_args()
@@ -920,6 +1087,7 @@ def main() -> int:
 
         llama_payload = [LLAMA_STATUS]
         for width, height in VIEWPORTS[2:5] if SPOT else VIEWPORTS:
+            phase(f"update cards at {width}x{height}")
             context = browser.new_context(
                 viewport = {"width": width, "height": height},
                 reduced_motion = "reduce",
@@ -961,12 +1129,26 @@ def main() -> int:
                         "nothing to measure, so every other check is vacuous",
                     )
                 measure(page, f"{size} {name} collapsed")
+                if path == "/":
+                    # Both update cards up, indicator off by default (#8346).
+                    check_downloads_absent(page, f"{size} {name}", 2)
                 page.screenshot(path = str(ART / f"{size}-{path.strip('/') or 'new-chat'}.png"))
 
                 toggle = page.locator('[data-testid="web-update-release-notes-toggle"]')
                 if toggle.count() == 1:
                     toggle.click()
-                    page.wait_for_timeout(1500)
+                    # Expanded, then still, instead of a fixed 1.5 s.
+                    try:
+                        page.wait_for_selector(
+                            '[data-testid="web-update-release-notes-toggle"][aria-expanded="true"]',
+                            state = "attached",
+                            timeout = 10_000,
+                        )
+                    except PlaywrightTimeoutError:
+                        info(
+                            f"WARN {size} {name}: the notes toggle never reported aria-expanded=true"
+                        )
+                    settle_cards(page)
                     measure(page, f"{size} {name} expanded")
                     toggle.click()
                 if path == "/":
@@ -987,6 +1169,7 @@ def main() -> int:
 
         # Exercise the compact app card omitted by the notes-bearing fixtures.
         for width, height in NO_PREVIEW_VIEWPORTS[:1] if SPOT else NO_PREVIEW_VIEWPORTS:
+            phase(f"app card with no notes preview at {width}x{height}")
             context = browser.new_context(
                 viewport = {"width": width, "height": height},
                 reduced_motion = "reduce",
@@ -1014,7 +1197,7 @@ def main() -> int:
             if toggle.count() == 1:
                 toggle.click()
                 panel.wait_for(state = "visible", timeout = 10_000)
-                page.wait_for_timeout(SETTLED_MS)
+                settle_cards(page)
                 measure(page, f"{width}x{height} with no preview, expanded")
             context.close()
 
@@ -1023,6 +1206,7 @@ def main() -> int:
         # the rail and move the whole stack. That is the case to check.
         # #8346 ships it off by default, so nothing above this point sees it.
         for width, height in INDICATOR_VIEWPORTS:
+            phase(f"loaded models indicator in the rail at {width}x{height}")
             context = browser.new_context(
                 viewport = {"width": width, "height": height},
                 reduced_motion = "reduce",
@@ -1031,9 +1215,8 @@ def main() -> int:
             context.add_init_script(
                 "localStorage.setItem('unsloth_show_loaded_models_indicator', 'true');"
             )
-            # The card only exists when something is loaded, so the preference
-            # alone would leave the rail exactly as it was and this whole pass
-            # would agree with itself about nothing.
+            # The card only exists when something is loaded, so the preference alone would leave the rail exactly as it
+            # was and this whole pass would agree with itself about nothing.
             for pattern, payload in (
                 ("**/api/studio/update-status*", UPDATE_STATUS),
                 ("**/api/studio/release-notes*", RELEASE_NOTES),
@@ -1048,8 +1231,8 @@ def main() -> int:
             page = context.new_page()
             boot(page, "/")
             page.wait_for_selector("text=Loaded models", timeout = 30_000)
-            # A third card changes the rail's height, which is what used to
-            # move it; give the layout a frame to prove it does not.
+            # A third card changes the rail's height, which is what used to move it; give the layout a frame to prove
+            # it does not.
             settle_stack(page)
             measure(page, f"{width}x{height} with the models indicator")
             seen = page.evaluate(RAIL_CORNER)
@@ -1060,7 +1243,9 @@ def main() -> int:
             )
             check(
                 f"{width}x{height}: the rail is still in its bottom-right corner",
-                seen is not None and seen["fromBottom"] == 16 and seen["fromRight"] == 16,
+                seen is not None
+                and seen["fromBottom"] == CORNER_INSET_PX
+                and seen["fromRight"] == CORNER_INSET_PX,
                 f"{seen}, so the rail has left the corner it is anchored to",
             )
             check(
@@ -1081,11 +1266,11 @@ def main() -> int:
             browser.close()
             return 1 if failures else 0
 
-        # One page, many window sizes. Every check the core matrix runs, at
-        # every resolution in RESIZE_SWEEP, for the price of one boot: the
-        # cards are already mounted and a resize is all a maximise or a restore
-        # ever is. It also exercises the path a fresh load never does, where
-        # the placement has to re-measure rather than measure once.
+        phase("resize sweep and restore cycles", SWEEP_BUDGET_S)
+        # One page, many window sizes.
+        # Every check the core matrix runs, at every resolution in RESIZE_SWEEP, for the price of one boot: the cards
+        # are already mounted and a resize is all a maximise or a restore ever is. It also exercises the path a fresh
+        # load never does, where the placement has to re-measure rather than measure once.
         context = browser.new_context(
             viewport = {"width": RESIZE_SWEEP[0][0], "height": RESIZE_SWEEP[0][1]},
             reduced_motion = "reduce",
@@ -1102,24 +1287,23 @@ def main() -> int:
         boot(page, "/")
         for width, height in RESIZE_SWEEP:
             page.set_viewport_size({"width": width, "height": height})
-            # Long enough for the ResizeObserver, the placement it feeds and the
-            # reflow that follows. Short because nothing is being fetched.
-            page.wait_for_timeout(RESIZE_SETTLE_MS)
+            # The ResizeObserver, the placement it feeds and the reflow that follows, waited for rather than slept.
+            settle_cards(page, RESIZE_SETTLE_MS)
             settle_stack(page)
             measure(page, f"{width}x{height} resized")
         page.set_viewport_size({"width": 1280, "height": 830})
-        page.wait_for_timeout(RESIZE_SETTLE_MS)
+        settle_cards(page, RESIZE_SETTLE_MS)
         page.screenshot(path = str(ART / "resize-sweep-end.png"))
 
-        # Parked small and brought back. A minimised window cannot be
-        # photographed, but the restore is where a cached measurement would
-        # show, and the claim is that it lands where a fresh load of the same
-        # size does rather than merely looking tidy.
+        # Parked small and brought back. A minimised window cannot be photographed, but the restore is where a cached
+        # measurement would show, and the claim is that it lands where a fresh load of the same size does rather than
+        # merely looking tidy.
         for (small_w, small_h), (back_w, back_h) in RESTORE_CYCLES:
             page.set_viewport_size({"width": small_w, "height": small_h})
-            page.wait_for_timeout(RESIZE_SETTLE_MS)
+            # Parked long enough to have laid out small, or the restore restores nothing.
+            settle_cards(page, RESIZE_SETTLE_MS)
             page.set_viewport_size({"width": back_w, "height": back_h})
-            page.wait_for_timeout(RESIZE_SETTLE_MS)
+            settle_cards(page, RESIZE_SETTLE_MS)
             restored = measure(page, f"{back_w}x{back_h} restored from {small_w}x{small_h}")
             fresh_context = browser.new_context(
                 viewport = {"width": back_w, "height": back_h},
@@ -1149,21 +1333,19 @@ def main() -> int:
             fresh_context.close()
         context.close()
 
-        # Settings > Appearance scales the type, and the card's floor is
-        # written against that scale rather than measured once at the default.
-        # At the 20px maximum the action row wraps at every card width, so a
-        # default-font floor left the buttons clipped inside the card.
+        # Settings > Appearance scales the type, and the card's floor is written against that scale rather than measured
+        # once at the default. At the 20px maximum the action row wraps at every card width, so a default-font floor
+        # left the buttons clipped inside the card.
         #
-        # Set on the server and put back in a finally, because the appearance
-        # store syncs up: leaving it at 20px hands every later suite in this job
-        # an Unsloth whose type is not the default, and they will not notice.
-        # Put BACK what was there, which is not always the default: run this
-        # against your own Unsloth and an unconditional reset would take your
-        # Appearance setting with it.
+        # Set on the server and put back in a finally, because the appearance store syncs up: leaving it at 20px hands
+        # every later suite in this job an Unsloth whose type is not the default, and they will not notice.
+        # Put BACK what was there, which is not always the default: run this against your own Unsloth and an
+        # unconditional reset would take your Appearance setting with it.
         was = read_ui_font_size(session["access_token"])
         set_ui_font_size(session["access_token"], UI_FONT_SIZE_MAX)
         try:
             for width, height in FONT_SCALE_VIEWPORTS:
+                phase(f"{UI_FONT_SIZE_MAX}px type at {width}x{height}")
                 context = browser.new_context(
                     viewport = {"width": width, "height": height},
                     reduced_motion = "reduce",
@@ -1178,14 +1360,14 @@ def main() -> int:
                     context.route(pattern, stub(payload))
                 page = context.new_page()
                 boot(page, "/")
-                scale = page.evaluate(
-                    "() => getComputedStyle(document.documentElement)"
-                    ".getPropertyValue('--ui-font-scale').trim()"
-                )
+                # Resolved through a length: since #11648 --ui-font-scale is a calc() of the size and interface
+                # scales, which reads back as that expression, so comparing the raw string to the default always
+                # said "scaled" and this check could not fail.
+                scale = float(page.evaluate("() => " + UI_FONT_SCALE_JS))
                 check(
                     f"{width}x{height} at {UI_FONT_SIZE_MAX}px: the type is actually scaled",
-                    scale not in ("", str(UI_FONT_SIZE_DEFAULT / UI_FONT_SIZE_CSS_BASE)),
-                    f"--ui-font-scale={scale!r}, so the rest of this pass proves nothing",
+                    abs(scale - UI_FONT_SIZE_DEFAULT / UI_FONT_SIZE_CSS_BASE) > 1e-3,
+                    f"--ui-font-scale resolved to {scale!r}, the default, so the rest of this pass proves nothing",
                 )
                 measure(page, f"{width}x{height} at {UI_FONT_SIZE_MAX}px")
                 page.screenshot(path = str(ART / f"{width}x{height}-font{UI_FONT_SIZE_MAX}.png"))

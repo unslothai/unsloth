@@ -2,16 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
+
+import { readSrc } from "./helpers/kit.ts";
 
 // specFallbackMessage is a module-local helper inside a .tsx, which this runner
 // cannot import (it strips types but does not transform JSX), so the file is read
 // as source -- the same guard the other chat-settings-sheet tests use.
-const settings = readFileSync(
-  new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url),
-  "utf8",
-);
+const settings = readSrc("features/chat/chat-settings-sheet.tsx");
 
 test("the Hybrid Mamba partial-offload stand-down has its own notice", () => {
   const branch = settings.match(
