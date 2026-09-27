@@ -539,6 +539,16 @@ def _ltx23_write_verdict(real: str, record: dict[str, Any]) -> None:
             pass
 
 
+def _ltx23_in_hub_cache_root(root: Path) -> bool:
+    """Whether *root* is one of the Hugging Face hub caches Studio downloads into (a look-alike tree elsewhere is not)."""
+    try:
+        from hub.utils.hf_cache_state import hf_cache_roots
+
+        return any(root == Path(r).resolve() for r in hf_cache_roots())
+    except Exception:  # noqa: BLE001 - unknown roots: hash instead
+        return False
+
+
 def _ltx23_stat_key(stat: Any) -> dict[str, int]:
     return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "inode": stat.st_ino}
 
@@ -572,6 +582,7 @@ def ltx23_source_file_verified(checkpoint_path: Path | str) -> bool:
             real.name == LTX23_PREQUANT_SOURCE_SHA256
             and real.parent.name == "blobs"
             and real.parent.parent.name.lower() in _LTX23_HUB_REPO_DIRS
+            and _ltx23_in_hub_cache_root(real.parent.parent.parent)
         ):
             return True
         key = _ltx23_stat_key(stat)

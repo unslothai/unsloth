@@ -11692,6 +11692,9 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     _, hashed = _ltx23_verdict_store(monkeypatch, tmp_path)
     blobs = tmp_path / "models--Lightricks--LTX-2.3" / "blobs"
     blobs.mkdir(parents = True)
+    import hub.utils.hf_cache_state as hf_cache_state
+
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda *a, **k: [tmp_path])
     good = blobs / video_ltx2.LTX23_PREQUANT_SOURCE_SHA256
     with open(good, "wb") as fh:
         fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)  # sparse
@@ -11702,9 +11705,10 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     assert video_ltx2.ltx23_source_file_verified(snap / name)
     assert hashed == []
     assert video_ltx2.ltx23_prequant_eligible(name, "Lightricks/LTX-2.3")
-    # The digest as a file name outside the official repo's blobs is not an identity: it is hashed like any local file.
-    elsewhere = tmp_path / "mine"
-    elsewhere.mkdir()
+    # The digest as a file name outside the official repo's blobs in a Hub cache root is not an identity: it is hashed
+    # like any local file, including a look-alike models--Lightricks--LTX-2.3/blobs tree outside every cache root.
+    elsewhere = tmp_path / "mine" / "models--Lightricks--LTX-2.3" / "blobs"
+    elsewhere.mkdir(parents = True)
     fake = elsewhere / video_ltx2.LTX23_PREQUANT_SOURCE_SHA256
     with open(fake, "wb") as fh:
         fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)
