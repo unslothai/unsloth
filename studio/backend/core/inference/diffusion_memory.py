@@ -242,7 +242,6 @@ def _host_empty_cache() -> None:
 
 
 def _pinnable_layout(data: Any) -> bool:
-    """Dense layouts a strided pinned copy reproduces: contiguous, or the channels_last(_3d) of VAE conv weights."""
     if data.is_contiguous():
         return True
     import torch
@@ -937,9 +936,7 @@ class CalibratedImageActivation:
         )
 
 
-# Worst case over every build, speed tier and CFG setting measured on NVIDIA (streamed encoders, first calls included,
-# channels_last and contiguous VAE weights);
-# (off / eager / default, max). Unlisted families keep the flat estimate: a U-Net cannot stream its encoders beside it.
+# NVIDIA worst case per (off / eager / default, max) tier; U-Nets stay unlisted: they cannot stream encoders beside them.
 _ACTIVATION_MARGIN = 1.2
 _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     str, tuple[tuple[int, int, int, int, int], tuple[int, int, int, int, int]]
@@ -955,7 +952,6 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
 def calibrated_image_activation(
     family: Optional[str], *, max_speed: bool = True
 ) -> Optional[CalibratedImageActivation]:
-    """Planning activation for a measured family, else None (flat estimate); ``max_speed`` is the safe default."""
     measured = _MEASURED_IMAGE_ACTIVATION_MIB.get(str(family or ""))
     if measured is None:
         return None
@@ -1372,9 +1368,8 @@ def _calibrated_faster_tier(
     policy: str,
     stream_transformer: bool,
 ) -> Optional[tuple[str, bool, bool, bool, str]]:
-    """A strictly faster auto tier than the flat pick, sized on measured activations, else None. Only tiers above
-    the flat pick are tried and every check grows with the budget, so more VRAM is never slower. Resident tiers must
-    also fit the 2048 denoise in free memory: above one megapixel the guard can tile the decode, never the denoise."""
+    """Strictly faster tier than the flat pick, else None; resident tiers must fit the 2048 denoise (it cannot tile).
+    Every check grows with the budget, so more VRAM never picks a slower tier."""
     if budget is None or free_mib is None or model_dense_mib is None or companion_dense_mib is None:
         return None
     te = max(0, int(text_encoder_dense_mib or 0))
@@ -1394,7 +1389,6 @@ def _calibrated_faster_tier(
         flat_rank = 5
     else:
         return None
-    # leaving streaming puts each whole module on the device beside its own phase, the transformer beside the 2048 denoise
     model_viable = max(transformer, te, others) <= budget and (
         flat_rank < 5
         or (

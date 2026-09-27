@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Measured activation planning: faster tiers only, more VRAM never slower, flat estimate everywhere else."""
-
 from __future__ import annotations
 
 import types
@@ -54,7 +52,6 @@ def _target():
 
 
 def _card(total_gib, kind = "discrete_vram"):
-    # a desktop plus the CUDA context already hold 1.2 GiB, as on a real card
     total = int(total_gib * GIB)
     return DeviceMemory("cuda", "cuda", kind, total - 1_229, total)
 
@@ -79,7 +76,6 @@ def _plan(
 
 
 def _rank(plan, sizes):
-    """Speed rank (0 fastest); whole-module offload of a component over budget is streamed after load."""
     budget = plan.estimates["safe_device_budget_mib"]
     transformer = sizes["model_dense_mib"] - sizes["companion_dense_mib"]
     if plan.offload_policy == OFFLOAD_NONE:
@@ -141,7 +137,6 @@ def test_whole_module_offload_untiles_when_the_resident_transformer_does_not_fit
         (FLUX1_BF16, SMALL_VAE_ACT, True),
         (SDXL, SMALL_VAE_ACT, True),
         (ZIMAGE_BF16, CalibratedImageActivation(1_000, 800, 30_000, 600, 1_000), True),
-        # a 2048 denoise too large to share the card with the transformer: the flat plan's own step stays
         (QWEN21_GGUF, CalibratedImageActivation(1_000, 800, 3_000, 600, 9_000), False),
     ],
 )
@@ -184,9 +179,7 @@ def test_a_module_taken_off_streaming_fits_beside_its_own_phase(sizes, family, m
 
 
 def test_a_largest_canvas_denoise_that_would_not_fit_keeps_the_transformer_off_the_resident_tiers():
-    # a resident transformer holds the VAE too while it denoises, and a 2048 canvas cannot be tiled there
     act = CalibratedImageActivation(1_000, 800, 3_000, 600, 6_000)
-    # 16 GB: not even the transformer alone fits beside it, so the flat plan stands
     assert _plan(16, QWEN21_GGUF, act) == _plan(16, QWEN21_GGUF, None)
     assert _plan(17, QWEN21_GGUF, act).offload_policy == OFFLOAD_MODEL
     plan = _plan(18, QWEN21_GGUF, act)
@@ -241,7 +234,6 @@ def test_only_measured_families_are_calibrated():
             act = calibrated_image_activation(family, max_speed = max_speed)
             assert act.tiled_decode_mib <= act.decode_mib
             assert act.headroom(False) >= max(raw[:4]) and act.max_canvas_mib >= raw[4]
-        # the max tier never plans for less than the default tiers
         assert all(m >= d for m, d in zip(tiers[1], tiers[0]))
     assert calibrated_image_activation("qwen-image-2.1") == calibrated_image_activation(
         "qwen-image-2.1", max_speed = True
@@ -250,12 +242,10 @@ def test_only_measured_families_are_calibrated():
 
 def test_a_text_encoder_that_cannot_run_whole_keeps_streaming():
     act = calibrated_image_activation("qwen-image-2.1", max_speed = False)
-    # 15 GB: the encoder fits the budget by weight, not with its own activations beside it
     assert _plan(15, LARGE_TE, act) == _plan(15, LARGE_TE, None)
 
 
 def test_16gb_qwen_image_21_at_the_max_speed_tier_keeps_streaming_the_transformer():
-    # max-autotune holds about 9.6 GB for a 2048 denoise, which an onloaded transformer could not add on a 16 GB card
     act = calibrated_image_activation("qwen-image-2.1", max_speed = True)
     assert _plan(16, QWEN21_GGUF, act) == _plan(16, QWEN21_GGUF, None)
     plan = _plan(22, QWEN21_GGUF, act)
@@ -264,10 +254,8 @@ def test_16gb_qwen_image_21_at_the_max_speed_tier_keeps_streaming_the_transforme
 
 def test_the_shipped_qwen_image_21_figures_never_stream_the_transformer_on_16gb():
     act = calibrated_image_activation("qwen-image-2.1", max_speed = False)
-    # a desktop and the CUDA context holding 1.2 GB: whole-module offload with the measured decode untiled
     plan = _plan(16, QWEN21_GGUF, act)
     assert plan.offload_policy == OFFLOAD_MODEL and plan.vae_tiling is False
-    # a headless card with only the CUDA context: the transformer stays resident, the text encoders stream
     card = DeviceMemory("cuda", "cuda", "discrete_vram", 16 * GIB - 512, 16 * GIB)
     plan = plan_diffusion_memory(
         target = _target(),
@@ -294,7 +282,6 @@ def test_the_requested_speed_tier_picks_the_figures(monkeypatch):
     default = calibrated_image_activation("qwen-image-2.1", max_speed = False)
     maxed = calibrated_image_activation("qwen-image-2.1", max_speed = True)
     assert default != maxed
-    # outside a load nothing says which tier will run, so plan for the largest
     assert d._calibrated_activation(fam, nvidia) == maxed
     seen = []
 
@@ -310,7 +297,6 @@ def test_the_requested_speed_tier_picks_the_figures(monkeypatch):
     load()
     assert seen.pop() == default
     assert d._calibrated_activation(fam, nvidia) == maxed
-    # both load entry points carry the speed tier into their plans, and keep their signatures
     for fn in (
         d.DiffusionBackend.load_pipeline,
         d.DiffusionBackend._pipeline_planned_denoiser_scheme,
@@ -348,7 +334,6 @@ def test_only_nvidia_with_a_confirmed_subquadratic_kernel_is_calibrated(monkeypa
 
 
 def test_an_explicit_auto_mode_ignores_the_legacy_offload_flag():
-    # a supplied memory mode wins over cpu_offload, so auto + cpu_offload plans exactly like auto
     for gib in (12, 16, 20):
         assert _plan(gib, QWEN21_GGUF, QWEN21_ACT, "auto", True) == _plan(
             gib, QWEN21_GGUF, QWEN21_ACT, "auto"
