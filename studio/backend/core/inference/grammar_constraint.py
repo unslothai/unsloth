@@ -27,9 +27,8 @@ except Exception:
 SUPPORTED_RESPONSE_FORMAT_TYPES = ("text", "json_object", "json_schema")
 
 MISSING_ENGINE_MESSAGE = (
-    "response_format needs the llguidance grammar engine, which did not load. Install or "
-    "repair it with `pip install llguidance==1.8.0`, or load a GGUF model to use the "
-    "llama.cpp grammar engine instead."
+    "response_format needs a grammar engine, and llguidance did not load. Install or repair "
+    "it with `pip install llguidance==1.8.0`, or load a GGUF model to use llama.cpp's."
 )
 
 # json_object promises an object, not any JSON value; spelled canonically to share a grammar.
