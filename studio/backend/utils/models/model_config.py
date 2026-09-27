@@ -3395,15 +3395,17 @@ def _looks_like_gguf_repo(repo_id: str, gguf_variant: Optional[str] = None) -> b
 
 def _gguf_repo_unreadable_message(repo_id: str, error: Optional[Exception]) -> str:
     if error is None:
-        cause = "Hugging Face is unreachable (offline) and the repo is not in the local cache"
-    else:
-        status = getattr(getattr(error, "response", None), "status_code", None)
-        first_line = (str(error).strip().splitlines() or [""])[0][:200]
-        cause = type(error).__name__
-        if status is not None:
-            cause += f" (HTTP {status})"
-        if first_line:
-            cause += f": {first_line}"
+        return (
+            f"Could not load the GGUF repo '{repo_id}': Studio is offline and the repo is not "
+            "in the local cache. Connect to the internet once to download it, then try again."
+        )
+    status = getattr(getattr(error, "response", None), "status_code", None)
+    first_line = (str(error).strip().splitlines() or [""])[0][:200]
+    cause = type(error).__name__
+    if status is not None:
+        cause += f", HTTP {status}"
+    if first_line:
+        cause += f": {first_line}"
     return (
         f"Could not read the GGUF repo '{repo_id}' from Hugging Face ({cause}). "
         "Unsloth needs the repo's file list to pick a GGUF file. Check the Hugging Face "

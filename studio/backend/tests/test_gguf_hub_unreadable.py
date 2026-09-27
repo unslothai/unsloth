@@ -97,7 +97,7 @@ def test_hub_401_on_gguf_repo_raises_clear_error(monkeypatch):
         ModelConfig.from_identifier(REPO)
     msg = str(exc_info.value)
     assert REPO in msg
-    assert "RepositoryNotFoundError (HTTP 401)" in msg
+    assert "RepositoryNotFoundError, HTTP 401" in msg
     assert "token in Settings" in msg and "HF_ENDPOINT" in msg
     assert "AutoConfig" not in msg
     # A ValueError, so /load and /validate answer 400 with this text.
