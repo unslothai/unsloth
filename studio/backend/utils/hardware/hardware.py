@@ -5863,6 +5863,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
         str(device),
         os.environ.get("CUDA_VISIBLE_DEVICES"),
         os.environ.get("HIP_VISIBLE_DEVICES"),
+        os.environ.get("ROCR_VISIBLE_DEVICES"),
         os.environ.get("ZE_AFFINITY_MASK"),
     )
     info = _probe_backend_visible_gpu_info(device)

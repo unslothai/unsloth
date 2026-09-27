@@ -69,10 +69,14 @@ def test_nvidia_smi_answering_zero_rows_reports_none(monkeypatch):
     assert hw.get_backend_visible_gpu_info()["available"] is False
 
 
-def test_a_different_mask_does_not_inherit_the_inventory(monkeypatch):
+@pytest.mark.parametrize(
+    "mask",
+    ["CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "ZE_AFFINITY_MASK"],
+)
+def test_a_different_mask_does_not_inherit_the_inventory(monkeypatch, mask):
     _smi(monkeypatch, [dict(B200)])
     assert hw.get_backend_visible_gpu_info()["available"]
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    monkeypatch.setenv(mask, "7")
     _smi(monkeypatch, None)
     assert hw.get_backend_visible_gpu_info()["available"] is False
 

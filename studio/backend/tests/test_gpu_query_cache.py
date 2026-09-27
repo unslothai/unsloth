@@ -291,6 +291,19 @@ def test_static_inventory_is_cached_until_redetection(smi):
     assert smi.calls("memory.total") == 2
 
 
+def test_an_answered_empty_inventory_replaces_the_cached_one(smi, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GPU_QUERY_STATIC_TTL", "0")
+    assert nvidia.get_physical_gpu_count() == 2
+    smi.set(gpus = [])
+    counts = []
+    for _ in range(20):
+        counts.append(nvidia.get_physical_gpu_count())
+        if counts[-1] in (0, None):
+            break
+        time.sleep(0.1)
+    assert counts[-1] in (0, None), counts
+
+
 def test_a_static_read_after_redetection_does_not_join_an_older_child(smi):
     smi.set(delay = 0.6)
     first = threading.Thread(target = nvidia.get_physical_gpu_count)

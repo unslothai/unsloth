@@ -256,7 +256,18 @@ def _run_child(flight: _Flight, argv: list, kind: str, kwargs: dict) -> None:
         result = subprocess.run(argv, **kwargs)
         flight.result = result
         stdout = getattr(result, "stdout", None)
-        if getattr(result, "returncode", None) == 0 and isinstance(stdout, str) and stdout.strip():
+        if (
+            getattr(result, "returncode", None) == 0
+            and isinstance(stdout, str)
+            and not stdout.strip()
+        ):
+            # An answered "no rows" is never cached, but it must not leave an older non-empty one served.
+            with _lock:
+                if flight.epoch == _reset_epoch:
+                    existing = _cache.get(flight.key)
+                    if existing is not None and existing.started <= flight.started:
+                        del _cache[flight.key]
+        elif getattr(result, "returncode", None) == 0 and isinstance(stdout, str):
             with _lock:
                 if flight.epoch != _reset_epoch:
                     return
