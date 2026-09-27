@@ -753,7 +753,15 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         # backend's documented "ignores them" behavior into a TypeError.
         # ``tool_protocol_active`` rides here rather than above: MLX declares no such
         # parameter and takes no **kwargs, so an unconditional forward would raise.
-        for gated in ("seed", "frequency_penalty", "logit_bias", "stop", "tool_protocol_active"):
+        for gated in (
+            "seed",
+            "frequency_penalty",
+            "logit_bias",
+            "stop",
+            "tool_protocol_active",
+            "response_format",
+            "reasoning_is_extracted",
+        ):
             if gated in cmd and _backend_declares(backend, gated):
                 gen_kwargs[gated] = cmd[gated]
         # A clip cannot be dropped like an unknown sampling knob: the answer would ignore it.
@@ -813,6 +821,9 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
                 "type": "gen_error",
                 "request_id": request_id,
                 "error": str(exc),
+                # Client-safe refusals would otherwise reach the caller as a generic 500.
+                "public": bool(getattr(exc, "public", False)),
+                "openai_param": getattr(exc, "openai_param", None),
                 "stack": traceback.format_exc(limit = 20),
             },
         )
@@ -1054,6 +1065,8 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 "type": "gen_error",
                 "request_id": request_id,
                 "error": str(exc),
+                "public": bool(getattr(exc, "public", False)),
+                "openai_param": getattr(exc, "openai_param", None),
                 "stack": traceback.format_exc(limit = 20),
             },
         )

@@ -4903,6 +4903,320 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
 
 
+import numpy as np  # noqa: E402
+
+from core.inference import grammar_constraint as gc
+from core.inference.grammar_constraint import (
+    ResponseFormatError,
+    build_constraint,
+    constraint_spec_from_response_format,
+)
+
+SCHEMA = {
+    "type": "object",
+    "properties": {"a": {"type": "integer"}},
+    "required": ["a"],
+    "additionalProperties": False,
+}
+
+JSON_SCHEMA_FORMAT = {"type": "json_schema", "schema": SCHEMA}
+
+
+def _char_tokenizer(
+    *extra_specials,
+    markers_are_special = False,
+    extra_chars = "",
+):
+    if not gc.LLGUIDANCE_AVAILABLE:
+        pytest.skip("llguidance.mlx did not import")
+    tk = pytest.importorskip("tokenizers")
+    transformers = pytest.importorskip("transformers")
+
+    chars = list('{}"[]:,0123456789abcdefghijklmnopqrstuvwxyz \n.-' + extra_chars)
+    backend = tk.Tokenizer(tk.models.BPE(vocab = {c: i for i, c in enumerate(chars)}, merges = []))
+    backend.pre_tokenizer = tk.pre_tokenizers.ByteLevel(add_prefix_space = False, use_regex = False)
+    backend.decoder = tk.decoders.ByteLevel()
+    backend.add_special_tokens([tk.AddedToken("<eos>", special = True)])
+    markers = [tk.AddedToken(t, special = markers_are_special) for t in ("</think>", *extra_specials)]
+    if markers_are_special:
+        backend.add_special_tokens(markers)
+    else:
+        backend.add_tokens(markers)
+    tokenizer = transformers.PreTrainedTokenizerFast(tokenizer_object = backend, eos_token = "<eos>")
+    tokenizer.chat_template = "{{ messages[0].content }}<think>"
+    return tokenizer
+
+
+@pytest.fixture(scope = "module")
+def tiny_tokenizer():
+    return _char_tokenizer()
+
+
+def _metal_mx():
+    mx = pytest.importorskip("mlx.core")
+    if not mx.metal.is_available():
+        pytest.skip("llguidance.mlx masks with a Metal kernel")
+    return mx
+
+
+def _allowed(constraint, width):
+    mx = _metal_mx()
+    masked = np.asarray(constraint.mask_logits(mx.zeros((width,), dtype = mx.float32)))
+    return set(np.nonzero(~np.isneginf(masked))[0].tolist())
+
+
+def test_every_spelling_of_a_supplied_schema_agrees_and_a_non_schema_is_refused(tiny_tokenizer):
+    wrapped = constraint_spec_from_response_format(
+        {"type": "json_schema", "json_schema": {"name": "city", "schema": SCHEMA}}
+    ).grammar
+    for spelling in (
+        JSON_SCHEMA_FORMAT,
+        {"type": "json_schema", "schema": dict(reversed(list(SCHEMA.items())))},
+        {"type": "json_object", "schema": SCHEMA},
+    ):
+        assert constraint_spec_from_response_format(spelling).grammar == wrapped
+    for supplied in (False, True, "nonsense", [1, 2]):
+        with pytest.raises(ResponseFormatError):
+            constraint_spec_from_response_format({"type": "json_object", "schema": supplied})
+    plain = constraint_spec_from_response_format({"type": "json_object"}).grammar
+    for spelling in (
+        {"type": "json_object", "schema": None},
+        {"type": "json_object", "schema": {}},
+        {"type": "json_schema", "schema": {"type": "object"}},
+    ):
+        assert constraint_spec_from_response_format(spelling).grammar == plain
+    digit = tiny_tokenizer.encode("4", add_special_tokens = False)[0]
+    width = len(tiny_tokenizer)
+    any_value = build_constraint({"type": "json_schema", "schema": {}}, tiny_tokenizer, "p")
+    assert digit in _allowed(any_value, width)
+    assert digit not in _allowed(
+        build_constraint({"type": "json_object"}, tiny_tokenizer, "p"), width
+    )
+
+
+def test_the_schema_itself_constrains_not_merely_json_syntax(tiny_tokenizer):
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
+    _allowed(constraint, len(tiny_tokenizer))
+    for token_id in tiny_tokenizer.encode('{"', add_special_tokens = False):
+        constraint.advance(int(token_id))
+    assert _allowed(constraint, len(tiny_tokenizer)) == set(
+        tiny_tokenizer.encode("a", add_special_tokens = False)
+    )
+    for token_id in tiny_tokenizer.encode('a":', add_special_tokens = False):
+        constraint.advance(int(token_id))
+    quote = tiny_tokenizer.encode('"', add_special_tokens = False)[0]
+    assert quote not in _allowed(constraint, len(tiny_tokenizer))
+
+
+def test_advance_raises_on_a_token_the_grammar_rejects(tiny_tokenizer):
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
+    _allowed(constraint, len(tiny_tokenizer))
+    illegal = tiny_tokenizer.encode("]", add_special_tokens = False)[0]
+    with pytest.raises(gc.GrammarDesyncError, match = "desynced on token") as excinfo:
+        constraint.advance(int(illegal))
+    assert not isinstance(excinfo.value, ResponseFormatError)
+
+
+def test_binding_waits_for_the_logits_width_a_padded_lm_head_widens(tiny_tokenizer):
+    gc._TOKENIZER_CACHE.clear()
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
+    padded = len(tiny_tokenizer) + 16
+    legal = _allowed(constraint, padded)
+    assert legal == set(tiny_tokenizer.encode("{", add_special_tokens = False))
+    assert max(legal) < len(tiny_tokenizer)
+
+
+def test_prelude_is_bounded_so_an_unclosed_think_block_cannot_eat_the_budget(
+    tiny_tokenizer, monkeypatch
+):
+    monkeypatch.setattr(gc, "_PRELUDE_MAX_TOKENS", 6)
+    constraint = build_constraint(
+        JSON_SCHEMA_FORMAT, tiny_tokenizer, "chat\n<think>\n", reasoning_is_extracted = True
+    )
+    _allowed(constraint, len(tiny_tokenizer))
+    for token_id in tiny_tokenizer.encode("abcdef", add_special_tokens = False):
+        constraint.advance(int(token_id))
+    close_id = tiny_tokenizer.encode("</think>", add_special_tokens = False)[0]
+    assert _allowed(constraint, len(tiny_tokenizer)) == {close_id}
+    constraint.advance(int(close_id))
+    assert _allowed(constraint, len(tiny_tokenizer)) == set(
+        tiny_tokenizer.encode("{", add_special_tokens = False)
+    )
+
+
+def test_reasoning_cannot_spell_the_closer_as_text_and_forge_the_document_boundary():
+    tokenizer = _char_tokenizer(extra_chars = "</>")
+
+    def _fresh():
+        constraint = build_constraint(
+            JSON_SCHEMA_FORMAT, tokenizer, "chat\n<think>", reasoning_is_extracted = True
+        )
+        constraint._bind(len(tokenizer))
+        return constraint
+
+    def _step(constraint, token_id):
+        # The numpy half of mask_logits, so the desync check reads a real mask without Metal.
+        gc._llg_mlx.fill_next_token_bitmask(constraint._matcher, constraint._bitmask)
+        constraint.advance(int(token_id))
+
+    def _chars(text):
+        return [tokenizer.convert_tokens_to_ids(c) for c in text]
+
+    constraint = _fresh()
+    for token_id in _chars("a<b</think"):
+        _step(constraint, token_id)
+    with pytest.raises(gc.GrammarDesyncError):
+        _step(constraint, tokenizer.convert_tokens_to_ids(">"))
+
+    close_id = tokenizer.encode("</think>", add_special_tokens = False)
+    assert len(close_id) == 1
+    constraint = _fresh()
+    for token_id in (
+        _chars("a<b</th") + close_id + tokenizer.encode('{"a":1}', add_special_tokens = False)
+    ):
+        _step(constraint, token_id)
+
+
+@pytest.mark.parametrize("reply_keeps_special_tokens", [False, True])
+def test_a_close_marker_is_refused_only_where_the_reply_would_lose_it(reply_keeps_special_tokens):
+    tokenizer = _char_tokenizer(markers_are_special = True)
+    ids = tokenizer.encode("</think>", add_special_tokens = False)
+    assert (
+        tokenizer.decode(ids, skip_special_tokens = True) != "</think>"
+    ), "fixture no longer models a marker a skip_special_tokens decode strips"
+
+    def _build():
+        return build_constraint(
+            JSON_SCHEMA_FORMAT,
+            tokenizer,
+            "chat\n<think>",
+            reasoning_is_extracted = True,
+            reply_keeps_special_tokens = reply_keeps_special_tokens,
+        )
+
+    if not reply_keeps_special_tokens:
+        with pytest.raises(ResponseFormatError):
+            _build()
+        return
+    constraint = _build()
+    assert constraint.allows_reasoning
+    for token_id in tokenizer.encode('x</think>{"a":1}', add_special_tokens = False):
+        assert int(token_id) in _allowed(constraint, len(tokenizer))
+        constraint.advance(int(token_id))
+
+
+class _Recorder:
+    def __init__(self):
+        self.advanced = []
+
+    def mask_logits(self, logits):
+        return logits
+
+    def advance(self, token_id):
+        self.advanced.append(int(token_id))
+
+
+def test_the_grammar_mask_runs_first_and_its_inf_survives_every_knob():
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_lm")
+    from core.inference.mlx_inference import _mlx_sampling_processors
+
+    class _MaskOdd(_Recorder):
+        def mask_logits(self, logits):
+            keep = mx.array([[1.0, 0.0, 1.0, 0.0]])
+            return mx.where(keep > 0, logits, mx.array(float("-inf")))
+
+    grammar = _MaskOdd()
+    processors = _mlx_sampling_processors(
+        repetition_penalty = 1.3,
+        presence_penalty = 0.5,
+        frequency_penalty = 0.5,
+        logit_bias = {1: 100.0},
+        grammar_constraint = grammar,
+    )
+    zeros = mx.zeros((1, 4), dtype = mx.float32)
+    tokens = mx.array([0, 1])
+    leading = np.asarray(processors[0](tokens, zeros))[0]
+    assert np.isneginf(leading[1]) and np.isneginf(leading[3])
+
+    logits = zeros
+    for processor in processors:
+        logits = processor(tokens, logits)
+    out = np.asarray(logits)[0]
+    assert np.isneginf(out[1]) and np.isneginf(out[3])
+    assert np.isfinite(out[0]) and np.isfinite(out[2])
+
+    assert grammar.advanced == []
+    processors[0](mx.array([0, 1, 2, 3]), zeros)
+    processors[0](mx.array([0, 1, 2, 3, 4]), zeros)
+    assert grammar.advanced == [2, 3, 4]
+
+
+def _two_stop_tokenizer():
+    tokenizer = _char_tokenizer("<end_of_text>", markers_are_special = True)
+    tokenizer.chat_template = "{{ messages[0].content }}"
+    runtime_stop = tokenizer.convert_tokens_to_ids("<end_of_text>")
+    assert runtime_stop != tokenizer.eos_token_id, "fixture no longer models a disagreement"
+    return tokenizer, runtime_stop
+
+
+def _stop_offered_after_the_document(target, tokenizer):
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, target, "prompt")
+    for token_id in tokenizer.encode('{"a":1}', add_special_tokens = False):
+        _allowed(constraint, len(tokenizer))
+        constraint.advance(int(token_id))
+    assert constraint._matcher.is_stopped(), "the document did not complete"
+    return _allowed(constraint, len(tokenizer))
+
+
+def test_the_grammar_stops_on_the_token_the_decode_loop_stops_on():
+    mlx_lm = pytest.importorskip("mlx_lm")
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    wrapped = TokenizerWrapper(tokenizer, eos_token_ids = [runtime_stop])
+    assert _stop_offered_after_the_document(wrapped, tokenizer) == {runtime_stop}
+    assert _stop_offered_after_the_document(tokenizer, tokenizer) == {tokenizer.eos_token_id}
+
+
+def test_a_schema_forced_through_a_stop_token_is_refused_while_it_can_still_be_reported():
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    wrapped = TokenizerWrapper(tokenizer, eos_token_ids = [runtime_stop])
+
+    def replay(schema, text):
+        constraint = build_constraint({"type": "json_schema", "schema": schema}, wrapped, "p")
+        for token in tokenizer.encode(text, add_special_tokens = False):
+            _allowed(constraint, len(tokenizer))
+            constraint.advance(int(token))
+        return _allowed(constraint, len(tokenizer))
+
+    with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
+        replay({"const": tokenizer.convert_ids_to_tokens(runtime_stop)}, '"')
+    assert runtime_stop in replay({"type": "integer"}, "42")
+    assert runtime_stop in replay(SCHEMA, '{"a":1}')
+
+
+def test_a_scalar_end_token_does_not_hide_the_runtime_stop_set():
+    pytest.importorskip("mlx_vlm")
+    from mlx_vlm.utils import StoppingCriteria
+
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    assert getattr(tokenizer, "eos_token_ids", None) == tokenizer.eos_token_id, "not a scalar"
+    criteria = StoppingCriteria([runtime_stop], tokenizer = tokenizer)
+    tokenizer.stopping_criteria = criteria
+    for target in (tokenizer, SimpleNamespace(tokenizer = tokenizer)):
+        assert _stop_offered_after_the_document(target, tokenizer) == set(criteria.eos_token_ids)
+
+
+def test_advance_before_the_first_mask_raises_rather_than_dropping_the_token(tiny_tokenizer):
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
+    with pytest.raises(gc.GrammarDesyncError, match = "before the grammar was bound"):
+        constraint.advance(tiny_tokenizer.encode("{", add_special_tokens = False)[0])
+
+
 def _uncopyable_naive_detokenizer(detokenizers):
     """mlx-vlm's naive detokenizer as it behaves BELOW 0.6.0, which is where ``__copy__`` arrived.
 
@@ -6739,3 +7053,351 @@ def test_single_image_replay_notes_describe_only_retained_pixels(monkeypatch, me
     else:
         assert calls[-1]["prompt"].count(IMAGE_TURN_TEXT) == 1
     assert len(image_marker_parts(history)) == 2
+
+
+def test_a_random_model_decoding_through_mlx_lm_emits_only_the_schema():
+    """Real mlx_lm pipelining (the next step is masked before this token is yielded) with a
+    random model: only the grammar can make the reply a valid document."""
+    mx = _metal_mx()
+    pytest.importorskip("mlx_lm")
+    from mlx_lm import stream_generate
+    from mlx_lm.models import llama
+    from mlx_lm.sample_utils import make_sampler
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    from core.inference.grammar_constraint import make_grammar_logits_processor
+
+    tokenizer = _char_tokenizer()
+    tokenizer.chat_template = "{{ messages[0].content }}"
+    mx.random.seed(0)
+    model = llama.Model(
+        llama.ModelArgs(
+            model_type = "llama",
+            hidden_size = 32,
+            num_hidden_layers = 1,
+            intermediate_size = 64,
+            num_attention_heads = 2,
+            num_key_value_heads = 2,
+            rms_norm_eps = 1e-5,
+            vocab_size = len(tokenizer),
+        )
+    )
+    schema = {
+        "type": "object",
+        "properties": {"a": {"enum": ["x", "y"]}, "b": {"type": "boolean"}},
+        "required": ["a", "b"],
+        "additionalProperties": False,
+    }
+    wrapped = TokenizerWrapper(tokenizer)
+    constraint = build_constraint({"type": "json_schema", "schema": schema}, wrapped, "p")
+    text = "".join(
+        chunk.text
+        for chunk in stream_generate(
+            model,
+            wrapped,
+            tokenizer.encode("go", add_special_tokens = False),
+            max_tokens = 64,
+            sampler = make_sampler(temp = 1.0),
+            logits_processors = [make_grammar_logits_processor(constraint)],
+        )
+    )
+    document = json.loads(text)
+    assert document["a"] in ("x", "y") and isinstance(document["b"], bool)
+    assert set(document) == {"a", "b"}
+
+
+def _constrained_vlm_reply(
+    monkeypatch,
+    pieces,
+    *,
+    allows_reasoning,
+    markers,
+    specials = (),
+):
+    """Snapshots ``_generate_vlm`` yields for scripted text under a stand-in grammar."""
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(MODEL_CONFIG = {}, apply_chat_template = None)
+    mlx_vlm.stream_generate = lambda *_a, **_k: iter(
+        [SimpleNamespace(text = piece, prompt_tokens = 1, generation_tokens = 1) for piece in pieces]
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_a, **_k: "user: hi\nassistant: <think>\n",
+    )
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
+    )
+    monkeypatch.setattr(
+        mlx_inference, "detect_reasoning_channel_markers", lambda *_a, **_k: markers
+    )
+    monkeypatch.setattr(
+        mlx_inference,
+        "_build_grammar_constraint",
+        lambda *_a, **_k: SimpleNamespace(
+            allows_reasoning = allows_reasoning,
+            stops_on = lambda _ids: None,
+            decoded_dropping = lambda _ids = None: None,
+        ),
+    )
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_k: None)
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_is_diffusion", lambda _model: False)
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
+    backend._processor = SimpleNamespace(chat_template = "template", all_special_tokens = specials)
+    args = ([{"role": "user", "content": "hi"}], [], 0.7, 0.9, 40, 0.01, 64, 1.0, None)
+    return list(backend._generate_vlm(*args, response_format = {"type": "json_object"}))
+
+
+def test_a_document_only_vlm_reply_is_not_rewritten_by_the_reasoning_normalizer(monkeypatch):
+    document = '{"city":"<think>Paris</think>"}'
+    snapshots = _constrained_vlm_reply(
+        monkeypatch,
+        [document[:12], document[12:]],
+        allows_reasoning = False,
+        markers = ("<think>", "</think>"),
+    )
+    assert snapshots[-1] == document
+
+
+def test_an_allowed_vlm_reasoning_block_keeps_its_opener_when_the_closer_is_special(monkeypatch):
+    snapshots = _constrained_vlm_reply(
+        monkeypatch,
+        ["x", "</think>", '{"a":1}'],
+        allows_reasoning = True,
+        markers = None,
+        specials = ("</think>",),
+    )
+    assert snapshots[-1] == '<think>\nx</think>{"a":1}'
+
+
+def test_the_text_grammar_is_told_a_closer_survives_whenever_the_prefill_is(monkeypatch):
+    """Client tools run the native decoder, which keeps a special </think>: the prefill then
+    re-emits the opener, so the grammar must allow the close rather than refuse the request."""
+    from core.inference import mlx_inference
+
+    mlx_lm = types.ModuleType("mlx_lm")
+    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    sample_utils.make_sampler = lambda **_k: object()
+    mlx_lm.sample_utils = sample_utils
+    mlx_lm.stream_generate = lambda *_a, **_k: iter([_Resp("ok", 1)])
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_k: None)
+    monkeypatch.setattr(mlx_inference, "decoder_preserves_token", lambda *_a, **_k: True)
+    seen = {}
+
+    def _capture(*_a, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(mlx_inference, "_build_grammar_constraint", _capture)
+    backend = _budget_backend(monkeypatch)
+    monkeypatch.setattr(
+        backend,
+        "_render_text_prompt",
+        lambda *_a, **_k: SimpleNamespace(prompt = "P<think>", reasoning_channel_markers = None),
+        raising = False,
+    )
+    list(
+        backend._generate_text(
+            _TEXT_TURN,
+            0.0,
+            1.0,
+            0,
+            0.0,
+            8,
+            1.0,
+            None,
+            tools = [{"type": "function", "function": {"name": "f"}}],
+            response_format = {"type": "json_object"},
+            reasoning_is_extracted = True,
+        )
+    )
+    assert seen["reply_keeps_special_tokens"] is True
+
+
+@pytest.mark.parametrize("constrained", [False, True])
+def test_a_constrained_plain_reply_is_decoded_without_space_cleanup(monkeypatch, constrained):
+    from core.inference import mlx_inference
+
+    mlx_lm = types.ModuleType("mlx_lm")
+    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    sample_utils.make_sampler = lambda **_k: object()
+    mlx_lm.sample_utils = sample_utils
+    mlx_lm.stream_generate = lambda *_a, **_k: iter([_Resp("ok", 1)])
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_k: None)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_build_grammar_constraint",
+        lambda *_a, **_k: SimpleNamespace(
+            allows_reasoning = False, decoded_dropping = lambda _ids: None
+        )
+        if constrained
+        else None,
+    )
+    backend = _budget_backend(monkeypatch)
+    decodes = []
+
+    def _decode(_ids, **kwargs):
+        decodes.append(kwargs)
+        return "ok"
+
+    backend._tokenizer.decode = _decode
+    monkeypatch.setattr(
+        backend,
+        "_render_text_prompt",
+        lambda *_a, **_k: SimpleNamespace(prompt = "P", reasoning_channel_markers = None),
+        raising = False,
+    )
+    list(
+        backend._generate_text(
+            _TEXT_TURN,
+            0.0,
+            1.0,
+            0,
+            0.0,
+            8,
+            1.0,
+            None,
+            response_format = {"type": "json_object"} if constrained else None,
+        )
+    )
+    assert decodes
+    # " ." inside a grammar-approved string must reach the client unchanged.
+    for kwargs in decodes:
+        assert kwargs.get("clean_up_tokenization_spaces") is (False if constrained else None)
+
+
+def test_a_special_token_the_reply_would_drop_is_refused_not_silently_deleted():
+    """llguidance spells a forced literal with a special id when one matches, and a decode that
+    skips special tokens would delete it from a reply reported as valid."""
+    tokenizer = _char_tokenizer("ab", markers_are_special = True)
+    special = tokenizer.convert_tokens_to_ids("ab")
+    fmt = {"type": "json_schema", "schema": {"const": "ab"}}
+
+    def _after_quote(constraint):
+        for token in tokenizer.encode('"', add_special_tokens = False):
+            _allowed(constraint, len(tokenizer))
+            constraint.advance(int(token))
+        return _allowed(constraint, len(tokenizer))
+
+    assert special in _after_quote(
+        build_constraint(fmt, tokenizer, "p", reply_keeps_special_tokens = True)
+    )
+    with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
+        _after_quote(build_constraint(fmt, tokenizer, "p"))
+
+
+def test_only_the_specials_the_decoder_drops_are_withheld_from_the_document():
+    """A native decoder keeps its allowlist and drops every other special id, so the grammar is
+    held to exactly that set, not to all specials or none."""
+    tokenizer = _char_tokenizer("ab", "cd", markers_are_special = True)
+    dropped, kept = (tokenizer.convert_tokens_to_ids(t) for t in ("ab", "cd"))
+
+    def _after_quote(literal):
+        constraint = build_constraint(
+            {"type": "json_schema", "schema": {"const": literal}},
+            tokenizer,
+            "p",
+            reply_keeps_special_tokens = True,
+        )
+        constraint.decoded_dropping({dropped})
+        for token in tokenizer.encode('"', add_special_tokens = False):
+            _allowed(constraint, len(tokenizer))
+            constraint.advance(int(token))
+        return _allowed(constraint, len(tokenizer))
+
+    assert kept in _after_quote("cd")
+    with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
+        _after_quote("ab")
+
+
+def test_the_text_path_hands_the_constraint_its_decoders_dropped_ids(monkeypatch):
+    from core.inference import mlx_inference
+
+    mlx_lm = types.ModuleType("mlx_lm")
+    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    sample_utils.make_sampler = lambda **_k: object()
+    mlx_lm.sample_utils = sample_utils
+    mlx_lm.stream_generate = lambda *_a, **_k: iter([_Resp("ok", 1)])
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_k: None)
+    seen = []
+    constraint = SimpleNamespace(allows_reasoning = False, decoded_dropping = seen.append)
+    monkeypatch.setattr(mlx_inference, "_build_grammar_constraint", lambda *_a, **_k: constraint)
+
+    class _Decoder:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def dropped_ids(self):
+            return frozenset({7})
+
+    monkeypatch.setattr(mlx_inference, "NativeToolTokenDecoder", _Decoder)
+    backend = _budget_backend(monkeypatch)
+    monkeypatch.setattr(
+        backend,
+        "_render_text_prompt",
+        lambda *_a, **_k: SimpleNamespace(prompt = "P", reasoning_channel_markers = None),
+        raising = False,
+    )
+    run = lambda **kw: list(
+        backend._generate_text(
+            _TEXT_TURN,
+            0.0,
+            1.0,
+            0,
+            0.0,
+            8,
+            1.0,
+            None,
+            response_format = {"type": "json_object"},
+            **kw,
+        )
+    )
+    try:
+        run(tools = [{"type": "function", "function": {"name": "f"}}])
+    except Exception:
+        pass  # the stand-in decoder cannot decode; the handoff happened before generation
+    assert seen and seen[0] == frozenset({7})
+    seen.clear()
+    run()
+    assert seen == [None], "a plain skip_special_tokens decode drops every special id"
+
+
+def test_a_tokenizer_end_token_the_runtime_does_not_stop_on_is_withheld_too():
+    """llguidance ends only on the runtime stops, so the tokenizer's own end token is just
+    another special id the decode drops, and a literal spelled only by it is refused."""
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    wrapped = TokenizerWrapper(tokenizer, eos_token_ids = [runtime_stop])
+    constraint = build_constraint(
+        {"type": "json_schema", "schema": {"const": "<eos>"}}, wrapped, "p"
+    )
+    for token in tokenizer.encode('"', add_special_tokens = False):
+        _allowed(constraint, len(tokenizer))
+        constraint.advance(int(token))
+    with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
+        _allowed(constraint, len(tokenizer))
+
+
+def test_the_grammar_ends_on_the_stop_the_decode_loop_names():
+    """mlx-vlm stops on config ids the tokenizer may not carry; told them, the finished
+    document is closed by that id rather than the tokenizer's end token."""
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tokenizer, "p")
+    constraint.stops_on([runtime_stop])
+    for token_id in tokenizer.encode('{"a":1}', add_special_tokens = False):
+        _allowed(constraint, len(tokenizer))
+        constraint.advance(int(token_id))
+    assert _allowed(constraint, len(tokenizer)) == {runtime_stop}

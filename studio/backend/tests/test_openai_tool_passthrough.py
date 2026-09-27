@@ -10753,6 +10753,30 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
             assert payload["cache_prompt"] is False, (seed, value)
 
 
+def test_a_lenient_schema_reaches_llama_server_where_it_reads_one():
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _response_format_for_llama_server as for_llama
+
+    schema = {"type": "integer"}
+    wrapped = {"type": "json_schema", "json_schema": {"schema": schema}}
+    lenient = {"type": "json_schema", "schema": schema}
+    assert for_llama(lenient) == wrapped
+    assert for_llama({"type": "json_schema", "json_schema": None, "schema": schema}) == wrapped
+    for already in (
+        {"type": "json_schema", "json_schema": {"name": "x", "schema": schema}},
+        {"type": "json_schema", "json_schema": {"schema": schema}, "schema": {}},
+        {"type": "json_object", "schema": schema},
+        {"type": "json_object"},
+        {"type": "text"},
+        None,
+    ):
+        assert for_llama(already) is already
+    request = ChatCompletionRequest(
+        model = "m", messages = [{"role": "user", "content": "hi"}], response_format = lenient
+    )
+    assert _build_openai_passthrough_body(request)["response_format"] == wrapped
+
+
 class TestPassthroughImageNormalization:
     @staticmethod
     def _data_url(fmt: str) -> str:
