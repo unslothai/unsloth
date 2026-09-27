@@ -14174,7 +14174,6 @@ def _wait_for_native_audio_gpu_free_gb(
     while True:
         try:
             from utils.hardware import gpu_query
-
             with gpu_query.fresh_reads():
                 devices = get_visible_gpu_utilization().get("devices", [])
             for device in devices:

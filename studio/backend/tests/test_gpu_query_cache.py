@@ -131,8 +131,6 @@ def _free_by_index(result):
     return {d["index"]: round(d["vram_total_gb"] - d["vram_used_gb"], 2) for d in result["devices"]}
 
 
-
-
 def test_classification():
     assert gpu_query.classify(["nvidia-smi", "-L"]) == gpu_query.STATIC
     assert gpu_query.classify(["nvidia-smi", "topo", "-m"]) == gpu_query.STATIC
@@ -149,8 +147,6 @@ def test_classification():
     with gpu_query.display_reads():
         assert gpu_query.classify(live) == gpu_query.DISPLAY
     assert gpu_query.classify(["nvidia-smi", "-q"]) == gpu_query.CRITICAL
-
-
 
 
 def test_concurrent_identical_display_queries_start_one_child(smi):
@@ -237,8 +233,6 @@ def test_different_queries_are_not_merged(smi):
     assert smi.calls("--query-gpu") == 2
 
 
-
-
 def test_fit_checks_always_read_afresh(smi, llama_probe):
     """Another process's allocation raises no Studio event, so the next fit check must see it."""
     assert llama_probe() == [(0, 180000, 183359), (1, 170000, 183359)]
@@ -308,8 +302,6 @@ def test_a_static_read_after_redetection_does_not_join_an_older_child(smi):
     assert nvidia.get_physical_gpu_count() == 1
     first.join(5)
     assert smi.calls("-L") == 2
-
-
 
 
 def test_display_after_a_load_reads_afresh_inside_the_ttl(smi, monkeypatch):
@@ -410,8 +402,6 @@ def test_a_fit_check_waits_its_whole_timeout_on_a_slow_driver(smi):
     assert gpu_query.driver_slow()
     out = gpu_query.run_nvidia_smi(argv, timeout = 5, capture_output = True, text = True)
     assert out.stdout.split() == ["0,", "180000", "1,", "170000"]
-
-
 
 
 def test_a_slow_cli_holds_the_caller_only_for_its_timeout(smi, monkeypatch):
@@ -519,8 +509,6 @@ def _with_timeout(fn, timeout):
         return fn(argv, **kwargs)
 
     return wrapped
-
-
 
 
 def test_failing_cli_is_not_cached(smi):

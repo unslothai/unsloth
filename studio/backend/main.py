@@ -2120,7 +2120,6 @@ def _get_cached_system_gpu_info(
             import contextlib
 
             from utils.hardware import gpu_query
-
             with contextlib.nullcontext() if refresh_memory else gpu_query.display_reads():
                 utilization_info = get_visible_gpu_utilization() or {"devices": []}
         except Exception as e:

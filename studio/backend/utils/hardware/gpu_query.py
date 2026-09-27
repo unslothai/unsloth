@@ -90,7 +90,6 @@ def _background_timeout() -> float:
     return _env_float("UNSLOTH_GPU_QUERY_BACKGROUND_TIMEOUT", 120.0)
 
 
-
 _display_mode: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "unsloth_gpu_query_display", default = False
 )
@@ -138,8 +137,6 @@ def _query_fields(argv: Sequence[str]) -> list[str]:
 
 def _nounits(argv: Sequence[str]) -> bool:
     return any(arg.startswith("--format=") and "nounits" in arg for arg in argv[1:])
-
-
 
 
 @dataclass
@@ -251,8 +248,6 @@ def _entry_fresh(entry: _Entry, kind: str, now: float) -> bool:
     return entry.gen == _events.generation()
 
 
-
-
 def _run_child(flight: _Flight, argv: list, kind: str, kwargs: dict) -> None:
     try:
         with _lock:
@@ -327,8 +322,6 @@ def _flight_outcome(flight: _Flight, argv: list, timeout: float) -> subprocess.C
     return _copy(flight.result)
 
 
-
-
 def _fallback(key: tuple, kind: str) -> Optional[subprocess.CompletedProcess]:
     now = time.monotonic()
     with _lock:
@@ -343,8 +336,6 @@ def _fallback(key: tuple, kind: str) -> Optional[subprocess.CompletedProcess]:
                 _stats.stale_served += 1
             return _copy(entry.result)
     return None
-
-
 
 
 def run_nvidia_smi(
