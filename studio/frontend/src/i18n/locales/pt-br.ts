@@ -261,6 +261,7 @@ export const ptBR = {
       markAllRead: "Marcar tudo como lido",
       // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Mover para",
+      section: "Seção",
       sectionsHeading: "Seções",
       removeFromProject: "Remover do projeto",
       newSection: "Nova seção",

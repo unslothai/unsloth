@@ -261,6 +261,7 @@ export const ru = {
       markAllRead: "Отметить все как прочитанные",
       // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Переместить в",
+      section: "Раздел",
       sectionsHeading: "Разделы",
       removeFromProject: "Убрать из проекта",
       newSection: "Новый раздел",

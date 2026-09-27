@@ -222,6 +222,7 @@ export const it = {
       markAllRead: "Segna tutto come letto",
       // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Sposta in",
+      section: "Sezione",
       sectionsHeading: "Sezioni",
       removeFromProject: "Rimuovi dal progetto",
       newSection: "Nuova sezione",

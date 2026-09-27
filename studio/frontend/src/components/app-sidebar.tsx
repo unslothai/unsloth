@@ -4167,8 +4167,8 @@ export function AppSidebar() {
     );
   }
 
-  /** "Move to" for rows that only sections take: a folder, or a selection. A chat's own menu adds
-   *  its projects to the same submenu. */
+  /** "Section" for rows that only sections take: a folder, or a selection. A chat's own menu
+   *  has "Move to", which adds its projects. */
   function renderSectionSubmenu(
     P: RowMenuParts,
     config: {
@@ -4180,8 +4180,8 @@ export function AppSidebar() {
     return (
       <P.Sub>
         <P.SubTrigger>
-          <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
-          <span>{t("shell.sections.moveTo")}</span>
+          <HugeiconsIcon icon={LayerIcon} strokeWidth={1.75} className="size-icon" />
+          <span>{t("shell.sections.section")}</span>
         </P.SubTrigger>
         <P.SubContent
           {...sidebarSubmenuOffsets}
@@ -4193,7 +4193,7 @@ export function AppSidebar() {
     );
   }
 
-  /** "Move to" for a selection of several rows of one kind. */
+  /** "Section" for a selection of several rows of one kind. */
   function renderBulkSectionSubmenu(kind: "chat" | "project", ids: string[]) {
     const assignments = kind === "chat" ? sectionByChatId : sectionByProjectId;
     const pinned = kind === "chat" ? pinnedIdSet : pinnedProjectIdSet;
@@ -4817,7 +4817,7 @@ export function AppSidebar() {
           </P.Item>
           {/* Name, instructions and folders are one dialog, so Edit rather than Rename. */}
           <P.Item onSelect={() => setEditingProject(project)}>
-            <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
             <span>Edit</span>
           </P.Item>
           {renderSectionSubmenu(P, {

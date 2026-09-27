@@ -257,6 +257,7 @@ export const zhCN = {
       markAllRead: "全部标为已读",
       // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "移动到",
+      section: "分区",
       sectionsHeading: "分区",
       removeFromProject: "从项目中移除",
       newSection: "新建分区",

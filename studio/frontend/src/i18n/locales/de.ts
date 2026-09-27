@@ -262,6 +262,7 @@ export const de = {
       markAllRead: "Alle als gelesen markieren",
       // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Verschieben nach",
+      section: "Abschnitt",
       sectionsHeading: "Abschnitte",
       removeFromProject: "Aus Projekt entfernen",
       newSection: "Neuer Abschnitt",

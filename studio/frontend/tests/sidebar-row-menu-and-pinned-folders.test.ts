@@ -141,7 +141,18 @@ test("a chat's Move to submenu groups projects and sections, New first and Remov
   // No Project sources, no separate Project or Section submenus, no ellipsis on New section.
   assert.ok(!APP_SIDEBAR.includes("<span>Project sources</span>"));
   assert.ok(!APP_SIDEBAR.includes("<span>Project</span>"));
-  assert.ok(!APP_SIDEBAR.includes('t("shell.sections.section")'));
+  // A folder or a selection only goes to sections, so its submenu is "Section", as ChatGPT's is,
+  // under the icon its sections carry.
+  const sectionOnly = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("function renderSectionSubmenu("));
+  assert.match(
+    sectionOnly,
+    /<P\.SubTrigger>\n\s*<HugeiconsIcon icon=\{LayerIcon\} strokeWidth=\{1\.75\} className="size-icon" \/>\n\s*<span>\{t\("shell\.sections\.section"\)\}<\/span>/,
+  );
+  // Edit opens a settings dialog for a folder as for a section: the cog, not a pencil.
+  assert.match(
+    APP_SIDEBAR,
+    /<P\.Item onSelect=\{\(\) => setEditingProject\(project\)\}>\n\s*<HugeiconsIcon icon=\{Settings02Icon\}/,
+  );
   assert.ok(!APP_SIDEBAR.includes("newSectionEllipsis"));
 });
 

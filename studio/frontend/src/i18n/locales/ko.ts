@@ -259,6 +259,7 @@ export const ko = {
       markAllRead: "모두 읽음으로 표시",
       // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "이동",
+      section: "섹션",
       sectionsHeading: "섹션",
       removeFromProject: "프로젝트에서 제거",
       newSection: "새 섹션",

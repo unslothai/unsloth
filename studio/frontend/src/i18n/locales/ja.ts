@@ -261,6 +261,7 @@ export const ja = {
       markAllRead: "すべて既読にする",
       // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "移動先",
+      section: "セクション",
       sectionsHeading: "セクション",
       removeFromProject: "プロジェクトから削除",
       newSection: "新しいセクション",

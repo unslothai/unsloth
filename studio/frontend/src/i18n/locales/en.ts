@@ -266,6 +266,7 @@ export const en = {
       markAllRead: "Mark all as read",
       // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Move to",
+      section: "Section",
       sectionsHeading: "Sections",
       removeFromProject: "Remove from project",
       newSection: "New section",

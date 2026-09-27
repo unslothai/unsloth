@@ -259,6 +259,7 @@ export const ar = {
       markAllRead: "تعليم الكل كمقروء",
       // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "نقل إلى",
+      section: "قسم",
       sectionsHeading: "الأقسام",
       removeFromProject: "إزالة من المشروع",
       newSection: "قسم جديد",

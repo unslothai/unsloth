@@ -262,6 +262,7 @@ export const hi = {
       markAllRead: "सभी को पढ़ा हुआ चिह्नित करें",
       // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "यहाँ ले जाएँ",
+      section: "सेक्शन",
       sectionsHeading: "सेक्शन",
       removeFromProject: "प्रोजेक्ट से हटाएँ",
       newSection: "नया सेक्शन",
