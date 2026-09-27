@@ -66,6 +66,7 @@ from _playwright_robust import (  # noqa: E402
     install_view_transition_killer,
     install_wall_clock_watchdog,
     is_benign_page_error,
+    robust_evaluate,
     wait_for_health,
 )
 
@@ -702,8 +703,14 @@ _ROW_STATE_JS = """(ids) => {
 
 
 def row_states(page, ids = INLINE_ROW_IDS) -> dict:
-    """DOM state of each nav row by test id; None for a row that is not rendered."""
-    return page.evaluate(_ROW_STATE_JS, list(ids)) or {}
+    """DOM state of each nav row by test id; None for a row that is not rendered.
+
+    Through robust_evaluate: the password rotation navigates the app on its own, which can
+    abort the post-login goto and leave a navigation in flight when the first sample is read
+    ("Execution context was destroyed"). That settles on its own and is not a page that
+    cannot be read; a page that stays unreadable still raises.
+    """
+    return robust_evaluate(page, _ROW_STATE_JS, list(ids)) or {}
 
 
 def sample_natural_warm_window(page) -> None:

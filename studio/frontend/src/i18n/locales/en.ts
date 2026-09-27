@@ -3133,7 +3133,7 @@ export const en = {
     // The full-window file viewer, shared with the Images, Video and Audio pages.
     viewer: {
       scale: "Scale",
-      fit: "Fit",
+      fit: "Zoom to fit",
       moreActionsImage: "More actions for this image",
       moreActionsVideo: "More actions for this video",
       moreActionsClip: "More actions for this clip",
