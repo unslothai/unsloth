@@ -11,11 +11,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -28,12 +30,10 @@ import { cn } from "@/lib/utils";
 import {
   ArrowLeft01Icon,
   ArrowRight01Icon,
-  Cancel01Icon,
   PlusSignIcon,
   RefreshIcon,
   Scroll01Icon,
   Search01Icon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -80,11 +80,6 @@ function isChord(event: KeyboardEvent): boolean {
 /** A plain folder in ~/.agents/skills; the backend refuses writes to anything else. */
 function isEditable(skill: SkillRecord): boolean {
   return skill.valid && skill.source === "agents" && !skill.linked;
-}
-
-function monogram(name: string): string {
-  const parts = name.split("-").filter(Boolean);
-  return (parts.length > 1 ? parts[0][0] + parts[1][0] : name.slice(0, 2)).toUpperCase();
 }
 
 export function ChatSkillsDialog({
@@ -346,73 +341,31 @@ export function ChatSkillsDialog({
     }
   }
 
-  const closeButton = (
-    <Button
-      type="button"
-      variant="ghost"
-      size="icon-sm"
-      disabled={busy}
-      onClick={() => handleOpenChange(false)}
-      aria-label={t("common.close")}
-    >
-      <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
-    </Button>
+  const sourceBadge = (source: SkillRecord["source"]) => (
+    <Badge variant={source === "agents" ? "secondary" : "outline"}>{sourceLabel(source)}</Badge>
   );
-  const divider = <div className="mx-1 h-5 w-px shrink-0 bg-border/60 max-sm:hidden" />;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent
-        showCloseButton={false}
-        className="flex h-[min(820px,calc(100dvh-3rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1120px,92vw)]"
-      >
+      <DialogContent className="rounded-xl shadow-border ring-0 [--radius:1.1rem] max-sm:flex max-sm:flex-col max-sm:overflow-hidden sm:max-w-2xl">
         {view.kind === "library" ? (
           <>
-            <header className="flex shrink-0 items-start gap-3 border-b border-border/50 px-6 pt-5 pb-4">
-              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                <HugeiconsIcon icon={Scroll01Icon} strokeWidth={1.75} className="size-5" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <DialogTitle className="text-base font-semibold tracking-tight">
-                  {t("skills.title")}
-                </DialogTitle>
-                <DialogDescription className="mt-0.5 text-xs text-muted-foreground">
-                  {t("skills.description")}
-                </DialogDescription>
+            <DialogHeader>
+              <div className="flex items-center gap-2">
+                <HugeiconsIcon icon={Scroll01Icon} strokeWidth={1.75} className="size-5 text-primary" />
+                <DialogTitle>{t("skills.title")}</DialogTitle>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  disabled={loading}
-                  onClick={refresh}
-                  aria-label={t("skills.refresh")}
-                  title={t("skills.refresh")}
-                >
-                  {loading ? (
-                    <Spinner />
-                  ) : (
-                    <HugeiconsIcon icon={RefreshIcon} strokeWidth={2} className="size-4" />
-                  )}
-                </Button>
-                <Button type="button" size="sm" onClick={openNew}>
-                  <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} />
-                  {t("skills.newSkill")}
-                </Button>
-                {divider}
-                {closeButton}
-              </div>
-            </header>
+              <DialogDescription>{t("skills.description")}</DialogDescription>
+            </DialogHeader>
 
-            <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border/50 px-6 py-3">
-              <div className="relative min-w-0 flex-1 sm:max-w-xs">
+            <div className="flex items-center gap-2">
+              <div className="relative min-w-0 flex-1">
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
                   className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground/60"
                 />
-                <input
+                <Input
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
                   onKeyDown={(event) => {
@@ -423,230 +376,109 @@ export function ChatSkillsDialog({
                   }}
                   placeholder={t("skills.search")}
                   aria-label={t("skills.search")}
-                  className="h-8 w-full rounded-full border-0 bg-muted/50 pl-9 pr-8 text-sm outline-none transition-shadow placeholder:text-muted-foreground/60 focus:ring-1 focus:ring-ring"
+                  className="h-8 pl-8 text-sm"
                 />
-                {searchQuery ? (
-                  <button
-                    type="button"
-                    onClick={() => setSearchQuery("")}
-                    aria-label={t("skills.clearSearch")}
-                    className="absolute top-1/2 right-2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
-                  >
-                    <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
-                  </button>
-                ) : null}
               </div>
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="outline"
+                disabled={loading}
+                onClick={refresh}
+                aria-label={t("skills.refresh")}
+                title={t("skills.refresh")}
+              >
+                {loading ? <Spinner /> : <HugeiconsIcon icon={RefreshIcon} strokeWidth={2} />}
+              </Button>
+              <Button type="button" size="sm" onClick={openNew}>
+                <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} />
+                {t("skills.newSkill")}
+              </Button>
             </div>
 
-            <div className="hover-scrollbar min-h-0 flex-1 overflow-y-auto p-6">
+            <div className="hover-scrollbar min-h-0 max-h-[min(58dvh,520px)] space-y-5 overflow-y-auto pr-1 max-sm:flex-1 max-sm:max-h-none">
               {error ? (
-                <p className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
                   {error}
-                </p>
+                </div>
               ) : null}
-              {sections.length > 0 ? (
-                <div className="flex flex-col gap-8">
-                  {sections.map((section) => (
-                    <section key={section.source} className="flex flex-col gap-3">
-                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                        <h3 className="text-sm font-semibold tracking-tight">
+              {sections.some((section) => section.skills.length > 0) ? (
+                sections
+                  .filter((section) => section.skills.length > 0)
+                  .map((section) => (
+                    <section key={section.source} className="space-y-2">
+                      <div className="flex items-baseline justify-between gap-3 px-1">
+                        <h3 className="text-xs font-medium text-muted-foreground">
                           {t(`skills.section${sectionSuffix(section.source)}`)}
                         </h3>
-                        <span className="text-xs tabular-nums text-muted-foreground/60">
-                          {section.skills.length}
-                        </span>
-                        <p className="basis-full text-xs text-muted-foreground sm:ml-auto sm:basis-auto">
+                        <p className="truncate text-ui-11 text-muted-foreground/70">
                           {t(`skills.section${sectionSuffix(section.source)}Hint`)}
                         </p>
                       </div>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                        {section.source === "agents" && !narrowed ? (
-                          <button
-                            type="button"
-                            onClick={openNew}
-                            className="flex min-h-[calc(160px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/70 p-4 text-center transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                          >
-                            <span className="flex size-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                              <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} className="size-5" />
-                            </span>
-                            <span className="text-sm font-semibold tracking-tight">
-                              {t("skills.newSkill")}
-                            </span>
-                            <span className="text-xs text-muted-foreground">
-                              {t("skills.newSkillHint")}
-                            </span>
-                          </button>
-                        ) : null}
-                        {section.skills.map((skill) => (
-                          <SkillCard
-                            key={keyOf(skill)}
-                            skill={skill}
-                            changing={changing === skill.name}
-                            onOpen={() => openSkill(skill)}
-                            onToggle={(enabled) => void toggle(skill.name, enabled)}
-                          />
-                        ))}
-                      </div>
+                      {section.skills.map((skill) => (
+                        <SkillRow
+                          key={keyOf(skill)}
+                          skill={skill}
+                          changing={changing === skill.name}
+                          onOpen={() => openSkill(skill)}
+                          onToggle={(enabled) => void toggle(skill.name, enabled)}
+                        />
+                      ))}
                     </section>
-                  ))}
-                </div>
+                  ))
               ) : loading ? (
-                <div className="flex h-full items-center justify-center">
+                <div className="flex justify-center p-6">
                   <Spinner />
                 </div>
+              ) : narrowed ? (
+                <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+                  {t("skills.noMatch", { query: searchQuery.trim() })}{" "}
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery("")}
+                    className="text-primary hover:underline"
+                  >
+                    {t("skills.clearSearch")}
+                  </button>
+                </div>
               ) : (
-                <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-                  <span className="flex size-12 items-center justify-center rounded-2xl bg-muted/60">
-                    <HugeiconsIcon
-                      icon={Scroll01Icon}
-                      strokeWidth={1.75}
-                      className="size-5 text-muted-foreground/50"
-                    />
-                  </span>
-                  {narrowed ? (
-                    <>
-                      <p className="text-sm font-medium">
-                        {t("skills.noMatch", { query: searchQuery.trim() })}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setSearchQuery("")}
-                        className="text-xs text-primary hover:underline"
-                      >
-                        {t("skills.clearSearch")}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <p className="text-sm font-medium">{t("skills.emptyTitle")}</p>
-                      <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
-                        {t("skills.empty")}
-                      </p>
-                      <Button type="button" size="sm" onClick={openNew}>
-                        <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} />
-                        {t("skills.newSkill")}
-                      </Button>
-                    </>
-                  )}
+                <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+                  {t("skills.empty")}
                 </div>
               )}
             </div>
           </>
         ) : (
           <>
-            <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border/50 px-4 pt-4 pb-3 sm:px-6">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={busy}
-                onClick={goLibrary}
-                className="-ml-2 text-muted-foreground"
-              >
-                <HugeiconsIcon icon={ArrowLeft01Icon} strokeWidth={2} />
-                {t("skills.title")}
-              </Button>
-              {divider}
-              <Monogram
-                name={view.kind === "new" ? trimmedName : (selected?.name ?? "")}
-                on={view.kind === "new" ? true : (selected?.enabled ?? false)}
-              />
-              <div className="min-w-32 flex-1">
-                <DialogTitle className="truncate text-base font-semibold tracking-tight">
+            <DialogHeader className="pr-8">
+              <div className="flex min-w-0 items-center gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={busy}
+                  onClick={goLibrary}
+                  aria-label={t("skills.title")}
+                  className="-ml-2 shrink-0"
+                >
+                  <HugeiconsIcon icon={ArrowLeft01Icon} strokeWidth={2} />
+                </Button>
+                <DialogTitle className="truncate">
                   {view.kind === "new" ? t("skills.newSkill") : (selected?.name ?? "")}
                 </DialogTitle>
-                <DialogDescription className="mt-0.5 truncate text-xs text-muted-foreground">
-                  {view.kind === "new"
-                    ? t("skills.createDescription")
-                    : (manifest?.path ?? selected?.path ?? sourceLabel(selected?.source ?? "agents"))}
-                </DialogDescription>
+                {selected ? sourceBadge(selected.source) : null}
+                {dirty && view.kind === "skill" ? (
+                  <span className="shrink-0 text-xs text-muted-foreground">{t("skills.unsaved")}</span>
+                ) : null}
               </div>
-              {selected ? (
-                <div className="flex shrink-0 items-center gap-2">
-                  <span
-                    className={cn(
-                      "inline-flex h-5 items-center rounded-full px-2 text-ui-11 font-medium",
-                      selected.source === "agents"
-                        ? "bg-primary/10 text-primary"
-                        : "bg-muted text-muted-foreground",
-                    )}
-                  >
-                    {sourceLabel(selected.source)}
-                  </span>
-                  {dirty ? (
-                    <span className="rounded-full bg-primary/10 px-2 py-0.5 text-ui-11 font-medium text-primary">
-                      {t("skills.unsaved")}
-                    </span>
-                  ) : null}
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                    {t("skills.enabledLabel")}
-                    <Switch
-                      checked={selected.valid && !selected.shadowed && selected.enabled}
-                      disabled={!selected.valid || selected.shadowed || changing === selected.name}
-                      aria-label={t(selected.enabled ? "skills.disable" : "skills.enable", {
-                        name: selected.name,
-                      })}
-                      onCheckedChange={(checked) => void toggle(selected.name, checked)}
-                    />
-                  </label>
-                </div>
-              ) : null}
-              {view.kind === "new" ? (
-                <div className="flex shrink-0 items-center gap-2">
-                  <Button type="button" size="sm" variant="ghost" disabled={creating} onClick={goLibrary}>
-                    {t("common.cancel")}
-                  </Button>
-                  <Button
-                    type="submit"
-                    form="skill-new-form"
-                    size="sm"
-                    disabled={creating || !canCreate}
-                  >
-                    {creating ? <Spinner /> : <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} />}
-                    {t("skills.create")}
-                  </Button>
-                </div>
-              ) : editable ? (
-                <>
-                  {divider}
-                  <div className="flex shrink-0 items-center gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      disabled={pending !== null}
-                      onClick={() => setConfirmingDelete(selected)}
-                      aria-label={t("skills.delete", { name: selected.name })}
-                      className="text-destructive hover:text-destructive"
-                    >
-                      {t("common.delete")}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      disabled={!dirty || pending !== null}
-                      onClick={() => setDraft(null)}
-                    >
-                      {t("skills.revert")}
-                    </Button>
-                    <Button
-                      type="submit"
-                      form="skill-edit-form"
-                      size="sm"
-                      disabled={pending !== null || !canSave}
-                    >
-                      {pending !== null ? <Spinner /> : <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} />}
-                      {t("skills.save")}
-                    </Button>
-                  </div>
-                </>
-              ) : null}
-              {divider}
-              {closeButton}
-            </header>
+              <DialogDescription className="truncate">
+                {view.kind === "new"
+                  ? t("skills.createDescription")
+                  : (manifest?.path ?? selected?.path ?? sourceLabel(selected?.source ?? "agents"))}
+              </DialogDescription>
+            </DialogHeader>
 
-            <div className="hover-scrollbar flex min-h-0 flex-1 flex-col overflow-y-auto">
+            <div className="hover-scrollbar min-h-0 max-h-[min(62dvh,640px)] overflow-y-auto pr-1 max-sm:flex-1 max-sm:max-h-none">
               {view.kind === "new" ? (
                 <Editor
                   formId="skill-new-form"
@@ -671,7 +503,7 @@ export function ChatSkillsDialog({
                         onChange={(event) =>
                           setNewDraft((prev) => ({ ...prev, name: event.target.value }))
                         }
-                        className="font-mono text-sm sm:max-w-sm"
+                        className="font-mono text-sm"
                       />
                     </Field>
                   }
@@ -687,7 +519,7 @@ export function ChatSkillsDialog({
                 />
               ) : selected ? (
                 readable && !manifest ? (
-                  <div className="flex h-full items-center justify-center">
+                  <div className="flex justify-center p-10">
                     <Spinner />
                   </div>
                 ) : (
@@ -729,6 +561,59 @@ export function ChatSkillsDialog({
               ) : null}
             </div>
 
+            <div className="flex flex-wrap items-center gap-2">
+              {selected ? (
+                <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Switch
+                    checked={selected.valid && !selected.shadowed && selected.enabled}
+                    disabled={!selected.valid || selected.shadowed || changing === selected.name}
+                    aria-label={t(selected.enabled ? "skills.disable" : "skills.enable", {
+                      name: selected.name,
+                    })}
+                    onCheckedChange={(checked) => void toggle(selected.name, checked)}
+                  />
+                  {t("skills.enabledLabel")}
+                </label>
+              ) : null}
+              <div className="ml-auto flex items-center gap-2">
+                {view.kind === "new" ? (
+                  <>
+                    <Button type="button" variant="ghost" disabled={creating} onClick={goLibrary}>
+                      {t("common.cancel")}
+                    </Button>
+                    <Button type="submit" form="skill-new-form" disabled={creating || !canCreate}>
+                      {creating ? <Spinner /> : null}
+                      {t("skills.create")}
+                    </Button>
+                  </>
+                ) : editable && selected ? (
+                  <>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={pending !== null}
+                      onClick={() => setConfirmingDelete(selected)}
+                      aria-label={t("skills.delete", { name: selected.name })}
+                      className="text-destructive hover:text-destructive"
+                    >
+                      {t("common.delete")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={!dirty || pending !== null}
+                      onClick={() => setDraft(null)}
+                    >
+                      {t("skills.revert")}
+                    </Button>
+                    <Button type="submit" form="skill-edit-form" disabled={pending !== null || !canSave}>
+                      {pending !== null ? <Spinner /> : null}
+                      {t("skills.save")}
+                    </Button>
+                  </>
+                ) : null}
+              </div>
+            </div>
           </>
         )}
       </DialogContent>
@@ -818,25 +703,7 @@ function detailsOf(
   ];
 }
 
-function Monogram({ name, on }: { name: string; on: boolean }): ReactElement {
-  return (
-    <span
-      aria-hidden="true"
-      className={cn(
-        "flex size-10 shrink-0 items-center justify-center rounded-xl text-sm font-semibold tracking-wide transition-colors",
-        on ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground",
-      )}
-    >
-      {name ? (
-        monogram(name)
-      ) : (
-        <HugeiconsIcon icon={Scroll01Icon} strokeWidth={1.75} className="size-4" />
-      )}
-    </span>
-  );
-}
-
-function SkillCard({
+function SkillRow({
   skill,
   changing,
   onOpen,
@@ -849,7 +716,6 @@ function SkillCard({
 }): ReactElement {
   const t = useT();
   const usable = skill.valid && !skill.shadowed;
-  const on = usable && skill.enabled;
   return (
     <div
       role="button"
@@ -863,63 +729,43 @@ function SkillCard({
         }
       }}
       className={cn(
-        "group flex cursor-pointer flex-col gap-3 rounded-2xl border bg-card p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        skill.valid ? "border-border/60 hover:border-border hover:bg-muted/30" : "border-destructive/30",
+        "group flex cursor-pointer items-center gap-3 rounded-xl border border-border/60 bg-muted/20 px-4 py-3 transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
         skill.shadowed && "opacity-60",
       )}
     >
-      <div className="flex items-start gap-3">
-        <Monogram name={skill.name} on={on} />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold tracking-tight">{skill.name}</p>
-          {skill.shadowed || skill.linked || !skill.valid ? (
-          <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            {skill.shadowed ? (
-              <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-ui-11 font-medium text-muted-foreground">
-                {t("skills.shadowed")}
-              </span>
-            ) : null}
-            {skill.linked ? (
-              <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-ui-11 font-medium text-muted-foreground">
-                {t("skills.linked")}
-              </span>
-            ) : null}
-            {skill.valid ? null : (
-              <span className="inline-flex h-5 items-center rounded-full bg-destructive/10 px-2 text-ui-11 font-medium text-destructive">
-                {t("skills.invalid")}
-              </span>
-            )}
-          </div>
-          ) : null}
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="truncate font-medium">{skill.name}</span>
+          {skill.shadowed ? <Badge variant="secondary">{t("skills.shadowed")}</Badge> : null}
+          {skill.linked ? <Badge variant="outline">{t("skills.linked")}</Badge> : null}
+          {skill.valid ? null : <Badge variant="destructive">{t("skills.invalid")}</Badge>}
         </div>
-        <span
-          className="shrink-0"
-          onClick={(event) => event.stopPropagation()}
-          onKeyDown={(event) => event.stopPropagation()}
+        <p
+          className={cn(
+            "mt-0.5 line-clamp-2 text-sm",
+            skill.valid ? "text-muted-foreground" : "text-destructive",
+          )}
         >
-          <Switch
-            checked={on}
-            disabled={!usable || changing}
-            aria-label={t(skill.enabled ? "skills.disable" : "skills.enable", { name: skill.name })}
-            onCheckedChange={onToggle}
-          />
-        </span>
+          {skill.valid ? skill.description : skill.error}
+        </p>
       </div>
-      <p
-        className={cn(
-          "line-clamp-3 text-xs leading-relaxed",
-          skill.valid ? "text-muted-foreground" : "text-destructive",
-        )}
+      <span
+        className="shrink-0"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
       >
-        {skill.valid ? skill.description : skill.error}
-      </p>
-      <div className="mt-auto flex items-center gap-2 text-ui-11 text-muted-foreground/70">
-        <span className="truncate font-mono">@{skill.name}</span>
-        <span className="ml-auto inline-flex shrink-0 items-center gap-0.5 text-muted-foreground/60 transition-colors group-hover:text-foreground group-focus-visible:text-foreground">
-          {isEditable(skill) ? t("skills.edit") : t("skills.view")}
-          <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-3" />
-        </span>
-      </div>
+        <Switch
+          checked={usable && skill.enabled}
+          disabled={!usable || changing}
+          aria-label={t(skill.enabled ? "skills.disable" : "skills.enable", { name: skill.name })}
+          onCheckedChange={onToggle}
+        />
+      </span>
+      <HugeiconsIcon
+        icon={ArrowRight01Icon}
+        strokeWidth={2}
+        className="size-4 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-foreground"
+      />
     </div>
   );
 }
@@ -988,7 +834,7 @@ function Editor({
   return (
     <form
       id={formId}
-      className="flex min-w-0 flex-1 flex-col gap-4 p-4 sm:p-6 lg:min-h-0"
+      className="flex flex-col gap-4 py-1"
       onSubmit={(event) => {
         event.preventDefault();
         if (!readOnly) onSubmit();
@@ -1053,7 +899,6 @@ function Editor({
         htmlFor={`${formId}-instructions`}
         label={t("skills.instructionsLabel")}
         hint={t("skills.instructionsHint")}
-        className="lg:min-h-0 lg:flex-1"
         trailing={
           <span className="text-ui-11 tabular-nums text-muted-foreground/60">
             {t("skills.characters", { count: instructions.length.toLocaleString() })}
@@ -1071,7 +916,7 @@ function Editor({
           placeholder={t("skills.instructionsPlaceholder")}
           onChange={(event) => onInstructions(event.target.value)}
           className={cn(
-            "h-[min(26rem,50vh)] min-h-40 resize-y font-mono text-ui-13 leading-relaxed lg:h-auto lg:min-h-32 lg:flex-1 lg:resize-none",
+            "h-[min(15rem,32dvh)] min-h-28 resize-y font-mono text-ui-13 leading-relaxed",
             readOnly && "text-muted-foreground",
           )}
         />

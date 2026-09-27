@@ -76,13 +76,12 @@ test("save and delete are offered only on skills the dialog can write", () => {
   );
   assert.match(DIALOG, /const editable = selected !== null && isEditable\(selected\);/);
   assert.match(DIALOG, /readOnly=\{!editable\}/);
-  assert.match(DIALOG, /\) : editable \? \([^]*?onClick=\{\(\) => setConfirmingDelete\(selected\)\}/);
+  assert.match(DIALOG, /\) : editable && selected \? \([^]*?onClick=\{\(\) => setConfirmingDelete\(selected\)\}/);
   assert.match(
     DIALOG,
     /<AlertDialogAction\n\s*variant="destructive"\n\s*onClick=\{\(\) => \{\n\s*const skill = confirmingDelete;/,
   );
   assert.match(DIALOG, /if \(skill\) void remove\(skill\);/);
-  assert.match(DIALOG, /\{isEditable\(skill\) \? t\("skills\.edit"\) : t\("skills\.view"\)\}/);
 });
 
 test("the new-skill form holds back an invalid or incomplete draft", () => {
