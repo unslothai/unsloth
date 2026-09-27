@@ -3169,7 +3169,6 @@ class FastBaseModel:
         lora_config = LoraConfig(
             **{k: v for k, v in local_variables.items() if k in allowed_parameters},
         )
-        # Block-diagonal grouped linears (DeepSeek-V4's o_a_proj) need a LoRA forward that is grouped too.
         _grouped_classes = register_grouped_linear_lora(lora_config, model)
         if _grouped_classes:
             print(

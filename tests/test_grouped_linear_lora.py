@@ -8,8 +8,6 @@ peft = pytest.importorskip("peft")
 
 
 class GroupedLinear(torch.nn.Linear):
-    """The shape contract of `DeepseekV4GroupedLinear` and `FP8GroupedLinear`."""
-
     def __init__(self, in_per_group, out_features, n_groups):
         super().__init__(in_per_group, out_features, bias = False)
         self.n_groups = n_groups
@@ -58,7 +56,6 @@ def test_is_grouped_linear_wants_n_groups_and_an_overridden_forward():
 
 
 def test_dense_lora_fails_on_the_grouped_linear():
-    """The arm that fails on main."""
     model = _peft_model(register = False)
     with pytest.raises(RuntimeError, match = "must match the size"):
         model(torch.randn(2, 5, 4, 16))
@@ -74,7 +71,6 @@ def test_grouped_lora_trains_and_matches_the_merged_weight():
     assert type(layer).__name__ == "GroupedLinearLoRA"
     assert layer.lora_A["default"].weight.grad is not None
     assert layer.lora_B["default"].weight.grad is not None
-    # Merging lora_B @ lora_A into the block-diagonal weight gives the same forward.
     with torch.no_grad():
         merged = model.merge_and_unload()
         merged_out = merged(x)
@@ -82,8 +78,7 @@ def test_grouped_lora_trains_and_matches_the_merged_weight():
 
 
 def test_merge_into_an_fp8_grouped_weight_is_refused():
-    """FP8GroupedLinear keeps an fp8 weight plus weight_scale_inv; B @ A cannot be added in place.
-    PEFT merges layer by layer, so the dense layer ahead of it must not be merged either."""
+    """PEFT merges layer by layer, so the dense layer ahead of the fp8 one must not be merged either."""
     if not hasattr(torch, "float8_e4m3fn"):
         pytest.skip("torch without float8")
     from peft import LoraConfig, get_peft_model
@@ -92,7 +87,7 @@ def test_merge_into_an_fp8_grouped_weight_is_refused():
     class DenseFirst(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.q_proj = torch.nn.Linear(16, 16, bias = False)  # merged first by PEFT
+            self.q_proj = torch.nn.Linear(16, 16, bias = False)
             self.o_a_proj = GroupedLinear(16, 4 * 8, 4)
 
         def forward(self, x):
@@ -140,7 +135,6 @@ def test_state_dict_is_a_plain_lora_checkpoint():
 
 
 def test_dora_is_refused_on_a_grouped_linear():
-    """The grouped forward computes the plain LoRA sum only, so DoRA is refused."""
     from peft import LoraConfig
     from unsloth.models.grouped_linear_lora import register_grouped_linear_lora
 
@@ -168,7 +162,6 @@ def test_a_variant_reaching_the_forward_is_refused():
 
 
 def test_dora_is_allowed_when_no_grouped_linear_is_targeted():
-    """DoRA on the dense o_b_proj alone is valid: the grouped forward is never built."""
     from peft import LoraConfig
     from unsloth.models.grouped_linear_lora import register_grouped_linear_lora
 
@@ -183,7 +176,6 @@ def test_dora_is_allowed_when_no_grouped_linear_is_targeted():
 
 
 def test_a_saved_adapter_reloads_onto_the_grouped_forward(tmp_path):
-    """The custom mapping is not in adapter_config.json, so a reload must register it again."""
     from peft import PeftModel
     from unsloth.models.grouped_linear_lora import register_grouped_linear_lora_for_adapter
 
@@ -207,12 +199,10 @@ def test_a_saved_adapter_reloads_onto_the_grouped_forward(tmp_path):
     with torch.no_grad():
         got = reloaded(x)
     torch.testing.assert_close(got, want)
-    # A model with no grouped linear reloads exactly as before.
     assert register_grouped_linear_lora_for_adapter(torch.nn.Linear(4, 4), str(tmp_path)) is None
 
 
 def test_fan_in_fan_out_is_reset_like_peft_does_for_nn_linear():
-    """PEFT resets fan_in_fan_out for nn.Linear; the custom mapping skips that dispatcher."""
     from peft import LoraConfig, get_peft_model
     from unsloth.models.grouped_linear_lora import register_grouped_linear_lora
 

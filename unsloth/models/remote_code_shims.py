@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Repairs for remote modeling code (vLLM ports such as Step-3.7-Flash) that breaks training:
-
-* `get_input_embeddings(self, input_ids)` returns embedded tokens, not the embedding module.
-* `forward(..., labels=...)` accepts labels but returns no loss, or fails in its loss code.
-
-Only the checkpoint's own classes are patched, and the original behaviour stays reachable.
-"""
+"""Repairs for remote modeling code (vLLM ports such as Step-3.7-Flash) that breaks training."""
 
 import functools
 import inspect
@@ -24,7 +18,6 @@ _EMBEDDING_ATTRIBUTES = ("embed_tokens", "wte", "word_embeddings", "tok_embeddin
 
 
 def accessor_requires_arguments(function):
-    """True when `function(self)` cannot be called: a required parameter follows self."""
     try:
         parameters = list(inspect.signature(function).parameters.values())
     except (TypeError, ValueError):
@@ -112,7 +105,6 @@ def find_output_head(module):
 
 
 def _repair_output_accessor(cls):
-    """`get_output_embeddings` that returns None while the class owns an `lm_head` (Step-3.7 delegates to a headless inner model)."""
     original = cls.__dict__.get("get_output_embeddings")
     if original is None or "_unsloth_original_get_output_embeddings" in cls.__dict__:
         return False
@@ -142,11 +134,6 @@ def _output_accessor_is_broken(model):
 
 
 def _fill_missing_loss(cls):
-    """Wrap `cls.forward` so a call with labels always yields a loss.
-
-    The first labelled call probes the original; if it gives no loss, labels are withheld
-    from then on and the causal LM loss is computed from its logits.
-    """
     original = cls.__dict__.get("forward")
     # Own dict only: a subclass of an already repaired class has its own unwrapped forward.
     if original is None or "_unsloth_original_forward" in cls.__dict__:
@@ -201,7 +188,6 @@ def _fill_missing_loss(cls):
     self_placeholder = object()
 
     def _bind(args, kwargs):
-        """Move a positional `labels` into kwargs; anything unbindable is left as it came."""
         if not args or signature is None:
             return args, kwargs
         try:
@@ -250,7 +236,7 @@ def _fill_missing_loss(cls):
                 f"Unsloth: `{cls.__name__}.forward` returned neither a loss nor logits, so no loss can be trained on."
             )
         if returns_loss is None:
-            # Cached only once a no-label forward worked: a first call failing for another reason must not pin it.
+            # Cache only after a no-label forward worked, so an unrelated first failure cannot pin it.
             self.__dict__[state_key] = False
             print(
                 f"Unsloth: `{cls.__name__}.forward` accepts `labels` but returns no loss, "
@@ -275,10 +261,7 @@ def _fill_missing_loss(cls):
 
 
 def _rebind_accelerate_hook(model):
-    """Point an accelerate hook attached during loading at the repaired forward.
-
-    `device_map` loading keeps the bound original as `model._old_forward`, bypassing class repairs.
-    """
+    # device_map loading keeps the bound original as `_old_forward`, bypassing class repairs.
     if getattr(type(model), "_unsloth_original_forward", None) is None:
         return
     if "_old_forward" not in vars(model):
