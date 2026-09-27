@@ -294,12 +294,15 @@ export function LinkedModelsPanel({
     const gguf = isGgufRepo(repoId);
     // On Device rows take the local list's layout: size on the right, no Hub chips.
     const onDevice = extra?.onDevice === true;
+    // The format word in the meta is what draws the row's format dot.
+    const format = gguf ? "GGUF" : "Safetensors";
+    const rowMeta = meta ? `${format} · ${meta}` : format;
     const open = expanded === repoId;
     return (
       <div key={repoId}>
         <ModelRow
           label={repoId}
-          meta={meta}
+          meta={rowMeta}
           selected={!open && isSelected(repoId)}
           downloaded={onDevice ? undefined : downloaded}
           alignMeta={onDevice ? "device" : "hub"}
@@ -437,7 +440,7 @@ export function LinkedModelsPanel({
       ) : (
         <>
           {gguf.map((r) =>
-            chatRepo(r.repo_id, `GGUF · ${formatBytes(r.size_bytes)}`, true, {
+            chatRepo(r.repo_id, formatBytes(r.size_bytes), true, {
               onDevice: true,
             }),
           )}
