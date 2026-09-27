@@ -10119,9 +10119,29 @@ exit 0
     function New-UnslothTorchOverridesFile {
         param([string]$PythonExe)
         if ($SkipTorch) { return $null }
-        $pins = & $PythonExe -c "from importlib.metadata import version, PackageNotFoundError`nfor _p in ('torch', 'torchvision', 'torchaudio'):`n    try:`n        print(_p + '==' + version(_p))`n    except PackageNotFoundError:`n        pass" 2>$null
+        # -I (isolated): the pins must describe the environment uv resolves INTO. Without it
+        # PYTHONPATH and the user site dir precede the venv's own site-packages on sys.path, so
+        # the probe can report a torch that is not the venv's and freeze a pin uv cannot satisfy
+        # there (#11980). Twin of install.sh's isolated trio probe.
+        $pins = & $PythonExe -I -c "from importlib.metadata import version, PackageNotFoundError`nfor _p in ('torch', 'torchvision', 'torchaudio'):`n    try:`n        print(_p + '==' + version(_p))`n    except PackageNotFoundError:`n        pass" 2>$null
         $lines = @($pins | Where-Object { $_ -match '^torch' })
         if ($lines.Count -eq 0 -or $lines[0] -notmatch '^torch==') { return $null }
+        # The pins above describe the venv because of -I, but `import torch` is not isolated, so a
+        # PYTHONPATH or user-site copy would be what actually gets imported while xformers and the
+        # rest were resolved against the venv's. Say so once -- it is the only part the user can
+        # act on, and after the -I fix the install itself no longer fails (#11980).
+        if (-not $script:TorchShadowWarned) {
+            $ambient = & $PythonExe -c "from importlib.metadata import version, PackageNotFoundError`ntry:`n    print(version('torch'))`nexcept PackageNotFoundError:`n    pass" 2>$null | Select-Object -Last 1
+            $venvTorch = $lines[0] -replace '^torch==', ''
+            if ($ambient -and $ambient -ne $venvTorch) {
+                $script:TorchShadowWarned = $true
+                # Into the log too, for the diagnostics report: the diag marker runs long before
+                # Step 2 and cannot know this. Twin of install.sh's DIAG line.
+                Write-TauriLog "DIAG" "torch_shadow=1 ambient=$ambient venv=$venvTorch"
+                substep "[WARN] PYTHONPATH or the user site directory exposes torch $ambient, which shadows this environment's torch $venvTorch when Python imports it" "Yellow"
+                substep "[WARN] unsloth and its kernels are being installed for $venvTorch -- clear PYTHONPATH before launching Unsloth, or the wrong torch is imported" "Yellow"
+            }
+        }
         # --overrides replaces any UV_OVERRIDE env file, so fold caller files in, minus their trio.
         # REBASED as they are folded: uv resolves relative references against the containing file.
         if ($env:UV_OVERRIDE) {
@@ -11384,6 +11404,8 @@ $script:MirrorEnvSaved = @{}
 $script:InstallTorchMirror = $null
 $script:WoaSessionOverrides = $null
 $script:TorchOverridesFile = $null
+# Once-per-run guard for the shadowed-torch warning (#11980); twin of install.sh's.
+$script:TorchShadowWarned = $false
 try {
     Install-UnslothStudio @args
 } finally {
