@@ -361,3 +361,41 @@ def test_an_explicit_auto_mode_ignores_the_legacy_offload_flag():
     assert _plan(16, QWEN21_GGUF, QWEN21_ACT, "auto", True) != _plan(
         16, QWEN21_GGUF, None, "auto", True
     )
+
+
+def _resident_after_placement(plan, sizes):
+    if plan.offload_policy == OFFLOAD_NONE:
+        return sizes["model_dense_mib"]
+    if plan.offload_policy == OFFLOAD_GROUP and not plan.stream_transformer:
+        return sizes["model_dense_mib"] - sizes["text_encoder_dense_mib"]
+    return 0
+
+
+@pytest.mark.parametrize("max_speed", [False, True])
+@pytest.mark.parametrize("tile_side", [256, dm.DEFAULT_VAE_TILE_SIDE])
+@pytest.mark.parametrize("sizes", [QWEN21_GGUF, QWEN21_GGUF_BF16_TE])
+def test_generation_guard_never_refuses_the_calibrated_2048_canvas_on_a_promoted_tier(
+    max_speed, tile_side, sizes
+):
+    # The promoted tier places the transformer resident, which lowers the free VRAM the guard reads; the 2048 canvas
+    # it was sized for must still run (tiled), never come back as a 400.
+    act = calibrated_image_activation("qwen-image-2.1", max_speed = max_speed)
+    promoted = 0
+    for step in range(10 * 4, 48 * 4 + 1):
+        gib = step / 4
+        plan = _plan(gib, sizes, act)
+        if "calibrated_headroom_mib" not in plan.estimates:
+            continue
+        promoted += 1
+        total = int(gib * GIB)
+        free = max(0, total - 1_229 - _resident_after_placement(plan, sizes))
+        verdict = dm.raise_on_image_activation_shortfall(
+            device_memory = DeviceMemory("cuda", "cuda", "discrete_vram", free, total),
+            width = 2048,
+            height = 2048,
+            family = "qwen-image-2.1",
+            vae_tile_side = tile_side,
+            vae_sliced = True,
+        )
+        assert verdict.action in (dm.ACTIVATION_RUN, dm.ACTIVATION_TILE), (gib, plan.reasons)
+    assert promoted > 0
