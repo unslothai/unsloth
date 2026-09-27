@@ -13848,7 +13848,6 @@ _META_REFRESH_CONTENT_RE = re.compile(
 )
 # Browsers leave an unterminated named reference in an attribute alone, so "&section=" stays literal instead of "§ion=".
 _ATTR_CHAR_REF_RE = re.compile(r"&(?:#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[A-Za-z][A-Za-z0-9]*;)")
-# Their contents are raw text or inert, so a <meta> or <base> inside one never takes effect in a browser.
 _META_REFRESH_INERT_TAGS = frozenset(
     (b"noscript", b"script", b"style", b"template", b"textarea", b"title", b"xmp")
 )
