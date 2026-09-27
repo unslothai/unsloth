@@ -2032,8 +2032,7 @@ class FastBaseModel:
             sync_unsloth_model_name_bnb_flags,
         )
 
-        # The loader forwards load_in_4bit = False when an explicit quantization_config owns the
-        # precision, so a bitsandbytes 4-bit config is the 4-bit request here.
+        # The loader passes load_in_4bit=False with an explicit config, so a bnb 4-bit config is the request.
         _explicit_bnb_4bit = user_quantization_config is not None and (
             quantization_config_selects_bnb_4bit(user_quantization_config)
         )
@@ -2041,9 +2040,7 @@ class FastBaseModel:
             auto_config,
             load_in_4bit = load_in_4bit or _explicit_bnb_4bit,
             load_in_8bit = load_in_8bit,
-            # Re-quantizing a packed compressed-tensors checkpoint needs the transformers 4-bit load: not under
-            # vLLM, which reads the packed weights itself, and not under full finetuning, which turns 4-bit off below.
-            # An explicit quantization_config is kept for the load below, so it must select bitsandbytes 4-bit too.
+            # Re-quantize needs the transformers 4-bit load: not vLLM, not full finetuning; explicit config must be bnb 4-bit.
             requantize_packed = not fast_inference
             and not full_finetuning
             and quantization_config_selects_bnb_4bit(user_quantization_config),
@@ -2057,8 +2054,7 @@ class FastBaseModel:
                 "local_files_only": local_files_only,
             },
         )
-        # Only an explicit bitsandbytes 4-bit config keeps the caller's flags (the loader passed
-        # False for it); any other quantizer clears them as on the plain path.
+        # Only an explicit bnb 4-bit config keeps the caller's flags; other quantizers clear them.
         if not _explicit_bnb_4bit:
             load_in_4bit, load_in_8bit = _checked_4bit, _checked_8bit
         from .modelopt_fp8 import (
@@ -2088,7 +2084,7 @@ class FastBaseModel:
         _planner_skip_reason = None
         _planner_config = auto_config if text_only_decoder else None
         _planner_config_reason = "text_only loads a decoder the repo config does not describe"
-        # A compressed-tensors packed checkpoint re-quantized to bitsandbytes on the fly has had its own quantization config dropped from auto_config; the repo's config.json would size it as compressed-tensors and refuse the bitsandbytes flags.
+        # Re-quantized packed checkpoint: config.json would size it as compressed-tensors and refuse bnb flags.
         if _planner_config is None and compressed_tensors_prepared_config(auto_config) is not None:
             _planner_config = auto_config
             _planner_config_reason = (

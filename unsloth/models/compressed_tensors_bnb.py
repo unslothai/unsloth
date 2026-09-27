@@ -216,10 +216,7 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
     return plan
 
 
-# dtype_plan None = keep storage dtype (else int32 packed words are cast to bf16); keyed by the
-# renamed name (``<module>.weight`` or the merged stack), so both spellings are added.
-# the *renamed* parameter name (``<module>.weight`` for a plain Linear, the merged stack name
-# for native MoE experts), which is why both spellings are added.
+# dtype_plan None keeps int32 words uncast; keyed by renamed name (``<module>.weight`` or merged stack), so both spellings.
 
 
 def _checkpoint_keys(checkpoint_files) -> list:
@@ -1094,8 +1091,7 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                 else None
             )
             if plan is not None:
-                # Read, not popped: the device-map planner runs this on a meta model first, and
-                # popping here left the real load without converters (random experts, Kimi on 4 GPUs).
+                # Read, not popped: device-map planning runs first on meta; popping left random experts (Kimi, 4 GPUs).
                 self._unsloth_ct_config = _build_quantization_config(plan)
                 dtype = kwargs.get("dtype", None)
                 if not isinstance(dtype, torch.dtype):
@@ -1130,8 +1126,7 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     self._unsloth_int4_packed = swapped
                     self._unsloth_int4_leftover = leftover if swapped else []
                     if self._unsloth_int4_packed:
-                        # Load the checkpoint tensors as stored: a cast would change the int32 words and
-                        # round a fp32 scale.
+                        # Load as stored: a cast would change int32 words and round a fp32 scale.
                         self._unsloth_dtype_plan[
                             r"\.weight_(packed|scale|zero_point|g_idx|shape)$"
                         ] = None

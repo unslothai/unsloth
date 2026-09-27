@@ -1610,8 +1610,7 @@ def _checkpointed_layer_forward(original):
                 self, *inputs[:n_args], **kwargs, **dict(zip(grad_keys, inputs[n_args:]))
             )
 
-        # The function gradient_checkpointing_enable() installed, so Unsloth's offloaded
-        # checkpoint and the caller's use_reentrant choice apply here too.
+        # gradient_checkpointing_enable()'s function: keeps offloading and the caller's use_reentrant.
         checkpoint = getattr(holder, "_gradient_checkpointing_func", None)
         if checkpoint is None:
             return torch.utils.checkpoint.checkpoint(run, *args, *grad_values, use_reentrant = False)

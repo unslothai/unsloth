@@ -1072,8 +1072,7 @@ else:
     pass
 
 
-# compressed-tensors integer weights kept packed (models/compressed_tensors_int4.py) carry an
-# Int4QuantState; everything else goes to the bitsandbytes / fp8 paths above unchanged.
+# Packed compressed-tensors weights carry an Int4QuantState; everything else is unchanged.
 from .int4_packed import (
     Int4QuantState,
     int4_dequantize_weight as _int4_dequantize_weight,
