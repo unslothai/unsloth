@@ -453,3 +453,40 @@ def test_hv_causal_mask_allocates_nothing_quadratic_besides_the_output():
         n_frame, n_hw, torch.bfloat16, "cpu", batch_size = 2
     )
     assert torch.equal(mask, stock) and mask.stride() == stock.stride()
+
+
+@needs_cuda
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_blend_seam_on_cuda_is_bit_identical_and_host_free(dtype):
+    # a seam blend must not pull host tensors onto the device (a synchronous copy per seam)
+    from diffusers import AutoencoderKLWan
+    from torch.utils._python_dispatch import TorchDispatchMode
+    from torch.utils._pytree import tree_leaves
+
+    class _HostArgs(TorchDispatchMode):
+        def __init__(self):
+            super().__init__()
+            self.ops = []
+
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            if any(
+                isinstance(t, torch.Tensor) and t.device.type == "cpu"
+                for t in tree_leaves((args, kwargs))
+            ):
+                self.ops.append(str(func))
+            return func(*args, **(kwargs or {}))
+
+    g = torch.Generator("cuda").manual_seed(0)
+    a = torch.randn(1, 3, 2, 40, 44, generator = g, device = "cuda").to(dtype)
+    b = torch.randn(1, 3, 2, 40, 44, generator = g, device = "cuda").to(dtype)
+    rec = _HostArgs()
+    with rec:
+        out = F.blend_seam(a, b.clone(), 17, -1)
+    assert rec.ops == []
+    assert torch.equal(AutoencoderKLWan.blend_h(None, a, b.clone(), 17), out)
