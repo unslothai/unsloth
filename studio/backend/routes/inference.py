@@ -16080,17 +16080,23 @@ async def _managed_engine_request(request):
     )
 
 
+def _managed_engine_unsupported_controls(payload) -> bool:
+    """A spelled-out ``{"type": "text"}`` response_format is the default, not structured output."""
+    return bool(
+        payload.use_adapter is not None
+        or _response_format_constrains_decoding(payload)
+        or payload.continue_final_message
+        or payload.enable_thinking
+        or payload.preserve_thinking
+        or payload.reasoning_effort not in (None, "none")
+    )
+
+
 def _reject_unsupported_managed_kind(request, config) -> None:
     if not (config.is_gguf or config.is_lora or config.is_audio):
         return
     detected_kind = (
-        "GGUF"
-        if config.is_gguf
-        else "a LoRA adapter"
-        if config.is_lora
-        else "a vision model"
-        if config.is_vision
-        else "an audio model"
+        "GGUF" if config.is_gguf else "a LoRA adapter" if config.is_lora else "an audio model"
     )
     raise HTTPException(
         status_code = 400,
@@ -28451,14 +28457,7 @@ async def produce_openai_chat_completions(
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
     if _sf_model_info.get("engine") in ("vllm", "sglang"):
-        if (
-            payload.use_adapter is not None
-            or payload.response_format
-            or payload.continue_final_message
-            or payload.enable_thinking
-            or payload.preserve_thinking
-            or payload.reasoning_effort not in (None, "none")
-        ):
+        if _managed_engine_unsupported_controls(payload):
             raise _reject(
                 400,
                 "This engine integration does not support adapters, structured output, continuation or reasoning controls.",
