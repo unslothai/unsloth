@@ -49,7 +49,6 @@ _THINK_MARKERS = ("<think>", "</think>")
 class ResponseFormatError(ValueError):
     """Invalid or unhonorable ``response_format``; the message is client-safe."""
 
-    # Read past the worker boundary, so a refusal raised there still reaches the caller.
     public = True
     openai_param = "response_format"
 
@@ -77,7 +76,6 @@ class ConstraintSpec:
     ) -> "GrammarConstraint":
         if in_reasoning:
             if self.reasoning_close is None:
-                # The plain document would land inside the open block, read as reasoning.
                 raise ResponseFormatError(
                     "response_format cannot be honored on this model: the prompt starts "
                     "inside an open reasoning block, and its closing marker "
@@ -86,7 +84,6 @@ class ConstraintSpec:
                     "document. Send the request with thinking disabled, or load a GGUF "
                     "build of this model."
                 )
-            # The prompt opened the block, so the grammar names only its close.
             grammar = _cached_grammar(self.schema_json, prelude_close = self.reasoning_close)
         else:
             grammar = self.grammar
@@ -172,7 +169,6 @@ def constraint_spec_from_response_format(
     else:
         schema_json = _canonical_schema_json(_json_schema_from_response_format(response_format))
 
-    # Taken as given: whether a block may be offered at all is ``build_constraint``'s call.
     markers = tuple(reasoning_markers) if reasoning_markers else None
     return ConstraintSpec(
         grammar = _cached_grammar(schema_json, prelude_close = None),
@@ -273,7 +269,6 @@ class GrammarConstraint:
         self._matcher = None
         self._bitmask = None
         self._stop_ids = ()
-        # The caller re-emits a block the prompt opened, which needs a grammar allowing one.
         self.allows_reasoning = allows_reasoning
 
     def _bind(self, n_vocab: int) -> None:
@@ -307,7 +302,6 @@ class GrammarConstraint:
         """Commit a sampled token, raising when it desyncs. A stopped matcher already accepted
         a complete document, so consuming the loop's extra token would error for no reason."""
         if self._matcher is None:
-            # Every token comes from a mask, so this caller skipped a step it never masked.
             raise GrammarDesyncError("guided decoding advanced before the grammar was bound")
         if self._matcher.is_stopped():
             return
@@ -360,7 +354,6 @@ def make_grammar_logits_processor(constraint: GrammarConstraint):
     return _processor
 
 
-# --- caches ---------------------------------------------------------------
 # The llguidance tokenizer wrap costs most of a second. Both caches hold strong references
 # and are bounded, so a recycled id() cannot alias a live entry.
 
@@ -406,7 +399,6 @@ def _compile_grammar(schema_json: str, prelude_close: Optional[str]) -> str:
         if prelude_close is None:
             grammar = _llg.LLMatcher.grammar_from_json_schema(schema_json)
         else:
-            # Only ever a prompt-opened block: the model owes the text and its close.
             grammar = (
                 "%llguidance {}\n"
                 "start: prelude doc\n"
@@ -445,7 +437,6 @@ def _runtime_stop_ids(tokenizer, n_vocab: int) -> Optional[tuple]:
     for obj in (tokenizer, getattr(tokenizer, "tokenizer", None)):
         if obj is None:
             continue
-        # mlx_lm keeps them on its wrapper; mlx_vlm on the tokenizer's stopping criteria.
         for ids in (
             getattr(obj, "eos_token_ids", None),
             getattr(getattr(obj, "stopping_criteria", None), "eos_token_ids", None),

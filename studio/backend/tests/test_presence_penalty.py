@@ -238,7 +238,6 @@ def test_worker_forwards_all_sampling_params_to_backend():
             reasoning_is_extracted = None,
             **kwargs,
         ):
-            # Named, not absorbed: the worker gates on the signature declaring it.
             self.received = dict(kwargs, rf = response_format, rie = reasoning_is_extracted)
             return iter(())  # empty stream -> loop exits, gen_done is sent
 

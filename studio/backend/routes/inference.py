@@ -25848,7 +25848,6 @@ async def produce_openai_chat_completions(
                     "decoding starts a new document rather than continuing the text before "
                     "it. Send the turn without continue_final_message.",
                 )
-            # Off the loop, and off the default executor with it.
             await asyncio.get_running_loop().run_in_executor(
                 _SCHEMA_VALIDATION_EXECUTOR, _reject_unhonorable_response_format, payload
             )
@@ -28453,8 +28452,6 @@ async def produce_openai_chat_completions(
     _sf_continue = _continue_final_message(payload)
     _sf_continued_turn = [_sf_continue]
 
-    # Whether a grammar shaped this reply, decided once and passed to every split a contract
-    # reaches, so no two of them can disagree about its markers.
     _sf_single_block = _response_format_constrains_decoding(payload)
 
     def _new_sf_reasoning_extractor():
@@ -28465,7 +28462,6 @@ async def produce_openai_chat_completions(
         return _ResponsesReasoningExtractor(
             parse_think_markers = _sf_parse_think,
             reasoning_prefilled = prefilled,
-            # The reply is the document, behind at most one block; later markers are its data.
             single_block = _sf_single_block,
         )
 
@@ -29092,7 +29088,6 @@ async def produce_openai_chat_completions(
         frequency_penalty = payload.frequency_penalty,
         logit_bias = payload.logit_bias,
         stop = normalized_stop,
-        # Guided decoding, honored by MLX; the gate above refused the backends that are not.
         response_format = _extract_response_format(payload),
     )
     if _video_clip is not None:
@@ -29390,7 +29385,6 @@ async def produce_openai_chat_completions(
                         _msg = _friendly_gen_stream_error(cumulative)
                         api_monitor.fail(monitor_id, _msg)
                         _refused = _refused_parameter(cumulative)
-                        # Status line already sent; the error object still names the field.
                         yield _openai_stream_error_sse(
                             openai_error_body(
                                 _msg,
@@ -33171,7 +33165,6 @@ async def _responses_stream(
         stream_finish_reason: Optional[str] = None
         extractor = _ResponsesReasoningExtractor(
             parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend),
-            # As above: these deltas are already split under the same contract.
             single_block = _response_format_constrains_decoding(chat_req),
         )
         reasoning_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}

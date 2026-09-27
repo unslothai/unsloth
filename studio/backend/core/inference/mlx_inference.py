@@ -2334,7 +2334,6 @@ def _build_grammar_constraint(
     reasoning_is_extracted = False,
     reply_keeps_special_tokens = False,
 ):
-    # The default spelled out, exactly; checked first so it never loads the engine.
     if response_format is None or response_format == {"type": "text"}:
         return None
     from core.inference.grammar_constraint import build_constraint
@@ -3466,8 +3465,6 @@ class MLXInferenceBackend:
         # Not the request flag: a later tool-loop pass keeps it but renders an ordinary post-tool prompt.
         _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
 
-        # Which rendering the reply gets: the native branch keeps every token, the plain
-        # one drops the special ones.
         preserve_native_channels = reasoning_channel_markers is not None
         # An open <think> prefilled by the template lives in the prompt, not the generated tokens; re-emit it so the
         # frontend renders the block.
@@ -3487,7 +3484,6 @@ class MLXInferenceBackend:
             response_format,
             self._tokenizer,
             prompt,
-            # No tools: the render already resolved them into these markers.
             reasoning_markers = reasoning_channel_markers,
             reasoning_is_extracted = reasoning_is_extracted,
             reply_keeps_special_tokens = preserve_native_channels,
@@ -3965,11 +3961,9 @@ class MLXInferenceBackend:
             response_format,
             chat_target,
             prompt,
-            # The markers detected above, so the constraint and the decoder cannot disagree.
             reasoning_markers = vlm_reasoning_markers,
             tools = tools,
             reasoning_is_extracted = reasoning_is_extracted,
-            # This path yields the detokenizer's text as it comes, special tokens included.
             reply_keeps_special_tokens = True,
         )
         # As above: a grammar holding the reply to the document alone forbids a block.

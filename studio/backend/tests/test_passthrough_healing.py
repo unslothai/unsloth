@@ -1633,7 +1633,6 @@ class TestClientToolSchemaTyping:
         assert _healed_arguments(call % ("Grep", "pattern")) == {"pattern": "x", "timeout": 30}
 
 
-# --- healing is withdrawn under a decoding contract --------------------------
 # Here rather than beside the route tests, which skip whole without llguidance.
 
 _SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
@@ -1666,7 +1665,6 @@ def test_every_post_decode_reinterpreter_is_handed_the_request_s_own_contract():
     source = (Path(__file__).resolve().parents[1] / "routes/inference.py").read_text()
     calls, missing = [], []
     for node in ast.walk(ast.parse(source)):
-        # Bare or qualified: a site reached through an import alias is still a site.
         if not isinstance(node, ast.Call):
             continue
         if (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) not in names:

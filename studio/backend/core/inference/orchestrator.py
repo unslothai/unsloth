@@ -1341,7 +1341,6 @@ class InferenceOrchestrator:
             cmd["stop"] = stop
         if response_format is not None:
             cmd["response_format"] = response_format
-            # Only alongside a contract, whose grammar leaves room for a block or not.
             cmd["reasoning_is_extracted"] = bool(reasoning_is_extracted)
         if video_b64:
             cmd["video_base64"] = video_b64

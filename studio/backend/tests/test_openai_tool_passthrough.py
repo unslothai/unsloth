@@ -10680,7 +10680,6 @@ def test_a_lenient_schema_reaches_llama_server_where_it_reads_one():
         None,
     ):
         assert for_llama(already) is already
-    # And the body actually handed to llama-server carries the rewritten form.
     request = ChatCompletionRequest(
         model = "m", messages = [{"role": "user", "content": "hi"}], response_format = lenient
     )

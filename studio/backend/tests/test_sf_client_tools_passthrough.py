@@ -1356,9 +1356,6 @@ def test_legacy_image_field_keeps_the_client_tool_catalog(monkeypatch):
     assert backend.calls[0]["image"] is not None
 
 
-# --- response_format on this path ------------------------------------------------------
-# The reply is a document the route must not re-read, and the contract reaches the backend
-# with the route's own answer to whether reasoning is separated here.
 
 _RF_SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
 _RF_FORMAT = {"type": "json_schema", "json_schema": {"name": "c", "schema": _RF_SCHEMA}}

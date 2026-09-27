@@ -4903,7 +4903,6 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
 
 
-# --- guided decoding (`response_format`) -----------------------------------------------
 # Against a synthetic character-level tokenizer, so real llguidance masks without a
 # downloaded checkpoint; the engine being optional, these cases skip where it is absent.
 
@@ -4945,7 +4944,6 @@ def _char_tokenizer(*extra_specials, markers_are_special = False):
     else:
         backend.add_tokens(markers)
     tokenizer = transformers.PreTrainedTokenizerFast(tokenizer_object = backend, eos_token = "<eos>")
-    # A reasoning protocol lives in the template, not the vocabulary.
     tokenizer.chat_template = "{{ messages[0].content }}<think>"
     return tokenizer
 
@@ -5079,7 +5077,6 @@ def test_a_close_marker_is_refused_only_where_the_reply_would_lose_it(reply_keep
         return
     constraint = _build()
     assert constraint.allows_reasoning
-    # Not just offered: the reasoning closes and the document follows, as it must.
     for token_id in tokenizer.encode('x</think>{"a":1}', add_special_tokens = False):
         assert int(token_id) in _allowed(constraint, len(tokenizer))
         constraint.advance(int(token_id))
@@ -5129,7 +5126,6 @@ def test_the_grammar_mask_runs_first_and_its_inf_survives_every_knob():
     assert np.isneginf(out[1]) and np.isneginf(out[3])
     assert np.isfinite(out[0]) and np.isfinite(out[2])
 
-    # The prompt is latched; each later call brings the steps taken since, cursor and all.
     assert grammar.advanced == []
     processors[0](mx.array([0, 1, 2, 3]), zeros)
     processors[0](mx.array([0, 1, 2, 3, 4]), zeros)
