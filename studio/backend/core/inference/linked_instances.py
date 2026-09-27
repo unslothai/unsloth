@@ -42,7 +42,6 @@ def _client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None:
         from core.inference.external_provider import _create_shared_http_client
-
         _http_client = _create_shared_http_client()
     return _http_client
 
@@ -80,7 +79,7 @@ def normalize_base_url(base_url: str) -> str:
 def split_model(model: object) -> Optional[tuple[str, str]]:
     if not isinstance(model, str) or not model.startswith(MODEL_PREFIX):
         return None
-    name, _, remote = model[len(MODEL_PREFIX):].partition("/")
+    name, _, remote = model[len(MODEL_PREFIX) :].partition("/")
     if not name or not remote:
         return None
     return name.lower(), remote
@@ -283,7 +282,9 @@ async def forward(
                 *lines, pending = (pending + chunk).split(b"\n")
                 out = []
                 for line in lines:
-                    event = _record_sse_line(entry_id, line.decode("utf-8", errors = "replace").strip())
+                    event = _record_sse_line(
+                        entry_id, line.decode("utf-8", errors = "replace").strip()
+                    )
                     if not (strip_usage and _is_usage_only(event)):
                         out.append(line + b"\n")
                 if out:
@@ -329,7 +330,11 @@ async def probe(instance: dict) -> dict:
         models = await fetch_models(instance)
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code
-        error = "The API key was rejected." if code in (401, 403) else f"The instance answered HTTP {code}."
+        error = (
+            "The API key was rejected."
+            if code in (401, 403)
+            else f"The instance answered HTTP {code}."
+        )
         return {"online": False, "error": error, "models": [], "latency_ms": None}
     except (httpx.HTTPError, ValueError):
         return {"online": False, "error": "Not reachable.", "models": [], "latency_ms": None}
@@ -456,7 +461,9 @@ async def proxy(request: Request, instance: dict, path: str) -> Response:
             await upstream.aclose()
 
     passthrough = {
-        k: v for k, v in upstream.headers.items() if k.lower() in ("content-disposition", "cache-control")
+        k: v
+        for k, v in upstream.headers.items()
+        if k.lower() in ("content-disposition", "cache-control")
     }
     return StreamingResponse(
         relay(), status_code = upstream.status_code, media_type = media_type, headers = passthrough
@@ -486,7 +493,9 @@ def _dict(value: object) -> dict:
 
 
 async def _get_json(instance: dict, headers: dict, path: str) -> dict:
-    response = await _client().get(f"{instance['base_url']}{path}", headers = headers, timeout = _PROBE_TIMEOUT)
+    response = await _client().get(
+        f"{instance['base_url']}{path}", headers = headers, timeout = _PROBE_TIMEOUT
+    )
     response.raise_for_status()
     return _dict(response.json())
 
@@ -507,7 +516,10 @@ def _gpus(system: dict, hardware: dict) -> list[dict]:
     listed = hardware.get("gpus")
     if isinstance(listed, list):
         return [
-            {"name": _text(g.get("name")) or "GPU", "vram_total_gb": _number(g.get("vram_total_gb"))}
+            {
+                "name": _text(g.get("name")) or "GPU",
+                "vram_total_gb": _number(g.get("vram_total_gb")),
+            }
             for g in listed[:16]
             if isinstance(g, dict)
         ]
@@ -529,7 +541,11 @@ async def fetch_info(instance: dict) -> dict:
         else:
             error = "Not reachable."
         return {"online": False, "error": error}
-    system, hardware, install = parts.get("system", {}), parts.get("hardware", {}), parts.get("install", {})
+    system, hardware, install = (
+        parts.get("system", {}),
+        parts.get("hardware", {}),
+        parts.get("install", {}),
+    )
     images = parts.get("images", {})
     versions = _dict(hardware.get("versions"))
     packages = _dict(system.get("ml_packages"))

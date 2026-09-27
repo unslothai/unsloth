@@ -81,9 +81,7 @@ def _row(row: sqlite3.Row) -> dict:
 def validate_name(name: str) -> str:
     name = (name or "").strip().lower()
     if not NAME_PATTERN.match(name):
-        raise ValueError(
-            "Name must be 1-32 characters: lowercase letters, digits, '-' or '_'."
-        )
+        raise ValueError("Name must be 1-32 characters: lowercase letters, digits, '-' or '_'.")
     return name
 
 
@@ -168,7 +166,9 @@ def update_instance(
                     LINKED_INSTANCE_API_KEY_KIND, instance_id, api_key, connection = conn
                 )
     except sqlite3.IntegrityError as exc:
-        raise DuplicateName(f"A linked instance named '{fields.get('name')}' already exists.") from exc
+        raise DuplicateName(
+            f"A linked instance named '{fields.get('name')}' already exists."
+        ) from exc
     finally:
         conn.close()
     return get_instance(instance_id)

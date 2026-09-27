@@ -9,9 +9,15 @@ from pydantic import BaseModel, Field
 
 
 class LinkedInstanceCreate(BaseModel):
-    name: str = Field(..., max_length = 32, description = "Short name; models appear as @<name>/<model>")
-    base_url: str = Field(..., max_length = 2048, description = "The remote's URL, e.g. its trycloudflare.com address")
-    api_key: str = Field(..., min_length = 1, max_length = 512, description = "An API key created on the remote")
+    name: str = Field(
+        ..., max_length = 32, description = "Short name; models appear as @<name>/<model>"
+    )
+    base_url: str = Field(
+        ..., max_length = 2048, description = "The remote's URL, e.g. its trycloudflare.com address"
+    )
+    api_key: str = Field(
+        ..., min_length = 1, max_length = 512, description = "An API key created on the remote"
+    )
 
 
 class LinkedInstanceUpdate(BaseModel):
@@ -32,8 +38,12 @@ class LinkedInstanceStatus(BaseModel):
     id: str
     online: bool
     error: Optional[str] = None
-    models: list[str] = Field(default_factory = list, description = "Model ids as this server exposes them")
-    loaded: list[str] = Field(default_factory = list, description = "The subset currently loaded on the remote")
+    models: list[str] = Field(
+        default_factory = list, description = "Model ids as this server exposes them"
+    )
+    loaded: list[str] = Field(
+        default_factory = list, description = "The subset currently loaded on the remote"
+    )
     latency_ms: Optional[int] = None
 
 
