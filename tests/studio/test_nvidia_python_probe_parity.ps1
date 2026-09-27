@@ -489,6 +489,9 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
         $null = Invoke-Fake "hang" $raw
         Check "live: an unset switch is left unset" ($null -eq $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML)
 
+        # The shared-root fallback is a standard user's; an elevated run declines it, checked last.
+        $savedElevated = ${function:Test-StudioChildScriptDirectoryElevated}
+        function Test-StudioChildScriptDirectoryElevated { return $false }
         $seen = Invoke-Fake "inline" $viaPython -NoPrivateDir
         Check "live: a declined private directory still yields the inventory" ($script:FakeGot -eq "nvml;12;8;8.9")
         Check "live: the program came through the environment, not a file" (($seen -join ",") -eq "argv4=-c src=present")
@@ -508,6 +511,11 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
         $null = Invoke-Fake "inline" $viaPython -Env @{ TEMP = "Z:\UnslothReviewTemp"; TMP = "Z:\UnslothReviewTemp"; LOCALAPPDATA = $altRoot; TMPDIR = $null }
         Check "live: a TEMP on a missing drive falls through to the next root" ($script:FakeGot -eq "nvml;12;8;8.9")
         Check "live: and no stray output file lands in the working directory" (-not (Test-Path -LiteralPath ".out"))
+
+        function Test-StudioChildScriptDirectoryElevated { return $true }
+        $seen = Invoke-Fake "inline" $viaPython -NoPrivateDir
+        Check "live: an elevated run declines the shared-root fallback" ($script:FakeGot -eq "" -and $seen.Count -eq 0)
+        ${function:Test-StudioChildScriptDirectoryElevated} = $savedElevated
     } finally {
         $script:PythonExe = $savedPy
         Restore-Env $savedEnv

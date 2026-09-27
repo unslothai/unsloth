@@ -2733,10 +2733,13 @@ function Install-UnslothStudio {
         # which is the point: a pre-created one carrying an attacker's ACL is refused, not adopted.
         if (-not $made) { return "" }
         if ($env:OS -eq "Windows_NT") {
+            # Until it is labelled a standard user can swap this directory for a junction: a link is
+            # never adopted, and cleanup never recurses through one into its target.
+            $isLink = { try { "$((Get-Item -LiteralPath $dir -Force -ErrorAction Stop).Attributes)" -match 'ReparsePoint' } catch { $true } }
             $labelled = $false
             $icacls = Get-StudioSystem32Tool -Name "icacls.exe"
             if (-not $icacls) {
-                try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+                if (-not (& $isLink)) { try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
                 return ""
             }
             try {
@@ -2748,16 +2751,17 @@ function Install-UnslothStudio {
                 }
             } catch { $labelled = $false }
             if ((-not $labelled) -and (Test-StudioChildScriptDirectoryElevated)) {
-                try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+                if (-not (& $isLink)) { try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
                 return ""
             }
+            if (& $isLink) { return "" }
             if ($labelled) {
                 $planted = $true
                 try {
                     $planted = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop).Count -ne 0
                 } catch { $planted = $true }
                 if ($planted) {
-                    try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+                    if (-not (& $isLink)) { try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
                     return ""
                 }
             }
@@ -8901,6 +8905,8 @@ main()
         $probeDir = New-StudioChildScriptDirectory
         $inline = (-not $probeDir)
         if ($inline) {
+            # Elevated, a shared root lets a standard user plant or swap the redirect files: decline.
+            try { if (Test-StudioChildScriptDirectoryElevated) { return "" } } catch { return "" }
             # The first root that takes a file: a TEMP that declined the directory may refuse this too.
             $stem = $null
             foreach ($root in @($env:TEMP, $env:TMP, $env:LOCALAPPDATA, $env:TMPDIR, "/tmp")) {

@@ -76,6 +76,7 @@ on:
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_windows_installer_resolver_fallback.py'
+      - 'tests/python/test_installer_helper_declaration_order.py'
       - 'tests/python/test_installer_embedded_nvidia_probe.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
       # The deliberate unreadable-directory and traversal-limit cases for the
@@ -193,6 +194,7 @@ on:
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_windows_installer_resolver_fallback.py'
+      - 'tests/python/test_installer_helper_declaration_order.py'
       - 'tests/python/test_installer_embedded_nvidia_probe.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
       # The deliberate unreadable-directory and traversal-limit cases for the
@@ -329,6 +331,7 @@ jobs:
           tests/python/test_windows_python_venv_hardening.py
           tests/python/test_windows_setup_output_encoding.py
           tests/python/test_windows_installer_resolver_fallback.py
+          tests/python/test_installer_helper_declaration_order.py
           tests/python/test_pwsh_runner_encoding.py
           tests/python/test_compiler_watch_temp_scan.py
           tests/python/test_installer_embedded_nvidia_probe.py
