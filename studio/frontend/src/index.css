@@ -718,6 +718,23 @@
 	--sidebar-surface: var(--background);
 }
 
+/* Neon Cyberpunk light: black outline and a hard cyan offset on the composer;
+   yellow only as a focus edge. */
+:root[data-palette="neon-cyberpunk"]:not(.dark)
+	:is(.chat-composer-surface, .unsloth-composer-surface) {
+	box-shadow:
+		0 0 0 1px #0a0a0f,
+		5px 5px 0 0 #00f0ff,
+		5px 5px 0 1px #0a0a0f;
+}
+:root[data-palette="neon-cyberpunk"]:not(.dark)
+	:is(.chat-composer-surface, .unsloth-composer-surface):focus-within {
+	box-shadow:
+		0 0 0 1px #0a0a0f,
+		5px 5px 0 0 #00f0ff,
+		5px 5px 0 1px #0a0a0f,
+		-3px -3px 0 0 #fcee0a;
+}
 /* Neon Cyberpunk: cyan edge glow on the dark composer. */
 :root[data-palette="neon-cyberpunk"].dark
 	:is(.chat-composer-surface, .unsloth-composer-surface) {
@@ -1205,14 +1222,14 @@
 
 /* Neon Cyberpunk */
 :root[data-palette="neon-cyberpunk"]:not(.dark) {
-	--th-bg: #f6f6f1;
-	--th-surface: #ecece5;
-	--th-raised: #e4e4dc;
-	--th-hover: #dcdcd2;
-	--th-border: #d2d2c7;
+	--th-bg: #f0fbfc;
+	--th-surface: #e2f6f8;
+	--th-raised: #d4eff3;
+	--th-hover: #c6e8ed;
+	--th-border: #9fdce4;
 	--th-fg: #0a0a0f;
-	--th-muted: #4a4a52;
-	--th-subtle: #8a8a92;
+	--th-muted: #2f525b;
+	--th-subtle: #6a959e;
 	--th-accent: #0a0a0f;
 	--th-accent-fg: #fcee0a;
 	--th-chart-1: #0a0a0f;
@@ -1220,9 +1237,11 @@
 	--th-chart-3: #d1004b;
 	--th-chart-4: #5b1fd1;
 	--th-chart-5: #b8a200;
-	--ring: #0a0a0f;
+	--ring: #008c99;
+	--sidebar-ring: #008c99;
 	--control-accent: #00f0ff;
 	--control-accent-foreground: #0a0a0f;
+	--nav-icon-idle-base: #1f8a96;
 }
 :root[data-palette="neon-cyberpunk"].dark {
 	--th-bg: #070b14;
@@ -1463,7 +1482,7 @@
 	--th-chart-5: #9cbcf0;
 }
 
-/* Wasabi */
+/* Key Lime Pie */
 :root[data-palette="wasabi"]:not(.dark) {
 	--th-bg: #f8faf2;
 	--th-surface: #eef3e3;

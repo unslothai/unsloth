@@ -131,9 +131,9 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     name: "Neon Cyberpunk",
     light: {
       accent: "#0a0a0f",
-      background: "#f6f6f1",
+      background: "#f0fbfc",
       foreground: "#0a0a0f",
-      surface: "#ecece5",
+      surface: "#e2f6f8",
     },
     dark: {
       accent: "#fcee0a",
@@ -263,7 +263,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   wasabi: {
-    name: "Wasabi",
+    name: "Key Lime Pie",
     light: {
       accent: "#4f7d00",
       background: "#f8faf2",
