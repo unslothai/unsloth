@@ -1318,8 +1318,6 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     # A number, not a word: the placeholder is only for a window nobody has read.
     assert 'displayValue={isMlx && windowUnknown ? "—" : undefined}' in page
     assert "savedContextPin(config) == null && mlxServedWindow == null\n" in page
-    # The resident model's window, else this model's; request bounds would shorten it. The order
-    # is decided in one place, so the control cannot state a window the fit did not choose.
     assert "const mlxServedWindow = resolveMlxServedWindow(" in page
     assert "targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null,\n" in page
     assert "? servedWindow(modelMaxPosition.maxPositionEmbeddings)" in page

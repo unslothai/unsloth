@@ -153,7 +153,6 @@ const safetensors = (
 
 test("a GGUF is priced only once its probe has cleared it of being diffusion", () => {
   assert.equal(gguf(false), true);
-  // Still in flight: a DiffusionGemma priced through a language-model plan is the wrong allocator.
   assert.equal(gguf(undefined), false);
 });
 
@@ -168,12 +167,10 @@ test("a model already known to be diffusion is priced by neither planner", () =>
 });
 
 test("safetensors is not priced where MLX is not what would load it", () => {
-  // Off Apple Silicon the backend answers not_gguf, so asking is one empty POST per slider release.
   assert.equal(safetensors(false, false), false);
   assert.equal(safetensors(false, undefined), false);
 });
 
-// The settings a NON-GGUF load sends: `max_seq_length`, not llama.cpp's context field.
 register("./helpers/memory-estimate-resolver.mjs", import.meta.url);
 
 const auth = await import("./helpers/store-stubs/auth.ts");
@@ -214,7 +211,6 @@ test("the non-GGUF context and MLX cache width reach the backend", async () => {
 });
 
 test("every field sent is also a field the hook re-fetches for", () => {
-  // Two hand-written lists, one in each module: the request body and the hook's cache key.
   const read = (path: string, fn: string): Set<string> => {
     const source = readFileSync(new URL(path, import.meta.url), "utf8");
     const start = source.indexOf(`function ${fn}(`);
@@ -244,14 +240,9 @@ test("every field sent is also a field the hook re-fetches for", () => {
 });
 
 test("what an MLX estimate names, and what the control shows", () => {
-  // Sending the window the control displays leaves the backend unable to tell a pin from a
-  // display fallback, so it could never fit one.
   assert.equal(resolveMlxEstimateContext(null), 0);
   assert.equal(resolveMlxEstimateContext(0), 0);
   assert.equal(resolveMlxEstimateContext(8192), 8192);
-  // The control describes the next load, so a fit outranks the load running now: clearing a
-  // pin on a resident 8192 must not leave it stating 8192 for a reload that fits. With no fit
-  // the resident load is the best answer, and the declared window the last.
   assert.equal(resolveMlxServedWindow(8192, 24576, 262144), 24576);
   assert.equal(resolveMlxServedWindow(null, 24576, 262144), 24576);
   assert.equal(resolveMlxServedWindow(20480, null, 262144), 20480);
@@ -265,6 +256,5 @@ test("the fitted window survives the wire, and its absence reads as null", async
     return (await fetchMemoryEstimate({ modelPath: "a" })).contextFitted;
   };
   assert.equal(await fitted({ available: true, n_ctx: 24576, context_fitted: 24576 }), 24576);
-  // A backend predating the fit chose no window for this machine; there is none to show.
   assert.equal(await fitted({ available: true, n_ctx: 262144 }), null);
 });

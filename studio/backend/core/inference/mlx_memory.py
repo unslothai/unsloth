@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What an MLX load would occupy, priced before anything is loaded.
-
-The GGUF planner assumes every layer keeps a key/value cache growing with the context, which is
-false for the hybrids here: Qwen3-Next, Qwen3.5/3.6/3.8 and Kimi-Linear interleave linear-attention
-layers whose recurrent state is CONSTANT in sequence length with full-attention layers that are not.
-So the cache is read off the objects the loading package builds -- mlx-lm for a text model, mlx-vlm
-for a vision one, which cache the same architecture differently. MLX knows shapes at graph build, so
-the tower is built unmaterialized and each entry solved as ``const + slope * T`` from two probes.
-"""
+"""What an MLX load would occupy, priced before anything is loaded."""
 
 from __future__ import annotations
 
@@ -35,45 +27,31 @@ __all__ = [
     "mlx_weight_bytes",
 ]
 
-# ``KVCache.step``: a cache grows a block at a time, so a context is charged to the top of its block.
 MLX_KV_BLOCK = 256
 
-# Both below one block, so neither pays for a growth, and far enough apart to read a slope.
 _PROBE_SHORT = 8
 _PROBE_LONG = 40
 
-# What a load prefills at on a host where the runtime cannot be asked; the live value comes
-# from the loader, which reads it off the runtime that would run the generation.
 MLX_PREFILL_CHUNK = 2048
 
-# Shorter than this and a fitted context is not worth serving; see mlx_fit_context.
 MLX_FIT_MIN_CONTEXT = 4096
 _KV_GROUP_SIZE = 64
 
-# Live activations inside one attention block at its widest, and the allocator floor.
 _ATTENTION_LIVE = 3.5
 _COMPUTE_BASE_BYTES = int(0.64 * 1024**3)
 
-# The gated-delta kernel accumulates in float32 whatever the model's dtype.
 _RECURRENT_DTYPE_SIZE = 4
 
-# A quantized cache leaves the fused kernel, and the fallback materializes scores in float32.
 _QUANT_SCORE_DTYPE_SIZE = 4
 
 _QUANT_SCORE_LIVE = 1.0
 
-# How the panel spells a width: "bf16", not "mlx.core.bfloat16".
 _WIDTH_NAMES = {"float64": "f64", "float32": "f32", "bfloat16": "bf16", "float16": "f16"}
 
-# How each cache class spells "this stops growing". ``window_size`` is absent: the one class using
-# it keeps the ENTIRE prefill, so reading it as a ceiling under-priced an 8k prompt sixty-six fold.
 _CACHE_BOUND_ATTRS = ("max_size", "chunk_size")
 
-# Fallback for mlx-vlm's own ``quantized_kv_start``, used where the loader cannot be reached.
 _VLM_QUANT_START = 5000
 
-# What safetensors itself will parse. The largest header across 255 locally cached shards is
-# 0.53 MB, so this rejects nothing a real checkpoint carries.
 _MAX_SAFETENSORS_HEADER = 100_000_000
 
 
@@ -88,7 +66,6 @@ class MlxMemoryBreakdown:
     layer_count: Optional[int] = None
     cache_type_kv: Optional[str] = None
     kv_estimable: bool = True
-    # Unified memory: there is no host/device split to place anything across.
     kv_on_gpu: bool = True
     n_parallel: int = 1
     gpu_layers: Optional[int] = None
@@ -133,10 +110,8 @@ def _indexed_shards(model_dir: str) -> list:
     except (ValueError, OSError):
         return []
     if not isinstance(weight_map, dict):
-        # mlx-vlm reaches straight for `.values()` and catches only ValueError and OSError.
         raise ValueError("model.safetensors.index.json has no weight map")
     if any(not isinstance(shard, str) for shard in weight_map.values()):
-        # Likewise: mlx-vlm does not screen these and dies on the path join.
         raise ValueError("model.safetensors.index.json names a non-string shard")
     named = sorted(set(weight_map.values()))
     return [
@@ -171,7 +146,6 @@ def _shard_bytes(model_dir: str, config: Optional[dict] = None) -> int:
     return total
 
 
-# Named rather than the dtypes themselves: this module is importable on a host with no MLX.
 _SAFETENSORS_DTYPES = {
     "F64": "float32",
     "F32": "float32",
@@ -196,9 +170,6 @@ def _checkpoint_tensors(model_dir: str, config: Optional[dict], dtype):
     for shard in mlx_shard_files(model_dir, config):
         with open(shard, "rb") as handle:
             length = int.from_bytes(handle.read(8), "little")
-            # Fitting inside the shard is not enough on a multi-gigabyte one, so the format's
-            # own ceiling is applied too: without both, a corrupt length pulls weights into
-            # memory to be parsed as JSON.
             limit = min(_MAX_SAFETENSORS_HEADER, os.fstat(handle.fileno()).st_size - 8)
             if not 0 < length <= limit:
                 raise ValueError(f"{shard} declares a {length}-byte safetensors header")
@@ -255,7 +226,6 @@ def _resident_bytes(model_dir: str, config: dict, quantize: bool) -> int:
         raise ValueError("this checkpoint ships no tensors")
     if hasattr(model, "sanitize"):
         tensors = model.sanitize(tensors)
-    # Not strict: a checkpoint may carry tensors this architecture has no home for.
     model.load_weights(list(tensors.items()), strict = False)
     orphaned = [name for name, _ in tree_flatten(model.parameters()) if name not in tensors]
     if orphaned:
@@ -263,7 +233,6 @@ def _resident_bytes(model_dir: str, config: dict, quantize: bool) -> int:
             f"{len(orphaned)} parameters this checkpoint does not supply, "
             f"beginning {orphaned[0]}"
         )
-    # Quantizing announces the width it reached; that belongs to a load, not to a panel.
     if quantize:
         with contextlib.redirect_stdout(io.StringIO()):
             model, _ = _apply_mlx_quantization(
@@ -291,8 +260,6 @@ def mlx_weight_bytes(
     try:
         return _resident_bytes(model_dir, config, quantize = load_in_4bit)
     except Exception as exc:
-        # Priced as stored: over-reporting a load that would shrink errs toward warning about a
-        # model that fits. Logged, or the fallback looks like a checkpoint that does not shrink.
         logger.debug("MLX estimate priced %s as stored: %s", model_dir, exc)
         return shards
 
@@ -304,12 +271,7 @@ def _runtime_dtype():
 
 
 def _generation_settings(config: dict) -> tuple:
-    """``(prefill chunk, kv group size)`` the package that would load this model runs at.
-
-    Asked of the loader rather than restated here, so an upstream default change moves the
-    estimate instead of silently invalidating it. This module stays importable on a host with
-    no MLX, so a loader it cannot reach falls back.
-    """
+    """``(prefill chunk, kv group size)`` the package that would load this model runs at."""
     try:
         from core.inference.mlx_inference import mlx_kv_group_size, mlx_prefill_chunk
     except Exception as exc:
@@ -347,27 +309,11 @@ def _loads_as_vision(config: dict) -> bool:
 
 
 def _routes_to_diffusion(config: dict) -> bool:
-    """Whether mlx-vlm would divert this load to a diffusion generator.
-
-    ``stream_generate`` diverts before reaching the autoregressive chunking path, into a
-    generator each architecture writes for itself, and those share no parameter meaning the
-    same thing: LLaDA2's ``block_length`` of 32 is the block it prefills in, DiffusionGemma's
-    caps the denoising canvas while its prompt goes in one step, and Nemotron Labs Diffusion
-    declares 32 and still prefills whole. One name, three behaviours, so a load that lands
-    here is refused rather than priced from whichever the caller guessed at.
-
-    The verdict is mlx-vlm's own, on a wrapper built here for the purpose. A cheap marker
-    test comes first so that build stays off the path of every other architecture, and the
-    markers are a gate rather than the verdict: an architecture can carry one and still
-    generate autoregressively. Failing to classify a marker-bearing model raises, since not
-    knowing which generator runs is what the caller refuses rather than a vote for the
-    autoregressive one.
-    """
+    """Whether mlx-vlm would divert this load to a diffusion generator."""
     try:
         from mlx_vlm.generate.diffusion import is_diffusion_model
         from mlx_vlm.utils import get_model_and_args
     except ImportError:
-        # An mlx-vlm with no diffusion generator diverts nothing to one.
         return False
     arch = get_model_and_args(config)[0]
     loader_config = _loader_config(arch, config)
@@ -380,11 +326,7 @@ def _routes_to_diffusion(config: dict) -> bool:
 
 
 def _declines_to_chunk(model_class, model) -> bool:
-    """Whether this model's runtime feeds the whole prompt to a single step.
-
-    A callable ``chunked_prefill_policy`` outranks this attribute in the loader but is
-    deliberately not consulted: it is answered per prompt, and no prompt exists yet.
-    """
+    """Whether this model's runtime feeds the whole prompt to a single step."""
     return bool(
         getattr(model_class, "no_chunked_prefill", False)
         or getattr(model, "no_chunked_prefill", False)
@@ -396,8 +338,6 @@ def _tower_needs_parent(arch) -> bool:
 
     tower = getattr(arch, "LanguageModel", None)
     if tower is None or tower.__init__ is object.__init__:
-        # Phi-3 Vision's placeholder class inherits object.__init__'s (*args, **kwargs), which
-        # reads as "takes one config" and then fails to build.
         return True
     try:
         parameters = inspect.signature(tower.__init__).parameters
@@ -415,11 +355,9 @@ def _tower_needs_parent(arch) -> bool:
 
 
 def _loader_config(arch, config: dict):
-    """Config resolved as the loader does: ``from_dict`` leaves nested sub-configs as dicts to
-    promote, and skipping that builds a tower from defaults."""
+    """Config resolved as the loader does (``from_dict`` leaves nested sub-configs as dicts)."""
     from mlx_vlm.utils import update_module_configs
 
-    # The loader's own preparation, in its order.
     config = dict(config)
     config.setdefault("text_config", config.pop("llm_config", {}))
     config.setdefault("vision_config", {})
@@ -456,20 +394,17 @@ def _probe_models(config: dict, dtype):
     if not config.get("model_type"):
         raise ValueError("config.json declares no model_type")
     if config.get("model_file"):
-        # Both loaders import this out of the CHECKPOINT; the probe will not, on a route this hot.
         raise ValueError("this checkpoint carries its own model module")
 
     def prepared(build):
         def _build():
             model = build()
             model.set_dtype(dtype)
-            # As the loaders leave it: branching on training takes a path generation never runs.
             model.eval()
             return model
 
         return _build
 
-    # Studio picks the package from the config alone, and a shared name is not a shared module.
     if not _loads_as_vision(config):
         from mlx_lm.models.cache import make_prompt_cache
         from mlx_lm.utils import _get_classes
@@ -511,8 +446,7 @@ def _probe_models(config: dict, dtype):
 
 
 def _quantize_like_runtime(cache, kv_bits: Optional[int], kv_group_size: int):
-    """The converted cache a load ends up with, or None if it refuses: Studio decides eligibility
-    for the whole request before mlx-lm converts per entry."""
+    """The converted cache a load ends up with, or None if it refuses."""
     if not kv_bits:
         return None
     convertible = [entry for entry in cache if getattr(entry, "to_quantized", None) is not None]
@@ -533,7 +467,6 @@ def _quantize_like_runtime(cache, kv_bits: Optional[int], kv_group_size: int):
         try:
             converted.append(convert(group_size = kv_group_size, bits = kv_bits))
         except Exception:
-            # Studio refuses the request on any conversion failure rather than dropping the one entry.
             return None
     return converted
 
@@ -569,7 +502,6 @@ def _entry_bytes(entry) -> int:
         return 0
     total = 0
     for item in state:
-        # A quantized entry nests (packed, scales, biases) and a CacheList nests whole caches.
         if isinstance(item, mx.array):
             total += item.size * item.dtype.size
         elif isinstance(item, (list, tuple)):
@@ -585,13 +517,7 @@ def _width_name(dtype) -> str:
 def _cache_width_name(
     plan, kv_bits, converted: bool, full_width: str, n_ctx: int, prefill_chunk: int
 ) -> str:
-    """How to caption the cache, from the width each growing entry ends up at.
-
-    Conversion is per entry, so a run can grow a class with no ``to_quantized`` beside one that
-    converts and still hold most of its cache full width; every width is named, largest share
-    first. Shares come off the bytes the totals charge, not slope: a bounded entry stops growing at
-    its window and its slope would keep a share it no longer holds.
-    """
+    """How to caption the cache, from the width each growing entry ends up at."""
     charged: dict = {}
     for slot in plan:
         if slot["slope"] <= 0:
@@ -610,9 +536,7 @@ def _cache_width_name(
 
 
 def _conv_width(entry) -> int:
-    """Total channel width of a linear-attention layer's convolution states: every rank-three state
-    summed, not the first, since ``(B, kernel - 1, channels)`` streams that channel count.
-    """
+    """Total channel width of a linear-attention layer's convolution states."""
     import mlx.core as mx
 
     state = entry.state
@@ -636,8 +560,7 @@ def _tower_layers(model) -> Optional[int]:
 
 
 def _tower_widths(model):
-    """The widths in ``_config_widths``' order as the tower was BUILT, or zeros. The two are
-    merged field by field, so they answer with the same shape or the merge drops the tail."""
+    """The widths in ``_config_widths``' order as the tower was BUILT, or zeros."""
     node, depth = model, 0
     while node is not None and depth < 3:
         for name in ("args", "config"):
@@ -686,7 +609,6 @@ def _probe(config: dict, dtype, n_tokens: int, kv_bits, kv_group_size):
     widths = (0,) * len(_config_widths({}))
     failure = ValueError("no architecture module could build this config")
     for build, make_prompt_cache, model_class in _probe_models(config, dtype):
-        # Construction stays OUTSIDE the guard: retrying a rejected config builds a full tower.
         model = build()
         cache = make_prompt_cache(model)
         try:
@@ -700,11 +622,9 @@ def _probe(config: dict, dtype, n_tokens: int, kv_bits, kv_group_size):
         break
     if cache is None:
         raise failure
-    # Both widths off the SAME forward pass: the full cache is held up to the conversion offset.
     quantized = _quantize_like_runtime(cache, kv_bits, kv_group_size)
     entries = []
     for entry in cache:
-        # One slot per LEAF cache: a CacheList can pair storages with different growth laws.
         converts = hasattr(entry, "to_quantized")
         for leaf in _sub_caches(entry):
             entries.append(
@@ -802,7 +722,6 @@ def _bounded_peak(cache_type, attribute: str, value: int, n_ctx: int, prefill_ch
         call(width)
         processed += width
     call(1)
-    # The decode step generate_step runs before yielding, charged even at zero tokens.
     call(1)
     return peak
 
@@ -816,15 +735,9 @@ def _held_tokens(
     tokens = n_ctx
     block = entry.get("block") or MLX_KV_BLOCK
     if entry["slope"] > 0:
-        # The first generated token's block is charged too; integer arithmetic since n_ctx is unbounded.
         tokens += 1 if decoding else 0
         if block > 1:
             tokens = -(-tokens // block) * block
-    # A bounded cache stops tracking the context, but its bound is not a ceiling on the
-    # allocation, and the block rounding above does not describe its allocator either: below
-    # roughly 600 tokens these classes hold a whole step beyond what they have been given, which
-    # is more than the rounding predicts rather than less. The peak is measured from the class,
-    # so it replaces the estimate rather than capping it.
     spec = entry.get("bound_spec")
     if spec:
         tokens = _bounded_peak(*spec, n_ctx, prefill_chunk)
@@ -874,7 +787,6 @@ def _quant_boundary(
         step = max(1, -(-start // prefill_chunk))
         if step <= full:
             return step * prefill_chunk
-    # The tail: a final partial prefill step, then the decode step. Both convert.
     for offset in (n_ctx - 1, n_ctx):
         if offset >= 1 and offset >= start:
             return offset
@@ -919,18 +831,11 @@ def _widest_quantized_scores(n_ctx: int, boundary: int, prefill_chunk: int) -> i
             widest = prefill_chunk * (boundary + whole * prefill_chunk)
         if rest:
             widest = max(widest, rest * (n_ctx - 1))
-    # The decode step before the first token: one query against the prompt plus the new token.
     return max(widest, n_ctx + 1)
 
 
 def _dequantized_row_bytes(widths, dtype_size: int, kv_bits, kv_group_size, prefill_chunk):
-    """Bytes per cached token one attention call holds where the runtime dequantizes the cache
-    instead of scoring it, or None where this shape still materializes the scores.
-
-    unsloth-zoo wraps each runtime's quantized attention and chooses per call, so the choice is
-    asked of that wrapper rather than restated: a zoo carrying no wrapper, a head width mlx will
-    not fuse, and a prefill step under the tie all keep the scores.
-    """
+    """Bytes per cached token one attention call holds where the runtime dequantizes the cache."""
     _hidden, _intermediate, heads, kv_heads, head_dim, value_dim = widths
     if not (heads and kv_heads and head_dim and kv_bits):
         return None
@@ -946,8 +851,6 @@ def _dequantized_row_bytes(widths, dtype_size: int, kv_bits, kv_group_size, pref
         logger.debug("MLX estimate cannot reach the quantized-attention wrapper: %s", exc)
         return None
     try:
-        # Only the width of the dtype reaches the answer, and mlx is lazy, so these shapes are
-        # described to the wrapper without an array behind them ever being made.
         dtype = mx.float32 if dtype_size == 4 else mx.bfloat16
 
         def rows(width):
@@ -957,11 +860,8 @@ def _dequantized_row_bytes(widths, dtype_size: int, kv_bits, kv_group_size, pref
                 bits = kv_bits,
             )
 
-        # A tower whose values are narrower than its keys is why these are asked separately:
-        # mlx will not fuse that shape, and the copy would not be twice one row either.
         keys, values = rows(head_dim), rows(value_dim or head_dim)
         queries = mx.zeros((1, heads, prefill_chunk, head_dim), dtype = dtype)
-        # Both runtimes prefill under "causal"; a mask the fused kernel refuses is its own case.
         if not fused_kernel_exists(queries, keys, values, kv_group_size, "causal"):
             return None
         if not dequantizing_is_smaller(queries, keys, values, kv_group_size):
@@ -991,14 +891,11 @@ def _compute_bytes(
     recurrent_width = sum(int(entry["conv_width"]) for entry in plan) * _RECURRENT_DTYPE_SIZE
     total = _COMPUTE_BASE_BYTES + prefill_chunk * (attention_width + recurrent_width)
     if quant_boundary is not None:
-        # The one term that DOES grow with the context, and only on the quantized path.
         score = heads * _QUANT_SCORE_DTYPE_SIZE * _QUANT_SCORE_LIVE
         row = _dequantized_row_bytes(widths, dtype_size, kv_bits, kv_group_size, prefill_chunk)
         if row is None:
             total += _widest_quantized_scores(n_ctx, quant_boundary, prefill_chunk) * score
         else:
-            # A copy replaces the scores only where the step is wide enough to be routed to it.
-            # The decode step never is, so its own scores can still be the wider of the two.
             total += max(row * n_ctx, (n_ctx + 1) * score)
     return int(total)
 
@@ -1018,7 +915,6 @@ def _load_is_refused(model_dir: str, config: dict, load_in_4bit: bool) -> Option
 
     existing = _get_existing_mlx_quantization(config)
     if isinstance(existing, dict) and existing.get("quant_method") == "bitsandbytes":
-        # Detected before the compatibility gate because the loader detects it there too.
         return "bitsandbytes weights mlx-lm cannot read"
 
     try:
@@ -1035,7 +931,6 @@ def _load_is_refused(model_dir: str, config: dict, load_in_4bit: bool) -> Option
                 q_group_size = None,
                 q_mode = None,
                 mlx_quantization_config = None,
-                # The CALLER's request; the compatibility check reads the metadata itself.
                 quantization_config = None,
                 quant_predicate = None,
                 quantize_modules = None,
@@ -1088,8 +983,7 @@ def _extra_tensors_refused(model, config: dict, extras: list) -> Optional[str]:
 
 
 def _refused_by_its_own_tensors(model_dir: str, config: dict) -> Optional[str]:
-    """Refusals only the checkpoint's own tensors reveal: tensors this architecture has no home
-    for, and a q_norm / k_norm rejection meaning mlx-lm is too old."""
+    """Refusals only the checkpoint's own tensors reveal."""
     try:
         from mlx.utils import tree_flatten
         from unsloth_zoo.mlx.loader import _raise_if_qk_norm_version_gap
@@ -1170,14 +1064,12 @@ def _size_load(
         return None
     if weights <= 0:
         return None
-    # Everything the architecture influences is inside the guard: raising here is a 500.
     try:
         dtype = _runtime_dtype()
         loaded_chunk, loaded_group = _generation_settings(config)
         plan, quant_start, facts = _cache_plan(
             config, dtype, kv_bits, kv_group_size or loaded_group
         )
-        # Per FIELD: a tower can state its hidden size and not its block width.
         widths = tuple(
             tower or checkpoint
             for tower, checkpoint in zip(facts["widths"], _config_widths(config))
@@ -1205,7 +1097,6 @@ def _priced_at(sizing: _MlxSizing, n_ctx: int) -> Optional[MlxMemoryBreakdown]:
     try:
         context = max(int(n_ctx or 0), 1)
         whole_prompt = sizing.facts["whole_prompt"]
-        # A runtime that declines to chunk sizes every "per chunk" term per PROMPT.
         chunk = context if whole_prompt else sizing.chunk
         kv, quant_boundary = _kv_bytes(
             sizing.plan, context, sizing.quant_start, chunk, whole_prompt
@@ -1232,7 +1123,6 @@ def _priced_at(sizing: _MlxSizing, n_ctx: int) -> Optional[MlxMemoryBreakdown]:
         gpu_bytes = total,
         n_ctx = context,
         layer_count = sizing.facts["layers"],
-        # What the cache is held at, not what was asked for. Never llama.cpp's vocabulary.
         cache_type_kv = _cache_width_name(
             sizing.plan,
             sizing.kv_bits,
@@ -1253,8 +1143,7 @@ def mlx_memory_breakdown(
     prefill_chunk: Optional[int] = None,
     load_in_4bit: bool = False,
 ) -> Optional[MlxMemoryBreakdown]:
-    """Price an MLX load, or None when it cannot honestly be sized: a total assembled around an
-    unread cache is a confident number for a load nobody measured."""
+    """Price an MLX load, or None when it cannot honestly be sized."""
     sizing = _size_load(model_dir, kv_bits, kv_group_size, prefill_chunk, load_in_4bit)
     return None if sizing is None else _priced_at(sizing, n_ctx)
 
@@ -1270,16 +1159,7 @@ def mlx_fit_context(
     prefill_chunk: Optional[int] = None,
     load_in_4bit: bool = False,
 ) -> Optional[int]:
-    """Largest context whose estimated footprint stays inside ``budget_bytes``.
-
-    None means nothing should be fitted, and answers four situations alike: the load cannot be
-    sized, ``max_ctx`` already fits, not even ``min_ctx`` does, or a length could not be priced
-    and the search stopped. None promises affordability; telling them apart needs a price.
-
-    The search assumes the total does not fall as the context grows. That is a property of the
-    terms, not something this arithmetic can enforce, so a test sweeps it at 256-token steps on a
-    dense, a windowed and a hybrid checkpoint and on a sizing that charges the whole prompt.
-    """
+    """Largest context whose estimated footprint stays inside ``budget_bytes``."""
     sizing = _size_load(model_dir, kv_bits, kv_group_size, prefill_chunk, load_in_4bit)
     if sizing is None:
         return None
@@ -1293,14 +1173,10 @@ def mlx_fit_context(
         middle = (low + high) // 2
         priced = _priced_at(sizing, middle)
         if priced is None:
-            # Not "does not fit": a bounded entry drives a real cache class to find its peak, so
-            # one context can fail where its neighbours priced. Searching on would discard the
-            # half above it and answer with a context that is not the largest one that fits.
             return None
         if priced.total_bytes <= budget_bytes:
             best = middle
             low = middle + 1
         else:
             high = middle - 1
-    # Down to a whole block, which is what the cache grows in anyway.
     return None if best is None else (best // MLX_KV_BLOCK) * MLX_KV_BLOCK

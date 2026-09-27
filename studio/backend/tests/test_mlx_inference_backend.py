@@ -3101,7 +3101,6 @@ def test_kv_quant_probe_reports_what_the_runtime_would_really_do(monkeypatch):
     )
     # Mixed quantizable/non-quantizable is a real success, reported as partial.
     assert elig(lambda: [lm_cache.KVCache(), lm_cache.CacheList(lm_cache.KVCache())]) == "partial"
-    # The two refusals the cache's shape settles, read off the one helper the estimate asks too.
     ring = lambda: [lm_cache.RotatingKVCache(max_size = 32)]
     assert elig(ring, reason = True) == (
         "refused",
@@ -4557,9 +4556,6 @@ def test_the_load_policy_bounds_a_pin_only_where_the_bound_can_be_enforced(monke
     assert policy(honours, None, 8192) == (None, 8192, True)
     assert policy(honours, None, 0, 262144) == (None, 262144, True)  # nothing to yield to
 
-    # A window fitted to the machine is an instruction about memory too, so it bounds where the
-    # model's own native window would have yielded to the quantization instead -- and the refusal
-    # it reports must not blame a Context Length the user never set.
     assert policy(honours, 4, 0, 24576, fitted = True) == (None, 24576, True)
     assert last["reason"] == mlx_inference.MLX_KV_QUANT_FITTED_CONTEXT
     assert policy(honours, 4, 8192) == (None, 8192, True)
@@ -4931,7 +4927,6 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
 
 
 def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path):
-    # `_fitted_context` catches everything, so a raise here reads as a real miss.
     from core.inference import mlx_inference
 
     priced = []
@@ -4945,7 +4940,6 @@ def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path
         ),
     )
     monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda **_: 8 * 1024**3)
-    # Every argument: another tower or length decides this window on a cache never built.
     judged = []
     monkeypatch.setattr(mlx_inference, "_kv_window_enforced", lambda *a: judged.append(a) or True)
 
@@ -4981,7 +4975,6 @@ def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path
     assert resident(kv_bits = 4, is_vlm = True)[:2] == (24_576, True)
     assert judged == [(model, True, 24_576)] and asked_elig == []
     assert resident(kv_bits = None)[2] is None and asked_elig == []
-    # Unbounded, so the width decides the window; one the cache will not carry is dropped first.
     monkeypatch.setattr(mlx_inference, "_kv_window_enforced", lambda *_a: False)
     assert resident(("full", "", True), kv_bits = 4, is_vlm = True)[:2] == (24_576, False)
     assert asked_elig == [(model, True, 4)]
@@ -4995,7 +4988,6 @@ def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path
     monkeypatch.setattr(mlx_inference, "_kv_window_enforced", lambda *a: judged.append(a) or True)
     monkeypatch.setattr(mlx_inference, "_kv_quant_eligibility", lambda *_a: ("full", "", True))
 
-    # Pricing builds cache classes drawing from the key, so both ways out of it rewind.
     rewound = []
     monkeypatch.setattr(
         mlx_inference, "_mlx_rng_key_words", lambda: rewound.append("held") or ("key",)
@@ -5037,33 +5029,24 @@ def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path
 
 
 def test_the_fit_budget_leaves_the_prompt_history_its_own_room(monkeypatch):
-    # Retained entries are evicted against their own cap rather than under pressure, so they are
-    # already spent when the fit reads the limit.
     from core.inference import mlx_inference
 
     fake = types.SimpleNamespace(
         metal = types.SimpleNamespace(is_available = lambda: True),
         device_info = lambda: {"max_recommended_working_set_size": 100_000_000_000},
     )
-    # `import mlx.core as mx` binds through the package attribute once the real module is
-    # loaded, so replacing only the sys.modules entry leaves the real one in play.
     monkeypatch.setitem(sys.modules, "mlx.core", fake)
     if "mlx" in sys.modules:
         monkeypatch.setattr(sys.modules["mlx"], "core", fake, raising = False)
     monkeypatch.delenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", raising = False)
 
     assert mlx_inference.mlx_memory_budget() == 85_000_000_000 - 15_000_000_000
-    # Only the text path keeps a history; reserving it for a vision load is a shorter context
-    # than the machine warrants.
     assert mlx_inference.mlx_memory_budget(retains_history = False) == 85_000_000_000
     fake.metal.is_available = lambda: False
     assert mlx_inference.mlx_memory_budget() is None
 
 
 def test_the_fit_asks_about_the_repo_the_loader_actually_opens(monkeypatch, tmp_path):
-    # A bnb-4bit id is served from its full-precision base and a LoRA load from its base
-    # checkpoint, so asking the cache about the name given finds nothing and the load is
-    # silently never fitted.
     import utils.utils as backend_utils
     from core.inference import mlx_inference
 
@@ -5071,7 +5054,6 @@ def test_the_fit_asks_about_the_repo_the_loader_actually_opens(monkeypatch, tmp_
     monkeypatch.setattr(
         backend_utils, "hf_cache_snapshot_dir", lambda name: asked.append(name) or tmp_path
     )
-    # The loader records the checkpoint it resolved, and that outranks the name it was given.
     assert mlx_inference._snapshot_dir(SimpleNamespace(_src_path = tmp_path), "org/alias") == str(
         tmp_path
     )
@@ -5081,8 +5063,7 @@ def test_the_fit_asks_about_the_repo_the_loader_actually_opens(monkeypatch, tmp_
 
 
 def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch):
-    """A pin is the user's own answer about memory and is served verbatim; the fit exists for the
-    load that gave none, and the verdict it reached is the one the policy runs on."""
+    """A pin is the user's own answer about memory and is served verbatim."""
     _install_fake_mlx(monkeypatch)
     _install_fake_fast_mlx(monkeypatch, [])
 
@@ -5122,21 +5103,18 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
         )
         return backend, backend.models[model]
 
-    # A pin the cache holds spends the request; the unpinned load hands the question to the fit.
     _, pinned = load(max_seq_length = 4096, kv_bits = 4)
     assert (asked, verdicts) == ([], [])
     assert (pinned["context_length"], pinned["context_length_fitted"]) == (4096, None)
     assert pinned["mlx_kv_quant_reason"] == mlx_inference.MLX_KV_QUANT_PINNED_CONTEXT
     _, info = load(max_seq_length = 0, kv_bits = 4)
     assert verdicts == []
-    # Every argument: a wrong checkpoint, ceiling, budget or width fits some other load here.
     assert asked == [
         ("fake/text", None, dict(load_in_4bit = True, retains_history = True, kv_bits = 4, is_vlm = False))
     ]
     assert (info["context_length"], info["context_length_fitted"]) == (24_576, 24_576)
     assert info["mlx_kv_quant_reason"] == mlx_inference.MLX_KV_QUANT_FITTED_CONTEXT
 
-    # Made to disagree: a policy asking again installs a bound over a window fitted without one.
     _, info = load((24_576, False, FULL), lambda _s: True, max_seq_length = 0, kv_bits = 4)
     assert (info["mlx_kv_bits"], info["context_length"], verdicts) == (4, 24_576, [])
     _, info = load((24_576, None, FULL), lambda _s: True, max_seq_length = 0, kv_bits = 4)
@@ -5144,8 +5122,6 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
     backend, info = load(enforceable = lambda _s: False, max_seq_length = 4096, kv_bits = 4)
     assert (info["mlx_kv_bits"], verdicts) == (4, [(backend._model, False, 4)])
 
-    # A vision load keeps the snapshot store where it can build one, and that is the same
-    # allowance the text history occupies, so it is reserved on the same terms.
     for available, reserved in ((True, True), (False, False)):
         monkeypatch.setattr(
             mlx_inference, "mlx_vlm_snapshot_store_available", lambda a = available: a
@@ -5164,8 +5140,6 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
             )
         ]
 
-    # A shard, a width the sizing does not take, and an adapter reloading its base at its own
-    # width are all loads the sizing cannot describe.
     for kwargs in (
         dict(
             parallel_mode = "tensor",
@@ -5179,9 +5153,7 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
 
 
 def test_the_fit_is_taken_at_the_width_the_load_will_run_at(monkeypatch):
-    """The window and the KV width are one decision: every window kept is affordable at the width
-    it runs at, priced there by the search or, where a bound takes the quantization away, by
-    ``_window_holds``."""
+    """The window and the KV width are one decision."""
     from core.inference import mlx_inference
 
     fits, asked, judged, priced = {}, [], [], []
@@ -5225,8 +5197,6 @@ def test_the_fit_is_taken_at_the_width_the_load_will_run_at(monkeypatch):
     ceiling_priced_out = lambda w, _b: w != 262_144
     for bounded, holds, full, b4, expected in (
         (bound, True, 24_576, 60_000, (24_576, None, True)),
-        # None installed, so the window is refitted where it runs -- shorter where quantized
-        # attention costs more than the cache saves, longer where not.
         (free, True, 24_576, 8_192, (8_192, 4, False)),
         (unknown, True, 24_576, 8_192, (8_192, 4, None)),
         (free, True, 24_576, 60_000, (60_000, 4, False)),
@@ -5236,7 +5206,6 @@ def test_the_fit_is_taken_at_the_width_the_load_will_run_at(monkeypatch):
         (free, True, 24_576, None, (None, 4, None)),
         (free, ceiling_priced_out, 24_576, None, (24_576, 4, False)),
         (free, False, 24_576, None, (None, 4, None)),
-        # Without grouped keys the saving finds a window where full width found none.
         (bound, True, None, None, (None, 4, None)),
         (free, False, None, 8_192, (8_192, 4, False)),
         (unknown, False, None, 8_192, (8_192, 4, None)),
@@ -5245,16 +5214,12 @@ def test_the_fit_is_taken_at_the_width_the_load_will_run_at(monkeypatch):
     ):
         assert fit(bounded, holds = holds, full = full, b4 = b4) == expected, (full, b4)
 
-    # The window served is the window judged, and the second sizing asked for only where the
-    # request survived the first bound. Result and trace are read from one call, so a window
-    # reached by extra probing cannot pass on the right answer alone.
     def traced(*a, **kw):
         return (fit(*a, **kw), asked[:], judged[:], priced[:])
 
     W, N, F = (24_576, None, True), (None, 4, None), (8_192, 4, False)
     assert traced(bound, full = 24_576, b4 = 60_000) == (W, [None], [24_576], [])
     assert traced(free, full = 24_576, b4 = 8_192) == (F, [None, 4], [24_576, 8_192], [])
-    # Priced again only where a bound takes the width away, or where the search named no window.
     assert traced(free, full = 24_576, b4 = 60_000) == (
         (60_000, 4, False),
         [None, 4],
@@ -5274,7 +5239,6 @@ def test_the_fit_is_taken_at_the_width_the_load_will_run_at(monkeypatch):
         [24_576],
         [(262_144, 4), (24_576, 4)],
     )
-    # Nothing fitted at either width judges nothing: there is no window to put the question about.
     assert traced(bound, full = None, b4 = None) == (N, [None, 4], [], [])
     assert traced(bound, full = None, b4 = 8_192) == (
         (8_192, None, True),
@@ -5290,7 +5254,6 @@ def test_the_fit_is_taken_at_the_width_the_load_will_run_at(monkeypatch):
         [],
     )
 
-    # A machine that cannot be measured, or a pricing that raised, instructs nothing.
     monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda **_: None)
     assert fit(bound, full = 24_576, b4 = 8_192) == (None, 4, None)
     monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda **_: 8 * 1024**3)
@@ -5305,7 +5268,6 @@ def test_the_fit_is_taken_at_the_width_the_load_will_run_at(monkeypatch):
         "/d", 262_144, load_in_4bit = False, retains_history = True, kv_bits = 4
     ) == (None, 4, None)
 
-    # With no width requested the window is still judged -- by the architecture, by default.
     monkeypatch.setitem(
         sys.modules,
         "core.inference.mlx_memory",
@@ -5333,7 +5295,6 @@ def test_what_tells_an_affordable_window_from_one_nothing_fits(monkeypatch):
             )
         ),
     )
-    # The window, width and weight loading asked about: anything else prices another load.
     assert mlx_inference._window_holds("/d", 4096, 4_096_000, load_in_4bit = True) is True
     assert priced == {"dir": "/d", "n_ctx": 4096, "kv_bits": None, "load_in_4bit": True}
     assert mlx_inference._window_holds("/d", 4096, 4_096_000, True, 4) is True
@@ -5349,8 +5310,7 @@ def test_what_tells_an_affordable_window_from_one_nothing_fits(monkeypatch):
 
 
 def test_the_bound_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
-    """An architecture can offer several towers and the sizing takes the first whose forward pass
-    runs, so judging one it would reject answers for a cache the load never builds."""
+    """The sizing takes the first tower whose forward pass succeeds."""
     from mlx_lm.models.cache import KVCache, RotatingKVCache
 
     from core.inference import mlx_inference
@@ -5370,7 +5330,6 @@ def test_the_bound_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
             cache = None,
             **_k,
         ):
-            # Selection has to happen on the cache the sizing selects on: the one with no window.
             self.selected_with = cache
             if not self.runs:
                 raise ValueError("this tower cannot run")
@@ -5405,8 +5364,6 @@ def test_the_bound_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
             ),
         )
 
-    # Building towers draws from the key an unseeded generation samples from, so the question
-    # leaves it where it was found: captured before any build, restored on every way out.
     rewound = []
     monkeypatch.setattr(
         mlx_inference, "_mlx_rng_key_words", lambda: rewound.append("held") or ("key",)
@@ -5417,27 +5374,21 @@ def test_the_bound_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
         offering(*towers)
         marks = len(rewound)
         answer = mlx_inference.mlx_bound_would_be_enforced("/d", 4096)
-        # Ordering, not arrival: a boundary below the build would still restore.
         tried = next((n for n, tower in enumerate(towers) if tower.runs), len(towers) - 1) + 1
         assert rewound[marks:] == ["held", *["built"] * tried, ("key",)]
         return answer
 
-    # No builder of its own is bounded only because the window reaches it; one that owns a
-    # builder is handed no window, so capping itself is its own business.
     plain = Tower("plain")
     assert verdict(plain) is True
     assert [getattr(entry, "max_size", None) for entry in plain.selected_with] == [None]
     assert verdict(Tower("bounded")) is True
     assert verdict(Tower("unbounded")) is False
-    # A cache with no entries caps nothing: `all` over nothing would say otherwise.
     assert verdict(Tower("empty")) is False
     assert verdict(Tower("bounded"), Tower("unbounded")) is True
-    # The first tower that runs is the answer, so a rejected one is skipped -- both directions.
     assert verdict(Tower("bounded", runs = False), Tower("unbounded")) is False
     assert verdict(Tower("unbounded", runs = False), Tower("bounded")) is True
     assert verdict(Tower("bounded", runs = False)) is None
 
-    # Answered from the cache built: converting one evaluates every weight the model has.
     monkeypatch.setattr(
         mlx_inference,
         "_kv_quant_eligibility",
@@ -5448,10 +5399,8 @@ def test_the_bound_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
         offering(*towers)
         return mlx_inference.mlx_kv_quant_is_refused("/d")
 
-    # Offering a conversion and keeping no ring is not refused -- which is not accepted either.
     assert refused(Tower("unbounded")) is False
     assert refused(Tower("plain")) is False
-    # A ring is refused, its conversion holding an offset past its storage; so is an empty cache.
     assert refused(Tower("bounded")) is True
     assert refused(Tower("empty")) is True
     assert refused(Tower("unbounded", runs = False), Tower("bounded")) is True

@@ -201,11 +201,7 @@ class TestNonGgufStatusReportsWhatTheLoadAskedFor:
         assert response.context_length_fitted == 14336
 
     def test_every_projection_that_reports_a_bound_reports_how_it_was_chosen(self):
-        """Four hand-maintained projections, and a drop from any one of them is silent.
-
-        Whether the window bounds the cache and whether the machine chose it are read together by
-        a client deciding what to show, so they are kept together at every site that reports one.
-        """
+        """Four hand-maintained projections, and a drop from any one of them is silent."""
         from pathlib import Path
 
         lines = Path("routes/inference.py").read_text().split("\n")

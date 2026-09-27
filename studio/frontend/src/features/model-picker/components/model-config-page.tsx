@@ -2704,13 +2704,9 @@ export function ModelConfigPage({
               (target.isGguf === true && activePresetSource === "builtin-default"),
           ),
           cacheTypeKv: runtimeConfig.kvCacheDtype,
-          // The pin the Load button sends, not the window the control displays: an unpinned
-          // MLX load names nothing and is fitted to this machine, and the fitted length is
-          // what comes back below.
           maxSeqLength: target.isGguf
             ? null
             : resolveMlxEstimateContext(savedContextPin(config)),
-          // MLX's cache width: a remembered llama.cpp kvCacheDtype does not describe it.
           mlxKvBits: runtimeConfig.mlxKvBits ?? null,
           nParallel: runtimeConfig.nParallel,
           nBatch: runtimeConfig.nBatch,
@@ -2737,9 +2733,6 @@ export function ModelConfigPage({
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
-  // Below the estimate on purpose: this reads what the estimate answered, while the request
-  // above deliberately does not. Only MLX reports a fitted window, and only where this
-  // machine holds less than the model offers.
   const mlxFittedWindow = targetIsMlx
     ? servedWindow(memoryEstimate.estimate?.contextFitted)
     : null;
@@ -2752,7 +2745,6 @@ export function ModelConfigPage({
     servedWindow(savedContextPin(config)) ??
     mlxServedWindow ??
     clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
-  // The slider picks a request, so it stops at the widest a load may make.
   const maxSeqLengthMax = Math.min(
     MAX_SEQ_LENGTH_MAX,
     Math.max(nativeMaxSeqLength, maxSeqLengthValue),
@@ -3165,8 +3157,6 @@ export function ModelConfigPage({
       )}
 
       <div className="space-y-5">
-        {/* Above Context Length on purpose: that is the control moving this number most. Outside the
-            GGUF block because an MLX load has a footprint to show too. */}
         {memoryEstimateRequest != null && (
           <MemoryEstimateRow
             estimate={memoryEstimate.estimate}

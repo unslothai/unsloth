@@ -913,8 +913,6 @@ class TestEstimateMemoryRoute:
         assert resp.reason == "unsupported_source"
 
     def test_the_estimate_asks_the_question_the_worker_asks_of_the_stack(self, monkeypatch):
-        # `import mlx.core` succeeds on a stack whose mlx-lm or mlx-vlm the worker refuses, and
-        # detect_hardware then routes the load to a backend on a different allocation plan.
         import utils.mlx_repair as repair
         monkeypatch.setattr(repair, "is_apple_silicon", lambda: True)
         for blockers, available in (([], True), (["mlx-vlm 0.0.1 is too old"], False)):
@@ -922,7 +920,6 @@ class TestEstimateMemoryRoute:
             assert ri._mlx_estimate_available() is available
 
     def test_non_gguf_model_is_not_priced_without_mlx(self, monkeypatch):
-        # Safetensors allocates differently, so the GGUF arithmetic would be invented.
         monkeypatch.setattr(
             ri,
             "_cached_estimate_config",
@@ -934,8 +931,6 @@ class TestEstimateMemoryRoute:
         assert resp.reason == "not_gguf"
 
     def test_a_native_audio_load_is_not_priced_as_an_mlx_one(self, monkeypatch, tmp_path):
-        # The worker hands these to the native audio backend ahead of the MLX path, so an MLX
-        # host must still refuse them: the language model priced here is never built.
         import core.inference.native_audio as native_audio
 
         self._mlx_target(monkeypatch, str(tmp_path))
@@ -999,7 +994,6 @@ class TestEstimateMemoryRoute:
         assert resp.total_bytes == 0
 
     def test_mlx_model_is_priced_and_itemized(self, monkeypatch, tmp_path):
-        # Real numbers on the wire, itemized as the GGUF arm itemizes them.
         self._mlx_target(monkeypatch, "/models/thing")
         seen = self._record_breakdown(
             monkeypatch,
@@ -1010,7 +1004,6 @@ class TestEstimateMemoryRoute:
             gpu_bytes = 9_000_000_000,
             layer_count = 36,
         )
-        # cache_type_kv is llama.cpp's and passed on purpose: MLX never reads it.
         resp = _estimate(
             model_path = "org/model",
             max_seq_length = 16384,
@@ -1043,7 +1036,6 @@ class TestEstimateMemoryRoute:
         )
         assert seen["load_in_4bit"] is False
 
-        # And the RESOLVED setting reaches it: 4 bits is off for a sidecar-routed architecture.
         import utils.transformers_version as tv
 
         asked, guarded, real_guard = [], [], ri._offline_guarded
@@ -1079,7 +1071,6 @@ class TestEstimateMemoryRoute:
         assert seen == {}
 
     def test_the_snapshot_priced_is_the_one_the_load_would_open(self, monkeypatch, tmp_path):
-        # mlx-lm cannot read bitsandbytes weights, so the load opens the base repo: the packed shards belong to a repository it never touches.
         import utils.models.model_config as mc
 
         asked, found = [], []
@@ -1097,7 +1088,6 @@ class TestEstimateMemoryRoute:
                     is None
                 )
             assert asked == ["unsloth/Qwen3-4B", "unsloth/Qwen3-4B"]
-        # And of the revision `main` names, not a newer snapshot beside it.
         for made in (
             "stub/config.json",
             "new/config.json",
@@ -1114,9 +1104,6 @@ class TestEstimateMemoryRoute:
             str(snaps / "old"),
         )
         config = SimpleNamespace(path = None, is_local = False, is_lora = False, identifier = "org/model")
-        # A load resolves through the ref and completes that revision or fails, so an incomplete
-        # one is not priced from an older snapshot beside it -- that quotes weights the load never
-        # opens. Where the ref names nothing here, the snapshots that are here are all there is.
         for named, expected in (
             ("old", old),
             ("stub", None),
@@ -1128,7 +1115,6 @@ class TestEstimateMemoryRoute:
             assert ri._local_mlx_model_dir(config) == expected
 
     def test_a_part_finished_download_is_not_priced_as_a_smaller_model(self, tmp_path):
-        # A shard names the siblings it expects, so two of five on disk is a model 60% smaller.
         def index(weight_map):
             (tmp_path / "model.safetensors.index.json").write_text(
                 json.dumps({"weight_map": weight_map})
@@ -1156,7 +1142,6 @@ class TestEstimateMemoryRoute:
         assert ri._local_mlx_model_dir(config) is None
 
     def test_shard_names_that_count_nothing_are_counted_by_the_index(self, tmp_path):
-        # Step-3.5-Flash's `model-000NN` and MiMo-V2-Flash's `model_N`: neither states a count.
         (tmp_path / "config.json").write_text("{}")
         config = SimpleNamespace(path = str(tmp_path), is_local = True, is_lora = False)
         (tmp_path / "model.safetensors").write_bytes(b"")
@@ -1175,8 +1160,6 @@ class TestEstimateMemoryRoute:
         for name in named[1:]:
             (tmp_path / name).write_bytes(b"")
         assert ri._local_mlx_model_dir(config) == str(tmp_path)
-        # An index overlapping this directory nowhere is a parent's, inherited by a re-upload:
-        # accepted, because it describes some other snapshot rather than this incomplete one.
         (tmp_path / "model.safetensors.index.json").write_text(
             json.dumps(
                 {
@@ -1189,7 +1172,6 @@ class TestEstimateMemoryRoute:
         assert ri._local_mlx_model_dir(config) == str(tmp_path)
 
     def test_an_mlx_estimate_prices_max_seq_length_not_n_ctx(self, monkeypatch):
-        # n_ctx is the GGUF-only control and is null on this path.
         self._mlx_target(monkeypatch, "/models/thing")
         seen = self._record_breakdown(
             monkeypatch,
@@ -1203,7 +1185,6 @@ class TestEstimateMemoryRoute:
         assert seen["n_ctx"] == 8192
 
     def test_an_unpinned_mlx_estimate_prices_the_fit_and_reports_it(self, monkeypatch, tmp_path):
-        # A panel showing a figure before an unpinned load must price the load's own fit.
         from core.inference import mlx_inference
         from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 
@@ -1218,7 +1199,6 @@ class TestEstimateMemoryRoute:
                 kw,
                 ceiling = ceiling,
                 dir = model_dir,
-                # Recorded before the question is put, catching a route that answered ahead.
                 probes_before = len(widths),
                 refused = kw["applies"]() if fit.get("ask", True) else None,
             )
@@ -1232,7 +1212,6 @@ class TestEstimateMemoryRoute:
             total_bytes = 3,
             gpu_bytes = 3,
         )
-        # n_ctx is llama.cpp's field, so a caller sending one is not naming an MLX length.
         probed, widths = [], []
         monkeypatch.setattr(
             mlx_inference,
@@ -1247,7 +1226,6 @@ class TestEstimateMemoryRoute:
         resp = _estimate(model_path = "org/model", n_ctx = 32_768, mlx_kv_bits = 4)
         assert probed == []
         assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (24_576, None, 24_576)
-        # The refusal question travels into the fit rather than being answered ahead of it.
         assert asked.pop("probes_before") == 0 and widths == [(str(tmp_path),)]
         assert asked.pop("applies")() is True
         assert asked == {
@@ -1264,13 +1242,10 @@ class TestEstimateMemoryRoute:
         assert (asked["probes_before"], asked["refused"], widths) == (0, None, [])
         fit["ask"] = True
 
-        # With no bound installed the load quantizes as asked, so the panel prices that width.
         fit["answer"] = (12_288, 4, False)
         resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
         assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (12_288, 4, 12_288)
 
-        # A refused width is never applied on any path, pinned included -- but it is asked
-        # about only where a width still stands.
         widths.clear()
         monkeypatch.setattr(
             mlx_inference,
@@ -1290,14 +1265,12 @@ class TestEstimateMemoryRoute:
         )
         _estimate(model_path = "org/model", mlx_kv_bits = 4)
         assert asked["kv_bits"] == 4 and asked["refused"] is False
-        # Not known to refuse is not a refusal: the load finds what only conversion can say.
         monkeypatch.setattr(mlx_inference, "mlx_kv_quant_is_refused", lambda *a: False)
         monkeypatch.setattr(mlx_inference, "mlx_bound_would_be_enforced", lambda *a: False)
         _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
         assert seen["kv_bits"] == 4
         monkeypatch.setattr(mlx_inference, "mlx_kv_quant_is_refused", lambda *a: False)
 
-        # A named length is fitted to nothing, but a bound it can carry still displaces the width.
         probed.clear()
         monkeypatch.setattr(
             mlx_inference, "mlx_bound_would_be_enforced", lambda *a: probed.append(a) or True
@@ -1309,21 +1282,16 @@ class TestEstimateMemoryRoute:
         resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
         assert (seen["n_ctx"], seen["kv_bits"]) == (8192, 4)
 
-        # With no fit the declared window stands, held to what /load accepts, then the default.
         fit["answer"] = (None, 4, None)
         write(json.dumps({"max_position_embeddings": MAX_REQUESTABLE_CONTEXT * 4}))
         resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
         assert resp.context_fitted is None
         assert (seen["n_ctx"], seen["kv_bits"]) == (MAX_REQUESTABLE_CONTEXT, 4)
-        # Nothing declares a window and nothing fitted one, so the load installs no cache bound
-        # and there is no length to price: a number here is one the conversation may grow past.
         write(json.dumps({"model_type": "llama"}))
         seen.clear()
         assert _estimate(model_path = "org/model").reason == "unsizable"
         assert seen == {}
 
-        # A vision load keeps the snapshot store where it can build one, and that is the same
-        # allowance the text history occupies, so the panel reserves it on the load's terms.
         write(json.dumps({"max_position_embeddings": 262_144}))
         self._mlx_target(monkeypatch, str(tmp_path), is_vision = True)
         for available in (True, False):
@@ -3728,11 +3696,9 @@ class TestMlxEstimateKvBits:
         [
             (4, 4),
             (8, 8),
-            # Not one of MLX's widths: the runtime refuses it and leaves the cache unquantized.
             (7, None),
             (0, None),
             (None, None),
-            # A bool is an int in Python, and True would otherwise read as 1 bit.
             (True, None),
             ("4", None),
         ],
@@ -3741,11 +3707,6 @@ class TestMlxEstimateKvBits:
         assert ri._mlx_estimate_kv_bits(requested) == expected
 
 
-# ---------------------------------------------------------------------------
-# The MLX pre-load planner. The property the GGUF planner cannot express: a linear-attention
-# layer's recurrent state does not grow with the context, so a hybrid must not be charged as
-# if every layer kept a key/value cache.
-# ---------------------------------------------------------------------------
 
 import glob  # noqa: E402
 from dataclasses import replace  # noqa: E402
@@ -3824,7 +3785,6 @@ def _on_bfloat16_chip():
 
 class TestCacheWidthName:
     def test_only_the_entries_that_grow_name_the_cache(self):
-        # The majority recurrent state never moves with the context, so it names neither cache.
         hybrid = [_RECURRENT] * 30 + [_GROWING] * 10
         assert _caption(hybrid) == "bf16"
         assert _caption(hybrid, 4, True) == "4-bit"
@@ -3842,10 +3802,8 @@ class TestCacheWidthName:
         assert _caption([_GROWING] * 10, 4, False) == "bf16"
 
     def test_an_entry_that_cannot_convert_keeps_its_width_through_a_converting_run(self):
-        # Conversion is per entry, so a run can convert part of what it holds.
         staying = _plan_entry(converts = False, quant_slope = _GROWING["slope"])
         assert _caption([staying] * 57 + [_GROWING] * 3, 4, True) == "bf16/4-bit"
-        # Ordered by what each carries: counting entries would name the heavy minority last.
         heavy, light = (
             _plan_entry(quant_slope = 100_000.0),
             _plan_entry(converts = False, slope = 1.0, quant_slope = 1.0),
@@ -3854,7 +3812,6 @@ class TestCacheWidthName:
 
     @_NEEDS_MLX
     def test_a_bounded_entry_is_weighed_by_what_it_holds_and_not_by_its_slope(self):
-        # Llama4's shape: past their bound the chunked entries stop growing.
         from mlx_lm.models.cache import ChunkedKVCache
 
         bounded = _plan_entry(converts = False, bound_spec = (ChunkedKVCache, "chunk_size", 8192))
@@ -3919,7 +3876,6 @@ class TestComputeBytes:
         assert mm._compute_bytes(mm._config_widths({}), 2, 2048, [_GROWING], 8192, None) == 0
 
     def test_the_calibrated_term_matches_the_measurement_it_came_from(self):
-        # The only absolute here, so it is what pins the scale to the load it was fitted to.
         measured = 610 * 1024**2
         priced = mm._compute_bytes(
             (1024, 3072, 16), 2, mm.MLX_PREFILL_CHUNK, [_GROWING] * 28, 8192, None
@@ -3932,10 +3888,8 @@ class TestComputeBytes:
 
 @_NEEDS_MLX
 class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
-    """unsloth-zoo routes each call between a score matrix and a dequantized copy of the cache,
-    and the two cost differently enough that pricing the wrong one is pricing another load."""
+    """unsloth-zoo routes each call between a score matrix and a dequantized copy of the cache."""
 
-    # hidden, intermediate, heads, kv heads, head width.
     GQA = (3584, 18944, 32, 8, 128, 0)
     MHA = (3584, 18944, 32, 32, 128, 0)
     WIDE = (3584, 18944, 16, 2, 256, 0)
@@ -3945,10 +3899,8 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         [
             (GQA, 2048, True),
             (GQA, 256, True),
-            # Ungrouped, the copy is HQ rows rather than HKV, so the tie sits above this step.
             (MHA, 2048, True),
             (MHA, 256, False),
-            # mlx has no fused kernel at this head width, so the runtime scores it either way.
             (WIDE, 2048, False),
             (WIDE, 256, False),
         ],
@@ -3962,8 +3914,6 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         from unsloth_zoo.mlx.attention import _row_bytes
 
         cache = mx.quantize(mx.zeros((1, 8, 1, 128), dtype = mx.bfloat16), group_size = 64, bits = 4)
-        # Keys and values both, and dequantized plus packed: the packed half is the compaction
-        # a prefix view pays before it can be dequantized at all.
         assert mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048) == (
             2 * 8 * _row_bytes(cache, 64, mx.bfloat16)
         )
@@ -3976,7 +3926,6 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         assert priced - floor == row * 32768 < scores
 
     def test_the_decode_step_still_scores_where_that_is_the_wider_of_the_two(self):
-        # One cached row against 128 query heads: the copy is small and the decode step is not.
         widths = (3584, 18944, 128, 1, 64, 0)
         row = mm._dequantized_row_bytes(widths, 2, 8, 64, 2048)
         floor = mm._compute_bytes(widths, 2, 2048, [], 32768, None)
@@ -4006,13 +3955,9 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         "stated, expected",
         [
             ({"num_key_value_heads": 8, "head_dim": 128}, (8, 128, 0)),
-            # Ungrouped attention states no separate count, and a head is the hidden size split.
             ({}, (32, 112, 0)),
-            # A tower can state the count and leave the width to the division.
             ({"num_key_value_heads": 4}, (4, 112, 0)),
-            # And a head width that is not the division, which several towers carry.
             ({"head_dim": 64}, (32, 64, 0)),
-            # Values narrower than keys, which mlx will not fuse and this must not flatten.
             ({"head_dim": 192, "v_head_dim": 128}, (32, 192, 128)),
         ],
     )
@@ -4021,13 +3966,9 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
 
         config = {"hidden_size": 3584, "num_attention_heads": 32, **stated}
         assert mm._config_widths(config)[3:] == expected
-        # The built tower answers the same, so a probe and a config cannot disagree here.
         assert mm._tower_widths(SimpleNamespace(args = SimpleNamespace(**config)))[3:] == expected
 
     def test_the_group_size_the_load_resolved_reaches_the_route(self):
-        # A wider group packs fewer scales and biases beside the same data, so the copy shrinks
-        # while the cache it was made from does too. Pricing it at the module default would
-        # charge a packing this load is not using.
         _on_bfloat16_chip()
         snapshot = _local_snapshot("unsloth/Qwen3-4B-Thinking-2507")
         priced = {
@@ -4043,18 +3984,13 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         )
 
     def test_a_tower_whose_values_are_narrower_keeps_the_scores(self):
-        # mlx fuses only where the two widths agree, so a key width it would fuse on its own
-        # must still keep the scores once the values beside it are narrower.
         assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 128, 64), 2, 4, 64, 2048) is None
         assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 192, 128), 2, 4, 64, 2048) is None
-        # Stating the width the keys already have changes nothing.
         assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 128, 128), 2, 4, 64, 2048) == (
             mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048)
         )
 
     def test_a_tower_that_states_nothing_is_still_priced_from_its_checkpoint(self):
-        # The two width sources are merged field by field, so a shorter one silently drops the
-        # tail and the route then cannot read the geometry the checkpoint did state.
         assert len(mm._tower_widths(object())) == len(mm._config_widths({}))
         config = {
             "hidden_size": 3584,
@@ -4073,7 +4009,6 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
 
     def test_an_unquantized_load_never_reaches_the_route(self):
         assert mm._dequantized_row_bytes(self.GQA, 2, None, 64, 2048) is None
-        # And a tower that stated no head geometry cannot be routed from a guess.
         assert mm._dequantized_row_bytes((3584, 18944, 32, 0, 0, 0), 2, 4, 64, 2048) is None
 
 
@@ -4082,11 +4017,9 @@ class TestProbeFollowsTheLoadersRoute:
     """The estimator must not price a load path that cannot be taken."""
 
     def test_a_vision_model_is_never_priced_from_mlx_lms_copy_of_it(self):
-        # Not interchangeable: mlx-lm keeps the MLA latent mlx-vlm expands, so it under-charges.
         import importlib
 
         config = {"model_type": "kimi_vl", "vision_config": {"depth": 2}}
-        # The collision this guards is real only while mlx-lm still carries its own copy.
         assert importlib.import_module("mlx_lm.models.kimi_vl")
         assert {
             model_class.__module__.split(".")[0]
@@ -4120,7 +4053,6 @@ class TestProbeFollowsTheLoadersRoute:
         "chip, expected", [("Apple M1 Max", "float16"), ("Apple M3 Max", "bfloat16")]
     )
     def test_the_chip_decides_the_width_the_loader_installs(self, monkeypatch, chip, expected):
-        # bf16 is emulated on M1/M2, so the loader installs fp16 there and bfloat16 later.
         import mlx.core as mx
         monkeypatch.setattr(mx, "device_info", lambda: {"device_name": chip})
         assert mm._runtime_dtype() is getattr(mx, expected)
@@ -4135,7 +4067,6 @@ class TestGenerationSettingsComeFromTheLoader:
 
         from core.inference import mlx_inference as mi
 
-        # Nothing pins the step, so every path answers with its own runtime's default.
         monkeypatch.setattr(mi, "mlx_vlm_snapshot_store_available", lambda: False)
         for vision, drafted in ((False, False), (True, False), (False, True), (True, True)):
             step = mi._generation_step(vision = vision, drafted = drafted)
@@ -4146,24 +4077,16 @@ class TestGenerationSettingsComeFromTheLoader:
                 assert ask(vision = vision, drafted = drafted) == (
                     inspect.signature(step).parameters[setting].default
                 )
-        # Named by package, not by asking the helper what it chose: both autoregressive
-        # defaults are 2048/64 today, so a vision request served mlx-lm's function would
-        # otherwise agree with every number this test checks.
         assert mi._generation_step(vision = True, drafted = False).__module__.startswith("mlx_vlm")
         assert mi._generation_step(vision = False, drafted = False).__module__.startswith("mlx_lm")
-        # A drafter alone moves the chunk, so a restated constant cannot tell these apart.
         assert mi.mlx_prefill_chunk(drafted = True) != mi.mlx_prefill_chunk()
-        # But only on the text path: mlx-vlm drives a drafter inside its own generation.
         assert mi.mlx_prefill_chunk(vision = True, drafted = True) == mi.mlx_prefill_chunk(vision = True)
 
     def test_a_pinned_vision_step_outranks_the_runtimes_own(self, monkeypatch):
         from core.inference import mlx_inference as mi
 
         vlm_default = mi._generation_default("prefill_step_size", 0, vision = True, drafted = False)
-        # The session's grid, stubbed apart from the runtime default so the pin is observable.
         monkeypatch.setattr(mi, "vlm_prefill_step", lambda: vlm_default + 256)
-        # A session needs the store AND the media ids; an image request missing either prefills
-        # at the runtime's own step, so only a load whose every request is served takes the pin.
         media, bare = {"image_token_id": 151655}, {"model_type": "vlm"}
         for store, config, expected in (
             (True, media, vlm_default + 256),
@@ -4173,7 +4096,6 @@ class TestGenerationSettingsComeFromTheLoader:
         ):
             monkeypatch.setattr(mi, "mlx_vlm_snapshot_store_available", lambda p = store: p)
             assert mi.mlx_prefill_chunk(vision = True, config = config) == expected
-            # Only the vision path is pinned, and the group size never is.
             assert mi.mlx_prefill_chunk(config = media) == mi.MLX_PREFILL_CHUNK_FALLBACK
             assert mi.mlx_kv_group_size(vision = True) == mi.MLX_KV_GROUP_SIZE_FALLBACK
 
@@ -4186,7 +4108,6 @@ class TestGenerationSettingsComeFromTheLoader:
             mlx_vlm_snapshot_store_available,
         )
 
-        # `mlx_vlm.generate` is a submodule shadowed by a function of the same name.
         vlm_generate = importlib.import_module("mlx_vlm.generate")
         backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
         backend._memory_limits_applied = {}
@@ -4209,13 +4130,10 @@ class TestGenerationSettingsComeFromTheLoader:
             return lambda prefill_step_size = chunk, kv_group_size = group: None
 
         monkeypatch.setattr(mi, "_generation_step", _stated)
-        # True is an int and "64" is truthy, so a bare truthiness check would price both.
         assert mi.mlx_prefill_chunk() == mi.MLX_PREFILL_CHUNK_FALLBACK
         assert mi.mlx_kv_group_size() == mi.MLX_KV_GROUP_SIZE_FALLBACK
 
     def test_the_eligibility_probe_converts_at_the_width_generation_would(self, monkeypatch):
-        # The probe decides whether a request is offered at all, so a width of its own would
-        # accept a cache generation then refuses, or refuse one it would have taken.
         import mlx.core as mx
 
         from core.inference import mlx_inference as mi
@@ -4236,8 +4154,6 @@ class TestGenerationSettingsComeFromTheLoader:
         monkeypatch.setattr(mi, "_kv_entry_nbytes", lambda entry: 1)
         mi._kv_quant_probe(lambda *a, **kw: None, [_Entry()], 4, vision = True)
         assert asked == [(32, 4)]
-        # And of the runtime actually being probed: a VLM cache asked about mlx-lm's width
-        # would be admitted or refused on a width generation never uses.
         assert seen == [True]
 
     @pytest.mark.parametrize("is_vlm", [True, False])
@@ -4269,13 +4185,10 @@ class TestGenerationSettingsComeFromTheLoader:
         assert seen == [True, False]
 
     def test_the_quantization_start_follows_the_loader_too(self, monkeypatch):
-        # It moves the full-width/quantized crossover and the score buffer, so restating it here
-        # would price a VLM at a footprint the load does not run at.
         from core.inference import mlx_inference as mi
 
         monkeypatch.setattr(mi, "_vlm_quantized_kv_start", lambda: 1234)
         assert mm._vlm_quant_start() == 1234
-        # And the plan carries the loader's answer rather than the fallback beside it.
         entry = {
             "bytes": 1,
             "quant_bytes": 1,
@@ -4314,8 +4227,6 @@ class TestGenerationSettingsComeFromTheLoader:
 @_NEEDS_MLX
 @pytest.mark.parametrize("reported, compute", [(None, 1_035_321_999), (512, 903_201_423)])
 def test_the_estimate_prices_the_chunk_the_loader_reports(monkeypatch, reported, compute):
-    # The drift this closes: the chunk a load really prefills at has to reach the estimate, and
-    # no assertion about the constant alone would catch it standing still.
     _on_bfloat16_chip()
     if reported is not None:
         from core.inference import mlx_inference as mi
@@ -4327,7 +4238,6 @@ def test_the_estimate_prices_the_chunk_the_loader_reports(monkeypatch, reported,
         kv_bits = 4,
     )
     assert breakdown is not None and breakdown.compute_bytes == compute
-    # And an explicit chunk still outranks whatever the loader reports.
     override = mm.mlx_memory_breakdown(
         _local_snapshot("unsloth/Qwen3-4B-Thinking-2507"),
         n_ctx = 32768,
@@ -4340,10 +4250,6 @@ def test_the_estimate_prices_the_chunk_the_loader_reports(monkeypatch, reported,
 
 @_NEEDS_MLX
 def test_a_model_mlx_vlm_would_diffuse_is_refused_rather_than_priced():
-    # stream_generate diverts ahead of the autoregressive chunking path, and what each
-    # diffusion generator prefills in is not readable pre-load: LLaDA2's block_length of 32
-    # is the block it prefills in, DiffusionGemma's is a denoising-canvas cap. Priced at the
-    # autoregressive 2048 this quoted 18.61 GB for a prompt that goes in one step.
     snapshot = _local_snapshot("mlx-community/diffusiongemma-26B-A4B-it-4bit")
     assert mm._routes_to_diffusion(mm._snapshot_config(snapshot)) is True
     assert mm.mlx_memory_breakdown(snapshot, n_ctx = 32768, load_in_4bit = True) is None
@@ -4351,7 +4257,6 @@ def test_a_model_mlx_vlm_would_diffuse_is_refused_rather_than_priced():
 
 @_NEEDS_MLX
 def test_an_ordinary_vision_model_is_not_mistaken_for_a_diffusion_one():
-    # The refusal must not reach a model that would have priced: this one carries no marker.
     config = {"model_type": "kimi_vl", "vision_config": {"depth": 2}}
     assert mm._routes_to_diffusion(config) is False
     assert mm._generation_settings(config)[0] > 0
@@ -4381,9 +4286,6 @@ class TestDiffusionRouting:
 
     @pytest.mark.parametrize("verdict", [True, False])
     def test_the_predicate_outranks_the_marker(self, monkeypatch, verdict):
-        # A marker only earns the model a classification. nemotron_labs_diffusion carries
-        # mask_token_id = 100 and still generates autoregressively under Studio's arguments,
-        # so a marker read as the verdict would refuse a load that prices.
         from mlx_vlm.generate import diffusion as vlm_diffusion
 
         self._resolving(monkeypatch, canvas = None, mask = 100)
@@ -4400,7 +4302,6 @@ class TestDiffusionRouting:
             mm._generation_settings({"model_type": "whatever"})
 
     def test_an_architecture_carrying_no_marker_is_never_built(self, monkeypatch):
-        # The marker gate keeps a wrapper build off every other architecture's path.
         def _explode(config):
             raise AssertionError("built a wrapper for a config carrying no marker")
 
@@ -4408,16 +4309,12 @@ class TestDiffusionRouting:
         assert mm._routes_to_diffusion({"model_type": "whatever"}) is False
 
     def test_a_marked_model_that_cannot_be_placed_is_refused_not_assumed(self, monkeypatch):
-        # Not knowing which generator runs is what the estimate refuses; treating it as
-        # autoregressive would quote a confident chunk for a load nobody could place.
         def _explode(config):
             raise RuntimeError("this wrapper cannot be built")
 
         self._resolving(monkeypatch, canvas = 512, mask = None, build = _explode)
         with pytest.raises(RuntimeError):
             mm._routes_to_diffusion({"model_type": "whatever"})
-        # And nothing on the way to the estimate's guard swallows it, which is what turns it
-        # into a refusal rather than a number.
         with pytest.raises(RuntimeError):
             mm._generation_settings({"model_type": "whatever", "vision_config": {"depth": 2}})
 
@@ -4425,9 +4322,6 @@ class TestDiffusionRouting:
 @_NEEDS_MLX
 @pytest.mark.parametrize("reported, explicit", [(32, None), (64, 32)])
 def test_the_estimate_prices_the_group_size_it_is_given(monkeypatch, reported, explicit):
-    # The same defect one setting over: a cache grouped at 32 costs more scales and biases
-    # than one grouped at 64, so restating either width prices a conversion that never ran.
-    # The loader supplies it, and an explicit width outranks what the loader reports.
     _on_bfloat16_chip()
     from core.inference import mlx_inference as mi
 
@@ -4444,7 +4338,6 @@ def test_the_estimate_prices_the_group_size_it_is_given(monkeypatch, reported, e
 
 @pytest.mark.skipif(not _HAVE_MLX, reason = "drives real cache classes")
 def test_the_peak_of_a_bounded_cache_is_measured_not_derived():
-    # Hand-derived three times and wrong three times, so the peak is measured by driving the class.
     from mlx_lm.models import cache as C
 
     for bound, attribute, value, n_ctx, chunk, expected in (
@@ -4453,9 +4346,7 @@ def test_the_peak_of_a_bounded_cache_is_measured_not_derived():
         (C.RotatingKVCache, "max_size", 512, 1024, 2048, 1023),
         (C.ChunkedKVCache, "chunk_size", 512, 4096, 2048, 2560),
         (C.ChunkedKVCache, "chunk_size", 512, 2560, 2048, 2048),
-        # A chunk of one charges the decode step generate_step runs before it yields.
         (C.RotatingKVCache, "max_size", 512, 256, 1, 512),
-        # And an unbounded context terminates: the walk stops once the cache has settled.
         (C.RotatingKVCache, "max_size", 512, 10**12, 2048, 2559),
     ):
         assert (
@@ -4463,9 +4354,6 @@ def test_the_peak_of_a_bounded_cache_is_measured_not_derived():
         ), f"{bound.__name__}({value}) at {n_ctx}"
     assert mm._bound_spec(type("E", (), {"max_size": 512})())
     assert mm._bound_spec(type("E", (), {"chunk_size": 512})())
-    # And what a bounded entry is charged IS that peak, not the generic block rounding capped by
-    # it. Below roughly 600 tokens these classes hold a step beyond what they were given, which
-    # is more than the rounding predicts: charging the smaller of the two halves the real cache.
     spec = (C.RotatingKVCache, "max_size", 512)
     entry = {"slope": 1.0, "block": mm.MLX_KV_BLOCK, "bound_spec": spec}
     for n_ctx, charged in ((253, 508), (100, 355), (1024, 1023), (10**12, 2559)):
@@ -4518,12 +4406,10 @@ class TestPricingALoad:
         config = self._checkpoint(tmp_path)
         wide = mm.mlx_weight_bytes(str(tmp_path), config, load_in_4bit = False)
         quantized = mm.mlx_weight_bytes(str(tmp_path), config, load_in_4bit = True)
-        # Neither width is the file size: the header is left behind, and quantizing drops more.
         assert (wide, quantized) == (2_886_144, 1_001_984)
         assert quantized < wide < mm._shard_bytes(str(tmp_path), config) == 2_888_265
 
     def test_shards_that_name_nothing_the_architecture_has_are_not_priced_from_it(self, tmp_path):
-        # Why the check is name-based rather than a count: a draft declares its own tensor count.
         config = self._checkpoint(tmp_path, prefix = "draft.")
         with pytest.raises(ValueError, match = "does not supply"):
             mm._resident_bytes(str(tmp_path), config, quantize = True)
@@ -4541,7 +4427,6 @@ class TestALoadWithNoFootprintToQuote:
             stated = {"model_type": "llama", spelling: per_module}
             assert mm._load_is_refused(str(tmp_path), stated, True)
             assert mm._load_is_refused(str(tmp_path), stated, False) is None
-            # Bitsandbytes is the exception at BOTH: mlx-lm cannot read those weights at all.
             bnb = {"model_type": "llama", spelling: {"quant_method": "bitsandbytes"}}
             for flag in (True, False):
                 assert "bitsandbytes" in (mm._load_is_refused(str(tmp_path), bnb, flag) or "")
@@ -4557,7 +4442,6 @@ class TestALoadWithNoFootprintToQuote:
         ],
     )
     def test_a_checkpoint_no_load_starts_from_is_refused(self, repo, names):
-        # Told apart: a version gap says upgrade, extra tensors say the load cannot start.
         snapshot = _local_snapshot(repo)
         config = mm._snapshot_config(snapshot)
         for flag in (True, False):
@@ -4565,7 +4449,6 @@ class TestALoadWithNoFootprintToQuote:
             assert mm.mlx_memory_breakdown(snapshot, n_ctx = 2048, load_in_4bit = flag) is None
 
     def test_no_checkpoint_on_this_disk_is_refused_for_an_invented_reason(self):
-        # A refusal that rejects working input is worse than the defect it prevents.
         hub = os.path.expanduser("~/.cache/huggingface/hub")
         seen = accepted = 0
         for path in glob.glob(os.path.join(hub, "models--*", "snapshots", "*", "config.json")):
@@ -4629,7 +4512,6 @@ class TestShardsTheLoaderReads:
         return sorted(os.path.basename(p) for p in mm.mlx_shard_files(str(tmp_path), config))
 
     def test_the_text_loader_reads_model_shards_only(self, tmp_path):
-        # mlx-lm globs `model*.safetensors`, so an adapter beside the shards is not weighed.
         assert self._spread(tmp_path, {"model_type": "llama"}) == ["model-00001.safetensors"]
         adapter_only = tmp_path / "lora"
         adapter_only.mkdir()
@@ -4637,7 +4519,6 @@ class TestShardsTheLoaderReads:
         assert mm.mlx_shard_files(str(adapter_only), {"model_type": "llama"}) == []
 
     def test_the_vision_loader_reads_the_index_before_the_directory(self, tmp_path):
-        # mlx-vlm globs only without an index, and excludes the consolidated copy.
         assert self._spread(tmp_path, self._VISION) == [
             "adapter_model.safetensors",
             "model-00001.safetensors",
@@ -4648,13 +4529,8 @@ class TestShardsTheLoaderReads:
         assert self._spread(tmp_path, self._VISION) == ["model-00001.safetensors"]
 
     @_NEEDS_MLX
-    # 1_000_000 is under the format's ceiling and still past the end of this shard, so it is the
-    # file-size half of the bound that has to reject it.
     @pytest.mark.parametrize("declared", [0, 1_000_000, 1 << 40])
     def test_a_shard_is_not_read_past_the_header_it_declares(self, tmp_path, declared):
-        # The read is otherwise bounded only by the shard itself, so a corrupt length pulls the
-        # weights into memory to be parsed as JSON. The panel prices whatever finished caching,
-        # and a slider drag is enough to reach it.
         import mlx.core as mx
 
         shard = tmp_path / "model.safetensors"
@@ -4662,15 +4538,11 @@ class TestShardsTheLoaderReads:
         shard.write_bytes(declared.to_bytes(8, "little") + body.encode() + b"\0" * 4)
         with pytest.raises(ValueError, match = "safetensors header"):
             mm._checkpoint_tensors(str(tmp_path), {"model_type": "llama"}, mx.bfloat16)
-        # The honest length still reads, so the guard is not just refusing everything.
         shard.write_bytes(len(body).to_bytes(8, "little") + body.encode() + b"\0" * 4)
         assert list(mm._checkpoint_tensors(str(tmp_path), {"model_type": "llama"}, mx.bfloat16))
 
     @_NEEDS_MLX
     def test_a_header_is_capped_below_the_shard_it_sits_in(self, tmp_path, monkeypatch):
-        # Fitting inside the file is no bound on a multi-gigabyte shard, so the format's own
-        # ceiling applies as well. Measured against the cap rather than a real one, since a file
-        # large enough to exceed 100 MB is not something to write in a test.
         import mlx.core as mx
 
         body = json.dumps({"a.weight": {"dtype": "F16", "shape": [2], "data_offsets": [0, 4]}})
@@ -4687,7 +4559,6 @@ class TestShardsTheLoaderReads:
         "weight_map", [["model-00001.safetensors"], "model-00001.safetensors", 7, True, None]
     )
     def test_an_index_whose_weight_map_is_not_a_mapping_is_fatal(self, tmp_path, weight_map):
-        # mlx-vlm reaches straight for `.values()` and catches only ValueError and OSError.
         (tmp_path / "model.safetensors.index.json").write_text(
             json.dumps({"weight_map": weight_map})
         )
@@ -4699,7 +4570,6 @@ class TestShardsTheLoaderReads:
 @pytest.mark.parametrize(
     "repo, n_ctx, kv_bits, weights, kv, compute, layers, caption",
     [
-        # Dense; the 4-bit row costs MORE, because unfused attention materializes scores.
         (
             "unsloth/Qwen3-4B-Thinking-2507",
             32768,
@@ -4720,7 +4590,6 @@ class TestShardsTheLoaderReads:
             36,
             "4-bit",
         ),
-        # Hybrid: 30 constant states against 10 growing, captioned for the ten.
         (
             "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit",
             32768,
@@ -4731,10 +4600,8 @@ class TestShardsTheLoaderReads:
             40,
             "bf16",
         ),
-        # Windowed: conversion is refused, so 4-bit asked for is still held at full width.
         ("unsloth/gemma-3-270m-it", 8192, None, 392_058_112, 65_258_496, 725_729_935, 18, "bf16"),
         ("unsloth/gemma-3-270m-it", 8192, 4, 392_058_112, 65_258_496, 725_729_935, 18, "bf16"),
-        # Vision, through the tower its own loader resolves from the enclosing config.
         (
             "mlx-community/deepseek-vl2-tiny-4bit",
             4096,
@@ -4745,7 +4612,6 @@ class TestShardsTheLoaderReads:
             12,
             "bf16",
         ),
-        # A tower not buildable from its own config, either side of mlx-vlm's conversion start.
         (
             "Qwen/Qwen2.5-VL-3B-Instruct",
             32768,
@@ -4776,7 +4642,6 @@ class TestShardsTheLoaderReads:
             36,
             "4-bit",
         ),
-        # A stale index naming three shards this snapshot never shipped: the load globs instead.
         (
             "mlx-community/gemma-3n-E2B-it-4bit",
             4096,
@@ -4787,7 +4652,6 @@ class TestShardsTheLoaderReads:
             30,
             "bf16",
         ),
-        # Widths its tower does not state, taken from the checkpoint's own config.
         (
             "mlx-community/Molmo-7B-D-0924-4bit",
             4096,
@@ -4798,7 +4662,6 @@ class TestShardsTheLoaderReads:
             28,
             "bf16",
         ),
-        # Recorded float32, resident at the width the chip gives the loader.
         (
             "hf-internal-testing/tiny-random-LlamaForCausalLM",
             512,
@@ -4828,7 +4691,6 @@ def test_a_real_checkpoint_is_priced_to_the_byte(
 @_NEEDS_MLX
 @pytest.mark.parametrize("kv_bits, caption", [(6, "6-bit"), (8, "8-bit")])
 def test_the_caption_names_a_width_the_real_conversion_reaches(kv_bits, caption):
-    # Every width the control offers runs the whole probe / convert path, not just 4-bit.
     _on_bfloat16_chip()
     breakdown = mm.mlx_memory_breakdown(
         _local_snapshot("unsloth/Qwen3-4B-Thinking-2507"),
@@ -4857,14 +4719,11 @@ class TestTheContextSearch:
         assert mm.mlx_fit_context("x", budget_bytes = 7000, max_ctx = 8192) == 6912
 
     def test_a_floor_between_blocks_rounds_up_rather_than_under_the_minimum(self, monkeypatch):
-        # 4,100 rounds to 4,352, so a budget holding 4,096 but not 4,352 is not a fit.
         self._linear(monkeypatch)
         assert mm.mlx_fit_context("x", budget_bytes = 4200, max_ctx = 8192, min_ctx = 4100) is None
         assert mm.mlx_fit_context("x", budget_bytes = 5000, max_ctx = 8192, min_ctx = 4100) == 4864
 
     def test_a_context_that_cannot_be_priced_abandons_the_fit(self, monkeypatch):
-        # 6,144 is the first midpoint. Searching past it would discard the half above and answer
-        # with a context that is not the largest one that fits.
         self._linear(monkeypatch, unpriceable = (6144,))
         assert mm.mlx_fit_context("x", budget_bytes = 7000, max_ctx = 8192) is None
 
@@ -4880,8 +4739,6 @@ class TestTheContextSearch:
 @_NEEDS_MLX
 @pytest.mark.parametrize("budget_gib, fitted", [(6, 18_432), (12, 61_952), (24, 149_504)])
 def test_a_real_checkpoint_is_fitted_to_the_byte(budget_gib, fitted):
-    # Exact on both sides against the estimate the panel shows: what it returns fits and the next
-    # block does not, which is what makes it a fit rather than a guess with headroom.
     _on_bfloat16_chip()
     snapshot = _local_snapshot("unsloth/Qwen3-4B-Thinking-2507")
     budget = budget_gib * 1024**3
@@ -4892,7 +4749,6 @@ def test_a_real_checkpoint_is_fitted_to_the_byte(budget_gib, fitted):
     priced = mm.mlx_memory_breakdown(snapshot, n_ctx = fitted, load_in_4bit = True)
     over = mm.mlx_memory_breakdown(snapshot, n_ctx = fitted + mm.MLX_KV_BLOCK, load_in_4bit = True)
     assert priced.total_bytes <= budget < over.total_bytes
-    # And a context that is not a number is refused rather than raised out of the guard.
     assert mm.mlx_memory_breakdown(snapshot, n_ctx = float("nan"), load_in_4bit = True) is None
 
 
@@ -4907,19 +4763,11 @@ def test_a_real_checkpoint_is_fitted_to_the_byte(budget_gib, fitted):
     ],
 )
 def test_the_total_never_falls_as_the_context_grows(repo, kv_bits, whole_prompt):
-    # What the search rests on, across a dense, a windowed and a hybrid shape. The fourth row is
-    # not a checkpoint that declines to chunk -- none is cached here -- but the same Qwen sizing
-    # with that fact flipped, which is the only way to reach the branch from this disk.
     sizing = mm._size_load(_local_snapshot(repo), kv_bits, None, None, True)
     if whole_prompt:
         forced = replace(sizing, facts = {**sizing.facts, "whole_prompt": True})
-        # And the flip has to reach the arithmetic: charging the whole prompt as one chunk costs
-        # more than charging it in 2,048-token steps, so a lost conditional shows up here.
         assert mm._priced_at(forced, 32_768).total_bytes > mm._priced_at(sizing, 32_768).total_bytes
         sizing = forced
-    # Every block to the ceiling a fit is given, which costs under a tenth of a second. A sample,
-    # not a proof: the terms are piecewise, and a whole-prompt sizing charges compute per token,
-    # so this catches a term that falls with the context rather than establishing that none can.
     steps = range(mm.MLX_KV_BLOCK, 262_145, mm.MLX_KV_BLOCK)
     totals = [mm._priced_at(sizing, n).total_bytes for n in steps]
     assert totals == sorted(totals)
