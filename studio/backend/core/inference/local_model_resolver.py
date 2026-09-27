@@ -811,6 +811,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         _is_hidden_model,
     )
     from hub.utils.gguf import dedupe_custom_gguf_rows, suppress_grouped_gguf_file_rows
+    from hub.utils.inventory_scan import scan_folder_hf_caches
     from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir, lmstudio_model_dirs
     from utils.hf_cache_settings import known_hf_hub_caches
     from core.inference.model_ids import public_model_id
@@ -889,7 +890,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
                 fp = Path(folder["path"])
                 custom_found += dedupe_custom_gguf_rows(
                     _scan_models_dir(fp, limit = 200)
-                    + _scan_hf_once(fp)
+                    + [row for hub in scan_folder_hf_caches(fp) for row in _scan_hf_once(hub)]
                     + _scan_lmstudio_dir(fp)
                     + _scan_ollama_dir(fp, limit = 200, materialize_links = False)
                 )

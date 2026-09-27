@@ -12,6 +12,7 @@ import base64
 import os
 import signal
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import multiprocessing as mp
 import queue
 import re
@@ -22,6 +23,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Generator, Mapping, Optional, Sequence, Tuple, Union
 from core.inference.audio_device import audio_device_forces_cpu
+from core.inference.context_refusal import ContextBudgetExceeded
 from core.inference.native_audio import NATIVE_AUDIO_TYPES, is_native_audio_model
 from core.inference.audio_errors import (
     AUDIO_UNSUPPORTED_CODE,
@@ -268,32 +270,42 @@ class GenStreamError(str):
     from model output whose visible text starts with "Error:" by checking isinstance(chunk,
     GenStreamError)."""
 
-    __slots__ = ("public",)
+    __slots__ = ("public", "openai_param")
 
     def __new__(
         cls,
         value,
         *,
         public: bool = False,
+        openai_param: Optional[str] = None,
     ):
         obj = str.__new__(cls, value)
         obj.public = bool(public)
+        # Set for a refusal about one request field, so the caller answers 400 not 500.
+        obj.openai_param = openai_param
         return obj
 
 
 class GenStreamErrorRaised(RuntimeError):
     """Internal exception form of ``GenStreamError`` for generator boundaries."""
 
-    __slots__ = ("public",)
+    __slots__ = ("public", "openai_param")
 
     def __init__(
         self,
         value,
         *,
         public: bool = False,
+        openai_param: Optional[str] = None,
     ):
         super().__init__(value)
         self.public = bool(public)
+        self.openai_param = openai_param
+
+    @classmethod
+    def from_chunk(cls, chunk: "GenStreamError") -> "GenStreamErrorRaised":
+        """Keeps public/openai_param so a refusal is not answered 500."""
+        return cls(str(chunk), public = chunk.public, openai_param = chunk.openai_param)
 
 
 def _summed_tool_loop_stats(total, turn):
@@ -368,6 +380,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "max_context_length": model_info.get("max_context_length"),
         "requested_context_length": model_info.get("requested_context_length"),
         "context_length_enforced": model_info.get("context_length_enforced"),
+        "mlx_context_budget": model_info.get("mlx_context_budget"),
     }
 
 
@@ -722,11 +735,13 @@ class InferenceOrchestrator:
                 return None
             request_id = str(uuid.uuid4())
             with self._send_order_lock:
-                from utils.hardware import get_visible_gpu_utilization
+                from utils.hardware import get_visible_gpu_utilization, gpu_query
 
                 live_free: dict[int, float] = {}
                 total_by_index: dict[int, float] = {}
-                for device in get_visible_gpu_utilization().get("devices", []):
+                with gpu_query.fresh_reads():
+                    _live_devices = get_visible_gpu_utilization().get("devices", [])
+                for device in _live_devices:
                     try:
                         index = int(device["index"])
                         total = float(device["vram_total_gb"])
@@ -862,8 +877,13 @@ class InferenceOrchestrator:
             if time.monotonic() >= deadline:
                 return None
             try:
+                from utils.hardware import gpu_query
+
                 result: dict[int, int] = {}
-                for device in get_visible_gpu_utilization().get("devices", []):
+                # Consecutive samples are compared: a cached one would read as settled.
+                with gpu_query.fresh_reads():
+                    devices = get_visible_gpu_utilization().get("devices", [])
+                for device in devices:
                     index = int(device["index"])
                     total = float(device["vram_total_gb"])
                     used = float(device["vram_used_gb"])
@@ -1325,6 +1345,8 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video_b64: Optional[str] = None,
+        response_format: Optional[dict] = None,
+        reasoning_is_extracted: bool = False,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -1349,6 +1371,9 @@ class InferenceOrchestrator:
             cmd["seed"] = seed
         if stop:
             cmd["stop"] = stop
+        if response_format is not None:
+            cmd["response_format"] = response_format
+            cmd["reasoning_is_extracted"] = bool(reasoning_is_extracted)
         if video_b64:
             cmd["video_base64"] = video_b64
         if use_adapter is not None:
@@ -1433,7 +1458,17 @@ class InferenceOrchestrator:
                     stats_holder["stats"] = resp.get("stats")
                 return
             elif rtype == "gen_error":
-                yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
+                _budget = resp.get("context_budget")
+                if _budget:
+                    # Rebuilt rather than yielded as text: the route arms match on the type.
+                    raise ContextBudgetExceeded(
+                        _budget["request_tokens"], _budget["context_tokens"]
+                    )
+                yield GenStreamError(
+                    f"Error: {resp.get('error', 'Unknown error')}",
+                    public = bool(resp.get("public", False)),
+                    openai_param = resp.get("openai_param"),
+                )
                 return
 
     def _start_dispatcher(self) -> bool:
@@ -1564,6 +1599,8 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
+        response_format: Optional[dict] = None,
+        reasoning_is_extracted: bool = False,
     ) -> Generator[str, None, None]:
         """Dispatched generation, sending the command without holding _gen_lock. Uses a per-request
         mailbox for tokens so two compare-mode requests can be queued at once. The subprocess
@@ -1619,6 +1656,8 @@ class InferenceOrchestrator:
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
             stop = stop,
+            response_format = response_format,
+            reasoning_is_extracted = reasoning_is_extracted,
             use_adapter = use_adapter,
             tools = tools,
             enable_thinking = enable_thinking,
@@ -1830,6 +1869,7 @@ class InferenceOrchestrator:
     # get unloaded by the swap.
     load_generation: int = 0
 
+    @_invalidates_gpu_memory("inference load")
     def load_model(
         self,
         config,
@@ -2223,6 +2263,7 @@ class InferenceOrchestrator:
         from core.inference import stt_registry
         return stt_registry.resident()
 
+    @_invalidates_gpu_memory("inference unload")
     def unload_model(self, model_name: str) -> bool:
         # active_model_name can differ in case from the client's raw /unload name (the load path canonicalizes
         # casing). Match case-insensitively and use the canonical spelling so the guard, unload command, and cleanup
@@ -2420,6 +2461,8 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
+        response_format: Optional[dict] = None,
+        reasoning_is_extracted: bool = False,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess. ``tools`` / ``enable_thinking`` /
         ``reasoning_effort`` / ``preserve_thinking`` are forwarded so the template can render
@@ -2453,6 +2496,8 @@ class InferenceOrchestrator:
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
             stop = stop,
+            response_format = response_format,
+            reasoning_is_extracted = reasoning_is_extracted,
             video = video,
         )
 
@@ -2565,7 +2610,7 @@ class InferenceOrchestrator:
                 for chunk in stream:
                     if isinstance(chunk, GenStreamError):
                         close_stream = True
-                        raise GenStreamErrorRaised(str(chunk), public = chunk.public)
+                        raise GenStreamErrorRaised.from_chunk(chunk)
                     yield chunk
             finally:
                 if close_stream:
@@ -2656,9 +2701,7 @@ class InferenceOrchestrator:
         try:
             for chunk in stream:
                 if isinstance(chunk, GenStreamError):
-                    # Preserve the public/operational flag so the route can surface the real message (e.g. "model is
-                    # being unloaded") instead of a generic error. Mirrors the safetensors tool loop's _single_turn.
-                    raise GenStreamErrorRaised(str(chunk), public = chunk.public)
+                    raise GenStreamErrorRaised.from_chunk(chunk)
                 yield chunk
         finally:
             close = getattr(stream, "close", None)
@@ -2693,6 +2736,8 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
+        response_format: Optional[dict] = None,
+        reasoning_is_extracted: bool = False,
     ) -> Generator[str, None, None]:
         """Inner generation logic: sends the command to the subprocess and yields tokens. Serialized
         by _gen_lock (one generation at a time) so concurrent readers don't consume each other's
@@ -2736,6 +2781,8 @@ class InferenceOrchestrator:
                 frequency_penalty = frequency_penalty,
                 logit_bias = logit_bias,
                 stop = stop,
+                response_format = response_format,
+                reasoning_is_extracted = reasoning_is_extracted,
                 use_adapter = use_adapter,
                 tools = tools,
                 enable_thinking = enable_thinking,

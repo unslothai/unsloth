@@ -66,6 +66,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const selectedGpuIndexKind = useChatRuntimeStore(
     (s) => s.selectedGpuIndexKind,
   );
+  const splitRatio = useChatRuntimeStore((s) => s.splitRatio);
 
   const isGguf = isServedByLlamaCpp({
     loadedIsGguf,
@@ -125,6 +126,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       nCpuMoe,
       selectedGpuIds,
       selectedGpuIndexKind,
+      tensorSplit: splitRatio,
     };
   }, [
     checkpoint,
@@ -156,6 +158,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     nCpuMoe,
     selectedGpuIds,
     selectedGpuIndexKind,
+    splitRatio,
   ]);
 
   return { checkpoint, isGguf, config };

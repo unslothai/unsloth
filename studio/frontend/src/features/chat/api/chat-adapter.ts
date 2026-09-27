@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
+import { externalModelLabel } from "../lib/external-model-label";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import { minPSamplingPayload } from "../lib/min-p-policy";
 import {
@@ -1982,8 +1984,14 @@ export async function buildLocalTokenCountExtras(
   // tools-on default answer and the server renders a catalog the completion does not.
   // No budget, because the completion sends none either, so a policy that injects tools
   // past this false gets the server default on both sides.
+  // The completion always sends thread_id; the server dates a thread's prompt from it.
+  const threadField = threadId ? { thread_id: threadId } : {};
   if (!supportsTools) {
-    return { enable_tools: false, bypass_permissions: bypassPermissions };
+    return {
+      enable_tools: false,
+      bypass_permissions: bypassPermissions,
+      ...threadField,
+    };
   }
 
   const ragProjectId = await resolveProjectId(threadId);
@@ -2007,7 +2015,11 @@ export async function buildLocalTokenCountExtras(
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
     // along because `--enable-tools` still outranks that false in _effective_enable_tools.
-    return { enable_tools: false, bypass_permissions: bypassPermissions };
+    return {
+      enable_tools: false,
+      bypass_permissions: bypassPermissions,
+      ...threadField,
+    };
   }
 
   return {
@@ -2033,7 +2045,7 @@ export async function buildLocalTokenCountExtras(
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
     // compaction nudge in the prompt whether or not RAG is on, and the completion sends it here.
-    ...(threadId ? { thread_id: threadId } : {}),
+    ...threadField,
     // Armed research puts the deep_research schema in the prompt, so the count carries it.
     ...(deepResearchEnabled ? { deep_research_armed: true } : {}),
     // Keeps search_knowledge_base and its grounding nudge in the prompt. No retrieval runs for
@@ -2399,6 +2411,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedMlxKvBitsRequested",
   "mlxKvQuantReason",
   "mlxKvQuantNote",
+  "loadedContextBudget",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
   "speculativeType",
@@ -5162,6 +5175,17 @@ export function createOpenAIStreamAdapter(
       addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
       addSystemInstruction(outboundMessages, artifactInstruction);
 
+      const blockAttachmentRun = (reason: string): never => {
+        toast.error(reason);
+        // Flip on->off so compare-mode waitForRunEnd resolves: this gate fires before setThreadRunning(true).
+        const gatedThreadKey = resolvedThreadId || "__default";
+        // Own token: siblings share "__default", so an ownerless clear would drop entries that are still generating.
+        const gateOwner = createImageGateRunOwner();
+        runtime.setThreadRunning(gatedThreadKey, true, { owner: gateOwner });
+        runtime.setThreadRunning(gatedThreadKey, false, { owner: gateOwner });
+        clearSelectedImageEditReference();
+        throw new Error(reason);
+      };
       // Block when ANY image is in the outbound payload and the loaded model cannot process images;
       // switching models means starting a new chat.
       if (imageBase64) {
@@ -5183,17 +5207,25 @@ export function createOpenAIStreamAdapter(
           mmprojFallbackReason: runtime.mmprojFallbackReason,
         });
         if (imageGateReason) {
-          toast.error(imageGateReason);
-          // Flip the per-thread running flag on->off so compare-mode waitForRunEnd resolves: this gate
-          // fires before the streaming path's setThreadRunning(true).
-          const gatedThreadKey = resolvedThreadId || "__default";
-          // Own token: siblings share "__default", so an ownerless clear would drop entries that are still generating.
-          const gateOwner = createImageGateRunOwner();
-          runtime.setThreadRunning(gatedThreadKey, true, { owner: gateOwner });
-          runtime.setThreadRunning(gatedThreadKey, false, { owner: gateOwner });
-          clearSelectedImageEditReference();
-          throw new Error(imageGateReason);
+          blockAttachmentRun(imageGateReason);
         }
+      }
+      // Media attached before a model loaded skipped the add-time check; recorded audio is not counted.
+      const answeringModel = runtime.models.find(
+        (m) => m.id === params.checkpoint,
+      );
+      const attachedMediaReason = attachedMediaUnavailableReason({
+        activeModel: answeringModel,
+        checkpoint: params.checkpoint,
+        modelLabel:
+          answeringModel?.name ||
+          externalModelLabel(params.checkpoint) ||
+          params.checkpoint,
+        audio: Boolean(findLatestUserAudioBase64(survivingMessages, false)),
+        video: Boolean(videoBase64),
+      });
+      if (attachedMediaReason) {
+        blockAttachmentRun(attachedMediaReason);
       }
       if (audioBase64 && !queuedRunSettings) {
         const audioName = runtime.pendingAudioName;

@@ -27,6 +27,7 @@ from typing import Any
 
 logger = get_logger(__name__)
 from core.inference.audio_errors import AUDIO_UNSUPPORTED_CODE
+from core.inference.context_refusal import ContextBudgetExceeded
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
 # Fresh spawned interpreter: re-apply the OS-trust-store injection.
@@ -556,6 +557,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "native_context_length",
                 "max_context_length",
                 "requested_context_length",
+                "mlx_context_budget",
             ):
                 try:
                     _ctx_value = _entry.get(_ctx_field)
@@ -778,7 +780,15 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         # backend's documented "ignores them" behavior into a TypeError.
         # ``tool_protocol_active`` rides here rather than above: MLX declares no such
         # parameter and takes no **kwargs, so an unconditional forward would raise.
-        for gated in ("seed", "frequency_penalty", "logit_bias", "stop", "tool_protocol_active"):
+        for gated in (
+            "seed",
+            "frequency_penalty",
+            "logit_bias",
+            "stop",
+            "tool_protocol_active",
+            "response_format",
+            "reasoning_is_extracted",
+        ):
             if gated in cmd and _backend_declares(backend, gated):
                 gen_kwargs[gated] = cmd[gated]
         # A clip cannot be dropped like an unknown sampling knob: the answer would ignore it.
@@ -832,15 +842,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
 
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info = True)
-        _send_response(
-            resp_queue,
-            {
-                "type": "gen_error",
-                "request_id": request_id,
-                "error": str(exc),
-                "stack": traceback.format_exc(limit = 20),
-            },
-        )
+        _send_response(resp_queue, _generation_error_payload(request_id, exc))
 
 
 def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
@@ -1073,15 +1075,26 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
 
     except Exception as exc:
         logger.error("Audio input generation error: %s", exc, exc_info = True)
-        _send_response(
-            resp_queue,
-            {
-                "type": "gen_error",
-                "request_id": request_id,
-                "error": str(exc),
-                "stack": traceback.format_exc(limit = 20),
-            },
-        )
+        _send_response(resp_queue, _generation_error_payload(request_id, exc))
+
+
+def _generation_error_payload(request_id, exc) -> dict:
+    """Carries a context refusal's counts so the parent can rebuild the typed error."""
+    payload = {
+        "type": "gen_error",
+        "request_id": request_id,
+        "error": str(exc),
+        # Client-safe refusals would otherwise reach the caller as a generic 500.
+        "public": bool(getattr(exc, "public", False)),
+        "openai_param": getattr(exc, "openai_param", None),
+        "stack": traceback.format_exc(limit = 20),
+    }
+    if isinstance(exc, ContextBudgetExceeded):
+        payload["context_budget"] = {
+            "request_tokens": exc.request_tokens,
+            "context_tokens": exc.context_tokens,
+        }
+    return payload
 
 
 def _handle_unload(backend, cmd: dict, resp_queue: Any) -> None:
@@ -1382,15 +1395,10 @@ def run_inference_process(
                     )
             except Exception as exc:
                 logger.error("MLX command error (%s): %s", cmd_type, exc)
-                _send_response(
-                    resp_queue,
-                    {
-                        "type": "gen_error" if cmd_type == "generate" else "error",
-                        "request_id": cmd.get("request_id"),
-                        "error": str(exc),
-                        "stack": traceback.format_exc(limit = 20),
-                    },
-                )
+                _payload = _generation_error_payload(cmd.get("request_id"), exc)
+                if cmd_type != "generate":
+                    _payload["type"] = "error"
+                _send_response(resp_queue, _payload)
         return
 
     # Windows Triton check, ahead of the torchao stub below, matching the training and export workers' gate-then-stub

@@ -295,126 +295,33 @@ def parse_wheel_name(name: str) -> dict | None:
     }
 
 
-NOTES_PREAMBLE = """\
-Prebuilt Linux x86_64 CUDA 13 wheels for flash-attn, causal-conv1d and mamba-ssm, built against \
-PyTorch 2.13 and 2.14.
-
-### Why these exist
-
-Upstream publishes prebuilt wheels for these three packages, but only against PyTorch 2.10 and \
-2.11. Those wheels were ABI compatible through torch 2.12 and stopped being so at 2.13:
-
-- `torch 2.13` changed `c10::impl::cow::materialize_cow_storage` and the signature of \
-`c10::cuda::c10_cuda_check_implementation`, so an upstream wheel imports on 2.13 as \
-`ImportError: undefined symbol: ...`.
-- `torch 2.14` changed it again, so a 2.13 wheel is not usable on 2.14 either.
-
-There is no version of these wheels that covers several torch minors from 2.13 on. Every torch \
-minor needs its own build, which is what this release is: one wheel per (package, torch minor, \
-interpreter), named so it cannot be installed against the wrong one.
-
-Building them from source instead takes roughly five hours of nvcc for flash-attn alone, needs \
-the CUDA toolkit present, and is out of reach on most machines that want to run the result.
-
-### Compatibility
-
-| | |
-| --- | --- |
-| Platform | Linux x86_64 only |
-| CUDA | 13.0 toolkit, `cu13` wheels, usable with any CUDA 13.x runtime |
-| PyTorch | exactly the minor in the filename, any patch level of it |
-| GPU architectures | sm_80, sm_86, sm_89, sm_90, sm_100, sm_120 |
-| C++11 ABI | `TRUE`, matching every PyTorch pip wheel from 2.7 on |
-| glibc | 2.35 or newer (built on Ubuntu 22.04) |
-
-sm_86 and sm_89 are covered by the sm_80 cubin, which is forward compatible across the minor \
-versions of its major. Newer architectures fall back to the embedded PTX and JIT on first use.
-
-Not covered: Windows, macOS, ROCm, CUDA 12 or earlier, aarch64, and free-threaded interpreters.
-
-### Installing
-
-```
-pip install https://github.com/{repo}/releases/download/{tag}/<wheel>
-```
-
-The `+cu13torch2.13cxx11abiTRUE` segment in each filename is a PEP 440 local version. pip \
-refuses to install a wheel whose local version does not match the environment it was built \
-for, so picking the wrong torch is a clean install error rather than an `undefined symbol` \
-traceback the first time a kernel is called.
-
-### Verifying
-
-Every wheel is signed with [Sigstore](https://www.sigstore.dev/) through GitHub OIDC, with the \
-bundle published beside it as `<wheel>.sigstore.json`, and carries an \
-[SLSA build provenance](https://slsa.dev/) attestation.
-
-Sigstore, which proves the wheel was produced by this workflow in this repository:
-
-```
-python -m pip install sigstore
-python -m sigstore verify identity \\
-  --cert-identity "https://github.com/{repo}/.github/workflows/prebuilt-cuda-wheels.yml@refs/heads/main" \\
-  --cert-oidc-issuer https://token.actions.githubusercontent.com \\
-  --bundle <wheel>.sigstore.json \\
-  <wheel>
-```
-
-`verify identity` rather than `verify github`, because it takes both the identity and the issuer \
-on every sigstore-python version; `verify github` dropped `--cert-oidc-issuer` in 4.0 and takes \
-`--repository` and `--ref` instead. Use whichever your installed version accepts.
-
-Build provenance, which reports the exact run, commit and workflow that produced it. Needs \
-GitHub CLI 2.49 or newer:
-
-```
-gh attestation verify <wheel> --repo {repo}
-```
-
-Digests, which is the cheap check and still worth doing:
-
-```
-sha256sum -c SHA256SUMS --ignore-missing
-```
-
-### Wheels
-"""
+def _join(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
 def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
-    """Release body from `(sha256, filename)` pairs.
+    """One-sentence release body from `(sha256, filename)` pairs.
 
     Regenerated from the release's current assets on every publish rather than appended to, so
-    a second run that adds the torch 2.14 half produces notes describing both halves, and a
-    third run that replaces one wheel does not leave the old digest in the table.
+    a second run that adds the torch 2.14 half produces a sentence describing both halves.
     """
-    rows = []
-    for digest, name in entries:
-        parsed = parse_wheel_name(name)
-        if parsed is None:
-            continue
-        rows.append((parsed, digest))
-    rows.sort(key = lambda row: (row[0]["torch"], row[0]["python"], row[0]["package"]))
-
-    lines = [NOTES_PREAMBLE.format(repo = repo, tag = tag).rstrip("\n"), ""]
-    if not rows:
-        lines.append("No wheels are attached to this release yet.")
-        return "\n".join(lines) + "\n"
-
-    lines.append("| Wheel | Package | Version | torch | CUDA | Python | C++11 ABI | sha256 |")
-    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
-    for parsed, digest in rows:
-        lines.append(
-            "| `{name}` | {package} | {version} | {torch} | {cuda} | {python} | {abi} | `{digest}` |".format(
-                digest = digest, **parsed
-            )
-        )
-    lines.append("")
-    lines.append(
-        f"{len(rows)} wheels, each with a `.sigstore.json` bundle beside it. "
-        "`SHA256SUMS` lists the same digests in `sha256sum -c` form."
+    parsed = [row for row in (parse_wheel_name(name) for _, name in entries) if row is not None]
+    if not parsed:
+        return "No wheels are attached to this release yet.\n"
+    present = {row["package"] for row in parsed}
+    packages = [
+        f"{package} {spec['version']}" for package, spec in SPECS.items() if package in present
+    ]
+    torches = sorted({row["torch"] for row in parsed}, key = lambda v: tuple(map(int, v.split("."))))
+    # cp313 -> 3.13
+    pythons = [
+        f"{cp[2]}.{cp[3:]}"
+        for cp in sorted({row["python"] for row in parsed}, key = lambda cp: int(cp[3:]))
+    ]
+    return (
+        f"Prebuilt Linux x86_64 CUDA {CUDA_TAG} wheels for {_join(packages)}, "
+        f"built for PyTorch {_join(torches)} on Python {_join(pythons)}.\n"
     )
-    return "\n".join(lines) + "\n"
 
 
 def _cmd_matrix(args: argparse.Namespace) -> int:

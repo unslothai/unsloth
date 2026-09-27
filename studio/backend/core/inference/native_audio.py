@@ -25,6 +25,7 @@ remote-code security gates have run.
 from __future__ import annotations
 
 import gc
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import io
 import json
 import logging
@@ -901,6 +902,7 @@ class NativeAudioBackend:
         torch.backends.cuda.enable_math_sdp(True)
         torch.backends.cuda.enable_cudnn_sdp(False)
 
+    @_invalidates_gpu_memory("audio load")
     def load_model(
         self,
         config,
@@ -1443,6 +1445,7 @@ class NativeAudioBackend:
                 cancel_hook.remove()
         return audio, entry["sample_rate"]
 
+    @_invalidates_gpu_memory("audio unload")
     def unload_model(self, model_name: str) -> bool:
         entry = self.models.pop(model_name, None)
         if entry is not None:
