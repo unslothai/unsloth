@@ -169,6 +169,7 @@ export function ChatSkillsDialog({
         );
       })
       .catch((cause: unknown) => {
+        if (generation !== manifestGeneration.current) return;
         toast.error(t("skills.openError"), { description: describe(cause) });
         setView((current) =>
           current.kind === "skill" && current.key === keyOf(skill) ? LIBRARY : current,
