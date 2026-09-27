@@ -5895,6 +5895,7 @@ export function AppSidebar() {
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent
                   {...accountSubmenuOffsets}
+                  alignEnd={true}
                   className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-56"
                 >
                   {HELP_GROUPS.map((group, index) => (
