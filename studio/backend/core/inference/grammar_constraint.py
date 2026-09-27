@@ -245,17 +245,22 @@ class GrammarConstraint:
         self._stripped_ids = ()
         self._strips_special_tokens = strips_special_tokens
         self._dropped_ids = None
+        self._runtime_stops = None
         self.allows_reasoning = allows_reasoning
 
     def _bind(self, n_vocab: int) -> None:
-        self._stop_ids = _runtime_stop_ids(self._tokenizer, n_vocab) or ()
+        self._stop_ids = (
+            tuple(sorted({int(i) for i in self._runtime_stops if 0 <= int(i) < int(n_vocab)}))
+            if self._runtime_stops
+            else _runtime_stop_ids(self._tokenizer, n_vocab) or ()
+        )
         if self._strips_special_tokens:
             # llguidance offers a special token to spell a schema literal, and a decode that
             # skips special tokens would delete it from a reply reported as valid.
             self._stripped_ids = _stripped_special_ids(
                 self._tokenizer, n_vocab, self._stop_ids, self._dropped_ids
             )
-        ll_tokenizer = _cached_ll_tokenizer(self._tokenizer, n_vocab)
+        ll_tokenizer = _cached_ll_tokenizer(self._tokenizer, n_vocab, self._stop_ids or None)
         matcher = _llg.LLMatcher(ll_tokenizer, self._grammar)
         error = matcher.get_error()
         if error:
@@ -273,6 +278,10 @@ class GrammarConstraint:
         self._forbid_stripped_ids()
         masked = _llg_mlx.apply_token_bitmask(logits.reshape(1, -1), self._bitmask)
         return masked.reshape(logits.shape)
+
+    def stops_on(self, ids) -> None:
+        """The ids the decode loop really ends on, when the tokenizer alone cannot say."""
+        self._runtime_stops = tuple(ids or ()) or None
 
     def decoded_dropping(self, ids = None) -> None:
         """Name the special ids the reply's decoder removes (None: every special id), once the
@@ -461,8 +470,12 @@ def _runtime_stop_ids(tokenizer, n_vocab: int) -> Optional[tuple]:
     return None
 
 
-def _cached_ll_tokenizer(tokenizer, n_vocab: int):
-    stop_ids = _runtime_stop_ids(tokenizer, n_vocab)
+def _cached_ll_tokenizer(
+    tokenizer,
+    n_vocab: int,
+    stop_ids = None,
+):
+    stop_ids = stop_ids or _runtime_stop_ids(tokenizer, n_vocab)
     tokenizer = _unwrap_hf_tokenizer(tokenizer)
     key = (id(tokenizer), int(n_vocab), stop_ids)
     with _CACHE_LOCK:

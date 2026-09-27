@@ -7137,7 +7137,11 @@ def _constrained_vlm_reply(
     monkeypatch.setattr(
         mlx_inference,
         "_build_grammar_constraint",
-        lambda *_a, **_k: SimpleNamespace(allows_reasoning = allows_reasoning),
+        lambda *_a, **_k: SimpleNamespace(
+            allows_reasoning = allows_reasoning,
+            stops_on = lambda _ids: None,
+            decoded_dropping = lambda _ids = None: None,
+        ),
     )
     monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_k: None)
     monkeypatch.setattr(mlx_inference, "_vlm_generation_is_diffusion", lambda _model: False)
@@ -7385,3 +7389,15 @@ def test_a_tokenizer_end_token_the_runtime_does_not_stop_on_is_withheld_too():
         constraint.advance(int(token))
     with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
         _allowed(constraint, len(tokenizer))
+
+
+def test_the_grammar_ends_on_the_stop_the_decode_loop_names():
+    """mlx-vlm stops on config ids the tokenizer may not carry; told them, the finished
+    document is closed by that id rather than the tokenizer's end token."""
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tokenizer, "p")
+    constraint.stops_on([runtime_stop])
+    for token_id in tokenizer.encode('{"a":1}', add_special_tokens = False):
+        _allowed(constraint, len(tokenizer))
+        constraint.advance(int(token_id))
+    assert _allowed(constraint, len(tokenizer)) == {runtime_stop}

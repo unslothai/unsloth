@@ -4009,6 +4009,9 @@ class MLXInferenceBackend:
             and self._tokenizer
             else None
         )
+        if constraint is not None:
+            # mlx-vlm stops on the config's ids, which some repos set apart from the tokenizer's.
+            constraint.stops_on(_mlx_stop_token_ids(self._tokenizer, self._model))
         if constraint is not None and vlm_token_decoder is not None:
             # Raw mlx-vlm text keeps every special; this decoder does not.
             constraint.decoded_dropping(vlm_token_decoder.dropped_ids())
