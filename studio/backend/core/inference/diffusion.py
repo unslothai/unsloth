@@ -8007,9 +8007,7 @@ class DiffusionBackend:
             calibrated = bool(getattr(state, "calibrated_placement", False))
             if (
                 getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE or calibrated
-            ) and (
-                _offload_controlnet_module(cn_model, state.device, logger)
-            ):
+            ) and (_offload_controlnet_module(cn_model, state.device, logger)):
                 pass
             elif calibrated:
                 del cn_model
