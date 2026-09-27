@@ -4922,7 +4922,11 @@ SCHEMA = {
 JSON_SCHEMA_FORMAT = {"type": "json_schema", "schema": SCHEMA}
 
 
-def _char_tokenizer(*extra_specials, markers_are_special = False, extra_chars = ""):
+def _char_tokenizer(
+    *extra_specials,
+    markers_are_special = False,
+    extra_chars = "",
+):
     if not gc.LLGUIDANCE_AVAILABLE:
         pytest.skip("llguidance.mlx did not import")
     tk = pytest.importorskip("tokenizers")
@@ -7261,3 +7265,23 @@ def test_a_constrained_plain_reply_is_decoded_without_space_cleanup(monkeypatch,
     # " ." inside a grammar-approved string must reach the client unchanged.
     for kwargs in decodes:
         assert kwargs.get("clean_up_tokenization_spaces") is (False if constrained else None)
+
+
+def test_a_special_token_the_reply_would_drop_is_refused_not_silently_deleted():
+    """llguidance spells a forced literal with a special id when one matches, and a decode that
+    skips special tokens would delete it from a reply reported as valid."""
+    tokenizer = _char_tokenizer("ab", markers_are_special = True)
+    special = tokenizer.convert_tokens_to_ids("ab")
+    fmt = {"type": "json_schema", "schema": {"const": "ab"}}
+
+    def _after_quote(constraint):
+        for token in tokenizer.encode('"', add_special_tokens = False):
+            _allowed(constraint, len(tokenizer))
+            constraint.advance(int(token))
+        return _allowed(constraint, len(tokenizer))
+
+    assert special in _after_quote(
+        build_constraint(fmt, tokenizer, "p", reply_keeps_special_tokens = True)
+    )
+    with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
+        _after_quote(build_constraint(fmt, tokenizer, "p"))

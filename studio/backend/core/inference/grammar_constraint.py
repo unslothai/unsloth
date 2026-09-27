@@ -63,6 +63,7 @@ class ConstraintSpec:
         tokenizer,
         *,
         in_reasoning: bool = False,
+        strips_special_tokens: bool = False,
     ) -> "GrammarConstraint":
         if in_reasoning:
             if self.reasoning_close is None:
@@ -77,7 +78,12 @@ class ConstraintSpec:
             grammar = _cached_grammar(self.schema_json, prelude_close = self.reasoning_close)
         else:
             grammar = self.grammar
-        return GrammarConstraint(grammar, tokenizer, allows_reasoning = in_reasoning)
+        return GrammarConstraint(
+            grammar,
+            tokenizer,
+            allows_reasoning = in_reasoning,
+            strips_special_tokens = strips_special_tokens,
+        )
 
 
 def build_constraint(
@@ -104,6 +110,7 @@ def build_constraint(
     return spec.build(
         tokenizer,
         in_reasoning = (reasoning_is_extracted and prompt_opens_reasoning_channel(prompt, markers)),
+        strips_special_tokens = not reply_keeps_special_tokens,
     )
 
 
@@ -228,16 +235,23 @@ class GrammarConstraint:
         tokenizer,
         *,
         allows_reasoning: bool = False,
+        strips_special_tokens: bool = False,
     ):
         self._grammar = grammar
         self._tokenizer = tokenizer
         self._matcher = None
         self._bitmask = None
         self._stop_ids = ()
+        self._stripped_ids = ()
+        self._strips_special_tokens = strips_special_tokens
         self.allows_reasoning = allows_reasoning
 
     def _bind(self, n_vocab: int) -> None:
         self._stop_ids = _runtime_stop_ids(self._tokenizer, n_vocab) or ()
+        if self._strips_special_tokens:
+            # llguidance offers a special token to spell a schema literal, and a decode that
+            # skips special tokens would delete it from a reply reported as valid.
+            self._stripped_ids = _stripped_special_ids(self._tokenizer, n_vocab, self._stop_ids)
         ll_tokenizer = _cached_ll_tokenizer(self._tokenizer, n_vocab)
         matcher = _llg.LLMatcher(ll_tokenizer, self._grammar)
         error = matcher.get_error()
@@ -253,8 +267,21 @@ class GrammarConstraint:
         forced_stop = self._stop_offered_as_text()
         if forced_stop is not None:
             raise ResponseFormatError(self._desync_message(forced_stop))
+        self._forbid_stripped_ids()
         masked = _llg_mlx.apply_token_bitmask(logits.reshape(1, -1), self._bitmask)
         return masked.reshape(logits.shape)
+
+    def _forbid_stripped_ids(self) -> None:
+        offered = [i for i in self._stripped_ids if self._mask_allowed(i)]
+        if not offered:
+            return
+        import numpy as np
+
+        words = self._bitmask.view(np.uint32)
+        for token_id in offered:
+            words[0, token_id // 32] &= np.uint32(~(1 << (token_id % 32)) & 0xFFFFFFFF)
+        if not words[0].any():
+            raise ResponseFormatError(self._desync_message(offered[0]))
 
     def _stop_offered_as_text(self) -> Optional[int]:
         if not self._stop_ids or self._matcher.is_stopped() or self._matcher.is_accepting():
@@ -380,6 +407,22 @@ def _unwrap_hf_tokenizer(tokenizer):
     if isinstance(inner, transformers.PreTrainedTokenizerFast):
         return inner
     return tokenizer
+
+
+def _stripped_special_ids(tokenizer, n_vocab: int, stop_ids) -> tuple:
+    # What decode(skip_special_tokens=True) drops: every added token marked special, which
+    # all_special_ids alone misses.
+    inner = _unwrap_hf_tokenizer(tokenizer)
+    try:
+        ids = set(getattr(inner, "all_special_ids", None) or ())
+        ids.update(
+            i for i, t in (getattr(inner, "added_tokens_decoder", None) or {}).items() if t.special
+        )
+    except Exception:
+        return ()
+    # llguidance falls back to the tokenizer's own end token when the runtime names none.
+    keep = set(stop_ids or ()) | {getattr(inner, "eos_token_id", None)}
+    return tuple(sorted({int(i) for i in ids if 0 <= int(i) < int(n_vocab)} - keep))
 
 
 def _runtime_stop_ids(tokenizer, n_vocab: int) -> Optional[tuple]:
