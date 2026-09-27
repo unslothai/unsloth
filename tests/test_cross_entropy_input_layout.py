@@ -2,13 +2,16 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 import pytest
+from real_accelerator import (
+    has_real_cuda,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 import torch.nn.functional as F
 
 pytestmark = pytest.mark.gpu
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("vocab_size", [80, 65540])
 @pytest.mark.parametrize(
