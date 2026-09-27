@@ -1065,10 +1065,7 @@ def _channels_last_decode_wins(
     compiled_decode: bool,
     offload_active: bool = False,
 ) -> bool:
-    """Whether channels_last VAE weights beat contiguous ones for this decode (measured on NVIDIA only).
-
-    Eager CUDA GroupNorm has no NHWC kernel, so an eager 16-bit channels_last decode is slower, but contiguous peaks
-    higher, so offloaded loads keep channels_last. Compiled 16-bit wins channels_last; fp32 is faster contiguous."""
+    """NVIDIA-measured: eager 16-bit is faster contiguous (no NHWC GroupNorm) but offload keeps channels_last (lower peak); compiled 16-bit wins channels_last; fp32 wins contiguous."""
     vae = getattr(pipe, "vae", None)
     if (
         getattr(target, "backend", "cuda") != "cuda"

@@ -453,7 +453,6 @@ def test_speed_default_dense_falls_back_to_regional_compile(monkeypatch):
     applied = apply_speed_optims(
         pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
     )
-    # The VAE decode stays eager on a DiT's default tier, so its weights stay contiguous.
     assert applied["channels_last"] is False and pipe.vae.mem_format == torch.contiguous_format
     assert applied["compiled"] is True and pipe.compiled is True
     # default compiles with dynamic=True and no autotune mode: fast cold start, resolution-robust, sidesteps the CUDA-graph crash.
@@ -679,7 +678,6 @@ def test_eager_vae_decode_keeps_contiguous_weights(monkeypatch, tier):
     "backend, device", [("rocm", "cuda"), ("mps", "mps"), ("xpu", "xpu"), ("cpu", "cpu")]
 )
 def test_eager_vae_decode_layout_unchanged_off_nvidia(monkeypatch, backend, device):
-    # Only NVIDIA was measured; every other backend keeps the channels_last weights it had before.
     torch = _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True)
     target = _target(device = device)
