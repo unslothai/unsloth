@@ -106,27 +106,58 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         return y / (1.0 + tl.exp2(u * -2.8853900817779268))
 
     @triton.jit
-    def _pre(c_ptr, xs, ws_ptr, b_ptr, offs, mask, HAS_BIAS: tl.constexpr, WS_FP32: tl.constexpr, EVICT: tl.constexpr,
-             FINAL_ROUND: tl.constexpr):
+    def _pre(
+        c_ptr,
+        xs,
+        ws_ptr,
+        b_ptr,
+        offs,
+        mask,
+        HAS_BIAS: tl.constexpr,
+        WS_FP32: tl.constexpr,
+        EVICT: tl.constexpr,
+        FINAL_ROUND: tl.constexpr,
+    ):
         # torchao Int8Tensor linear epilogue: (int32 * x_scale).to(bf16) * w_scale (+ bias), then .to(bf16).
         # FINAL_ROUND=False leaves the last rounding to the caller (it commutes with a row max).
         c = tl.load(c_ptr + offs, mask = mask, other = 0, eviction_policy = EVICT).to(tl.float32)
         y = _rbf16(c * xs)
-        y = y * tl.load(ws_ptr + offs, mask = mask, other = 0.0, eviction_policy = "evict_last").to(tl.float32)
+        y = y * tl.load(ws_ptr + offs, mask = mask, other = 0.0, eviction_policy = "evict_last").to(
+            tl.float32
+        )
         if not WS_FP32:
             y = _rbf16(y)
         if HAS_BIAS:
-            y = y + tl.load(b_ptr + offs, mask = mask, other = 0.0, eviction_policy = "evict_last").to(tl.float32)
+            y = y + tl.load(b_ptr + offs, mask = mask, other = 0.0, eviction_policy = "evict_last").to(
+                tl.float32
+            )
         if FINAL_ROUND:
             y = _rbf16(y)
         return y
 
     @triton.jit
     def dq_gelu_quant(
-        c_ptr, xs_ptr, ws_ptr, b_ptr, p_ptr, q_ptr, s_ptr,
-        N, NA, S, stride_c, stride_q, p_sb, p_ss, p_sh,
-        HAS_BIAS: tl.constexpr, WS_FP32: tl.constexpr, HAS_PREFIX: tl.constexpr, HEAD_DIM: tl.constexpr,
-        CHUNK: tl.constexpr, CHUNK_A: tl.constexpr,
+        c_ptr,
+        xs_ptr,
+        ws_ptr,
+        b_ptr,
+        p_ptr,
+        q_ptr,
+        s_ptr,
+        N,
+        NA,
+        S,
+        stride_c,
+        stride_q,
+        p_sb,
+        p_ss,
+        p_sh,
+        HAS_BIAS: tl.constexpr,
+        WS_FP32: tl.constexpr,
+        HAS_PREFIX: tl.constexpr,
+        HEAD_DIM: tl.constexpr,
+        CHUNK: tl.constexpr,
+        CHUNK_A: tl.constexpr,
     ):
         row = tl.program_id(0).to(tl.int64)
         xs = tl.load(xs_ptr + row).to(tl.float32)
@@ -148,7 +179,13 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             for k in range(0, N, CHUNK):
                 offs = k + base
                 m = offs < N
-                g = _rbf16(_gelu_tanh(_pre(crow, xs, ws_ptr, b_ptr, offs, m, HAS_BIAS, WS_FP32, "evict_last", True)))
+                g = _rbf16(
+                    _gelu_tanh(
+                        _pre(
+                            crow, xs, ws_ptr, b_ptr, offs, m, HAS_BIAS, WS_FP32, "evict_last", True
+                        )
+                    )
+                )
                 acc = tl.maximum(acc, tl.where(m, tl.abs(g), 0.0))
             amax = tl.max(acc, axis = 0)
         if HAS_PREFIX:
@@ -161,7 +198,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             for k in range(0, NA, CHUNK_A):
                 j = k + abase
                 m = j < NA
-                v = tl.load(pbase + (j // HEAD_DIM) * p_sh + (j % HEAD_DIM), mask = m, other = 0.0).to(tl.float32)
+                v = tl.load(pbase + (j // HEAD_DIM) * p_sh + (j % HEAD_DIM), mask = m, other = 0.0).to(
+                    tl.float32
+                )
                 pacc = tl.maximum(pacc, tl.abs(v))
             amax = tl.maximum(amax, tl.max(pacc, axis = 0))
         scale = _rbf16(tl.math.div_rn(amax, 127.5))
@@ -172,7 +211,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             for k in range(0, NA, CHUNK_A):
                 j = k + abase
                 m = j < NA
-                v = tl.load(pbase + (j // HEAD_DIM) * p_sh + (j % HEAD_DIM), mask = m, other = 0.0).to(tl.float32)
+                v = tl.load(pbase + (j // HEAD_DIM) * p_sh + (j % HEAD_DIM), mask = m, other = 0.0).to(
+                    tl.float32
+                )
                 qi = tl.extra.cuda.libdevice.nearbyint(v * inv)
                 qi = tl.minimum(tl.maximum(qi, -128.0), 127.0)
                 tl.store(qrow + j, qi.to(tl.int8), mask = m)
@@ -180,7 +221,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         for k in range(0, N, CHUNK):
             offs = k + base
             m = offs < N
-            g = _rbf16(_gelu_tanh(_pre(crow, xs, ws_ptr, b_ptr, offs, m, HAS_BIAS, WS_FP32, "evict_first", True)))
+            g = _rbf16(
+                _gelu_tanh(
+                    _pre(crow, xs, ws_ptr, b_ptr, offs, m, HAS_BIAS, WS_FP32, "evict_first", True)
+                )
+            )
             qi = tl.extra.cuda.libdevice.nearbyint(g * inv)
             qi = tl.minimum(tl.maximum(qi, -128.0), 127.0)
             tl.store(qrow + NA + offs, qi.to(tl.int8), mask = m)
@@ -191,16 +236,40 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         return y / (1.0 + tl.exp(-y))
 
     @triton.jit
-    def _swiglu_val(crow, xs, ws_ptr, b_ptr, g0, v0, offs, m, HAS_BIAS: tl.constexpr, WS_FP32: tl.constexpr,
-                    EVICT: tl.constexpr):
+    def _swiglu_val(
+        crow,
+        xs,
+        ws_ptr,
+        b_ptr,
+        g0,
+        v0,
+        offs,
+        m,
+        HAS_BIAS: tl.constexpr,
+        WS_FP32: tl.constexpr,
+        EVICT: tl.constexpr,
+    ):
         g = _pre(crow + g0, xs, ws_ptr + g0, b_ptr + g0, offs, m, HAS_BIAS, WS_FP32, EVICT, True)
         v = _pre(crow + v0, xs, ws_ptr + v0, b_ptr + v0, offs, m, HAS_BIAS, WS_FP32, EVICT, True)
         return _rbf16(_rbf16(_silu(g)) * v)
 
     @triton.jit
     def dq_swiglu_quant(
-        c_ptr, xs_ptr, ws_ptr, b_ptr, h_ptr, q_ptr, s_ptr, N, G0, V0, stride_c, stride_q,
-        HAS_BIAS: tl.constexpr, WS_FP32: tl.constexpr, CHUNK: tl.constexpr,
+        c_ptr,
+        xs_ptr,
+        ws_ptr,
+        b_ptr,
+        h_ptr,
+        q_ptr,
+        s_ptr,
+        N,
+        G0,
+        V0,
+        stride_c,
+        stride_q,
+        HAS_BIAS: tl.constexpr,
+        WS_FP32: tl.constexpr,
+        CHUNK: tl.constexpr,
     ):
         # c row = the fused GEMM output; the gate half starts at column G0, the value half at V0 (both N wide).
         # Two int32 rows per output row make recomputing in pass 2 ALU-bound, so pass 1 parks the bf16 product in a
@@ -214,7 +283,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         for k in range(0, N, CHUNK):
             offs = k + base
             m = offs < N
-            h = _swiglu_val(crow, xs, ws_ptr, b_ptr, G0, V0, offs, m, HAS_BIAS, WS_FP32, "evict_first")
+            h = _swiglu_val(
+                crow, xs, ws_ptr, b_ptr, G0, V0, offs, m, HAS_BIAS, WS_FP32, "evict_first"
+            )
             tl.store(hrow + offs, h.to(tl.bfloat16), mask = m, eviction_policy = "evict_last")
             acc = tl.maximum(acc, tl.where(m, tl.abs(h), 0.0))
         amax = tl.max(acc, axis = 0)
@@ -226,12 +297,16 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         for k in range(0, N, CHUNK):
             offs = k + base
             m = offs < N
-            h = tl.load(hrow + offs, mask = m, other = 0.0, eviction_policy = "evict_first").to(tl.float32)
+            h = tl.load(hrow + offs, mask = m, other = 0.0, eviction_policy = "evict_first").to(
+                tl.float32
+            )
             qi = tl.extra.cuda.libdevice.nearbyint(h * inv)
             qi = tl.minimum(tl.maximum(qi, -128.0), 127.0)
             tl.store(qrow + offs, qi.to(tl.int8), mask = m)
 
-    return types.SimpleNamespace(dq_gelu_quant = dq_gelu_quant, dq_swiglu_quant = dq_swiglu_quant, triton = triton)
+    return types.SimpleNamespace(
+        dq_gelu_quant = dq_gelu_quant, dq_swiglu_quant = dq_swiglu_quant, triton = triton
+    )
 
 
 def _launch(c: Any, xs: Any, ws: Any, bias: Any, prefix: Any) -> tuple:
@@ -251,8 +326,21 @@ def _launch(c: Any, xs: Any, ws: Any, bias: Any, prefix: Any) -> tuple:
     scale = torch.empty((m_rows,), device = c.device, dtype = torch.float32)
     with torch.cuda.device(c.device):
         k.dq_gelu_quant[(m_rows,)](
-            c, xs, ws, bias if bias is not None else ws, prefix if prefix is not None else ws, q, scale,
-            n, na, s, c.stride(0), q.stride(0), p_sb, p_ss, p_sh,
+            c,
+            xs,
+            ws,
+            bias if bias is not None else ws,
+            prefix if prefix is not None else ws,
+            q,
+            scale,
+            n,
+            na,
+            s,
+            c.stride(0),
+            q.stride(0),
+            p_sb,
+            p_ss,
+            p_sh,
             HAS_BIAS = bias is not None,
             WS_FP32 = ws.dtype == torch.float32,
             HAS_PREFIX = prefix is not None,
@@ -265,7 +353,9 @@ def _launch(c: Any, xs: Any, ws: Any, bias: Any, prefix: Any) -> tuple:
     return q, scale
 
 
-def _launch_swiglu(c: Any, xs: Any, ws: Any, bias: Any, gate_col: int, value_col: int, n: int) -> tuple:
+def _launch_swiglu(
+    c: Any, xs: Any, ws: Any, bias: Any, gate_col: int, value_col: int, n: int
+) -> tuple:
     """SwiGLU on the int32 output ``c`` of one fused GEMM: gate columns [gate_col, +n), value columns [value_col, +n)."""
     import torch
 
@@ -276,7 +366,18 @@ def _launch_swiglu(c: Any, xs: Any, ws: Any, bias: Any, gate_col: int, value_col
     scratch = torch.empty((m_rows, n), device = c.device, dtype = torch.bfloat16)
     with torch.cuda.device(c.device):
         k.dq_swiglu_quant[(m_rows,)](
-            c, xs, ws, bias if bias is not None else ws, scratch, q, scale, n, gate_col, value_col, c.stride(0), q.stride(0),
+            c,
+            xs,
+            ws,
+            bias if bias is not None else ws,
+            scratch,
+            q,
+            scale,
+            n,
+            gate_col,
+            value_col,
+            c.stride(0),
+            q.stride(0),
             HAS_BIAS = bias is not None,
             WS_FP32 = ws.dtype == torch.float32,
             CHUNK = 2048,
@@ -286,15 +387,17 @@ def _launch_swiglu(c: Any, xs: Any, ws: Any, bias: Any, gate_col: int, value_col
     return q, scale
 
 
-def reference_dq_swiglu_quant(c: Any, xs: Any, ws: Any, bias: Any, gate_col: int, value_col: int, n: int) -> tuple:
+def reference_dq_swiglu_quant(
+    c: Any, xs: Any, ws: Any, bias: Any, gate_col: int, value_col: int, n: int
+) -> tuple:
     """Eager mirror: two torchao epilogues (gate, value), ATen SiLU, bf16 product, torchao per-row act quant."""
     import torch
     import torch.nn.functional as F
 
     def part(col):
-        y = (c[:, col:col + n] * xs.reshape(-1, 1)).to(torch.bfloat16) * ws[col:col + n]
+        y = (c[:, col : col + n] * xs.reshape(-1, 1)).to(torch.bfloat16) * ws[col : col + n]
         if bias is not None:
-            y = y + bias[col:col + n]
+            y = y + bias[col : col + n]
         return y.to(torch.bfloat16)
 
     h = F.silu(part(gate_col)) * part(value_col)
@@ -314,12 +417,13 @@ def _op() -> Any:
     qualname = f"{_OP_NAMESPACE}::{_OP_NAME}"
     ns = getattr(torch.ops, _OP_NAMESPACE, None)
     if ns is not None and hasattr(ns, _OP_NAME) and hasattr(ns, _OP_NAME_SWIGLU):
-        return types.SimpleNamespace(gelu = getattr(ns, _OP_NAME), swiglu = getattr(ns, _OP_NAME_SWIGLU))
+        return types.SimpleNamespace(
+            gelu = getattr(ns, _OP_NAME), swiglu = getattr(ns, _OP_NAME_SWIGLU)
+        )
     custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
     if custom_op is None:  # torch < 2.4
         return None
     try:
-
         # Explicit schema: this module's annotations are strings (``from __future__ import annotations``) and torch is
         # imported lazily, so schema inference from them would not resolve.
         @custom_op(
@@ -337,6 +441,7 @@ def _op() -> Any:
                 c.new_empty((c.shape[0], na + c.shape[1]), dtype = torch.int8),
                 c.new_empty((c.shape[0],), dtype = torch.float32),
             )
+
         @custom_op(
             f"{_OP_NAMESPACE}::{_OP_NAME_SWIGLU}",
             mutates_args = (),
@@ -366,7 +471,11 @@ def _device_ok(index: int) -> bool:
         return False
     if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
         return False
-    if not (_triton_version_ok() and _triton_jit_toolchain_ok()) or _kernels() is None or _op() is None:
+    if (
+        not (_triton_version_ok() and _triton_jit_toolchain_ok())
+        or _kernels() is None
+        or _op() is None
+    ):
         return False
     try:
         dev = torch.device("cuda", index)
@@ -396,7 +505,9 @@ def reference_dq_gelu_quant(c: Any, xs: Any, ws: Any, bias: Any, prefix: Any) ->
         y = y + bias
     g = F.gelu(y.to(torch.bfloat16), approximate = "tanh")
     if prefix is not None:
-        g = torch.cat([prefix.reshape(prefix.shape[0] * prefix.shape[1], -1).to(g.dtype), g], dim = -1)
+        g = torch.cat(
+            [prefix.reshape(prefix.shape[0] * prefix.shape[1], -1).to(g.dtype), g], dim = -1
+        )
     amax = torch.maximum(-g.amin(dim = 1).clamp(max = 0), g.amax(dim = 1).clamp(min = 0))
     scale = (amax / 127.5).clamp(min = torch.finfo(torch.float32).eps).to(torch.float32)
     q = torch.clamp(torch.round(g * (1.0 / scale).reshape(-1, 1)), -128, 127).to(torch.int8)
@@ -411,11 +522,16 @@ def _plain_int8_weight(w: Any) -> bool:
         kw = getattr(w, "act_quant_kwargs", None)
         if kw is None or getattr(w, "act_pre_scale", None) is not None:
             return False
-        if getattr(w, "act_quant_scale", None) is not None or getattr(w, "act_quant_zero_point", None) is not None:
+        if (
+            getattr(w, "act_quant_scale", None) is not None
+            or getattr(w, "act_quant_zero_point", None) is not None
+        ):
             return False
         if getattr(kw, "reduce_range", False) or getattr(w, "reduce_range", False):
             return False
-        if "SYMMETRIC" not in str(getattr(kw, "mapping_type", "")) or "ASYMMETRIC" in str(getattr(kw, "mapping_type", "")):
+        if "SYMMETRIC" not in str(getattr(kw, "mapping_type", "")) or "ASYMMETRIC" in str(
+            getattr(kw, "mapping_type", "")
+        ):
             return False
         if type(getattr(kw, "granularity", None)).__name__ != "PerRow":
             return False
@@ -446,7 +562,6 @@ def _act_quant(x2d: Any, weight: Any) -> tuple:
 
 def _int_mm(a: Any, weight: Any) -> Any:
     from torchao.kernel.intmm import safe_int_mm
-
     return safe_int_mm(a, weight.qdata.contiguous().t())
 
 
@@ -469,7 +584,13 @@ def _ff_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) -> Any
     down = self.net[2]
     lead = hidden_states.shape[:-1]
     x2d = hidden_states.reshape(-1, hidden_states.shape[-1])
-    if args or kwargs or x2d.shape[0] < _MIN_ROWS or not hidden_states.is_cuda or hidden_states.dtype != torch.bfloat16:
+    if (
+        args
+        or kwargs
+        or x2d.shape[0] < _MIN_ROWS
+        or not hidden_states.is_cuda
+        or hidden_states.dtype != torch.bfloat16
+    ):
         return type(self).forward(self, hidden_states, *args, **kwargs)
     xq, xs = _act_quant(x2d, proj.weight)
     c = _int_mm(xq.reshape(-1, xq.shape[-1]), proj.weight)
@@ -495,7 +616,14 @@ def _flux_single_forward(
     text_seq_len = encoder_hidden_states.shape[1]
     rows = hidden_states.shape[0] * (hidden_states.shape[1] + text_seq_len)
     if rows < _MIN_ROWS or hidden_states.dtype != torch.bfloat16 or not hidden_states.is_cuda:
-        return type(self).forward(self, hidden_states, encoder_hidden_states, temb, image_rotary_emb, joint_attention_kwargs)
+        return type(self).forward(
+            self,
+            hidden_states,
+            encoder_hidden_states,
+            temb,
+            image_rotary_emb,
+            joint_attention_kwargs,
+        )
     hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim = 1)
     residual = hidden_states
     norm_hidden_states, gate = self.norm(hidden_states, emb = temb)
@@ -503,12 +631,18 @@ def _flux_single_forward(
     xq, xs = _act_quant(x2d, self.proj_mlp.weight)
     c = _int_mm(xq.reshape(rows, -1), self.proj_mlp.weight)
     joint_attention_kwargs = joint_attention_kwargs or {}
-    attn_output = self.attn(hidden_states = norm_hidden_states, image_rotary_emb = image_rotary_emb, **joint_attention_kwargs)
+    attn_output = self.attn(
+        hidden_states = norm_hidden_states,
+        image_rotary_emb = image_rotary_emb,
+        **joint_attention_kwargs,
+    )
     heads = self.attn.heads
     prefix = attn_output.unflatten(-1, (heads, attn_output.shape[-1] // heads))
     if prefix.stride(-1) != 1:
         prefix = prefix.contiguous()
-    q, s = _OP_HANDLE.gelu(c, xs.reshape(-1), self.proj_mlp.weight.scale.flatten(), self.proj_mlp.bias, prefix)
+    q, s = _OP_HANDLE.gelu(
+        c, xs.reshape(-1), self.proj_mlp.weight.scale.flatten(), self.proj_mlp.bias, prefix
+    )
     out = _linear_from_q(q, s, self.proj_out.weight, self.proj_out.bias, hidden_states.dtype)
     out = out.reshape(*hidden_states.shape[:-1], out.shape[-1])
     gate = gate.unsqueeze(1)
@@ -537,7 +671,10 @@ def _swiglu_spec(module: Any) -> Optional[tuple]:
             n = net[0].proj.out_features // 2
             # SwiGLU.forward: hidden, gate = proj(x).chunk(2) -> value first, gate second
             return ("net.0.proj", None, "net.2", n, n, 0)
-        if name == "Flux2FeedForward" and type(getattr(module, "act_fn", None)).__name__ == "Flux2SwiGLU":
+        if (
+            name == "Flux2FeedForward"
+            and type(getattr(module, "act_fn", None)).__name__ == "Flux2SwiGLU"
+        ):
             n = module.linear_in.out_features // 2
             return ("linear_in", None, "linear_out", n, 0, n)  # gate first, value second (FLUX.2)
     except Exception:  # noqa: BLE001
@@ -549,7 +686,11 @@ def _split_spec(module: Any) -> Optional[tuple]:
     """Two separate projections (gate, value) + down: Z-Image FeedForward (w1, w3, w2), Qwen-Image-2.1 SwiGLU."""
     name = type(module).__name__
     mod = type(module).__module__
-    if name == "FeedForward" and mod.endswith("transformer_z_image") and all(hasattr(module, n) for n in ("w1", "w2", "w3")):
+    if (
+        name == "FeedForward"
+        and mod.endswith("transformer_z_image")
+        and all(hasattr(module, n) for n in ("w1", "w2", "w3"))
+    ):
         return ("w1", "w3", "w2")
     if name == "QwenImage21SwiGLUFeedForward":
         return ("gate_layer", "proj", "out")
@@ -567,7 +708,9 @@ _SWIGLU_ALL_LAYOUTS = False
 
 
 def _is_zimage_ff(module: Any) -> bool:
-    return _split_spec(module) == ("w1", "w3", "w2") and type(module).__module__.endswith("transformer_z_image")
+    return _split_spec(module) == ("w1", "w3", "w2") and type(module).__module__.endswith(
+        "transformer_z_image"
+    )
 
 
 def _swiglu_layout_allowed(module: Any) -> bool:
@@ -587,7 +730,13 @@ def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) ->
     rec = self.__dict__.get(_SWIGLU_ATTR)
     lead = hidden_states.shape[:-1]
     x2d = hidden_states.reshape(-1, hidden_states.shape[-1])
-    ok = rec is not None and not args and not kwargs and x2d.shape[0] >= _MIN_ROWS and hidden_states.is_cuda
+    ok = (
+        rec is not None
+        and not args
+        and not kwargs
+        and x2d.shape[0] >= _MIN_ROWS
+        and hidden_states.is_cuda
+    )
     ok = ok and hidden_states.dtype == torch.bfloat16
     if ok:
         fused_in, parts, down_name, n, gate_col, value_col = rec
@@ -597,7 +746,9 @@ def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) ->
     down = _get(self, down_name)
     xq, xs = _act_quant(x2d, fused_in.weight)
     c = _int_mm(xq.reshape(-1, xq.shape[-1]), fused_in.weight)
-    q, s = _OP_HANDLE.swiglu(c, xs.reshape(-1), fused_in.weight.scale.flatten(), fused_in.bias, gate_col, value_col, n)
+    q, s = _OP_HANDLE.swiglu(
+        c, xs.reshape(-1), fused_in.weight.scale.flatten(), fused_in.bias, gate_col, value_col, n
+    )
     y = _linear_from_q(q, s, down.weight, down.bias, hidden_states.dtype)
     return y.reshape(*lead, y.shape[-1])
 
@@ -616,7 +767,14 @@ def _prepare_swiglu(module: Any) -> bool:
             return False
         if not (_plain_int8_weight(lin.weight) and _plain_int8_weight(down.weight)):
             return False
-        module.__dict__[_SWIGLU_ATTR] = (lin, ((in_name, lin), (down_name, down)), down_name, n, gate_col, value_col)
+        module.__dict__[_SWIGLU_ATTR] = (
+            lin,
+            ((in_name, lin), (down_name, down)),
+            down_name,
+            n,
+            gate_col,
+            value_col,
+        )
         return True
     split = _split_spec(module)
     if split is None:
@@ -643,7 +801,6 @@ def _exact_linear(*modules: Any) -> bool:
     ConvRotLinear rotates its input by a block Hadamard first), and the fused forward calls _int_mm on the
     weight directly, so it would silently skip that step."""
     from torch import nn
-
     return all(type(m) is nn.Linear for m in modules)
 
 
@@ -675,11 +832,15 @@ def _flux_single_eligible(module: Any) -> bool:
         act = module.act_mlp
         if type(act).__name__ != "GELU" or getattr(act, "approximate", None) != "tanh":
             return False
-        if getattr(module.attn, "heads", None) is None or not getattr(module.attn, "pre_only", False):
+        if getattr(module.attn, "heads", None) is None or not getattr(
+            module.attn, "pre_only", False
+        ):
             return False
         if not _exact_linear(module.proj_mlp, module.proj_out):
             return False
-        return _plain_int8_weight(module.proj_mlp.weight) and _plain_int8_weight(module.proj_out.weight)
+        return _plain_int8_weight(module.proj_mlp.weight) and _plain_int8_weight(
+            module.proj_out.weight
+        )
     except Exception:  # noqa: BLE001
         return False
 
@@ -687,7 +848,9 @@ def _flux_single_eligible(module: Any) -> bool:
 def _flux_single_class_is_arch_patched(module: Any) -> bool:
     try:
         from . import diffusion_arch_patches as ap
-        return getattr(type(module), "forward", None) is getattr(ap, "_flux_single_forward", object())
+        return getattr(type(module), "forward", None) is getattr(
+            ap, "_flux_single_forward", object()
+        )
     except Exception:  # noqa: BLE001
         return False
 
@@ -696,7 +859,6 @@ def resident_cuda_device(module: Any) -> Any:
     """The one CUDA device every parameter of ``module`` lives on (NVIDIA, not ROCm), else None."""
     try:
         import torch
-
         if getattr(torch.version, "hip", None):
             return None
         devices = {p.device for p in module.parameters()}
@@ -728,7 +890,11 @@ def run_on_first_call(module: Any, key: str, fn: Any) -> None:
     hooks[key] = module.register_forward_pre_hook(_pre_hook, with_kwargs = True)
 
 
-def install(transformer: Any, logger: Any = None, offload_active: bool = False) -> int:
+def install(
+    transformer: Any,
+    logger: Any = None,
+    offload_active: bool = False,
+) -> int:
     """Point every eligible block of ``transformer`` at the fused forward. Idempotent; returns the count (or the
     count of candidates when the weights are not on the GPU yet: the swap then happens at the first forward).
     Must run before the first compiled forward (the regional compile traces whatever ``forward`` is then)."""
@@ -736,14 +902,20 @@ def install(transformer: Any, logger: Any = None, offload_active: bool = False) 
         return 0
     if resident_cuda_device(transformer) is not None:
         return _finalize(transformer, logger)
-    candidates = sum(1 for m in transformer.modules() if _ff_eligible(m) or _flux_single_eligible(m) or _swiglu_candidate(m))
+    candidates = sum(
+        1
+        for m in transformer.modules()
+        if _ff_eligible(m) or _flux_single_eligible(m) or _swiglu_candidate(m)
+    )
     if candidates:
         run_on_first_call(transformer, "int8_fused", lambda t: _finalize(t, logger))
     return candidates
 
 
 def _swiglu_candidate(module: Any) -> bool:
-    return (_swiglu_spec(module) is not None or _split_spec(module) is not None) and _swiglu_layout_allowed(module)
+    return (
+        _swiglu_spec(module) is not None or _split_spec(module) is not None
+    ) and _swiglu_layout_allowed(module)
 
 
 def _finalize(transformer: Any, logger: Any = None) -> int:
@@ -775,7 +947,10 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
             module.forward = types.MethodType(fn, module)
             count += 1
     if logger is not None and count:
-        logger.info("diffusion.int8_fused: %d int8 MLP region(s) run the fused dequant/activation/quant kernel", count)
+        logger.info(
+            "diffusion.int8_fused: %d int8 MLP region(s) run the fused dequant/activation/quant kernel",
+            count,
+        )
     return count
 
 

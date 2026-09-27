@@ -23,7 +23,9 @@ def _cuda_int8_ready() -> bool:
     return fused._device_ok(torch.cuda.current_device())
 
 
-needs_cuda = pytest.mark.skipif(not _cuda_int8_ready(), reason = "needs CUDA (not ROCm), Triton and torchao Int8Tensor")
+needs_cuda = pytest.mark.skipif(
+    not _cuda_int8_ready(), reason = "needs CUDA (not ROCm), Triton and torchao Int8Tensor"
+)
 
 
 @pytest.fixture(autouse = True)
@@ -34,13 +36,22 @@ def _clean_env(monkeypatch):
 
 @pytest.mark.parametrize(
     "version, ok",
-    [("3.7.1", True), ("3.2.0", True), ("3.1.0", False), ("2.3.1", False), ("garbage", False), ("4.0", True)],
+    [
+        ("3.7.1", True),
+        ("3.2.0", True),
+        ("3.1.0", False),
+        ("2.3.1", False),
+        ("garbage", False),
+        ("4.0", True),
+    ],
 )
 def test_triton_version_gate(version, ok):
     assert fused._triton_version_ok(version) is ok
 
 
-@pytest.mark.parametrize("value, off", [("0", True), ("off", True), ("false", True), ("1", False), ("", False)])
+@pytest.mark.parametrize(
+    "value, off", [("0", True), ("off", True), ("false", True), ("1", False), ("", False)]
+)
 def test_kill_switch(monkeypatch, value, off):
     monkeypatch.setenv(fused.INT8_FUSED_ENV, value)
     assert fused.int8_fused_disabled() is off
@@ -66,7 +77,14 @@ def test_install_noop_on_cpu_module():
     assert "forward" not in ff.__dict__
 
 
-def _rand_inputs(m, n, *, ws_dtype = torch.float32, bias = True, seed = 0):
+def _rand_inputs(
+    m,
+    n,
+    *,
+    ws_dtype = torch.float32,
+    bias = True,
+    seed = 0,
+):
     g = torch.Generator(device = "cpu").manual_seed(seed)
     c = torch.randint(-(2**20), 2**20, (m, n), generator = g, dtype = torch.int32).cuda()
     xs = (torch.rand(m, generator = g) * 1e-3 + 1e-5).to(torch.bfloat16).float().cuda()
@@ -109,7 +127,9 @@ def test_kernel_prefix_segment(transposed):
     bsz, seq, heads, hd, n = 2, 300, 4, 64, 1024
     c, xs, ws, b = _rand_inputs(bsz * seq, n)
     if transposed:  # SDPA output layout [B, H, S, D] seen as [B, S, H, D]
-        prefix = (torch.randn(bsz, heads, seq, hd, device = "cuda") * 3).to(torch.bfloat16).transpose(1, 2)
+        prefix = (
+            (torch.randn(bsz, heads, seq, hd, device = "cuda") * 3).to(torch.bfloat16).transpose(1, 2)
+        )
     else:
         prefix = (torch.randn(bsz, seq, heads, hd, device = "cuda") * 3).to(torch.bfloat16)
     q, s = fused._launch(c, xs, ws, b, prefix)
@@ -118,12 +138,21 @@ def test_kernel_prefix_segment(transposed):
     assert torch.equal(s, s_ref) and torch.equal(q, q_ref)
 
 
-def _quantized_ff(dim = 256, inner = 1024, seed = 0):
+def _quantized_ff(
+    dim = 256,
+    inner = 1024,
+    seed = 0,
+):
     from diffusers.models.attention import FeedForward
     from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
 
     torch.manual_seed(seed)
-    ff = FeedForward(dim, dim, mult = inner // dim, activation_fn = "gelu-approximate").cuda().to(torch.bfloat16).eval()
+    ff = (
+        FeedForward(dim, dim, mult = inner // dim, activation_fn = "gelu-approximate")
+        .cuda()
+        .to(torch.bfloat16)
+        .eval()
+    )
     for p in ff.parameters():
         p.data.normal_(0, 0.05)
     quantize_(ff, Int8DynamicActivationInt8WeightConfig())
@@ -196,10 +225,19 @@ def test_flux_single_block_bit_identical_to_stock_eager():
     from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
 
     torch.manual_seed(0)
-    blk = tf.FluxSingleTransformerBlock(dim = 256, num_attention_heads = 4, attention_head_dim = 64).cuda().to(torch.bfloat16).eval()
+    blk = (
+        tf.FluxSingleTransformerBlock(dim = 256, num_attention_heads = 4, attention_head_dim = 64)
+        .cuda()
+        .to(torch.bfloat16)
+        .eval()
+    )
     for p in blk.parameters():
         p.data.normal_(0, 0.05)
-    quantize_(blk, Int8DynamicActivationInt8WeightConfig(), filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and "norm" not in fqn)
+    quantize_(
+        blk,
+        Int8DynamicActivationInt8WeightConfig(),
+        filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and "norm" not in fqn,
+    )
     hid = torch.randn(1, 200, 256, device = "cuda", dtype = torch.bfloat16)
     enc = torch.randn(1, 40, 256, device = "cuda", dtype = torch.bfloat16)
     temb = torch.randn(1, 256, device = "cuda", dtype = torch.bfloat16)
@@ -211,7 +249,9 @@ def test_flux_single_block_bit_identical_to_stock_eager():
 
 
 @needs_cuda
-@pytest.mark.parametrize("m, n, gate_col, value_col", [(4352, 10240, 0, 10240), (300, 1024, 1024, 0), (17, 64, 0, 64)])
+@pytest.mark.parametrize(
+    "m, n, gate_col, value_col", [(4352, 10240, 0, 10240), (300, 1024, 1024, 0), (17, 64, 0, 64)]
+)
 def test_swiglu_kernel_bit_exact_vs_eager_reference(m, n, gate_col, value_col):
     c, xs, ws, b = _rand_inputs(m, 2 * n, bias = False)
     q, s = fused._launch_swiglu(c, xs, ws, None, gate_col, value_col, n)
@@ -236,7 +276,6 @@ def test_swiglu_mlps_bit_identical_to_stock_eager(kind, monkeypatch):
     torch.manual_seed(0)
     if kind == "diffusers_swiglu":
         from diffusers.models.attention import FeedForward
-
         ff = FeedForward(256, inner_dim = 512, activation_fn = "swiglu", bias = False)
     elif kind == "zimage":
         zmod = pytest.importorskip("diffusers.models.transformers.transformer_z_image")
@@ -280,7 +319,9 @@ def test_cpu_placed_model_is_swapped_at_the_first_forward():
     with torch.no_grad():
         ff(x)
     assert fused.is_installed(ff)
-    assert "_unsloth_first_call_hooks" in ff.__dict__ and not ff.__dict__["_unsloth_first_call_hooks"]
+    assert (
+        "_unsloth_first_call_hooks" in ff.__dict__ and not ff.__dict__["_unsloth_first_call_hooks"]
+    )
 
 
 def test_offload_skips_install():
@@ -301,9 +342,16 @@ def test_convrot_linears_keep_the_stock_forward(kind, monkeypatch):
         from diffusers.models.attention import FeedForward
 
         torch.manual_seed(0)
-        ff = _quantize(FeedForward(256, inner_dim = 512, activation_fn = "swiglu", bias = False).cuda().to(torch.bfloat16).eval())
+        ff = _quantize(
+            FeedForward(256, inner_dim = 512, activation_fn = "swiglu", bias = False)
+            .cuda()
+            .to(torch.bfloat16)
+            .eval()
+        )
         lins = (ff.net[0].proj, ff.net[2])
-    monkeypatch.setattr(fused, "_SWIGLU_ALL_LAYOUTS", True)  # the layout gate alone would already refuse diffusers SwiGLU
+    monkeypatch.setattr(
+        fused, "_SWIGLU_ALL_LAYOUTS", True
+    )  # the layout gate alone would already refuse diffusers SwiGLU
     for lin in lins:
         _install_rotation(lin, 16)
     assert fused.install(ff) == 0
@@ -313,13 +361,18 @@ def test_convrot_linears_keep_the_stock_forward(kind, monkeypatch):
 def _swiglu_module(kind):
     if kind == "diffusers_swiglu":
         from diffusers.models.attention import FeedForward
-
         return FeedForward(256, inner_dim = 512, activation_fn = "swiglu", bias = False)
     if kind == "zimage":
-        return pytest.importorskip("diffusers.models.transformers.transformer_z_image").FeedForward(256, 512)
+        return pytest.importorskip("diffusers.models.transformers.transformer_z_image").FeedForward(
+            256, 512
+        )
     if kind == "flux2":
-        return pytest.importorskip("diffusers.models.transformers.transformer_flux2").Flux2FeedForward(256, inner_dim = 512)
-    return pytest.importorskip("diffusers.models.transformers.transformer_qwenimage21").QwenImage21SwiGLUFeedForward(256, 512)
+        return pytest.importorskip(
+            "diffusers.models.transformers.transformer_flux2"
+        ).Flux2FeedForward(256, inner_dim = 512)
+    return pytest.importorskip(
+        "diffusers.models.transformers.transformer_qwenimage21"
+    ).QwenImage21SwiGLUFeedForward(256, 512)
 
 
 @pytest.mark.parametrize("kind", ["diffusers_swiglu", "zimage", "flux2", "qwenimage21"])
