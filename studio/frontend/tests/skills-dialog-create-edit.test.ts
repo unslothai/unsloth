@@ -76,10 +76,7 @@ test("save and delete are offered only on skills the dialog can write", () => {
   );
   assert.match(DIALOG, /const editable = selected !== null && isEditable\(selected\);/);
   assert.match(DIALOG, /readOnly=\{!editable\}/);
-  assert.match(
-    DIALOG,
-    /onDelete=\{editable \? \(\) => setConfirmingDelete\(selected\) : undefined\}/,
-  );
+  assert.match(DIALOG, /\) : editable \? \([^]*?onClick=\{\(\) => setConfirmingDelete\(selected\)\}/);
   assert.match(
     DIALOG,
     /<AlertDialogAction\n\s*variant="destructive"\n\s*onClick=\{\(\) => \{\n\s*const skill = confirmingDelete;/,
@@ -130,6 +127,6 @@ test("the dialog guards writes and drafts, and reopens on the library", () => {
   );
   assert.match(
     DIALOG,
-    /if \(open !== seenOpen\) \{\n\s*setSeenOpen\(open\);\n\s*if \(open\) \{\n\s*setSearchQuery\(""\);\n\s*setEnabledOnly\(false\);\n\s*setView\(LIBRARY\);/,
+    /if \(open !== seenOpen\) \{\n\s*setSeenOpen\(open\);\n\s*if \(open\) \{\n\s*setSearchQuery\(""\);\n\s*setView\(LIBRARY\);/,
   );
 });

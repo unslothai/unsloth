@@ -22,7 +22,6 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { useCopyFeedback } from "@/features/hub";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -30,7 +29,6 @@ import {
   ArrowLeft01Icon,
   ArrowRight01Icon,
   Cancel01Icon,
-  Copy01Icon,
   PlusSignIcon,
   RefreshIcon,
   Scroll01Icon,
@@ -99,7 +97,6 @@ export function ChatSkillsDialog({
   const t = useT();
   const { skills, loading, error } = useSkillsCatalog();
   const [searchQuery, setSearchQuery] = useState("");
-  const [enabledOnly, setEnabledOnly] = useState(false);
   const [view, setView] = useState<View>(LIBRARY);
   const [newDraft, setNewDraft] = useState<SkillDraft>(EMPTY_DRAFT);
   const [draft, setDraft] = useState<EditDraft | null>(null);
@@ -120,7 +117,6 @@ export function ChatSkillsDialog({
     setSeenOpen(open);
     if (open) {
       setSearchQuery("");
-      setEnabledOnly(false);
       setView(LIBRARY);
       setNewDraft(EMPTY_DRAFT);
       setDraft(null);
@@ -141,26 +137,21 @@ export function ChatSkillsDialog({
         : t("skills.sourceBundled");
 
   const query = searchQuery.trim().toLowerCase();
-  const narrowed = query !== "" || enabledOnly;
+  const narrowed = query !== "";
   const filtered = useMemo(
     () =>
-      skills.filter((skill) => {
-        if (enabledOnly && !(skill.enabled && skill.valid && !skill.shadowed)) return false;
-        return (
+      skills.filter(
+        (skill) =>
           !query ||
           skill.name.toLowerCase().includes(query) ||
-          skill.description.toLowerCase().includes(query)
-        );
-      }),
-    [skills, enabledOnly, query],
+          skill.description.toLowerCase().includes(query),
+      ),
+    [skills, query],
   );
   const sections = SECTIONS.map((source) => ({
     source,
     skills: filtered.filter((skill) => skill.source === source),
   })).filter((section) => section.skills.length > 0 || (section.source === "agents" && !narrowed));
-  const enabledCount = skills.filter(
-    (skill) => skill.enabled && skill.valid && !skill.shadowed,
-  ).length;
 
   const selected =
     view.kind === "skill" ? (skills.find((skill) => keyOf(skill) === view.key) ?? null) : null;
@@ -445,14 +436,6 @@ export function ChatSkillsDialog({
                   </button>
                 ) : null}
               </div>
-              <label className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-                {t("skills.enabledOnly")}
-                <Switch size="sm" checked={enabledOnly} onCheckedChange={setEnabledOnly} />
-              </label>
-              {divider}
-              <span className="text-xs tabular-nums text-muted-foreground">
-                {t("skills.summary", { enabled: enabledCount, total: skills.length })}
-              </span>
             </div>
 
             <div className="hover-scrollbar min-h-0 flex-1 overflow-y-auto p-6">
@@ -523,16 +506,11 @@ export function ChatSkillsDialog({
                   {narrowed ? (
                     <>
                       <p className="text-sm font-medium">
-                        {t("skills.noMatch", {
-                          query: searchQuery.trim() || t("skills.enabledOnly"),
-                        })}
+                        {t("skills.noMatch", { query: searchQuery.trim() })}
                       </p>
                       <button
                         type="button"
-                        onClick={() => {
-                          setSearchQuery("");
-                          setEnabledOnly(false);
-                        }}
+                        onClick={() => setSearchQuery("")}
                         className="text-xs text-primary hover:underline"
                       >
                         {t("skills.clearSearch")}
@@ -585,7 +563,16 @@ export function ChatSkillsDialog({
               </div>
               {selected ? (
                 <div className="flex shrink-0 items-center gap-2">
-                  <SourceChip label={sourceLabel(selected.source)} source={selected.source} />
+                  <span
+                    className={cn(
+                      "inline-flex h-5 items-center rounded-full px-2 text-ui-11 font-medium",
+                      selected.source === "agents"
+                        ? "bg-primary/10 text-primary"
+                        : "bg-muted text-muted-foreground",
+                    )}
+                  >
+                    {sourceLabel(selected.source)}
+                  </span>
                   {dirty ? (
                     <span className="rounded-full bg-primary/10 px-2 py-0.5 text-ui-11 font-medium text-primary">
                       {t("skills.unsaved")}
@@ -627,6 +614,17 @@ export function ChatSkillsDialog({
                       type="button"
                       size="sm"
                       variant="ghost"
+                      disabled={pending !== null}
+                      onClick={() => setConfirmingDelete(selected)}
+                      aria-label={t("skills.delete", { name: selected.name })}
+                      className="text-destructive hover:text-destructive"
+                    >
+                      {t("common.delete")}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
                       disabled={!dirty || pending !== null}
                       onClick={() => setDraft(null)}
                     >
@@ -652,7 +650,6 @@ export function ChatSkillsDialog({
               {view.kind === "new" ? (
                 <Editor
                   formId="skill-new-form"
-                  name={trimmedName}
                   nameField={
                     <Field
                       htmlFor="skill-name"
@@ -687,17 +684,6 @@ export function ChatSkillsDialog({
                     setNewDraft((prev) => ({ ...prev, instructions: value }))
                   }
                   onSubmit={() => void create()}
-                  aside={
-                    <EditorAside
-                      name={trimmedName}
-                      description={newDraft.description}
-                      instructions={newDraft.instructions}
-                      sourceText={t("skills.fromAgents")}
-                      sourceChip={
-                        <SourceChip label={t("skills.sourceAgents")} source="agents" />
-                      }
-                    />
-                  }
                 />
               ) : selected ? (
                 readable && !manifest ? (
@@ -707,7 +693,6 @@ export function ChatSkillsDialog({
                 ) : (
                   <Editor
                     formId="skill-edit-form"
-                    name={selected.name}
                     description={draft?.description ?? manifest?.description ?? selected.description}
                     instructions={draft?.instructions ?? manifest?.instructions ?? ""}
                     readOnly={!editable}
@@ -737,28 +722,8 @@ export function ChatSkillsDialog({
                     }
                     onDescription={(value) => editDraft({ description: value })}
                     onInstructions={(value) => editDraft({ instructions: value })}
+                    details={detailsOf(selected, t)}
                     onSubmit={() => void save()}
-                    aside={
-                      <EditorAside
-                        name={selected.name}
-                        description={draft?.description ?? manifest?.description ?? selected.description}
-                        instructions={draft?.instructions ?? manifest?.instructions ?? ""}
-                        sourceText={
-                          selected.source === "agents"
-                            ? t("skills.fromAgents")
-                            : selected.source === "claude"
-                              ? t("skills.fromClaude")
-                              : t("skills.fromBundled")
-                        }
-                        sourceChip={
-                          <SourceChip label={sourceLabel(selected.source)} source={selected.source} />
-                        }
-                        path={manifest?.path ?? selected.path ?? null}
-                        details={detailsOf(selected, t)}
-                        onDelete={editable ? () => setConfirmingDelete(selected) : undefined}
-                        deleting={pending === selected.name}
-                      />
-                    }
                   />
                 )
               ) : null}
@@ -867,27 +832,6 @@ function Monogram({ name, on }: { name: string; on: boolean }): ReactElement {
       ) : (
         <HugeiconsIcon icon={Scroll01Icon} strokeWidth={1.75} className="size-4" />
       )}
-    </span>
-  );
-}
-
-function SourceChip({
-  label,
-  source,
-}: {
-  label: string;
-  source: SkillRecord["source"];
-}): ReactElement {
-  return (
-    <span
-      className={cn(
-        "inline-flex h-5 items-center rounded-full px-2 text-ui-11 font-medium",
-        source === "agents"
-          ? "bg-primary/10 text-primary"
-          : "bg-muted text-muted-foreground",
-      )}
-    >
-      {label}
     </span>
   );
 }
@@ -1023,223 +967,115 @@ function Editor({
   readOnly,
   disabled,
   notice,
+  details,
   onDescription,
   onInstructions,
   onSubmit,
-  aside,
 }: {
   formId: string;
-  name: string;
   nameField?: ReactNode;
   description: string;
   instructions: string;
   readOnly: boolean;
   disabled: boolean;
   notice?: { tone: "muted" | "error"; text: string } | null;
+  details?: Array<[string, string]>;
   onDescription: (value: string) => void;
   onInstructions: (value: string) => void;
   onSubmit: () => void;
-  aside: ReactNode;
 }): ReactElement {
   const t = useT();
   return (
-    <div className="flex flex-col gap-6 p-4 sm:p-6 lg:min-h-0 lg:flex-1 lg:flex-row">
-      <form
-        id={formId}
-        className="flex min-w-0 flex-1 flex-col gap-4 lg:min-h-0"
-        onSubmit={(event) => {
+    <form
+      id={formId}
+      className="flex min-w-0 flex-1 flex-col gap-4 p-4 sm:p-6 lg:min-h-0"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!readOnly) onSubmit();
+      }}
+      onKeyDown={(event) => {
+        if (isChord(event) && !readOnly) {
           event.preventDefault();
-          if (!readOnly) onSubmit();
-        }}
-        onKeyDown={(event) => {
-          if (isChord(event) && !readOnly) {
-            event.preventDefault();
-            onSubmit();
-          }
-        }}
-      >
-        {notice ? (
-          <p
-            className={cn(
-              "rounded-xl px-4 py-3 text-xs leading-relaxed",
-              notice.tone === "error"
-                ? "border border-destructive/30 bg-destructive/5 text-destructive"
-                : "bg-muted/50 text-muted-foreground",
-            )}
-          >
-            {notice.text}
-          </p>
-        ) : null}
-        {nameField}
-        <Field
-          htmlFor={`${formId}-description`}
-          label={t("skills.descriptionLabel")}
-          hint={t("skills.descriptionHint")}
-          trailing={
-            <span className="text-ui-11 tabular-nums text-muted-foreground/60">
-              {description.length}/1024
-            </span>
-          }
-        >
-          <Textarea
-            id={`${formId}-description`}
-            value={description}
-            rows={2}
-            maxLength={1024}
-            readOnly={readOnly}
-            disabled={disabled}
-            aria-label={t("skills.descriptionLabel")}
-            placeholder={t("skills.descriptionPlaceholder")}
-            onChange={(event) => onDescription(event.target.value)}
-            className={cn(
-              "max-h-[min(12rem,30vh)] min-h-[calc(4.5rem*var(--ui-space-scale,1))] overflow-y-auto leading-relaxed",
-              readOnly && "text-muted-foreground",
-            )}
-          />
-        </Field>
-        <Field
-          htmlFor={`${formId}-instructions`}
-          label={t("skills.instructionsLabel")}
-          hint={t("skills.instructionsHint")}
-          className="lg:min-h-0 lg:flex-1"
-          trailing={
-            <span className="text-ui-11 tabular-nums text-muted-foreground/60">
-              {t("skills.characters", { count: instructions.length.toLocaleString() })}
-            </span>
-          }
-        >
-          <Textarea
-            id={`${formId}-instructions`}
-            value={instructions}
-            fieldSizing="fixed"
-            readOnly={readOnly}
-            disabled={disabled}
-            spellCheck={false}
-            aria-label={t("skills.instructionsLabel")}
-            placeholder={t("skills.instructionsPlaceholder")}
-            onChange={(event) => onInstructions(event.target.value)}
-            className={cn(
-              "h-[min(26rem,50vh)] min-h-40 resize-y font-mono text-ui-13 leading-relaxed lg:h-auto lg:min-h-32 lg:flex-1 lg:resize-none",
-              readOnly && "text-muted-foreground",
-            )}
-          />
-        </Field>
-      </form>
-      <aside className="hover-scrollbar flex min-w-0 flex-col gap-3 lg:min-h-0 lg:w-[calc(280px*var(--ui-space-scale,1))] lg:shrink-0 lg:overflow-y-auto">
-        {aside}
-      </aside>
-    </div>
-  );
-}
-
-function EditorAside({
-  name,
-  description,
-  instructions,
-  sourceText,
-  sourceChip,
-  path,
-  details,
-  onDelete,
-  deleting,
-}: {
-  name: string;
-  description: string;
-  instructions: string;
-  sourceText: string;
-  sourceChip: ReactNode;
-  path?: string | null;
-  details?: Array<[string, string]>;
-  onDelete?: () => void;
-  deleting?: boolean;
-}): ReactElement {
-  const t = useT();
-  const { copied, copy } = useCopyFeedback();
-  const shownName = name || t("skills.previewName");
-  return (
-    <>
-      <section className="flex flex-col gap-3 rounded-2xl border border-border/60 bg-card p-4">
-        <div>
-          <p className="text-xs font-semibold">{t("skills.previewTitle")}</p>
-          <p className="mt-0.5 text-ui-11 leading-relaxed text-muted-foreground">
-            {t("skills.previewHint")}
-          </p>
-        </div>
-        <div className="rounded-lg bg-muted/50 px-3 py-2.5 font-mono text-ui-11 leading-relaxed break-words">
-          <span className="text-primary">{shownName}</span>
-          <span className="text-muted-foreground">: </span>
-          <span className={description ? "text-foreground" : "text-muted-foreground/60"}>
-            {description || t("skills.descriptionPlaceholder")}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-ui-11 text-muted-foreground">{t("skills.mention")}</span>
-          <button
-            type="button"
-            disabled={!name}
-            onClick={() => void copy(`@${name}`)}
-            aria-label={t("skills.copyMention", { name: shownName })}
-            className="ml-auto inline-flex h-6 items-center gap-1.5 rounded-full bg-primary/10 px-2 font-mono text-ui-11 text-primary transition-colors hover:bg-primary/15 disabled:opacity-50"
-          >
-            @{shownName}
-            <HugeiconsIcon icon={copied ? Tick02Icon : Copy01Icon} strokeWidth={2} className="size-3" />
-          </button>
-        </div>
-      </section>
-      <section className="flex flex-col gap-3 rounded-2xl border border-border/60 bg-card p-4 text-xs">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="font-semibold">{t("skills.sourceLabel")}</p>
-            <p className="mt-0.5 leading-relaxed text-muted-foreground">{sourceText}</p>
-          </div>
-          {sourceChip}
-        </div>
-        {path ? (
-          <div>
-            <p className="font-semibold">{t("skills.locationLabel")}</p>
-            <p className="mt-0.5 break-all font-mono text-ui-11 text-muted-foreground">{path}</p>
-          </div>
-        ) : null}
-        <div>
-          <p className="font-semibold">{t("skills.detailsTitle")}</p>
-          {details && details.length > 0 ? (
-            <dl className="mt-1 flex flex-col gap-1">
-              {details.map(([label, value]) => (
-                <div key={label} className="flex items-baseline justify-between gap-3">
-                  <dt className="shrink-0 text-muted-foreground">{label}</dt>
-                  <dd className="truncate text-right">{value}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : (
-            <p className="mt-0.5 text-muted-foreground">{t("skills.detailsEmpty")}</p>
+          onSubmit();
+        }
+      }}
+    >
+      {notice ? (
+        <p
+          className={cn(
+            "rounded-xl px-4 py-3 text-xs leading-relaxed",
+            notice.tone === "error"
+              ? "border border-destructive/30 bg-destructive/5 text-destructive"
+              : "bg-muted/50 text-muted-foreground",
           )}
-        </div>
-        <p className="text-ui-11 text-muted-foreground/70">
-          {t("skills.characters", { count: instructions.length.toLocaleString() })}
+        >
+          {notice.text}
         </p>
-      </section>
-      {onDelete ? (
-        <section className="flex items-center justify-between gap-3 rounded-2xl border border-border/60 bg-card p-4 text-xs">
-          <div className="min-w-0">
-            <p className="font-semibold">{t("skills.deleteLabel")}</p>
-            <p className="mt-0.5 leading-relaxed text-muted-foreground">
-              {t("skills.deleteRowDescription")}
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={deleting}
-            onClick={onDelete}
-            aria-label={t("skills.delete", { name })}
-            className="shrink-0 text-destructive hover:text-destructive"
-          >
-            {t("common.delete")}
-          </Button>
-        </section>
       ) : null}
-    </>
+      {details && details.length > 0 ? (
+        <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
+          {details.map(([label, value]) => (
+            <div key={label} className="flex min-w-0 gap-2">
+              <dt className="shrink-0 text-muted-foreground">{label}</dt>
+              <dd className="truncate">{value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {nameField}
+      <Field
+        htmlFor={`${formId}-description`}
+        label={t("skills.descriptionLabel")}
+        hint={t("skills.descriptionHint")}
+        trailing={
+          <span className="text-ui-11 tabular-nums text-muted-foreground/60">
+            {description.length}/1024
+          </span>
+        }
+      >
+        <Textarea
+          id={`${formId}-description`}
+          value={description}
+          rows={2}
+          maxLength={1024}
+          readOnly={readOnly}
+          disabled={disabled}
+          aria-label={t("skills.descriptionLabel")}
+          placeholder={t("skills.descriptionPlaceholder")}
+          onChange={(event) => onDescription(event.target.value)}
+          className={cn(
+            "max-h-[min(12rem,30vh)] min-h-[calc(4.5rem*var(--ui-space-scale,1))] overflow-y-auto leading-relaxed",
+            readOnly && "text-muted-foreground",
+          )}
+        />
+      </Field>
+      <Field
+        htmlFor={`${formId}-instructions`}
+        label={t("skills.instructionsLabel")}
+        hint={t("skills.instructionsHint")}
+        className="lg:min-h-0 lg:flex-1"
+        trailing={
+          <span className="text-ui-11 tabular-nums text-muted-foreground/60">
+            {t("skills.characters", { count: instructions.length.toLocaleString() })}
+          </span>
+        }
+      >
+        <Textarea
+          id={`${formId}-instructions`}
+          value={instructions}
+          fieldSizing="fixed"
+          readOnly={readOnly}
+          disabled={disabled}
+          spellCheck={false}
+          aria-label={t("skills.instructionsLabel")}
+          placeholder={t("skills.instructionsPlaceholder")}
+          onChange={(event) => onInstructions(event.target.value)}
+          className={cn(
+            "h-[min(26rem,50vh)] min-h-40 resize-y font-mono text-ui-13 leading-relaxed lg:h-auto lg:min-h-32 lg:flex-1 lg:resize-none",
+            readOnly && "text-muted-foreground",
+          )}
+        />
+      </Field>
+    </form>
   );
 }

@@ -105,6 +105,21 @@ def _require_unlinked_agent_path(base: Path, *paths: Path) -> None:
             raise SkillError("Agent Skills directory is missing or unsafe.") from exc
 
 
+def _agents_base(home: Optional[Path]) -> tuple[Path, Optional[Path]]:
+    if home is not None:
+        return home, None
+    if is_owner_context():
+        return _owner_home(), None
+    return workspace_root(), Path(_MANAGED_SKILLS_DIR)
+
+
+def _agents_ancestors(base: Path, root: Optional[Path]) -> tuple[Path, ...]:
+    # Owner: ~/.agents and ~/.agents/skills; managed account: <workspace>/skills. Last = the root.
+    if root is None:
+        return (base / ".agents", base / ".agents" / "skills")
+    return (base / root,)
+
+
 def _write_new_skill_manifest(
     base: Path,
     name: str,
@@ -113,15 +128,8 @@ def _write_new_skill_manifest(
     root: Optional[Path] = None,
 ) -> None:
     base = base.resolve(strict = True)
-    if root is None:
-        # The owner's home: ~/.agents/skills, both levels checked.
-        agents = base / ".agents"
-        root = agents / "skills"
-        ancestors: tuple[Path, ...] = (agents, root)
-    else:
-        # A managed account's private workspace: <workspace>/skills.
-        root = base / root
-        ancestors = (root,)
+    ancestors = _agents_ancestors(base, root)
+    root = ancestors[-1]
     _require_unlinked_agent_path(base, *ancestors)
     root.mkdir(mode = 0o700, parents = True, exist_ok = True)
     _require_unlinked_agent_path(base, *ancestors)
@@ -638,12 +646,8 @@ def create_skill(
     manifest = _render_manifest({"name": normalized, "description": description}, instructions)
     metadata = _parse_skill_markdown(manifest, normalized)
 
-    if home is not None:
-        base, root = home, None
-    elif is_owner_context():
-        base, root = _owner_home(), None
-    else:
-        base, root = workspace_root(), Path(_MANAGED_SKILLS_DIR)
+    base, root = _agents_base(home)
+    if root is not None:
         # A fresh account's workspace may not exist yet; its own private root is safe to make.
         base.mkdir(mode = 0o700, parents = True, exist_ok = True)
     with _LOCK:
@@ -693,18 +697,13 @@ def _editable_skill(
         raise SkillError(
             f"Skill '{record['name']}' is not in the Agents folder, so it cannot be changed here."
         )
-    if home is not None:
-        base, managed = home, False
-    elif is_owner_context():
-        base, managed = _owner_home(), False
-    else:
-        base, managed = workspace_root(), True
+    base, root = _agents_base(home)
     try:
         base = base.resolve(strict = True)
     except OSError as exc:
         raise SkillError("Agent Skills directory is missing or unsafe.") from exc
-    # Same ancestors create_skill refuses: a linked root would send the write outside it.
-    ancestors = (base / _MANAGED_SKILLS_DIR,) if managed else (base / ".agents", base / ".agents" / "skills")
+    # Same check as create_skill: a linked root would send the write outside it.
+    ancestors = _agents_ancestors(base, root)
     _require_unlinked_agent_path(base, *ancestors)
     entry = ancestors[-1] / record["name"]
     if record["linked"] or _is_linked_path(entry) or skill_dir != entry:

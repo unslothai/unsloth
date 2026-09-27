@@ -31,7 +31,6 @@ export type { CapabilityKey } from "./lib/model-capabilities";
 export { useLatestRef } from "./hooks/use-latest-ref";
 export { useHubAvailability, useOnlineStatus } from "./hooks/use-online-status";
 export { HubFailureHint } from "./catalog/catalog-states";
-export { useCopyFeedback } from "./hooks/use-copy-feedback";
 export {
   INVENTORY_HINT_KIND,
   INVENTORY_HINT_KINDS,
