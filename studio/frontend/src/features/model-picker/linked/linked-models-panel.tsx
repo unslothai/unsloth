@@ -21,6 +21,9 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import {
   type CatalogGroup,
   type ModelArtifact,
+  AUDIO_CATALOG,
+  IMAGE_CATALOG,
+  VIDEO_CATALOG,
   artifactForRepoId,
 } from "../components/model-selector/model-catalog";
 import {
@@ -44,6 +47,8 @@ export type LinkedChatPick = {
 };
 
 type Section = "recommended" | "downloaded";
+
+const MEDIA_CATALOGS = [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG];
 
 const GB = 1024 ** 3;
 const isGgufRepo = (id: string) => /gguf/i.test(id);
@@ -243,8 +248,17 @@ export function LinkedModelsPanel({
 
   const imageRepo = (repoId: string) =>
     catalog ? artifactForRepoId(repoId, catalog) !== null : false;
+  // Chat's On Device skips media models; the remote's cache reports no task for most GGUFs.
   const isImageRepo = (repo: CachedGgufRepo | CachedModelRepo) =>
     imageRepo(repo.repo_id) ||
+    MEDIA_CATALOGS.some((c) => artifactForRepoId(repo.repo_id, c) !== null) ||
+    ((caps) => caps.imageGen || caps.videoGen)(
+      detectCapabilities({
+        id: repo.repo_id,
+        tags: repo.tags,
+        pipelineTag: repo.pipeline_tag ?? undefined,
+      }),
+    ) ||
     /image|diffusion|video|audio|speech/i.test(repo.pipeline_tag ?? "");
 
   const chatRepo = (
