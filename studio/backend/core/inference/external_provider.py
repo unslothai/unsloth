@@ -4582,6 +4582,8 @@ class ExternalProviderClient:
                 # 3.13 + httpcore 1.0.x GeneratorExit ordering).
                 lines_gen = response.aiter_lines().__aiter__()
                 final_finish_reason: Optional[str] = None
+                bare_json = ""
+                stream_error: Optional[str] = None
                 try:
                     while True:
                         try:
@@ -4590,9 +4592,18 @@ class ExternalProviderClient:
                             break
                         if not line.strip():
                             continue
-                        if not line.startswith("data:"):
+                        if line.startswith("data:"):
+                            data_str = line[len("data:") :].strip()
+                        elif bare_json or line.lstrip().startswith("{"):
+                            # Gemini sends a mid-stream error as bare multi-line JSON, not as a `data:` frame.
+                            bare_json += line
+                            try:
+                                _json.loads(bare_json)
+                            except ValueError:
+                                continue
+                            data_str, bare_json = bare_json, ""
+                        else:
                             continue
-                        data_str = line[len("data:") :].strip()
                         if not data_str or data_str == "[DONE]":
                             continue
                         try:
@@ -4605,6 +4616,16 @@ class ExternalProviderClient:
                             continue
                         if not isinstance(event, dict):
                             continue
+
+                        error = event.get("error")
+                        if isinstance(error, dict):
+                            code = error.get("code")
+                            stream_error = _error_sse_line(
+                                code if isinstance(code, int) else 502,
+                                _json.dumps(event),
+                                self.provider_type,
+                            )
+                            break
 
                         # Latch usageMetadata across deltas -- the final fragment carries the complete totals.
                         usage_meta = event.get("usageMetadata")
@@ -4992,6 +5013,10 @@ class ExternalProviderClient:
                             }
                         )
                         web_search_tool_ended = True
+
+                    if stream_error:
+                        yield stream_error
+                        return
 
                     if final_finish_reason:
                         # Gemini emits "STOP" even for a pure functionCall turn; override to "tool_calls" so OAI
