@@ -463,6 +463,31 @@ def test_a_genuine_split_keeps_every_shard_in_the_plan():
     assert plan.download_size_bytes == 30
 
 
+def test_a_quant_shipped_whole_and_split_plans_only_the_set_the_loader_opens():
+    """Qwen/Qwen2.5-Coder-7B-Instruct-GGUF ships Q4_K_M both as one file and as two shards."""
+    from routes.models import _one_shard_family_of
+    from utils.models.model_config import _group_gguf_variant_files
+
+    split = [
+        ("qwen2.5-coder-7b-instruct-q4_k_m-00001-of-00002.gguf", 3_993_201_376),
+        ("qwen2.5-coder-7b-instruct-q4_k_m-00002-of-00002.gguf", 689_872_288),
+    ]
+    files = [*split, ("qwen2.5-coder-7b-instruct-q4_k_m.gguf", 4_683_073_536)]
+    opened = _gguf_files_for_variant([path for path, _ in files], "Q4_K_M")
+    assert opened[: len(split)] == [path for path, _ in split]
+
+    plan = build_gguf_variant_plans([_Sibling(path, size) for path, size in files])["q4_k_m"]
+    assert set(plan.target_filenames) == plan.main_filenames == {path for path, _ in split}
+    assert plan.download_size_bytes == plan.main_size_bytes == 4_683_073_664
+
+    row = (split[0][0], 4_683_073_664)
+    assert group_gguf_variant_files(files) == {"q4_k_m": row}
+    assert _group_gguf_variant_files([(p, "q4_k_m", s) for p, s in files]) == {"q4_k_m": row}
+    assert [e[0] for e in _one_shard_family_of([(p, None, s) for p, s in files])] == [
+        path for path, _ in split
+    ]
+
+
 def test_a_qualified_key_is_an_explicit_checkpoint_request():
     """``resolve_local_gguf`` falls back to the first local variant for a ``:tag`` that
     names no quant, which is right for ``:latest`` and wrong for one of our own rows. The

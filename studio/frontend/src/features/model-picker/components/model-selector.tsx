@@ -621,6 +621,8 @@ function ModelSelectorContent({
     <PopoverContent
       align="start"
       alignOffset={10}
+      // Read by the model list, which sets its right inset against the panel's own.
+      data-external={hasExternal || undefined}
       aria-label={
         visibleConfigTarget
           ? `Run settings for ${visibleConfigTarget.displayName}`
