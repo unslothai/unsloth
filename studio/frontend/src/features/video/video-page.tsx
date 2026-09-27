@@ -3592,13 +3592,14 @@ function VideoGenerator({
   );
 
   return (
-    // The chat-style layout gives this page no outer top inset, so clear the custom titlebar here as chat does.
-    // 34px on win/linux, 0 under macOS's native one.
+    // The chat-style layout gives this page no outer top inset, so it applies the content inset itself, as chat does.
     <div
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
       style={railRootStyle}
-      className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+      className="diffusion-surface @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
     >
+      {/* Page-level, so the handle covers the divider through the header too. */}
+      <MediaRailResizeHandle kind="video" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
       <AlertDialog
@@ -3676,61 +3677,68 @@ function VideoGenerator({
           </div>
         </DialogContent>
       </Dialog>
-      {/* Top: the model selector, clear of the sidebar and level with the controls column. Load
-          progress shows in a toast. */}
-      <div
-        className={cn(
-          "@container pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start justify-between pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))] pt-[var(--studio-chat-header-padding-top,11px)]",
-          isMobileShell
-            ? "pl-12"
-            : // Collapsed in the desktop app, start where Chat and Images do, clear of the titlebar buttons.
-              !pinned && isTauri
-              ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-              : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
-        )}
-      >
-        {/* min-w-0: without it a long resident model name pushes the Images link off a phone screen. */}
-        <div className="pointer-events-auto flex min-w-0 items-center gap-3">
-          <ModelSelector
-            triggerDataTour="video-model"
-            models={videoModels}
-            value={status?.loaded ? status.repo_id ?? undefined : undefined}
-            activeGgufVariant={quant}
-            onValueChange={handleModelSelect}
-            resolveDownloadFootprint={resolveDownloadFootprint}
-            onEject={status?.loaded ? handleUnload : undefined}
-            variant="ghost"
-            className="!h-[calc(34px*var(--ui-space-scale,1))]"
-            task={VIDEO_GEN_TASKS}
-            catalog={VIDEO_CATALOG}
-            hubCapability="diffusion"
-            placeholder="Select video model"
-            open={active && selectorOpen}
-            onOpenChange={(o) => setSelectorOpen(active && o)}
-          />
-          {/* The load's own cancel, beside the selector rather than inside it: the selector's eject needs
-              a resident model, so it is hidden for exactly the span a first load runs. A real button,
-              so it is keyboard reachable. Says "load", never "download": that Cancel stops another job. */}
-          {busy === "loading" && (
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  aria-label="Cancel load"
-                  className="!h-[calc(34px*var(--ui-space-scale,1))] rounded-full text-xs"
-                  onClick={() => void handleCancelLoad()}
-                >
-                  Cancel load
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Stop loading this model</TooltipContent>
-            </Tooltip>
+      {/* Top: the model selector over the rail and the Library link over the preview, the divider in line
+          with the rail's as on Images and Audio. Load progress shows in a toast. */}
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
+        <div
+          className={cn(
+            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
+            isMobileShell
+              ? "pl-12"
+              : // Collapsed in the desktop app, start where Chat and Images do, clear of the titlebar buttons.
+                !pinned && isTauri
+                ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+                : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
           )}
-          {/* Loaded-model status line: family / kind / offload / speed. Hidden until a model is resident. */}
+        >
+          {/* min-w-0: without it a long resident model name pushes the Library link off a phone screen. */}
+          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
+            <ModelSelector
+              triggerDataTour="video-model"
+              models={videoModels}
+              value={status?.loaded ? status.repo_id ?? undefined : undefined}
+              activeGgufVariant={quant}
+              onValueChange={handleModelSelect}
+              resolveDownloadFootprint={resolveDownloadFootprint}
+              onEject={status?.loaded ? handleUnload : undefined}
+              variant="ghost"
+              className="!h-[calc(34px*var(--ui-space-scale,1))]"
+              task={VIDEO_GEN_TASKS}
+              catalog={VIDEO_CATALOG}
+              hubCapability="diffusion"
+              placeholder="Select video model"
+              open={active && selectorOpen}
+              onOpenChange={(o) => setSelectorOpen(active && o)}
+            />
+            {/* The load's own cancel, beside the selector rather than inside it: the selector's eject needs
+                a resident model, so it is hidden for exactly the span a first load runs. A real button,
+                so it is keyboard reachable. Says "load", never "download": that Cancel stops another job. */}
+            {busy === "loading" && (
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    aria-label="Cancel load"
+                    className="!h-[calc(34px*var(--ui-space-scale,1))] rounded-full text-xs"
+                    onClick={() => void handleCancelLoad()}
+                  >
+                    Cancel load
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Stop loading this model</TooltipContent>
+              </Tooltip>
+            )}
+          </div>
+        </div>
+        {/* No centred mode pill here, unlike Images and Audio, so the status line takes the free width. */}
+        <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2">
+          {/* Loaded-model status line: family / kind / offload / speed, over the preview once a model is
+              resident. One control-height line: chips that do not fit wrap onto a clipped second line,
+              so none is shown cut off. */}
           {status?.loaded && (
-            <div className="hidden min-w-0 items-center gap-3 text-ui-11 @min-[720px]:flex">
+            <div className="pointer-events-auto col-start-1 mt-[var(--studio-chat-header-padding-top,11px)] flex h-[var(--studio-chat-control-height,34px)] min-w-0 flex-wrap content-start gap-x-3 overflow-hidden pl-4 text-ui-11 leading-[var(--studio-chat-control-height,34px)]">
               {status.family && <StatusChip label="Family" value={status.family} />}
               {status.engine && <StatusChip label="Engine" value={status.engine} />}
               {status.model_kind && <StatusChip label="Kind" value={status.model_kind} />}
@@ -3740,34 +3748,31 @@ function VideoGenerator({
               {status.speed_mode && <StatusChip label="Speed" value={status.speed_mode} />}
             </div>
           )}
-        </div>
-        <div className="pointer-events-auto flex shrink-0 items-center gap-2">
-          {/* A separate page, so it sits outside this page's controls. */}
-          <LibraryPageLink
-            tab="videos"
-            labelClassName="@max-[30rem]:hidden"
-            arrowClassName="@max-[30rem]:hidden"
-          />
+          <div className="pointer-events-none col-start-2 flex min-w-0 items-start justify-end pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))] pt-[var(--studio-chat-header-padding-top,11px)]">
+            <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+              <LibraryPageLink
+                tab="videos"
+                labelClassName="hidden @[50rem]:inline"
+                arrowClassName="hidden @[50rem]:block"
+              />
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Controls rail and preview canvas, as on the Images tabs. Gutters match Images, so both
-          pages' content starts at the same 40px. */}
-      {/* overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto, letting a
-          wide row pan the page sideways on a phone. */}
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 max-sm:pl-0 max-sm:pr-0 sm:pr-8 lg:flex-row lg:overflow-hidden">
-        {/* Widened by the pl-8 so the controls keep their old width. */}
+      {/* Controls rail and preview canvas, laid out as on Images and Audio: below 50rem the panes stack
+          and the page scrolls as one column. overflow-x-hidden: an unset overflow-x computes to auto
+          beside overflow-y-auto, letting a wide row pan the page sideways on a phone. */}
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="video-settings"
-          className="relative flex w-full shrink-0 flex-col border-b border-border/60 pl-8 max-sm:pl-5 lg:w-[min(var(--media-rail-width,calc(400px*var(--ui-space-scale,1))),calc(100%-13rem))] lg:overflow-hidden lg:border-r lg:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
         >
-          <MediaRailResizeHandle kind="video" className="hidden lg:contents" />
-          {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 pb-6 pl-0.5 pr-7 max-sm:pr-5 lg:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto",
               settingsFadeClass,
             )}
           >
@@ -4288,7 +4293,7 @@ function VideoGenerator({
 
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
-          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 pt-0.5 pb-4 pl-4 pr-3">
+          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-4">
             {busy === "generating" ? (
               <Button
                 // Kept in step with the Images Stop control, which uses the same fill.
@@ -4331,7 +4336,7 @@ function VideoGenerator({
 
         <div
           data-tour="video-preview"
-          className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden pl-2 lg:min-h-0"
+          className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
         >
           {viewer && viewerVideo && viewerSrc && (
             <MediaViewer
