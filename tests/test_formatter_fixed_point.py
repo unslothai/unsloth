@@ -517,13 +517,31 @@ def test_a_timeout_in_the_polling_loop_kills_the_running_formatters(tmp_path, mo
     grandchild = _read_pid(pid_file)
     assert grandchild is not None, "the batch never started its child"
     # SIGKILL is sent at once, but the process only dies once it is next scheduled, and a
-    # grandchild still in Python's startup can sit in uninterruptible I/O on a loaded runner.
-    # Five seconds was not always enough under xdist (Repo tests (CPU, rest) on #12060), so wait
-    # as long as the launch above may take. A group kill that missed it still fails, just later.
+    # grandchild still in Python's startup can sit in uninterruptible I/O on a loaded runner, so
+    # wait as long as the launch above may take. A group kill that missed it still fails, just
+    # later. The verdict is the last probe the loop took: probing again after it said "dead" could
+    # only disagree by racing the reaper.
     deadline = real_monotonic() + 30
-    while _alive(grandchild) and real_monotonic() < deadline:
+    alive = _alive(grandchild)
+    while alive and real_monotonic() < deadline:
         real_sleep(0.05)
-    assert not _alive(grandchild), "the formatter's own child outlived the timeout"
+        alive = _alive(grandchild)
+    assert not alive, "the formatter's own child outlived the timeout"
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason = "reads Linux /proc")
+def test_a_pid_reaped_between_the_two_probes_is_not_alive(monkeypatch):
+    """The signal probe can see a zombie that is reaped before /proc/<pid>/stat is opened.
+
+    That window used to read as alive, so the timeout test above failed on a process that had
+    already been killed and reaped (Repo tests (CPU, rest) on #12097).
+    """
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    assert not Path(f"/proc/{child.pid}").exists(), "the child was not reaped"
+    # Stand in for the probe that ran while the process was still a zombie.
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+    assert _alive(child.pid) is False
 
 
 def _read_pid(path: Path) -> int | None:
@@ -544,9 +562,13 @@ def _alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     # A killed child of an exited wrapper is reparented and reaped; until then it is a zombie.
+    # The reaper can finish between the signal probe above and this read, and a pid with no
+    # /proc entry left is gone, not alive.
     try:
         with open(f"/proc/{pid}/stat", encoding = "utf-8") as stat:
             return stat.read().split(") ", 1)[1][0] != "Z"
+    except (FileNotFoundError, ProcessLookupError):
+        return False
     except OSError:
         return True
 
