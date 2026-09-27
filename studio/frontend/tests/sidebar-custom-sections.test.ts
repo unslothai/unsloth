@@ -496,6 +496,38 @@ test("reordering Pinned keeps a pinned row's section for when it is unpinned", (
   assert.equal(plan.effects.fileInSection, undefined);
 });
 
+test("a section's row dragged into Pinned keeps its section for when it is unpinned", () => {
+  // As a pin from the row's menu does: Pinned draws it, and unpinning sends it back to S.
+  const chatPlan = plannedDrop(
+    planSidebarDrop(chat("s1", SCOPE, SCOPE), chatRow("pinned", PINNED_ORDER_SCOPE, "p1"), "bottom", context()),
+  );
+  assert.equal(chatPlan.action.kind, "pin");
+  assert.equal(chatPlan.effects.pinChat, "s1");
+  assert.equal(chatPlan.effects.fileInSection, undefined);
+  const folderPlan = plannedDrop(
+    planSidebarDrop(
+      { kind: "project", id: "lab", section: SCOPE, scope: SCOPE, projectId: null },
+      chatRow("pinned", PINNED_ORDER_SCOPE, "p1"),
+      "bottom",
+      context(),
+    ),
+  );
+  assert.equal(folderPlan.action.kind, "pin");
+  assert.equal(folderPlan.effects.pinProject, "lab");
+  assert.equal(folderPlan.effects.fileInSection, undefined);
+  // Into a pinned folder is a move into that project, which the section would hide: it leaves.
+  const intoFolder = plannedDrop(
+    planSidebarDrop(
+      chat("s1", SCOPE, SCOPE),
+      chatRow("pinned", projectOrderScope("home"), "c3", "home"),
+      "top",
+      context({ pinnedProjectIds: new Set(["home"]), orders: { ...context().orders, pinned: ["p1", "home"] } }),
+    ),
+  );
+  assert.equal(intoFolder.action.kind, "move");
+  assert.deepEqual(intoFolder.effects.fileInSection, { kind: "chat", id: "s1", sectionId: null });
+});
+
 // ---------------------------------------------------------------------------------------------
 // Sidebar wiring
 

@@ -175,13 +175,16 @@ function ownSection(
 }
 
 /** A row carried out to a list that is not a custom section leaves its section, or the section
- *  would keep drawing it there and the drop would read as ignored. A reorder moves nothing out. */
+ *  would keep drawing it there and the drop would read as ignored. A reorder moves nothing out,
+ *  and neither does a pin: Pinned draws a pinned row whatever its section, which it keeps for when
+ *  it is unpinned, as a pin from its menu does. */
 function leavingSection(
   drag: SidebarDragItem,
   outcome: SidebarDropOutcome,
   ctx: SidebarDropContext,
 ): SidebarDropOutcome {
-  if (!outcome || outcome === STAY || outcome.action.kind === "reorder") return outcome;
+  if (!outcome || outcome === STAY) return outcome;
+  if (outcome.action.kind === "reorder" || outcome.action.kind === "pin") return outcome;
   const filed =
     drag.kind === "project" ? ctx.sectionByProjectId[drag.id] : ctx.sectionByChatId[drag.id];
   if (!filed || outcome.effects.fileInSection) return outcome;
