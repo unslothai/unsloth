@@ -1325,7 +1325,10 @@ def _compressed_tensors_fp8_block_size(module, weights):
     strategy = getattr(weights, "strategy", None)
     strategy = str(getattr(strategy, "value", strategy))
     # Block FP8 is opt-in: fp8_block_quant_linear trains ~2.5x slower than the decompressed bf16 model.
-    if strategy == "block" and os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_BLOCK_KERNELS", "0") != "1":
+    if (
+        strategy == "block"
+        and os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_BLOCK_KERNELS", "0") != "1"
+    ):
         return None
     if (
         strategy not in _CT_FP8_STRATEGIES
