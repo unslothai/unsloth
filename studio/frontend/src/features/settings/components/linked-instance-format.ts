@@ -66,9 +66,14 @@ export function vramPercent(gpu: PoolGpu): number | null {
 
 /** Every GPU as one pool: "2× NVIDIA L4" or "RX 6500 XT + RX 5700 XT", with summed VRAM. */
 export function gpuPool(gpus: PoolGpu[]) {
-  const label = gpuGroups(gpus)
-    .map(({ name, count }) => (count > 1 ? `${count}× ${name}` : name))
-    .join(" + ");
+  const groups = gpuGroups(gpus);
+  // Past two kinds of card the names stop fitting a line; the details list them all.
+  const label =
+    groups.length > 2
+      ? `${gpus.length} GPUs`
+      : groups
+          .map(({ name, count }) => (count > 1 ? `${count}× ${name}` : name))
+          .join(" + ");
   return {
     label,
     total: sum(gpus.map((g) => g.vram_total_gb)),
