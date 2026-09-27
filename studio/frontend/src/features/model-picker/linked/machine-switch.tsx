@@ -11,13 +11,23 @@ import type {
   LinkedInstanceInfo,
   LinkedInstanceStatus,
 } from "@/features/settings/api/linked-instances";
-import { gpuPool } from "@/features/settings/components/linked-instance-format";
+import {
+  connectionKind,
+  gpuPool,
+} from "@/features/settings/components/linked-instance-format";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { CloudServerIcon, ComputerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
+
+const CONNECTION = {
+  tunnel: "Cloudflare tunnel",
+  loopback: "This PC",
+  lan: "LAN",
+  public: "Public URL",
+} as const;
 
 function gpuLine(info?: LinkedInstanceInfo): string | null {
   if (!info?.gpus?.length) return info?.online ? "CPU only" : null;
@@ -30,6 +40,7 @@ function gpuLine(info?: LinkedInstanceInfo): string | null {
 function Row({
   icon,
   title,
+  via,
   detail,
   online,
   selected,
@@ -37,6 +48,7 @@ function Row({
 }: {
   icon: typeof ComputerIcon;
   title: string;
+  via?: string;
   detail: string | null;
   online?: boolean;
   selected: boolean;
@@ -63,8 +75,13 @@ function Row({
         ) : null}
       </span>
       <span className="flex min-w-0 flex-col">
-        <span className="break-all text-xs font-medium text-foreground">
-          {title}
+        <span className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+          <span className="break-all text-xs font-medium text-foreground">
+            {title}
+          </span>
+          {via ? (
+            <span className="text-ui-10 text-muted-foreground/80">{via}</span>
+          ) : null}
         </span>
         {detail ? (
           <span className="text-ui-11 text-muted-foreground">{detail}</span>
@@ -169,6 +186,7 @@ export function MachineSwitch({
               key={instance.id}
               icon={CloudServerIcon}
               title={`@${instance.name}`}
+              via={CONNECTION[connectionKind(instance.base_url)]}
               detail={
                 gpuLine(infos[instance.id]) ??
                 (statuses[instance.id]?.online === false ? "Offline" : null)
