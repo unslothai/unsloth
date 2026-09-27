@@ -1968,13 +1968,21 @@ def _fake_system32(tmp_path: Path, tools: dict[str, str]) -> dict[str, str]:
         tool = system32 / name
         tool.write_text(f"#!/bin/sh\n{body}\n")
         tool.chmod(0o755)
-    return dict(os.environ, OS = "Windows_NT", SystemRoot = str(tmp_path / "Windows"),
-                TEMP = str(tmp_path), TMP = str(tmp_path), TMPDIR = str(tmp_path))
+    return dict(
+        os.environ,
+        OS = "Windows_NT",
+        SystemRoot = str(tmp_path / "Windows"),
+        TEMP = str(tmp_path),
+        TMP = str(tmp_path),
+        TMPDIR = str(tmp_path),
+    )
 
 
 @requires_pwsh
 @pytest.mark.skipif(os.name == "nt", reason = "the fake System32 tools are POSIX shell scripts")
-def test_an_elevated_run_without_a_private_directory_does_not_probe_from_a_shared_root(tmp_path: Path):
+def test_an_elevated_run_without_a_private_directory_does_not_probe_from_a_shared_root(
+    tmp_path: Path,
+):
     """The fallback writes its redirect files into %TEMP%, where a standard user can plant or swap them."""
     env = _fake_system32(tmp_path, {"icacls.exe": "exit 1", "whoami.exe": 'printf "S-1-16-12288"'})
     python = tmp_path / "python"
@@ -1984,7 +1992,10 @@ def test_an_elevated_run_without_a_private_directory_does_not_probe_from_a_share
     script.write_text(_INTEGRITY_REPRO)
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-File", str(script), str(REPO_ROOT / "install.ps1"), str(python)],
-        env = env, capture_output = True, text = True, timeout = 60,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
     )
     assert result.returncode == 0, result.stderr
     assert _lines(result, "ANSWER:") == ["ANSWER:"], result.stdout
@@ -2003,13 +2014,17 @@ def test_a_child_directory_swapped_for_a_link_before_labelling_is_refused(tmp_pa
     script = tmp_path / "mkdir.ps1"
     script.write_text(
         _INTEGRITY_REPRO.split("function Get-NvidiaProbePythonExe")[0].replace(
-            "if (-not (Get-Command Read-NvidiaLibraryRawViaPython", "if (-not (Get-Command New-StudioChildScriptDirectory"
+            "if (-not (Get-Command Read-NvidiaLibraryRawViaPython",
+            "if (-not (Get-Command New-StudioChildScriptDirectory",
         )
         + 'Write-Output "DIR:$(New-StudioChildScriptDirectory)"\n'
     )
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-File", str(script), str(REPO_ROOT / source), "unused"],
-        env = env, capture_output = True, text = True, timeout = 60,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
     )
     assert result.returncode == 0, result.stderr
     assert _lines(result, "DIR:") == ["DIR:"], result.stdout
