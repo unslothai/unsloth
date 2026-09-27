@@ -1199,6 +1199,10 @@ function parseXml(xml: string, filename: string): XMLDocument {
 }
 
 function elementChildren(element: Element): Element[] {
+  // Native `children` where the DOM has it (browsers); xmldom lacks it.
+  if (element.children) {
+    return Array.from(element.children);
+  }
   return Array.from(element.childNodes).filter(
     (child): child is Element => child.nodeType === ELEMENT_NODE,
   );
@@ -1211,6 +1215,9 @@ function children(element: Element, localName: string): Element[] {
 }
 
 function descendants(element: Element, localNames: string[]): Element[] {
+  if (localNames.length === 1 && element.getElementsByTagNameNS) {
+    return Array.from(element.getElementsByTagNameNS("*", localNames[0]));
+  }
   const matches: Element[] = [];
   const stack = elementChildren(element).reverse();
   while (stack.length > 0) {
@@ -1238,7 +1245,13 @@ function relationshipId(element: Element): string {
   return "";
 }
 
+// OOXML attributes read here are unqualified, so the name is the local name.
 function attribute(element: Element, localName: string): string | null {
+  if (element.getAttribute) {
+    return element.hasAttribute(localName)
+      ? element.getAttribute(localName)
+      : null;
+  }
   for (const attr of Array.from(element.attributes)) {
     if ((attr.localName ?? attr.name) === localName) {
       return attr.value;

@@ -320,9 +320,10 @@ class StoredFileAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    // Only the python tool reads the original; without it the upload is pure send latency.
     const [complete, upload] = await Promise.all([
       this.delegate.send(attachment),
-      uploadAttachmentFile(attachment.file),
+      pythonToolRunsInStudio() ? uploadAttachmentFile(attachment.file) : null,
     ]);
     const storedFile = upload && storedAttachmentFile(upload);
     return storedFile

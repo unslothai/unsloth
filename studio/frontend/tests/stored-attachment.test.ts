@@ -148,7 +148,7 @@ test("only document adapters keep their file, and only a python turn asks for co
   );
   assert.match(
     provider,
-    /uploadAttachmentFile\(attachment\.file\),\s*\]\);[^}]*return storedFile\s*\?\s*\(\{ \.\.\.complete, storedFile \}/,
+    /pythonToolRunsInStudio\(\) \? uploadAttachmentFile\(attachment\.file\) : null,\s*\]\);[^}]*return storedFile\s*\?\s*\(\{ \.\.\.complete, storedFile \}/,
   );
   assert.match(
     provider,
