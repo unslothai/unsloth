@@ -1392,6 +1392,9 @@ def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_
     )
     monkeypatch.setattr(video_module, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
+        video_module, "select_transformer_quant_scheme", lambda target, mode, family = None, **_k: "fp8"
+    )
+    monkeypatch.setattr(
         video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
     )
     monkeypatch.setattr(video_routes, "_training_is_active", lambda: False)
