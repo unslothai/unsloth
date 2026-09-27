@@ -120,6 +120,15 @@ def _agents_ancestors(base: Path, root: Optional[Path]) -> tuple[Path, ...]:
     return (base / root,)
 
 
+def _agents_root_linked(home: Optional[Path]) -> bool:
+    base, root = _agents_base(home)
+    try:
+        base = base.resolve(strict = True)
+    except OSError:
+        return False
+    return any(_is_linked_path(path) for path in _agents_ancestors(base, root))
+
+
 def _write_new_skill_manifest(
     base: Path,
     name: str,
@@ -503,6 +512,8 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
     overrides = _load_overrides()
     found: list[tuple[dict, Optional[Path], Optional[os.stat_result]]] = []
     selected: dict[str, dict] = {}
+    # A linked Agents root makes every skill under it read-only, like a linked entry.
+    agents_linked = _agents_root_linked(home)
     for source, root in _skill_roots(home):
         try:
             candidates = _candidate_dirs(root)
@@ -533,7 +544,7 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
                 "enabled": False,
                 "valid": False,
                 "shadowed": False,
-                "linked": _is_linked_path(candidate),
+                "linked": _is_linked_path(candidate) or (source == "agents" and agents_linked),
             }
             try:
                 metadata, skill_dir = _validate_skill_dir(candidate)

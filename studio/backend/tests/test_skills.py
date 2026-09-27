@@ -1069,6 +1069,7 @@ def test_skill_under_a_linked_agents_root_stays_read_only(isolated_skills, tmp_p
         # Reason: Windows may deny symlink creation without Developer Mode.
         pytest.skip("symlinks are unavailable on this platform")
 
+    assert skills.list_skills(home = home)[0]["linked"] is True
     with pytest.raises(skills.SkillError, match = "unsafe"):
         skills.update_skill("rooted", "Changed", "Changed", home = home)
     with pytest.raises(skills.SkillError, match = "unsafe"):
