@@ -1276,7 +1276,7 @@
 	--nav-icon-idle-base: #3fb8c6;
 }
 
-/* Oat Milk */
+/* Oat */
 :root[data-palette="oat-milk"]:not(.dark) {
 	--th-bg: #fbf8f3;
 	--th-surface: #f4efe7;
@@ -1510,7 +1510,7 @@
 	--th-chart-5: #9cbcf0;
 }
 
-/* Key Lime Pie */
+/* Key Lime */
 :root[data-palette="wasabi"]:not(.dark) {
 	--th-bg: #f8faf2;
 	--th-surface: #eef3e3;

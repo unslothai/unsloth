@@ -293,7 +293,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   wasabi: {
-    name: "Key Lime Pie",
+    name: "Key Lime",
     light: {
       accent: "#4f7d00",
       background: "#f8faf2",
@@ -308,7 +308,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   "oat-milk": {
-    name: "Oat Milk",
+    name: "Oat",
     light: {
       accent: "#86683f",
       background: "#fbf8f3",
