@@ -321,3 +321,51 @@ def test_guard_restores_causal_cache_state_on_fallback(monkeypatch):
         monkeypatch.setattr(F, "causal_conv", flaky)
         out = _decode(vae, z)
     assert _psnr(out, ref) > 45
+
+
+def _single_head_attention(dim, device, dtype):
+    from diffusers.models.attention_processor import Attention, AttnProcessor2_0
+
+    attn = Attention(
+        dim, heads = 1, dim_head = dim, rescale_output_factor = 1.0, eps = 1e-6, norm_num_groups = 32, bias = True,
+        upcast_softmax = True, residual_connection = True, _from_deprecated_attn_block = True,
+        processor = AttnProcessor2_0(),
+    ).to(device, dtype).eval()  # fmt: skip
+    attn.processor = F.FusedSingleHeadProcessor(attn.processor)
+    return attn
+
+
+def test_attention_fp32_or_cpu_input_goes_straight_to_stock(monkeypatch):
+    pytest.importorskip("diffusers")
+    attn = _single_head_attention(320, "cpu", torch.float32)
+    monkeypatch.setattr(
+        F.FusedSingleHeadProcessor, "_fused", staticmethod(lambda *a: pytest.fail("fused path ran"))
+    )
+    x = torch.randn(1, 320, 4, 4)
+    with torch.inference_mode():
+        out = attn(x)
+    assert out.shape == x.shape
+    assert not getattr(attn, "_unsloth_vae_fused_failed", False)
+
+
+@needs_cuda
+@pytest.mark.parametrize("oom", [True, False])
+def test_attention_oom_falls_back_for_that_call_only(monkeypatch, oom):
+    pytest.importorskip("diffusers")
+    attn = _single_head_attention(512, "cuda", torch.bfloat16)
+    x = torch.randn(1, 512, 16, 16, device = "cuda", dtype = torch.bfloat16)
+    with torch.inference_mode():
+        ref = attn.processor.fallback(attn, x)
+
+        def boom(*a, **k):
+            raise (
+                torch.cuda.OutOfMemoryError("CUDA out of memory")
+                if oom
+                else RuntimeError("kernel exploded")
+            )
+
+        monkeypatch.setattr(F, "single_head_attention", boom)
+        out = attn(x)
+    assert torch.equal(out, ref)
+    # an OOM keeps the fused path for the next call; a real failure retires it
+    assert getattr(attn, "_unsloth_vae_fused_failed", False) is (not oom)

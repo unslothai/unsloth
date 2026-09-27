@@ -854,30 +854,45 @@ class FusedSingleHeadProcessor:
             or attn.norm_k is not None
             or hidden_states.ndim != 4
             or getattr(attn, "_unsloth_vae_fused_failed", False)
+            or not _attention_input_ok(attn, hidden_states)
         ):
             return self.fallback(
                 attn, hidden_states, encoder_hidden_states, attention_mask, temb, *args, **kwargs
             )
         try:
-            residual = hidden_states
-            b, c, h, w = hidden_states.shape
-            x = hidden_states.view(b, c, h * w).transpose(1, 2)
-            if attn.group_norm is not None:
-                x = attn.group_norm(x.transpose(1, 2)).transpose(1, 2)
-            q, k, v = attn.to_q(x), attn.to_k(x), attn.to_v(x)
-            if not _mm_attention_ok(q):
-                raise TypeError("not a half-precision wide head")
-            o = single_head_attention(q, k, v)
-            o = attn.to_out[1](attn.to_out[0](o))
-            o = o.transpose(-1, -2).reshape(b, c, h, w)
-            if attn.residual_connection:
-                o = o + residual
-            return o / attn.rescale_output_factor
-        except TypeError:
-            return self.fallback(attn, hidden_states, encoder_hidden_states, attention_mask, temb)
-        except Exception:  # noqa: BLE001
-            attn._unsloth_vae_fused_failed = True
-            return self.fallback(attn, hidden_states, encoder_hidden_states, attention_mask, temb)
+            return self._fused(attn, hidden_states)
+        except Exception as exc:  # noqa: BLE001
+            # an OOM falls back for this call only (SDPA's memory-efficient kernel needs less); anything else (e.g. a
+            # torch without bmm(out_dtype=)) for good. Outside the handler, so the failed call's tensors are freed first.
+            if not _is_oom(exc):
+                attn._unsloth_vae_fused_failed = True
+        return self.fallback(attn, hidden_states, encoder_hidden_states, attention_mask, temb)
+
+    @staticmethod
+    def _fused(attn: Any, hidden_states: Any) -> Any:
+        residual = hidden_states
+        b, c, h, w = hidden_states.shape
+        x = hidden_states.view(b, c, h * w).transpose(1, 2)
+        if attn.group_norm is not None:
+            x = attn.group_norm(x.transpose(1, 2)).transpose(1, 2)
+        q, k, v = attn.to_q(x), attn.to_k(x), attn.to_v(x)
+        o = single_head_attention(q, k, v)
+        o = attn.to_out[1](attn.to_out[0](o))
+        o = o.transpose(-1, -2).reshape(b, c, h, w)
+        if attn.residual_connection:
+            o = o + residual
+        return o / attn.rescale_output_factor
+
+
+def _attention_input_ok(attn: Any, hidden_states: Any) -> bool:
+    """Checked before any work, so an fp32 (upcast) or CPU VAE never pays for projections it then discards."""
+    torch = _torch()
+    width = getattr(getattr(attn, "to_q", None), "out_features", 0)
+    return (
+        hidden_states.is_cuda
+        and hidden_states.dtype in (torch.float16, torch.bfloat16)
+        and width > 256
+    )
 
 
 def install_attention_processors(part: Any) -> int:
