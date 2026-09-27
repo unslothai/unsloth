@@ -101,13 +101,8 @@ def get_tool_policy_default() -> Optional[bool]:
 
 
 def conversation_recall_allowed() -> bool:
-    """Whether the internal `search_conversation` recall may run under the current policy.
-
-    It reads only this thread's own compaction archive: no code, no network, never prompts.
-    A CLI `--disable-tools` keeps it, so checkpoint compaction still resets into a searchable
-    archive instead of falling back to the rolling window. A per-context hard-off
-    (`tools_force_disabled`, public surfaces) still refuses it.
-    """
+    """search_conversation only reads this thread's archive, so a CLI `--disable-tools` keeps it;
+    only `tools_force_disabled` (public surfaces, any thread_id) refuses it."""
     return not _force_disabled.get()
 
 

@@ -538,13 +538,8 @@ def test_a_restated_instruction_does_not_crowd_out_every_other_rule():
 
 
 def test_a_process_with_tools_disabled_still_resets(monkeypatch):
-    """`supports_tools` is the TEMPLATE's capability, not "this request gets the tool".
-
-    `--disable-tools` sets the process policy to False, which still admits the local,
-    read-only search_conversation, so compaction keeps resetting into a searchable archive.
-    A per-context hard-off (public surfaces) refuses every tool, recall included, and
-    resetting there would leave the epoch behind a tool that never arrives.
-    """
+    """`--disable-tools` still admits search_conversation, so compaction keeps resetting; a
+    per-context hard-off refuses recall, so resetting there would strand the epoch."""
     from core.inference import llama_cpp
     from state.tool_policy import tools_force_disabled
 
@@ -562,8 +557,7 @@ def test_a_process_with_tools_disabled_still_resets(monkeypatch):
 
 
 def test_disable_tools_reopens_the_loop_for_recall_only(monkeypatch):
-    """Under `--disable-tools` the recall loop still opens, and offers search_conversation
-    ALONE: no skills, MCP or armed deep research ride in on it."""
+    """The recall loop under `--disable-tools` offers search_conversation alone."""
     import asyncio
     import types
 

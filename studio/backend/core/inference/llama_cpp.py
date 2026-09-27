@@ -204,10 +204,8 @@ def _can_reset_epoch(
         from state.tool_policy import conversation_recall_allowed
 
         # `supports_tools` is the TEMPLATE's capability, not "will this request be given
-        # the tool". A CLI `--disable-tools` still admits search_conversation (local,
-        # read-only), but a per-context hard-off refuses it, and resetting there would
-        # strand the epoch behind a tool that never arrives. Rolling keeps the newest turns
-        # in view and re-injects the inline recall, needing no tool.
+        # the tool". Where recall is refused, resetting would strand the epoch behind a tool
+        # that never arrives; rolling re-injects the inline recall and needs no tool.
         if not conversation_recall_allowed():
             return False
     except Exception:  # noqa: BLE001 -- an unreadable policy is "no", never an error
