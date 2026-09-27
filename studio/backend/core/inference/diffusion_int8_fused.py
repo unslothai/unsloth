@@ -890,6 +890,14 @@ def run_on_first_call(module: Any, key: str, fn: Any) -> None:
     hooks[key] = module.register_forward_pre_hook(_pre_hook, with_kwargs = True)
 
 
+def cancel_first_call(module: Any, key: str) -> None:
+    """Drop a ``run_on_first_call`` hook that has not fired yet (no-op if it has, or was never registered)."""
+    hooks = getattr(module, "__dict__", {}).get("_unsloth_first_call_hooks")
+    handle = hooks.pop(key, None) if hooks else None
+    if handle is not None:
+        handle.remove()
+
+
 def install(
     transformer: Any,
     logger: Any = None,
@@ -918,10 +926,40 @@ def _swiglu_candidate(module: Any) -> bool:
     ) and _swiglu_layout_allowed(module)
 
 
+def _swiglu_eligible(module: Any) -> bool:
+    """The checks ``_prepare_swiglu`` makes, without fusing anything."""
+    from torch import nn
+
+    if not _swiglu_layout_allowed(module):
+        return False
+    try:
+        spec = _swiglu_spec(module)
+        if spec is not None:
+            parts = (_get(module, spec[0]), _get(module, spec[2]))
+        else:
+            split = _split_spec(module)
+            if split is None:
+                return False
+            parts = tuple(_get(module, name) for name in split)
+        return all(type(m) is nn.Linear and _plain_int8_weight(m.weight) for m in parts)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _has_eligible(transformer: Any) -> bool:
+    return any(
+        _MARK in m.__dict__ or _ff_eligible(m) or _swiglu_eligible(m) or _flux_single_eligible(m)
+        for m in transformer.modules()
+    )
+
+
 def _finalize(transformer: Any, logger: Any = None) -> int:
     global _OP_HANDLE
     dev = resident_cuda_device(transformer)
     if dev is None:
+        return 0
+    # Before the probe: it compiles and launches both Triton kernels, pure latency for a bf16 / fp16 model.
+    if not _has_eligible(transformer):
         return 0
     import torch
 
@@ -958,6 +996,8 @@ def uninstall(transformer: Any = None) -> None:
     """Restore the stock forwards under ``transformer`` (a dropped transformer needs nothing: the patch is per instance)."""
     if transformer is None:
         return
+    # A deferred install still pending (weights not yet on the GPU) must not fire at the next forward.
+    cancel_first_call(transformer, "int8_fused")
     with _LOCK:
         for module in transformer.modules():
             prev = module.__dict__.pop(_MARK, None)

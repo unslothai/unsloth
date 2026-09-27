@@ -391,3 +391,29 @@ def test_swiglu_install_count_follows_the_quality_gate(kind):
     ff = _quantize(_swiglu_module(kind).cuda().to(torch.bfloat16).eval())
     assert fused.install(ff) == (1 if kind == "zimage" else 0)
     assert fused.is_installed(ff) is (kind == "zimage")
+
+
+def test_ineligible_resident_model_never_probes_the_kernels(monkeypatch):
+    # A bf16 / fp16 DiT already on the GPU has nothing to fuse: the Triton validation launch must not run.
+    probed = []
+    monkeypatch.setattr(fused, "resident_cuda_device", lambda m: torch.device("cuda", 0))
+    monkeypatch.setattr(fused, "_device_ok", lambda index: probed.append(index) or True)
+    mod = torch.nn.Sequential(torch.nn.Linear(8, 8), torch.nn.GELU(), torch.nn.Linear(8, 8))
+    assert fused.install(mod) == 0
+    assert probed == []
+    assert "forward" not in mod[0].__dict__
+
+
+def test_uninstall_cancels_the_deferred_install(monkeypatch):
+    mod = torch.nn.Sequential(torch.nn.Linear(8, 8))
+    target = mod[0]
+    monkeypatch.setattr(fused, "_ff_eligible", lambda m: m is target)
+    finalized = []
+    monkeypatch.setattr(fused, "_finalize", lambda t, logger = None: finalized.append(t) or 1)
+    assert fused.install(mod) == 1
+    assert "int8_fused" in mod.__dict__["_unsloth_first_call_hooks"]
+    fused.uninstall(mod)
+    mod(torch.randn(2, 8))
+    assert finalized == []
+    assert "int8_fused" not in mod.__dict__.get("_unsloth_first_call_hooks", {})
+    assert not mod._forward_pre_hooks
