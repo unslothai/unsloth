@@ -60,6 +60,18 @@ def _toolchain_ok() -> bool:
         return True
 
 
+# Shape / frame-count arguments used only as loop bounds and index math, never as a stride multiplier: Triton would
+# otherwise compile one variant per (== 1, % 16 == 0, other) combination of each, and a tiled Wan decode meets ~70 of
+# them (T, To and n_cache 1 vs >1, odd latent tile sizes, edge tiles): ~20 s of JIT on the first render. Strides and C
+# stay specialized: their divisibility is what lets the channel-contiguous loads vectorize.
+_SHAPE_ARGS = {
+    "_rms_act": ("T", "H", "W", "Ho", "Wo", "ph", "pw", "To", "front", "n_cache"),
+    "_bias_residual": ("P", "T", "HW", "W"),
+    "_dup_up_add": ("T_o", "H_o", "W_o", "t_off"),
+    "_up_nearest2x": ("T_o", "H", "W"),
+}
+
+
 @lru_cache(maxsize = 1)
 def _kernels() -> Optional[types.SimpleNamespace]:
     try:
@@ -176,7 +188,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         out_off = (bt.to(tl.int64) * HW + p.to(tl.int64))[:, None] * C + c[None, :]
         tl.store(out_ptr + out_off, v.to(out_ptr.dtype.element_ty), mask = m)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = _SHAPE_ARGS["_rms_act"])
     def _rms_act(
         x_ptr, out_ptr, w_ptr, b_ptr, ib_ptr, cache_ptr,
         C, T, H, W, Ho, Wo, ph, pw, To, front, n_cache, scale, eps,
@@ -253,7 +265,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 v = v / (1.0 + tl.exp(-v))
             tl.store(out_ptr + out_off, v.to(out_ptr.dtype.element_ty), mask = m)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = _SHAPE_ARGS["_bias_residual"])
     def _bias_residual(
         o_ptr, ob_ptr, r_ptr, rb_ptr, P, C, T, HW, W, sb, sc, st, sh, sw, inv_scale,
         HAS_OB: tl.constexpr, HAS_RB: tl.constexpr, SCALE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
@@ -368,7 +380,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 p_ptr + row * P_STRIDE + cols, p.to(p_ptr.dtype.element_ty), mask = cols < P_STRIDE
             )
 
-    @triton.jit
+    @triton.jit(do_not_specialize = _SHAPE_ARGS["_dup_up_add"])
     def _dup_up_add(
         o_ptr, x_ptr, C, T_o, H_o, W_o, t_off, repeats,
         osb, osc, ost, osh, osw, xsb, xsc, xst, xsh, xsw,
@@ -404,7 +416,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         ov = tl.load(o_ptr + o_off, mask = m, other = 0.0).to(tl.float32)
         tl.store(o_ptr + o_off, (ov + xv).to(o_ptr.dtype.element_ty), mask = m)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = _SHAPE_ARGS["_up_nearest2x"])
     def _up_nearest2x(
         x_ptr, out_ptr, C, T_o, H, W, xsb, xsc, xst, xsh, xsw,
         INTERLEAVE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr

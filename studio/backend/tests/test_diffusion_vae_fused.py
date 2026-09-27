@@ -566,3 +566,34 @@ def test_pipeline_qkv_fuse_keeps_the_fused_vae_attention():
     assert procs and all(isinstance(p, F.FusedSingleHeadProcessor) for p in procs)
     assert all(isinstance(p.fallback, FusedAttnProcessor2_0) for p in procs)
     assert all(isinstance(p, FusedAttnProcessor2_0) for p in unet.attn_processors.values())
+
+
+def _variants(kernel) -> int:
+    caches = getattr(kernel, "device_caches", None)
+    if caches is not None:  # Triton >= 3.2: {device: (kernel_cache, ...)}
+        return sum(len(c[0]) for c in caches.values())
+    return sum(len(c) for c in getattr(kernel, "cache", {}).values())
+
+
+@needs_cuda
+def test_shape_args_do_not_multiply_jit_variants():
+    # each new (== 1, % 16, other) mix of a frame count or tile size used to JIT another variant: ~90 on a tiled
+    # Wan-2.2 decode, ~20 s of first-render compile. Sizes must reuse the compiled kernel; strides (all % 16 here,
+    # channels-last C=64) stay specialized for the vectorized channel loads.
+    k = F._kernels()
+    for name, args in F._SHAPE_ARGS.items():
+        params = {p.name: p for p in getattr(k, name.lstrip("_")).params}
+        assert set(args) <= set(params), (name, set(args) - set(params))
+        assert all(params[a].do_not_specialize for a in args), name
+    cl = torch.channels_last_3d
+    seen = None
+    for t, h, w, front in ((4, 16, 16, 2), (1, 16, 16, 2), (3, 13, 17, 1), (1, 7, 9, 2), (5, 1, 33, 0)):
+        x = torch.randn(1, 64, t, h, w, device = "cuda", dtype = torch.float16).contiguous(memory_format = cl)
+        cache = torch.randn(1, 64, 1, h, w, device = "cuda", dtype = torch.float16).contiguous(memory_format = cl)
+        out = F.rms_norm_act(x, None, act = True, front = front, cache = cache if front else None)
+        ref = torch.nn.functional.silu(x)
+        if front:
+            ref = torch.cat([torch.zeros_like(cache[:, :, :front - 1]), cache, ref], 2)
+        torch.testing.assert_close(out, ref, atol = 2e-3, rtol = 2e-3)  # fp32 silu vs fp16 opmath: last-ulp
+        seen = seen or _variants(k.rms_act)
+        assert _variants(k.rms_act) == seen, (t, h, w, front)
