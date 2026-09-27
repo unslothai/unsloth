@@ -673,6 +673,7 @@ def _compile_repeated_blocks(
     unet = _denoiser_unet(pipe) if not dits else None
     if not dits and unet is None:
         return False
+    _install_inductor_backports(logger)
     # default: dynamic=True, fast cold start, no recompile on resolution change. max: max-autotune-no-cudagraphs +
     # automatic dynamic (None): the first shape compiles static and autotuned, and a dimension that then changes is
     # generalised once. dynamic=False recompiled on every new prompt length for DiTs whose blocks see the text tokens
@@ -778,13 +779,26 @@ def _compile_repeated_blocks(
     return engaged
 
 
+def _install_inductor_backports(logger: Any) -> bool:
+    """torch 2.12 / 2.13 cannot prove ``(k*a - k*b) % (a - b) == 0`` and raise inductor ``CantSplit`` on it (fixed in
+    2.14); a probe-gated backport of that proof, a no-op on every other torch. Never fails a load."""
+    try:
+        from . import diffusion_inductor_backports
+        return diffusion_inductor_backports.install(logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "inductor backports", exc)
+        return False
+
+
 def compile_dynamic(transformer: Any, dynamic: Optional[bool]) -> Optional[bool]:
     """The ``dynamic`` a DiT is actually compiled with, so compile-cache fingerprints key on the same value.
 
     dynamic=True makes even the constant segment starts symbolic, and on Qwen-Image-2.1 the attention output cat
-    (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction, which inductor
-    cannot split (CantSplit, every render failed). Automatic dynamic (None) compiles the first shapes static and only
-    generalises what actually varies: stable after ~3 recompiles, same numerics."""
+    (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction. torch 2.12 / 2.13
+    cannot prove that split exact (CantSplit, every render failed); ``diffusion_inductor_backports`` restores the proof,
+    after which dynamic=True compiles, but measured slower than automatic dynamic (Qwen-Image-2.1 fp8 1024px on B200:
+    +6 s cold, +1.5% per step). Automatic dynamic (None) plus ``diffusion_dynamic_text`` compiles once and did not
+    recompile across 6 prompt lengths and 3 resolutions, so it stays."""
     if dynamic and transformer is not None and _carries_torchao_weights(transformer):
         return None
     return dynamic
@@ -1104,6 +1118,7 @@ def _compile_vae_decode(
         return True
     if getattr(vae, "_unsloth_compile_decode_error", None):
         return False
+    _install_inductor_backports(logger)
     try:
         import torch
 
