@@ -622,7 +622,7 @@ def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
     if mode == SPEED_MAX:
         # An auto-dynamic DiT generalises a dimension once and then reuses that graph for unseen values, so a new
         # (width, height, batch) is not a new artifact; the Dynamo graph-count delta marks the renders that compiled.
-        return _denoiser_unet(pipe) is not None or not _dits_auto_dynamic(pipe)
+        return _denoiser_unet(pipe) is not None or not auto_dynamic_active(pipe)
     if mode != SPEED_DEFAULT:
         return False
     return (
@@ -1030,14 +1030,7 @@ def settle_compile_fallback(
 
 
 def auto_dynamic_active(pipe: Any) -> bool:
-    """Whether any denoiser DiT (the max tier, or torchao weights on the default) or the VAE decode compiled with
-    automatic dynamic, whose generalising recompile must reach the compile-cache bundle."""
-    if getattr(getattr(pipe, "vae", None), "_unsloth_auto_dynamic", False) is True:
-        return True
-    return _dits_auto_dynamic(pipe)
-
-
-def _dits_auto_dynamic(pipe: Any) -> bool:
+    """Whether any denoiser DiT compiled with automatic dynamic (the max tier, or torchao weights on the default)."""
     return any(getattr(t, "_unsloth_auto_dynamic", False) for t in _guarded_dits(pipe))
 
 
@@ -1073,30 +1066,15 @@ COMPILE_VAE_ENV = "UNSLOTH_DIFFUSION_COMPILE_VAE"
 _VAE_TRUE_TOKENS = ("1", "true", "yes", "on")
 _VAE_FALSE_TOKENS = ("0", "false", "no", "off")
 
-# Not a correctness list: these decode correctly compiled but measured SLOWER than eager. The Qwen-Image VAE leaves
-# the list once its single-frame 2D path is armed (diffusion_vae_single_frame): the stock causal-3D graph compiled
-# dynamic ran 300-370 ms vs 120-180 ms eager at 1024 (B200), the 2D graph compiled static runs ~35 ms.
+# Not a correctness list: these decode correctly compiled but measured SLOWER than eager, or not worth the compile.
+# The Qwen-Image VAE stays eager even with its single-frame 2D path (diffusion_vae_single_frame): compiled it saves
+# ~23 ms per 1024 decode (35.8 -> 12.8 ms, B200) but costs a ~54 s first render, and a ~175 s recompile on the next
+# resolution (automatic dynamic) or a longer one-off dynamic compile. Keyed by class, never by the single-frame
+# marker, which is installed after the compile-cache fingerprint is taken.
 _VAE_COMPILE_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage", "AutoencoderKLWan"})
 
 # ``auto`` compiles only measured VAEs: video DiTs also pass through apply_speed_optims.
-_VAE_COMPILE_ALLOW: frozenset[str] = frozenset(
-    {"AutoencoderKL", "AutoencoderKLFlux2", "AutoencoderKLQwenImage"}
-)
-
-# Automatic dynamic (first shape static), not dynamic=True: symbolic shapes switch off inductor's conv layout
-# optimisation and triple the cold compile. B200 1024 decode, static vs dynamic: FLUX.1 AutoencoderKL 27.0 vs 26.5 ms
-# (eager 117 ms), cold 24 vs 71 s; FLUX.2 55 vs 82 ms, 30 vs 79 s; Qwen-Image 2D 35 vs 50 ms, 11 vs 41 s. A second
-# distinct shape generalises once, like the max-tier DiT.
-_VAE_COMPILE_AUTO_DYNAMIC: frozenset[str] = frozenset(
-    {"AutoencoderKL", "AutoencoderKLFlux2", "AutoencoderKLQwenImage"}
-)
-
-
-def _vae_compile_name_ok(vae: Any) -> bool:
-    name = type(vae).__name__
-    if name == "AutoencoderKLQwenImage" and getattr(vae, "_unsloth_single_frame", False):
-        return True
-    return name in _VAE_COMPILE_ALLOW and name not in _VAE_COMPILE_DENY
+_VAE_COMPILE_ALLOW: frozenset[str] = frozenset({"AutoencoderKL", "AutoencoderKLFlux2"})
 
 
 def vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
@@ -1120,7 +1098,8 @@ def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
         return True
     if speed_mode != SPEED_MAX:
         return False
-    return _vae_compile_name_ok(getattr(pipe, "vae", None))
+    name = type(getattr(pipe, "vae", None)).__name__
+    return name in _VAE_COMPILE_ALLOW and name not in _VAE_COMPILE_DENY
 
 
 def _vae_eager_when_tiled(pipe: Any) -> bool:
@@ -1201,9 +1180,10 @@ def _compile_vae_decode(
     try:
         import torch
 
-        # A U-Net keeps the dynamic decode its whole-module compile was measured with.
-        auto = _denoiser_unet(pipe) is None and type(vae).__name__ in _VAE_COMPILE_AUTO_DYNAMIC
-        kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": None if auto else True}
+        # dynamic=True, never automatic dynamic: one compile serves every resolution. Automatic dynamic compiles the
+        # first shape static and then pays a second, generalising compile on the next resolution (max tier, B200:
+        # 3-289 s on the FLUX.1 VAE, 175 s on Qwen-Image), for no steady-state gain on FLUX.1 (27.0 vs 26.5 ms).
+        kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": True}
         if max_autotune:
             kwargs["mode"] = "max-autotune-no-cudagraphs"
         compiled = torch.compile(decode, **kwargs)
@@ -1211,7 +1191,6 @@ def _compile_vae_decode(
             vae, compiled, decode, logger, eager_when_tiled = eager_when_tiled
         )
         vae._unsloth_compiled_decode = True
-        vae._unsloth_auto_dynamic = auto
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "vae decode compile", exc)

@@ -85,3 +85,33 @@ def test_install_is_idempotent_and_marks_the_vae():
     first = vae._decode
     assert sf.install(vae) is True
     assert vae._decode is first and vae._unsloth_single_frame is True
+
+
+@pytest.mark.parametrize("single_frame", ["1", "0"])
+@pytest.mark.parametrize("compile_env", [None, "1"])
+def test_compile_cache_key_matches_the_later_vae_compile(monkeypatch, single_frame, compile_env):
+    """The loader keys the compile bundle on vae_decode_compile_allowed() BEFORE apply_speed_optims installs the
+    single-frame path; the key must still equal what that later pass compiles."""
+    from core.inference import diffusion_speed as ds
+
+    monkeypatch.setenv(sf.SINGLE_FRAME_ENV, single_frame)
+    if compile_env is None:
+        monkeypatch.delenv(ds.COMPILE_VAE_ENV, raising = False)
+    else:
+        monkeypatch.setenv(ds.COMPILE_VAE_ENV, compile_env)
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    monkeypatch.setattr(ds, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(ds, "_compile_repeated_blocks", lambda *a, **k: True)
+    monkeypatch.setattr(ds, "_install_inductor_backports", lambda *a, **k: False)
+    target = types.SimpleNamespace(
+        device = "cpu", dtype = torch.bfloat16, supports_default_torch_compile = True
+    )
+    family = types.SimpleNamespace(supports_torch_compile = True)
+    for mode in (ds.SPEED_MAX, ds.SPEED_DEFAULT):
+        vae = _tiny_vae()
+        pipe = types.SimpleNamespace(vae = vae, transformer = types.SimpleNamespace())
+        key = ds.vae_decode_compile_allowed(pipe, mode)
+        applied = ds.apply_speed_optims(pipe, target, is_gguf = False, family = family, speed_mode = mode)
+        assert applied["compiled_vae_decode"] is key, (mode, single_frame, compile_env)
+        # A second load of the same weights asks again with the path already armed.
+        assert ds.vae_decode_compile_allowed(pipe, mode) is key
