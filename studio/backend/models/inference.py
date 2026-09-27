@@ -4277,30 +4277,6 @@ class GalleryImage(BaseModel):
         description = "Offload policy actually engaged: none | group | model | sequential. Part of "
         "the build: an offloaded pipeline declines the torchao text-encoder modes.",
     )
-    speed_mode: Optional[str] = Field(
-        None,
-        description = "Speed profile engaged for this generation (eager | default | max | off), after "
-        "any deferred compile. Absent on records written before this existed.",
-    )
-    attention_backend: Optional[str] = Field(
-        None,
-        description = "Attention backend engaged for this generation, or null for default SDPA. "
-        "Absent on records written before this existed.",
-    )
-    transformer_cache: Optional[str] = Field(
-        None,
-        description = "Step cache engaged for this generation (fbcache | static), or null when off. "
-        "Absent on records written before this existed.",
-    )
-    cpu_offload: Optional[bool] = Field(
-        None,
-        description = "Whether CPU offload was active for this generation. Absent on records written "
-        "before this existed.",
-    )
-    schema_version: Optional[int] = Field(
-        None,
-        description = "Recipe format version embedded in the PNG unsloth chunk. Absent on older images.",
-    )
     baked_loras: list[str] = Field(
         default_factory = list,
         description = "Adapter ids baked into the transformer AT LOAD TIME (before quantize + "

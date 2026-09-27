@@ -40732,10 +40732,6 @@ async def generate_diffusion_image(
                         "text_encoder_quant": result.get("text_encoder_quant"),
                         "memory_mode": result.get("memory_mode"),
                         "offload_policy": result.get("offload_policy"),
-                        "speed_mode": result.get("speed_mode"),
-                        "attention_backend": result.get("attention_backend"),
-                        "transformer_cache": result.get("transformer_cache"),
-                        "cpu_offload": result.get("cpu_offload"),
                         "baked_loras": list(result.get("baked_loras") or []),
                         # The adapters APPLIED to this generation. A baked-but-disabled adapter is recorded above as part of the build instead.
                         "loras": [f"{l.id}:{l.weight:g}" for l in request.loras or []],
@@ -41630,15 +41626,7 @@ async def _generate_openai_images(
         "model_kind": result.get("model_kind"),
         "gguf_filename": result.get("gguf_filename"),
         "transformer_quant": result.get("transformer_quant"),
-        "text_encoder_quant": result.get("text_encoder_quant"),
-        "memory_mode": result.get("memory_mode"),
-        "offload_policy": result.get("offload_policy"),
-        "speed_mode": result.get("speed_mode"),
-        "attention_backend": result.get("attention_backend"),
-        "transformer_cache": result.get("transformer_cache"),
-        "cpu_offload": result.get("cpu_offload"),
         "baked_loras": list(result.get("baked_loras") or []),
-        "workflow": result.get("workflow"),
         "created_at": float(created),
     }
     # The diffusers batch shares one seed; the native batch uses a distinct seed per image, so record each image's own seed.
