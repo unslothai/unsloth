@@ -72,6 +72,7 @@ import {
 import {
   type ChatAttachmentOriginal,
   persistAttachmentOriginals,
+  reuseStagedUpload,
   withAttachmentOriginal,
 } from "./attachment-originals";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
@@ -882,6 +883,7 @@ class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
     string,
     Promise<ChatAttachmentOriginal | null>
   >();
+  private readonly uploadedAt = new Map<string, number>();
 
   private upload(file: File): Promise<ChatAttachmentOriginal | null> {
     return uploadChatAttachmentOriginal(file).catch(() => null);
@@ -897,8 +899,8 @@ class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
       : useChatRuntimeStore.getState().incognito
         ? `Temporary chats save no files, so the python tool cannot open ${file.name}.`
         : file.size > MAX_TOOL_ONLY_ATTACHMENT_BYTES
-        ? `File is too large: ${file.name}`
-        : null;
+          ? `File is too large: ${file.name}`
+          : null;
     if (refusal) {
       toast.error(refusal);
       throw new Error(refusal);
@@ -914,6 +916,7 @@ class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
     yield attachment;
     const upload = this.upload(file);
     this.uploads.set(attachment.id, upload);
+    this.uploadedAt.set(attachment.id, Date.now());
     const original = await upload;
     if (this.uploads.get(attachment.id) !== upload) return;
     if (!original) {
@@ -930,9 +933,11 @@ class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const original =
-      (await this.uploads.get(attachment.id)) ??
-      (await this.upload(attachment.file));
+      (reuseStagedUpload(this.uploadedAt.get(attachment.id))
+        ? await this.uploads.get(attachment.id)
+        : null) ?? (await this.upload(attachment.file));
     this.uploads.delete(attachment.id);
+    this.uploadedAt.delete(attachment.id);
     const text = original
       ? `[${attachment.name}: only the python tool can read this file]`
       : `[${attachment.name} could not be uploaded, so it cannot be read]`;
@@ -949,6 +954,7 @@ class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
 
   async remove(attachment: { id: string }): Promise<void> {
     this.uploads.delete(attachment.id);
+    this.uploadedAt.delete(attachment.id);
   }
 }
 

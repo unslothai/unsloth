@@ -77,3 +77,11 @@ export async function persistAttachmentOriginals(
     }),
   );
 }
+
+// Originals no message names yet are swept an hour after upload; sending one staged half that long
+// uploads it again, which restarts its clock.
+const STAGED_UPLOAD_MAX_AGE_MS = 30 * 60 * 1000;
+
+export function reuseStagedUpload(stagedAt: number | undefined, now = Date.now()): boolean {
+  return stagedAt !== undefined && now - stagedAt < STAGED_UPLOAD_MAX_AGE_MS;
+}

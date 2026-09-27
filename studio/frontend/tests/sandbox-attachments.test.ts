@@ -21,7 +21,7 @@ const originals = loadWithStubs<typeof import("../src/features/chat/attachment-o
     },
   },
 );
-const { persistAttachmentOriginals, withAttachmentOriginal } = originals;
+const { persistAttachmentOriginals, reuseStagedUpload, withAttachmentOriginal } = originals;
 const { sandboxAttachmentPath, sandboxReader, withSandboxAttachmentPaths } =
   loadWithStubs<typeof import("../src/features/chat/sandbox-attachments.ts")>(
     new URL("../src/features/chat/sandbox-attachments.ts", import.meta.url),
@@ -154,4 +154,11 @@ test("saving a temporary chat stores a document it kept for the python tool", as
   const [saved] = await persistAttachmentOriginals([{ id: "1", type: "document", name: "data.csv", content: [], file } as never], 0);
   assert.deepEqual((saved as { original?: unknown }).original, { sha256: SHA, sizeBytes: 3 });
   assert.ok(!("file" in (saved as object)));
+});
+
+test("a staged upload is sent again once it nears the originals sweep", () => {
+  const now = 10 * 60 * 60 * 1000;
+  assert.equal(reuseStagedUpload(now - 60_000, now), true);
+  assert.equal(reuseStagedUpload(now - 31 * 60_000, now), false);
+  assert.equal(reuseStagedUpload(undefined, now), false);
 });
