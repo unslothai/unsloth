@@ -117,6 +117,7 @@ import { readRtfAttachmentContent } from "./rtf";
 import {
   awaitThreadScopedSettingsWrite,
   beginThreadScopedPairing,
+  codeToolsOn,
   commitHeldThreadScopedEditsToTheirThread,
   releaseHeldThreadScopedEdits,
   useChatRuntimeStore,
@@ -845,10 +846,11 @@ const MAX_TOOL_ONLY_ATTACHMENT_BYTES = 200 * 1024 * 1024;
 
 /** Whether this turn's python tool runs in Studio's sandbox; chat-adapter.ts decides it the same way. */
 function pythonToolRunsInStudio(): boolean {
-  const { params, supportsTools, codeToolsEnabled } =
-    useChatRuntimeStore.getState();
-  const external = parseExternalModelId(params.checkpoint);
-  if (!external) return supportsTools && codeToolsEnabled;
+  const state = useChatRuntimeStore.getState();
+  // The effective Code state, as the send path computes it: Full access turns it on locally.
+  const codeToolsEnabled = codeToolsOn(state);
+  const external = parseExternalModelId(state.params.checkpoint);
+  if (!external) return state.supportsTools && codeToolsEnabled;
   const provider = (
     loadConnectionsEnabled() ? loadExternalProviders() : []
   ).find((p) => p.id === external.providerId);
