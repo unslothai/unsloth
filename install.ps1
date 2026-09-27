@@ -2529,9 +2529,9 @@ function Install-UnslothStudio {
             $isFile = $false
             try { $isFile = Test-Path -LiteralPath $candidate -PathType Leaf } catch {}
             if (-not $isFile) { continue }
-            # Elevated, the venv interpreter runs here before the destination guard does, so only where
-            # that guard would let it run: the default layout, or a custom home that is already Unsloth's.
-            if ($requireAdminRoot -and ($venvCandidates -contains $candidate)) {
+            # The venv interpreter runs here before the destination guard does, so only where that
+            # guard would let it run: the default layout, or a custom home that is already Unsloth's.
+            if ($venvCandidates -contains $candidate) {
                 $ours = $false
                 try {
                     $mode = Get-Variable -Name StudioRedirectMode -ValueOnly -ErrorAction Stop
@@ -2544,7 +2544,7 @@ function Install-UnslothStudio {
                         (Test-Path -LiteralPath (Join-Path $studioHomeValue "bin\unsloth.cmd") -PathType Leaf)
                 } catch { $ours = $false }
                 if (-not $ours) {
-                    $rejectedForWritability = $true
+                    if ($requireAdminRoot) { $rejectedForWritability = $true }
                     continue
                 }
             }
