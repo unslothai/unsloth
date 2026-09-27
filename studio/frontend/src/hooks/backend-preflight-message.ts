@@ -26,6 +26,24 @@ export const LLAMA_RUNTIME_REASONS = [
   "llama_runtime_incomplete",
 ];
 
+export function isLlamaRuntimeReason(reason: string | null): boolean {
+  return LLAMA_RUNTIME_REASONS.includes((reason ?? "").split(":", 1)[0]);
+}
+
+function llamaRuntimeFolder(): string {
+  return typeof navigator !== "undefined" && /Win/i.test(navigator.platform ?? "")
+    ? "%USERPROFILE%\\.unsloth\\llama.cpp"
+    : "~/.unsloth/llama.cpp";
+}
+
+export function runtimeRepairFailureMessage(error: string): string {
+  return `Unsloth could not repair its llama.cpp runtime. Security software may be blocking the reinstall or removing files as they are installed. Allow the runtime folder, usually ${llamaRuntimeFolder()}, in your antivirus, then retry. Repair error: ${error}`;
+}
+
+export function runtimeRepairRecurrenceMessage(): string {
+  return `Unsloth's llama.cpp runtime is missing files again soon after a repair. Security software may be removing them. Allow the runtime folder, usually ${llamaRuntimeFolder()}, in your antivirus, then run \`unsloth studio update\` to reinstall it.`;
+}
+
 export function preflightStaleMessage(
   disposition: string,
   reason: string | null,
@@ -52,17 +70,13 @@ export function preflightStaleMessage(
   // The install is current, some of its files are gone, so "too old" sends people
   // to an update that reports they are up to date. Name the usual cause: a
   // reinstall into the same quarantine needs an exclusion, not a retry.
-  if (LLAMA_RUNTIME_REASONS.includes(kind)) {
+  if (isLlamaRuntimeReason(kind)) {
     // Named, because "allow the folder" leaves the user to find out which folder,
     // and an exclusion is the one step that stops this recurring. The default
     // root, since UNSLOTH_LLAMA_CPP_PATH can move it and preflight does not send
     // the path: hedged with "usually" rather than asserted. Windows spelling on
     // Windows, the same platform test the roaming-profile hint above uses.
-    const folder =
-      typeof navigator !== "undefined" && /Win/i.test(navigator.platform ?? "")
-        ? "%USERPROFILE%\\.unsloth\\llama.cpp"
-        : "~/.unsloth/llama.cpp";
-    return `Unsloth's llama.cpp runtime is missing files, which usually means security software quarantined them. Run \`unsloth studio update\` to reinstall it, and allow the folder it installs into, usually ${folder}, in your antivirus if it happens again.`;
+    return `Unsloth's llama.cpp runtime is missing files, which usually means security software quarantined them. Run \`unsloth studio update\` to reinstall it, and allow the folder it installs into, usually ${llamaRuntimeFolder()}, in your antivirus if it happens again.`;
   }
   if (disposition === "owned_stale") {
     return "Desktop-owned Unsloth backend is too old for this desktop app. Run `unsloth studio update`, then restart Unsloth.";

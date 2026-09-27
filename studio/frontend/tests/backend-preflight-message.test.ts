@@ -14,6 +14,8 @@ import {
   WORKING_DIRECTORY_UNAVAILABLE,
   PATH_SETTING_UNRESOLVABLE,
   preflightStaleMessage,
+  runtimeRepairFailureMessage,
+  runtimeRepairRecurrenceMessage,
 } from "../src/hooks/backend-preflight-message.ts";
 
 const UNREACHABLE_PROFILE = /cannot reach your user folder/;
@@ -118,6 +120,19 @@ test("a quarantined llama.cpp runtime is not reported as an outdated install", (
       assert.match(message, /\.unsloth[\\/]llama\.cpp/);
     }
   }
+});
+
+test("a failed repair and recurring damage show antivirus advice with the runtime folder", () => {
+  const failure = runtimeRepairFailureMessage("download blocked");
+  assert.match(failure, /Security software may be blocking the reinstall/);
+  assert.match(failure, /Repair error: download blocked/);
+  assert.match(failure, /\.unsloth[\\/]llama\.cpp/);
+
+  const recurring = runtimeRepairRecurrenceMessage();
+  assert.match(recurring, /missing files again soon after a repair/);
+  assert.match(recurring, /antivirus/);
+  assert.match(recurring, /unsloth studio update/);
+  assert.match(recurring, /\.unsloth[\\/]llama\.cpp/);
 });
 
 test("the folder to exclude is spelled the way the platform spells it", () => {
