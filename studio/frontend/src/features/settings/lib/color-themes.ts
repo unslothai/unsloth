@@ -8,28 +8,28 @@
 export const UNSLOTH_THEME_IDS = ["standard", "classic", "minimal"] as const;
 
 export const FLAVOR_THEME_IDS = [
-  "neon-cyberpunk",
   "matcha",
   "espresso",
   "blueberry",
   "cherry",
-  "mint",
-  "pina-paraiso",
-  "macaron",
-  "taro",
   "honey",
+  "neon-cyberpunk",
+  "macaron",
+  "pina-paraiso",
+  "mint",
+  "taro",
+  "licorice",
   "butterfly-pea",
   "tangerine",
-  "licorice",
+  "earl-grey",
   "plum",
   "wasabi",
-  "earl-grey",
+  "oat-milk",
   "cinnamon",
   "dragon-fruit",
   "peach",
   "yuzu",
   "cotton-candy",
-  "oat-milk",
 ] as const;
 
 export const COLOR_THEME_IDS = [
@@ -66,21 +66,6 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
   minimal: {
     light: { accent: "#171717", background: "#ffffff", foreground: "#171717" },
     dark: { accent: "#ededed", background: "#181818", foreground: "#dfdfdf" },
-  },
-  "neon-cyberpunk": {
-    name: "Neon Cyberpunk",
-    light: {
-      accent: "#0a0a0f",
-      background: "#f0fbfc",
-      foreground: "#0a0a0f",
-      surface: "#e2f6f8",
-    },
-    dark: {
-      accent: "#fcee0a",
-      background: "#070b14",
-      foreground: "#eafcff",
-      surface: "#0d1424",
-    },
   },
   matcha: {
     name: "Matcha",
@@ -142,34 +127,34 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       surface: "#241718",
     },
   },
-  mint: {
-    name: "Mint",
+  honey: {
+    name: "Honey",
     light: {
-      accent: "#0f9e80",
-      background: "#f3f9f7",
-      foreground: "#12302a",
-      surface: "#e9f4f1",
+      accent: "#c98a00",
+      background: "#fdf9ef",
+      foreground: "#2a2310",
+      surface: "#f8f1de",
     },
     dark: {
-      accent: "#4fd1b3",
-      background: "#111b1a",
-      foreground: "#dcefeb",
-      surface: "#172322",
+      accent: "#f2b631",
+      background: "#1a1710",
+      foreground: "#f0e6cf",
+      surface: "#231f15",
     },
   },
-  "pina-paraiso": {
-    name: "Piña Paraíso",
+  "neon-cyberpunk": {
+    name: "Neon Cyberpunk",
     light: {
-      accent: "#f2b800",
-      background: "#fffcf0",
-      foreground: "#2c2410",
-      surface: "#fbf5df",
+      accent: "#0a0a0f",
+      background: "#f0fbfc",
+      foreground: "#0a0a0f",
+      surface: "#e2f6f8",
     },
     dark: {
-      accent: "#ffd23f",
-      background: "#17150c",
-      foreground: "#f6efd6",
-      surface: "#201d11",
+      accent: "#fcee0a",
+      background: "#070b14",
+      foreground: "#eafcff",
+      surface: "#0d1424",
     },
   },
   macaron: {
@@ -187,6 +172,36 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       surface: "#26181d",
     },
   },
+  "pina-paraiso": {
+    name: "Piña Paraíso",
+    light: {
+      accent: "#f2b800",
+      background: "#fffcf0",
+      foreground: "#2c2410",
+      surface: "#fbf5df",
+    },
+    dark: {
+      accent: "#ffd23f",
+      background: "#17150c",
+      foreground: "#f6efd6",
+      surface: "#201d11",
+    },
+  },
+  mint: {
+    name: "Mint",
+    light: {
+      accent: "#0f9e80",
+      background: "#f3f9f7",
+      foreground: "#12302a",
+      surface: "#e9f4f1",
+    },
+    dark: {
+      accent: "#4fd1b3",
+      background: "#111b1a",
+      foreground: "#dcefeb",
+      surface: "#172322",
+    },
+  },
   taro: {
     name: "Ube Chiffon",
     light: {
@@ -202,19 +217,19 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       surface: "#1e1a28",
     },
   },
-  honey: {
-    name: "Honey",
+  licorice: {
+    name: "Licorice",
     light: {
-      accent: "#c98a00",
-      background: "#fdf9ef",
-      foreground: "#2a2310",
-      surface: "#f8f1de",
+      accent: "#d12d34",
+      background: "#fafafa",
+      foreground: "#111114",
+      surface: "#f2f2f3",
     },
     dark: {
-      accent: "#f2b631",
-      background: "#1a1710",
-      foreground: "#f0e6cf",
-      surface: "#231f15",
+      accent: "#e5484d",
+      background: "#0e0e10",
+      foreground: "#ececf1",
+      surface: "#16161a",
     },
   },
   "butterfly-pea": {
@@ -247,19 +262,19 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       surface: "#241c15",
     },
   },
-  licorice: {
-    name: "Licorice",
+  "earl-grey": {
+    name: "Earl Grey",
     light: {
-      accent: "#d12d34",
-      background: "#fafafa",
-      foreground: "#111114",
-      surface: "#f2f2f3",
+      accent: "#4f6b8a",
+      background: "#f6f7f9",
+      foreground: "#1c2129",
+      surface: "#eceff3",
     },
     dark: {
-      accent: "#e5484d",
-      background: "#0e0e10",
-      foreground: "#ececf1",
-      surface: "#16161a",
+      accent: "#9db4cf",
+      background: "#15171b",
+      foreground: "#e2e6ec",
+      surface: "#1c1f24",
     },
   },
   plum: {
@@ -292,19 +307,19 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       surface: "#181f15",
     },
   },
-  "earl-grey": {
-    name: "Earl Grey",
+  "oat-milk": {
+    name: "Oat Milk",
     light: {
-      accent: "#4f6b8a",
-      background: "#f6f7f9",
-      foreground: "#1c2129",
-      surface: "#eceff3",
+      accent: "#86683f",
+      background: "#fbf8f3",
+      foreground: "#2e2921",
+      surface: "#f4efe7",
     },
     dark: {
-      accent: "#9db4cf",
-      background: "#15171b",
-      foreground: "#e2e6ec",
-      surface: "#1c1f24",
+      accent: "#d9b98c",
+      background: "#1d1b18",
+      foreground: "#ece6dc",
+      surface: "#25221e",
     },
   },
   cinnamon: {
@@ -380,21 +395,6 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       background: "#1a1420",
       foreground: "#f5e4f4",
       surface: "#221a29",
-    },
-  },
-  "oat-milk": {
-    name: "Oat Milk",
-    light: {
-      accent: "#86683f",
-      background: "#fbf8f3",
-      foreground: "#2e2921",
-      surface: "#f4efe7",
-    },
-    dark: {
-      accent: "#d9b98c",
-      background: "#1d1b18",
-      foreground: "#ece6dc",
-      surface: "#25221e",
     },
   },
 };
