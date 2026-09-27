@@ -223,3 +223,10 @@ def test_listing_bounds_escalate_and_a_refusal_is_not_retried(monkeypatch):
     with pytest.raises(RepositoryNotFoundError):
         mc._hub_model_info_slow_link(REPO)
     assert calls == [15.0]
+
+
+def test_gguf_named_repo_with_a_cached_config_keeps_the_transformers_route(monkeypatch, _isolated):
+    _cache(_isolated, REPO, "config.json")
+    monkeypatch.setattr(huggingface_hub, "model_info", _hub(TimeoutError("read timed out")))
+    config = ModelConfig.from_identifier(REPO)
+    assert config is not None and not config.is_gguf

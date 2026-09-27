@@ -3383,11 +3383,11 @@ _GGUF_REPO_NAME_RE = _re.compile(r"(?:^|[-_.])gguf(?:$|[-_.])", _re.IGNORECASE)
 
 
 def _looks_like_gguf_repo(repo_id: str, gguf_variant: Optional[str] = None) -> bool:
-    if _GGUF_REPO_NAME_RE.search(repo_id.rstrip("/").rsplit("/", 1)[-1]):
-        return True
-    # A variant echoed back for a cached Transformers repo still loads through Transformers.
-    return bool(gguf_variant) and not any(
-        (snap / "config.json").is_file() for snap in _iter_hf_cache_snapshots(repo_id)
+    # A cached Transformers checkpoint can still load through Transformers from that cache.
+    if any((snap / "config.json").is_file() for snap in _iter_hf_cache_snapshots(repo_id)):
+        return False
+    return bool(gguf_variant) or bool(
+        _GGUF_REPO_NAME_RE.search(repo_id.rstrip("/").rsplit("/", 1)[-1])
     )
 
 
