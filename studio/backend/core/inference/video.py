@@ -5159,7 +5159,6 @@ class VideoBackend:
         hv15_mask_engaged = False
         if effective_speed != SPEED_OFF:
             from .video_hv15_vae import install_vectorised_causal_mask
-
             hv15_mask_engaged = install_vectorised_causal_mask(pipe, logger = logger) > 0
         speed_optims: tuple = ()
         for view in views:

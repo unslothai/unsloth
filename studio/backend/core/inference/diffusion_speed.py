@@ -1221,7 +1221,11 @@ def _vae_declares_repeated_blocks(vae: Any) -> bool:
         return False
 
 
-def _compile_vae_regionally(vae: Any, logger: Any, max_autotune: bool = False) -> bool:
+def _compile_vae_regionally(
+    vae: Any,
+    logger: Any,
+    max_autotune: bool = False,
+) -> bool:
     """Compile the VAE's repeated block, not ``decode``. A tiled video decode loops over temporal chunks and spatial
     tiles in Python, so compiling ``decode`` unrolls the loop into one graph: MiniMax-H3 at 960x544 is 6 chunks x 15
     tiles x 36 ViT blocks, which fails with RecursionError static and CantSplit dynamic. The block itself sees one

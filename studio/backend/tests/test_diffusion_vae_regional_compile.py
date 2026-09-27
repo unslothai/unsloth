@@ -47,7 +47,6 @@ class _RegionalVae(torch.nn.Module):
 
 def _inductor_error(msg):
     from torch._inductor.exc import InductorError  # noqa: PLC0415
-
     try:
         return InductorError(RuntimeError(msg), None)
     except TypeError:  # constructor signature varies by torch version
@@ -84,6 +83,7 @@ def test_regional_vae_tiling_does_not_force_eager():
         def compiled(*a, **k):
             calls["compiled"] += 1
             return m._call_impl(*a, **k)
+
         return compiled
 
     vae = _RegionalVae(factory)
@@ -96,6 +96,7 @@ def test_regional_vae_compile_failure_falls_back_and_settles_status():
     def factory(m):
         def compiled(*a, **k):
             raise _inductor_error("RecursionError: maximum recursion depth exceeded")
+
         return compiled
 
     vae = _RegionalVae(factory)
@@ -149,13 +150,17 @@ def test_tiny_minimax_h3_vae_decode_compiles_once_per_tile_shape():
     from torch._dynamo.utils import counters
 
     torch.manual_seed(0)
-    vae = cls(
-        block_out_channels = (8, 8, 8, 8, 8, 8),
-        decoder_num_layers = 2,
-        decoder_num_attention_heads = 2,
-        decoder_attention_head_dim = 16,
-        norm_num_groups = 4,
-    ).cuda().eval()
+    vae = (
+        cls(
+            block_out_channels = (8, 8, 8, 8, 8, 8),
+            decoder_num_layers = 2,
+            decoder_num_attention_heads = 2,
+            decoder_attention_head_dim = 16,
+            norm_num_groups = 4,
+        )
+        .cuda()
+        .eval()
+    )
     # 2 x 2 tiles, 2 temporal chunks
     z = torch.randn(1, 24, 7, 24, 24, device = "cuda")
     with torch.no_grad():
