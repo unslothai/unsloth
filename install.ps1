@@ -2760,6 +2760,14 @@ exit 1
     $script:StudioEarlyPythonProbedWithoutVenv = $false
 
     function Get-StudioEarlyPython {
+        # This optional pre-lock probe has no ACL/ownership validation for candidates.
+        # Elevated or uninspectable Windows tokens retain the old resolver ladder.
+        try {
+            $elevation = Get-ElevationState
+            if ($elevation -eq "true" -or
+                ($elevation -ne "false" -and
+                 [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT)) { return $null }
+        } catch { return $null }
         # A miss taken before $VenvDir existed (--tauri) is re-probed once it does.
         $venvDirValue = $null
         try { $venvDirValue = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue } catch {}
