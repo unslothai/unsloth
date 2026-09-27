@@ -5352,10 +5352,26 @@ def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, sto
     ), "a row the engine has already retired is not handed back again"
 
 
+def _batch_engine(monkeypatch):
+    """The zoo batch engine, or a stand-in where the backend CI installs no unsloth-zoo."""
+    try:
+        from unsloth_zoo.mlx import generate as engine
+    except ImportError:
+        engine = types.ModuleType("unsloth_zoo.mlx.generate")
+        engine.stream_unavailable_reason = lambda *a, **k: None
+        for name in ("unsloth_zoo", "unsloth_zoo.mlx"):
+            if not isinstance(sys.modules.get(name), types.ModuleType):
+                monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.generate", engine)
+        monkeypatch.setattr(sys.modules["unsloth_zoo.mlx"], "generate", engine, raising = False)
+    return engine
+
+
 def test_a_text_load_whose_engine_cannot_batch_says_so_before_it_commits(monkeypatch):
     """The reply is owed the decode it would have had, not the error building raises."""
     from core.inference.mlx_inference import MLXInferenceBackend
-    from unsloth_zoo.mlx import generate as engine
+
+    engine = _batch_engine(monkeypatch)
 
     backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
     backend._model, backend._tokenizer, backend._is_vlm = object(), object(), False
@@ -5380,7 +5396,8 @@ def test_a_text_load_whose_engine_cannot_batch_says_so_before_it_commits(monkeyp
 def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
     """Replayed tool images, a clip and the native tool protocol live only on the"""
     from core.inference.mlx_inference import MLXInferenceBackend
-    from unsloth_zoo.mlx import generate as engine
+
+    engine = _batch_engine(monkeypatch)
 
     backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
     backend._model, backend._tokenizer, backend._is_vlm = object(), object(), False
@@ -5395,7 +5412,8 @@ def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
 
 def test_a_quantized_or_budgeted_kv_cache_does_not_batch(monkeypatch):
     from core.inference.mlx_inference import MLXInferenceBackend
-    from unsloth_zoo.mlx import generate as engine
+
+    engine = _batch_engine(monkeypatch)
 
     backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
     backend._model, backend._tokenizer, backend._is_vlm = object(), object(), False

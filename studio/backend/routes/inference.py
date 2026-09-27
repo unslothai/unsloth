@@ -30630,7 +30630,8 @@ def _openai_model_objects() -> list[dict]:
         _serving = _unsloth_serving_fields(model_info)
         if _serving["context_length_enforced"] is not None:
             entry["context_length_enforced"] = bool(_serving["context_length_enforced"])
-        entry["context_unbounded_when_batched"] = _serving["context_unbounded_when_batched"]
+        if _serving["context_unbounded_when_batched"]:
+            entry["context_unbounded_when_batched"] = True
         if _serving["parallel_slots"] is not None:
             entry["parallel_slots"] = _serving["parallel_slots"]
         models.append(entry)

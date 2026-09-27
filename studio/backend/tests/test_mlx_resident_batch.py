@@ -4,17 +4,40 @@
 """Replies joining and leaving a batch the MLX worker keeps open."""
 
 import functools
+import importlib
 import inspect
 import multiprocessing as _mp
 import queue as _queue
+import sys
 import threading
+import types
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
-from core.inference import worker
-from core.inference.worker import RowRefused
-from core.inference.worker import StopLedger
+
+def _stub_if_missing(name, attrs):
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001 - stub unusable imports
+        pass
+    mod = types.ModuleType(name)
+    mod.__spec__ = None
+    for attr in attrs:
+        setattr(mod, attr, MagicMock())
+    sys.modules[name] = mod
+
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+
+from core.inference import worker  # noqa: E402
+from core.inference.inference import InferenceBackend  # noqa: E402
+from core.inference.worker import RowRefused  # noqa: E402
+from core.inference.worker import StopLedger  # noqa: E402
 
 
 class _RespQueue:
@@ -381,7 +404,6 @@ def test_a_batch_that_will_not_open_still_answers_the_reply(monkeypatch):
 
 def test_a_row_override_the_backend_cannot_take_is_dropped_not_raised():
     """The route varies the seed per row, and the fallback decodes on backends without one."""
-    InferenceBackend = pytest.importorskip("core.inference.inference").InferenceBackend
 
     class _NoSeedBackend(_DecliningBackend):
         """Transformers-shaped: wraps() carries the real signature, which declares no seed."""
