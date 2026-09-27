@@ -405,3 +405,32 @@ def test_controlnet_pipe_not_cached_after_unload_race(monkeypatch):
     with pytest.raises(RuntimeError, match = "cancelled"):
         b._controlnet_pipe(st, resolved, threading.Event())
     assert b._cn_pipes == {}
+
+
+@pytest.mark.parametrize(
+    "policy, calibrated, streamed",
+    [("none", False, False), ("none", True, True), ("group", False, True)],
+)
+def test_controlnet_streams_beside_a_calibrated_resident_tier(monkeypatch, policy, calibrated, streamed):
+    # A calibrated tier budgets only the base model's measured activations; a resident 6+ GB FLUX.1 ControlNet
+    # beside it can overflow, so it streams. A flat resident tier keeps the resident ControlNet.
+    import threading
+
+    from core.inference import diffusion as d
+
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers())
+    _allow_cn_security(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        d, "_offload_controlnet_module", lambda m, device, logger: calls.append(m) or True
+    )
+    b = d.DiffusionBackend()
+    st = _state()
+    st.offload_policy = policy
+    st.calibrated_placement = calibrated
+    b._state = st
+    p = b._controlnet_pipe(
+        st, dc.ResolvedControlNet("flux-union-pro", "repo/id", is_local = False), threading.Event()
+    )
+    assert bool(calls) is streamed
+    assert hasattr(p.controlnet, "device") is not streamed

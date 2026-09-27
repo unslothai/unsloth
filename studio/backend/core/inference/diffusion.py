@@ -1041,6 +1041,8 @@ class _LoadState:
     # The exact variant hint the memory plan was built from (family + checkpoint name + repo ids). Stored rather than
     # rebuilt so generate()'s activation re-check budgets with the SAME distilled / edit multipliers the load did.
     variant_hint: str = ""
+    # The tier was promoted by measured activations, which leave no room for a later ControlNet.
+    calibrated_placement: bool = False
 
 
 @dataclass
@@ -6895,6 +6897,7 @@ class DiffusionBackend:
                         kind = kind,
                         cpu_offload = effective_policy != OFFLOAD_NONE,
                         offload_policy = effective_policy,
+                        calibrated_placement = "calibrated_headroom_mib" in plan.estimates,
                         vae_tiling = effective_tiling,
                         memory_mode = plan.requested_mode,
                         speed_mode = effective_speed,
@@ -7995,8 +7998,11 @@ class DiffusionBackend:
                 del cn_model
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
             # Placement follows the base offload policy (resident base -> resident, offloaded -> group offload).
-            # Best-effort.
-            if getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE and (
+            # A calibrated tier budgets only the base model, so its ControlNet streams too. Best-effort.
+            if (
+                getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE
+                or getattr(state, "calibrated_placement", False)
+            ) and (
                 _offload_controlnet_module(cn_model, state.device, logger)
             ):
                 pass
