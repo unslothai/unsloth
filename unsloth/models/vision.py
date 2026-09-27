@@ -200,12 +200,21 @@ __all__ = [
 ]
 
 
-def _infer_device_map_from_loaded_model(model):
-    """Build a compact device_map by inspecting actual parameter placements."""
+def _infer_device_map_from_loaded_model(model, skip = ()):
+    """Build a compact device_map by inspecting actual parameter placements. Parameters
+    named in `skip` (full names) are left off the map."""
     device_map = {}
 
     def _assign(module, prefix):
-        params = list(module.named_parameters(remove_duplicate = False))
+        params = [
+            (n, p) for n, p in module.named_parameters(remove_duplicate = False)
+            if (f"{prefix}.{n}" if prefix else n) not in skip
+        ]
+        if not params and skip and any(
+            (f"{prefix}.{n}" if prefix else n) in skip
+            for n, _ in module.named_parameters(remove_duplicate = False)
+        ):
+            return
         if not params:
             bufs = list(module.named_buffers())
             if bufs:
@@ -221,6 +230,8 @@ def _infer_device_map_from_loaded_model(model):
             for pname, param in module.named_parameters(remove_duplicate = False):
                 if "." not in pname:
                     full = f"{prefix}.{pname}" if prefix else pname
+                    if full in skip:
+                        continue
                     if not any(full == k or full.startswith(k + ".") for k in device_map):
                         device_map[full] = param.device
 
@@ -439,8 +450,16 @@ def _attach_bnb_multidevice_hooks(
     if getattr(model, "hf_device_map", None) is not None:
         return  # already dispatched
 
+    # A frozen table the model declares unplaceable (Qwen4Exp's n-gram embedding) stays on
+    # CPU unhooked: its module gathers rows there. Hooking it offloads ~102 GB to the GPU
+    # on every forward.
     try:
-        all_devs = {p.device for p in model.parameters()}
+        from .loader_utils import no_placement_tensor_names
+        _unplaced = no_placement_tensor_names(model)
+    except Exception:
+        _unplaced = set()
+    try:
+        all_devs = {p.device for n, p in model.named_parameters() if n not in _unplaced}
     except Exception as exc:
         warnings.warn(
             "Unsloth: Failed to determine device placement from model parameters, "
@@ -464,7 +483,7 @@ def _attach_bnb_multidevice_hooks(
         return  # accelerate not available
 
     try:
-        inferred_map = _infer_device_map_from_loaded_model(model)
+        inferred_map = _infer_device_map_from_loaded_model(model, skip = _unplaced)
         if not inferred_map:
             return
 
@@ -490,13 +509,21 @@ def _attach_bnb_multidevice_hooks(
                     (d for d in device_map_int.values() if d not in ("cpu", "disk")),
                     None,
                 )
-            dispatch_model(
-                model,
-                device_map = device_map_int,
-                main_device = main_device,
-                skip_keys = getattr(model, "_skip_keys_device_placement", None),
-                force_hooks = True,
-            )
+            _skip_check = contextlib.nullcontext()
+            if _unplaced:
+                try:
+                    from transformers.integrations.accelerate import skip_device_map_check
+                    _skip_check = skip_device_map_check()
+                except Exception:
+                    pass
+            with _skip_check:
+                dispatch_model(
+                    model,
+                    device_map = device_map_int,
+                    main_device = main_device,
+                    skip_keys = getattr(model, "_skip_keys_device_placement", None),
+                    force_hooks = True,
+                )
             desc = f"{len(inferred_map)} block(s) across {len(cuda_devs)} device(s)"
         finally:
             for param, key, val in _stripped:

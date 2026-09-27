@@ -125,3 +125,19 @@ def test_real_qwen4_exp_on_meta(monkeypatch):
     assert isinstance(out, dict)
     assert not covered(out, "model.layers.1.ple.ple_embedding.ngram_embedding.weight")
     assert covered(out, "model.layers.1.ple.key_proj.weight") and covered(out, "model.layers.3.mlp.experts.down_proj")
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+def test_bnb_hooks_leave_the_cpu_table_alone():
+    """A 4bit load used to see cuda + cpu parameters, dispatch the table as an offloaded
+    'cpu' block, and copy it to the GPU on every forward (110 GB peak on Qwen3.8-Flash-Next
+    truncated to 4 layers, 159 s for one step)."""
+    from unsloth.models.vision import _attach_bnb_multidevice_hooks
+    model = Model()
+    model.is_loaded_in_4bit = True
+    model.to("cuda:0")
+    table = model.model.layers[1].ple.ple_embedding.ngram_embedding
+    table.to("cpu")
+    _attach_bnb_multidevice_hooks(model, True, False, False, False)
+    assert not any(hasattr(m, "_hf_hook") for m in model.modules())
+    assert table.weight.device.type == "cpu"

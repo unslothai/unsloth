@@ -283,6 +283,23 @@ def _single_device_index(device_map):
     return None
 
 
+def no_placement_tensor_names(model):
+    """Names of every parameter / buffer of a module that owns one of the model's
+    `_no_placement_params` (see `exclude_no_placement_params`). Empty for other models."""
+    names = getattr(model, "_no_placement_params", None)
+    if not names:
+        return set()
+    tensors = list(model.named_parameters(remove_duplicate = False)) + list(
+        model.named_buffers(remove_duplicate = False)
+    )
+    owners = {
+        name.rsplit(".", 1)[0]
+        for name, _ in tensors
+        if any(name == n or name.endswith("." + n) for n in names)
+    }
+    return {name for name, _ in tensors if any(name.startswith(o + ".") for o in owners)}
+
+
 def exclude_no_placement_params(device_map, model_class, config):
     """Keep a model's `_no_placement_params` out of the device map, so they stay on CPU.
 
