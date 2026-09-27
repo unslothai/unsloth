@@ -525,6 +525,67 @@ FLA_MODEL_TYPE_PREFIXES = ("qwen3_next", "qwen3_5", "kimi_linear", "olmo_hybrid"
 _fla_advised = False
 
 
+def _exaone_moe_windows_need_support(config, windows):
+    """Per-layer windows that disagree with the single `sliding_window` every sliding layer gets."""
+    layer_types = getattr(config, "layer_types", None) or []
+    single = getattr(config, "sliding_window", None)
+    for layer_type, window in zip(layer_types, windows or []):
+        if layer_type == "sliding_attention" and window and window != single:
+            return True
+    return False
+
+
+# Config fields whose effect lives only in modeling code: an older transformers keeps them as
+# plain attributes and silently runs a different network. K-EXAONE 2.0 (750B) ships
+# `swiglu_limits` (SwiGLU clamp on its deep layers) and per-layer `sliding_windows` (128, one
+# 4096 layer) with no `sliding_window`, so transformers without huggingface/transformers#47802
+# ignores the clamp and gives every sliding layer the 4096 default window.
+_MODELING_ONLY_CONFIG_FIELDS = {
+    "exaone_moe": (
+        ("swiglu_limits", lambda config, v: any(float(x or 0) for x in (v or []))),
+        ("sliding_windows", _exaone_moe_windows_need_support),
+    ),
+}
+
+
+def _raise_if_modeling_ignores_config(config, model_types):
+    """Refuse a checkpoint whose config needs modeling features this transformers lacks."""
+    if config is None:
+        return
+    for model_type in model_types or []:
+        fields = _MODELING_ONLY_CONFIG_FIELDS.get(model_type)
+        if not fields:
+            continue
+        needed = [
+            name
+            for name, needs in fields
+            if getattr(config, name, None) is not None and needs(config, getattr(config, name))
+        ]
+        if not needed:
+            continue
+        try:
+            import importlib, inspect as _inspect
+            source = _inspect.getsource(
+                importlib.import_module(f"transformers.models.{model_type}.modeling_{model_type}")
+            )
+        except Exception:
+            continue
+        missing = [name for name in needed if name not in source]
+        if not missing:
+            continue
+        message = (
+            f"Unsloth: this {model_type} checkpoint sets {', '.join(missing)}, which the installed "
+            f"transformers {transformers_version} ignores, so it would load and train a different "
+            "network than the one released (for K-EXAONE 2.0: no SwiGLU clamp and a 4096 window on "
+            "every sliding layer instead of 128). Install a transformers that supports it "
+            "(huggingface/transformers#47802), or set UNSLOTH_ALLOW_IGNORED_CONFIG=1 to load anyway."
+        )
+        if os.environ.get("UNSLOTH_ALLOW_IGNORED_CONFIG", "0") == "1":
+            logger.warning(message)
+            return
+        raise RuntimeError(message)
+
+
 def _maybe_advise_fla_install(model_types):
     """One-time note when a gated-deltanet model loads without the fast kernels. They ship with Unsloth, so this fires only when they could not be enabled on this platform (no CUDA, torch < 2.7 or triton < 3.3) or when Unsloth deliberately disabled them as known-broken on this GPU / Triton combination, i.e. exactly when transformers uses the slow pure PyTorch path."""
     global _fla_advised
@@ -1013,6 +1074,7 @@ class FastLanguageModel(FastLlamaModel):
             peft_config if peft_config is not None else model_config,
             trust_remote_code = trust_remote_code,
         )
+        _raise_if_modeling_ignores_config(model_config, model_types)
         if len(model_types) == 1:
             model_type = model_types[0]
         else:
@@ -1830,6 +1892,7 @@ class FastModel(FastBaseModel):
         )
         model_types_all = ",".join(model_types) + ","
         _maybe_advise_fla_install(model_types)
+        _raise_if_modeling_ignores_config(model_config, model_types)
 
         # Text-diffusion models (DiffusionGemma) take a transformers-only slow path: a custom block-diffusion generate over a novel backbone, so Unsloth's autoregressive kernel/compile patching is skipped and the unmodified HF model is loaded, keeping 4bit/8bit and PEFT LoRA.
         if is_diffusion_model_type(model_types):
