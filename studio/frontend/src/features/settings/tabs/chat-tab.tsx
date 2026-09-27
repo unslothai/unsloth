@@ -398,6 +398,16 @@ export function ChatTab() {
             onCheckedChange={setAutoCompactEnabled}
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.autoScroll")}
+          description={t("settings.chat.autoScrollDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.autoScroll")}
+            checked={autoScrollWhileGenerating}
+            onCheckedChange={setAutoScrollWhileGenerating}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.groups.conversations.title")}>
@@ -541,16 +551,6 @@ export function ChatTab() {
             checked={foldToolActivityIntoThinking && !foldBlockedByAlwaysExpanded}
             disabled={foldBlockedByAlwaysExpanded}
             onCheckedChange={setFoldToolActivityIntoThinking}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.autoScroll")}
-          description={t("settings.chat.autoScrollDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.autoScroll")}
-            checked={autoScrollWhileGenerating}
-            onCheckedChange={setAutoScrollWhileGenerating}
           />
         </SettingsRow>
         <SettingsRow
