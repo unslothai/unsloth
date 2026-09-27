@@ -25,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { downloadTranscript } from "./transcript-download";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { archiveTranscript, deleteTranscript, listTranscripts } from "./api";
@@ -220,7 +221,7 @@ export function TranscriptGallery({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="size-5 text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+                  className="size-5 text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 any-pointer-coarse:opacity-100"
                   aria-label="Transcript actions"
                 >
                   <HugeiconsIcon icon={MoreVerticalIcon} className="size-3.5" />
@@ -237,9 +238,10 @@ export function TranscriptGallery({
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() =>
-                    void navigator.clipboard.writeText(record.text).then(
-                      () => toast.success("Transcript copied"),
-                      () => toast.error("Could not copy transcript."),
+                    void copyToClipboard(record.text).then((ok) =>
+                      ok
+                        ? toast.success("Transcript copied")
+                        : toast.error("Could not copy transcript."),
                     )
                   }
                 >

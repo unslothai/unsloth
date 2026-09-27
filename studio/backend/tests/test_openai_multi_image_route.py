@@ -165,12 +165,41 @@ def test_a_16_bit_image_keeps_its_levels_instead_of_clipping_to_white(monkeypatc
 
     delivered = _call(monkeypatch, turn).calls[0]["image"]
 
-    assert [pixel[0] for pixel in delivered.convert("RGB").get_flattened_data()] == [
-        0,
-        77,
-        155,
-        255,
-    ]
+    # getpixel, like the multi-image test below, because the flattened read is spelled
+    # getdata() on Pillow 10 and 11 and get_flattened_data() only from 12. This file runs on
+    # both: no-torch-runtime.txt pins pillow 12.3.0 from Python 3.10 and 11.3.0 below it, so
+    # the 12-only spelling made this the one test in the file that could not.
+    levels = delivered.convert("RGB")
+    assert [levels.getpixel(at)[0] for at in ((0, 0), (1, 0), (0, 1), (1, 1))] == [0, 77, 155, 255]
+
+
+def _as_image(delivered):
+    """A served entry, whether it rides as pixels or as the base64 they came in."""
+    if isinstance(delivered, str):
+        return Image.open(io.BytesIO(base64.b64decode(delivered)))
+    return delivered
+
+
+def test_a_16_bit_image_on_a_multi_image_turn_keeps_its_levels_too(monkeypatch):
+    """The single-image path had this guard and the multi-image one did not, which is how the
+    route came to hand generation the caller's raw base64 instead of what it had just decoded.
+    Only `_decode_and_resize_image` scales 0..65535 down; the worker's own decode does not, so
+    the picture arrived clipped to white with every structural assertion still green.
+
+    Asserted on the pixels rather than on the type, so the claim survives a transport that
+    carries base64 again -- what must not come back is the lost conversion.
+    """
+    source = Image.new("I;16", (2, 2))
+    source.putdata([0, 20000, 40000, 65535])
+    turn = [ChatMessage(role = "user", content = [_part(source), _sized(4), _ASK])]
+
+    served = _call(monkeypatch, turn).calls[0]["images"]
+
+    assert len(served) == 2
+    levels = _as_image(served[0]).convert("RGB")
+    # getpixel, not the flattened read the single-image test uses: that one is spelled
+    # getdata() on Pillow 10 and get_flattened_data() on 12, and this runs on both.
+    assert [levels.getpixel(at)[0] for at in ((0, 0), (1, 0), (0, 1), (1, 1))] == [0, 77, 155, 255]
 
 
 _PDF = {

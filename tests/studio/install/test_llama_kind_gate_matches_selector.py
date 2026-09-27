@@ -28,6 +28,7 @@ import itertools
 import pathlib
 import re
 import shutil
+import hashlib
 import sys
 
 import pytest
@@ -58,10 +59,21 @@ ASSET_NAMES = (
     f"llama-{TAG}-bin-win-vulkan-x64.zip",
     f"llama-{TAG}-bin-win-hip-radeon-x64.zip",
 )
+
+
+def _fixture_digest(name: str) -> str:
+    """Stand-in for the digest GitHub publishes; a fixture without one selects nothing."""
+    return hashlib.sha256(name.encode()).hexdigest()
+
+
 RELEASE = {
     "tag_name": TAG,
     "assets": [
-        {"name": name, "browser_download_url": f"https://example.invalid/{name}"}
+        {
+            "name": name,
+            "browser_download_url": f"https://example.invalid/{name}",
+            "digest": f"sha256:{_fixture_digest(name)}",
+        }
         for name in ASSET_NAMES
     ],
 }

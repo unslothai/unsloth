@@ -35,6 +35,8 @@ export interface ModelCatalogEntry {
   defaultEffort: ReasoningEffortLevel | null;
   inputModalities: readonly string[] | null;
   maxOutputTokens: number | null;
+  /** Total context window the provider publishes, or null when it publishes none. */
+  contextLength: number | null;
 }
 
 interface LiveCatalogRecord {
@@ -170,9 +172,21 @@ export function modelsDevCatalogFetchedAt(): number | null {
 // Merged namespaces, rebuilt whenever a served catalog lands.
 let mergedNamespaces: Map<string, Readonly<Record<string, ModelCatalogSnapshotEntry>>> | null = null;
 
+/** Provider types with no catalogue namespace of their own. A Codex subscription serves OpenAI's
+ *  models under OpenAI's ids, and getExternalReasoningCapabilities already aliases it the same
+ *  way; without this every Codex lookup resolved to null and read as "not published". */
+const CATALOG_NAMESPACE_ALIASES: Record<string, string> = {
+  openai_codex: "openai",
+};
+
+function catalogNamespace(providerType: string): string {
+  return CATALOG_NAMESPACE_ALIASES[providerType] ?? providerType;
+}
+
 function snapshotNamespace(
   providerType: string,
 ): Readonly<Record<string, ModelCatalogSnapshotEntry>> | undefined {
+  providerType = catalogNamespace(providerType);
   hydrateModelsDev();
   const served = modelsDev?.providers[providerType];
   const bundled = MODEL_CATALOG_SNAPSHOT[providerType];
@@ -183,7 +197,14 @@ function snapshotNamespace(
   if (!mergedNamespaces) mergedNamespaces = new Map();
   const cached = mergedNamespaces.get(providerType);
   if (cached) return cached;
-  const merged = { ...bundled, ...served };
+  const merged: Record<string, ModelCatalogSnapshotEntry> = { ...bundled };
+  for (const [id, entry] of Object.entries(served)) {
+    // A served entry replaces the bundled one, except that it cannot take away a context window
+    // it has no field for: a backend older than that field, or its cached payload inside the
+    // day-long TTL, would otherwise report every model it covers as not publishing one.
+    const context = entry.context ?? bundled[id]?.context;
+    merged[id] = context == null ? entry : { ...entry, context };
+  }
   mergedNamespaces.set(providerType, merged);
   return merged;
 }
@@ -203,6 +224,8 @@ function fromLiveModel(model: ProviderModelCapabilityInfo): ModelCatalogEntry {
       typeof model.max_output_tokens === "number" && model.max_output_tokens > 0
         ? model.max_output_tokens
         : null,
+    // The live response carries no context window; resolveModelCatalogEntry backfills it.
+    contextLength: null,
   };
 }
 
@@ -217,6 +240,7 @@ function fromSnapshotEntry(entry: ModelCatalogSnapshotEntry): ModelCatalogEntry 
     defaultEffort: null,
     inputModalities: entry.input ?? null,
     maxOutputTokens: null,
+    contextLength: entry.context ?? null,
   };
 }
 
@@ -285,14 +309,21 @@ export function resolveModelCatalogEntry(
   const candidates = lookupCandidates(normalizedProvider, modelId);
   if (candidates.length === 0) return null;
   hydrateLiveCatalog();
+  const snapshot = snapshotNamespace(normalizedProvider);
   const live = LIVE_CATALOG.get(normalizedProvider)?.models;
   if (live) {
     for (const candidate of candidates) {
       const entry = live[candidate];
-      if (entry) return entry;
+      if (!entry) continue;
+      // A live entry wins on what it states, but states no context window, so that one field
+      // falls through to the snapshot instead of reading as unpublished.
+      if (entry.contextLength != null || !snapshot) return entry;
+      const fallback = candidates
+        .map((id) => snapshot[id]?.context)
+        .find((context) => typeof context === "number" && context > 0);
+      return fallback == null ? entry : { ...entry, contextLength: fallback };
     }
   }
-  const snapshot = snapshotNamespace(normalizedProvider);
   if (!snapshot) return null;
   for (const candidate of candidates) {
     const entry = snapshot[candidate];

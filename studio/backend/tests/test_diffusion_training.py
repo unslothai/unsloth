@@ -81,6 +81,7 @@ def _isolated_runs_dir(monkeypatch, tmp_path):
     d = tmp_path / "runs" / "diffusion"
     d.mkdir(parents = True, exist_ok = True)
     monkeypatch.setattr(dts, "_runs_dir", lambda: d)
+
     yield d
 
 
@@ -189,6 +190,32 @@ def _wait_status(
             return st
         time.sleep(0.02)
     return svc.status()
+
+
+def _wait_record(
+    runs_dir,
+    job_id,
+    timeout = 5.0,
+):
+    """Block until the pump thread has written this run's record, and return it.
+
+    The status going terminal is not the record being on disk. _pump_loop calls _apply_event,
+    which publishes the status, and only then _persist_run_record, from its own thread, so
+    _wait_status can return before the file exists. The 0.1s sleep this replaces was a bet on
+    that thread being scheduled inside the sleep; on a loaded runner it is not, and the test
+    fails reading a file that is about to appear. Waiting for the file states the actual
+    precondition and costs nothing when the thread is prompt.
+    """
+    import json
+
+    path = runs_dir / f"{job_id}.json"
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            return json.loads(path.read_text(encoding = "utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            time.sleep(0.01)
+    raise AssertionError(f"the pump never persisted {path} within {timeout}s")
 
 
 def test_service_happy_path():
@@ -2317,12 +2344,7 @@ def test_run_record_persisted_on_complete(_isolated_runs_dir):
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
     job_id = svc.start({**_CFG, "model_family": "z-image", "hf_token": "SECRET"})
     _wait_status(svc, "completed")
-    # The pump persists right after the terminal event; give the thread a beat.
-    time.sleep(0.1)
-
-    import json
-
-    rec = json.loads((_isolated_runs_dir / f"{job_id}.json").read_text())
+    rec = _wait_record(_isolated_runs_dir, job_id)
     assert rec["job_id"] == job_id
     assert rec["status"] == "completed"
     assert rec["saved"] is True
@@ -2351,11 +2373,7 @@ def test_run_record_no_save_stop_marks_unsaved(_isolated_runs_dir):
     _wait_status(svc, "running")
     svc.stop(save = False)
     _wait_status(svc, "stopped")
-    time.sleep(0.1)
-
-    import json
-
-    rec = json.loads((_isolated_runs_dir / f"{job_id}.json").read_text())
+    rec = _wait_record(_isolated_runs_dir, job_id)
     assert rec["status"] == "stopped"
     assert rec["saved"] is False and rec["lora_path"] is None
 

@@ -175,6 +175,13 @@ def main():
                         "error": None,
                     },
                 )
+            elif path == "/api/system":
+                # NVFP4 options only render on a host that reports NVFP4 diffusion (the options go
+                # through withNvfp4Option since 8ecfd3092), and the loop below picks NVFP4, so this
+                # host is a Blackwell one.
+                system = _api_payload(path, query, full_footprint = True)
+                system["nvfp4_diffusion"] = True
+                _json(route, system)
             else:
                 _json(route, _api_payload(path, query, full_footprint = True))
 
@@ -207,11 +214,16 @@ def main():
         )
         if DECLINE:
             # The select must show what RAN, or the page advertises a precision nothing is using.
-            expect(encoder).to_have_text("Default")
+            # A declined scheme runs the dense encoder ("off"), and since #11539 a family default
+            # can pick a scheme on its own, so Default no longer means dense: the select shows the
+            # opt-out that did run (images-page.tsx maps an engaged "off" to "none", not "auto").
+            expect(encoder).to_have_text("Dense (bf16)")
             assert loads[-1]["text_encoder_quant"] == "fp8", loads
             assert not errors, errors
             _record(page, state, loads, plans, errors)
-            print(f"Passed: a declined encoder precision reseeds to Default ({browser.version})")
+            print(
+                f"Passed: a declined encoder precision reseeds to Dense (bf16) ({browser.version})"
+            )
             context.close()
             browser.close()
             return

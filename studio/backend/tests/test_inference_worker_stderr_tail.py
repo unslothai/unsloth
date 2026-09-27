@@ -1241,3 +1241,89 @@ def test_two_paths_on_one_line_are_two_matches():
 
     spaced = _redact_worker_output("C:\\Program Files\\unsloth\\weights.gguf failed\n")
     assert spaced.strip() == ".../weights.gguf failed", spaced
+
+
+def test_the_mirror_module_does_not_pull_logging_into_a_spawned_worker():
+    """Every inference worker imports this module before its entrypoint runs.
+
+    A fresh spawn child has no ``logging`` yet, and importing it there was 4.2ms of the
+    5.3ms this module added to each worker spawn. Nothing on the spawn path needs it: the
+    record marking runs later, after the worker has configured logging.
+    """
+    import ast
+
+    source = (Path(_BACKEND_DIR) / "utils/worker_stderr.py").read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    top_level = [
+        alias.name for node in tree.body if isinstance(node, ast.Import) for alias in node.names
+    ]
+    top_level += [node.module for node in tree.body if isinstance(node, ast.ImportFrom)]
+    assert "logging" not in top_level, (
+        "utils/worker_stderr.py imports logging at module scope again, which every "
+        "spawned worker pays for before its entrypoint runs"
+    )
+
+    # And the same thing as a fact rather than as a reading of the source. Skipped rather
+    # than failed where the interpreter already has logging for its own reasons, since the
+    # claim is about what this module drags in, not about what a bare start-up loads.
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys\n"
+            "preloaded = 'logging' in sys.modules\n"
+            f"sys.path.insert(0, {_BACKEND_DIR!r})\n"
+            "import utils.worker_stderr\n"
+            "print(preloaded, 'logging' in sys.modules)\n",
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert probe.returncode == 0, probe.stderr
+    preloaded, after = probe.stdout.split()
+    if preloaded == "True":
+        pytest.skip("this interpreter loads logging before any of our code runs")
+    assert after == "False", "importing utils.worker_stderr imported logging"
+
+
+def test_a_second_formatter_class_cannot_wrap_a_handler_that_is_already_marked():
+    """The marking class is built on first use, so there can be more than one of it.
+
+    Two threads that both find the cache empty each build a class, and ``isinstance`` is
+    false across the pair, so identity would wrap one handler twice and emit every
+    continuation line with a doubled prefix. Rebuilding the class here is the same
+    observation as that race, without depending on an interleaving.
+    """
+    import io
+    import logging as logging_module
+
+    from utils import worker_stderr
+    from utils.worker_stderr import LOG_RECORD_CONTINUATION_PREFIX, LOG_RECORD_START_MARK
+
+    stream = io.StringIO()
+    handler = logging_module.StreamHandler(stream)
+    handler.setFormatter(logging_module.Formatter("%(message)s"))
+
+    original = worker_stderr._PREFIX_FORMATTER_CLASS
+    try:
+        assert worker_stderr._mark_handler(handler) is True
+        first_class = worker_stderr._PREFIX_FORMATTER_CLASS
+        worker_stderr._PREFIX_FORMATTER_CLASS = None
+        assert (
+            worker_stderr._mark_handler(handler) is False
+        ), "a handler already marked by one formatter class was marked again by another"
+        second_class = worker_stderr._prefix_formatter_class()
+        assert first_class is not second_class, "the rebuild this test needs did not happen"
+
+        logger = logging_module.getLogger(f"{__name__}.two-classes")
+        logger.handlers = [handler]
+        logger.propagate = False
+        logger.setLevel(logging_module.DEBUG)
+        logger.error("boom\n  File x")
+        emitted = stream.getvalue()
+    finally:
+        worker_stderr._PREFIX_FORMATTER_CLASS = original
+
+    expected = LOG_RECORD_START_MARK + "boom\n" + LOG_RECORD_CONTINUATION_PREFIX + "  File x\n"
+    assert emitted == expected, emitted

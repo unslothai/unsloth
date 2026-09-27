@@ -30,7 +30,7 @@ from core.inference.audio_errors import (
     AudioGenerationCancelledError,
 )
 from utils.hardware import get_device, prepare_gpu_selection
-from utils.utils import hf_env_offline
+from utils.utils import hf_env_offline, is_metal_queue_dead
 
 # Re-exported from the shared helper so GGUF, training and inference share one type. Via PEP 562, not a module-level
 # import: resolving the name imports unsloth_zoo, hence torch, and routes/inference.py imports this module at startup
@@ -174,6 +174,12 @@ def _redact_worker_output(text: str) -> str:
     except Exception:  # noqa: BLE001
         pass
     return _ABSOLUTE_PATH_RE.sub(_shorten_path, redacted)
+
+
+class _WorkerMailbox(queue.Queue):
+    def __init__(self, worker):
+        super().__init__()
+        self.worker = worker
 
 
 class _LoadCancelled(Exception):
@@ -330,11 +336,9 @@ def _summed_tool_loop_stats(total, turn):
     return summed
 
 
-def _request_images(image, images):
-    """One request's images in render order; ``image`` is the older single-image spelling."""
-    if images:
-        return list(images)
-    return [image] if image is not None else []
+def _encoded_images(images, to_base64) -> list:
+    """Replayed MCP pictures arrive already PNG-encoded; a caller's decoded list does not."""
+    return [one if isinstance(one, str) else to_base64(one) for one in images or ()]
 
 
 def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
@@ -486,11 +490,19 @@ class InferenceOrchestrator:
         self._start_top_models_fetch()
         top_gguf = self._top_gguf_cache or []
         top_hub = self._top_hub_cache or []
-        # Never wait for the remote Hugging Face ranking during startup. Chat's first /api/models/list needs curated
-        # defaults immediately; the background fetch backfills extra choices on later calls.
+        # Use detected hardware here: discovery runs on the event loop.
+        from core.inference.defaults import suggestions_for_host
+        import utils.hardware.hardware as _hw_mod
+
+        # A chat-only Mac never reaches the MLX loader, so its ranking is left as fetched.
+        device = None if _hw_mod.CHAT_ONLY else _hw_mod.DEVICE
+        fetched = suggestions_for_host(top_gguf + top_hub, device)
+        # Never wait for the remote Hugging Face ranking during startup. Chat's
+        # first /api/models/list needs curated defaults immediately; the
+        # background fetch backfills extra choices on later calls.
         result: list[str] = []
         seen: set[str] = set()
-        for m in self._static_models + top_gguf + top_hub:
+        for m in self._static_models + fetched:
             if m not in seen:
                 result.append(m)
                 seen.add(m)
@@ -559,7 +571,7 @@ class InferenceOrchestrator:
         from utils.process_lifetime import is_process_shutting_down
 
         if is_process_shutting_down():
-            raise RuntimeError("Studio is shutting down; not starting an inference subprocess")
+            raise RuntimeError("Unsloth is shutting down; not starting an inference subprocess")
         from utils.native_path_leases import (
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
@@ -657,7 +669,7 @@ class InferenceOrchestrator:
                     )
             except Exception as exc:
                 logger.debug("Could not reap the raced inference worker: %s", exc)
-            raise RuntimeError("Studio is shutting down; not starting an inference subprocess")
+            raise RuntimeError("Unsloth is shutting down; not starting an inference subprocess")
         logger.info("Inference subprocess started (pid=%s)", _spawned_proc.pid)
 
     def _cancel_generation(self) -> None:
@@ -987,6 +999,31 @@ class InferenceOrchestrator:
     def _ensure_subprocess_alive(self) -> bool:
         return self._proc is not None and self._proc.is_alive()
 
+    def _observe_response(self, resp, worker):
+        """Retire ``worker`` if its Metal queue is dead; nothing else reaps it."""
+        detail = resp.get("error") or ""
+        if worker is None or not is_metal_queue_dead(detail):
+            return resp
+        with self._subprocess_shutdown_lock:
+            if self._proc is not worker:
+                return resp
+            logger.error("Retiring the inference worker: its GPU queue is dead (%s)", detail)
+            if self._shutdown_subprocess_locked(5):  # a survivor still holds the model
+                self.active_model_name = None
+                self.models.clear()
+        return resp
+
+    def _observe_off_thread(self, resp, worker) -> None:
+        """Off the dispatcher thread because retiring joins it."""
+        if worker is None or not is_metal_queue_dead(resp.get("error") or ""):
+            return
+        threading.Thread(
+            target = self._observe_response,
+            args = (resp, worker),
+            daemon = True,
+            name = "inference-retire-worker",
+        ).start()
+
     def _subprocess_crash_message(
         self,
         context: str,
@@ -1049,12 +1086,27 @@ class InferenceOrchestrator:
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"Failed to send command to subprocess: {exc}")
 
-    def _read_resp(self, timeout: float = 1.0) -> Optional[dict]:
-        """Read a response from the subprocess (non-blocking with timeout)."""
-        if self._resp_queue is None:
+    def _read_mailbox(
+        self,
+        mailbox: _WorkerMailbox,
+        timeout: Optional[float] = None,
+    ):
+        resp = mailbox.get_nowait() if timeout is None else mailbox.get(timeout = timeout)
+        return self._observe_response(resp, mailbox.worker)
+
+    def _read_resp(
+        self,
+        timeout: float = 1.0,
+        observe: bool = True,
+    ) -> Optional[dict]:
+        # Handle before queue, else a reload between them blames the replacement.
+        worker = self._proc
+        resp_queue = self._resp_queue
+        if resp_queue is None:
             return None
         try:
-            return self._resp_queue.get(timeout = timeout)
+            resp = resp_queue.get(timeout = timeout)
+            return self._observe_response(resp, worker) if observe else resp
         except queue.Empty:
             return None
         except (EOFError, OSError, ValueError):
@@ -1148,22 +1200,23 @@ class InferenceOrchestrator:
 
         Returns (read_one, drain, release).
         """
-        mailbox: queue.Queue = queue.Queue()
+        mailbox = _WorkerMailbox(self._proc)
         with self._mailbox_lock:
             self._direct_mailboxes[request_id] = mailbox
 
         def read_one(timeout: float = 1.0):
             try:
-                return mailbox.get_nowait()
+                return self._read_mailbox(mailbox)
             except queue.Empty:
                 pass
             thread = self._dispatcher_thread
             if thread is not None and thread.is_alive():
                 try:
-                    return mailbox.get(timeout = timeout)
+                    return self._read_mailbox(mailbox, timeout)
                 except queue.Empty:
                     return None
-            resp = self._read_resp(timeout = timeout)
+            worker = self._proc  # handle before queue, as in _read_resp
+            resp = self._read_resp(timeout = timeout, observe = False)
             if resp is None:
                 return None
             rid = resp.get("request_id")
@@ -1178,9 +1231,11 @@ class InferenceOrchestrator:
                         else:
                             self._mark_worker_started(owner)
                     other.put(resp)
+                # Observe only after hand-over: retiring clears the registry.
+                self._observe_response(resp, worker)
                 # Outside the mailbox check on purpose: a released request's late frames go to nobody.
                 return None
-            return resp
+            return self._observe_response(resp, worker)
 
         def drain(timeout: float = 5.0) -> bool:
             deadline = time.monotonic() + timeout
@@ -1224,8 +1279,10 @@ class InferenceOrchestrator:
     def _build_generate_cmd(
         self,
         request_id: str,
-        images_b64: list,
+        image_b64: Optional[str],
         *,
+        images_b64: Optional[list] = None,
+        image_ordinal: Optional[int] = None,
         messages: list = None,
         system_prompt: str = "",
         temperature: float = 0.7,
@@ -1254,7 +1311,9 @@ class InferenceOrchestrator:
             "request_id": request_id,
             "messages": messages or [],
             "system_prompt": system_prompt,
-            "images_base64": images_b64,
+            "image_base64": image_b64,
+            "images_base64": images_b64 or None,
+            "image_ordinal": image_ordinal,
             "temperature": temperature,
             "top_p": top_p,
             "top_k": top_k,
@@ -1414,6 +1473,7 @@ class InferenceOrchestrator:
             if self._resp_queue is None:
                 break
 
+            worker = self._proc  # handle before queue, as in _read_resp
             try:
                 resp = self._resp_queue.get(timeout = _DISPATCH_POLL_INTERVAL)
             except queue.Empty:
@@ -1432,6 +1492,7 @@ class InferenceOrchestrator:
                     continue
 
                 # Route to mailbox if a matching request_id exists
+                delivered = False
                 if rid:
                     with self._mailbox_lock:
                         mbox = self._mailboxes.get(rid) or self._direct_mailboxes.get(rid)
@@ -1446,13 +1507,16 @@ class InferenceOrchestrator:
                             else:
                                 self._mark_worker_started(owner)
                         mbox.put(resp)
-                        continue
+                        delivered = True
 
-                logger.debug(
-                    "Dispatcher: no mailbox for request_id=%s type=%s, dropping",
-                    rid,
-                    rtype,
-                )
+                if not delivered:
+                    logger.debug(
+                        "Dispatcher: no mailbox for request_id=%s type=%s, dropping",
+                        rid,
+                        rtype,
+                    )
+                # Every response: an abandoned mailbox is never read.
+                self._observe_off_thread(resp, worker)
             except Exception:
                 logger.exception("Inference dispatcher: failed to route a response; continuing")
                 continue
@@ -1462,6 +1526,8 @@ class InferenceOrchestrator:
         messages: list = None,
         system_prompt: str = "",
         image = None,
+        images: Optional[list] = None,
+        image_ordinal: Optional[int] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
@@ -1483,8 +1549,6 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
-        *,
-        images = None,
     ) -> Generator[str, None, None]:
         """Dispatched generation, sending the command without holding _gen_lock. Uses a per-request
         mailbox for tokens so two compare-mode requests can be queued at once. The subprocess
@@ -1520,11 +1584,14 @@ class InferenceOrchestrator:
 
         request_id = str(uuid.uuid4())
 
-        images_b64 = [self._pil_to_base64(one) for one in _request_images(image, images)]
+        image_b64 = self._pil_to_base64(image) if image is not None else None
+        images_b64 = _encoded_images(images, self._pil_to_base64)
 
         cmd = self._build_generate_cmd(
             request_id,
-            images_b64,
+            image_b64,
+            images_b64 = images_b64,
+            image_ordinal = image_ordinal,
             messages = messages,
             system_prompt = system_prompt,
             temperature = temperature,
@@ -1548,7 +1615,7 @@ class InferenceOrchestrator:
             video_b64 = video,
         )
 
-        mailbox: queue.Queue = queue.Queue()
+        mailbox = _WorkerMailbox(self._proc)
         with self._mailbox_lock:
             # _unload_pending alone is not enough: an unload that ran fully since _start_dispatcher clears it in its
             # finally and stops the dispatcher, so it reads False here though the dispatcher is gone and the model
@@ -1608,7 +1675,7 @@ class InferenceOrchestrator:
 
         def read_mailbox(timeout):
             try:
-                return mailbox.get(timeout = timeout)
+                return self._read_mailbox(mailbox, timeout)
             except queue.Empty:
                 return None
 
@@ -1632,15 +1699,15 @@ class InferenceOrchestrator:
 
     def _drain_mailbox(
         self,
-        mailbox: queue.Queue,
+        mailbox: _WorkerMailbox,
         timeout: float = 5.0,
     ) -> None:
         """Drain a mailbox until gen_done/gen_error, discarding tokens."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                resp = mailbox.get(
-                    timeout = min(_DISPATCH_POLL_INTERVAL, deadline - time.monotonic())
+                resp = self._read_mailbox(
+                    mailbox, min(_DISPATCH_POLL_INTERVAL, deadline - time.monotonic())
                 )
             except queue.Empty:
                 continue
@@ -2304,6 +2371,8 @@ class InferenceOrchestrator:
         messages: list,
         system_prompt: str = "",
         image = None,
+        images: Optional[list] = None,
+        image_ordinal: Optional[int] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
@@ -2324,8 +2393,6 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
-        *,
-        images = None,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess. ``tools`` / ``enable_thinking`` /
         ``reasoning_effort`` / ``preserve_thinking`` are forwarded so the template can render
@@ -2338,6 +2405,7 @@ class InferenceOrchestrator:
             system_prompt = system_prompt,
             image = image,
             images = images,
+            image_ordinal = image_ordinal,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -2366,6 +2434,7 @@ class InferenceOrchestrator:
         messages: list,
         tools: list,
         system_prompt: str = "",
+        images: Optional[list] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
@@ -2395,6 +2464,7 @@ class InferenceOrchestrator:
         stop: Optional[list] = None,
         reasoning_prefilled: bool = False,
         seed: Optional[int] = None,
+        caller_image_indexes: "tuple[int, ...]" = (),
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process, calling the worker for each
@@ -2405,6 +2475,13 @@ class InferenceOrchestrator:
 
         # None lets the backend size an unset limit once it has counted the prompt.
         max_new_tokens = max_tokens if max_tokens and max_tokens > 0 else None
+        # Only a model that reads images gets a sink; the loop leaves MCP pictures
+        # out of the prompt without one.
+        loop_images: Optional[list] = (
+            list(images or [])
+            if self.models.get(self.active_model_name, {}).get("is_vision")
+            else None
+        )
 
         # The worker's usage for the LATEST turn only. Hoisted out of the turn so the loop can size a conversation
         # search against a real prompt count, and cleared on the way in rather than on each way out, so a turn that
@@ -2425,6 +2502,7 @@ class InferenceOrchestrator:
                 messages = conv,
                 system_prompt = "",
                 image = None,
+                images = list(loop_images) if loop_images else None,
                 temperature = temperature,
                 top_p = top_p,
                 top_k = top_k,
@@ -2524,6 +2602,11 @@ class InferenceOrchestrator:
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
             generation_stats_holder = turn_stats,
+            images_sink = loop_images,
+            # Which sink entries are the caller's own attachment, so the loop's cap
+            # never evicts it. Empty when the model reads no images, since there is
+            # then no sink to protect anything in.
+            caller_image_indexes = tuple(caller_image_indexes) if loop_images else (),
         )
 
     def generate_with_adapter_control(
@@ -2560,6 +2643,8 @@ class InferenceOrchestrator:
         messages: list = None,
         system_prompt: str = "",
         image = None,
+        images: Optional[list] = None,
+        image_ordinal: Optional[int] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
@@ -2581,8 +2666,6 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
-        *,
-        images = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic: sends the command to the subprocess and yields tokens. Serialized
         by _gen_lock (one generation at a time) so concurrent readers don't consume each other's
@@ -2607,10 +2690,13 @@ class InferenceOrchestrator:
             if cancel_event is not None and cancel_event.is_set():
                 return
             request_id = str(uuid.uuid4())
-            images_b64 = [self._pil_to_base64(one) for one in _request_images(image, images)]
+            image_b64 = self._pil_to_base64(image) if image is not None else None
+            images_b64 = _encoded_images(images, self._pil_to_base64)
             cmd = self._build_generate_cmd(
                 request_id,
-                images_b64,
+                image_b64,
+                images_b64 = images_b64,
+                image_ordinal = image_ordinal,
                 messages = messages,
                 system_prompt = system_prompt,
                 temperature = temperature,

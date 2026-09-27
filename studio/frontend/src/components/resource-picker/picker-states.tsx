@@ -14,7 +14,7 @@ export function RetryButton({ onRetry }: { onRetry: () => void }) {
       type="button"
       onClick={onRetry}
       className={cn(
-        "mt-1 inline-flex items-center gap-1.5 rounded-full border border-border/70 px-3 py-1 text-ui-11 font-medium text-foreground transition-colors hover:bg-foreground/[0.05]",
+        "mt-1 inline-flex items-center gap-1.5 rounded-full border border-border/70 px-3 py-1 text-ui-11 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]",
         PICKER_OPTION_FOCUS_VISIBLE_CLASS,
       )}
     >
