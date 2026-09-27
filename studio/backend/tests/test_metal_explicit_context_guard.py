@@ -977,7 +977,6 @@ class TestACpuPinnedProjectorOnUnifiedMemory:
         assert _ctx_values(captured["cmd"])[-1] == "40960"
 
 
-# Well above the 9 GiB free-memory budget.
 _WIRED = 16 * 1024**3
 
 

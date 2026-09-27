@@ -25728,10 +25728,7 @@ class LlamaCppBackend:
                     elif _apple_budget_mib > 0 and effective_ctx > 0:
                         # No GPU on Metal: the branches above are skipped and the context
                         # stays at native, over-committing unified memory (#5118, #6529).
-                        # Cap with the same fit math; Auto shrinks to the cap, and the verdict
-                        # below decides when an explicit request is refused. "--fit on" stays a
-                        # backstop but not one this can lean on: llama.cpp sizes its reduction
-                        # from ggml-metal's free-memory report, blind to Unsloth's own footprint
+                        # Not "--fit on" alone: llama.cpp sizes from ggml-metal's free-memory report, blind to Unsloth's own footprint
                         # and the wired limit. See _metal_context_overcommit_message.
                         native_ctx_for_cap = self._context_length or effective_ctx
                         # This arm's floor, which is _FIT_MIN_CTX only while the child's
@@ -25969,8 +25966,7 @@ class LlamaCppBackend:
                                     nothing_fits = _apple_nothing_fits,
                                 )
                             else:
-                                # Priced like the fit, SWA checkpoints included, so what is
-                                # admitted matches the ceiling a refusal names.
+                                # Priced like the fit (SWA checkpoints included) so admission matches the refusal ceiling.
                                 _requested_mib = _apple_footprint_mib(
                                     effective_ctx, _fit_ctx_checkpoints
                                 )
