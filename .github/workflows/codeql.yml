@@ -20,8 +20,11 @@ on:
     - cron: "17 4 * * 1"
   workflow_dispatch:
 
+# One group per commit on main (a queued run in a shared group is cancelled by the next push, so a
+# merge burst would leave commits unanalysed); per branch / PR elsewhere, where a newer push
+# supersedes the older run.
 concurrency:
-  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
