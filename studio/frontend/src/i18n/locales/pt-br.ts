@@ -3079,6 +3079,11 @@ export const ptBR = {
       gridView: "Visualização em grade",
       listView: "Visualização em lista",
       settings: "Configurações da Biblioteca",
+      sort: "Ordenar",
+      sortDefault: "Ordem padrão",
+      sortName: "Nome",
+      sortModified: "Modificado",
+      sortSize: "Tamanho",
     },
     create: {
       note: "Nota",

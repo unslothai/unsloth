@@ -204,6 +204,110 @@ def apply_small_m_padding(
     return wrapped
 
 
+# Per-family int8 ConvRot (group, rotated fqn suffixes); not an exclusion, so plain artifacts still validate.
+_INT8_FAMILY_CONVROT: dict[str, tuple[int, tuple[str, ...]]] = {
+    "qwen-image-2.1": (
+        256,
+        (
+            "attn.to_q",
+            "attn.to_k",
+            "attn.to_v",
+            "attn.to_out.0",
+            "img_mlp.gate_layer",
+            "img_mlp.proj",
+            "img_mlp.out",
+        ),
+    ),
+}
+
+
+_INT8_FAMILY_CONVROT_FILENAME: dict[str, str] = {
+    "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
+}
+
+INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
+
+
+def int8_convrot_enabled() -> bool:
+    return (_os.environ.get(INT8_CONVROT_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def convrot_spec_for_scheme(
+    scheme: str, family: Optional[str] = None
+) -> tuple[int, tuple[str, ...]]:
+    """The family's int8 ConvRot table entry, regardless of the opt-in flag."""
+    if scheme != TQ_INT8:
+        return 0, ()
+    return _INT8_FAMILY_CONVROT.get(str(family or "").strip().lower(), (0, ()))
+
+
+def convrot_prequant_filename(scheme: str, family: Optional[str] = None) -> Optional[str]:
+    if scheme != TQ_INT8:
+        return None
+    return _INT8_FAMILY_CONVROT_FILENAME.get(str(family or "").strip().lower())
+
+
+def convrot_fqns(
+    transformer: Any, filter_fn: Any, group: int, suffixes: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Quantized Linears matching ``suffixes`` with width divisible by ``group`` (LoRA ``base_layer`` stays exact)."""
+    from .diffusion_convrot import rotatable_fqns
+
+    rotatable, _ = rotatable_fqns(transformer, filter_fn, group)
+    names = tuple(n for s in suffixes for n in (s, s + ".base_layer"))
+    return tuple(f for f in rotatable if any(f == n or f.endswith("." + n) for n in names))
+
+
+def apply_runtime_convrot(
+    transformer: Any,
+    scheme: str,
+    family: Optional[str],
+    filter_fn: Any,
+    *,
+    target: Any = None,
+    logger: Any = None,
+) -> tuple[str, ...]:
+    """Rotate BEFORE quantize_; a later failure leaves an exact dense model, so fallback stays correct."""
+    group, suffixes = convrot_spec_for_scheme(scheme, family)
+    if not group or not int8_convrot_enabled():
+        return ()
+    from .diffusion_convrot import CONVROT_ATTR, CONVROT_KIND, rotate_linears_, warm_rotation_cache
+
+    rotated = rotate_linears_(
+        transformer, convrot_fqns(transformer, filter_fn, group, suffixes), group
+    )
+    if rotated:
+        # forward device, not the weights' (CPU-first quantize)
+        weight = transformer.get_submodule(rotated[0]).weight
+        device = getattr(target, "torch_device", None) or getattr(target, "device", None)
+        dtype = getattr(target, "dtype", None)
+        try:
+            warm_rotation_cache(
+                transformer,
+                device or weight.device,
+                dtype if dtype is not None and not isinstance(dtype, str) else weight.dtype,
+            )
+        except Exception:  # noqa: BLE001 - only saves one recompile
+            pass
+    try:
+        setattr(
+            transformer,
+            CONVROT_ATTR,
+            {"kind": CONVROT_KIND, "group": group, "linears": len(rotated)},
+        )
+    except Exception:  # noqa: BLE001 - diagnostic marker only
+        pass
+    if logger is not None:
+        logger.info(
+            "diffusion.transformer_quant: ConvRot group %d on %d %s linears (%s)",
+            group,
+            len(rotated),
+            scheme,
+            family,
+        )
+    return rotated
+
+
 # nvfp4 raises on an empty activation; HunyuanVideo-1.5's attention trim hits it every t2v render.
 _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
 _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
@@ -1733,15 +1837,17 @@ def quantize_transformer(
         # exclude_tokens_for_scheme, whose list is baked into prequant metadata.
         exclude = exclude_tokens_for_scheme(scheme, family) + ("lora_",)
         divisible = divisible_for_scheme(scheme)
+        filter_fn = make_filter_fn(
+            min_features,
+            exclude_name_tokens = exclude,
+            require_bf16 = scheme in _REQUIRE_BF16_SCHEMES,
+            require_divisible = divisible,
+        )
+        apply_runtime_convrot(transformer, scheme, family, filter_fn, target = target, logger = logger)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),
-            filter_fn = make_filter_fn(
-                min_features,
-                exclude_name_tokens = exclude,
-                require_bf16 = scheme in _REQUIRE_BF16_SCHEMES,
-                require_divisible = divisible,
-            ),
+            filter_fn = filter_fn,
         )
         # Pad this family's small-M linears now that the weights are quantized and in place. Not best-effort: a raise
         # here means the transformer is quantized but not safely compilable, so it falls into the except below and the

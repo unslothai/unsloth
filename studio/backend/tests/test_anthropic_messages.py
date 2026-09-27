@@ -1041,6 +1041,57 @@ class TestAnthropicMessagesToOpenAI:
         result = anthropic_messages_to_openai(msgs)
         assert result[0]["content"] == "Line 1\nLine 2"
 
+    @pytest.mark.parametrize(
+        "content, expected",
+        [
+            ("permission denied", "Error: permission denied"),
+            ("Error: disk full", "Error: disk full"),
+            ("", "Error: tool returned no content"),
+            (None, "Error: tool returned no content"),
+            ([{"type": "text", "text": "exit 1"}], "Error: exit 1"),
+            ([], "Error: tool returned no content"),
+        ],
+    )
+    def test_tool_result_is_error_marks_the_tool_message(self, content, expected):
+        block = {"type": "tool_result", "tool_use_id": "tu_1", "is_error": True, "content": content}
+        request = AnthropicMessagesRequest(
+            max_tokens = 16, messages = [{"role": "user", "content": [block]}]
+        )
+        result = anthropic_messages_to_openai([m.model_dump() for m in request.messages])
+        assert result == [{"role": "tool", "tool_call_id": "tu_1", "content": expected}]
+
+    @pytest.mark.parametrize("flag", [{}, {"is_error": False}, {"is_error": None}])
+    @pytest.mark.parametrize("content", ["42", ""])
+    def test_tool_result_without_is_error_is_unchanged(self, flag, content):
+        block = {"type": "tool_result", "tool_use_id": "tu_1", "content": content, **flag}
+        request = AnthropicMessagesRequest(
+            max_tokens = 16, messages = [{"role": "user", "content": [block]}]
+        )
+        result = anthropic_messages_to_openai([m.model_dump() for m in request.messages])
+        assert result == [{"role": "tool", "tool_call_id": "tu_1", "content": content}]
+
+    def test_tool_result_is_error_with_image_prepends_the_marker(self):
+        image = {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"},
+        }
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_1",
+                        "is_error": True,
+                        "content": [{"type": "text", "text": "crashed"}, image],
+                    }
+                ],
+            }
+        ]
+        parts = anthropic_messages_to_openai(msgs)[0]["content"]
+        assert [p["type"] for p in parts] == ["text", "text", "image_url"]
+        assert [p["text"] for p in parts[:2]] == ["Error:", "crashed"]
+
     def test_tool_result_search_results_keep_title_source_and_text(self):
         msgs = [
             {

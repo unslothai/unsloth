@@ -7657,14 +7657,7 @@ def _backfill_conversion_symbols_once(builders, added):
             continue
         # Build the stub off to the side rather than installing it, so the real module keeps its
         # identity and everything else it exports.
-        saved = sys.modules.pop(name, None)
-        try:
-            donor = builders[name]()
-        finally:
-            if saved is not None:
-                sys.modules[name] = saved
-            else:
-                sys.modules.pop(name, None)
+        donor = builders[name]()
         for symbol in missing:
             qualified = f"{name}.{symbol}"
             if symbol == "_MODEL_TO_CONVERSION_PATTERN":
@@ -7711,9 +7704,12 @@ def _backfill_missing_conversion_symbols():
     Never replaces a module and never overwrites a name transformers defines,
     so this is a no-op on every release that still exports them.
     """
+    # The _build_ variants, not _install_: installing also attaches the stub to the transformers
+    # package, where `import transformers.conversion_mapping as m` would keep finding it after the
+    # real module is back in sys.modules.
     builders = {
-        "transformers.conversion_mapping": _install_transformers_conversion_mapping_stub,
-        "transformers.core_model_loading": _install_transformers_core_model_loading_stub,
+        "transformers.conversion_mapping": _build_transformers_conversion_mapping_stub,
+        "transformers.core_model_loading": _build_transformers_core_model_loading_stub,
     }
     added = []
     # One pass is not enough when the drifts coincide: conversion_mapping imports names from
@@ -9067,6 +9063,13 @@ def fix_peft_stale_torchao_import_error():
             return False
 
     is_torchao_available.__unsloth_patched__ = True
+    # peft's is an lru_cache; functools.wraps copies its name and __dict__ but not cache_clear or
+    # cache_info, which are methods of the cache object. Forward them so the patch stays a drop-in
+    # for anything that resets the probe after installing or removing torchao.
+    for name in ("cache_clear", "cache_info"):
+        method = getattr(original, name, None)
+        if method is not None:
+            setattr(is_torchao_available, name, method)
 
     patched = False
     try:
