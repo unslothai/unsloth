@@ -7,11 +7,11 @@ import test from "node:test";
 import { getToastOffsets } from "../src/lib/toast-offset.ts";
 
 test("web chat toasts clear the header and stay against the right edge", () => {
-  assert.deepEqual(getToastOffsets("/chat", false, false), {
+  assert.deepEqual(getToastOffsets("/chat", false), {
     default: { top: 52, right: 12 },
     mobile: { top: 52, right: 16 },
   });
-  assert.deepEqual(getToastOffsets("/chat/thread", false, false), {
+  assert.deepEqual(getToastOffsets("/chat/thread", false), {
     default: { top: 52, right: 12 },
     mobile: { top: 52, right: 16 },
   });
@@ -19,7 +19,7 @@ test("web chat toasts clear the header and stay against the right edge", () => {
 
 test("web media toasts clear their workspace headers", () => {
   for (const pathname of ["/images", "/video"]) {
-    assert.deepEqual(getToastOffsets(pathname, false, false), {
+    assert.deepEqual(getToastOffsets(pathname, false), {
       default: { top: 52, right: 12 },
       mobile: { top: 52, right: 16 },
     });
@@ -28,7 +28,7 @@ test("web media toasts clear their workspace headers", () => {
 
 test("other web routes keep the normal corner inset", () => {
   for (const pathname of ["/studio", "/settings"]) {
-    assert.deepEqual(getToastOffsets(pathname, false, false), {
+    assert.deepEqual(getToastOffsets(pathname, false), {
       default: { top: 12, right: 12 },
       mobile: { top: 16, right: 16 },
     });
@@ -36,25 +36,17 @@ test("other web routes keep the normal corner inset", () => {
 });
 
 test("desktop routes without page headers clear the titlebar", () => {
-  assert.deepEqual(getToastOffsets("/settings", true, false), {
+  assert.deepEqual(getToastOffsets("/settings", true), {
     default: { top: 46, right: 12 },
     mobile: { top: 50, right: 16 },
   });
 });
 
-test("custom-titlebar desktop headers share the titlebar band", () => {
-  // Its header is 48px, 4px taller than the macOS one, and keeps the same 8px gap.
+test("desktop headers share the titlebar band", () => {
+  // The header's controls sit at the same height under both titlebars (y 9-42), as in
+  // the browser, so the toasts do too.
   for (const pathname of ["/chat", "/images", "/video", "/audio"]) {
-    assert.deepEqual(getToastOffsets(pathname, true, true), {
-      default: { top: 56, right: 12 },
-      mobile: { top: 56, right: 16 },
-    });
-  }
-});
-
-test("macOS desktop headers overlay the native titlebar", () => {
-  for (const pathname of ["/chat", "/images", "/video", "/audio"]) {
-    assert.deepEqual(getToastOffsets(pathname, true, false), {
+    assert.deepEqual(getToastOffsets(pathname, true), {
       default: { top: 52, right: 12 },
       mobile: { top: 52, right: 16 },
     });
@@ -65,7 +57,7 @@ test("a route that merely starts with a workspace name keeps the corner inset", 
   // The header routes are matched exactly, so a longer path that happens to share the
   // prefix must not inherit their clearance and drop 40px down a page with no header.
   for (const pathname of ["/chatty", "/images-old", "/videos", "/chatgpt"]) {
-    assert.deepEqual(getToastOffsets(pathname, false, false), {
+    assert.deepEqual(getToastOffsets(pathname, false), {
       default: { top: 12, right: 12 },
       mobile: { top: 16, right: 16 },
     });
@@ -77,29 +69,18 @@ test("an unrecognised pathname falls back to the corner inset", () => {
   // router does not normalise it, so "/images/" rests as its own pathname and misses
   // the route, which is why it wants the no-header placement rather than the media one.
   for (const pathname of ["/unknown", "/images/", "/video/", ""]) {
-    assert.deepEqual(getToastOffsets(pathname, false, false), {
+    assert.deepEqual(getToastOffsets(pathname, false), {
       default: { top: 12, right: 12 },
       mobile: { top: 16, right: 16 },
     });
   }
 });
 
-test("a custom titlebar is ignored off the desktop app", () => {
-  // shouldUseCustomWindowTitlebar() cannot return true while isTauri is false, but the
-  // signature allows the pair, and there is no titlebar to clear in a browser.
-  for (const pathname of ["/chat", "/studio"]) {
-    assert.deepEqual(
-      getToastOffsets(pathname, false, true),
-      getToastOffsets(pathname, false, false),
-    );
-  }
-});
-
 test("offsets are pure, so a caller cannot poison the next lookup", () => {
-  const first = getToastOffsets("/chat", false, false);
+  const first = getToastOffsets("/chat", false);
   first.default.top = -999;
   first.mobile.right = -999;
-  assert.deepEqual(getToastOffsets("/chat", false, false), {
+  assert.deepEqual(getToastOffsets("/chat", false), {
     default: { top: 52, right: 12 },
     mobile: { top: 52, right: 16 },
   });
@@ -108,16 +89,16 @@ test("offsets are pure, so a caller cannot poison the next lookup", () => {
 test("the header offset follows the UI font size, the titlebar does not", () => {
   // The page header is 48px * the scale, so a fixed 52px top lands inside it
   // at the 20px setting.
-  assert.deepEqual(getToastOffsets("/chat", false, false, 20 / 15), {
+  assert.deepEqual(getToastOffsets("/chat", false, 20 / 15), {
     default: { top: 69, right: 12 },
     mobile: { top: 69, right: 16 },
   });
-  assert.deepEqual(getToastOffsets("/chat", true, true, 20 / 15), {
-    default: { top: 75, right: 12 },
-    mobile: { top: 75, right: 16 },
+  assert.deepEqual(getToastOffsets("/chat", true, 20 / 15), {
+    default: { top: 69, right: 12 },
+    mobile: { top: 69, right: 16 },
   });
   // A route with no header keeps its corner inset at any size.
-  assert.deepEqual(getToastOffsets("/settings", false, false, 20 / 15), {
+  assert.deepEqual(getToastOffsets("/settings", false, 20 / 15), {
     default: { top: 12, right: 12 },
     mobile: { top: 16, right: 16 },
   });

@@ -1068,12 +1068,7 @@ const REDUCED_MOTION_MAP = {
 export function AppProvider({ children }: AppProviderProps) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const uiSpaceScale = useUiSpaceScale();
-  const toastOffsets = getToastOffsets(
-    pathname,
-    isTauri,
-    shouldUseCustomWindowTitlebar(),
-    uiSpaceScale,
-  );
+  const toastOffsets = getToastOffsets(pathname, isTauri, uiSpaceScale);
   const reduceMotion = useAppearanceCustomStore(
     (s) => s.customization.reduceMotion,
   );

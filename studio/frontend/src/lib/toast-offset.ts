@@ -4,8 +4,6 @@
 const EDGE_OFFSET = 12;
 const MOBILE_EDGE_OFFSET = 16;
 const HEADER_TOP_OFFSET = 52;
-// The custom titlebar's page header is 48px to the native macOS one's 44px.
-const CUSTOM_TITLEBAR_HEADER_TOP_OFFSET = 56;
 const DESKTOP_TITLEBAR_HEIGHT = 34;
 
 const HEADER_ROUTES = new Set(["/chat", "/images", "/video", "/audio"]);
@@ -23,21 +21,16 @@ export type ToastOffsets = {
 export function getToastOffsets(
   pathname: string,
   isDesktopApp: boolean,
-  usesCustomTitlebar: boolean,
   /** The page header grows with the UI font size; the titlebar band does not. */
   uiSpaceScale = 1,
 ): ToastOffsets {
   const hasPageHeader =
     HEADER_ROUTES.has(pathname) || pathname.startsWith("/chat/");
-  // Page headers sit in the titlebar band on every desktop titlebar, so only a page
-  // without one has the band to clear.
+  // Page headers sit in the titlebar band on every desktop titlebar, with their controls
+  // at the same height, so only a page without one has the band to clear.
   const titlebarOffset =
     isDesktopApp && !hasPageHeader ? DESKTOP_TITLEBAR_HEIGHT : 0;
-  const headerTopOffset = Math.round(
-    (isDesktopApp && usesCustomTitlebar
-      ? CUSTOM_TITLEBAR_HEADER_TOP_OFFSET
-      : HEADER_TOP_OFFSET) * uiSpaceScale,
-  );
+  const headerTopOffset = Math.round(HEADER_TOP_OFFSET * uiSpaceScale);
   const defaultTopOffset = hasPageHeader ? headerTopOffset : EDGE_OFFSET;
   const mobileTopOffset = hasPageHeader ? headerTopOffset : MOBILE_EDGE_OFFSET;
 
