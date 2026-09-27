@@ -4701,6 +4701,7 @@ def test_the_vlm_entry_point_hands_the_limit_a_clip_the_processor_can_read(monke
 
     monkeypatch.setattr("core.inference.mlx_inference._mlx_vlm_decodes_video", lambda: True)
     backend = MLXInferenceBackend()
+    backend._kv_context_budget = 1024
     seen = {}
 
     def _limit(*_a, **kwargs):
@@ -4716,6 +4717,27 @@ def test_the_vlm_entry_point_hands_the_limit_a_clip_the_processor_can_read(monke
     assert seen["videos"] != [clip]
     assert seen["on_disk"] == [True]
     assert not os.path.exists(seen["videos"][0])
+
+
+def test_media_is_prepared_only_under_a_budget_and_only_once(monkeypatch):
+    from core.inference.mlx_inference import UNSET_GENERATION_BUDGET
+
+    utils = _stub_prepare_inputs(monkeypatch)
+    calls = []
+    real = utils.prepare_inputs
+    utils.prepare_inputs = lambda *a, **k: calls.append(1) or real(*a, **k)
+    prompt = "placeholder describe this picture"
+
+    unbudgeted = _vision_backend(budget = None, window = 8192)
+    sized = unbudgeted._generation_limit(
+        prompt, None, images = [object()], cap = UNSET_GENERATION_BUDGET
+    )
+    assert calls == []
+    assert sized == min(8192 - 4, UNSET_GENERATION_BUDGET)
+
+    budgeted = _vision_backend()
+    assert budgeted._generation_limit(prompt, None, images = [object()]) == 1024 - 524
+    assert calls == [1]
 
 
 def test_a_max_tokens_at_the_whole_window_is_the_chat_saying_no_cap(monkeypatch):

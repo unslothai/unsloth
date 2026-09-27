@@ -2654,16 +2654,28 @@ class MLXInferenceBackend:
         cap = None,
     ):
         budget = getattr(self, "_kv_context_budget", None)
+        if not budget:
+            # No budget: size from the placeholder count as before, never preparing the media.
+            if max_new_tokens is None:
+                max_new_tokens = self._unset_generation_budget(prompt, prompt_tokens)
+                if cap is not None:
+                    max_new_tokens = min(max_new_tokens, cap)
+            return max_new_tokens
         # Max Tokens == window is the UI's "no cap"; admitting it as-is would refuse every prompt.
-        if budget and max_new_tokens is not None and int(max_new_tokens) == int(budget):
+        if max_new_tokens is not None and int(max_new_tokens) == int(budget):
             max_new_tokens = None
+        if prompt_tokens is None:
+            # Counted once: preparing media for sizing and again for admission doubles the cost.
+            try:
+                prompt_tokens = range(self._count_prompt_tokens(prompt, images, audio, videos))
+            except Exception as exc:
+                logger.debug("MLX prompt count for the context budget failed: %s", exc)
         if max_new_tokens is None:
-            max_new_tokens = self._unset_generation_budget(
-                prompt, prompt_tokens, images, audio, videos
-            )
+            max_new_tokens = self._unset_generation_budget(prompt, prompt_tokens)
             if cap is not None:
                 max_new_tokens = min(max_new_tokens, cap)
-        self._check_context_budget(prompt, max_new_tokens, prompt_tokens, images, audio, videos)
+        if prompt_tokens is not None:
+            self._check_context_budget(prompt, max_new_tokens, prompt_tokens)
         return max_new_tokens
 
     def _kv_quant_generate_kwargs(self):
@@ -3942,7 +3954,11 @@ class MLXInferenceBackend:
         sequences = _mlx_stop_sequences(stop)
         stopped = False
         # Counted from a temp file (base64 is unreadable to the processor), discarded here.
-        counted_clip = _write_video_clip(video) if video is not None else None
+        counted_clip = (
+            _write_video_clip(video)
+            if video is not None and getattr(self, "_kv_context_budget", None)
+            else None
+        )
         try:
             max_new_tokens = self._generation_limit(
                 prompt,
