@@ -1015,13 +1015,20 @@ def LlamaModel_fast_forward(
     else:
         padding_mask = None
 
-        attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-            attention_mask,
-            (batch_size, seq_length),
-            inputs_embeds,
-            past_key_values_length,
-            sliding_window = getattr(self.config, "sliding_window", None),
-        )
+        # Gemma2 builds separate sliding and global masks from the 2D mask below; a 4D sliding
+        # mask here would pass through unchanged and window the global layers too.
+        if IS_GEMMA2:
+            # No padding: keep the flash path, which windows each layer itself.
+            if HAS_FLASH_ATTENTION_SOFTCAPPING and bool(attention_mask.all()):
+                attention_mask = None
+        else:
+            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                attention_mask,
+                (batch_size, seq_length),
+                inputs_embeds,
+                past_key_values_length,
+                sliding_window = getattr(self.config, "sliding_window", None),
+            )
         # Must NOT convert to bool; that weirdly causes errors.
 
     hidden_states = inputs_embeds
@@ -1058,19 +1065,14 @@ def LlamaModel_fast_forward(
             # Unsloth needs a 2D mask, not [2, 1, n, n] (#853), converted to float not bool
             # (pytorch/pytorch#103749).
 
-            dynamic_SWA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (batch_size, seq_length),
-                inputs_embeds,
-                past_key_values_length,
-                sliding_window = self.config.sliding_window,
-            )
-            dynamic_GA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (batch_size, seq_length),
-                inputs_embeds,
-                past_key_values_length,
-                sliding_window = None,
+            # Always materialised: the SDPA helper returns None for an all-ones mask, which the
+            # softcapping kernels cannot take.
+            key_value_length = past_key_values_length + seq_length
+            dynamic_SWA_mask = AttentionMaskConverter(
+                is_causal = True, sliding_window = self.config.sliding_window
+            ).to_4d(attention_mask, seq_length, inputs_embeds.dtype, key_value_length)
+            dynamic_GA_mask = AttentionMaskConverter(is_causal = True).to_4d(
+                attention_mask, seq_length, inputs_embeds.dtype, key_value_length
             )
             use_static_mask = False
 

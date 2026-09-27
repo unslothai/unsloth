@@ -478,8 +478,9 @@ def Gemma2Model_fast_forward_inference(
             seq_len,
         )
     else:
-        SWA = attention_mask
-        GA = attention_mask
+        # One row has no padding; the raw 2D mask cannot be sliced to the sliding window.
+        SWA = None
+        GA = None
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
         # For pipeline parallelism every tensor must be on the same device; this movement happens once per GPU in PP.
