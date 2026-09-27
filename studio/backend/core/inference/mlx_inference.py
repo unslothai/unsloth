@@ -2078,6 +2078,8 @@ def _turboquant_status(
     try:
         entries = make_prompt_cache(language_model)
     except Exception as exc:
+        if is_metal_queue_dead(exc):
+            raise
         logger.warning("MLX TurboQuant eligibility probe failed: %s", exc)
         status["reason"] = "this model's KV cache layout could not be inspected"
         return status
@@ -2110,6 +2112,8 @@ def _turboquant_status(
             status["note"] = "Some layers keep their native cache format."
         return status
     except Exception as exc:
+        if is_metal_queue_dead(exc):
+            raise
         logger.warning("MLX TurboQuant eligibility probe failed: %s", exc)
         status["eligibility"] = "refused"
         status["reason"] = f"this model's KV cache cannot use TurboQuant ({type(exc).__name__})"
@@ -3083,19 +3087,27 @@ class MLXInferenceBackend:
         # Freed before the replacement weights are allocated, for headroom.
         self._model_fusion.close()
         self._clear_prompt_cache()
+        model = None
         try:
             model, tokenizer_or_processor = FastMLXModel.from_pretrained(
                 model_name,
                 **load_kwargs,
             )
         except Exception as exc:
-            if is_vision or not use_vlm:
+            if is_vision or not use_vlm or is_metal_queue_dead(exc):
                 raise
             logger.warning(
                 "TurboQuant load of %s through mlx-vlm failed (%s); serving through mlx-lm without it",
                 model_name,
                 exc,
             )
+        if model is None:
+            import gc
+
+            # Outside the except: its traceback keeps the failed load's weights alive.
+            gc.collect()
+            _drain_generation_streams(mx)
+            mx.clear_cache()
             self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
             use_vlm = False
             load_kwargs["text_only"] = True

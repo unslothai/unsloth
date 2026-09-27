@@ -58,28 +58,41 @@ def test_a_model_holding_layers_native_reports_partial_and_says_so():
     assert (status["eligibility"], status["kv_bits"]) == ("partial", 4) and status["note"]
 
 
+class FailsOnDecode(nn.Module):
+    def __init__(
+        self,
+        inner,
+        error = "no decode here",
+    ):
+        super().__init__()
+        self.inner = inner
+        self.error = error
+        self.calls = 0
+
+    @property
+    def layers(self):
+        return self.inner.layers
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls > 1:
+            raise RuntimeError(self.error)
+        return self.inner(*args, **kwargs)
+
+
 def test_a_model_that_cannot_decode_is_refused_rather_than_raising():
-    class FailsOnDecode(nn.Module):
-        def __init__(self, inner):
-            super().__init__()
-            self.inner = inner
-            self.calls = 0
-
-        @property
-        def layers(self):
-            return self.inner.layers
-
-        def __call__(self, *args, **kwargs):
-            self.calls += 1
-            if self.calls > 1:
-                raise RuntimeError("no decode here")
-            return self.inner(*args, **kwargs)
-
     model = FailsOnDecode(_llama())
     status = _turboquant_status(model, 4)
     assert model.calls == 2
     assert status["eligibility"] == "refused" and status["kv_bits"] is None
     assert "RuntimeError" in status["reason"]
+
+
+def test_a_dead_metal_queue_is_raised_not_reported_as_a_refusal():
+    # The orchestrator retires the worker on this marker; a refusal would keep serving on a dead queue.
+    model = FailsOnDecode(_llama(), "[METAL] Command buffer execution failed: GPU Timeout Error")
+    with pytest.raises(RuntimeError, match = "GPU Timeout"):
+        _turboquant_status(model, 4)
 
 
 def test_a_copied_turboquant_cache_can_still_be_extended():

@@ -3066,7 +3066,8 @@ def test_a_text_model_mlx_vlm_cannot_load_is_served_without_turboquant(monkeypat
     class _Loader:
         @staticmethod
         def from_pretrained(name, **kwargs):
-            attempts.append(kwargs["text_only"])
+            # The retry must not run under the failed load's traceback, which pins its weights.
+            attempts.append((kwargs["text_only"], sys.exc_info()[0]))
             if not kwargs["text_only"]:
                 raise ValueError("Expected shape (262144, 640) but received shape (262144, 80)")
             return SimpleNamespace(config = {}), SimpleNamespace()
@@ -3083,7 +3084,7 @@ def test_a_text_model_mlx_vlm_cannot_load_is_served_without_turboquant(monkeypat
     config = SimpleNamespace(identifier = "org/prequantized-text", is_vision = False, is_lora = False)
     backend.load_model(config, kv_quant = "tq-4")
 
-    assert attempts == [False, True]
+    assert attempts == [(False, None), (True, None)]
     assert backend._turboquant_refusal == mlx_inference.MLX_TURBOQUANT_TEXT_LOAD
     assert backend._is_vlm is False
     assert backend._kv_quant["kv_bits"] is None
@@ -3092,7 +3093,19 @@ def test_a_text_model_mlx_vlm_cannot_load_is_served_without_turboquant(monkeypat
     vision = SimpleNamespace(identifier = "org/vlm", is_vision = True, is_lora = False)
     with pytest.raises(ValueError, match = "Expected shape"):
         mlx_inference.MLXInferenceBackend().load_model(vision, kv_quant = "tq-4")
-    assert attempts == [False]
+    assert attempts == [(False, None)]
+
+    class _DeadQueue(_Loader):
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            attempts.append((kwargs["text_only"], None))
+            raise RuntimeError("[METAL] Command buffer execution failed: GPU Timeout Error")
+
+    attempts.clear()
+    loader.FastMLXModel = _DeadQueue
+    with pytest.raises(RuntimeError, match = "GPU Timeout"):
+        mlx_inference.MLXInferenceBackend().load_model(config, kv_quant = "tq-4")
+    assert attempts == [(False, None)]
 
 
 def test_reload_comparison_and_response_carry_the_resolved_setting():
