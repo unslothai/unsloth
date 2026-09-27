@@ -897,14 +897,21 @@ def _is_oom(exc: BaseException) -> bool:
 
 
 def _guard(module: Any, fast: Any, stock: Any, label: str, logger: Any) -> None:
-    """``module.forward = fast`` until it raises something ``stock`` does not; then stock for good."""
+    """``module.forward = fast`` until it raises something ``stock`` does not; then stock for good.
+
+    Causal-cache state (Wan's ``feat_cache`` / ``feat_idx`` lists) is snapshotted and restored before the stock
+    retry, so a fast path that failed half way (cache slot written, index advanced) cannot desync the decode."""
 
     def forward(*args, **kwargs):
         if getattr(module, "_unsloth_vae_fused_failed", False):
             return stock(*args, **kwargs)
+        lists = [a for a in (*args, *kwargs.values()) if isinstance(a, list)]
+        snap = [a[:] for a in lists]
         try:
             return fast(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001
+            for a, saved in zip(lists, snap):
+                a[:] = saved
             if _is_oom(exc):
                 raise
             out = stock(*args, **kwargs)

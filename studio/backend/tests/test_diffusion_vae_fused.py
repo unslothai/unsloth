@@ -258,3 +258,28 @@ def test_guard_falls_back_to_stock_for_good(monkeypatch):
         out = _decode(vae, z)
     assert torch.allclose(out, ref, atol = 5e-3)  # channels-last weights: another (TF32) cuDNN algorithm
     assert any(getattr(m, "_unsloth_vae_fused_failed", False) for m in vae.modules())
+
+
+@needs_cuda
+def test_guard_restores_causal_cache_state_on_fallback(monkeypatch):
+    # a fast residual block that dies AFTER writing its first cache slot must not desync the stock retry
+    from diffusers import AutoencoderKLWan
+
+    torch.manual_seed(0)
+    vae = AutoencoderKLWan(base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1).cuda().half().eval()
+    z = torch.randn(1, 4, 3, 8, 8, device = "cuda", dtype = torch.float16)
+    with torch.inference_mode():
+        ref = _decode(vae, z)
+        F.install(vae)
+        real = F.causal_conv
+        calls = {"n": 0}
+
+        def flaky(conv, x, cache = None, **kw):
+            calls["n"] += 1
+            if calls["n"] == 2:  # conv2 of the first block: conv1 already advanced feat_idx and wrote a slot
+                raise RuntimeError("boom")
+            return real(conv, x, cache, **kw)
+
+        monkeypatch.setattr(F, "causal_conv", flaky)
+        out = _decode(vae, z)
+    assert _psnr(out, ref) > 45
