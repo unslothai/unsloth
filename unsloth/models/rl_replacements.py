@@ -920,9 +920,10 @@ _ORPO_ROW_CAP = (
 
 
 def orpo_trainer_row_cap(function_name, function):
-    if function_name != "tokenize_row" or "_unsloth_ul" in function:
+    if function_name != "tokenize_row" or "_unsloth_ul" in function or "max_prompt_length" in function:
         return function
-    match = re.search(r"(?m)^([ \t]*)chosen_sequence_tokens = \{", function)
+    # Before TRL's own response cut: its negative slice end can empty the shorter answer.
+    match = re.search(r"(?m)^([ \t]*)longer_response_length = max\(", function)
     if match is None:
         return function
     indent = match.group(1)

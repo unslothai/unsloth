@@ -84,7 +84,8 @@ def _tokenize_row(trainer, patched):
     src = textwrap.dedent(methods["tokenize_row"])
     if patched:
         new = _row_cap()("tokenize_row", src)
-        assert new != src, "row cap anchor not found in this TRL tokenize_row"
+        if "max_prompt_length" not in src:
+            assert new != src, "row cap anchor not found in this TRL tokenize_row"
         src = new
     ns = dict(vars(module))
     exec(src, ns)
@@ -112,6 +113,7 @@ LONG_ROWS = {
     "long_answer": (_words(4, "p"), " " + _words(60, "c"), " " + _words(50, "r")),
     "both_long": (_words(40, "p"), " " + _words(40, "c"), " " + _words(45, "r")),
     "just_over": (_words(15, "p"), " " + _words(15, "c"), " " + _words(14, "r")),
+    "lopsided": (_words(4, "p"), " " + _words(100, "c"), " " + _words(2, "r")),
 }
 
 
