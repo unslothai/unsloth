@@ -2,9 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   SANDBOX_INLINE_IMAGE_EXTS,
@@ -14,6 +12,8 @@ import {
   sandboxSessionInSrc,
 } from "../src/components/assistant-ui/sandbox-files.ts";
 import { safeMarkdownUrl } from "../src/lib/safe-markdown-url.ts";
+
+import { readText } from "./helpers/kit.ts";
 
 /*
  * THREE PIECES ONLY WORK TOGETHER, and nothing in the type system joins them:
@@ -31,13 +31,10 @@ import { safeMarkdownUrl } from "../src/lib/safe-markdown-url.ts";
  * change that does nothing.
  */
 
-const read = (relative: string): string =>
-  readFileSync(new URL(relative, import.meta.url), "utf8");
-
-const MARKDOWN_TEXT = read("../src/components/assistant-ui/markdown-text.tsx");
-const HOOK = read("../src/components/assistant-ui/use-sandbox-image.ts");
-const TOOL_UI = read("../src/components/assistant-ui/tool-ui-python.tsx");
-const BACKEND = read(
+const MARKDOWN_TEXT = readText("../src/components/assistant-ui/markdown-text.tsx");
+const HOOK = readText("../src/components/assistant-ui/use-sandbox-image.ts");
+const TOOL_UI = readText("../src/components/assistant-ui/tool-ui-python.tsx");
+const BACKEND = readText(
   "../../backend/routes/inference.py",
 );
 

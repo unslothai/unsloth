@@ -157,6 +157,7 @@ const COERCED: ReadonlyArray<
   ["tool-ui-python.tsx", "PythonToolUIImpl", ["code"]],
   ["tool-ui-terminal.tsx", "TerminalToolUIImpl", ["command"]],
   ["tool-ui-knowledge-base.tsx", "KnowledgeBaseToolUIImpl", ["query"]],
+  ["tool-ui-read-skill.tsx", "ReadSkillToolUIImpl", ["name", "resource"]],
   ["tool-ui-web-search.tsx", "WebSearchToolUIImpl", ["query", "url"]],
   [
     "tool-ui-code-execution.tsx",
@@ -306,7 +307,7 @@ test("the fallback card survives a tool name that is not a string", () => {
   );
   assert.match(
     source,
-    /formatMcpToolName\(name, mcpServer\) \?\? name/,
+    /formatMcpToolName\(name, mcpServer, mcpTool\) \?\? name/,
     "tool-fallback.tsx passes the raw toolName to formatMcpToolName",
   );
   assert.equal(toolArgText(123).startsWith("mcp__"), false);

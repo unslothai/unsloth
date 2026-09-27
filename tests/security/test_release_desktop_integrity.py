@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import base64
+import fnmatch
+import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -36,10 +39,29 @@ def _step(workflow, job, name):
     return _steps(workflow, job)[_step_index(workflow, job, name)]
 
 
-def test_windows_release_build_restores_but_does_not_save_rust_cache():
+def test_the_release_build_restores_but_never_saves_the_rust_cache():
+    """No platform may save, because this job holds the signing credentials.
+
+    Windows was already restore-only, to keep a long target-cache upload from blocking
+    the publisher once the signed artifacts were ready. Every leg is restore-only now
+    for a security reason instead: GitHub lets pull requests restore caches written on
+    the default branch, so this was the only job in the organisation where a run holding
+    TAURI_SIGNING_PRIVATE_KEY, APPLE_* and AZURE_* wrote a cache a contributor could
+    read. That is the 2026-09-21 cargo-miri shape, where miri serialised the whole
+    environment under target/ and CI cached it.
+
+    A `save-if` that names a platform is what this guards against: it reads as a
+    performance knob, and the next platform added inherits saving by default.
+    """
     cache = _step(_workflow(), "build", "Rust cache")
     assert cache["with"]["workspaces"] == "studio/src-tauri -> target"
-    assert cache["with"]["save-if"] == "${{ matrix.platform != 'windows-latest' }}"
+    assert cache["with"]["save-if"] is False, (
+        f"the release build's rust-cache has save-if={cache['with']['save-if']!r}, so some "
+        f"platform writes a cache from the job that holds the signing credentials. Caches "
+        f"written on the default branch are restorable by every pull request. Keep this "
+        f"`save-if: false`; restoring is free of that risk, and a dispatch-only release "
+        f"does not run often enough for the save to be worth it."
+    )
 
 
 def _write_fake_gh(path: Path):
@@ -158,12 +180,17 @@ def _stage_assets(tmp_path: Path) -> None:
     for name, payload in (
         ("Unsloth-Desktop-MacOS.dmg", b"disk image"),
         ("Unsloth-Desktop-Ubuntu.deb", b"package"),
+        ("Unsloth-Desktop-Ubuntu.deb.sig", signature),
+        ("Unsloth-Desktop-Ubuntu-ARM64.deb", b"arm64 package"),
+        ("Unsloth-Desktop-Ubuntu-ARM64.deb.sig", signature),
         ("Unsloth-Desktop-ARM64.app.tar.gz", b"mac updater"),
         ("Unsloth-Desktop-ARM64.app.tar.gz.sig", signature),
         ("Unsloth-Desktop-Linux.AppImage", b"linux updater"),
         ("Unsloth-Desktop-Linux.AppImage.sig", signature),
         ("Unsloth-Desktop-Windows.exe", b"installer"),
         ("Unsloth-Desktop-Windows.exe.sig", signature),
+        ("Unsloth-Desktop-Windows-ARM64.exe", b"arm64 installer"),
+        ("Unsloth-Desktop-Windows-ARM64.exe.sig", signature),
     ):
         (asset_dir / name).write_bytes(payload)
 
@@ -173,9 +200,15 @@ def _run_create_release(
     tmp_path: Path,
     *,
     invalid_signature = False,
+    missing_debian_signature = False,
+    missing_debian_arm64_signature = False,
     **kwargs,
 ):
     _stage_assets(tmp_path)
+    if missing_debian_signature:
+        (tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Ubuntu.deb.sig").unlink()
+    if missing_debian_arm64_signature:
+        (tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Ubuntu-ARM64.deb.sig").unlink()
     if invalid_signature:
         (tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Linux.AppImage.sig").write_text(
             "Tauri signer diagnostic, not a signature\n", encoding = "utf-8"
@@ -315,6 +348,96 @@ def test_publish_rejects_signer_diagnostics_as_updater_signatures(tmp_path):
     assert not [line for line in commands if line.startswith("gh release create")]
 
 
+def test_linux_release_stages_the_debian_signature(tmp_path):
+    bundles = tmp_path / "bundles"
+    bundles.mkdir()
+    files = []
+    for suffix in ("deb", "deb.sig", "AppImage", "AppImage.sig"):
+        path = bundles / f"Unsloth_0.1.50_amd64.{suffix}"
+        path.write_text(suffix, encoding = "utf-8")
+        files.append(str(path))
+    result, _ = _run_step(
+        _workflow(),
+        "build",
+        "Stage release assets",
+        tmp_path,
+        extra_env = {"ARTIFACT_PATHS": json.dumps(files), "MATRIX_ARTIFACT": "linux"},
+    )
+    assert result.returncode == 0, result.stderr
+    staged = tmp_path / "desktop-release-assets"
+    assert (staged / "Unsloth-Desktop-Ubuntu.deb.sig").read_text() == "deb.sig"
+    assert (staged / "Unsloth-Desktop-Linux.AppImage.sig").read_text() == "AppImage.sig"
+
+
+def test_a_missing_debian_signature_prevents_manifest_publication(tmp_path):
+    result, _ = _run_create_release(_workflow(), tmp_path, missing_debian_signature = True)
+    assert result.returncode != 0
+    # Named in full since the arm64 leg ships a .deb.sig too.
+    assert "Expected exactly one -Ubuntu.deb.sig updater asset" in result.stderr
+
+
+def test_a_missing_debian_arm64_signature_prevents_manifest_publication(tmp_path):
+    result, _ = _run_create_release(_workflow(), tmp_path, missing_debian_arm64_signature = True)
+    assert result.returncode != 0
+    assert "Expected exactly one -Ubuntu-ARM64.deb.sig updater asset" in result.stderr
+
+
+def test_the_two_linux_legs_never_stage_the_same_asset_name(tmp_path):
+    """Both Linux legs bundle a deb and its signature.
+
+    publish-release merges every leg's artifact into one flat directory, so a shared name
+    is an overwrite rather than a clash: x64 users would get the arm64 signature and their
+    in-app update would fail verification, with nothing red anywhere.
+    """
+    staged = {}
+    for artifact, arch in (("linux-x64", "amd64"), ("linux-arm64", "arm64")):
+        leg = tmp_path / artifact
+        leg.mkdir()
+        bundles = leg / "bundles"
+        bundles.mkdir()
+        files = []
+        for suffix in ("deb", "deb.sig"):
+            path = bundles / f"Unsloth_0.1.50_{arch}.{suffix}"
+            path.write_text(f"{arch}.{suffix}", encoding = "utf-8")
+            files.append(str(path))
+        result, _ = _run_step(
+            _workflow(),
+            "build",
+            "Stage release assets",
+            leg,
+            extra_env = {"ARTIFACT_PATHS": json.dumps(files), "MATRIX_ARTIFACT": artifact},
+        )
+        assert result.returncode == 0, result.stderr
+        staged[artifact] = {
+            path.name: path.read_text(encoding = "utf-8")
+            for path in (leg / "desktop-release-assets").iterdir()
+        }
+
+    assert set(staged["linux-x64"]) == {
+        "Unsloth-Desktop-Ubuntu.deb",
+        "Unsloth-Desktop-Ubuntu.deb.sig",
+    }
+    assert set(staged["linux-arm64"]) == {
+        "Unsloth-Desktop-Ubuntu-ARM64.deb",
+        "Unsloth-Desktop-Ubuntu-ARM64.deb.sig",
+    }
+    assert not set(staged["linux-x64"]) & set(staged["linux-arm64"])
+    assert staged["linux-arm64"]["Unsloth-Desktop-Ubuntu-ARM64.deb.sig"] == "arm64.deb.sig"
+
+
+def test_the_updater_manifest_points_linux_arm64_at_its_own_bundle(tmp_path):
+    """An arm64 deb install must never be offered the amd64 package."""
+    result, _ = _run_create_release(_workflow(), tmp_path)
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads((tmp_path / "latest.json").read_text(encoding = "utf-8"))
+    platforms = manifest["platforms"]
+    for key in ("linux-aarch64", "linux-aarch64-deb"):
+        assert platforms[key]["url"].endswith("Unsloth-Desktop-Ubuntu-ARM64.deb"), key
+    for key in ("linux-x86_64", "linux-x86_64-appimage"):
+        assert platforms[key]["url"].endswith("Unsloth-Desktop-Linux.AppImage"), key
+    assert platforms["linux-x86_64-deb"]["url"].endswith("Unsloth-Desktop-Ubuntu.deb")
+
+
 def test_the_publish_sequence_never_rewrites_the_release_body(tmp_path):
     workflow = _workflow()
     result, commands = _run_create_release(workflow, tmp_path)
@@ -331,6 +454,13 @@ def test_the_publish_sequence_never_rewrites_the_release_body(tmp_path):
     latest = tmp_path / "latest.json"
     assert latest.is_file()
     metadata = yaml.safe_load(latest.read_text(encoding = "utf-8"))
+    platforms = metadata["platforms"]
+    debian = platforms["linux-x86_64-deb"]
+    assert debian["url"].endswith("/Unsloth-Desktop-Ubuntu.deb")
+    signature = tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Ubuntu.deb.sig"
+    assert debian["signature"] == signature.read_text().strip()
+    assert platforms["linux-x86_64-appimage"]["url"].endswith(".AppImage")
+    assert platforms["linux-x86_64"] == platforms["linux-x86_64-appimage"]
     for platform in metadata["platforms"].values():
         decoded = base64.b64decode(platform["signature"], validate = True)
         assert decoded.startswith(b"untrusted comment:")
@@ -340,6 +470,125 @@ def test_the_publish_sequence_never_rewrites_the_release_body(tmp_path):
     notes = (tmp_path / "desktop-release-notes.md").read_text(encoding = "utf-8")
     assert "Build provenance" not in notes
     assert "Desktop app for Unsloth." in notes
+
+
+def test_the_build_matrix_covers_windows_on_arm():
+    """The leg has to exist, cross-compile from the x64 runner (there is no ARM64
+    Windows runner), have its Rust target installed, and be named in the publish
+    gate. A leg the gate does not name can fail while the release still publishes."""
+    workflow = _workflow()
+    include = workflow["jobs"]["build"]["strategy"]["matrix"]["include"]
+    arm64 = [entry for entry in include if entry.get("artifact") == "windows-arm64"]
+    assert len(arm64) == 1, f"expected one Windows ARM64 leg, got {arm64}"
+    leg = arm64[0]
+    assert leg["platform"] == "windows-latest"
+    assert "--target aarch64-pc-windows-msvc" in leg["args"]
+    assert leg["label"] == "Windows (ARM64)"
+
+    rust = _step(workflow, "build", "Install Rust stable")
+    assert "aarch64-pc-windows-msvc" in rust["with"]["targets"]
+
+    wait = _step(workflow, "publish-release", "Wait for the build matrix")["run"]
+    assert f"'Build {leg['label']}'" in wait
+
+
+def _stage_windows_leg(workflow, tmp_path: Path, artifact: str) -> list[str]:
+    """Run the real "Stage release assets" step for one Windows leg and return what it staged."""
+    bundles = tmp_path / f"bundles-{artifact}"
+    bundles.mkdir(parents = True, exist_ok = True)
+    # Tauri names the NSIS output per target; both end in -setup.exe, which is the
+    # whole point of this test.
+    arch = "arm64" if artifact == "windows-arm64" else "x64"
+    installer = bundles / f"Unsloth Studio_0.1.50_{arch}-setup.exe"
+    installer.write_bytes(b"installer")
+    signature = bundles / f"Unsloth Studio_0.1.50_{arch}-setup.exe.sig"
+    signature.write_text("signature", encoding = "utf-8")
+
+    staged = tmp_path / "desktop-release-assets"
+    if staged.exists():
+        for path in staged.iterdir():
+            path.unlink()
+
+    result = _run_step(
+        workflow,
+        "build",
+        "Stage release assets",
+        tmp_path,
+        extra_env = {
+            "ARTIFACT_PATHS": json.dumps([str(installer), str(signature)]),
+            "MATRIX_ARTIFACT": artifact,
+        },
+    )[0]
+    assert result.returncode == 0, result.stderr
+    return sorted(path.name for path in staged.iterdir())
+
+
+def test_the_two_windows_legs_never_stage_the_same_asset_name(tmp_path):
+    """publish-release downloads every leg's artifact into one directory with
+    merge-multiple, so if both Windows legs staged Unsloth-Desktop-Windows.exe one
+    would silently overwrite the other and the release would ship one architecture
+    twice. The x64 name is also load bearing: it is the published download link."""
+    workflow = _workflow()
+    x64 = _stage_windows_leg(workflow, tmp_path, "windows-x64")
+    arm64 = _stage_windows_leg(workflow, tmp_path, "windows-arm64")
+
+    assert x64 == ["Unsloth-Desktop-Windows.exe", "Unsloth-Desktop-Windows.exe.sig"]
+    assert arm64 == [
+        "Unsloth-Desktop-Windows-ARM64.exe",
+        "Unsloth-Desktop-Windows-ARM64.exe.sig",
+    ]
+    assert not set(x64) & set(arm64)
+
+
+def test_no_matrix_leg_shares_a_fixed_artifact_name_with_another(tmp_path):
+    """upload-artifact v4 and later refuse a duplicate name within a run, so a step with a
+    literal name that more than one leg reaches fails the second leg outright and takes the
+    release with it. Two Windows legs on the same `windows-latest` platform make
+    `matrix.platform` too coarse to gate such a step; only `matrix.artifact` is unique.
+    """
+    workflow = _workflow()
+    legs = {
+        entry["artifact"] for entry in workflow["jobs"]["build"]["strategy"]["matrix"]["include"]
+    }
+
+    for step in workflow["jobs"]["build"]["steps"]:
+        if "upload-artifact" not in step.get("uses", ""):
+            continue
+        name = step.get("with", {}).get("name", "")
+        if "matrix.artifact" in name:
+            continue  # already unique per leg
+        condition = step.get("if", "")
+        pinned = [leg for leg in legs if f"matrix.artifact == '{leg}'" in condition]
+        assert len(pinned) == 1, (
+            f"step {step.get('name')!r} uploads the fixed name {name!r} but is gated on "
+            f"{condition!r}, which is not pinned to exactly one matrix leg"
+        )
+
+
+def test_the_updater_manifest_points_windows_arm64_at_its_own_bundle(tmp_path):
+    """Tauri looks an update up by {os}-{arch}. Without a windows-aarch64 entry an
+    ARM64 install either never sees an update, or takes the x86_64 one and replaces a
+    native install with an emulated build. Both Windows bundles end in .exe.sig, so
+    this also pins the selection: the two entries must not collapse onto one file."""
+    workflow = _workflow()
+    result, _ = _run_create_release(workflow, tmp_path)
+    assert result.returncode == 0, result.stderr
+
+    metadata = yaml.safe_load((tmp_path / "latest.json").read_text(encoding = "utf-8"))
+    platforms = metadata["platforms"]
+    for key in ("windows-x86_64", "windows-x86_64-nsis", "windows-aarch64", "windows-aarch64-nsis"):
+        assert key in platforms, f"latest.json is missing {key}"
+
+    arm64_url = platforms["windows-aarch64"]["url"]
+    x64_url = platforms["windows-x86_64"]["url"]
+    assert arm64_url.endswith("Unsloth-Desktop-Windows-ARM64.exe"), arm64_url
+    assert x64_url.endswith("Unsloth-Desktop-Windows.exe"), x64_url
+    assert "ARM64" not in x64_url, "the x64 entry picked up the ARM64 bundle"
+    assert arm64_url != x64_url
+    # The -nsis aliases exist because Tauri appends the installer kind; they must
+    # resolve to the same bundle as the bare key or an update can cross architectures.
+    assert platforms["windows-aarch64-nsis"] == platforms["windows-aarch64"]
+    assert platforms["windows-x86_64-nsis"] == platforms["windows-x86_64"]
 
 
 def test_release_uploads_never_clobber_or_mutate_the_legacy_channel():
@@ -581,3 +830,144 @@ def test_a_sample_quarantined_mid_scan_passes_the_positive_control():
     assert recheck.index("-not (Test-Path $eicarPath)") < recheck.index(
         "$controlPassed = $true"
     ), "the control passes without first confirming the sample is gone"
+
+
+def test_cloud_block_level_is_verified_against_highplus():
+    """A refused HighPlus leaves the previous level, not zero, so -eq 0 passes a
+    runner still on High. 4 is HighPlus per the Defender Policy CSP."""
+    scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
+
+    assert "-CloudBlockLevel HighPlus" in scan
+    check = [line for line in scan.splitlines() if "$pref.CloudBlockLevel" in line]
+    assert len(check) == 1, f"expected one CloudBlockLevel check, found {check}"
+    assert "-ne 4" in check[0], (
+        "the CloudBlockLevel check no longer compares against 4 (HighPlus), so a "
+        "runner left on High passes as fully configured"
+    )
+
+
+def test_asr_verification_checks_the_action_not_just_the_rule_id():
+    """Add-MpPreference is additive, so a rule a policy set to Disabled or Block
+    keeps that action and an id-only check calls it applied."""
+    scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
+
+    verify = scan.split("Add-MpPreference -AttackSurfaceReductionRules_Ids", 1)[1]
+    verify = verify.split("$scanStart = Get-Date", 1)[0]
+    assert "AttackSurfaceReductionRules_Actions" in verify, (
+        "the ASR verification reads only the rule ids, so a rule stuck in Block "
+        "or Disabled still reports as applied in audit mode"
+    )
+    assert "-ne 2" in verify, "the ASR verification no longer requires AuditMode (2)"
+    assert (
+        "[Math]::Min(" in verify
+    ), "the ASR arrays are zipped without guarding a truncated Actions read"
+
+
+def test_asr_audit_events_are_reported_as_runner_activity_only():
+    """All four rules fire on process launch and this step only copies and scans
+    the bundle, so a 1121/1122 here is runner activity, not a verdict on it."""
+    scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
+
+    report = scan.split("$asrEvents = @(Get-WinEvent", 1)[1]
+    assert (
+        "$_.TimeCreated -ge $scanStart" in report
+    ), "the ASR event query is no longer bounded to this step's own window"
+    assert "::error::" not in report.split("if ($detected -or $unscanned)", 1)[0], (
+        "ASR audit events became fatal; 01443614 fires on low prevalence, which "
+        "every freshly built binary has, so this would block every release"
+    )
+    assert (
+        "not attributable" in report or "not a finding against it" in report
+    ), "the ASR warning reads as a verdict on the bundle, which is never executed"
+
+
+def test_linux_arm64_deb_has_a_native_build_and_blocks_publication_on_failure():
+    workflow = _workflow()
+    legs = workflow["jobs"]["build"]["strategy"]["matrix"]["include"]
+    arm64 = [leg for leg in legs if leg.get("artifact") == "linux-arm64"]
+    assert len(arm64) == 1
+    assert arm64[0]["platform"] == "ubuntu-24.04-arm"
+    build = _step(workflow, "build", "Build Linux ARM64 package")
+    assert build["if"] == "matrix.platform == 'ubuntu-24.04-arm'"
+    assert build["with"]["args"] == "-v --bundles deb"
+    assert "TAURI_SIGNING_PRIVATE_KEY" in build["env"]
+    wait = _step(workflow, "publish-release", "Wait for the build matrix")["run"]
+    assert f"'Build {arm64[0]['label']}'" in wait
+
+
+def test_linux_deb_architectures_stage_distinct_assets_and_validate_together(tmp_path):
+    workflow = _workflow()
+    _stage_assets(tmp_path)
+    arm64_asset = tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Ubuntu-ARM64.deb"
+    arm64_asset.unlink(missing_ok = True)
+    for artifact, arch, target in (
+        ("linux-x64", "amd64", "Unsloth-Desktop-Ubuntu.deb"),
+        ("linux-arm64", "arm64", "Unsloth-Desktop-Ubuntu-ARM64.deb"),
+    ):
+        source = tmp_path / f"Unsloth_0.1.50_{arch}.deb"
+        source.write_bytes(arch.encode())
+        destination = tmp_path / "desktop-release-assets" / target
+        destination.unlink(missing_ok = True)
+        result, _ = _run_step(
+            workflow,
+            "build",
+            "Stage release assets",
+            tmp_path,
+            extra_env = {"ARTIFACT_PATHS": json.dumps([str(source)]), "MATRIX_ARTIFACT": artifact},
+        )
+        assert result.returncode == 0, result.stderr
+        assert destination.read_bytes() == arch.encode()
+    result, _ = _run_step(workflow, "publish-release", "Validate release asset set", tmp_path)
+    assert result.returncode == 0, result.stderr
+    arm64_asset.unlink()
+    result, _ = _run_step(workflow, "publish-release", "Validate release asset set", tmp_path)
+    assert result.returncode != 0
+    assert "Unsloth-Desktop-Ubuntu-ARM64.deb" in result.stderr
+
+
+def test_linux_clean_machine_downloads_only_the_runner_architecture(tmp_path):
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/desktop-app-clean-machine-ci.yml").read_text(
+            encoding = "utf-8"
+        )
+    )
+    job = workflow["jobs"]["linux"]
+    assert job["runs-on"] == "${{ matrix.os }}"
+    legs = job["strategy"]["matrix"]["include"]
+    assert {leg["arch"] for leg in legs if leg["kind"] == "deb"} == {"x64", "arm64"}
+    download = _step(workflow, "linux", "Download the shipped bundle")
+    original = download["run"]
+    for leg in legs:
+        download["run"] = original.replace("${{ matrix.asset }}", leg["asset"])
+        result, commands = _run_step(
+            workflow,
+            "linux",
+            "Download the shipped bundle",
+            tmp_path,
+            target_has_desktop_assets = True,
+            extra_env = {"REL_TAG": RELEASE_TAG, "REL_REPO": "unslothai/unsloth"},
+        )
+        assert result.returncode == 0, result.stderr
+        expected = (
+            "Unsloth-Desktop-Ubuntu-ARM64.deb"
+            if leg["arch"] == "arm64"
+            else (
+                "Unsloth-Desktop-Ubuntu.deb"
+                if leg["kind"] == "deb"
+                else "Unsloth-Desktop-Linux.AppImage"
+            )
+        )
+        command = next(
+            command for command in commands if command.startswith("gh release download ")
+        )
+        arguments = shlex.split(command)
+        pattern = arguments[arguments.index("--pattern") + 1]
+        for prefix in ("Unsloth-Desktop-", "Unsloth-Desktop-0_1_803_beta-"):
+            assets = [
+                prefix + suffix for suffix in ("Ubuntu.deb", "Ubuntu-ARM64.deb", "Linux.AppImage")
+            ]
+            assert fnmatch.filter(assets, pattern) == [
+                prefix + expected.removeprefix("Unsloth-Desktop-")
+            ]
+        if leg["arch"] == "arm64":
+            assert leg["os"] == "ubuntu-24.04-arm"

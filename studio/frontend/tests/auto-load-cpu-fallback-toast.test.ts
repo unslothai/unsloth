@@ -2,11 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -25,12 +23,7 @@ const CALL_SITES = /\n\s*showAutoLoadSuccess\([\s\S]*?\);/g;
 
 // Asserted against the source like the other chat-adapter tests: importing the
 // module would drag in the stores and the toast layer for one closure.
-const source = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  ),
-  "utf8",
-);
+const source = readSrc("features/chat/api/chat-adapter.ts");
 
 // The wording and the warn-vs-success choice used to be written inline in
 // showAutoLoadSuccess, and this file matched them there by substring. Both now

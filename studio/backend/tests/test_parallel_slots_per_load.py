@@ -227,7 +227,12 @@ def test_load_model_commits_requested_from_intent():
     # come from the immutable pre-reduction intent.
     src = inspect.getsource(LlamaCppBackend.load_model)
     commit = src.find("self._requested_n_parallel = max(1, int(intent.n_parallel))")
-    healthy = src.find("self._healthy = True\n", 0, commit if commit != -1 else None)
+    # The commit goes through _publish_healthy(), which sets _healthy under the
+    # spawn lock so a teardown cannot land between the successful probe and the
+    # commit. The invariant this test guards is unchanged: health is published
+    # first, so a failed start cannot poison the next inheritance check.
+    # Matched without the argument list, so adding one does not break this again.
+    healthy = src.find("self._publish_healthy(", 0, commit if commit != -1 else None)
     snapshot = src.find("self._last_load_intent = replace(intent")
     assert commit != -1, "load_model must commit the requested slot count"
     assert healthy != -1 and healthy < commit < snapshot

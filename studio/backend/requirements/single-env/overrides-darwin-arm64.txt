@@ -1,7 +1,25 @@
-# Keep mlx-vlm / mlx-lm on the same Transformers floor as the main Unsloth
+# Keep mlx-vlm / mlx-lm on the same Transformers version as the main Unsloth
 # environment when uv applies their dependency metadata.
-transformers>=5.5.0; python_version >= "3.10"
-transformers>=4.57.6; python_version < "3.10"
+#
+# A window, not a floor. An override replaces EVERY requirement on the package,
+# including unsloth's own transformers<=5.5.0 cap in pyproject, and install.sh's
+# core install is the one uv command that does not also pass constraints.txt. A
+# bare floor therefore let that resolve pick transformers 5.16.1 (the first
+# release wanting tokenizers>=0.23.1) with tokenizers 0.23.2 on macOS arm64;
+# extras-no-deps.txt then pinned transformers back to 5.5.0 --no-deps and left
+# tokenizers stranded, so every `import transformers`, and so every
+# `import mlx_lm`, raised and Apple Silicon came up chat-only.
+#
+# Unlike the huggingface_hub case below, this cannot go unsatisfiable: that one
+# replaced other packages' requirements ON hub while a direct requirement still
+# had to be met, whereas here no requirement on transformers survives to
+# contradict the window. A future mlx-vlm needing a newer transformers gets this
+# one installed instead, which is what an override is for.
+#
+# Keep in lockstep with constraints.txt; tests/studio/install/
+# test_transformers_tokenizers_pair.py fails if the two disagree.
+transformers>=5.5.0,<=5.5.0; python_version >= "3.10"
+transformers>=4.57.6,<=4.57.6; python_version < "3.10"
 
 # mlx-vlm / mlx-lm pull anyio>=4.14, which fights the constraints.txt cap (needed
 # for the 4.14 Python-3.13 streaming cancel-scope RuntimeError, #6483). The -c
@@ -17,13 +35,9 @@ anyio<4.14.0
 # silently backtracks mlx-vlm to 0.4.4, dropping newer VLM/audio support, so the
 # cap stays: the resolver must never pair hub 1.x with pinned transformers 4.x.
 #
-# On python >= 3.10 that premise is gone. diffusers (for MiniMax-H3) requires
-# huggingface-hub>=1.23.0,<2.0, and constraints.txt, studio.txt, base.txt and
-# no-torch-runtime.txt all moved to that window. A flat <1.0 here contradicts
-# them and is unsatisfiable, which is macOS-arm only, so only the mac legs see
-# it: uv reports "Because you require huggingface-hub>=0.34.0,<1.0 and
-# huggingface-hub>=1.23.0,<2.0, your requirements are unsatisfiable", falls back
-# to pip, and the clean-machine trace then fails on a rustc probe. mlx-audio's
-# own >=1.0 floor is satisfied by the 1.x window anyway.
-huggingface_hub>=1.23.0,<2.0; python_version >= "3.10"
+# On python >= 3.10 the premise is gone: constraints.txt, studio.txt,
+# no-torch-runtime.txt and the pyproject studio extra take hub 1.x, so a flat
+# <1.0 here is unsatisfiable (macOS-arm only; uv falls back to pip). 1.31.0 is
+# the floor the Diffusers main build in diffusers-main.txt declares.
+huggingface_hub>=1.31.0,<2.0; python_version >= "3.10"
 huggingface_hub>=0.34.0,<1.0; python_version < "3.10"

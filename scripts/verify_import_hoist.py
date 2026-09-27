@@ -271,6 +271,11 @@ class _Builder(ast.NodeVisitor):
                 # AugAssign target is also a load
                 if isinstance(node, ast.AugAssign):
                     self._record_loads(t, scope)
+                else:
+                    # A subscript or attribute target LOADS everything but the outermost
+                    # binding: `overrides[dependency] = fn` reads both names.
+                    if not isinstance(t, ast.Name):
+                        self._record_loads(t, scope)
             return
         if isinstance(node, (ast.For, ast.AsyncFor)):
             self._visit_expr(node.iter, scope)
@@ -733,7 +738,6 @@ _SELF_TESTS = {
         "import os\nimport sys\ndef f(x):\n    return x._b + sys.argv[0]\n",
         None,
     ),
-    # --- the __all__ re-export skip, and its scoping ---
     "reexport_in_package_init_is_allowed": (
         'from .a import A\n__all__ = ["A"]\n',
         'from .a import A\nfrom .b import B\n__all__ = ["A", "B"]\n',
@@ -752,7 +756,6 @@ _SELF_TESTS = {
         "BLOCKER",
         "pkg/__init__.py",
     ),
-    # --- quoted annotations are annotations ---
     # A TYPE_CHECKING import reached only through a forward reference IS used.
     "forward_ref_string_annotation_counts_as_a_use": (
         "from typing import TYPE_CHECKING, Optional\ndef f(x) -> Optional[int]:\n    return x\n",
@@ -771,6 +774,22 @@ _SELF_TESTS = {
         "    from .m import T\n"
         "def f(x) -> Optional[\"Optional['T']\"]:\n"
         "    return x\n",
+        None,
+    ),
+    # `app.dependency_overrides[dep] = lambda: ...` is how FastAPI route tests are written.
+    "a_subscript_key_on_the_left_hand_side_is_a_use": (
+        "app = {}\n",
+        "from .deps import dependency\napp = {}\napp[dependency] = 1\n",
+        None,
+    ),
+    "a_subscripted_object_on_the_left_hand_side_is_a_use": (
+        "def f(k, v):\n    return k, v\n",
+        "from .deps import registry\ndef f(k, v):\n    registry[k] = v\n",
+        None,
+    ),
+    "an_attribute_target_loads_the_object": (
+        "def f(v):\n    return v\n",
+        "from .deps import settings\ndef f(v):\n    settings.value = v\n",
         None,
     ),
     # The other direction: Literal['T'] is a VALUE, so it must NOT credit an import T.

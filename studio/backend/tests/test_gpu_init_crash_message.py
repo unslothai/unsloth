@@ -966,7 +966,8 @@ def test_env_projector_cpu_recovery_keeps_audio_input(monkeypatch, tmp_path):
     )
 
     assert loaded is True
-    assert read == [str(projector)]
+    # The batch-size decision may inspect the same projector earlier in the load.
+    assert read and set(read) == {str(projector)}
     assert backend._is_vision is True
     assert backend._mmproj_has_audio is True
 
@@ -1072,7 +1073,7 @@ def test_the_exit_handler_removes_the_runtime_after_the_kill():
     cannot delete a runtime whose server is still holding the files open."""
     backend = LlamaCppBackend()
     order = []
-    backend._kill_process = lambda: order.append("kill")
+    backend._kill_process = lambda **_kw: order.append("kill")
     backend._cleanup_cpu_fallback_runtime = lambda: order.append("clean")
 
     backend._cleanup()

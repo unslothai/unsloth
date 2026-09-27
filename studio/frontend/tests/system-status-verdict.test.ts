@@ -11,17 +11,12 @@
 // rendering it told an AMD/ROCm user "No visible GPU detected".
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const tabSrc = await readFile(
-  new URL("../src/features/settings/tabs/resources-tab.tsx", import.meta.url),
-  "utf8",
-);
-const hookSrc = await readFile(
-  new URL("../src/hooks/use-system.ts", import.meta.url),
-  "utf8",
-);
+import { readSrcAsync } from "./helpers/kit.ts";
+
+const tabSrc = await readSrcAsync("features/settings/tabs/resources-tab.tsx");
+const hookSrc = await readSrcAsync("hooks/use-system.ts");
 
 function lift(src: string, pattern: RegExp, what: string, where: string): string {
   const found = pattern.exec(src);

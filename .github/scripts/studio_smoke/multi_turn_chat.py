@@ -201,7 +201,6 @@ def check(label: str, first: list[str], second: list[str]) -> None:
     # History grounding is asserted on the LAST turn, per turn. "Repeat the city name" names no city, so 'Paris' can
     # only have come from turn 3, and a server that kept only the latest turn answers "Okay, I'm ready." -- measured
     # against llama-server b10360 on the UD-Q4_K_XL file the workflow loads.
-    #
     # #10009 asserted this on turn 2 instead, requiring the reply to restate turn 1's number, and that is a false
     # failure on macOS: in the same run that turn 2 came back "You haven't provided the previous question.", turn 4
     # answered "The capital of France is Paris.", which is only possible with history attached. Whether a 270M model
@@ -225,7 +224,6 @@ def main() -> int:
         # is built from the reply before it, and the second replay meets the server holding cache and slot state the
         # first one left behind, so a token the model is near-tied on can land differently without decoding being
         # broken. A server that is actually non-deterministic disagrees on every attempt and still fails.
-        #
         # Deliberately NOT done by softening check(): #5669 turned this assertion into a printed warning on the Linux
         # leg and it went unnoticed for three months, so every divergence handed to check() is still a hard failure,
         # and every other fault -- an empty reply, history not reaching the model -- fails on the first attempt.

@@ -12,24 +12,17 @@
 // regex and evaluated, as system-status-verdict.test.ts does beside them.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrcAsync, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
 const { videoNavHint } = await import("../src/config/hardware-verdict.ts");
 const { en } = await import("../src/i18n/locales/en.ts");
 
-const tabSrc = await readFile(
-  new URL("../src/features/settings/tabs/resources-tab.tsx", import.meta.url),
-  "utf8",
-);
-const sidebarSrc = await readFile(
-  new URL("../src/components/app-sidebar.tsx", import.meta.url),
-  "utf8",
-);
+const tabSrc = await readSrcAsync("features/settings/tabs/resources-tab.tsx");
+const sidebarSrc = await readSrcAsync("components/app-sidebar.tsx");
 
 function lift(
   src: string,
@@ -280,33 +273,21 @@ test("every string the banner reaches for exists", () => {
 // isExternalServer, stopped the external-server poll and swapped the shell to the repairing
 // screen, so a connected user lands on the repair-error screen instead of on their server.
 test("the repair row hides itself for an externally started backend", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/settings/components/desktop-repair-control.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/settings/components/desktop-repair-control.tsx");
   assert.match(
     source,
     /if\s*\(!repair\s*\|\|\s*repair\.isExternalServer\)\s*return null;/,
     "the control must bail out on an external server as well as outside Tauri",
   );
 
-  const context = await readFile(
-    new URL("../src/hooks/tauri-repair-context.ts", import.meta.url),
-    "utf8",
-  );
+  const context = await readSrcAsync("hooks/tauri-repair-context.ts");
   assert.match(
     context,
     /isExternalServer:\s*boolean;/,
     "the controller has to carry the flag for the control to read it",
   );
 
-  const provider = await readFile(
-    new URL("../src/app/provider.tsx", import.meta.url),
-    "utf8",
-  );
+  const provider = await readSrcAsync("app/provider.tsx");
   const memo = provider.slice(provider.indexOf("const repairController"));
   assert.match(
     memo.slice(0, 300),
@@ -326,10 +307,7 @@ test("the repair row hides itself for an externally started backend", async () =
 // machine and no_gpu becomes torch_cpu_build. The polling effect stopped at the first
 // settled verdict, so the new hint was unreachable for the rest of the session.
 test("the sidebar keeps polling while the inventory can still change the verdict", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/app-sidebar.tsx");
 
   assert.match(
     source,
@@ -341,7 +319,7 @@ test("the sidebar keeps polling while the inventory can still change the verdict
     source.indexOf("INVENTORY_SENSITIVE_REASONS = new Set(["),
   );
   const listed = set.slice(0, set.indexOf("]"));
-  for (const settled of ["mlx_unavailable", "intel_mac"]) {
+  for (const settled of ["mlx_unavailable", "no_torch", "intel_mac"]) {
     assert.ok(
       !listed.includes(settled),
       `${settled} cannot change on a probe and must not keep polling`,
@@ -411,6 +389,10 @@ test("only a host the inventory can still reclassify keeps polling", () => {
     "a healthy GPU host must not gain a forced read a minute",
   );
   assert.ok(!polls(true, "intel_mac"), "an Intel Mac stays an Intel Mac");
+  assert.ok(
+    !polls(true, "no_torch"),
+    "a --no-torch install declined the training stack; nothing is coming to change it",
+  );
   // detection_failed is NOT settled when torch is the thing that failed: the backend
   // classifies the wheel from disk and swaps in the mismatch once the inventory recovers,
   // so stopping the poll froze the sidebar on the failure for the session.

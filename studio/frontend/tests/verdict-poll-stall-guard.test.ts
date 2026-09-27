@@ -13,13 +13,11 @@
 // is waiting for.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const src = await readFile(
-  new URL("../src/components/app-sidebar.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrcAsync } from "./helpers/kit.ts";
+
+const src = await readSrcAsync("components/app-sidebar.tsx");
 
 // The interval, verbatim, from the marker it opens with to the cleanup it returns.
 const START = "let pollingSince = 0;";

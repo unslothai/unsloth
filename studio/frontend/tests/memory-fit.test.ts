@@ -17,6 +17,7 @@ import {
   type MemoryFitVerdict,
   classifyMemoryFit,
   formatMemoryGb,
+  memoryFigureCandidates,
   resolveDraftCacheNote,
   resolveKvNote,
   resolveMemoryFit,
@@ -135,19 +136,19 @@ test("worseMemoryFit is symmetric for every pair", () => {
 
 const ADVISORY_TEXTS = {
   singlePoolExceeds:
-    "More than this machine's memory. The GPU and the rest of the system share one pool here, so there is nothing to offload to.",
+    "Exceeds shared memory. Try a shorter context or smaller model; CPU offloading adds no memory.",
   singlePoolPressure:
-    "This fits the machine, but not what is free right now. If that memory is not the model being replaced, the context will be fitted down or the load refused.",
+    "Fits this machine, but little memory is free right now. Free memory or try Auto context.",
   hostShareExceeds:
-    "More than system RAM holds. This placement keeps most of the load outside the GPU, and spare VRAM cannot take those bytes.",
+    "CPU placement exceeds system RAM. Try fewer CPU layers or a smaller model.",
   totalExceeds:
-    "More than this machine holds. The GPU and system RAM together are not enough for this load, so spilling layers or fitting the context down will not recover it.",
+    "Exceeds combined GPU and system memory. Try a shorter context or smaller model.",
   gpuExceeds:
-    "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
+    "Exceeds GPU memory. Try Auto context or fewer GPU layers; loading may still fail.",
   hostPressure:
-    "The part of this load that runs from system RAM fits the machine, but not what is free right now. If that memory is not the model being replaced, the load will be refused.",
+    "Fits system RAM, but little is free right now. Free memory, or try a shorter context or smaller model.",
   gpuPressure:
-    "This fits the card, but something is using it right now. If that memory is not the model being replaced, layers will spill or the context will be fitted down.",
+    "Fits this GPU, but little VRAM is free right now. Free memory or try Auto context.",
 };
 
 test("D1: a single-pool host under memory pressure now says so", () => {
@@ -182,6 +183,18 @@ test("D1: the single-pool pressure text is reachable from EITHER free reading", 
     APPLE,
   );
   assert.equal(hostSide.advisory?.text, ADVISORY_TEXTS.singlePoolPressure);
+});
+
+test("a tight reading warns without claiming the load exceeds available memory", () => {
+  const result = fit(
+    { gpuBytes: 26 * GB, totalBytes: 26 * GB },
+    { freeGpuCapacityGb: 30, usableSystemRamGb: 30 },
+    APPLE,
+  );
+  assert.equal(result.freeGpuFit, "tight");
+  assert.equal(result.usableHostFit, "tight");
+  assert.match(result.advisory?.text ?? "", /little memory is free right now/);
+  assert.doesNotMatch(result.advisory?.text ?? "", /not what is free|will be|refused/);
 });
 
 test("D1: no discrete-host string can be chosen on a single-pool host", () => {
@@ -241,8 +254,8 @@ test("the floor notes outrank every verdict, in their own order", () => {
     { drafterKvUnsized: true, moeOffloadUnmodelled: true, totalBytes: 900 * GB },
     {},
   );
-  assert.match(drafter.advisory?.text ?? "", /fetch rather than one on this disk/);
-  const moe = fit({ moeOffloadUnmodelled: true, totalBytes: 900 * GB }, {});
+  assert.match(drafter.advisory?.text ?? "", /remote draft model or vision component/);
+  const moe = fit({ moeOffloadUnmodelled: true, gpuBytes: 8 * GB, totalBytes: 900 * GB }, {});
   assert.equal(moe.advisory?.tone, "muted");
   assert.match(moe.advisory?.text ?? "", /Expert layers/);
 });
@@ -260,6 +273,19 @@ test("the aggregate verdict is asked before the GPU one", () => {
   // spilling to system RAM as the remedy, which is advice to do something that cannot
   // work.
   const result = fit({ gpuBytes: 20 * GB, totalBytes: 200 * GB }, {});
+  assert.equal(result.advisory?.text, ADVISORY_TEXTS.totalExceeds);
+});
+
+test("both pools overflowing never recommends moving more layers to the GPU", () => {
+  for (const gpuGb of [24, 30]) {
+    const result = fit({ gpuBytes: gpuGb * GB, totalBytes: (gpuGb + 70) * GB }, {});
+    assert.equal(result.advisory?.text, ADVISORY_TEXTS.totalExceeds);
+    assert.doesNotMatch(result.advisory?.text ?? "", /fewer CPU layers/);
+  }
+});
+
+test("host overflow with spare GPU capacity keeps placement advice", () => {
+  const result = fit({ gpuBytes: 8 * GB, totalBytes: 78 * GB }, {});
   assert.equal(result.advisory?.text, ADVISORY_TEXTS.hostShareExceeds);
 });
 
@@ -271,7 +297,7 @@ test("a load beyond GPU and RAM combined, with a host share that fits RAM", () =
   assert.equal(result.advisory?.text, ADVISORY_TEXTS.totalExceeds);
 });
 
-test("a load that only overflows the card is told it will spill", () => {
+test("a load that only overflows the card gets conditional offload advice", () => {
   const result = fit({ gpuBytes: 30 * GB, totalBytes: 30 * GB }, {});
   assert.equal(result.advisory?.text, ADVISORY_TEXTS.gpuExceeds);
 });
@@ -282,6 +308,35 @@ test("a discrete host under host-RAM pressure keeps the system-RAM wording", () 
     { usableSystemRamGb: 38 },
   );
   assert.equal(result.advisory?.text, ADVISORY_TEXTS.hostPressure);
+});
+
+test("pressure advice does not shift layers into another pressured pool", () => {
+  for (const freeGpu of [24, 22, 0]) {
+    const result = fit(
+      { gpuBytes: 22 * GB, totalBytes: 40 * GB },
+      {
+        freeGpuCapacityGb: freeGpu,
+        usableSystemRamGb: 10,
+        reclaimableTotalBytes: 10 * GB,
+      },
+    );
+    assert.equal(result.rawGpuFit, "tight");
+    assert.equal(result.usableHostFit, "tight");
+    assert.doesNotMatch(result.advisory?.text ?? "", /CPU layers|offload/);
+    assert.match(result.advisory?.text ?? "", /shorter context or smaller model/);
+  }
+  for (const [gpuGb, hostGb, freeGpu, freeHost] of [
+    [30, 5, 23, 2],
+    [21, 65, 1, 60],
+  ]) {
+    const result = fit(
+      { gpuBytes: gpuGb * GB, totalBytes: (gpuGb + hostGb) * GB },
+      { freeGpuCapacityGb: freeGpu, usableSystemRamGb: freeHost },
+    );
+    assert.equal(result.advisory?.tone, "warn");
+    assert.doesNotMatch(result.advisory?.text ?? "", /layers|offload/);
+    assert.match(result.advisory?.text ?? "", /shorter context or smaller model/);
+  }
 });
 
 test("a discrete host under VRAM pressure alone gets the card wording", () => {
@@ -491,9 +546,101 @@ test("an unsizable pass-through adapter marks the total a floor", () => {
     IDLE_DISCRETE,
   );
   assert.equal(bounded.bounded, true);
+  assert.equal(bounded.prefix, "≥ ");
+  assert.equal(bounded.advisory?.tone, "warn");
+  assert.match(bounded.advisory?.text ?? "", /adapter or control vector/);
   const sized = resolveMemoryFit(
     { ...SIZED, totalBytes: 8 * GB, gpuBytes: 8 * GB },
     IDLE_DISCRETE,
   );
   assert.equal(sized.bounded, false);
+});
+
+test("an unsized adapter warning takes precedence over a placement verdict", () => {
+  const result = fit(
+    { adaptersUnsized: true, moeOffloadUnmodelled: true, totalBytes: 200 * GB },
+    {},
+  );
+  assert.match(result.advisory?.text ?? "", /adapter or control vector/);
+  assert.equal(result.advisory?.tone, "warn");
+});
+
+test("CPU-only estimates use RAM guidance without suggesting GPU placement", () => {
+  for (const total of [25.61, 40]) {
+    const result = fit(
+      { gpuBytes: 0, totalBytes: total * GB },
+      {
+        gpuCapacityGb: 0,
+        totalCapacityGb: 32,
+        systemRamCapacityGb: 32,
+        freeGpuCapacityGb: 0,
+        usableSystemRamGb: 24,
+      },
+    );
+    assert.equal(result.cpuOnly, true);
+    assert.match(result.advisory?.text ?? "", /RAM/);
+    assert.doesNotMatch(result.advisory?.text ?? "", /CPU layers|GPU layers/);
+  }
+});
+
+test("a confirmed zero free reading warns, while an unknown reading stays unknown", () => {
+  for (const known of [false, true]) {
+    const gpu = fit(
+      { gpuBytes: 20 * GB, totalBytes: 25 * GB },
+      { freeGpuCapacityGb: 0, freeGpuCapacityKnown: known },
+    );
+    assert.equal(gpu.freeGpuFit, known ? "exceeds" : "unknown");
+    assert.equal(gpu.gpuFit, known ? "tight" : "fits");
+    assert.equal(gpu.cpuOnly, false);
+    const ram = fit(
+      { gpuBytes: 0, totalBytes: 25 * GB },
+      { usableSystemRamGb: 0, usableSystemRamKnown: known },
+    );
+    assert.equal(ram.hostPressured, known);
+  }
+});
+
+test("shared pools keep their label and warn when known free memory reaches zero", () => {
+  const result = fit(
+    { gpuBytes: 0, totalBytes: 25 * GB },
+    {
+      freeGpuCapacityGb: 0,
+      usableSystemRamGb: 0,
+      freeGpuCapacityKnown: true,
+      usableSystemRamKnown: true,
+    },
+    APPLE,
+  );
+  assert.equal(result.cpuOnly, false);
+  assert.equal(result.hostPressured, true);
+  assert.equal(result.gpuPressured, true);
+});
+
+test("compact estimates retain units and never round a lower bound up", () => {
+  const candidates = memoryFigureCandidates(25.61 * GB, true);
+  assert.equal(candidates[0], "≥ 25.61 GiB");
+  assert.ok(candidates.includes("≥ 25.6 GiB"));
+  assert.ok(candidates.includes("≥ 25 GiB"));
+  assert.ok(!candidates.includes("≥ 26 GiB"));
+  assert.ok(memoryFigureCandidates(2048 * GB, false).includes("2 TiB"));
+});
+
+test("the primary lower-bound label also rounds down", () => {
+  assert.equal(memoryFigureCandidates(25.619 * GB, true)[0], "≥ 25.61 GiB");
+  assert.equal(memoryFigureCandidates(25.619 * GB, false)[0], "25.62 GiB");
+  for (const gib of [0.009, 25.619, 1024.999, 2048.129]) {
+    for (const label of memoryFigureCandidates(gib * GB, true)) {
+      const [, amount, unit] = label.split(" ");
+      const scaled = Number(amount) * (unit === "TiB" ? 1024 : 1);
+      assert.ok(scaled <= gib, `${label} exceeds ${gib} GiB`);
+    }
+  }
+});
+
+test("capacity advice does not assume a pageable load mode", () => {
+  for (const [gpu, total] of [[0, 100], [30, 100], [8, 78]]) {
+    const result = fit({ gpuBytes: gpu * GB, totalBytes: total * GB }, {});
+    assert.match(result.advisory?.text ?? "", /smaller model/);
+    assert.doesNotMatch(result.advisory?.text ?? "", /paging|will load|will fit/);
+  }
 });

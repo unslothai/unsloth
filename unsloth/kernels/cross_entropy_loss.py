@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -83,6 +80,9 @@ def _cross_entropy_forward(
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
     if DO_SOFTCAPPING:
         logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
+    if DO_LOGIT_SCALING or DO_SOFTCAPPING:
+        # Either transform makes the -inf padding finite: -SOFTCAP via tanh, +inf via a negative scale.
+        logits = tl.where(mask, logits, -float("inf"))
 
     c = tl.max(logits, 0)
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
@@ -168,6 +168,9 @@ def _chunked_cross_entropy_forward(
         logits = LOGIT_SCALE * logits
     if DO_SOFTCAPPING:
         logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
+    if DO_LOGIT_SCALING or DO_SOFTCAPPING:
+        # Either transform makes the -inf padding finite: -SOFTCAP via tanh, +inf via a negative scale.
+        logits = tl.where(mask, logits, -float("inf"))
 
     c = tl.max(logits, 0)
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))

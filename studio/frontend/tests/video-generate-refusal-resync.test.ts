@@ -10,14 +10,11 @@
 // The refusal is the page's only news that the model is gone, so it has to act on it.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-const VIDEO = readFileSync(
-  fileURLToPath(new URL("../src/features/video/video-page.tsx", import.meta.url)),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const VIDEO = readSrc("features/video/video-page.tsx");
 
 const RESYNC = VIDEO.slice(
   VIDEO.indexOf("const resyncAfterGenerateRefusal = useCallback("),
@@ -73,10 +70,7 @@ test("a load started while the re-read was in flight is left alone", () => {
 test("the images page already corrects itself on every generate exit", () => {
   // It has the same dead-button shape, but its finally re-reads status on success,
   // failure and cancel alike, so there is nothing to fix there.
-  const images = readFileSync(
-    fileURLToPath(new URL("../src/features/images/images-page.tsx", import.meta.url)),
-    "utf8",
-  );
+  const images = readSrc("features/images/images-page.tsx");
   const finallyBlock = images.slice(images.indexOf("      cancelRequested.current = false;"));
   assert.match(finallyBlock.slice(0, 1200), /if \(isMounted\.current\) await refreshStatus\(\);/);
 });
