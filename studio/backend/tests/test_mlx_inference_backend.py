@@ -277,6 +277,8 @@ def test_mlx_vlm_generation_survives_every_fusion_refusing(monkeypatch, mlx_infe
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
     backend._processor = SimpleNamespace(chat_template = "template")
+    backend._is_vlm = True
+    backend._reads_vision = True
     args = (
         [{"role": "user", "content": [{"type": "image"}]}],
         [object()],
