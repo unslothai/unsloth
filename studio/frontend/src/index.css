@@ -1893,9 +1893,13 @@ html[data-chat-font] .aui-root {
 		background-color: var(--card);
 	}
 
-	/* Root of every settings page: one gap between the header and each section. */
+	/* Root of every settings page. Plain blocks (search, filters, lists) keep
+	   the base gap; headed sections get extra room above. */
 	.settings-page {
-		@apply flex min-w-0 max-w-full flex-col gap-10;
+		@apply flex min-w-0 max-w-full flex-col gap-6;
+	}
+	.settings-page > :has(.settings-heading):not(:first-child) {
+		margin-top: 0.75rem;
 	}
 
 	/* Settings section headings: muted, eased slightly toward the page, so they read apart from the row labels. */
