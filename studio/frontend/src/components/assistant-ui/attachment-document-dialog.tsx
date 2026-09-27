@@ -30,12 +30,7 @@ import {
   useState,
 } from "react";
 
-/**
- * Opens an attachment in the Library's viewer, as a click on its tile, row or chip. The header
- * matches the Library's: name and subtitle, the page's own controls, "Chat about this" and a
- * download. Only a sent attachment offers the chat: an unsent one is already in the chat it would
- * open. `load` is read on click, so nothing is copied until the user asks for it.
- */
+/** Opens an attachment in the Library's viewer; `load` is read on click, so nothing is copied until asked. */
 export const AttachmentViewer: FC<{
   trigger: ReactNode;
   open: boolean;
@@ -45,9 +40,7 @@ export const AttachmentViewer: FC<{
   media: boolean;
   noun: "image" | "video" | "clip" | "file";
   redactFromReload: boolean;
-  /** The attachment's bytes, for the download and the chat. Unset while they are not ready. */
   load?: () => Promise<Blob>;
-  /** The name and type those bytes go out under, when not the attachment's own. */
   saveAs?: { name: string; contentType: string };
   flush?: boolean;
   extra?: ReactNode;
@@ -69,13 +62,11 @@ export const AttachmentViewer: FC<{
 }) => {
   const t = useT();
   const navigate = useNavigate();
-  // Mounted on first open and kept for its close animation. A transcript draws one of these per
-  // attachment, and the viewer's project menu subscribes to and refetches the project list.
+  // Mounted on first open: every mounted viewer's project menu refetches the project list.
   const [mounted, setMounted] = useState(open);
   if (open && !mounted) setMounted(true);
   const name = saveAs?.name ?? (source.name || "attachment");
   const contentType = saveAs?.contentType ?? source.contentType;
-  // A sent original is fetched on click and can fail; say so rather than doing nothing.
   const actions: MediaViewerActions = {
     primary:
       load && !redactFromReload
@@ -218,7 +209,6 @@ const DocumentDialog: FC<
       noun="file"
       redactFromReload={redactFromReload}
       load={blob ? () => Promise.resolve(blob) : undefined}
-      // The stored text, when the original is gone: saved as text, not under the document's type.
       saveAs={
         loaded?.plain !== undefined
           ? { name: `${source.name.replace(/\.[^.]+$/, "")}.txt`, contentType: "text/plain" }

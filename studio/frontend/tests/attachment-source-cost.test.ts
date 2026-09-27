@@ -86,13 +86,11 @@ test("the audio data URL is built in the dialog, not on every attachment tile", 
     true,
     "the audio data URL is built outside AttachmentAudioBody",
   );
-  // The viewer renders its body only while open, so the join waits for a click.
   assert.match(preview, /<AttachmentViewer[\s\S]*<AttachmentAudioBody/);
   const viewer = readSrc("components/assistant-ui/attachment-document-dialog.tsx");
   assert.match(viewer, /\{open && children\}/);
 });
 
-// A clip opens in a video player, not as text or as audio: .mp4 and .webm are audio names too.
 test("the attachment selector resolves a video from the composer and from a sent message", () => {
   const part = { type: "file", filename: "clip.mp4", data: "A".repeat(1024), mimeType: "video/mp4" };
   const state = {
@@ -109,7 +107,6 @@ test("the attachment selector resolves a video from the composer and from a sent
   assert.equal(composer.kind, "video");
   assert.equal(composer.file, file);
 
-  // Audio that shares a video extension stays audio.
   const listen = selectAttachmentSource({
     attachment: {
       type: "file",

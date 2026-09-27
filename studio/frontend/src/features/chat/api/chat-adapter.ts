@@ -5145,11 +5145,9 @@ export function createOpenAIStreamAdapter(
       addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
       addSystemInstruction(outboundMessages, artifactInstruction);
 
-      // Stops this turn before it streams because an attachment cannot go to the loaded model.
       const blockAttachmentRun = (reason: string): never => {
         toast.error(reason);
-        // Flip the per-thread running flag on->off so compare-mode waitForRunEnd resolves: this gate
-        // fires before the streaming path's setThreadRunning(true).
+        // Flip on->off so compare-mode waitForRunEnd resolves: this gate fires before setThreadRunning(true).
         const gatedThreadKey = resolvedThreadId || "__default";
         // Own token: siblings share "__default", so an ownerless clear would drop entries that are still generating.
         const gateOwner = createImageGateRunOwner();
@@ -5182,9 +5180,7 @@ export function createOpenAIStreamAdapter(
           blockAttachmentRun(imageGateReason);
         }
       }
-      // Audio and video can be attached before any model is loaded, so the model answering this
-      // turn may not take them. Only files attached to the message count: recorded audio is
-      // offered only to a model that listens.
+      // Media attached before a model loaded skipped the add-time check; recorded audio is not counted.
       const answeringModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );

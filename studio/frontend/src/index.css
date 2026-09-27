@@ -3596,8 +3596,7 @@ body.sidebar-row-dragging * {
 	background: oklch(0.67 0 0 / 0.5);
 }
 
-/* The composer's attachment strip scrolls sideways with no scrollbar, as the cards read as one
-   row. Unlayered like the rules above, which a utility class could not outrank. */
+/* Unlayered like the rules above, which a utility class could not outrank. */
 .aui-composer-attachment-cards[data-layout="strip"] {
 	scrollbar-width: none;
 }
@@ -3606,9 +3605,7 @@ body.sidebar-row-dragging * {
 	display: none;
 }
 
-/* Collapsed to one row, the strip runs out to the composer's edges, as ChatGPT's does, with its
-   first card still lined up with the text until it is scrolled. The negative margin cancels the
-   surface's p-2.5; the clip keeps the cards inside its rounded top corners. */
+/* The negative margin cancels the surface's p-2.5; the clip keeps cards inside its rounded top corners. */
 .unsloth-composer-surface .aui-composer-attachment-cards[data-layout="strip"] {
 	margin-inline: -0.625rem;
 	width: calc(100% + 1.25rem);

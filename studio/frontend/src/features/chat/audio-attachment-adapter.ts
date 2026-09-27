@@ -24,9 +24,7 @@ function newAttachmentId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-// Audio shares the "Add photos & files" picker. Like VisionImageAdapter, a loaded model that
-// cannot take audio is rejected at add() time with a toast. With no model loaded yet the file
-// waits in the composer, and the send path checks it against whichever model is loaded by then.
+// A loaded model without audio rejects at add(); with none loaded, the send path checks it later.
 export class AudioAttachmentAdapter implements AttachmentAdapter {
   // MIME is unreliable for some containers (m4a), so also match by extension. No .webm extension:
   // it would claim video/webm files; real audio webm (MediaRecorder) always reports the audio/webm

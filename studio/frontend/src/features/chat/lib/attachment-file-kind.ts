@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What kind of file an attachment is, for its icon, color and label. Read off the name and the
-// MIME type only: an attachment's bytes can be megabytes and this runs on every tile and row.
+// Name and MIME type only: the bytes can be megabytes and this runs on every tile and row.
 
 import {
   AudioWave01Icon,
@@ -54,7 +53,6 @@ register(
 register("text", "txt md markdown mdx rst log patch diff tex srt vtt");
 register("archive", "zip tar gz tgz bz2 xz zst 7z rar");
 
-// Extensionless names that are still source.
 const CODE_BASENAMES = new Set(["dockerfile", "makefile", "gemfile", "rakefile"]);
 
 function extensionOf(name: string): string {
@@ -63,9 +61,6 @@ function extensionOf(name: string): string {
   return dot > 0 ? base.slice(dot + 1) : "";
 }
 
-/** The kind of an attachment, from its name and MIME type. The MIME type wins where it is
- *  decisive, since a browser types media and PDFs reliably; the extension decides the rest,
- *  which is also where an empty or generic MIME type lands. */
 export function attachmentFileKind(
   name: string | undefined,
   contentType: string | undefined,
@@ -101,8 +96,6 @@ export const ATTACHMENT_KIND_ICONS = {
   file: File02Icon,
 } as const satisfies Record<AttachmentFileKind, unknown>;
 
-/** Each kind's color, as the Library and most file pickers tell them apart at a glance. The web
- *  page globe and the generic file stay the text color. */
 export const ATTACHMENT_KIND_ICON_CLASS: Record<AttachmentFileKind, string> = {
   image: "text-sky-500",
   pdf: "text-red-500",
@@ -132,7 +125,6 @@ const KIND_LABELS: Record<Exclude<AttachmentFileKind, "file">, string> = {
   archive: "Archive",
 };
 
-/** The line under a sent file's name: its kind, or for an unknown kind its extension. */
 export function attachmentKindLabel(
   kind: AttachmentFileKind,
   name: string | undefined,

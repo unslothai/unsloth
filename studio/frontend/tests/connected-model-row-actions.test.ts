@@ -104,7 +104,6 @@ test("modality comes from the resolvers the app already has", () => {
     /const activeModel = state\.models\.find\(\(m\) => m\.id === checkpoint\);/,
   );
   assert.match(audioAdapter, /if \(modelLoaded && !activeModel\?\.hasAudioInput\) \{/);
-  // A file attached before any model was loaded meets the same rule when it is sent.
   assert.match(
     readSrc("features/chat/lib/attached-media-gate.ts"),
     /if \(audio && !activeModel\?\.hasAudioInput\) \{/,

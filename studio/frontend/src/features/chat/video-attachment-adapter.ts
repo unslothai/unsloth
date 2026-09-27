@@ -37,8 +37,6 @@ export class VideoAttachmentAdapter implements AttachmentAdapter {
     const activeModel = state.models.find((m) => m.id === checkpoint);
     const modelLoaded = !!checkpoint && !state.modelLoading;
     let unavailableReason: string | null = null;
-    // With no model loaded yet the clip waits in the composer, as images and audio do; the send
-    // path checks it against whichever model is loaded by then.
     if (modelLoaded && !activeModel?.hasVideoInput) {
       const label =
         activeModel?.name ||

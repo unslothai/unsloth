@@ -38,9 +38,7 @@ const guardedLocalStorage: StateStorage = {
 
 export type ReduceMotionSetting = "system" | "on" | "off";
 export type ChatWidthSetting = "standard" | "wide" | "full";
-/** Files waiting in the composer: large cards that wrap, or the compact strip of tiles. */
 export type ComposerAttachmentsSetting = "cards" | "compact";
-/** Files in a sent message: a list that collapses to chips past six files, or always one. */
 export type SentAttachmentsSetting = "auto" | "list" | "chips";
 
 export type CustomModeColors = {

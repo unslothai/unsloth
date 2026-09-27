@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Attachments show their kind: a colored icon per file type in the composer's cards and in a
-// sent message's list or chips. Files can wait in the composer before any model is loaded, and
-// the model that answers is checked when the message is sent.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -51,9 +48,7 @@ test("each file kind is read off the name, with a decisive MIME type first", () 
   for (const [name, mime, kind] of cases) {
     assert.equal(attachmentFileKind(name, mime), kind, `${name} (${mime || "no type"})`);
   }
-  // A misleading extension does not beat a MIME type the browser is sure of.
   assert.equal(attachmentFileKind("recording.txt", "audio/wav"), "audio");
-  // Nor can a name reach into Object.prototype.
   assert.equal(attachmentFileKind("x.constructor", ""), "file");
 });
 
@@ -85,18 +80,13 @@ test("Auto lists up to six sent files, then collapses them to chips", () => {
 
 test("composer cards wrap for two rows, then become one scrolling strip", () => {
   assert.equal(COMPOSER_ATTACHMENT_MAX_ROWS, 2);
-  // A 724px row of fifths with 8px gaps: two rows of five, then the strip.
   const fifth = (724 - 4 * 8) / 5;
   assert.equal(composerAttachmentsOverflow(10, 724, fifth, 8), false);
   assert.equal(composerAttachmentsOverflow(11, 724, fifth, 8), true);
-  // A card a hair under or over a fifth, as the browser rounds it, still counts five.
   assert.equal(composerAttachmentsOverflow(10, 724, fifth + 0.004, 8), false);
-  // At its minimum width a narrow composer fits fewer, so it reaches two rows sooner.
   assert.equal(composerAttachmentsOverflow(7, 300, 105, 8), true);
   assert.equal(composerAttachmentsOverflow(0, 724, fifth, 8), false);
-  // Before a card has laid out there is nothing to measure, so nothing changes.
   assert.equal(composerAttachmentsOverflow(20, 724, 0, 8), false);
-  // Each card takes a fifth of the row less the four gap-2 gaps, down to a minimum.
   assert.match(
     ATTACHMENT,
     /const CARD_SLOT =\n\s*"shrink-0 w-\[calc\(\(100%_-_var\(--spacing\)\*8\)\/5\)\] min-w-\[calc\(7rem\*var\(--ui-space-scale,1\)\)\]";/,
@@ -121,7 +111,6 @@ test("the strip is laid out through the DOM, never through React state", () => {
   );
   assert.match(strip, /el\.dataset\.layout = next/);
   assert.doesNotMatch(strip, /useState/);
-  // Only the attachment count re-runs the effect; widths come from a ResizeObserver.
   assert.match(strip, /\}, \[count\]\);/);
   assert.match(strip, /new ResizeObserver\(layout\)/);
 });
@@ -135,7 +124,6 @@ test("sent attachments split images from files by type, with stable component ma
     ATTACHMENT,
     /const SENT_FILE_COMPONENTS = \{\n\s*Image: NoAttachment,\n\s*Document: SentFileItem,\n\s*File: SentFileItem,\n\};/,
   );
-  // Every row and chip still opens the attachment's preview.
   const sent = ATTACHMENT.slice(ATTACHMENT.indexOf("const SentFileItem: FC"));
   assert.match(sent, /<AttachmentPreviewDialog redactFromReload=\{false\}>/);
 });
@@ -173,11 +161,9 @@ test("audio or video attached before a model loaded is checked when sent", () =>
     attachedMediaUnavailableReason({ ...base, activeModel: listener, audio: false, video: true }) ?? "",
     /^Model cannot accept video\./,
   );
-  // A connected model has no row in `models`, and takes neither.
   assert.ok(
     attachedMediaUnavailableReason({ ...base, activeModel: undefined, audio: true, video: false }),
   );
-  // Nothing attached, or nothing loaded to send to: not this gate's call.
   assert.equal(
     attachedMediaUnavailableReason({ ...base, activeModel: textOnly, audio: false, video: false }),
     null,
@@ -206,7 +192,6 @@ test("attaching no longer needs a loaded model, only a capable one when one is l
 test("every attachment opens in the Library's viewer, from the composer and from a message", async () => {
   const preview = await readSrcAsync("components/assistant-ui/attachment-preview.tsx");
   const viewer = await readSrcAsync("components/assistant-ui/attachment-document-dialog.tsx");
-  // Images, source and text files, clips, videos and documents all go through one frame.
   for (const dialog of [
     "AttachmentImageDialog",
     "AttachmentTextDialog",
@@ -218,12 +203,9 @@ test("every attachment opens in the Library's viewer, from the composer and from
   }
   assert.match(viewer, /const DocumentDialog[\s\S]*?<AttachmentViewer\n/);
   assert.match(viewer, /export const AttachmentViewer[\s\S]*?<MediaViewer\n/);
-  // No bare lightbox or plain dialog is left behind.
   assert.doesNotMatch(preview, /<DialogContent/);
-  // "Chat about this" is the Library's, and only for a sent file: an unsent one is already here.
   assert.match(viewer, /load && !redactFromReload/);
   assert.match(viewer, /startLibraryChat\(navigate, \{ files: \[file\] \}\)/);
-  // A page renders as the Library shows it, with its code a click away.
   assert.match(preview, /<ArtifactHtmlFrame code=\{preview\.text\}/);
 });
 
@@ -248,7 +230,6 @@ test("an image card in the composer has no border or fill; file cards keep both"
 
 test("an attachment's viewer mounts on first open, not with every tile", async () => {
   const viewer = await readSrcAsync("components/assistant-ui/attachment-document-dialog.tsx");
-  // Each mounted viewer subscribes to, and refetches, the project list for its menu.
   assert.match(viewer, /const \[mounted, setMounted\] = useState\(open\);\n\s*if \(open && !mounted\) setMounted\(true\);/);
   assert.match(viewer, /\{mounted && \(\n\s*<MediaViewer/);
 });

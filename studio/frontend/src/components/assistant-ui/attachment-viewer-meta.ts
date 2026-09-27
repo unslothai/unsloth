@@ -3,11 +3,8 @@
 
 import { formatBytes } from "@/features/hub";
 
-/** The zoom steps a page, grid or source file offers, as the Library's viewer does. */
 export const ATTACHMENT_PAGE_SCALES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
-/** The attachment's type as the Library's subtitle names it: its extension, or failing that a
- *  MIME subtype. */
 function typeLabel(name: string, contentType: string | undefined): string | null {
   const dot = name.lastIndexOf(".");
   if (dot > 0 && dot < name.length - 1) return name.slice(dot + 1).toUpperCase();
@@ -15,7 +12,6 @@ function typeLabel(name: string, contentType: string | undefined): string | null
   return subtype ? subtype.toUpperCase() : null;
 }
 
-/** The Library viewer's subtitle for an attachment: type, size, and anything the body adds. */
 export function attachmentViewerMeta(
   source: { name: string; contentType: string | undefined },
   bytes: number | null | undefined,

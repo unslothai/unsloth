@@ -4,12 +4,10 @@
 import { documentKind, isMarkdown, sheetDelimiter } from "@/components/file-viewer/kind";
 import { isAudioAttachment } from "@/features/chat/attachment-content";
 
-/** "document": shown as it looks (pages, a grid, slides or rendered markdown), not as text. */
 export type AttachmentPreviewKind = "image" | "audio" | "video" | "text" | "document";
 
 export type AttachmentAudioPart = { data: string; format: string };
 
-/** A sent clip's file part: raw base64, or a data URL, under a video MIME type. */
 export type AttachmentVideoPart = { data: string; mimeType: string };
 
 type AttachmentContentPart = {
@@ -35,7 +33,6 @@ export type AttachmentSelection = {
 
 const VIDEO_MIME = /^video\//i;
 
-/** Whether the viewer has content: the file, a kept original, or full text (markdown, CSV). */
 function isViewableDocument(
   name: string,
   contentType: string | undefined,

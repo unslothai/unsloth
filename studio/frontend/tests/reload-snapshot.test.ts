@@ -1428,7 +1428,6 @@ test("carries live form state, except what sensitive fields hide", () => {
     attachmentPreviewSource,
     /AttachmentPreviewDialog[\s\S]*?redactFromReload/,
   );
-  // Each opens the shared viewer with the flag, and the viewer marks its portaled dialog.
   for (const dialog of [
     "AttachmentImageDialog",
     "AttachmentTextDialog",

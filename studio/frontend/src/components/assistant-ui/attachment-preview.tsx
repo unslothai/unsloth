@@ -3,9 +3,6 @@
 
 "use client";
 
-// Every attachment opens in the Library's viewer, from the composer and from a sent message:
-// images zoom as they do there, documents show their pages, grid or slides, source files their
-// highlighted code, web pages render, and clips and videos play. Nothing is read until a viewer opens.
 
 import {
   AttachmentDocumentDialog,
@@ -58,10 +55,8 @@ type TextPreviewState =
 
 const WEB_PAGE_NAME = /\.(html?|xhtml)$/i;
 
-/** A URL's bytes: an object URL for a composer file, a data URL for a sent one. */
 const fetchBlob = (src: string): Promise<Blob> => fetch(src).then((response) => response.blob());
 
-/** Scales text while still filling the pane, as the Library's viewer does. */
 const Zoomed: FC<{ scale: number; children: ReactNode }> = ({ scale, children }) => (
   <div className="size-full overflow-hidden">
     <div
@@ -155,7 +150,6 @@ const useAttachmentTextPreview = (
   return file ? fileState : sentState;
 };
 
-/** The Library's two view buttons for a page that has a source: its code, or rendered. */
 const ViewButton: FC<{
   label: string;
   active: boolean;
@@ -202,7 +196,7 @@ const AttachmentTextDialog: FC<
     [ready],
   );
   const truncated = Boolean(preview?.truncated || ready?.truncated);
-  // Highlighting stops at the transcript's ceiling, so a long file still opens without tokenizing.
+  // Highlighting stops at the transcript's ceiling so a long file opens without tokenizing.
   const language = useMemo(() => {
     if (!ready || !preview || preview.text.length > MAX_HIGHLIGHT_CHARS) return null;
     return attachmentTextLanguage(source.name, ready.label);
@@ -223,7 +217,6 @@ const AttachmentTextDialog: FC<
       truncated && "preview truncated",
     );
   }, [state.status, ready, preview, source, truncated]);
-  // The file itself, or a sent text file's whole text. Text pulled out of a PDF is not the file.
   // The preview caps a sent body, so the whole one is cut from the stored text on click.
   const { file, text: sentText } = source;
   const load = file
@@ -369,11 +362,9 @@ const AttachmentAudioDialog: FC<
   );
 };
 
-/** A sent clip's file part as a URL the player can read. The part may already be a data URL. */
 const attachmentVideoSrc = (video: AttachmentVideoPart): string =>
   video.data.startsWith("data:") ? video.data : `data:${video.mimeType};base64,${video.data}`;
 
-/** The player, and, as for audio, the only place a sent clip's data URL is built. */
 const AttachmentVideoBody: FC<{ source: AttachmentSource; onError: () => void }> = ({
   source,
   onError,
@@ -404,7 +395,6 @@ const AttachmentVideoDialog: FC<
       media={!failed}
       noun="video"
       redactFromReload={redactFromReload}
-      // Built on click, like the player's: a sent clip is only base64 until someone asks for it.
       load={
         file
           ? () => Promise.resolve(file)

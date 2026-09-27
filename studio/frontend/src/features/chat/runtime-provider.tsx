@@ -311,8 +311,6 @@ class VisionImageAdapter implements AttachmentAdapter {
       );
       externalModelLabel = externalSelection.modelId;
     }
-    // With no model loaded yet the image waits in the composer; the send path checks it against
-    // whichever model is loaded by then.
     const unavailableReason = !modelLoaded
       ? null
       : getImageInputUnavailableReason({

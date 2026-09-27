@@ -33,8 +33,7 @@ export function startLibraryChat(
 ): void {
   const nonce = createModelConfigHandoffRequestId();
   resetToNewChat();
-  // Offered once the new chat is on screen: from inside a chat, the composer that is open until
-  // then is the old thread's, and an offer drained early would attach the files there.
+  // Offered once the new chat is on screen: drained earlier it would attach to the old thread's composer.
   void navigate({ to: "/chat", search: { new: nonce } }).then(() => {
     requestAnimationFrame(() =>
       useLibraryChatHandoffStore.getState().offer(`single:${nonce}`, handoff),
