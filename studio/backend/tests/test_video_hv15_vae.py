@@ -107,3 +107,44 @@ def test_real_diffusers_block_is_recognised_when_installed():
             hv.causal_attention_mask(n_frame, n_hw, torch.bfloat16, "cpu", 1),
             cls.prepare_causal_attention_mask(n_frame, n_hw, torch.bfloat16, "cpu", batch_size = 1),
         )
+
+
+def test_mask_allocates_nothing_quadratic_besides_the_output():
+    """The stock loop allocates only the seq_len x seq_len mask; so must this (no seq_len x seq_len bool predicate)."""
+    from torch.utils._python_dispatch import TorchDispatchMode
+    from torch.utils._pytree import tree_leaves
+
+    class _Allocs(TorchDispatchMode):
+        def __init__(self):
+            super().__init__()
+            self.storages = []
+
+        def __torch_dispatch__(self, func, types, args = (), kwargs = None):
+            out = func(*args, **(kwargs or {}))
+            for t in tree_leaves(out):
+                if isinstance(t, torch.Tensor):
+                    self.storages.append((t.untyped_storage().data_ptr(), t.untyped_storage().nbytes()))
+            return out
+
+    n_frame, n_hw = 6, 32
+    seq_len = n_frame * n_hw
+    rec = _Allocs()
+    with rec:
+        mask = hv.causal_attention_mask(n_frame, n_hw, torch.bfloat16, "cpu", 2)
+    own = mask.untyped_storage().data_ptr()
+    assert [nb for ptr, nb in rec.storages if ptr != own and nb >= seq_len * seq_len] == []
+    assert torch.equal(mask, _stock(n_frame, n_hw, torch.bfloat16, "cpu", 2))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_mask_peak_cuda_memory_is_the_output_alone():
+    n_frame, n_hw = 6, 256
+    seq_len = n_frame * n_hw
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    base = torch.cuda.memory_allocated()
+    mask = hv.causal_attention_mask(n_frame, n_hw, torch.float32, "cuda", 1)
+    torch.cuda.synchronize()
+    extra = torch.cuda.max_memory_allocated() - base - mask.untyped_storage().nbytes()
+    # A seq_len x seq_len bool would be 2.36 MB here; the frame-level predicate is n_frame ** 2 bytes.
+    assert extra < seq_len * seq_len // 4

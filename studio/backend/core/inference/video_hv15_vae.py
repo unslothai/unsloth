@@ -28,13 +28,16 @@ def causal_attention_mask(
     device: Any,
     batch_size: Optional[int] = None,
 ) -> Any:
-    """``prepare_causal_attention_mask`` without the per-row loop: 0 where frame(col) <= frame(row), else -inf."""
+    """``prepare_causal_attention_mask`` without the per-row loop: 0 where frame(col) <= frame(row), else -inf.
+
+    The predicate is built per FRAME pair (n_frame x n_frame) and broadcast over the (n_hw, n_hw) blocks of a 4-D view
+    of the output, so the only seq_len x seq_len allocation is the mask itself, the same peak as the stock loop."""
     import torch
 
     seq_len = n_frame * n_hw
-    frame = torch.arange(seq_len, device = device) // n_hw
     mask = torch.zeros((seq_len, seq_len), dtype = dtype, device = device)
-    mask.masked_fill_(frame[None, :] > frame[:, None], float("-inf"))
+    later = torch.ones((n_frame, n_frame), dtype = torch.bool, device = device).triu_(1)
+    mask.view(n_frame, n_hw, n_frame, n_hw).masked_fill_(later[:, None, :, None], float("-inf"))
     if batch_size is not None:
         mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
     return mask
