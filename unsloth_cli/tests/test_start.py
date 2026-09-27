@@ -5127,13 +5127,70 @@ def test_write_opencode_config_fresh(tmp_path):
     assert provider["options"] == {"baseURL": f"{BASE}/v1", "apiKey": "sk-unsloth-abc"}
     # Context limit must be declared, or OpenCode treats it as 0 and disables compaction.
     assert provider["models"] == {
-        MODEL["id"]: {"name": MODEL["id"], "limit": {"context": 131072, "output": 8192}}
+        MODEL["id"]: {"name": MODEL["id"], "limit": {"context": 131072, "output": 32_000}}
     }
     assert config["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
     # Provider filters belong to the launch-time inline overlay, not this config writer.
     assert "disabled_providers" not in config
     # Compaction buffer scaled to ~10% of the window (compact near 90%).
     assert config["compaction"] == {"auto": True, "reserved": 131072 // 10}
+
+
+@pytest.mark.parametrize(
+    "window, max_tokens, expected",
+    [
+        # A quarter of a small window, so OpenCode (usable = context - output) still compacts
+        # before the server overflows.
+        (16_384, None, 4_096),
+        (32_768, None, 8_192),
+        # Large windows are no longer pinned at 8,192 (#12009): long reasoning and tool-call
+        # turns get OpenCode's own 32,000 ceiling.
+        (131_072, None, 32_000),
+        (143_616, None, 32_000),
+        # An explicit --max-tokens wins, bounded to half the window.
+        (143_616, 65_536, 65_536),
+        (143_616, 200_000, 71_808),
+        (32_768, 4_000, 4_000),
+    ],
+)
+def test_opencode_output_limit(window, max_tokens, expected):
+    assert start.opencode_output_limit(window, max_tokens) == expected
+
+
+def test_opencode_max_tokens_sets_limit_and_raises_opencode_ceiling(fake_studio, tmp_path):
+    # OpenCode sends min(limit.output, 32000), so a bigger --max-tokens also has to lift that
+    # ceiling or the flag would do nothing.
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "65536"]
+    )
+    assert result.exit_code == 0, result.output
+    config_path = tmp_path / "agents" / "opencode" / "opencode.json"
+    config = json.loads(config_path.read_text())
+    limit = config["provider"][start._OPENCODE_PROVIDER]["models"][MODEL["id"]]["limit"]
+    assert limit == {"context": 131072, "output": 65536}
+    _assert_env_set(result.output, "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "65536")
+
+
+def test_opencode_max_tokens_under_ceiling_leaves_opencode_env_alone(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "16000"]
+    )
+    assert result.exit_code == 0, result.output
+    config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    limit = config["provider"][start._OPENCODE_PROVIDER]["models"][MODEL["id"]]["limit"]
+    assert limit["output"] == 16000
+    assert "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX" not in result.output
+
+
+def test_opencode_max_tokens_past_half_the_window_is_capped(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "120000"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "leaves too little" in result.output
+    config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    limit = config["provider"][start._OPENCODE_PROVIDER]["models"][MODEL["id"]]["limit"]
+    assert limit["output"] == 131072 // 2
 
 
 def test_write_opencode_config_preserves_and_idempotent(tmp_path):
