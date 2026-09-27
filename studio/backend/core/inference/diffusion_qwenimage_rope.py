@@ -52,10 +52,9 @@ def _patch_table(index: int, logger: Any = None) -> bool:
     if entry is None:
         return False
     with _LOCK:
-        if getattr(getattr(entry, "func", None), "__unsloth_real_rope__", False):
-            return True
         stock = getattr(entry, "func", None)
-        if (
+        patched = getattr(stock, "__unsloth_real_rope__", False)
+        if not patched and (
             stock is None
             or dict(getattr(entry, "keywords", {}) or {}) != {"use_real": False}
             or q21._digest(stock) not in _FINGERPRINT
@@ -63,10 +62,13 @@ def _patch_table(index: int, logger: Any = None) -> bool:
             if logger is not None:
                 logger.info("diffusion.qwenimage_rope: complex RoPE kept: RoPE table entry differs")
             return False
+        # Per device, even once the table is patched: the wrapper keeps the complex path on an unprobed index.
         if index not in q21._FUSION:
             q21._FUSION[index] = q21.probe_fusion(torch.device("cuda", index))
         if q21._FUSION[index] is None:
             return False
+        if patched:
+            return True
         q21._NEEDS_EMULATE[0] = q21._addcmul_lowering()[1]
         wrapper = q21._WRAPPERS.get(stock)
         if wrapper is None:
@@ -82,7 +84,10 @@ def _patch_table(index: int, logger: Any = None) -> bool:
 
 def install(transformer: Any, logger: Any = None) -> bool:
     """Before the first compile. Patches now if the DiT is already on the GPU, else at its first forward."""
-    if disabled() or type(transformer).__name__ != "QwenImageTransformer2DModel":
+    if disabled():
+        uninstall()  # a previous load may have patched the process-global table
+        return False
+    if type(transformer).__name__ != "QwenImageTransformer2DModel":
         return False
     from .diffusion_int8_fused import resident_cuda_device, run_on_first_call
 
@@ -102,7 +107,11 @@ def install(transformer: Any, logger: Any = None) -> bool:
     return True
 
 
-def uninstall() -> None:
+def uninstall(transformer: Any = None) -> None:
+    """Restore the stock table entry (process-global); drop ``transformer``'s pending first-forward install."""
+    if transformer is not None:
+        from .diffusion_int8_fused import cancel_first_call
+        cancel_first_call(transformer, "qwenimage_rope")
     with _LOCK:
         for table, entry in list(_STOCK.values()):
             table["cuda"] = entry
