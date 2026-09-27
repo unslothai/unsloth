@@ -296,6 +296,8 @@ _OVERSIZE_TOKENS_RE = _re.compile(
 
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
+    if isinstance(exc, context_refusal.ContextBudgetExceeded):
+        return str(exc)
     if isinstance(exc, httpx.ReadTimeout):
         if "stopped producing tokens" in str(exc).lower():
             return (
@@ -809,6 +811,19 @@ def _openai_stream_error_chunk(exc) -> dict:
     if _cls is False:
         return openai_error_body(_friendly_error(exc), status = 400)
     return openai_error_body(_friendly_error(exc), status = 500)
+
+
+def _context_budget_http_error(exc) -> "HTTPException":
+    """Context refusal as the same 400 llama.cpp returns (raised before any token)."""
+    return HTTPException(
+        status_code = 400,
+        detail = openai_error_body(
+            _friendly_error(exc),
+            status = 400,
+            code = "context_length_exceeded",
+            param = "messages",
+        ),
+    )
 
 
 def _openai_stream_error_sse(error: dict) -> str:
@@ -1569,6 +1584,8 @@ def _classify_llama_generation_error(exc: Exception) -> Optional[bool]:
     # explanation says "context window" while making the point that the window is
     # SHARED, so the heuristic below would read it as an overflow and set the
     # client compacting a conversation that was never too long.
+    if isinstance(exc, context_refusal.ContextBudgetExceeded):
+        return True
     if isinstance(exc, LlamaStreamError):
         # Only an oversize refusal is an overflow. Everything else stays None, which
         # keeps it a 500: KV starvation is server capacity exhaustion and an in-band
@@ -7575,6 +7592,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_kv_quant_eligibility = None,
         mlx_kv_quant_reason = None,
         mlx_kv_quant_note = None,
+        mlx_context_budget = None,
         chat_template_override_reason = None,
         # llama.cpp allocates the window it reports: bounded by construction.
         context_length_enforced = True,
@@ -9013,6 +9031,16 @@ def disable_openai_auto_switch_for_request(scope) -> None:
         scope[_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY] = True
 
 
+async def _keyless_caller_held_back(fastapi_request) -> bool:
+    """Keyless caller that may not POST /api/inference/load itself, so it may not switch models."""
+    from auth.authentication import request_admitted_without_credential
+    from utils.keyless_api_access import keyless_request_may_load_models
+
+    if not request_admitted_without_credential(fastapi_request):
+        return False
+    return not await keyless_request_may_load_models(fastapi_request)
+
+
 def _automatic_model_load_may_run() -> bool:
     """True when a request can trigger an automatic load: either resolver-based
     auto-switch is on, or a standalone idle TTL can reload an idle-freed model. The
@@ -9176,9 +9204,9 @@ async def _no_model_loaded_error(
 ):
     """``(status, detail)`` for the /v1 sites that fail because nothing is loaded.
 
-    Changes only the case the generic text gets wrong (auto-switch on, a model
-    named, that name resolving to nothing local, so the switch silently did
-    nothing) into a 404 model_not_found. Everything else keeps ``status`` and the
+    Changes only the cases the generic text gets wrong (auto-switch on, a model named):
+    a name resolving to nothing local becomes a 404 model_not_found, and a downloaded one
+    a held-back keyless caller may not load says so. Everything else keeps ``status`` and the
     :func:`_no_model_loaded_detail` text verbatim.
     """
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
@@ -9206,6 +9234,11 @@ async def _no_model_loaded_error(
             # Resident but on a backend this endpoint can't use, so "not downloaded" is false.
             return status, _no_model_loaded_detail(base)
         if await asyncio.to_thread(resolve_local_gguf, named) is not None:
+            if fastapi_request is not None and await _keyless_caller_held_back(fastapi_request):
+                return status, (
+                    f"No model is loaded, and keyless API access cannot load '{named}' by "
+                    "request. Load it in Unsloth Studio, or send an Unsloth API key."
+                )
             # Resolvable but unloaded: the switch failed, which the generic text covers.
             return status, _no_model_loaded_detail(base)
         message = await _unavailable_model_message(named)
@@ -9841,7 +9874,19 @@ async def _reject_unservable_model(
         gguf_hub_repo = await asyncio.to_thread(_resident_id_is_namespaced)
     if not (quantified or here or gguf_hub_repo):
         return
-    if switchable:
+    if (
+        switchable
+        and fastapi_request is not None
+        and await _keyless_caller_held_back(fastapi_request)
+    ):
+        # Switching is on but not for this caller, so a retry can never succeed.
+        status_code, code = 404, "model_not_found"
+        message = (
+            f"The model '{requested_model}' is downloaded but not loaded, and keyless API "
+            "access can only use the loaded model. Send an Unsloth API key to switch "
+            "models by request, or load it in Unsloth Studio."
+        )
+    elif switchable:
         # On disk and switching allowed, so the swap failed: the resident model is wrong weights.
         status_code, code = 503, "model_switch_failed"
         message = (
@@ -10107,11 +10152,8 @@ async def _maybe_auto_switch_model(
             _claim_slot_for_non_preview(fastapi_request)
         return
 
-    from auth.authentication import request_admitted_without_credential
-
-    keyless_caller = request_admitted_without_credential(fastapi_request)
-    # the keyless dialog offers the loaded model, so a stranger swaps or fetches nothing
-    if auto_switch_on and keyless_caller:
+    keyless_held_back = await _keyless_caller_held_back(fastapi_request)
+    if auto_switch_on and keyless_held_back:
         auto_switch_on = False
         if not idle_unload_is_configured():
             await _reject_unservable_model(requested_model, fastapi_request)
@@ -10181,11 +10223,11 @@ async def _maybe_auto_switch_model(
             else:  # pre-3-tuple stash: fall back to the path as the override key
                 target_id, variant = last
                 override_id = target_id
-            # A credential-less caller may restore only the model it explicitly
+            # A held-back keyless caller may restore only the model it explicitly
             # named (or the reload-only sentinel used when the model is omitted).
             # Check before loading so an unrelated name cannot trigger an expensive
             # stash restore and only then receive the normal mismatch response.
-            if keyless_caller and not reload_only:
+            if keyless_held_back and not reload_only:
                 requested_base, requested_variant = split_model_ref(requested_model)
                 if not _matches_any(
                     requested_base, (target_id, override_id, public_model_id(target_id))
@@ -16596,6 +16638,7 @@ async def _load_model_impl(
                     ),
                     max_context_length = _positive_int_or_none(_model_info.get("max_context_length")),
                     context_length_enforced = _model_info.get("context_length_enforced"),
+                    mlx_context_budget = _model_info.get("mlx_context_budget"),
                     chat_template = _chat_template,
                 )
 
@@ -17404,6 +17447,7 @@ async def _load_model_impl(
             native_context_length = _positive_int_or_none(_model_info.get("native_context_length")),
             max_context_length = _positive_int_or_none(_model_info.get("max_context_length")),
             context_length_enforced = _model_info.get("context_length_enforced"),
+            mlx_context_budget = _model_info.get("mlx_context_budget"),
             chat_template = _chat_template,
         )
 
@@ -19846,6 +19890,7 @@ async def get_status(current_subject: str):
             native_context_length = _positive_int_or_none(model_info.get("native_context_length")),
             max_context_length = _positive_int_or_none(model_info.get("max_context_length")),
             context_length_enforced = model_info.get("context_length_enforced"),
+            mlx_context_budget = model_info.get("mlx_context_budget"),
             # 0 is an answer (size it yourself); None means no request is recorded. Either
             # spelling: the route stamps max_seq_length_requested on every non-GGUF load,
             # and the MLX mirror carries requested_context_length.
@@ -26158,6 +26203,9 @@ async def produce_openai_chat_completions(
                         cancel_event.set()
                         api_monitor.finish(monitor_id, "cancelled")
                         raise
+                    except context_refusal.ContextBudgetExceeded as e:
+                        api_monitor.fail(monitor_id, _friendly_error(e))
+                        yield _openai_stream_error_sse(_openai_stream_error_chunk(e))
                     except Exception as e:
                         logger.error(f"Error during audio input streaming: {e}", exc_info = True)
                         _msg = _friendly_error(e)
@@ -26214,6 +26262,9 @@ async def produce_openai_chat_completions(
                     raise
                 except HTTPException:
                     raise
+                except context_refusal.ContextBudgetExceeded as e:
+                    api_monitor.fail(monitor_id, _friendly_error(e))
+                    raise _context_budget_http_error(e)
                 except Exception as e:
                     api_monitor.fail(monitor_id, _friendly_error(e))
                     raise
@@ -29041,6 +29092,10 @@ async def produce_openai_chat_completions(
                 _msg = _friendly_gen_stream_error(exc)
                 api_monitor.fail(monitor_id, _msg)
                 yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
+            except context_refusal.ContextBudgetExceeded as e:
+                backend.reset_generation_state(cancel_event)
+                api_monitor.fail(monitor_id, _friendly_error(e))
+                yield _openai_stream_error_sse(_openai_stream_error_chunk(e))
             except Exception:
                 backend.reset_generation_state(cancel_event)
                 # Generic wire message; full trace stays in the log (CWE-209:
@@ -29184,6 +29239,10 @@ async def produce_openai_chat_completions(
             backend.reset_generation_state(cancel_event)
             api_monitor.fail(monitor_id, str(exc.detail))
             raise
+        except context_refusal.ContextBudgetExceeded as e:
+            backend.reset_generation_state(cancel_event)
+            api_monitor.fail(monitor_id, _friendly_error(e))
+            raise _context_budget_http_error(e)
         except Exception:
             backend.reset_generation_state(cancel_event)
             # CWE-209: generic detail; full trace in log.
@@ -29238,16 +29297,30 @@ async def produce_openai_chat_completions(
     if _continue_final_message(payload):
         gen_kwargs["continue_final_message"] = True
 
-    # ── Client-tool passthrough (safetensors + MLX) ──────────────
-    # Client tools (or tool-result history) without server-side tools: render
-    # tools into the template, generate one turn, heal text-form calls (#6801).
-    # supports_tools=False falls through to plain relay (GGUF gate parity).
+    # Client-tool passthrough (safetensors + MLX): render client tools, generate one turn,
+    # heal text-form calls (#6801). A catalog the model cannot render is refused, as on GGUF.
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
     # Classified against the processor body above, before the server loop's own gate:
     # that gate reads the same flag, and deciding it here left the loop enabled on a
     # tokenizer body that renders tools while generation used a processor body that
     # does not, so the model was never shown the schemas the loop was driving.
     _sf_supports_tools = _sf_features.get("supports_tools", False)
+    if _has_active_tool_catalog and (_sf_is_gptoss or not _sf_supports_tools):
+        raise _reject(
+            400,
+            openai_error_body(
+                (
+                    "Client-supplied tools are not supported for gpt-oss on this backend; "
+                    "load a GGUF build of the model."
+                    if _sf_is_gptoss
+                    else "Client-supplied tools require a chat template with tool-call support; "
+                    "the current model/template does not advertise tools."
+                ),
+                status = 400,
+                code = "unsupported_parameter",
+                param = "tools",
+            ),
+        )
     # Gate on _sf_use_tools (did the server-side path claim the request?), not
     # raw mcp_enabled: an empty MCP registry must not silently drop client tools.
     _sf_client_tools = (
@@ -29681,6 +29754,10 @@ async def produce_openai_chat_completions(
                     if _refused
                     else {"error": {"message": _msg, "type": "server_error"}}
                 )
+            except context_refusal.ContextBudgetExceeded as e:
+                backend.reset_generation_state(cancel_event)
+                api_monitor.fail(monitor_id, _friendly_error(e))
+                yield _openai_stream_error_sse(_openai_stream_error_chunk(e))
             except Exception as e:
                 backend.reset_generation_state(cancel_event)
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
@@ -29993,6 +30070,10 @@ async def produce_openai_chat_completions(
                     ),
                 )
             raise HTTPException(status_code = 500, detail = _msg)
+        except context_refusal.ContextBudgetExceeded as e:
+            backend.reset_generation_state(cancel_event)
+            api_monitor.fail(monitor_id, _friendly_error(e))
+            raise _context_budget_http_error(e)
         except Exception as e:
             backend.reset_generation_state(cancel_event)
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
