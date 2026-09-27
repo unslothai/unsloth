@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A GGUF repo whose Hub listing cannot be read must not be routed to Transformers (#11551).
-
-``detect_gguf_model_remote`` returned None both for "no GGUF in this repo" and for "the
-Hub refused or never answered", so a GGUF-only repo fell through to the Transformers tier
-and failed with "Both AutoConfig and PeftConfig loading failed", naming neither the
-format nor the Hub failure. No GPU, no network.
-"""
+"""A GGUF repo whose Hub listing cannot be read must not be routed to Transformers (#11551)."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,7 +27,11 @@ GGUF = "LFM2.5-VL-1.6B-UD-Q4_K_XL.gguf"
 class RepositoryNotFoundError(Exception):
     """Matched by type name, as detect_gguf_model_remote does."""
 
-    def __init__(self, message, status_code = 401):
+    def __init__(
+        self,
+        message,
+        status_code = 401,
+    ):
         super().__init__(message)
         self.response = SimpleNamespace(status_code = status_code)
 
@@ -100,7 +98,6 @@ def test_hub_401_on_gguf_repo_raises_clear_error(monkeypatch):
     assert "RepositoryNotFoundError, HTTP 401" in msg
     assert "token in Settings" in msg and "HF_ENDPOINT" in msg
     assert "AutoConfig" not in msg
-    # A ValueError, so /load and /validate answer 400 with this text.
     assert isinstance(exc_info.value, ValueError)
 
 
@@ -149,7 +146,6 @@ def test_non_gguf_repo_with_hub_failure_keeps_todays_behaviour(monkeypatch, fail
 
 
 def test_gguf_repo_without_gguf_files_keeps_todays_behaviour(monkeypatch):
-    # A successful listing with no GGUF is a real answer, not a Hub failure.
     monkeypatch.setattr(huggingface_hub, "model_info", _hub(["config.json", "model.safetensors"]))
     config = ModelConfig.from_identifier("org/odd-GGUF")
     assert config is not None and not config.is_gguf

@@ -1161,8 +1161,7 @@ _hub_model_info_scope: ContextVar[Optional[_HubModelInfoScope]] = ContextVar(
 
 # Bound the Hub lookup so a DNS-dead session fails fast to the cache instead of hanging on retries.
 _HUB_MODEL_INFO_TIMEOUT = 15.0
-# The GGUF listing picks the whole route, and it was unbounded before the bound above: a link
-# slower than 15s could never pass three identical reads and the repo fell to Transformers.
+# Unbounded before #10230; three identical 15s reads never pass on a slow link (#11551).
 _GGUF_LISTING_TIMEOUTS = (_HUB_MODEL_INFO_TIMEOUT, 30.0, 60.0)
 
 
@@ -1215,12 +1214,18 @@ def _is_timeout_error(exc: BaseException) -> bool:
     return any("Timeout" in cls.__name__ for cls in type(exc).__mro__)
 
 
-def _hub_model_info_slow_link(repo_id: str, hf_token: HfTokenArg = None, *, files_metadata: bool = False):
-    """``_hub_model_info``, re-read with the next ``_GGUF_LISTING_TIMEOUTS`` bound only after a
-    timeout; a refusal or a dead DNS still fails on the first attempt."""
+def _hub_model_info_slow_link(
+    repo_id: str,
+    hf_token: HfTokenArg = None,
+    *,
+    files_metadata: bool = False,
+):
+    """Re-read with a longer bound only after a timeout; a refusal fails on the first attempt."""
     for attempt, timeout in enumerate(_GGUF_LISTING_TIMEOUTS):
         try:
-            return _hub_model_info(repo_id, hf_token, files_metadata = files_metadata, timeout = timeout)
+            return _hub_model_info(
+                repo_id, hf_token, files_metadata = files_metadata, timeout = timeout
+            )
         except Exception as e:
             if attempt == len(_GGUF_LISTING_TIMEOUTS) - 1 or not _is_timeout_error(e):
                 raise
@@ -3359,15 +3364,10 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
 
 
 class GgufRepoUnreadableError(ValueError):
-    """A GGUF-named Hub repo whose file listing could not be read.
-
-    A ValueError so /load and /validate return it as a 400 with this text, instead of
-    the Transformers "Both AutoConfig and PeftConfig loading failed" the misroute gave (#11551).
-    """
+    """A ValueError so /load and /validate answer 400 with its text (#11551)."""
 
 
-# Set by from_identifier around its detect_gguf_model_remote call; receives the Hub error
-# when the None it gets back means "could not list the repo" rather than "no GGUF in it".
+# from_identifier's sink for the Hub error behind a detect_gguf_model_remote None.
 _gguf_remote_detect_failure: ContextVar[Optional[List[Exception]]] = ContextVar(
     "gguf_remote_detect_failure", default = None
 )
@@ -3379,15 +3379,13 @@ def _note_gguf_remote_detect_failure(error: Exception) -> None:
         sink.append(error)
 
 
-# A repo NAME carrying "gguf" as its own token: unsloth/X-GGUF, org/x-gguf, org/gguf-x.
 _GGUF_REPO_NAME_RE = _re.compile(r"(?:^|[-_.])gguf(?:$|[-_.])", _re.IGNORECASE)
 
 
 def _looks_like_gguf_repo(repo_id: str, gguf_variant: Optional[str] = None) -> bool:
     if _GGUF_REPO_NAME_RE.search(repo_id.rstrip("/").rsplit("/", 1)[-1]):
         return True
-    # A variant echoed back for a cached Transformers repo must still reach Transformers,
-    # which can load it from that cache.
+    # A variant echoed back for a cached Transformers repo still loads through Transformers.
     return bool(gguf_variant) and not any(
         (snap / "config.json").is_file() for snap in _iter_hf_cache_snapshots(repo_id)
     )
@@ -3420,8 +3418,7 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
     Retries (3 attempts bounded 15s/30s/60s, 1s/2s backoff) on transient HF Hub failures: a
     silent None would make the caller treat a GGUF-only repo as non-GGUF and
     fall through to MLX on Apple Silicon. Offline falls back to the local cache.
-    A None from a failed Hub read (not from a listing without GGUFs) is also
-    reported to ``_gguf_remote_detect_failure`` when a caller has set it.
+    A None from a failed Hub read is also reported to ``_gguf_remote_detect_failure``.
     """
     if _env_offline():
         return _detect_gguf_from_hf_cache(repo_id)
@@ -4356,16 +4353,17 @@ class ModelConfig:
                 gguf_filename = detect_gguf_model_remote(identifier, hf_token = hf_token)
             finally:
                 _gguf_remote_detect_failure.reset(failure_token)
-            # "Could not list the repo" is not "no GGUF in it". For a GGUF-named repo the
-            # fall-through below reaches Transformers, whose missing config.json error names
-            # neither the repo's format nor the Hub failure that caused it (#11551). A
-            # refused repo is still never served from cache: that is the Hub's call.
+            # A failed listing is not "no GGUF": the fall-through ends in Transformers' config.json
+            # error (#11551). A refused repo is still never served from cache.
             if not gguf_filename and _looks_like_gguf_repo(identifier, gguf_variant):
                 if detect_failures:
                     raise GgufRepoUnreadableError(
                         _gguf_repo_unreadable_message(identifier, detect_failures[-1])
                     ) from None
-                if _env_offline() and next(iter(_iter_hf_cache_snapshots(identifier)), None) is None:
+                if (
+                    _env_offline()
+                    and next(iter(_iter_hf_cache_snapshots(identifier)), None) is None
+                ):
                     raise GgufRepoUnreadableError(_gguf_repo_unreadable_message(identifier, None))
             if gguf_filename:
                 # Preflight: verify the llama-server binary exists before a multi-GB download.
