@@ -53,7 +53,8 @@ def _extract_function(name: str) -> str:
 
 def test_the_release_installer_copies_through_copy_uvset():
     body = _extract_function("Install-UvFromRelease")
-    assert "Copy-UvSet -Work $work -DestDir $destDir" in body
+    # $srcRoot: the archive may unpack into a subfolder, and main resolves that before the probe.
+    assert "Copy-UvSet -Work $srcRoot -DestDir $destDir" in body
     # The verdict probe keeps its own message; the copy no longer borrows it.
     assert body.count("could not run on this machine") == 1
     assert "could not be replaced" in body
