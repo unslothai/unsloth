@@ -50,6 +50,9 @@ param(
     [int] $Port = 8888
 )
 
+# A relative -WorkDir resolves against this shell's location once, so every path below is absolute.
+$WorkDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkDir)
+
 $ErrorActionPreference = 'Stop'
 
 $NOISG_GUID = '{5283AC0F-FFF1-49AE-ADA1-8A933130CAD6}'
@@ -1478,6 +1481,8 @@ function Invoke-Collect {
     $stage = Join-Path $WorkDir ".stage-$Label"
     Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    # Get-ChildItem returns absolute FullName values even for a relative -WorkDir.
+    $dir = (Get-Item -LiteralPath $dir).FullName
     foreach ($item in Get-ChildItem -LiteralPath $dir -Recurse -File) {
         $rel = $item.FullName.Substring($dir.Length).TrimStart('\')
         if ($rel -like 'rollback\*' -or $rel -like 'raw-logs\*') { continue }

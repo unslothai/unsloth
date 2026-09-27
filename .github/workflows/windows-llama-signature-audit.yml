@@ -335,6 +335,7 @@ jobs:
           } else {
             Write-Host '::warning::llama-quantize.exe is not in the bundle, so only llama-server was loaded'
           }
+          Add-Content -Path $env:GITHUB_ENV -Value 'EXERCISE_COMPLETED=true'
 
       - name: Verdict
         if: always() && steps.control.outputs.control_fired == 'true'
@@ -413,6 +414,13 @@ jobs:
           }
           if ($rows) { $rows | Format-Table -AutoSize | Out-String | Write-Host }
 
+          # A process-creation error throws before its exit code can be recorded.
+          if ($ours.Count -eq 0 -and $env:EXERCISE_COMPLETED -ne 'true') {
+            Write-Host '::error::the runtime exercise did not finish; no verdict'
+            "## App Control audit (signature-only)`n`nNo verdict: the runtime exercise did not finish.`n" |
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            exit 1
+          }
           # An allow needs a load that completed. --help may exit 1; a negative code is the loader's NTSTATUS.
           if ($ours.Count -eq 0 -and $env:QUANTIZE_EXIT -and [int]$env:QUANTIZE_EXIT -lt 0) {
             Write-Host "::error::llama-quantize failed to load (exit $env:QUANTIZE_EXIT) and no 3076 names the shipped runtime; no verdict"

@@ -8,6 +8,7 @@ import fnmatch
 import functools
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,7 @@ import threading
 from pathlib import Path
 
 import pytest
+import yaml
 
 from unsloth_pwsh_runner import run_pwsh
 
@@ -2278,3 +2280,84 @@ def test_the_event_poll_waits_for_the_count_to_settle():
     verdict = _verdict()
     _has(verdict, "$ours.Count -gt 0 -and $ours.Count -eq $seen) { break }", "$seen = $ours.Count")
     _lacks(verdict, "if ($ours.Count -gt 0) { break }")
+
+
+@pytest.mark.parametrize("workdir", [".\\evidence", "C:\\review\\evidence"])
+def test_the_archive_filter_holds_for_a_relative_workdir(tmp_path, workdir):
+    """A relative -WorkDir made $dir shorter than Get-ChildItem's absolute FullName, so raw-logs and rollback reached the zip."""
+    source = _text(PS1)
+    assert "$WorkDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkDir)" in source
+    block = source[source.index('    $stage = Join-Path $WorkDir ".stage-$Label"') :]
+    block = block[: block.index("        $target = Join-Path $stage $rel")]
+    prelude = r"""
+param([string]$WorkDir)
+$ErrorActionPreference = 'Stop'
+$Label = 'run'
+function Join-Path { param($Path, $ChildPath) "$Path\$ChildPath" }
+function Remove-Item { }
+function New-Item { }
+function Get-Item { [pscustomobject]@{ FullName = 'C:\review\evidence\run' } }
+function Get-ChildItem {
+  foreach ($name in @('raw-logs\studio-start.log', 'rollback\preexisting-policy.cip', 'studio-logs\studio-start.log', 'scenario-results.json')) {
+    [pscustomobject]@{ FullName = "C:\review\evidence\run\$name" }
+  }
+}
+$dir = Join-Path $WorkDir $Label
+"""
+    script = tmp_path / "stage.ps1"
+    script.write_text(prelude + block + "Write-Output $rel\n}\n", encoding = "utf-8")
+    result = _run_ps(script, "-WorkDir", workdir)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["studio-logs\\studio-start.log", "scenario-results.json"], result.stdout
+
+
+@pytest.mark.parametrize("quantize_mode", ["start-failure", "exit-0", "exit-1", "loader-failure"])
+def test_the_ci_allow_needs_an_exercise_that_finished(tmp_path, quantize_mode):
+    """A llama-quantize that failed to start left no QUANTIZE_EXIT, and an empty window then printed a clean allow."""
+    if shutil.which("pwsh") is None:
+        pytest.skip("pwsh is required")
+    steps = yaml.safe_load(_text(WORKFLOW))["jobs"]["code-integrity"]["steps"]
+    exercise = next(s["run"] for s in steps if s.get("id") == "exercise")
+    verdict = next(s["run"] for s in steps if s.get("name") == "Verdict")
+    env = dict(
+        os.environ,
+        GITHUB_ENV = str(tmp_path / "env"),
+        GITHUB_STEP_SUMMARY = str(tmp_path / "summary"),
+        RELEASE_TAG = "fixed-test-release",
+        AUDIT_START = "2026-09-27T00:00:00Z",
+        SAC_POLICY_ID = "{5283AC0F-FFF1-49AE-ADA1-8A933130CAD6}",
+        ENFORCE = "true",
+    )
+    for name in ("QUANTIZE_EXIT", "EXERCISE_EXIT", "EXERCISE_COMPLETED", "RUNTIME_DIR"):
+        env.pop(name, None)
+    quantize = {
+        "start-failure": "throw 'process creation refused (simulated)'",
+        "exit-0": "$global:LASTEXITCODE = 0",
+        "exit-1": "$global:LASTEXITCODE = 1",
+        "loader-failure": "$global:LASTEXITCODE = -1073741701",
+    }[quantize_mode]
+    prelude = r"""
+function gh { $global:LASTEXITCODE = 0; if ($args[1] -eq 'view') { 'llama-windows-x64-cpu.zip' } }
+function Expand-Archive { }
+function Get-ChildItem {
+  param($LiteralPath, [switch]$Recurse, $Filter)
+  if ($Filter -eq 'llama-server.exe') {
+    [pscustomobject]@{ FullName = 'Test-Server'; Directory = [pscustomobject]@{ FullName = 'C:\runtime' } }
+  } else { [pscustomobject]@{ FullName = 'Test-Quantize' } }
+}
+function Test-Server { $global:LASTEXITCODE = 0; 'version: test' }
+function Test-Quantize { QUANTIZE }
+""".replace("QUANTIZE", quantize)
+    script = tmp_path / "exercise.ps1"
+    script.write_text(prelude + exercise, encoding = "utf-8")
+    ran = subprocess.run(["pwsh", "-NoProfile", "-File", str(script)], env = env, capture_output = True, text = True)
+    assert (ran.returncode != 0) == (quantize_mode == "start-failure"), ran.stdout + ran.stderr
+    for line in (tmp_path / "env").read_text(encoding = "utf-8-sig").splitlines():
+        key, value = line.split("=", 1)
+        env[key] = value
+    script = tmp_path / "verdict.ps1"
+    script.write_text("function Start-Sleep { }\nfunction Get-WinEvent { }\n" + verdict, encoding = "utf-8")
+    ran = subprocess.run(["pwsh", "-NoProfile", "-File", str(script)], env = env, capture_output = True, text = True)
+    refuse = quantize_mode in ("start-failure", "loader-failure")
+    assert (ran.returncode != 0) == refuse, ran.stdout
+    assert ("No binary in the shipped runtime would be refused" not in ran.stdout) == refuse, ran.stdout
