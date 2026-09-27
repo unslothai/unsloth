@@ -234,6 +234,16 @@ test("an attachment's viewer mounts on first open, not with every tile", async (
   assert.match(viewer, /\{mounted && \(\n\s*<MediaViewer/);
 });
 
+test("a file loaded or handed off across a sign-out never reaches the next account", async () => {
+  const start = await readSrcAsync("features/library/start-chat.ts");
+  const fn = start.slice(start.indexOf("export function startLibraryChat("));
+  const guard = fn.indexOf("if (getAuthSessionEpoch() !== epoch) return;");
+  assert.ok(guard !== -1 && guard < fn.indexOf(".offer("), "the deferred offer checks the session first");
+  const viewer = await readSrcAsync("components/assistant-ui/attachment-document-dialog.tsx");
+  assert.match(viewer, /return getAuthSessionEpoch\(\) === epoch \? blob : null;/);
+  assert.doesNotMatch(viewer, /void load\(\)/);
+});
+
 test("the viewer's chat and download report a file they could not read", async () => {
   const viewer = await readSrcAsync("components/assistant-ui/attachment-document-dialog.tsx");
   assert.match(viewer, /\.catch\(\(\) => toast\.error\(`Could not read \$\{name\}`\)\)/);
