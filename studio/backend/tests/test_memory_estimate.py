@@ -936,7 +936,7 @@ class TestEstimateMemoryRoute:
         self._mlx_target(monkeypatch, str(tmp_path))
         priced = []
         monkeypatch.setattr(
-            ri, "_mlx_estimate_fitted_context", lambda *a, **kw: priced.append(a) or (None, None)
+            ri, "_mlx_estimate_fitted_context", lambda *a, **kw: priced.append(a) or None
         )
         monkeypatch.setattr(native_audio, "is_native_audio_model", lambda name: name == "org/tts")
         resp = _estimate(model_path = "org/tts")
@@ -1191,18 +1191,13 @@ class TestEstimateMemoryRoute:
         write = (tmp_path / "config.json").write_text
         write(json.dumps({"max_position_embeddings": 262_144}))
         self._mlx_target(monkeypatch, str(tmp_path))
-        asked, fit = {}, {"answer": (24_576, None, True)}
+        asked, fit = {}, {"answer": 24_576}
         monkeypatch.setattr(
             mlx_inference,
             "mlx_fit_to_memory",
-            lambda model_dir, ceiling, **kw: asked.update(
-                kw,
-                ceiling = ceiling,
-                dir = model_dir,
-                probes_before = len(widths),
-                refused = kw["applies"]() if fit.get("ask", True) else None,
-            )
-            or fit["answer"],
+            lambda model_dir, ceiling, **kw: (
+                asked.update(kw, ceiling = ceiling, dir = model_dir) or fit["answer"]
+            ),
         )
         seen = self._record_breakdown(
             monkeypatch,
@@ -1212,77 +1207,43 @@ class TestEstimateMemoryRoute:
             total_bytes = 3,
             gpu_bytes = 3,
         )
-        probed, widths = [], []
+        widths, refuses = [], {"answer": False}
         monkeypatch.setattr(
             mlx_inference,
             "mlx_kv_quant_is_refused",
-            lambda *a: widths.append(a) or False,
+            lambda *a: widths.append(a) or refuses["answer"],
         )
-        monkeypatch.setattr(
-            mlx_inference,
-            "mlx_bound_would_be_enforced",
-            lambda *a: probed.append(a) or True,
-        )
+
+        # The width the cache takes is priced into the fit, and the fitted window is a budget.
         resp = _estimate(model_path = "org/model", n_ctx = 32_768, mlx_kv_bits = 4)
-        assert probed == []
-        assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (24_576, None, 24_576)
-        assert asked.pop("probes_before") == 0 and widths == [(str(tmp_path),)]
-        assert asked.pop("applies")() is True
+        assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (24_576, 4, 24_576)
+        assert widths == [(str(tmp_path),)]
         assert asked == {
             "ceiling": 262_144,
             "retains_history": True,
             "dir": str(tmp_path),
             "kv_bits": 4,
             "load_in_4bit": seen["load_in_4bit"],
-            "refused": True,
         }
-        widths.clear()
-        fit["ask"] = False
-        _estimate(model_path = "org/model", mlx_kv_bits = 4)
-        assert (asked["probes_before"], asked["refused"], widths) == (0, None, [])
-        fit["ask"] = True
 
-        fit["answer"] = (12_288, 4, False)
+        # A width the load would refuse is priced at full width, fitted or pinned.
+        refuses["answer"] = True
         resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
-        assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (12_288, 4, 12_288)
-
-        widths.clear()
-        monkeypatch.setattr(
-            mlx_inference,
-            "mlx_kv_quant_is_refused",
-            lambda *a: widths.append(a) or True,
-        )
+        assert (asked["kv_bits"], seen["kv_bits"], resp.context_fitted) == (None, None, 24_576)
         resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
-        assert widths == []
-        assert (seen["n_ctx"], seen["kv_bits"]) == (8192, None)
-        monkeypatch.setattr(mlx_inference, "mlx_bound_would_be_enforced", lambda *a: False)
-        resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
-        assert widths == [(str(tmp_path),)]
-        assert (seen["n_ctx"], seen["kv_bits"]) == (8192, None)
-        widths.clear()
-        monkeypatch.setattr(
-            mlx_inference, "mlx_bound_would_be_enforced", lambda *a: probed.append(a) or True
-        )
-        _estimate(model_path = "org/model", mlx_kv_bits = 4)
-        assert asked["kv_bits"] == 4 and asked["refused"] is False
-        monkeypatch.setattr(mlx_inference, "mlx_kv_quant_is_refused", lambda *a: False)
-        monkeypatch.setattr(mlx_inference, "mlx_bound_would_be_enforced", lambda *a: False)
-        _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
-        assert seen["kv_bits"] == 4
-        monkeypatch.setattr(mlx_inference, "mlx_kv_quant_is_refused", lambda *a: False)
-
-        probed.clear()
-        monkeypatch.setattr(
-            mlx_inference, "mlx_bound_would_be_enforced", lambda *a: probed.append(a) or True
-        )
-        resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
-        assert probed == [(str(tmp_path), 8192)]
         assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (8192, None, None)
-        monkeypatch.setattr(mlx_inference, "mlx_bound_would_be_enforced", lambda *a: False)
-        resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
-        assert (seen["n_ctx"], seen["kv_bits"]) == (8192, 4)
 
-        fit["answer"] = (None, 4, None)
+        # A pin never displaces an accepted width; it is not fitted either.
+        refuses["answer"] = False
+        asked.clear()
+        resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
+        assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted, asked) == (8192, 4, None, {})
+
+        widths.clear()
+        _estimate(model_path = "org/model")
+        assert (widths, asked["kv_bits"], seen["kv_bits"]) == ([], None, None)
+
+        fit["answer"] = None
         write(json.dumps({"max_position_embeddings": MAX_REQUESTABLE_CONTEXT * 4}))
         resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
         assert resp.context_fitted is None

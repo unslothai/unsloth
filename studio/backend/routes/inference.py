@@ -13804,17 +13804,16 @@ def _mlx_estimate_ceiling(model_dir: str) -> Optional[int]:
 
 
 def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_bits):
-    """The window and KV width a load naming no Context Length would be fitted to."""
+    """The window a load naming no Context Length would be fitted to."""
     from core.inference.mlx_inference import (
         mlx_fit_to_memory,
-        mlx_kv_quant_is_refused,
         mlx_vlm_snapshot_store_available,
     )
 
     ceiling = _mlx_estimate_ceiling(model_dir)
     if not ceiling:
-        return None, kv_bits
-    window, applied, _bounded = mlx_fit_to_memory(
+        return None
+    return mlx_fit_to_memory(
         model_dir,
         ceiling,
         load_in_4bit = load_in_4bit,
@@ -13822,9 +13821,7 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
             not getattr(config, "is_vision", False) or mlx_vlm_snapshot_store_available()
         ),
         kv_bits = kv_bits,
-        applies = lambda: not mlx_kv_quant_is_refused(model_dir),
     )
-    return window, applied
 
 
 def _mlx_estimate_available() -> bool:
@@ -18959,27 +18956,18 @@ async def estimate_memory(
             model_dir = _local_mlx_model_dir(config)
             if not model_dir:
                 return EstimateMemoryResponse(available = False, reason = "not_downloaded")
-            from core.inference.mlx_inference import (
-                mlx_bound_displaces_quantization,
-                mlx_bound_would_be_enforced,
-                mlx_kv_quant_is_refused,
-            )
+            from core.inference.mlx_inference import mlx_kv_quant_is_refused
             from core.inference.mlx_memory import mlx_memory_breakdown
 
             mlx_load_in_4bit = _mlx_estimate_load_in_4bit(config, request)
             mlx_kv_bits = _mlx_estimate_kv_bits(request.mlx_kv_bits)
+            # A width the cache takes applies under a pin or a fit alike: the window is then a budget.
+            if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir):
+                mlx_kv_bits = None
             mlx_named_ctx = request.max_seq_length or 0
             mlx_fitted_ctx = None
-            if mlx_named_ctx:
-                if mlx_bound_displaces_quantization(
-                    instructed = True,
-                    bounded = mlx_bound_would_be_enforced(model_dir, mlx_named_ctx),
-                ):
-                    mlx_kv_bits = None
-                if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir):
-                    mlx_kv_bits = None
-            else:
-                mlx_fitted_ctx, mlx_kv_bits = _mlx_estimate_fitted_context(
+            if not mlx_named_ctx:
+                mlx_fitted_ctx = _mlx_estimate_fitted_context(
                     config, model_dir, mlx_load_in_4bit, mlx_kv_bits
                 )
             mlx_priced_ctx = mlx_named_ctx or mlx_fitted_ctx or _mlx_estimate_ceiling(model_dir)

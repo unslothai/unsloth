@@ -1669,19 +1669,6 @@ MLX_KV_QUANT_NO_REUSE = (
 # The cap _configure_memory_limits installs, so a fitted context names a load MLX would allocate.
 MLX_MEMORY_LIMIT_FRACTION = 0.85
 
-MLX_KV_QUANT_FITTED_CONTEXT = (
-    "Context Length was fitted to this machine's memory, which limits the KV cache, and the "
-    "installed mlx-lm cannot quantize a limited cache. There is more of one or the other on a "
-    "machine with more memory."
-)
-MLX_KV_QUANT_PINNED_CONTEXT = (
-    "Context Length is set for this model, which limits the KV cache, and the installed "
-    "mlx-lm cannot quantize a limited cache. Reset it to quantize instead."
-)
-
-# Not asked yet; distinct from None, which means the bound probe could not judge.
-_UNASKED = object()
-
 
 def _kv_entry_nbytes(entry):
     """Bytes held by one cache entry, or None when it cannot be measured. Read straight off the
@@ -2333,27 +2320,6 @@ def _snapshot_dir(model, model_name: str) -> Optional[str]:
     return str(snapshot) if snapshot is not None else None
 
 
-def mlx_bound_displaces_quantization(*, instructed, bounded) -> bool:
-    """Whether the load spends its cache width on a bound instead of the requested KV bits."""
-    return bool(instructed) and bounded is True
-
-
-def _window_holds(
-    model_dir,
-    window,
-    budget,
-    load_in_4bit,
-    kv_bits = None,
-) -> bool:
-    """Whether a load of *window* at *kv_bits* stays inside *budget*. ``mlx_fit_context``"""
-    from core.inference.mlx_memory import mlx_memory_breakdown
-
-    priced = mlx_memory_breakdown(
-        model_dir, n_ctx = int(window), kv_bits = kv_bits, load_in_4bit = load_in_4bit
-    )
-    return priced is not None and priced.total_bytes <= budget
-
-
 def mlx_fit_to_memory(
     model_dir,
     ceiling,
@@ -2361,72 +2327,27 @@ def mlx_fit_to_memory(
     load_in_4bit: bool,
     retains_history: bool,
     kv_bits = None,
-    bounded = None,
-    applies = None,
-):
-    """The context a load of *model_dir* is held to and the KV width it runs at."""
+) -> Optional[int]:
+    """The context a load of *model_dir* is held to, priced at the KV width its cache takes."""
     budget = mlx_memory_budget(retains_history = retains_history)
     if budget is None or not ceiling or not model_dir:
-        return None, kv_bits, None
-    if bounded is None:
-        bounded = lambda window: mlx_bound_would_be_enforced(model_dir, window)
+        return None
     with mlx_rng_preserved():
         try:
             from core.inference.mlx_memory import mlx_fit_context
 
-            def fit(bits):
-                return mlx_fit_context(
-                    model_dir,
-                    budget_bytes = budget,
-                    max_ctx = int(ceiling),
-                    kv_bits = bits,
-                    load_in_4bit = load_in_4bit,
-                )
-
-            def wanted():
-                nonlocal kv_bits
-                if kv_bits is not None and applies is not None and not applies():
-                    kv_bits = None
-                return kv_bits
-
-            def taken(window, otherwise):
-                verdict = bounded(window)
-                if verdict is True and not _window_holds(model_dir, window, budget, load_in_4bit):
-                    return otherwise()
-                return settled(window, verdict)
-
-            def settled(window, verdict):
-                displaced = mlx_bound_displaces_quantization(instructed = True, bounded = verdict)
-                return window, (None if displaced else kv_bits), verdict
-
-            fitted = fit(None)
+            fitted = mlx_fit_context(
+                model_dir,
+                budget_bytes = budget,
+                max_ctx = int(ceiling),
+                kv_bits = kv_bits,
+                load_in_4bit = load_in_4bit,
+            )
             logger.debug("MLX fit for %s: %s tokens under %.1f GB", model_dir, fitted, budget / 1e9)
-            if fitted is None:
-                if wanted() is None:
-                    return None, kv_bits, None
-                quantized = fit(kv_bits)
-                logger.debug("MLX fit for %s at %d-bit KV: %s", model_dir, kv_bits, quantized)
-                if quantized is None:
-                    return None, kv_bits, None
-                return taken(quantized, lambda: (None, kv_bits, None))
-            verdict = bounded(fitted)
-            if (
-                mlx_bound_displaces_quantization(instructed = True, bounded = verdict)
-                or wanted() is None
-            ):
-                return settled(fitted, verdict)
-            quantized = fit(kv_bits)
-            logger.debug("MLX fit for %s at %d-bit KV: %s", model_dir, kv_bits, quantized)
-            if quantized is not None:
-                return taken(quantized, lambda: settled(fitted, verdict))
-            if _window_holds(model_dir, ceiling, budget, load_in_4bit, kv_bits):
-                return None, kv_bits, None
-            if not _window_holds(model_dir, fitted, budget, load_in_4bit, kv_bits):
-                return None, kv_bits, None
-            return settled(fitted, verdict)
+            return fitted
         except Exception as exc:
             logger.debug("MLX context fit unavailable for %s: %s", model_dir, exc)
-            return None, kv_bits, None
+            return None
 
 
 def _fitted_context(
@@ -2439,28 +2360,21 @@ def _fitted_context(
     kv_bits = None,
     is_vlm = False,
 ):
-    """The fit for a resident model and whether its window would really be capped."""
+    """The fit for a resident model and the eligibility verdict it was priced under."""
     try:
         model_dir = _snapshot_dir(model, model_name)
     except Exception as exc:
         logger.debug("MLX snapshot unavailable for %s: %s", model_name, exc)
-        return None, None, None
-    verdict = []
-
-    def applies():
-        verdict.append(_kv_quant_eligibility(model, is_vlm, kv_bits))
-        return verdict[0][0] in ("full", "partial")
-
-    fitted, _bits, bounded = mlx_fit_to_memory(
+        return None, None
+    verdict = None if kv_bits is None else _kv_quant_eligibility(model, is_vlm, kv_bits)
+    fitted = mlx_fit_to_memory(
         model_dir,
         ceiling,
         load_in_4bit = load_in_4bit,
         retains_history = retains_history,
-        kv_bits = kv_bits,
-        bounded = lambda window: _kv_window_enforced(model, is_vlm, window),
-        applies = applies,
+        kv_bits = kv_bits if verdict is None or verdict[0] in ("full", "partial") else None,
     )
-    return fitted, bounded, (verdict[0] if verdict else None)
+    return fitted, verdict
 
 
 def _kv_window_enforced(model, is_vlm, window):
@@ -2474,12 +2388,6 @@ def _kv_window_enforced(model, is_vlm, window):
     except Exception as exc:
         logger.debug("MLX context limit probe failed: %s", exc)
         return None
-
-
-def _kv_entries_are_bounded(entries, window) -> bool:
-    """Whether every leaf of a built cache caps itself at *window*. Nothing built is not bounded."""
-    flattened = list(_flatten_kv_entries(entries))
-    return bool(flattened) and all(_kv_entry_is_bounded(entry, window) for entry in flattened)
 
 
 def _asking_the_architecture(model_dir, question):
@@ -2513,16 +2421,6 @@ def _asking_the_architecture(model_dir, question):
         return None
 
 
-def mlx_bound_would_be_enforced(model_dir, window) -> Optional[bool]:
-    """Whether installing *window* at this checkpoint would bound every cache entry."""
-    return _asking_the_architecture(
-        model_dir,
-        lambda model, make_prompt_cache: _kv_entries_are_bounded(
-            make_prompt_cache(model, max_kv_size = window), window
-        ),
-    )
-
-
 def mlx_kv_quant_is_refused(model_dir) -> bool:
     """Whether this checkpoint's cache refuses a quantized width outright, from its shape alone."""
     return (
@@ -2540,8 +2438,6 @@ def _kv_quant_status(
     requested_bits,
     model,
     is_vlm,
-    context_bounded = False,
-    bound_reason = MLX_KV_QUANT_PINNED_CONTEXT,
     eligibility = None,
 ):
     """Resolve a requested bit width against this model into a status dict."""
@@ -2553,11 +2449,6 @@ def _kv_quant_status(
         "note": "",
     }
     if requested_bits is None:
-        return status
-    if context_bounded:
-        status["eligibility"] = "refused"
-        status["reason"] = bound_reason
-        logger.info("MLX KV quantization not applied: %s", bound_reason)
         return status
     verdict, reason, retainable = eligibility or _kv_quant_eligibility(
         model, is_vlm, requested_bits
@@ -3499,22 +3390,20 @@ class MLXInferenceBackend:
         served,
         fitted = False,
         eligibility = None,
-        bounded = _UNASKED,
     ):
         """The quantization status, cache window and per-request budget this load will run with.
 
-        A rotating cache cannot be quantized, so with kv_bits an enforceable pin becomes a budget."""
-        pinned = _positive_int(max_seq_length) is not None
+        A rotating cache cannot be quantized, so with kv_bits an enforceable pin or fitted window
+        becomes a budget."""
+        pinned = _positive_int(max_seq_length) is not None or fitted
         # Tri-state: True bounded, False confirmed unbounded, None unjudgeable. Only True installs a bound; the other
         # two stay apart so a client can tell them apart.
-        confirmed = self._kv_cache_window_enforceable(served) if bounded is _UNASKED else bounded
+        confirmed = self._kv_cache_window_enforceable(served)
         enforceable = confirmed is True
         quant = _kv_quant_status(
             _normalize_mlx_kv_bits(kv_bits),
             self._model,
             is_vlm,
-            mlx_bound_displaces_quantization(instructed = fitted, bounded = confirmed),
-            MLX_KV_QUANT_FITTED_CONTEXT,
             eligibility,
         )
         if quant["kv_bits"] is None and enforceable:
@@ -3648,8 +3537,8 @@ class MLXInferenceBackend:
         )
         _priceable = not (is_distributed or is_lora or dtype is not None)
         _requested_bits = _normalize_mlx_kv_bits(kv_bits)
-        _fitted_ctx, _fitted_bounded, _eligibility = (
-            (None, None, None)
+        _fitted_ctx, _eligibility = (
+            (None, None)
             if not _priceable or _positive_int(max_seq_length) is not None
             else _fitted_context(
                 self._model,
@@ -3678,7 +3567,6 @@ class MLXInferenceBackend:
             _served_ctx,
             fitted = _fitted_ctx is not None,
             eligibility = _eligibility,
-            bounded = _fitted_bounded if _fitted_ctx else _UNASKED,
         )
         if self._kv_quant["kv_bits"] is not None:
             logger.info(
