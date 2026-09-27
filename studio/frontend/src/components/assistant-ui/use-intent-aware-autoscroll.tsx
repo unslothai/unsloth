@@ -125,6 +125,12 @@ export function useAdjustForContentInsertedAbove(): (deltaPx: number) => void {
   return useContext(AutoScrollContext).adjustForContentInsertedAbove;
 }
 
+/** See AutoScrollContextValue.detachFromBottom. Opening a collapsible by hand near the bottom
+ *  must grow it downward, not pin the bottom and shove the header up. */
+export function useDetachThreadFromBottom(): () => void {
+  return useContext(AutoScrollContext).detachFromBottom;
+}
+
 export function useIsThreadAtBottom(): boolean {
   const ctx = useContext(AutoScrollContext);
   return useSyncExternalStore(ctx.subscribe, ctx.getIsAtBottom, () => true);

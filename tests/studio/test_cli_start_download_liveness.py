@@ -217,7 +217,7 @@ class Harness:
         return False
 
     def start(self):
-        return start_cli._start_studio_server(BASE, MODEL, start_cli.LoadOptions())
+        return start_cli._start_studio_server(BASE, MODEL, start_cli.LoadOptions())[1]
 
 
 def test_a_live_download_survives_past_the_idle_cap(monkeypatch):

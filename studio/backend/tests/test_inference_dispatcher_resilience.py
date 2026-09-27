@@ -41,7 +41,9 @@ def _dispatcher():
     o._dispatcher_stop = threading.Event()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._direct_mailboxes = {}
     o._request_cancel_events = {}
+    o._proc = None  # no worker, so no routed response retires anything
     return o
 
 
@@ -134,6 +136,7 @@ def _direct_reader_host():
     o._active_cancel_events = []
     o._executing_cancel_events = []
     o._dispatcher_thread = None
+    o._proc = None  # no worker, so no read retires anything
     return o
 
 
@@ -184,7 +187,7 @@ def test_rerouting_a_foreign_gen_done_retires_that_request():
 
 def _direct_reader_calls(o, request_id):
     """_direct_reader wired to a scripted _read_resp (o._scripted, popped in order)."""
-    o._read_resp = lambda timeout = 1.0: o._scripted.pop(0) if o._scripted else None
+    o._read_resp = lambda timeout = 1.0, observe = True: (o._scripted.pop(0) if o._scripted else None)
     return o._direct_reader(request_id)
 
 

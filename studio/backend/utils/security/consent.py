@@ -8,11 +8,13 @@ The LOAD-path counterpart to the capability probes (which read raw config and ne
 Hardening plus consent, not a sandbox: static patterns are evadable, so subprocess / venv isolation remains the containment layer.
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
 from loggers import get_logger
 
+from utils.account_context import is_owner_context
 from utils.security.remote_code_scan import (
     CRITICAL,
     HIGH,
@@ -25,6 +27,20 @@ from utils.security.remote_code_scan import (
 )
 
 logger = get_logger(__name__)
+
+MANAGED_REMOTE_CODE_OVERRIDE = "UNSLOTH_STUDIO_ALLOW_MANAGED_REMOTE_CODE"
+MANAGED_REMOTE_CODE_REFUSAL = (
+    "Remote code is off for managed accounts; the installation owner can enable it with "
+    f"{MANAGED_REMOTE_CODE_OVERRIDE}=1"
+)
+
+
+def managed_remote_code_refused() -> bool:
+    """Remote code runs unconfined as the Studio user, so a managed account may not
+    enable it unless the owner opted in for the whole installation."""
+    if is_owner_context():
+        return False
+    return os.environ.get(MANAGED_REMOTE_CODE_OVERRIDE, "").lower() not in ("1", "true", "yes")
 
 
 @dataclass
@@ -264,6 +280,11 @@ def evaluate_remote_code_consent_for_targets(
             None,
             "",
             "auto_map declared but no executable code present; trust_remote_code is a no-op",
+        )
+
+    if managed_remote_code_refused():
+        return RemoteCodeDecision(
+            primary, True, True, None, None, "", MANAGED_REMOTE_CODE_REFUSAL, approvable = False
         )
 
     result = scan_remote_code_files(combined)

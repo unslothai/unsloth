@@ -152,7 +152,13 @@ def _client_capture(provider_type: str, **kwargs) -> dict:
         return server.sampling()
 
 
-def _route_capture(**payload_fields) -> dict:
+def _route_capture(
+    *,
+    provider_type = "vllm",
+    messages = None,
+    full_body = False,
+    **payload_fields,
+) -> dict:
     """POST through `_proxy_to_external_provider`, not around it."""
     import routes.inference as ri
     from starlette.requests import Request
@@ -162,9 +168,9 @@ def _route_capture(**payload_fields) -> dict:
 
     with _Server() as server:
         payload = ChatCompletionRequest(
-            provider_type = "vllm",
+            provider_type = provider_type,
             provider_base_url = server.base_url,
-            messages = [{"role": "user", "content": "hi"}],
+            messages = messages or [{"role": "user", "content": "hi"}],
             model = "a-model",
             stream = True,
             **payload_fields,
@@ -193,7 +199,7 @@ def _route_capture(**payload_fields) -> dict:
 
         _run(go)
         assert server.bodies, "the route never reached the provider"
-        return server.sampling()
+        return server.bodies[-1] if full_body else server.sampling()
 
 
 def test_a_request_that_never_mentioned_them_forwards_nothing():
@@ -366,3 +372,20 @@ def test_a_stale_frontend_bundle_does_not_start_400ing_a_custom_gateway():
         _run(go)
         assert server.sampling() == {}, "custom leaked an extension the gateway rejects"
         assert "Unrecognized request argument" not in "".join(lines)
+
+
+@pytest.mark.parametrize("value", [True, False, None])
+def test_preserve_thinking_reaches_llama_server_through_the_route(value):
+    messages = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "answer", "reasoning_content": "prior thought"},
+        {"role": "user", "content": "two"},
+    ]
+    body = _route_capture(
+        provider_type = "llama_cpp", messages = messages, full_body = True, preserve_thinking = value
+    )
+    assert body["messages"][-2]["reasoning_content"] == "prior thought"
+    if value is None:
+        assert "chat_template_kwargs" not in body
+    else:
+        assert body["chat_template_kwargs"] == {"preserve_thinking": value}

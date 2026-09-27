@@ -9,6 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import functools
 from contextlib import nullcontext
 import torch
 import torch.nn as nn
@@ -23,10 +24,24 @@ from unsloth_zoo.temporary_patches.common import torch_compile
 torch_matmul = torch.matmul
 
 
-def _fp8_triton_device_context(tensor: torch.Tensor):
-    if tensor.device.type == "cuda" and torch.cuda.device_count() > 1:
+# Read once for the decode GEMV: device_count() in a compiled region graph-breaks ("torch.* op returned non-Tensor").
+_CUDA_MULTI_DEVICE = torch.cuda.is_available() and torch.cuda.device_count() > 1
+_XPU_MULTI_DEVICE = (
+    hasattr(torch, "xpu") and torch.xpu.is_available() and torch.xpu.device_count() > 1
+)
+
+
+def _fp8_triton_device_context(tensor: torch.Tensor, static_device_count = False):
+    # static_device_count only for forward-only kernels: torch 2.11 compiles FP8BlockQuantLinear's backward to zeros.
+    if tensor.device.type == "cuda" and (
+        _CUDA_MULTI_DEVICE if static_device_count else torch.cuda.device_count() > 1
+    ):
         return torch.cuda.device(tensor.device)
-    if tensor.device.type == "xpu" and hasattr(torch, "xpu") and torch.xpu.device_count() > 1:
+    if tensor.device.type == "xpu" and (
+        _XPU_MULTI_DEVICE
+        if static_device_count
+        else (hasattr(torch, "xpu") and torch.xpu.device_count() > 1)
+    ):
         return torch.xpu.device(tensor.device)
     return nullcontext()
 
@@ -111,11 +126,29 @@ def weight_dequant_block(
     return y
 
 
+def _is_transposed_view(x):
+    return (
+        x.dim() == 2 and x.shape[0] > 1 and x.shape[1] > 1 and x.stride(0) == 1 and x.stride(1) != 1
+    )
+
+
+def _has_fbgemm_rowwise():
+    try:
+        return hasattr(torch.ops.fbgemm, "quantize_fp8_per_row") and hasattr(
+            torch.ops.fbgemm, "f8f8bf16_rowwise"
+        )
+    except Exception:
+        return False
+
+
 def weight_dequant(
     x: torch.Tensor,
     s: torch.Tensor,
     dtype = torch.bfloat16,
 ):
+    # Transposed views keep scales in storage order; square weights can't be told apart by shape.
+    if _is_transposed_view(x):
+        return weight_dequant(x.t(), s, dtype).t()
     # Per-tensor scale: single value for entire weight matrix
     if s.numel() == 1:
         return x.to(dtype) * s.view(1, 1).to(dtype)
@@ -131,8 +164,11 @@ def weight_dequant(
             raise ValueError(f"Incompatible shapes {x.shape = }, {s.shape = }")
         return y
     else:
-        # Block quantized weight: scale shape is (ceil(m/block_m), ceil(n/block_n)).
-        return weight_dequant_block(x, s, dtype = dtype)
+        # Block quantized weight: scale shape is (ceil(m/block_m), ceil(n/block_n)). Go through the
+        # any-shape helper so fast_dequantize's callers get the pre-sm89 fallback too.
+        return _blockwise_weight_dequant_any_shape(
+            x, s, getattr(s, "block_size", None) or [128, 128], dtype
+        )
 
 
 # Copied from huggingface.co/deepseek-ai/DeepSeek-V3 inference/kernel.py
@@ -340,9 +376,111 @@ fp8_block_matmul = (
 )
 
 
+@functools.lru_cache(maxsize = None)
+def _fp8_device_lacks_kernel(device):
+    # A device's capability cannot change, so look it up once. Tests that simulate another
+    # card must call _fp8_device_lacks_kernel.cache_clear().
+    return torch.version.hip is None and torch.cuda.get_device_capability(device) < (8, 9)
+
+
+def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
+    """True when triton here cannot compile this fp8 dtype, so kernels taking it must be avoided.
+
+    triton adds fp8e4nv only from sm89 on, so compare the full (major, minor): sm89 (4090,
+    L40S, L4) does support it. ROCm lists fp8e4nv always and its capability is gfx-derived.
+
+    kernel_dtype is the fp8 dtype the kernel really handles. It defaults to the tensor's own,
+    which is right for a dequant, but a forward must pass e4m3fn: act_quant emits e4m3fn
+    whatever the weight dtype is, so e5m2 weights hit the same unsupported kernel.
+    """
+    return (
+        tensor.is_cuda
+        and (tensor.dtype if kernel_dtype is None else kernel_dtype) == torch.float8_e4m3fn
+        and _fp8_device_lacks_kernel(tensor.device)
+    )
+
+
+@triton.jit
+def _fp8_rowwise_gemv_kernel(
+    x_ptr, w_ptr, s_ptr, y_ptr, N, K, stride_wn, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr
+):
+    offs_n = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
+    acc = tl.zeros((BLOCK_N, BLOCK_K), dtype = tl.float32)
+    for k0 in range(0, K, BLOCK_K):
+        offs_k = k0 + tl.arange(0, BLOCK_K)
+        x = tl.load(x_ptr + offs_k, mask = offs_k < K, other = 0.0).to(tl.float32)
+        w = tl.load(
+            w_ptr + offs_n[:, None] * stride_wn + offs_k[None, :],
+            mask = (offs_n[:, None] < N) & (offs_k[None, :] < K),
+            other = 0.0,
+        ).to(tl.float32)
+        acc += w * x[None, :]
+    s = tl.load(s_ptr + offs_n, mask = offs_n < N, other = 0.0).to(tl.float32)
+    y = tl.sum(acc, axis = 1) * s
+    tl.store(y_ptr + offs_n, y.to(y_ptr.dtype.element_ty), mask = offs_n < N)
+
+
+def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
+    if not (X.is_cuda and weight.is_cuda and X.dtype in (torch.bfloat16, torch.float16)):
+        return False
+    if weight.dtype != torch.float8_e4m3fn or weight.dim() != 2 or not weight.is_contiguous():
+        return False
+    if X.numel() != X.shape[-1] or X.shape[-1] != weight.shape[1]:
+        return False
+    # Exactly one scale per output row: a block grid can have N elements by coincidence.
+    if (
+        tuple(weight_scale.shape) not in ((weight.shape[0], 1), (weight.shape[0],))
+        or weight.shape[0] == 1
+    ):
+        return False
+    if torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad):
+        return False
+    return not _fp8_kernel_unsupported(weight)
+
+
+def fp8_rowwise_gemv(X, weight, weight_scale):
+    """X @ (weight * weight_scale).T for one token without a 16-bit weight copy."""
+    N, K = weight.shape
+    out = torch.empty((*X.shape[:-1], N), device = X.device, dtype = X.dtype)
+    if not X.is_contiguous():
+        X = X.contiguous()
+    scale = weight_scale if weight_scale.is_contiguous() else weight_scale.contiguous()
+    block_n = 1 if N <= 4096 else (4 if N <= 32768 else 8)
+    with _fp8_triton_device_context(X, static_device_count = True):
+        _fp8_rowwise_gemv_kernel[(triton.cdiv(N, block_n),)](
+            X, weight, scale, out, N, K, weight.stride(0), BLOCK_N = block_n, BLOCK_K = 512, num_warps = 2
+        )
+    return out
+
+
+# Expanding the scale over the whole weight needs two m*n float32 temporaries, ~6x the triton
+# kernel's peak; chunk by block-rows so the scratch stays bounded. Values are identical.
+_DEQUANT_CHUNK_ELEMS = 8 * 1024 * 1024
+
+
+def _torch_blockwise_dequant(weight, weight_scale, block_size, out_dtype):
+    # no_grad to match the triton kernel this stands in for, which builds no graph. Not
+    # torch.compiled: the callers are already compiled regions, and compiling the loop here
+    # unrolls one graph per chunk, which measured slower than eager.
+    with torch.no_grad():
+        m, n = weight.shape
+        out = torch.empty(m, n, dtype = out_dtype, device = weight.device)
+        rows = max(
+            block_size[0], (_DEQUANT_CHUNK_ELEMS // max(n, 1)) // block_size[0] * block_size[0]
+        )
+        for i in range(0, m, rows):
+            j = min(i + rows, m)
+            s = weight_scale[i // block_size[0] : -(-j // block_size[0])]
+            s = s.repeat_interleave(block_size[0], 0)[: j - i]
+            s = s.repeat_interleave(block_size[1], 1)[:, :n]
+            out[i:j] = weight[i:j].to(torch.float32) * s
+        return out
+
+
 def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dtype):
     """Blockwise fp8 weight dequant for any shape: triton when the weight tiles
-    evenly into block_size, else a torch-native per-block scale expansion."""
+    evenly into block_size and this GPU can compile its fp8 dtype, else a
+    torch-native per-block scale expansion."""
     m, n = weight.shape
     if weight_scale.dtype not in (torch.float32, torch.float16, torch.bfloat16):
         weight_scale = weight_scale.to(torch.float32)  # e.g. float8_e8m0fnu scales break triton
@@ -351,12 +489,17 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
         # Per-tensor scale: the normal forward stashes the un-expanded scalar, which repeat_interleave
         # cannot grow to (m, n).
         return (weight.to(torch.float32) * weight_scale.float()).to(out_dtype)
-    if m % block_size[0] != 0 or n % block_size[1] != 0 or block_size[0] != block_size[1]:
-        # Uneven tiling, or rectangular blocks: the triton kernel uses a single BLOCK_SIZE for both axes
-        # and derives the column scale stride from it, so it mis-indexes when block_size[0] != [1].
-        s_full = weight_scale.repeat_interleave(block_size[0], 0)[:m]
-        s_full = s_full.repeat_interleave(block_size[1], 1)[:, :n]
-        return (weight.to(torch.float32) * s_full).to(out_dtype)
+    # An fp8 dtype this device cannot compile: fall back instead of raising from the fallback.
+    kernel_fp8_unsupported = _fp8_kernel_unsupported(weight)
+    if (
+        m % block_size[0] != 0
+        or n % block_size[1] != 0
+        or block_size[0] != block_size[1]
+        or kernel_fp8_unsupported
+    ):
+        # Uneven tiling, rectangular blocks, or an uncompilable fp8 dtype: the triton kernel uses one
+        # BLOCK_SIZE for both axes, so it mis-indexes when block_size[0] != [1].
+        return _torch_blockwise_dequant(weight, weight_scale, block_size, out_dtype)
     # Even tiling with square blocks: pass the real block size, since weight_dequant would silently
     # default to 128 and dequantize wrongly.
     return weight_dequant_block(weight, weight_scale, block_size = block_size[0], dtype = out_dtype)
@@ -402,9 +545,11 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         if not weight.is_contiguous():
             weight = weight.contiguous()
 
-        if X.shape[-1] % block_size[1] != 0:
-            # Hidden dim not divisible by the activation block: dequant plus plain matmul, using the un-expanded
-            # scale so a scalar per-tensor scale keeps the fast path in forward and backward.
+        if X.shape[-1] % block_size[1] != 0 or _fp8_kernel_unsupported(weight, torch.float8_e4m3fn):
+            # Hidden dim not divisible by the activation block, or a dtype this device cannot compile
+            # (act_quant and the gemm below both take fp8e4nv pointers, so pre-sm89 must skip both):
+            # dequant plus plain matmul, using the un-expanded scale so a scalar per-tensor scale
+            # keeps the fast path in forward and backward.
             W_deq = _blockwise_weight_dequant_any_shape(
                 weight, original_weight_scale, block_size, X.dtype
             )
@@ -451,8 +596,12 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
         weight_scale,
         bias = None,
     ):
-        if weight.shape[0] == weight_scale.shape[0] and (
-            weight.shape[0] % 8 == 0 and weight.shape[1] % 8 == 0
+        if (
+            weight.shape[0] == weight_scale.shape[0]
+            and (weight.shape[0] % 8 == 0 and weight.shape[1] % 8 == 0)
+            and not _is_transposed_view(weight)
+            and _has_fbgemm_rowwise()
+            and not _fp8_kernel_unsupported(weight, torch.float8_e4m3fn)
         ):
             # The kernel needs weight dims divisible by 8 (else "cutlass cannot implement"), and padding plus
             # f8f8bf16 is slower than dequant plus bf16 matmul.
@@ -480,12 +629,9 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             output = output.to(x.device, x.dtype)
             output = output.reshape(output_shape)
             del x_quantized, x_scale
-        elif (
-            weight.shape[0] != weight_scale.shape[0] and weight.shape[1] == weight_scale.shape[0]
-        ) or (weight.shape[0] % 8 != 0 or weight.shape[1] % 8 != 0):
-            # Transposed weight/scale (backward dY@W) or a non-divisible-by-8 shape (Qwen 2.5 VL 7B gate proj
-            # 3420x1280): dequant is preferred.
-            W_deq = weight_dequant(weight, weight_scale).T
+        elif weight_scale.shape[0] in (weight.shape[0], weight.shape[1]):
+            # Transposed, non-divisible-by-8 (Qwen 2.5 VL 7B 3420x1280), no FBGEMM, or pre-sm89: dequant.
+            W_deq = weight_dequant(weight, weight_scale, x.dtype).T
             output = torch_matmul(x, W_deq)
             output = output + bias if bias is not None else output
             del W_deq
@@ -500,7 +646,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
+        W_deq = weight_dequant(ctx.weight, ctx.weight_scale, grad_output.dtype)
         grad_X = torch_matmul(grad_output, W_deq)
         del W_deq
         return grad_X, None, None, None, None
@@ -558,6 +704,8 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
         # fbgemm 1.4.0) in_features % 16 == 0, out_features % 8 == 0; anything else raises.
         kernel_supported = (
             not per_tensor
+            # triton_quantize_fp8_block below emits fp8e4nv, so pre-sm89 needs the dequant path too.
+            and not _fp8_kernel_unsupported(weight, torch.float8_e4m3fn)
             and weight_scale.dtype == torch.float32
             and (bs_m, bs_n, bs_k) == (128, 128, 128)
             and X.shape[-1] % 16 == 0
@@ -701,7 +849,10 @@ def fp8_linear(
 
 def module_forward_patch(forward_function, scale_attr = "weight_scale"):
     def patched_forward(self, X):
-        return forward_function(X, self.weight, getattr(self, scale_attr))
+        out = forward_function(X, self.weight, getattr(self, scale_attr))
+        # The kernels take no bias, so a biased Linear (Qwen2-style q/k/v) adds it here; fbgemm keeps it fp32.
+        bias = self._parameters.get("bias")
+        return out if bias is None else out + bias.to(out.dtype)
 
     return patched_forward
 
@@ -760,7 +911,11 @@ if FP8GroupedLinear is not None:
             return grad_x, None, None, None, None, grad_bias
 
     def _fp8_grouped_forward(self, x):
-        if self.weight.element_size() > 1 or not self.training:
+        # The upstream eval path runs its own fp8e4nv kernels, so pre-sm89 has to use the
+        # dequant path here too, not only while training.
+        if self.weight.element_size() > 1 or (
+            not self.training and not _fp8_kernel_unsupported(self.weight, torch.float8_e4m3fn)
+        ):
             return _fp8_grouped_forward_orig(self, x)
         bias = self.bias if self.has_bias else None
         return _FP8GroupedMM.apply(

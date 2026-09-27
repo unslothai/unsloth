@@ -601,3 +601,49 @@ class TestTheEnableSwitch:
         self._strix_halo(monkeypatch)
         assert LlamaCppBackend._unified_memory_for_launch([0], 100 * _GIB) is True
         assert LlamaCppBackend._unified_memory_for_launch([0], None) is False
+
+
+class TestTheDirectIoGateNeedsEveryDeviceRead:
+    """`_rocm_classification_answered` guards a loader choice, so it must mean "the
+    devices were classified", not "a classifier was importable and something
+    enumerated". `_rocm_unified_memory_gpu_ids` drops any device it cannot read with
+    `except: continue`, and an absent device reads as discrete, which is how an
+    unclassified APU would be handed DirectIO over its own system RAM."""
+
+    @staticmethod
+    def _torch(archs, *, raises_on = None):
+        t = _fake_torch("6.2.0", list(archs))
+
+        def props(i):
+            if raises_on is not None and i == raises_on:
+                raise RuntimeError("HIP error: invalid device ordinal")
+            return types.SimpleNamespace(gcnArchName = archs[i])
+
+        t.cuda.get_device_properties = props
+        return t
+
+    def test_every_device_readable_answers(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "torch", self._torch(["gfx1100", "gfx1201"]))
+        assert LlamaCppBackend._rocm_classification_answered() is True
+
+    def test_one_unreadable_device_declines(self, monkeypatch):
+        """The discrete gfx1100 beside it is exactly the trap: the set comes back
+        empty, the launch looks like two discrete cards, and the unreadable one may
+        be the APU."""
+        monkeypatch.setitem(sys.modules, "torch", self._torch(["gfx1100", "gfx1151"], raises_on = 1))
+        assert LlamaCppBackend._rocm_unified_memory_gpu_ids() == set()
+        assert LlamaCppBackend._rocm_classification_answered() is False
+
+    def test_the_only_device_being_unreadable_declines(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "torch", self._torch(["gfx1151"], raises_on = 0))
+        assert LlamaCppBackend._rocm_classification_answered() is False
+
+    def test_no_devices_declines(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "torch", self._torch([]))
+        assert LlamaCppBackend._rocm_classification_answered() is False
+
+    def test_non_rocm_torch_declines(self, monkeypatch):
+        """No Windows ROCm wheel, so this is the usual answer on the one platform
+        the DirectIO decision runs on."""
+        monkeypatch.setitem(sys.modules, "torch", _fake_torch(None, ["sm_90"]))
+        assert LlamaCppBackend._rocm_classification_answered() is False

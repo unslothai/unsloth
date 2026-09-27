@@ -215,6 +215,10 @@ def test_orchestrator_cmd_carries_all_sampling_params():
     )
     for key, val in _SAMPLING.items():
         assert cmd[key] == val, f"{key} dropped/altered in orchestrator cmd"
+    rf = {"response_format": {"type": "json_object"}, "reasoning_is_extracted": True}
+    with_rf = o._build_generate_cmd("req1", None, messages = [], max_new_tokens = 8, **rf)
+    assert {key: with_rf[key] for key in rf} == rf
+    assert "reasoning_is_extracted" not in cmd
 
 
 def test_worker_forwards_all_sampling_params_to_backend():
@@ -226,8 +230,14 @@ def test_worker_forwards_all_sampling_params_to_backend():
         def __init__(self):
             self.received = None
 
-        def generate_chat_response(self, **kwargs):
-            self.received = kwargs
+        def generate_chat_response(
+            self,
+            *,
+            response_format = None,
+            reasoning_is_extracted = None,
+            **kwargs,
+        ):
+            self.received = dict(kwargs, rf = response_format, rie = reasoning_is_extracted)
             return iter(())  # empty stream -> loop exits, gen_done is sent
 
     class _FakeQueue:
@@ -242,6 +252,8 @@ def test_worker_forwards_all_sampling_params_to_backend():
         "request_id": "r",
         "messages": [{"role": "user", "content": "hi"}],
         "max_new_tokens": 128,
+        "response_format": {"type": "json_object"},
+        "reasoning_is_extracted": True,
         **_SAMPLING,
     }
     backend = _RecordingBackend()
@@ -250,6 +262,8 @@ def test_worker_forwards_all_sampling_params_to_backend():
     assert backend.received is not None
     for key, val in _SAMPLING.items():
         assert backend.received[key] == val, f"{key} dropped/altered in worker gen_kwargs"
+    assert backend.received["rf"] == {"type": "json_object"}
+    assert backend.received["rie"] is True
 
 
 def test_orchestrator_cmd_carries_the_tool_protocol_flag():
@@ -323,9 +337,10 @@ def test_the_mlx_think_prefill_predicate_matches_the_decoder_it_describes():
     from core.inference.mlx_inference import MLXInferenceBackend
 
     src = inspect.getsource(MLXInferenceBackend._generate_text)
-    after = src[src.index("preserves_think_close") :]
+    after = src[src.index("think_close_survives = (") :]
     predicate = after[: after.index("decoder_preserves_token")]
     assert "tool_protocol_active" in predicate, "the prefill predicate ignores unrestricted mode"
+    assert "preserves_think_close = think_close_survives" in src
 
 
 def test_the_mlx_vlm_decoder_survives_a_reasoning_only_request():
@@ -354,3 +369,91 @@ def test_the_mlx_vlm_prefill_predicate_matches_its_decoder_gate():
     predicate = after[: after.index("decoder_preserves_token")]
     for condition in ("tools", "tool_protocol_active", "vlm_reasoning_markers is not None"):
         assert condition in predicate, f"the VLM prefill predicate omits {condition}"
+
+
+def test_a_video_clip_crosses_the_worker_boundary_only_to_a_backend_that_takes_it():
+    """The clip rides the command like an image; a backend without ``video`` fails the request."""
+    from pathlib import Path
+
+    from core.inference.orchestrator import InferenceOrchestrator, _mirrored_model_entry
+    from core.inference.worker import _handle_generate
+
+    o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    assert "video_base64" not in o._build_generate_cmd("r", None, messages = [])
+    cmd = o._build_generate_cmd(
+        "r", None, messages = [{"role": "user", "content": "hi"}], video_b64 = "AAAA"
+    )
+    assert cmd["video_base64"] == "AAAA"
+
+    class _FakeQueue:
+        def __init__(self):
+            self.items = []
+
+        def put(self, item):
+            self.items.append(item)
+
+    class _VideoBackend:
+        last_generation_stats = None
+        received = None
+
+        def generate_chat_response(
+            self,
+            video = None,
+            **kwargs,
+        ):
+            self.received = video
+            return iter(())
+
+    class _TextBackend:
+        last_generation_stats = None
+        called = False
+
+        def generate_chat_response(self, **kwargs):
+            self.called = True
+            return iter(())
+
+    takes = _VideoBackend()
+    _handle_generate(takes, cmd, _FakeQueue(), threading.Event())
+    assert takes.received == "AAAA"
+    refuses, queue = _TextBackend(), _FakeQueue()
+    _handle_generate(refuses, cmd, queue, threading.Event())
+    assert refuses.called is False
+    assert [item["type"] for item in queue.items] == ["gen_error"]
+
+    # The classified capability has to reach the parent, or the route refuses every clip.
+    assert _mirrored_model_entry({"has_video_input": True}, "m")["has_video_input"] is True
+    assert _mirrored_model_entry({}, "m")["has_video_input"] is False
+    worker_source = (
+        Path(__file__).resolve().parents[1] / "core" / "inference" / "worker.py"
+    ).read_text(encoding = "utf-8")
+    assert '("is_audio", "audio_type", "has_audio_input", "has_video_input")' in worker_source
+
+
+def test_both_orchestrator_entry_points_forward_the_clip_into_the_command():
+    """The locked and the dispatched paths build the command separately."""
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    class _Built(Exception):
+        pass
+
+    built = []
+    o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._gen_lock = threading.Lock()
+    o._unload_pending = False
+    o._exclusive_tts_pending = False
+    o.active_model_name = "m"
+    o._ensure_subprocess_alive = lambda: True
+    o._wait_dispatcher_idle = lambda: None
+    o._start_dispatcher = lambda: False
+
+    def _build(*_args, **kwargs):
+        built.append(kwargs)
+        raise _Built()
+
+    o._build_generate_cmd = _build
+    turn = [{"role": "user", "content": "hi"}]
+    with pytest.raises(_Built):
+        list(o.generate_chat_response(messages = turn, video = "AAAA"))
+    with pytest.raises(_Built):
+        list(o.generate_with_adapter_control(use_adapter = True, messages = turn, video = "AAAA"))
+    assert [kw["video_b64"] for kw in built] == ["AAAA", "AAAA"]

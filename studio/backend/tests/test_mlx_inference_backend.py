@@ -2,17 +2,348 @@
 
 import ast
 import asyncio
+import builtins
 import contextlib
 import copy
 import json
 import subprocess
 import sys
 import types
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+@pytest.fixture
+def native_vlm_generation_context():
+    from core.inference import mlx_inference
+    return mlx_inference._vlm_generation_context
+
+
+@pytest.fixture(autouse = True)
+def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_context", contextlib.nullcontext)
+    module = types.ModuleType("unsloth_zoo.mlx.inference")
+    module.fused_moe_gate_up = contextlib.nullcontext
+    module.fused_decode_conv_silu = contextlib.nullcontext
+    module.fused_residual_norm = contextlib.nullcontext
+    module.fused_moe_router = contextlib.nullcontext
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", module)
+    return module
+
+
+@pytest.fixture
+def mlx_moe(mlx_inference_patches):
+    return mlx_inference_patches
+
+
+@pytest.fixture
+def mlx_decode(mlx_inference_patches):
+    return mlx_inference_patches
+
+
+@pytest.mark.parametrize(
+    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
+)
+@pytest.mark.parametrize(
+    "error",
+    [
+        ModuleNotFoundError("injected", name = "unsloth_zoo.mlx.inference"),
+        # Zoo installed without the mlx extras its fusion module imports.
+        ModuleNotFoundError("injected", name = "mlx"),
+        ModuleNotFoundError("injected", name = "unsloth_zoo"),
+        # A skewed or partial install raises ImportError, not ModuleNotFoundError.
+        ImportError("cannot import name 'gather_qmm'"),
+        RuntimeError("zoo fusion module failed at import"),
+    ],
+    ids = ["feature", "mlx", "unsloth_zoo", "import-error", "raising-module"],
+)
+def test_mlx_fusion_import_never_fails_the_request(monkeypatch, error, feature):
+    """No Zoo state may fail a load or a generation: raising would take down a path that
+    worked before the optimization existed, so a transitive failure is logged instead."""
+    from core.inference import mlx_inference
+
+    module_name = "unsloth_zoo.mlx.inference"
+    helper = getattr(mlx_inference, f"_mlx_fused_{feature}")
+
+    original_import = mlx_inference.importlib.import_module
+
+    def fail(name, *args, **kwargs):
+        if name == module_name:
+            raise error
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(mlx_inference.importlib, "import_module", fail)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    model = object()
+    with helper(model) as active:
+        assert active is model
+
+
+@pytest.mark.parametrize(
+    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
+)
+def test_mlx_fusion_that_cannot_be_entered_keeps_native(
+    monkeypatch, mlx_inference_patches, feature
+):
+    """Packing can fail on the model in hand (headroom, an unsupported layout) after the
+    module imported cleanly. That must degrade to native, not fail the request."""
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def refuse(_model):
+        raise RuntimeError("cannot pack this model")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_inference_patches, f"fused_{feature}", refuse)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    model = object()
+    with getattr(mlx_inference, f"_mlx_fused_{feature}")(model) as active:
+        assert active is model
+
+
+@pytest.mark.parametrize(
+    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
+)
+@pytest.mark.parametrize(
+    "message",
+    [
+        "[METAL] Command buffer execution failed: Caused GPU Timeout Error "
+        "(0000000b:kIOGPUCommandBufferCallbackErrorTimeout)",
+        "[METAL] Command buffer execution failed: Ignored (for causing prior/excessive GPU "
+        "errors) (0000000e:kIOGPUCommandBufferCallbackErrorSubmissionsIgnored)",
+    ],
+    ids = ["watchdog", "ignored"],
+)
+def test_mlx_dead_gpu_queue_is_not_reported_as_a_working_fallback(
+    monkeypatch, mlx_inference_patches, feature, message
+):
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def fault(_model):
+        raise RuntimeError(message)
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_inference_patches, f"fused_{feature}", fault)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    with pytest.raises(RuntimeError, match = "METAL"):
+        with getattr(mlx_inference, f"_mlx_fused_{feature}")(object()):
+            pass  # pragma: no cover
+    assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()
+
+
+@pytest.mark.parametrize(
+    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
+)
+def test_mlx_packing_that_runs_out_of_memory_still_keeps_native(
+    monkeypatch, mlx_inference_patches, feature
+):
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def refuse(_model):
+        raise RuntimeError("[METAL] Command buffer execution failed: Insufficient Memory.")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_inference_patches, f"fused_{feature}", refuse)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    model = object()
+    with getattr(mlx_inference, f"_mlx_fused_{feature}")(model) as active:
+        assert active is model
+
+
+def test_mlx_dead_gpu_queue_at_load_fails_the_load(monkeypatch, mlx_moe):
+    from core.inference import mlx_inference
+
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+
+    @contextmanager
+    def fault(_model):
+        raise RuntimeError("[METAL] Command buffer execution failed: Caused GPU Timeout Error.")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_moe, "fused_moe_gate_up", fault)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    with pytest.raises(RuntimeError, match = "METAL"):
+        backend.load_model(config)
+
+
+def test_mlx_fusion_failure_at_load_still_loads_the_model(monkeypatch, mlx_moe):
+    """The base-model scope is entered inside load_model, so a fusion that refuses there
+    must not turn a good load into a failed one."""
+    from core.inference import mlx_inference
+
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+
+    @contextmanager
+    def refuse(_model):
+        raise RuntimeError("no headroom to pack")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_moe, "fused_moe_gate_up", refuse)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    assert backend.load_model(config) is True
+    assert backend.active_model_name == "fake/text"
+    assert backend._model is not None
+    assert backend.unload_model("fake/text")
+
+
+def test_mlx_fusion_that_refuses_everywhere_still_generates(monkeypatch, mlx_moe):
+    from core.inference import mlx_inference
+
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    tokenizer = backend._tokenizer
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+    refused = []
+
+    def _refusing(name):
+        @contextmanager
+        def refuse(_model):
+            refused.append(name)
+            raise RuntimeError("no headroom to pack")
+            yield  # pragma: no cover
+
+        return refuse
+
+    for name in ("moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"):
+        monkeypatch.setattr(mlx_moe, f"fused_{name}", _refusing(name))
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    assert backend.load_model(config) is True
+    backend._tokenizer = tokenizer
+
+    stream = backend.generate_chat_response(messages = [{"role": "user", "content": "p"}])
+    assert next(stream) == "7"
+    stream.close()
+    assert Counter(refused) == Counter(
+        moe_gate_up = 2, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
+    )
+
+
+def _all_fusions_refuse(monkeypatch, patches):
+    from core.inference import mlx_inference
+
+    refused = []
+
+    def _refusing(name):
+        @contextmanager
+        def refuse(_model):
+            refused.append(name)
+            raise RuntimeError("no headroom to pack")
+            yield  # pragma: no cover
+
+        return refuse
+
+    for name in ("moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"):
+        monkeypatch.setattr(patches, f"fused_{name}", _refusing(name))
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    return refused
+
+
+def test_mlx_vlm_generation_survives_every_fusion_refusing(monkeypatch, mlx_inference_patches):
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {}, apply_chat_template = lambda *_a, **_k: "<image> prompt"
+    )
+    mlx_vlm.stream_generate = lambda *_a, **_k: iter(
+        [SimpleNamespace(text = "ok", prompt_tokens = 1, generation_tokens = 1)]
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_a, **_k: "<image> prompt",
+    )
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
+    )
+    refused = _all_fusions_refuse(monkeypatch, mlx_inference_patches)
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
+    backend._processor = SimpleNamespace(chat_template = "template")
+    args = (
+        [{"role": "user", "content": [{"type": "image"}]}],
+        [object()],
+        0.7,
+        0.9,
+        40,
+        0.01,
+        4,
+        1.0,
+        None,
+    )
+    assert list(backend._generate_vlm(*args)) == ["ok"]
+    assert Counter(refused) == Counter(
+        moe_gate_up = 1, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
+    )
+
+
+def test_mlx_audio_input_generation_survives_every_fusion_refusing(
+    monkeypatch, mlx_inference_patches
+):
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    stats = dict(prompt_tokens = 3, prompt_tps = 1.0, generation_tokens = 3, generation_tps = 1.0)
+    fake_vlm = types.ModuleType("mlx_vlm")
+    fake_vlm.stream_generate = lambda *_a, **_k: (
+        SimpleNamespace(text = text, **stats) for text in ("H", "e", "l")
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_render_registered_vlm_prompt",
+        lambda *_a, **_k: "P<audio>",
+    )
+    refused = _all_fusions_refuse(monkeypatch, mlx_inference_patches)
+
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._generation_lock = __import__("threading").Lock()
+    backend._model, backend._processor = _audio_model(), _audio_processor()
+    backend.active_model_name = "m"
+    backend.last_generation_stats = None
+    backend.models = {"m": {"audio_type": "audio_vlm"}}
+    assert list(
+        backend.generate_audio_input_response(
+            messages = [{"role": "user", "content": "what is said?"}],
+            system_prompt = "",
+            audio_array = [0.0, 0.1, -0.1],
+            max_new_tokens = 64,
+        )
+    ) == ["H", "e", "l"]
+    assert Counter(refused) == Counter(
+        moe_gate_up = 1, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
+    )
+
+
+@pytest.mark.parametrize(
+    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
+)
+def test_mlx_missing_inference_export_keeps_native(monkeypatch, mlx_inference_patches, feature):
+    from core.inference import mlx_inference
+
+    name = f"fused_{feature}"
+    monkeypatch.delattr(mlx_inference_patches, name)
+    model = object()
+    helper = getattr(mlx_inference, f"_mlx_{name}")
+    with helper(model) as active:
+        assert active is model
 
 
 class _Resp:
@@ -221,6 +552,72 @@ def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
     assert isinstance(backend._tokenizer, _DummyTokenizer)
     # Non-LoRA text model: no base_model on the record.
     assert backend.models["fake/text"]["base_model"] is None
+
+
+@pytest.mark.parametrize("is_lora", [False, True])
+def test_mlx_base_fusion_lifetime_and_lora_request_scope(monkeypatch, mlx_moe, is_lora):
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    tokenizer = backend._tokenizer
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+    events = []
+
+    class FusedModel(_DummyModel):
+        pass
+
+    @contextmanager
+    def fusion(model):
+        if type(model) is FusedModel:
+            yield model
+            return
+        original = type(model)
+        model.__class__ = FusedModel
+        events.append(("enter", model))
+        try:
+            yield model
+        finally:
+            assert backend._model is model
+            model.__class__ = original
+            events.append(("exit", model))
+
+    monkeypatch.setattr(mlx_moe, "fused_moe_gate_up", fusion)
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = is_lora)
+    assert backend.load_model(config)
+    first = backend._model
+    expected_class = _DummyModel if is_lora else FusedModel
+    assert type(first) is expected_class
+    backend._tokenizer = tokenizer
+    stream = backend.generate_chat_response(messages = [{"role": "user", "content": "p"}])
+    assert next(stream) == "7"
+    assert type(first) is FusedModel
+    stream.close()
+    assert type(first) is expected_class
+    assert events == ([("enter", first), ("exit", first)] if is_lora else [("enter", first)])
+    backend.reset_generation_state()
+    assert type(first) is expected_class
+
+    assert backend.load_model(config)
+    second = backend._model
+    assert second is not first and type(first) is _DummyModel
+    assert type(second) is expected_class
+    backend.unload_model(config.identifier)
+    assert type(second) is _DummyModel and backend._model is None
+
+    assert backend.load_model(config)
+    third = backend._model
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("load failed")
+
+    loader = sys.modules["unsloth_zoo.mlx.loader"].FastMLXModel
+    monkeypatch.setattr(loader, "from_pretrained", fail)
+    with pytest.raises(RuntimeError, match = "load failed"):
+        backend.load_model(config)
+    assert type(third) is _DummyModel
+    backend.unload_model(config.identifier)
+    assert sum(event == "enter" for event, _ in events) == sum(
+        event == "exit" for event, _ in events
+    )
 
 
 def test_mlx_text_lora_record_keeps_base_model_for_native_template(monkeypatch):
@@ -577,7 +974,68 @@ def test_mlx_generate_chat_response_accepts_template_kwargs():
         ), f"{name!r} must default to None so existing callers stay valid"
 
 
-def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
+@pytest.mark.parametrize("ending", ["exhaust", "close", "error"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_vlm_iterator_restores_each_callers_stream_and_closes_on_generation_stream(
+    ending, reverse, monkeypatch, native_vlm_generation_context
+):
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_vlm.generate")
+    if not mx.metal.is_available():
+        pytest.skip("Metal is required")
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_context", native_vlm_generation_context)
+    from core.inference.mlx_inference import _iter_vlm_responses
+    from mlx_vlm.generate import generation_stream
+
+    original = mx.default_stream(mx.gpu)
+    callers = [original, mx.new_stream(mx.gpu)]
+    if reverse:
+        callers.reverse()
+    with mx.stream(generation_stream):
+        generation = mx.default_stream(mx.gpu)
+    assert all(caller != generation for caller in callers)
+    seen, closed = [], []
+
+    def responses():
+        try:
+            for index in range(3):
+                seen.append(mx.default_stream(mx.gpu))
+                if index == 2 and ending == "error":
+                    raise RuntimeError("generation failed")
+                yield index
+        finally:
+            closed.append(mx.default_stream(mx.gpu))
+
+    iterator = _iter_vlm_responses(responses())
+    for index, caller in enumerate(callers):
+        with mx.stream(caller):
+            assert next(iterator) == index
+            assert mx.default_stream(mx.gpu) == caller
+        assert mx.default_stream(mx.gpu) == original
+    with mx.stream(callers[0]):
+        if ending == "close":
+            iterator.close()
+        elif ending == "error":
+            with pytest.raises(RuntimeError, match = "generation failed"):
+                next(iterator)
+        else:
+            assert next(iterator) == 2
+            with pytest.raises(StopIteration):
+                next(iterator)
+        assert mx.default_stream(mx.gpu) == callers[0]
+    assert mx.default_stream(mx.gpu) == original
+    assert seen == [generation] * (2 if ending == "close" else 3)
+    assert closed == [generation]
+
+
+@pytest.mark.parametrize(
+    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
+)
+def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(
+    monkeypatch, mlx_moe, mlx_decode, feature
+):
     """A prefilled <think> block must be re-emitted as the first VLM snapshot,
     inside the adapter context (so unsupported requests still raise first), so
     the UI renders the thinking block during prefill and a pre-first-token
@@ -588,6 +1046,18 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
 
     order = []
+    stream_state = {"fail": False, "in_generation": False}
+
+    @contextmanager
+    def _generation_context():
+        assert not stream_state["in_generation"]
+        stream_state["in_generation"] = True
+        try:
+            yield
+        finally:
+            stream_state["in_generation"] = False
+
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_context", _generation_context)
 
     @contextmanager
     def _adapter_state(_model, state):
@@ -599,6 +1069,21 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
             order.append("adapter_exit")
 
     monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+
+    @contextmanager
+    def _fusion(model):
+        assert model is backend._model and backend._generation_lock.locked()
+        assert order[-1] == "snapshots_released"
+        order.append("fusion_enter")
+        try:
+            yield
+        finally:
+            assert backend._generation_lock.locked()
+            order.append("fusion_exit")
+
+    monkeypatch.setattr(
+        mlx_moe if feature == "moe_gate_up" else mlx_decode, f"fused_{feature}", _fusion
+    )
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.detect_think_prefill",
         lambda *_a, **_k: "<think>\n",
@@ -613,8 +1098,15 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
 
     def _vlm_stream(*_a, **_k):
         # The prefill must have been emitted before any generated token.
-        assert order[-1] == "adapter_enter"
-        yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
+        assert order[-1] == "fusion_enter"
+        assert stream_state["in_generation"]
+        try:
+            if stream_state["fail"]:
+                raise RuntimeError("generation failed")
+            yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
+        finally:
+            assert stream_state["in_generation"]
+            order.append("producer_closed")
 
     mlx_vlm.stream_generate = _vlm_stream
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
@@ -626,16 +1118,28 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    monkeypatch.setattr(
+        backend, "_release_vlm_snapshots", lambda: order.append("snapshots_released")
+    )
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
 
     gen = backend._generate_vlm(*args, _adapter_state = False)
     # First snapshot is the prefill alone, emitted after entering the adapter context.
     assert next(gen) == "<think>\n"
-    assert order == ["adapter_enter"]
+    entered = ["adapter_enter", "snapshots_released", "fusion_enter"]
+    assert order == entered
     # Subsequent snapshots are cumulative (prefill + generated text).
     assert next(gen) == "<think>\nok"
+    assert not stream_state["in_generation"]
     gen.close()
-    assert order == ["adapter_enter", "adapter_exit"]
+    completed = entered + ["producer_closed", "fusion_exit", "adapter_exit"]
+    assert order == completed
+    assert not backend._generation_lock.locked()
+    stream_state["fail"] = True
+    with pytest.raises(RuntimeError, match = "generation failed"):
+        list(backend._generate_vlm(*args, _adapter_state = False))
+    assert order == completed * 2
+    assert not backend._generation_lock.locked()
 
 
 def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
@@ -693,7 +1197,7 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
     tools = [{"function": {"name": "search"}}]
     generator = backend._generate_vlm(*args, _adapter_state = False)
     assert next(generator) == "ok"
@@ -713,7 +1217,7 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     assert calls["stream"][-1][0][2] == "<image> healthy generic"
     state["generic"] = "generic prompt"
     text_messages = [{"role": "user", "content": "hello"}]
-    assert list(backend._generate_vlm(*((text_messages, None) + args[2:]), tools = tools)) == ["ok"]
+    assert list(backend._generate_vlm(*((text_messages, []) + args[2:]), tools = tools)) == ["ok"]
     assert calls["generic"][-1]["tools"] == tools
     assert calls["stream"][-1][0][2] == "generic prompt"
     two_images = [{"role": "user", "content": [{"type": "image"}, {"type": "image"}]}]
@@ -778,7 +1282,12 @@ def test_mlx_vlm_model_config_prefers_config_with_model_type():
     )
 
 
-def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
+@pytest.mark.parametrize(
+    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
+)
+def test_mlx_generate_text_forwards_kwargs_into_template_helper(
+    monkeypatch, mlx_moe, mlx_decode, feature
+):
     """Mac text path must route through apply_chat_template_for_generation so
     reasoning / tool kwargs reach the tokenizer."""
     from core.inference import mlx_inference
@@ -829,12 +1338,28 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
 
     monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
 
+    @contextmanager
+    def _fusion(model):
+        assert model is backend._model
+        assert adapter_active["value"] and backend._generation_lock.locked()
+        adapter_events.append(("fusion_enter", False))
+        try:
+            yield
+        finally:
+            assert adapter_active["value"] and backend._generation_lock.locked()
+            adapter_events.append(("fusion_exit", False))
+
+    monkeypatch.setattr(
+        mlx_moe if feature == "moe_gate_up" else mlx_decode, f"fused_{feature}", _fusion
+    )
+
     class _Resp:
         def __init__(self, tok):
             self.token = tok
 
     def _stream_generate(_model, _tokenizer, **_kw):
         assert adapter_active["value"]
+        assert adapter_events[-1] == ("fusion_enter", False)
         if stream_state["fail"]:
             raise RuntimeError("generation failed")
         yield _Resp(1)
@@ -870,7 +1395,8 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     assert next(generator) == "hi"
     assert adapter_active["value"] and backend._generation_lock.locked()
     generator.close()
-    assert adapter_events == [("enter", False), ("exit", False)]
+    completed = [(name, False) for name in ("enter", "fusion_enter", "fusion_exit", "exit")]
+    assert adapter_events == completed
     stream_state["fail"] = True
     with pytest.raises(RuntimeError, match = "generation failed"):
         list(
@@ -880,7 +1406,7 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
                 max_new_tokens = 1,
             )
         )
-    assert adapter_events[-2:] == [("enter", False), ("exit", False)]
+    assert adapter_events == completed * 2
     assert not backend._generation_lock.locked()
 
     monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", real_adapter_state)
@@ -991,7 +1517,36 @@ def test_mlx_tool_turn_preserves_native_gemma_special_token_ids(monkeypatch):
     assert [call["function"]["name"] for call in calls] == ["terminal"]
 
 
-def test_mlx_reasoning_tool_turn_filters_special_ids_by_provenance(monkeypatch):
+def test_mlx_reasoning_tool_turn_keeps_provenance_across_buffered_segments(monkeypatch):
+    """A kept control has to reach the parser once, where the model wrote it, and a suppressed one
+    must not ride along inside the segment that carries it."""
+    # Built before the fake mlx modules land, so the real detokenizer still imports.
+    turn = _SpmTurn(
+        (
+            "<|channel>",
+            "thought",
+            "\n",
+            "weighing",
+            "<pad>",
+            "▁it",
+            "<channel|>",
+            "<|tool_call>",
+            "call:terminal{command:id}",
+            "<tool_call|>",
+            "<eos>",
+        ),
+        specials = (
+            "<|channel>",
+            "<channel|>",
+            "<|tool_call>",
+            "<tool_call|>",
+            "<pad>",
+            "<eos>",
+        ),
+        eos = "<eos>",
+        chat_template = "x",
+        ends = "stop",
+    )
     _install_fake_mlx(monkeypatch)
     from core.inference import mlx_inference
     from core.inference.tool_call_parser import parse_tool_calls_from_text
@@ -1014,65 +1569,28 @@ def test_mlx_reasoning_tool_turn_filters_special_ids_by_provenance(monkeypatch):
     mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
     mlx_lm_sample.make_sampler = lambda **_kwargs: object()
     mlx_lm_sample.make_logits_processors = lambda **_kwargs: None
-
-    pieces = {
-        1: "<|channel>",
-        2: "thought\n",
-        3: "reasoned",
-        4: "<channel|>",
-        5: "<|tool_call>",
-        6: "call:terminal{command:id}",
-        7: "<tool_call|>",
-        8: "<eos>",
-    }
-    special_ids = {1, 4, 5, 7, 8}
-
-    def _stream_generate(_model, _tokenizer, **_kwargs):
-        for token_id, piece in pieces.items():
-            # Special-token text is deliberately wrong: production must trust
-            # response.token provenance and decode that id itself.
-            text = "untrusted-special-text" if token_id in special_ids else piece
-            yield SimpleNamespace(token = token_id, text = text)
-
-    mlx_lm_pkg.stream_generate = _stream_generate
+    mlx_lm_pkg.stream_generate = lambda _model, _tokenizer, **_kwargs: turn.stream()
     monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
     monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
 
-    class _Tokenizer:
-        chat_template = "x"
-        all_special_ids = list(special_ids)
-        all_special_tokens = [pieces[token_id] for token_id in special_ids]
-
-        def convert_ids_to_tokens(self, token_id):
-            return pieces[token_id]
-
-        def decode(
-            self,
-            ids,
-            *,
-            skip_special_tokens = False,
-            **_kwargs,
-        ):
-            skipped = special_ids if skip_special_tokens else set()
-            return "".join(pieces[int(token_id)] for token_id in ids if token_id not in skipped)
-
     backend = mlx_inference.MLXInferenceBackend()
     backend._model = object()
-    backend._tokenizer = _Tokenizer()
+    backend._tokenizer = turn
     backend._is_vlm = False
 
     snapshots = list(
         backend.generate_chat_response(
             messages = [{"role": "user", "content": "run it"}],
             tools = [{"type": "function", "function": {"name": "terminal"}}],
-            max_new_tokens = len(pieces),
+            max_new_tokens = len(turn.ids),
         )
     )
     assert snapshots[-1] == (
-        "<think>reasoned</think><|tool_call>call:terminal{command:id}<tool_call|>"
+        "<think>weighing it</think><|tool_call>call:terminal{command:id}<tool_call|>"
     )
-    assert "<eos>" not in snapshots[-1]
-    assert "untrusted-special-text" not in snapshots[-1]
+    # The suppressed pieces rode in on ordinary text; the kept one is written once, not twice.
+    assert "<pad>" not in snapshots[-1] and "<eos>" not in snapshots[-1]
+    assert snapshots[-1].count("<|tool_call>") == 1
     calls = parse_tool_calls_from_text(snapshots[-1], enabled_tool_names = {"terminal"})
     assert [call["function"]["name"] for call in calls] == ["terminal"]
 
@@ -2294,7 +2812,10 @@ def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch)
     ) == ["<think>"]
 
 
-def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
+@pytest.mark.parametrize(
+    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
+)
+def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_decode, feature):
     """Base-vs-LoRA compare sends audio_base64 and use_adapter in one body.
 
     The audio stream has to enter _temporary_mlx_adapter_state like the text and
@@ -2304,26 +2825,75 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
     from core.inference.mlx_inference import MLXInferenceBackend
 
     seen = {}
+    order = []
+    stream_state = {"active": False}
+
+    @contextmanager
+    def _generation_context():
+        assert not stream_state["active"]
+        stream_state["active"] = True
+        try:
+            yield
+        finally:
+            stream_state["active"] = False
+
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_context", _generation_context)
 
     @contextlib.contextmanager
     def _fake_adapter_state(model, use_adapter):
         seen["use_adapter"] = use_adapter
         seen["entered"] = True
-        yield
-        seen["exited"] = True
+        seen["exited"] = False
+        order.append("adapter_enter")
+        try:
+            yield
+        finally:
+            seen["exited"] = True
+            order.append("adapter_exit")
+
+    @contextmanager
+    def _fusion(model):
+        assert model is backend._model and backend._generation_lock.locked()
+        assert seen["entered"] and not seen["exited"]
+        assert order[-1] == "snapshots_released"
+        order.append("fusion_enter")
+        try:
+            yield
+        finally:
+            assert not seen["exited"] and backend._generation_lock.locked()
+            order.append("fusion_exit")
+
+    monkeypatch.setattr(
+        mlx_moe if feature == "moe_gate_up" else mlx_decode, f"fused_{feature}", _fusion
+    )
 
     def _fake_stream(model, processor, prompt, **kwargs):
         seen["inside"] = seen.get("entered") and not seen.get("exited")
-        yield SimpleNamespace(
-            text = "x",
-            prompt_tokens = 1,
-            prompt_tps = 1.0,
-            generation_tokens = 1,
-            generation_tps = 1.0,
-        )
+        assert order[-1] == "fusion_enter"
+        assert stream_state["active"]
+        try:
+            if seen.get("fail"):
+                raise RuntimeError("generation failed")
+            yield SimpleNamespace(
+                text = "x",
+                prompt_tokens = 1,
+                prompt_tps = 1.0,
+                generation_tokens = 1,
+                generation_tps = 1.0,
+            )
+        finally:
+            assert stream_state["active"]
+            order.append("producer_closed")
+
+    retained = []
+
+    def _retained_stream(*args, **kwargs):
+        producer = _fake_stream(*args, **kwargs)
+        retained.append(producer)
+        return producer
 
     fake_vlm = types.ModuleType("mlx_vlm")
-    fake_vlm.stream_generate = _fake_stream
+    fake_vlm.stream_generate = _retained_stream
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
     monkeypatch.setattr(
         mlx_inference,
@@ -2338,19 +2908,50 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
     backend.active_model_name = "m"
     backend.last_generation_stats = None
     backend.models = {"m": {"audio_type": "audio_vlm"}}
-
-    list(
-        backend.generate_audio_input_response(
-            messages = [{"role": "user", "content": "hi"}],
-            system_prompt = "",
-            audio_array = [0.0],
-            max_new_tokens = 8,
-            use_adapter = False,
-        )
+    monkeypatch.setattr(
+        backend, "_release_vlm_snapshots", lambda: order.append("snapshots_released")
     )
+
+    args = dict(
+        messages = [{"role": "user", "content": "hi"}],
+        system_prompt = "",
+        audio_array = [0.0],
+        max_new_tokens = 8,
+        use_adapter = False,
+    )
+    list(backend.generate_audio_input_response(**args))
     assert seen["use_adapter"] is False
     # Held for the whole stream, and restored afterwards.
     assert seen["inside"] is True and seen["exited"] is True
+    completed = [
+        "adapter_enter",
+        "snapshots_released",
+        "fusion_enter",
+        "producer_closed",
+        "fusion_exit",
+        "adapter_exit",
+    ]
+    assert order == completed
+    stream = backend.generate_audio_input_response(**args)
+    assert next(stream) == "x"
+    assert not stream_state["active"]
+    stream.close()
+    assert order == completed * 2
+    assert not backend._generation_lock.locked()
+    seen["fail"] = True
+    with pytest.raises(RuntimeError, match = "generation failed"):
+        list(backend.generate_audio_input_response(**args))
+    assert order == completed * 3
+    assert not backend._generation_lock.locked()
+
+    seen["fail"] = False
+    cancelled = __import__("threading").Event()
+    for index, extra in enumerate(({"cancel_event": cancelled}, {"stop": ["x"]}), start = 4):
+        cancelled.set()
+        list(backend.generate_audio_input_response(**args, **extra))
+        assert order == completed * index
+        assert not stream_state["active"]
+        assert not backend._generation_lock.locked()
 
 
 def test_worker_forwards_use_adapter_on_the_audio_command():
@@ -2363,7 +2964,7 @@ def test_worker_forwards_use_adapter_on_the_audio_command():
     assert '"use_adapter"' in src
 
 
-def test_kv_quant_status_applies_only_when_eligible_and_notes_vlm_cost(monkeypatch):
+def test_kv_quant_status_applies_only_when_eligible(monkeypatch):
     from core.inference import mlx_inference
 
     monkeypatch.setattr(
@@ -2381,9 +2982,7 @@ def test_kv_quant_status_applies_only_when_eligible_and_notes_vlm_cost(monkeypat
     text = mlx_inference._kv_quant_status(8, object(), False)
     vlm = mlx_inference._kv_quant_status(8, object(), True)
     assert text["kv_bits"] == 8 and not text["note"]
-    # The threshold caveat rides with the resolved value, so an API client sees it.
-    assert vlm["kv_bits"] == 8 and "vision models" in vlm["note"]
-    assert str(mlx_inference._vlm_quantized_kv_start()) in vlm["note"]
+    assert vlm["kv_bits"] == 8 and not vlm["note"]
 
     monkeypatch.setattr(
         mlx_inference,
@@ -2395,8 +2994,12 @@ def test_kv_quant_status_applies_only_when_eligible_and_notes_vlm_cost(monkeypat
     assert refused["requested_kv_bits"] == 8  # what the reload decision compares
 
 
-def _tiny_lm(cache_factory, dim = 128):
-    """Minimal model whose forward populates whatever cache it is given."""
+def _tiny_lm(
+    cache_factory,
+    dim = 128,
+    attends_quantized = True,
+):
+    """``attends_quantized = False`` rejects a quantized cache, as Gemma 4's KV-shared layers do."""
     import mlx.core as mx
 
     class _LM:
@@ -2412,7 +3015,9 @@ def _tiny_lm(cache_factory, dim = 128):
                 target = getattr(entry, "update_and_fetch", None)
                 if target is not None:
                     k = mx.zeros((1, 2, inputs.shape[1], dim))
-                    target(k, k)
+                    keys, _ = target(k, k)
+                    if not attends_quantized and not isinstance(keys, mx.array):
+                        raise TypeError("incompatible function arguments")
             return mx.zeros((1, inputs.shape[1], 8))
 
     return _LM()
@@ -2480,16 +3085,37 @@ def test_kv_quant_probe_reports_what_the_runtime_would_really_do(monkeypatch):
     pytest.importorskip("mlx_lm")
     from mlx_lm.models import cache as lm_cache
 
-    def elig(factory, dim = 128):
-        lm = _tiny_lm(factory, dim)
+    def verdict(
+        factory,
+        dim = 128,
+        **kwargs,
+    ):
+        lm = _tiny_lm(factory, dim, **kwargs)
         monkeypatch.setattr(lm_cache, "make_prompt_cache", lambda m, **_: lm.make_cache())
-        return mlx_inference._kv_quant_eligibility(lm, False, 8)[0]
+        return mlx_inference._kv_quant_eligibility(lm, False, 8)
+
+    def elig(
+        factory,
+        dim = 128,
+        **kwargs,
+    ):
+        return verdict(factory, dim, **kwargs)[0]
 
     assert elig(lambda: [lm_cache.KVCache(), lm_cache.KVCache()]) == "full"
     # A width mx.quantize rejects is caught by attempting it, not by naming it.
     assert elig(lambda: [lm_cache.KVCache()], dim = 80) == "refused"
     # A container the quantizer never descends into is skipped, not fatal.
     assert elig(lambda: [lm_cache.CacheList(lm_cache.KVCache())]) == "none"
+    windowed = lambda: [lm_cache.KVCache(), lm_cache.RotatingKVCache(max_size = 8)]
+    assert elig(windowed) == "partial"
+    assert "sliding-window" in verdict(windowed)[1]
+    mixed = lambda: [lm_cache.KVCache()] + windowed() + [lm_cache.CacheList(lm_cache.KVCache())]
+    assert verdict(mixed)[0] == "partial" and "sliding-window" not in verdict(mixed)[1]
+    assert elig(lambda: [lm_cache.RotatingKVCache(max_size = 8)]) == "none"
+    assert verdict(lambda: [lm_cache.KVCache() for _ in range(3)]) == ("full", "", True)
+    alone = verdict(lambda: [lm_cache.RotatingKVCache(max_size = 8)] * 2 + [lm_cache.KVCache()])
+    assert alone[0] == "none" and "stays unquantized" in alone[1]
+    assert elig(windowed, attends_quantized = False) == "refused"
     # Mixed quantizable/non-quantizable is a real success, reported as partial.
     assert elig(lambda: [lm_cache.KVCache(), lm_cache.CacheList(lm_cache.KVCache())]) == "partial"
 
@@ -2955,6 +3581,38 @@ def test_an_entry_the_upstream_lru_cannot_size_is_not_retainable(monkeypatch):
     assert probe(SimpleNamespace(state = (), nbytes = 128))[3] is True
 
 
+def test_kv_quant_probe_raises_a_dead_metal_queue(monkeypatch):
+    """The orchestrator retires a worker on this marker; a refusal would keep it serving on a dead queue."""
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    mx = sys.modules["mlx.core"]
+    mx.random = SimpleNamespace(state = [0])
+    mx.array = lambda v: v
+    mx.eval = lambda *a: None
+    calls = []
+
+    def language_model(*args, **kwargs):
+        calls.append(None)
+        if len(calls) > 1:
+            raise RuntimeError(f"[METAL] Command buffer execution failed: {message}")
+
+    entry = SimpleNamespace(
+        to_quantized = lambda group_size, bits: SimpleNamespace(state = (), nbytes = 1),
+        max_size = None,
+        window_size = None,
+        state = (),
+    )
+    message = "GPU Timeout Error"
+    with pytest.raises(RuntimeError, match = "GPU Timeout"):
+        mlx_inference._kv_quant_probe(language_model, [entry], 8)
+
+    calls.clear()
+    message = "Insufficient Memory"
+    failure = mlx_inference._kv_quant_probe(language_model, [entry], 8)[2]
+    assert failure == "it cannot attend over a quantized cache (RuntimeError)"
+
+
 class _SentinelRandomState:
     """``mx.random.state`` as mlx >= 0.32.1 exposes it: readable, not writable."""
 
@@ -3009,13 +3667,89 @@ def test_kv_quant_probe_rewinds_the_rng_without_assigning_to_the_state(monkeypat
     outcome = mlx_inference._kv_quant_probe(language_model, [entry], 8)
 
     assert outcome == (1, 0, None, True)
-    # A rewind that ran before the forward pass would leave the probe's own
+    # A rewind that ran before the forward passes would leave the probe's own
     # draws in the stream the caller goes on to sample.
     assert events == [
         ("forward", None),
         ("convert", None),
+        ("forward", None),
         ("seed", (words[0] << 32) | words[1]),
     ]
+
+
+def test_generate_kwargs_and_history_carry_a_pre_quantized_cache_and_no_kv_bits():
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.models import cache as lm_cache
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend._model = _tiny_lm(
+        lambda: [
+            lm_cache.RotatingKVCache(max_size = 8),
+            lm_cache.KVCache(),
+            lm_cache.KVCache(),
+            lm_cache.RotatingKVCache(max_size = 8),
+        ]
+    )
+    backend._kv_quant = {"kv_bits": None}
+    assert backend._kv_quant_generate_kwargs() == {}
+
+    backend._kv_quant = {"kv_bits": 4}
+    kwargs = backend._kv_quant_generate_kwargs()
+    assert set(kwargs) == {"prompt_cache"}
+    kinds = [type(entry).__name__ for entry in kwargs["prompt_cache"]]
+    assert kinds == ["RotatingKVCache", "QuantizedKVCache", "KVCache", "RotatingKVCache"]
+    assert kwargs["prompt_cache"][1].bits == 4
+    assert [
+        type(e).__name__
+        for e in mlx_inference._quantize_kv_entries([lm_cache.KVCache(), lm_cache.KVCache()], 4)
+    ] == ["QuantizedKVCache", "QuantizedKVCache"]
+
+    cache, rest = backend._prompt_cache().fetch(backend._model, "key", [1, 2, 3])
+    assert [type(entry).__name__ for entry in cache] == kinds and rest == [1, 2, 3]
+
+
+def test_vlm_prompt_cache_session_starts_from_a_pre_quantized_cache(monkeypatch):
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.models import cache as lm_cache
+    from core.inference.mlx_inference import MLXInferenceBackend, VLMPromptSnapshotStore
+
+    names = ("mlx_vlm", "mlx_vlm.generate", "mlx_vlm.generate.common", "mlx_vlm.models")
+    modules = {name: types.ModuleType(name) for name in names + ("mlx_vlm.models.cache",)}
+    modules["mlx_vlm.models.cache"].make_prompt_cache = lambda _model, max_kv_size = None: [
+        lm_cache.RotatingKVCache(max_size = 8),
+        lm_cache.KVCache(),
+    ]
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._vlm_snapshot_store = VLMPromptSnapshotStore(10**6)
+    backend._vlm_snapshot_store_unavailable = False
+    backend._vlm_is_diffusion_model = lambda _model: False
+    backend._model = SimpleNamespace(config = SimpleNamespace(), language_model = object())
+    backend._kv_cache_window = None
+    backend.active_model_name = "m"
+    backend._kv_quant = {"kv_bits": 4}
+    session = backend._vlm_prompt_cache_session("base")
+    kinds = [type(entry).__name__ for entry in session.cache]
+    assert kinds == ["RotatingKVCache", "QuantizedKVCache"] and session.cache[1].bits == 4
+
+    import mlx.core as mx
+    from core.inference.mlx_inference import (
+        cache_entries_nbytes,
+        cache_entries_offset,
+        copy_cache_entries,
+    )
+
+    for entry in session.cache:
+        entry.update_and_fetch(mx.ones((1, 1, 4, 64)), mx.ones((1, 1, 4, 64)))
+    snapshot = copy_cache_entries(session.cache)
+    assert type(snapshot[1]).__name__ == "QuantizedKVCache" and snapshot[1].bits == 4
+    assert cache_entries_offset(snapshot) == 4
+    assert cache_entries_nbytes(snapshot[1:]) > 0
+    assert backend._vlm_snapshot_store.store("m", [1, 2, 3, 4], snapshot)
 
 
 def test_a_successful_override_does_not_pin_the_tokenizer_past_load(monkeypatch):
@@ -3216,7 +3950,7 @@ def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
     backend._processor = SimpleNamespace(chat_template = "template")
     args = (
         [{"role": "user", "content": [{"type": "image"}]}],
-        object(),
+        [object()],
         0.7,
         0.9,
         40,
@@ -3665,7 +4399,7 @@ class _RenderRecordingBackend:
     active_model_name = "mlx/model"
 
     def __init__(self):
-        self.messages = self.system = self.tools = None
+        self.messages = self.system = self.tools = self.reasoning = None
 
     def count_chat_tokens(
         self,
@@ -3675,6 +4409,10 @@ class _RenderRecordingBackend:
     ):
         self.messages, self.system = messages, system_prompt
         self.tools = kwargs.get("tools")
+        self.reasoning = {
+            key: kwargs.get(key)
+            for key in ("enable_thinking", "reasoning_effort", "preserve_thinking")
+        }
         return 11, "mlx/model"
 
 
@@ -3734,6 +4472,26 @@ def test_an_mlx_count_is_served_where_llama_cpp_would_have_refused(monkeypatch):
     with pytest.raises(HTTPException) as refused:
         _count_route(monkeypatch, _RenderRecordingBackend(), messages = [])
     assert refused.value.status_code == 503
+
+
+def test_an_mlx_count_uses_the_shared_nested_reasoning_controls(monkeypatch):
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        messages = [{"role": "user", "content": "hello"}],
+        thinking = {"type": "disabled"},
+        chat_template_kwargs = {
+            "reasoning_effort": "high",
+            "preserve_thinking": True,
+        },
+    )
+
+    assert backend.reasoning == {
+        "enable_thinking": True,
+        "reasoning_effort": "high",
+        "preserve_thinking": True,
+    }
 
 
 @pytest.mark.parametrize(
@@ -3903,39 +4661,235 @@ def test_the_load_policy_bounds_a_pin_only_where_the_bound_can_be_enforced(monke
         backend = MLXInferenceBackend()
         backend._model = model
         backend._is_vlm = False
-        quant, window, enforced = backend._resolve_kv_policy(
+        quant, window, enforced, budget = backend._resolve_kv_policy(
             False, kv_bits, requested, requested if served is unset else served
         )
-        return quant["kv_bits"], window, enforced
+        return quant["kv_bits"], window, enforced, budget
 
-    assert policy(honours, 4, 8192) == (None, 8192, True)  # enforceable pin outranks quant
-    # Auto yields to quantization, and a window that bounds nothing says so.
-    assert policy(honours, 4, 0, 262144) == (4, None, False)
-    assert policy(honours, None, 8192) == (None, 8192, True)
-    assert policy(honours, None, 0, 262144) == (None, 262144, True)  # nothing to yield to
+    assert policy(honours, 4, 8192) == (4, None, False, 8192)
+    assert policy(honours, 4, 0, 262144) == (4, None, False, None)
+    assert policy(honours, None, 8192) == (None, 8192, True, None)
+    assert policy(honours, None, 0, 262144) == (None, 262144, True, None)  # nothing to yield to
 
-    # An unenforceable pin spends nothing, and the verdict still travels to the API.
-    assert policy(owns, 4, 8192) == (4, None, False)
-    assert policy(owns, None, 8192) == (None, None, False)
+    assert policy(owns, 4, 8192) == (4, None, False, None)
+    assert policy(owns, None, 8192) == (None, None, False, None)
 
     # A window nobody could read bounds nothing rather than bounding at zero.
-    assert policy(honours, None, 0, None) == (None, None, False)  # unreadable
-    assert policy(honours, None, 0, 0) == (None, None, False)  # non-positive
+    assert policy(honours, None, 0, None) == (None, None, False, None)  # unreadable
+    assert policy(honours, None, 0, 0) == (None, None, False, None)  # non-positive
 
     # A shape the probe cannot judge is null, not a confirmed "not enforced".
     unreadable = SimpleNamespace(layers = [object()], make_cache = lambda: None)
-    assert policy(unreadable, None, 8192) == (None, None, None)
+    assert policy(unreadable, None, 8192) == (None, None, None, None)
+
+    # The pre-built cache quantizes from the first token, budget or not.
+    backend = MLXInferenceBackend()
+    backend._model = honours
+    backend._is_vlm = False
+    budgeted, _, _, budget = backend._resolve_kv_policy(True, 4, 4096, 4096)
+    unpinned, _, _, _ = backend._resolve_kv_policy(True, 4, 0, 262144)
+    assert budget == 4096 and budgeted["note"] == "" and unpinned["note"] == ""
+    for backend._kv_context_budget in (budget, None):
+        backend._kv_quant = budgeted
+        kwargs = backend._kv_quant_generate_kwargs()
+        assert set(kwargs) == {"prompt_cache"}
+        assert [getattr(entry, "bits", None) for entry in kwargs["prompt_cache"]] == [4, 4]
 
 
-def test_quantization_is_refused_for_a_pinned_context_rather_than_raising_mid_stream():
-    """Left to mlx-lm this surfaces as NotImplementedError on the first generated token."""
-    from core.inference.mlx_inference import _kv_quant_status
+def _drive_vlm_generation(
+    backend,
+    monkeypatch,
+    image = None,
+    max_new_tokens = 1,
+    session = None,
+    video = None,
+):
+    import sys
+    import types
 
-    status = _kv_quant_status(4, None, False, context_pinned = True)
+    seen = {}
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {}, apply_chat_template = lambda *_a, **_k: "prompt"
+    )
 
-    assert status["kv_bits"] is None
-    assert status["eligibility"] == "refused"
-    assert "quantize a limited cache" in status["reason"]
+    def _stream(*_a, **kwargs):
+        seen.clear()
+        seen.update(kwargs)
+        yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_a, **_k: "prompt",
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    )
+    backend._model = SimpleNamespace(config = {"model_type": "gemma3"})
+    backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
+    backend._is_vlm = True
+    monkeypatch.setattr(backend, "_release_vlm_snapshots", lambda: None)
+    monkeypatch.setattr(backend, "_vlm_prompt_cache_session", lambda *_a, **_k: session)
+    list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "hi"}],
+            image = image,
+            video = video,
+            max_new_tokens = max_new_tokens,
+        )
+    )
+    return seen
+
+
+def _stub_prepare_inputs(monkeypatch, per_medium = 520):
+    import sys
+    import types
+
+    seen = {}
+
+    def _prepare_inputs(
+        _processor,
+        *,
+        prompts,
+        images = None,
+        audio = None,
+        videos = None,
+        **_kwargs,
+    ):
+        media = [*(images or ()), *(audio or ()), *(videos or ())]
+        seen.clear()
+        seen.update(_kwargs)
+        return {"input_ids": SimpleNamespace(size = len(prompts.split()) + per_medium * len(media))}
+
+    utils = types.ModuleType("mlx_vlm.utils")
+    utils.prepare_inputs = _prepare_inputs
+    utils.seen = seen
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    return utils
+
+
+def _vision_backend(budget = 1024, window = 1024):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = SimpleNamespace(model_type = "qwen2_5_vl"))
+    backend._processor = object()
+    backend._is_vlm = True
+    backend._tokenizer = SimpleNamespace(encode = lambda text, **_k: [0] * len(text.split()))
+    backend._served_context = window
+    backend._kv_context_budget = budget
+    return backend
+
+
+def test_the_context_budget_counts_the_request_in_tokens_the_processor_would_produce(monkeypatch):
+    """Media must be counted expanded: text alone is 7 tokens vs 582 for one image."""
+    from core.inference import context_refusal
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    utils = _stub_prepare_inputs(monkeypatch)
+    backend = _vision_backend()
+    prompt = "placeholder describe this picture"
+
+    assert backend._count_prompt_tokens(prompt) == 4
+    assert backend._count_prompt_tokens(prompt, [object()]) == 524
+    assert backend._count_prompt_tokens(prompt, [object(), object()]) == 1044
+
+    backend._check_context_budget(prompt, 16)
+    backend._check_context_budget(prompt, 16, images = [object()])
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        backend._check_context_budget(prompt, 16, images = [object(), object()])
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        backend._check_context_budget(prompt, 16, audio = [object(), object()])
+    monkeypatch.setattr("core.inference.mlx_inference._video_frame_rate", lambda *_a: 1.5)
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        backend._check_context_budget(prompt, 16, videos = ["a.mp4", "b.mp4"])
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        backend._check_context_budget(prompt, 16, images = [object()], videos = ["a.mp4"])
+    # Counted at generation's fps, not the processor's default rate.
+    backend._check_context_budget(prompt, 16, videos = ["a.mp4"])
+    assert utils.seen["fps"] == 1.5
+
+    sized = backend._generation_limit(prompt, None, images = [object()])
+    assert sized == 1024 - 524
+    backend._generation_limit(prompt, sized, images = [object()])
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        backend._generation_limit(prompt, 16, images = [object(), object()])
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        backend._generation_limit(prompt, 16, videos = ["a.mp4", "b.mp4"])
+
+    def _unpreparable(*_a, **_k):
+        raise RuntimeError("no processor")
+
+    utils.prepare_inputs = _unpreparable
+    assert backend._count_prompt_tokens(prompt, [object(), object()]) == 4
+    backend._check_context_budget(prompt, 16, images = [object(), object()])
+
+
+def test_the_vlm_entry_point_hands_the_limit_a_clip_the_processor_can_read(monkeypatch):
+    """A video is counted from a readable file, not the route's base64."""
+    import base64
+    import os
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    monkeypatch.setattr("core.inference.mlx_inference._mlx_vlm_decodes_video", lambda: True)
+    backend = MLXInferenceBackend()
+    backend._kv_context_budget = 1024
+    seen = {}
+
+    def _limit(*_a, **kwargs):
+        seen.update(kwargs)
+        seen["on_disk"] = [os.path.exists(clip) for clip in kwargs.get("videos") or ()]
+        return 1
+
+    monkeypatch.setattr(backend, "_generation_limit", _limit)
+    clip = base64.b64encode(b"not a readable clip").decode()
+    # Past the limit a stub path fails setup; the counted clip must still be discarded.
+    with contextlib.suppress(Exception):
+        _drive_vlm_generation(backend, monkeypatch, video = clip)
+    assert seen["videos"] != [clip]
+    assert seen["on_disk"] == [True]
+    assert not os.path.exists(seen["videos"][0])
+
+
+def test_media_is_prepared_only_under_a_budget_and_only_once(monkeypatch):
+    from core.inference.mlx_inference import UNSET_GENERATION_BUDGET
+
+    utils = _stub_prepare_inputs(monkeypatch)
+    calls = []
+    real = utils.prepare_inputs
+    utils.prepare_inputs = lambda *a, **k: calls.append(1) or real(*a, **k)
+    prompt = "placeholder describe this picture"
+
+    unbudgeted = _vision_backend(budget = None, window = 8192)
+    sized = unbudgeted._generation_limit(
+        prompt, None, images = [object()], cap = UNSET_GENERATION_BUDGET
+    )
+    assert calls == []
+    assert sized == min(8192 - 4, UNSET_GENERATION_BUDGET)
+
+    budgeted = _vision_backend()
+    assert budgeted._generation_limit(prompt, None, images = [object()]) == 1024 - 524
+    assert calls == [1]
+
+
+def test_a_max_tokens_at_the_whole_window_is_the_chat_saying_no_cap(monkeypatch):
+    """Max Tokens at the window means "as much as fits", not a request for that many."""
+    from core.inference import context_refusal
+
+    _stub_prepare_inputs(monkeypatch)
+    backend = _vision_backend()
+    prompt = "placeholder describe this picture"
+
+    assert backend._generation_limit(prompt, 1024) == 1024 - 4
+    assert backend._generation_limit(prompt, 1024, images = [object()]) == 1024 - 524
+    assert backend._generation_limit(prompt, 16) == 16
+    assert backend._generation_limit(prompt, 2048) == 1024 - 4
+    assert backend._generation_limit(prompt, 500, range(700)) == 1024 - 700
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        backend._generation_limit(prompt, 1, range(1024))
 
 
 def test_the_bound_is_checked_on_a_real_cache_at_the_size_that_was_asked_for():
@@ -4070,7 +5024,7 @@ def test_the_window_reaches_the_runtime_on_every_generation_route(monkeypatch):
     next(
         vlm._generate_vlm(
             [{"role": "user", "content": [{"type": "image"}]}],
-            object(),
+            [object()],
             0,
             1,
             0,
@@ -4278,14 +5232,434 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
 
 
-def test_mlx_vlm_recovers_native_tool_tokens_like_the_text_path(monkeypatch):
-    """mlx-vlm's ``response.text`` has already dropped the native tool controls. Without recovering
-    them the wrapper never reaches the parser, so a genuine
-    ``<|tool_call>call:terminal{..}<tool_call|>`` arrives markerless and the execution guard
-    refuses it. Text-only requests on a model classified as a VLM use this route too."""
-    from core.inference import mlx_inference
+import numpy as np  # noqa: E402
 
-    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+from core.inference import grammar_constraint as gc
+from core.inference.grammar_constraint import (
+    ResponseFormatError,
+    build_constraint,
+    constraint_spec_from_response_format,
+)
+
+SCHEMA = {
+    "type": "object",
+    "properties": {"a": {"type": "integer"}},
+    "required": ["a"],
+    "additionalProperties": False,
+}
+
+JSON_SCHEMA_FORMAT = {"type": "json_schema", "schema": SCHEMA}
+
+
+def _char_tokenizer(
+    *extra_specials,
+    markers_are_special = False,
+    extra_chars = "",
+):
+    if not gc.LLGUIDANCE_AVAILABLE:
+        pytest.skip("llguidance.mlx did not import")
+    tk = pytest.importorskip("tokenizers")
+    transformers = pytest.importorskip("transformers")
+
+    chars = list('{}"[]:,0123456789abcdefghijklmnopqrstuvwxyz \n.-' + extra_chars)
+    backend = tk.Tokenizer(tk.models.BPE(vocab = {c: i for i, c in enumerate(chars)}, merges = []))
+    backend.pre_tokenizer = tk.pre_tokenizers.ByteLevel(add_prefix_space = False, use_regex = False)
+    backend.decoder = tk.decoders.ByteLevel()
+    backend.add_special_tokens([tk.AddedToken("<eos>", special = True)])
+    markers = [tk.AddedToken(t, special = markers_are_special) for t in ("</think>", *extra_specials)]
+    if markers_are_special:
+        backend.add_special_tokens(markers)
+    else:
+        backend.add_tokens(markers)
+    tokenizer = transformers.PreTrainedTokenizerFast(tokenizer_object = backend, eos_token = "<eos>")
+    tokenizer.chat_template = "{{ messages[0].content }}<think>"
+    return tokenizer
+
+
+@pytest.fixture(scope = "module")
+def tiny_tokenizer():
+    return _char_tokenizer()
+
+
+def _metal_mx():
+    mx = pytest.importorskip("mlx.core")
+    if not mx.metal.is_available():
+        pytest.skip("llguidance.mlx masks with a Metal kernel")
+    return mx
+
+
+def _allowed(constraint, width):
+    mx = _metal_mx()
+    masked = np.asarray(constraint.mask_logits(mx.zeros((width,), dtype = mx.float32)))
+    return set(np.nonzero(~np.isneginf(masked))[0].tolist())
+
+
+def test_every_spelling_of_a_supplied_schema_agrees_and_a_non_schema_is_refused(tiny_tokenizer):
+    wrapped = constraint_spec_from_response_format(
+        {"type": "json_schema", "json_schema": {"name": "city", "schema": SCHEMA}}
+    ).grammar
+    for spelling in (
+        JSON_SCHEMA_FORMAT,
+        {"type": "json_schema", "schema": dict(reversed(list(SCHEMA.items())))},
+        {"type": "json_object", "schema": SCHEMA},
+    ):
+        assert constraint_spec_from_response_format(spelling).grammar == wrapped
+    for supplied in (False, True, "nonsense", [1, 2]):
+        with pytest.raises(ResponseFormatError):
+            constraint_spec_from_response_format({"type": "json_object", "schema": supplied})
+    plain = constraint_spec_from_response_format({"type": "json_object"}).grammar
+    for spelling in (
+        {"type": "json_object", "schema": None},
+        {"type": "json_object", "schema": {}},
+        {"type": "json_schema", "schema": {"type": "object"}},
+    ):
+        assert constraint_spec_from_response_format(spelling).grammar == plain
+    digit = tiny_tokenizer.encode("4", add_special_tokens = False)[0]
+    width = len(tiny_tokenizer)
+    any_value = build_constraint({"type": "json_schema", "schema": {}}, tiny_tokenizer, "p")
+    assert digit in _allowed(any_value, width)
+    assert digit not in _allowed(
+        build_constraint({"type": "json_object"}, tiny_tokenizer, "p"), width
+    )
+
+
+def test_the_schema_itself_constrains_not_merely_json_syntax(tiny_tokenizer):
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
+    _allowed(constraint, len(tiny_tokenizer))
+    for token_id in tiny_tokenizer.encode('{"', add_special_tokens = False):
+        constraint.advance(int(token_id))
+    assert _allowed(constraint, len(tiny_tokenizer)) == set(
+        tiny_tokenizer.encode("a", add_special_tokens = False)
+    )
+    for token_id in tiny_tokenizer.encode('a":', add_special_tokens = False):
+        constraint.advance(int(token_id))
+    quote = tiny_tokenizer.encode('"', add_special_tokens = False)[0]
+    assert quote not in _allowed(constraint, len(tiny_tokenizer))
+
+
+def test_advance_raises_on_a_token_the_grammar_rejects(tiny_tokenizer):
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
+    _allowed(constraint, len(tiny_tokenizer))
+    illegal = tiny_tokenizer.encode("]", add_special_tokens = False)[0]
+    with pytest.raises(gc.GrammarDesyncError, match = "desynced on token") as excinfo:
+        constraint.advance(int(illegal))
+    assert not isinstance(excinfo.value, ResponseFormatError)
+
+
+def test_binding_waits_for_the_logits_width_a_padded_lm_head_widens(tiny_tokenizer):
+    gc._TOKENIZER_CACHE.clear()
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
+    padded = len(tiny_tokenizer) + 16
+    legal = _allowed(constraint, padded)
+    assert legal == set(tiny_tokenizer.encode("{", add_special_tokens = False))
+    assert max(legal) < len(tiny_tokenizer)
+
+
+def test_prelude_is_bounded_so_an_unclosed_think_block_cannot_eat_the_budget(
+    tiny_tokenizer, monkeypatch
+):
+    monkeypatch.setattr(gc, "_PRELUDE_MAX_TOKENS", 6)
+    constraint = build_constraint(
+        JSON_SCHEMA_FORMAT, tiny_tokenizer, "chat\n<think>\n", reasoning_is_extracted = True
+    )
+    _allowed(constraint, len(tiny_tokenizer))
+    for token_id in tiny_tokenizer.encode("abcdef", add_special_tokens = False):
+        constraint.advance(int(token_id))
+    close_id = tiny_tokenizer.encode("</think>", add_special_tokens = False)[0]
+    assert _allowed(constraint, len(tiny_tokenizer)) == {close_id}
+    constraint.advance(int(close_id))
+    assert _allowed(constraint, len(tiny_tokenizer)) == set(
+        tiny_tokenizer.encode("{", add_special_tokens = False)
+    )
+
+
+def test_reasoning_cannot_spell_the_closer_as_text_and_forge_the_document_boundary():
+    tokenizer = _char_tokenizer(extra_chars = "</>")
+
+    def _fresh():
+        constraint = build_constraint(
+            JSON_SCHEMA_FORMAT, tokenizer, "chat\n<think>", reasoning_is_extracted = True
+        )
+        constraint._bind(len(tokenizer))
+        return constraint
+
+    def _step(constraint, token_id):
+        # The numpy half of mask_logits, so the desync check reads a real mask without Metal.
+        gc._llg_mlx.fill_next_token_bitmask(constraint._matcher, constraint._bitmask)
+        constraint.advance(int(token_id))
+
+    def _chars(text):
+        return [tokenizer.convert_tokens_to_ids(c) for c in text]
+
+    constraint = _fresh()
+    for token_id in _chars("a<b</think"):
+        _step(constraint, token_id)
+    with pytest.raises(gc.GrammarDesyncError):
+        _step(constraint, tokenizer.convert_tokens_to_ids(">"))
+
+    close_id = tokenizer.encode("</think>", add_special_tokens = False)
+    assert len(close_id) == 1
+    constraint = _fresh()
+    for token_id in (
+        _chars("a<b</th") + close_id + tokenizer.encode('{"a":1}', add_special_tokens = False)
+    ):
+        _step(constraint, token_id)
+
+
+@pytest.mark.parametrize("reply_keeps_special_tokens", [False, True])
+def test_a_close_marker_is_refused_only_where_the_reply_would_lose_it(reply_keeps_special_tokens):
+    tokenizer = _char_tokenizer(markers_are_special = True)
+    ids = tokenizer.encode("</think>", add_special_tokens = False)
+    assert (
+        tokenizer.decode(ids, skip_special_tokens = True) != "</think>"
+    ), "fixture no longer models a marker a skip_special_tokens decode strips"
+
+    def _build():
+        return build_constraint(
+            JSON_SCHEMA_FORMAT,
+            tokenizer,
+            "chat\n<think>",
+            reasoning_is_extracted = True,
+            reply_keeps_special_tokens = reply_keeps_special_tokens,
+        )
+
+    if not reply_keeps_special_tokens:
+        with pytest.raises(ResponseFormatError):
+            _build()
+        return
+    constraint = _build()
+    assert constraint.allows_reasoning
+    for token_id in tokenizer.encode('x</think>{"a":1}', add_special_tokens = False):
+        assert int(token_id) in _allowed(constraint, len(tokenizer))
+        constraint.advance(int(token_id))
+
+
+class _Recorder:
+    def __init__(self):
+        self.advanced = []
+
+    def mask_logits(self, logits):
+        return logits
+
+    def advance(self, token_id):
+        self.advanced.append(int(token_id))
+
+
+def test_the_grammar_mask_runs_first_and_its_inf_survives_every_knob():
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_lm")
+    from core.inference.mlx_inference import _mlx_sampling_processors
+
+    class _MaskOdd(_Recorder):
+        def mask_logits(self, logits):
+            keep = mx.array([[1.0, 0.0, 1.0, 0.0]])
+            return mx.where(keep > 0, logits, mx.array(float("-inf")))
+
+    grammar = _MaskOdd()
+    processors = _mlx_sampling_processors(
+        repetition_penalty = 1.3,
+        presence_penalty = 0.5,
+        frequency_penalty = 0.5,
+        logit_bias = {1: 100.0},
+        grammar_constraint = grammar,
+    )
+    zeros = mx.zeros((1, 4), dtype = mx.float32)
+    tokens = mx.array([0, 1])
+    leading = np.asarray(processors[0](tokens, zeros))[0]
+    assert np.isneginf(leading[1]) and np.isneginf(leading[3])
+
+    logits = zeros
+    for processor in processors:
+        logits = processor(tokens, logits)
+    out = np.asarray(logits)[0]
+    assert np.isneginf(out[1]) and np.isneginf(out[3])
+    assert np.isfinite(out[0]) and np.isfinite(out[2])
+
+    assert grammar.advanced == []
+    processors[0](mx.array([0, 1, 2, 3]), zeros)
+    processors[0](mx.array([0, 1, 2, 3, 4]), zeros)
+    assert grammar.advanced == [2, 3, 4]
+
+
+def _two_stop_tokenizer():
+    tokenizer = _char_tokenizer("<end_of_text>", markers_are_special = True)
+    tokenizer.chat_template = "{{ messages[0].content }}"
+    runtime_stop = tokenizer.convert_tokens_to_ids("<end_of_text>")
+    assert runtime_stop != tokenizer.eos_token_id, "fixture no longer models a disagreement"
+    return tokenizer, runtime_stop
+
+
+def _stop_offered_after_the_document(target, tokenizer):
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, target, "prompt")
+    for token_id in tokenizer.encode('{"a":1}', add_special_tokens = False):
+        _allowed(constraint, len(tokenizer))
+        constraint.advance(int(token_id))
+    assert constraint._matcher.is_stopped(), "the document did not complete"
+    return _allowed(constraint, len(tokenizer))
+
+
+def test_the_grammar_stops_on_the_token_the_decode_loop_stops_on():
+    mlx_lm = pytest.importorskip("mlx_lm")
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    wrapped = TokenizerWrapper(tokenizer, eos_token_ids = [runtime_stop])
+    assert _stop_offered_after_the_document(wrapped, tokenizer) == {runtime_stop}
+    assert _stop_offered_after_the_document(tokenizer, tokenizer) == {tokenizer.eos_token_id}
+
+
+def test_a_schema_forced_through_a_stop_token_is_refused_while_it_can_still_be_reported():
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    wrapped = TokenizerWrapper(tokenizer, eos_token_ids = [runtime_stop])
+
+    def replay(schema, text):
+        constraint = build_constraint({"type": "json_schema", "schema": schema}, wrapped, "p")
+        for token in tokenizer.encode(text, add_special_tokens = False):
+            _allowed(constraint, len(tokenizer))
+            constraint.advance(int(token))
+        return _allowed(constraint, len(tokenizer))
+
+    with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
+        replay({"const": tokenizer.convert_ids_to_tokens(runtime_stop)}, '"')
+    assert runtime_stop in replay({"type": "integer"}, "42")
+    assert runtime_stop in replay(SCHEMA, '{"a":1}')
+
+
+def test_a_scalar_end_token_does_not_hide_the_runtime_stop_set():
+    pytest.importorskip("mlx_vlm")
+    from mlx_vlm.utils import StoppingCriteria
+
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    assert getattr(tokenizer, "eos_token_ids", None) == tokenizer.eos_token_id, "not a scalar"
+    criteria = StoppingCriteria([runtime_stop], tokenizer = tokenizer)
+    tokenizer.stopping_criteria = criteria
+    for target in (tokenizer, SimpleNamespace(tokenizer = tokenizer)):
+        assert _stop_offered_after_the_document(target, tokenizer) == set(criteria.eos_token_ids)
+
+
+def test_advance_before_the_first_mask_raises_rather_than_dropping_the_token(tiny_tokenizer):
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
+    with pytest.raises(gc.GrammarDesyncError, match = "before the grammar was bound"):
+        constraint.advance(tiny_tokenizer.encode("{", add_special_tokens = False)[0])
+
+
+def _uncopyable_naive_detokenizer(detokenizers):
+    """mlx-vlm's naive detokenizer as it behaves BELOW 0.6.0, which is where ``__copy__`` arrived.
+
+    Pinning the behaviour rather than the installed version: on 0.6.0 and later ``copy.copy``
+    succeeds, so a test that let the real class decide passed only on an older wheel and said
+    nothing about the branch it meant to cover."""
+
+    class _Uncopyable(detokenizers.NaiveStreamingDetokenizer):
+        def __copy__(self):
+            raise AttributeError(
+                "property 'text' of 'NaiveStreamingDetokenizer' object has no setter"
+            )
+
+    return _Uncopyable
+
+
+class _SpmTurn:
+    """One generated turn, standing in for both the tokenizer and the runtime's detokenizer.
+
+    The SPM detokenizer releases text only when a piece begins with the SPM space marker, so a
+    control reaches ``response.text`` inside a later segment. Fakes handing each piece back on its
+    own step hide that, and under that shape re-decoding a control on its own step reads correct."""
+
+    def __init__(
+        self,
+        pieces,
+        specials = (),
+        eos = None,
+        chat_template = None,
+        ends = "exhausted",
+        reports_finish_reason = True,
+        block = False,
+        shares_detokenizer = False,
+        detokenizer_class = "spm",
+    ):
+        detokenizers = pytest.importorskip("mlx_vlm.tokenizer_utils")
+        self.vocab = {}
+        self.ids = [self.vocab.setdefault(piece, len(self.vocab)) for piece in pieces]
+        self._by_id = {token_id: piece for piece, token_id in self.vocab.items()}
+        self.all_special_ids = tuple(self.vocab[piece] for piece in specials)
+        self.all_special_tokens = tuple(specials)
+        self.chat_template = chat_template
+        self._ends = ends
+        self._reports_finish_reason = reports_finish_reason
+        self._block = block
+        self._shares_detokenizer = shares_detokenizer
+        if eos is not None:
+            eos_ids = [self.vocab[piece] for piece in ((eos,) if isinstance(eos, str) else eos)]
+            self.eos_token_ids = tuple(eos_ids)
+            self.eos_token_id = eos_ids[-1]
+        self.detokenizer = (
+            _uncopyable_naive_detokenizer(detokenizers)(self)
+            if detokenizer_class == "naive"
+            else detokenizers.SPMStreamingDetokenizer(self, trim_space = False)
+        )
+
+    def convert_ids_to_tokens(self, token_id):
+        return self._by_id[token_id]
+
+    def decode(
+        self,
+        token_ids,
+        skip_special_tokens = False,
+        **_kwargs,
+    ):
+        return "".join(
+            "" if (skip_special_tokens and i in self.all_special_ids) else self._by_id.get(i, "")
+            for i in token_ids
+        ).replace("▁", " ")
+
+    def stream(self, *_a, **_k):
+        """A segment per step from the runtime's own detokenizer, then the flush ending the turn.
+
+        ``ends`` picks that last yield's shape: exhausting the sampler repeats the position already
+        reported, while breaking out reports one never yielded -- on a stop token the detokenizer
+        never saw, or on the token limit, which mlx-lm reaches after feeding it.
+        ``reports_finish_reason`` is off for the supported mlx-vlm floor, which has no such field."""
+        if self._block:
+            # What mlx-vlm's diffusion generators report for a denoised block: every id at once,
+            # the count grown by all of them, only the last one named, and the block's own text.
+            yield self._yielded(self.decode(self.ids), self.ids[-1], len(self.ids), "stop")
+            return
+        # mlx-vlm's supported floor streams through the processor's own instance rather than a
+        # copy of it, so anything else driving that instance corrupts both.
+        detokenizer = self.detokenizer if self._shares_detokenizer else copy.copy(self.detokenizer)
+        detokenizer.reset()
+        streamed = self.ids if self._ends == "exhausted" else self.ids[:-1]
+        for position, token_id in enumerate(streamed, start = 1):
+            detokenizer.add_token(token_id, skip_special_token_ids = [])
+            yield self._yielded(detokenizer.last_segment, token_id, position, None)
+        if self._ends == "length":
+            detokenizer.add_token(self.ids[-1], skip_special_token_ids = [])
+        detokenizer.finalize()
+        yield self._yielded(
+            detokenizer.last_segment,
+            self.ids[-1],
+            len(self.ids),
+            "stop" if self._ends == "stop" else "length",
+        )
+
+    def _yielded(self, text, token_id, position, finish_reason):
+        fields = dict(text = text, token = token_id, prompt_tokens = 3, generation_tokens = position)
+        if self._reports_finish_reason:
+            fields["finish_reason"] = finish_reason
+        return SimpleNamespace(**fields)
+
+
+def _run_spm_vlm_turn(
+    monkeypatch,
+    turn,
+    tool_name = "get_weather",
+    stop = None,
+):
+    from core.inference import mlx_inference
 
     @contextmanager
     def _adapter_state(_model, _state):
@@ -4295,397 +5669,359 @@ def test_mlx_vlm_recovers_native_tool_tokens_like_the_text_path(monkeypatch):
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
     )
-
-    class _Tok:
-        # 7/8 are the Gemma wrapper; mlx-vlm reports them as empty text.
-        _IDS = {7: "<|tool_call>", 8: "<tool_call|>", 9: "<eos>"}
-        all_special_ids = tuple(_IDS)
-
-        def convert_ids_to_tokens(self, token_id):
-            return self._IDS[token_id]
-
-        def decode(
-            self,
-            token_ids,
-            skip_special_tokens = False,
-            **_k,
-        ):
-            return "".join(
-                self._IDS.get(i, "")
-                for i in token_ids
-                if not (skip_special_tokens and i in self.all_special_ids)
-            )
-
-    prompt_utils = SimpleNamespace(
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(
         MODEL_CONFIG = {"deepseek_vl_v2": object()},
         apply_chat_template = lambda *_a, **_k: "<image> model-aware",
     )
-    mlx_vlm = types.ModuleType("mlx_vlm")
-    mlx_vlm.prompt_utils = prompt_utils
-
-    def _vlm_stream(*_a, **_k):
-        for token_id, text in (
-            (7, ""),
-            (None, 'call:terminal{command:"id"}'),
-            (8, ""),
-        ):
-            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
-
-    mlx_vlm.stream_generate = _vlm_stream
+    mlx_vlm.stream_generate = turn.stream
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
         lambda _t, _m, **_k: "<image> model-aware",
     )
 
-    backend = MLXInferenceBackend()
+    backend = mlx_inference.MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
-    backend._processor = SimpleNamespace(tokenizer = _Tok())
-    backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
-
-    snapshots = list(
+    backend._processor = SimpleNamespace(
+        tokenizer = turn, chat_template = turn.chat_template, detokenizer = turn.detokenizer
+    )
+    backend._tokenizer = turn
+    return list(
         backend._generate_vlm(
-            *args,
+            [{"role": "user", "content": [{"type": "image"}]}],
+            [object()],
+            0,
+            1,
+            0,
+            0,
+            32,
+            1,
+            None,
             _adapter_state = False,
-            tools = [{"type": "function", "function": {"name": "terminal"}}],
+            tools = [{"type": "function", "function": {"name": tool_name}}],
+            stop = stop,
         )
     )
+
+
+def test_mlx_vlm_keeps_a_native_tool_wrapper_exactly_once(monkeypatch):
+    """Strict parsing needs the wrapper to tell a native call from markerless prose, and a second
+    copy is no better: the parser reads the pair as a malformed envelope."""
+    turn = _SpmTurn(
+        (
+            "<|tool_call>",
+            "call",
+            ":",
+            "terminal",
+            "{",
+            "command",
+            ":",
+            '"id"',
+            "}",
+            "<tool_call|>",
+        ),
+        specials = ("<|tool_call>", "<tool_call|>"),
+    )
+    snapshots = _run_spm_vlm_turn(monkeypatch, turn, tool_name = "terminal")
     assert snapshots[-1] == '<|tool_call>call:terminal{command:"id"}<tool_call|>'
 
 
-def test_mlx_drops_a_trailing_stop_token_from_the_preserved_decode(monkeypatch):
-    """``skip_special_tokens`` used to swallow the stop id; the decoder keeps controls. Some
-    runtimes stop on an allowlisted one (TML Inkling's ``<|end_message|>``), so without filtering
-    it an ordinary answer is delivered with the protocol marker appended."""
-    from core.inference import mlx_inference
-
-    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
-
-    class _Tok:
-        _IDS = {5: "<|end_message|>"}
-        all_special_ids = (5,)
-        eos_token_id = 5
-
-        def convert_ids_to_tokens(self, token_id):
-            return self._IDS[token_id]
-
-        def decode(
-            self,
-            token_ids,
-            skip_special_tokens = False,
-            **_kwargs,
-        ):
-            return "".join(
-                ""
-                if (skip_special_tokens and i in self.all_special_ids)
-                else self._IDS.get(i, chr(i))
-                for i in token_ids
-            )
-
-    tok = _Tok()
-    decoder = mlx_inference.NativeToolTokenDecoder(tok)
-    stop_ids = mlx_inference._mlx_stop_token_ids(tok, None)
-    assert 5 in stop_ids, stop_ids
-
-    ids = [ord("h"), ord("i"), 5]
-    assert decoder.decode(ids) == "hi<|end_message|>"
-    trimmed = ids[:-1] if ids[-1] in stop_ids else ids
-    assert decoder.decode(trimmed) == "hi"
-    # The marker still survives when it is not the turn's final token.
-    assert decoder.decode([ord("h"), 5, ord("i")]) == "h<|end_message|>i"
+def test_mlx_vlm_keeps_prose_that_spells_a_suppressed_control(monkeypatch):
+    """Suppression is about where a control came from, not what the text spells."""
+    turn = _SpmTurn(
+        ("Write", "▁`", "<", "pad", ">", "`", "▁literally.", "<pad>"),
+        specials = ("<pad>",),
+    )
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "Write `<pad>` literally."
 
 
 def test_mlx_vlm_does_not_leak_a_preserved_stop_token(monkeypatch):
-    """The VLM path appends each decoded token straight into the snapshot. So an allowlisted control
-    used as the runtime EOS would trail every ordinary answer; ``_generate_text`` drops it at its
-    final re-decode and this route needs the same."""
-    from core.inference import mlx_inference
-
-    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
-
-    @contextmanager
-    def _adapter_state(_model, _state):
-        yield
-
-    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    """This path appends each settled piece straight into the snapshot, so an allowlisted control
+    used as the runtime EOS would trail every ordinary answer."""
+    turn = _SpmTurn(
+        ("Hi", "▁there", "<|end_message|>"),
+        specials = ("<|end_message|>",),
+        eos = "<|end_message|>",
+        ends = "stop",
     )
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "Hi there"
 
-    class _Tok:
-        _IDS = {5: "<|end_message|>"}
-        all_special_ids = (5,)
-        eos_token_id = 5
 
-        def convert_ids_to_tokens(self, token_id):
-            return self._IDS[token_id]
-
-        def decode(
-            self,
-            token_ids,
-            skip_special_tokens = False,
-            **_kwargs,
-        ):
-            return "".join(
-                "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
-                for i in token_ids
-            )
-
-    prompt_utils = SimpleNamespace(
-        MODEL_CONFIG = {"deepseek_vl_v2": object()},
-        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+def test_mlx_vlm_settles_a_turn_a_runtime_ends_without_saying_so(monkeypatch):
+    """mlx-vlm gained a finish reason well after the floor Studio supports."""
+    turn = _SpmTurn(
+        ("Hi", "▁there", "<|end_message|>"),
+        specials = ("<|end_message|>",),
+        eos = "<|end_message|>",
+        ends = "stop",
+        reports_finish_reason = False,
     )
-    mlx_vlm = types.ModuleType("mlx_vlm")
-    mlx_vlm.prompt_utils = prompt_utils
-
-    def _vlm_stream(*_a, **_k):
-        for token_id, text in ((None, "hi"), (5, "")):
-            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
-
-    mlx_vlm.stream_generate = _vlm_stream
-    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda _t, _m, **_k: "<image> model-aware",
-    )
-
-    backend = MLXInferenceBackend()
-    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
-    backend._processor = SimpleNamespace(tokenizer = _Tok())
-    backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
-
-    snapshots = list(
-        backend._generate_vlm(
-            *args,
-            _adapter_state = False,
-            tools = [{"type": "function", "function": {"name": "terminal"}}],
-        )
-    )
-    assert snapshots[-1] == "hi"
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "Hi there"
 
 
 def test_mlx_vlm_keeps_a_stop_token_that_closes_a_tool_envelope(monkeypatch):
-    """The suppression is for a turn with NO tool markup. TML Inkling uses ``<|end_message|>`` both
-    as the required close for ``<|content_invoke_tool_json|>`` and as a possible EOS, and strict
-    parsing rejects the call without it, so blanking it unconditionally loses a complete call."""
-    from core.inference import mlx_inference
-
-    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
-
-    @contextmanager
-    def _adapter_state(_model, _state):
-        yield
-
-    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    """TML Inkling uses ``<|end_message|>`` both as that closer and as a possible EOS, and the
+    runtime stops before its detokenizer sees that id."""
+    turn = _SpmTurn(
+        (
+            "<|content_invoke_tool_json|>",
+            '{"name":',
+            '▁"get_weather",',
+            '▁"args":',
+            "▁{}}",
+            "<|end_message|>",
+        ),
+        specials = ("<|content_invoke_tool_json|>", "<|end_message|>"),
+        eos = "<|end_message|>",
+        ends = "stop",
     )
+    envelope = '<|content_invoke_tool_json|>{"name": "get_weather", "args": {}}'
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == envelope + "<|end_message|>"
+
+
+def test_mlx_vlm_keeps_a_stop_id_the_runtime_generated_straight_through(monkeypatch):
+    """``_mlx_stop_token_ids`` reads the config before the tokenizer attribute and the two disagree
+    on some repos, so a held id can be one the runtime generated and carried on from."""
+    turn = _SpmTurn(
+        (
+            "<|content_invoke_tool_json|>",
+            '{"name":',
+            '▁"get_weather",',
+            '▁"args":',
+            "▁{}}",
+            "<|end_message|>",
+            "<eos>",
+            "▁Anything",
+            "▁else?",
+        ),
+        specials = ("<|content_invoke_tool_json|>", "<|end_message|>", "<eos>"),
+        eos = ("<|end_message|>", "<eos>"),
+    )
+    envelope = '<|content_invoke_tool_json|>{"name": "get_weather", "args": {}}'
+    snapshot = _run_spm_vlm_turn(monkeypatch, turn)[-1]
+    assert snapshot == envelope + "<|end_message|> Anything else?"
+
+
+def test_mlx_vlm_drops_a_generated_stop_id_outside_the_allowlist(monkeypatch):
+    """Carrying on past a stop id says it ended nothing, not that the reply may show it."""
+    turn = _SpmTurn(
+        ("Nearly", "▁done", "<eos>", "▁and", "▁back"),
+        specials = ("<eos>",),
+        eos = "<eos>",
+    )
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "Nearly done and back"
+
+
+def test_mlx_vlm_keeps_a_closer_a_later_stop_id_followed(monkeypatch):
+    """The config lists more ids than the runtime stopped on, so a closer can be followed by
+    another stop id."""
+    turn = _SpmTurn(
+        (
+            "<|content_invoke_tool_json|>",
+            '{"name":"get_weather","args":{}}',
+            "<|end_message|>",
+            "<eos>",
+        ),
+        specials = ("<|content_invoke_tool_json|>", "<|end_message|>", "<eos>"),
+        eos = ("<|end_message|>", "<eos>"),
+        ends = "stop",
+    )
+    envelope = '<|content_invoke_tool_json|>{"name":"get_weather","args":{}}'
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == envelope + "<|end_message|>"
+
+
+def test_mlx_vlm_keeps_every_closer_a_nested_call_needs(monkeypatch):
+    """Half-closed is as rejectable as unclosed."""
+    turn = _SpmTurn(
+        (
+            "<tool_call>",
+            "<function=get_weather>",
+            "<parameter=city>",
+            "Paris",
+            "</parameter>",
+            "</function>",
+            "</tool_call>",
+        ),
+        specials = ("<tool_call>", "</parameter>", "</function>", "</tool_call>"),
+        eos = ("</parameter>", "</function>", "</tool_call>"),
+        ends = "stop",
+    )
+    call = "<tool_call><function=get_weather><parameter=city>Paris"
+    snapshot = _run_spm_vlm_turn(monkeypatch, turn)[-1]
+    assert snapshot == call + "</parameter></function></tool_call>"
+
+
+def test_mlx_stream_detokenizer_handles_one_that_cannot_be_copied():
+    """Its ``text`` is a property over an inherited slot, so ``copy.copy`` raises. It is also the
+    one mlx-lm builds per read, which is what makes a second read independent."""
+    detokenizers = pytest.importorskip("mlx_lm.tokenizer_utils")
+    from core.inference.mlx_inference import _mlx_stream_detokenizer
 
     class _Tok:
-        _IDS = {5: "<|end_message|>"}
-        all_special_ids = (5,)
-        eos_token_id = 5
+        def decode(self, token_ids):
+            return "".join(f"<{token_id}>" for token_id in token_ids)
 
-        def convert_ids_to_tokens(self, token_id):
-            return self._IDS[token_id]
+    class _PerRead:
+        """Stands in for ``TokenizerWrapper``, whose ``detokenizer`` is a property."""
 
-        def decode(
-            self,
-            token_ids,
-            skip_special_tokens = False,
-            **_kwargs,
-        ):
-            return "".join(
-                "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
-                for i in token_ids
-            )
+        @property
+        def detokenizer(self):
+            return detokenizers.NaiveStreamingDetokenizer(_Tok())
 
-    prompt_utils = SimpleNamespace(
-        MODEL_CONFIG = {"deepseek_vl_v2": object()},
-        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+    source = _PerRead()
+    with pytest.raises(AttributeError):
+        copy.copy(source.detokenizer)
+    own = _mlx_stream_detokenizer(source)
+    assert own is not None
+    own.add_token(7)
+    own.finalize()
+    assert own.text == "<7>"
+
+
+def test_mlx_stream_detokenizer_rebuilds_the_one_a_retained_source_cannot_copy():
+    """mlx-vlm's processor hands back a single retained instance, and below 0.6.0 -- which is
+    where ``__copy__`` arrives -- copying the naive one raises. Falling back to no detokenizer
+    there would pass the runtime's text through unfiltered for the whole turn, so a control the
+    allowlist suppresses would reach the reply."""
+    detokenizers = pytest.importorskip("mlx_vlm.tokenizer_utils")
+    from core.inference.mlx_inference import _mlx_stream_detokenizer
+
+    class _Tok:
+        def decode(self, token_ids, **_kwargs):
+            return "".join(f"<{token_id}>" for token_id in token_ids)
+
+    class _Retained:
+        def __init__(self):
+            self.detokenizer = _uncopyable_naive_detokenizer(detokenizers)(_Tok())
+
+    source = _Retained()
+    with pytest.raises(AttributeError):
+        copy.copy(source.detokenizer)
+
+    own = _mlx_stream_detokenizer(source)
+    assert own is not None, "a detokenizer that cannot be copied can still be rebuilt"
+    assert own is not source.detokenizer
+
+    own.add_token(7)
+    own.finalize()
+    assert own.text == "<7>"
+    # and driving ours left the one the runtime streams through alone
+    source.detokenizer.add_token(9)
+    source.detokenizer.finalize()
+    assert source.detokenizer.text == "<9>"
+
+
+def test_mlx_vlm_suppresses_a_control_on_a_runtime_whose_detokenizer_cannot_be_copied(monkeypatch):
+    """The end of that: on the supported mlx-vlm floor the reply still owes only what the
+    allowlist keeps, rather than every control the runtime rendered."""
+    turn = _SpmTurn(
+        ("▁Hello", "<pad>", "▁world"),
+        specials = ("<pad>",),
+        ends = "exhausted",
+        shares_detokenizer = True,
+        detokenizer_class = "naive",
     )
-    mlx_vlm = types.ModuleType("mlx_vlm")
-    mlx_vlm.prompt_utils = prompt_utils
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == " Hello world"
 
-    envelope = '<|content_invoke_tool_json|>{"name": "get_weather", "args": {}}'
 
-    def _vlm_stream(*_a, **_k):
-        for token_id, text in ((None, envelope), (5, "")):
-            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
-
-    mlx_vlm.stream_generate = _vlm_stream
-    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+@pytest.mark.parametrize("ends", ("stop", "exhausted"))
+def test_mlx_vlm_owes_a_closer_exactly_once_without_a_detokenizer_of_its_own(monkeypatch, ends):
+    """A runtime that stopped before rendering the stop id never wrote it; one that did has already
+    said it."""
+    turn = _SpmTurn(
+        (
+            "<|content_invoke_tool_json|>",
+            '{"name":"get_weather","args":{}}',
+            "<|end_message|>",
+        ),
+        specials = ("<|content_invoke_tool_json|>", "<|end_message|>"),
+        eos = "<|end_message|>",
+        ends = ends,
+    )
     monkeypatch.setattr(
-        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda _t, _m, **_k: "<image> model-aware",
+        "core.inference.mlx_inference._mlx_stream_detokenizer", lambda _source: None
     )
+    envelope = '<|content_invoke_tool_json|>{"name":"get_weather","args":{}}'
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == envelope + "<|end_message|>"
 
-    backend = MLXInferenceBackend()
-    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
-    backend._processor = SimpleNamespace(tokenizer = _Tok())
-    backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
 
-    snapshots = list(
-        backend._generate_vlm(
-            *args,
-            _adapter_state = False,
-            tools = [{"type": "function", "function": {"name": "get_weather"}}],
-        )
+@pytest.mark.parametrize(
+    "trailing, expected_tail", ((("▁Done.",), " Done."), (("\n", "Done."), "\nDone."))
+)
+def test_mlx_vlm_does_not_repeat_a_closer_the_runtime_already_wrote(
+    monkeypatch, trailing, expected_tail
+):
+    """The runtime's text already carries every control but the one it stopped before -- whether an
+    SPM space marker released it mid-turn or the whole reply arrived in the final flush."""
+    turn = _SpmTurn(
+        ("<tool_call>", '{"name":"get_weather","arguments":{}}', "</tool_call>")
+        + trailing
+        + ("<eos>",),
+        specials = ("<tool_call>", "</tool_call>", "<eos>"),
+        eos = ("</tool_call>", "<eos>"),
+        ends = "stop",
     )
-    assert snapshots[-1] == envelope + "<|end_message|>"
+    monkeypatch.setattr(
+        "core.inference.mlx_inference._mlx_stream_detokenizer", lambda _source: None
+    )
+    call = '<tool_call>{"name":"get_weather","arguments":{}}</tool_call>'
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == call + expected_tail
+
+
+def test_mlx_vlm_does_not_drive_the_detokenizer_the_runtime_streams_through(monkeypatch):
+    """The supported mlx-vlm floor streams through the processor's own instance."""
+    turn = _SpmTurn(
+        ("<|channel>", "thought", "\n", "weighing", "▁it", "<channel|>", "▁the", "▁answer"),
+        specials = ("<|channel>", "<channel|>"),
+        chat_template = "...<|channel>thought\n...<channel|>",
+        shares_detokenizer = True,
+    )
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "<think>weighing it</think> the answer"
 
 
 def test_mlx_vlm_drops_an_orphan_closer_that_opened_nothing(monkeypatch):
-    """ "the turn mentions a marker" is not enough to keep a closer. An ordinary answer that merely
-    writes ``[ARGS]`` opened no envelope, so a trailing ``<|end_message|>`` is orphan markup and
-    must not reach the user."""
-    from core.inference import mlx_inference
-
-    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
-
-    @contextmanager
-    def _adapter_state(_model, _state):
-        yield
-
-    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    """Mentioning a marker is not opening an envelope."""
+    turn = _SpmTurn(
+        ("The", "▁[ARGS]", "▁marker", "▁is", "▁neat", "<|end_message|>"),
+        specials = ("<|end_message|>",),
+        eos = "<|end_message|>",
+        ends = "stop",
     )
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "The [ARGS] marker is neat"
 
-    class _Tok:
-        _IDS = {5: "<|end_message|>"}
-        all_special_ids = (5,)
-        eos_token_id = 5
 
-        def convert_ids_to_tokens(self, token_id):
-            return self._IDS[token_id]
+def test_mlx_vlm_keeps_a_block_the_runtime_settled_in_one_step(monkeypatch):
+    """A diffusion generator denoises a whole block and names only its last id."""
+    turn = _SpmTurn(("Hello", "\u2581world"), block = True)
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "Hello world"
 
-        def decode(
-            self,
-            token_ids,
-            skip_special_tokens = False,
-            **_kwargs,
-        ):
-            return "".join(
-                "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
-                for i in token_ids
-            )
 
-    prompt_utils = SimpleNamespace(
-        MODEL_CONFIG = {"deepseek_vl_v2": object()},
-        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+def test_mlx_vlm_matches_a_stop_sequence_the_detokenizer_held_to_the_end(monkeypatch):
+    """Text the cut held back is unmatched, not cleared."""
+    turn = _SpmTurn(("Hi", "\u2581STOP"))
+    assert _run_spm_vlm_turn(monkeypatch, turn, stop = "STOP")[-1] == "Hi "
+
+
+def test_mlx_vlm_writes_a_buffered_reasoning_delimiter_once(monkeypatch):
+    """The opener is buffered with the pieces after it, so a second copy written on its own step
+    lands ahead of them: the normalizer then matches the later copy and emits the earlier one as
+    answer text, which is how a gemma-4 thought leaked ``<|channel>`` into the reply."""
+    turn = _SpmTurn(
+        (
+            "<|channel>",
+            "thought",
+            "\n",
+            "weighing",
+            "▁it",
+            "<channel|>",
+            "▁the",
+            "▁answer",
+        ),
+        specials = ("<|channel>", "<channel|>"),
+        chat_template = "...<|channel>thought\n...<channel|>",
     )
-    mlx_vlm = types.ModuleType("mlx_vlm")
-    mlx_vlm.prompt_utils = prompt_utils
-
-    def _vlm_stream(*_a, **_k):
-        for token_id, text in ((None, "The [ARGS] marker is neat"), (5, "")):
-            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
-
-    mlx_vlm.stream_generate = _vlm_stream
-    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda _t, _m, **_k: "<image> model-aware",
-    )
-
-    backend = MLXInferenceBackend()
-    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
-    backend._processor = SimpleNamespace(tokenizer = _Tok())
-    backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
-
-    snapshots = list(
-        backend._generate_vlm(
-            *args,
-            _adapter_state = False,
-            tools = [{"type": "function", "function": {"name": "get_weather"}}],
-        )
-    )
-    assert snapshots[-1] == "The [ARGS] marker is neat"
-
-
-def test_mlx_vlm_keeps_the_reasoning_protocol_delimiters_on_a_tool_turn(monkeypatch):
-    """The VLM decoder drops every special id outside its preserved set. A turn that combines tools
-    with a native reasoning protocol therefore loses the delimiters
-    ``normalize_reasoning_snapshots`` is waiting for, and the thought is emitted as ordinary
-    answer text. The text path already passes the protocol's controls."""
-    from core.inference import mlx_inference
-
-    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
-
-    @contextmanager
-    def _adapter_state(_model, _state):
-        yield
-
-    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
-    )
-
-    class _Tok:
-        # The delimiters are special-token ids, as they are in the real vocabulary.
-        _IDS = {1: "<|channel>", 2: "<channel|>", 9: "<eos>"}
-        all_special_ids = (1, 2, 9)
-        eos_token_id = 9
-        chat_template = "...<|channel>thought\n...<channel|>"
-
-        def convert_ids_to_tokens(self, token_id):
-            return self._IDS[token_id]
-
-        def decode(
-            self,
-            token_ids,
-            skip_special_tokens = False,
-            **_kwargs,
-        ):
-            return "".join(
-                "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
-                for i in token_ids
-            )
-
-    prompt_utils = SimpleNamespace(
-        MODEL_CONFIG = {"deepseek_vl_v2": object()},
-        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
-    )
-    mlx_vlm = types.ModuleType("mlx_vlm")
-    mlx_vlm.prompt_utils = prompt_utils
-
-    def _vlm_stream(*_a, **_k):
-        for token_id, text in (
-            (1, "<|channel>"),
-            (None, "thought\n"),
-            (None, "weighing it"),
-            (2, "<channel|>"),
-            (None, " the answer"),
-        ):
-            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
-
-    mlx_vlm.stream_generate = _vlm_stream
-    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda _t, _m, **_k: "<image> model-aware",
-    )
-
-    backend = MLXInferenceBackend()
-    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
-    backend._processor = SimpleNamespace(tokenizer = _Tok(), chat_template = _Tok.chat_template)
-    backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 8, 1, None)
-
-    snapshots = list(
-        backend._generate_vlm(
-            *args,
-            _adapter_state = False,
-            tools = [{"type": "function", "function": {"name": "get_weather"}}],
-        )
-    )
-    # The thought is a closed reasoning block, not answer text.
-    assert snapshots[-1] == "<think>weighing it</think> the answer"
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "<think>weighing it</think> the answer"
 
 
 # --- VLM prompt snapshots -------------------------------------------------------
@@ -4730,8 +6066,200 @@ def test_vlm_add_special_tokens_falls_back_to_the_inline_rule(monkeypatch):
     assert rule("gemma4", template) == "mlx-vlm's answer"
 
 
-def _run_mlx_reasoning_stream(monkeypatch, pieces, special_ids, eos_id):
-    """Drive the MLX text reasoning path over ``pieces``, stopping on ``eos_id``."""
+def test_mlx_vlm_pixels_follow_the_order_the_markers_appear_in():
+    """MLX binds pixels to markers positionally. The replayed MCP pictures carry
+    their markers on earlier turns, and the attachment's marker goes on the last
+    user turn, so the attachment's pixels have to come last."""
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    backend._multi_image_marker = "<image>"
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *_args, **_kwargs: (
+        captured.append((messages, attached)) or iter(())
+    )
+    replayed_first, replayed_second, attachment = object(), object(), object()
+    messages = [
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "a"}]},
+        {"role": "assistant", "content": "seen"},
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "b"}]},
+        {"role": "assistant", "content": "seen"},
+        {"role": "user", "content": "and this one?"},
+    ]
+
+    list(
+        backend.generate_chat_response(
+            messages,
+            image = attachment,
+            images = [replayed_first, replayed_second],
+        )
+    )
+
+    sent_messages, attached = captured[0]
+    assert attached == [replayed_first, replayed_second, attachment]
+    # The attachment's own marker is the last one in the conversation.
+    marker_turns = [
+        index
+        for index, message in enumerate(sent_messages)
+        if isinstance(message.get("content"), list)
+        and any(part.get("type") == "image" for part in message["content"])
+    ]
+    assert marker_turns[-1] == len(sent_messages) - 1
+
+
+def test_mlx_attachment_displaces_a_replayed_image_on_the_same_turn():
+    """A local turn takes one picture, so the attachment replaces the replay
+    marker and its pixels together."""
+    from core.inference.mlx_inference import MLXInferenceBackend, _count_vlm_images
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    backend._multi_image_marker = "<image>"
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *_a, **_k: (
+        captured.append((messages, attached)) or iter(())
+    )
+    replayed, attachment = object(), object()
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": "image"}, {"type": "text", "text": "and this one?"}],
+        }
+    ]
+
+    list(backend.generate_chat_response(messages, image = attachment, images = [replayed]))
+
+    sent, attached = captured[0]
+    markers = sum(_count_vlm_images(m.get("content")) for m in sent)
+    assert attached == [attachment]
+    assert markers == len(attached), f"{markers} marker(s) for {len(attached)} images"
+    # The attachment's pixels are last, so its marker has to be too.
+    assert sent[-1]["content"][-1] == {"type": "image"}
+
+
+def test_mlx_does_not_double_mark_an_attachment_the_client_already_marked():
+    from core.inference.mlx_inference import MLXInferenceBackend, _count_vlm_images
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    backend._multi_image_marker = "<image>"
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *_a, **_k: (
+        captured.append((messages, attached)) or iter(())
+    )
+    messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "x"}]}]
+
+    list(backend.generate_chat_response(messages, image = object()))
+
+    sent, attached = captured[0]
+    assert sum(_count_vlm_images(m.get("content")) for m in sent) == len(attached) == 1
+
+
+def test_mlx_normalizes_a_replay_only_conversation_for_a_processor_template():
+    """A processor template needs every turn in part shape. A replay-only request
+    (images without an attachment) is a mix of strings and marker lists, and gating
+    the normalization on the singular image left it failing at render."""
+    from types import SimpleNamespace
+
+    from core.inference.mlx_inference import MLXInferenceBackend, _count_vlm_images
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    backend._multi_image_marker = "<image>"
+    # A processor carrying its own template is what chat_render_target selects.
+    backend._processor = SimpleNamespace(
+        apply_chat_template = lambda *a, **k: "prompt", chat_template = "t"
+    )
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *a, **k: (
+        captured.append((messages, attached)) or iter(())
+    )
+    messages = [
+        {"role": "tool", "content": "[1 image returned]"},
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "what was it"}]},
+    ]
+
+    list(backend.generate_chat_response(messages, images = [object()]))
+
+    sent, attached = captured[0]
+    assert all(isinstance(message.get("content"), list) for message in sent), sent
+    markers = sum(_count_vlm_images(message.get("content")) for message in sent)
+    assert markers == len(attached) == 1
+
+
+def test_mlx_binds_an_earlier_attachment_to_its_own_turn_not_a_newer_replay():
+    """The attachment's turn can PRECEDE a tool's picture. The route used to pre-add
+    its marker, so the backend counted that marker as history's, the top-up became a
+    no-op, and the two pixels bound to each other's turns -- the model was shown the
+    screenshot where the user's own diagram belonged."""
+    from core.inference.mcp_images import placeholder_turn
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    backend._multi_image_marker = "<image>"
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *_args, **_kwargs: (
+        captured.append((messages, attached)) or iter(())
+    )
+    attachment, replayed = object(), object()
+
+    # What the plain route hands the backend once the fix stops it pre-marking: the
+    # attachment's turn is still a plain string, and the only marker in the
+    # conversation is the replayed picture's.
+    messages = [
+        {"role": "user", "content": "here is my diagram"},
+        {"role": "assistant", "content": "noted"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "mcp__s__shot", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "[1 image returned]"},
+        placeholder_turn(1, 1),
+        {"role": "user", "content": "which one is bluer?"},
+    ]
+
+    list(
+        backend.generate_chat_response(
+            messages,
+            image = attachment,
+            images = [replayed],
+            image_ordinal = 0,
+        )
+    )
+
+    sent_messages, attached = captured[0]
+    marker_turns = [
+        index
+        for index, message in enumerate(sent_messages)
+        if isinstance(message.get("content"), list)
+        and any(part.get("type") == "image" for part in message["content"])
+    ]
+    assert len(marker_turns) == 2, sent_messages
+    # The attachment's marker is on the FIRST turn, the replay's on the placeholder
+    # after it -- so the pixels have to arrive in that same order.
+    assert marker_turns[0] < marker_turns[1]
+    assert attached == [attachment, replayed], "the pixels bound to each other's markers"
+
+
+def _run_mlx_reasoning_stream(
+    monkeypatch,
+    turn,
+    stop = None,
+):
     _install_fake_mlx(monkeypatch)
     from core.inference import mlx_inference
 
@@ -4754,74 +6282,83 @@ def _run_mlx_reasoning_stream(monkeypatch, pieces, special_ids, eos_id):
     mlx_lm_sample.make_sampler = lambda **_kwargs: object()
     mlx_lm_sample.make_logits_processors = lambda **_kwargs: None
 
-    def _stream_generate(_model, _tokenizer, **_kwargs):
-        for token_id, piece in pieces.items():
-            yield SimpleNamespace(token = token_id, text = piece)
-
-    mlx_lm_pkg.stream_generate = _stream_generate
+    mlx_lm_pkg.stream_generate = lambda _model, _tokenizer, **_kwargs: turn.stream()
     monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
     monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
 
-    class _Tokenizer:
-        chat_template = "x"
-        all_special_ids = list(special_ids)
-        all_special_tokens = [pieces[token_id] for token_id in special_ids]
-        eos_token_id = eos_id
-
-        def convert_ids_to_tokens(self, token_id):
-            return pieces[token_id]
-
-        def decode(
-            self,
-            ids,
-            *,
-            skip_special_tokens = False,
-            **_kwargs,
-        ):
-            skipped = special_ids if skip_special_tokens else set()
-            return "".join(pieces[int(t)] for t in ids if t not in skipped)
-
     backend = mlx_inference.MLXInferenceBackend()
     backend._model = object()
-    backend._tokenizer = _Tokenizer()
+    backend._tokenizer = turn
     backend._is_vlm = False
     return list(
         backend.generate_chat_response(
             messages = [{"role": "user", "content": "hi"}],
             tools = [{"type": "function", "function": {"name": "terminal"}}],
-            max_new_tokens = len(pieces),
+            max_new_tokens = len(turn.ids),
+            stop = stop,
         )
     )
 
 
 def test_mlx_reasoning_reply_does_not_end_in_a_preserved_eos_control(monkeypatch):
-    """The non-reasoning branch trims a trailing stop id that is also an allowlisted
-    control; the reasoning branch appended it, ending an ordinary reply in raw markup."""
-    pieces = {
-        1: "<|channel>",
-        2: "thought",
-        3: "reasoned",
-        4: "<channel|>",
-        5: "Done.",
-        6: "<|end_message|>",
-    }
-    snapshots = _run_mlx_reasoning_stream(monkeypatch, pieces, {1, 4, 6}, 6)
+    """The reasoning branch appended it, ending an ordinary reply in raw markup."""
+    turn = _SpmTurn(
+        ("<|channel>", "thought", "▁reasoned", "<channel|>", "▁Done.", "<|end_message|>"),
+        specials = ("<|channel>", "<channel|>", "<|end_message|>"),
+        eos = "<|end_message|>",
+        chat_template = "x",
+        ends = "stop",
+    )
+    snapshots = _run_mlx_reasoning_stream(monkeypatch, turn)
     assert "<|end_message|>" not in snapshots[-1]
     assert snapshots[-1].endswith("Done.")
 
 
+def test_mlx_reasoning_keeps_the_token_the_limit_cut_the_turn_after(monkeypatch):
+    """mlx-lm reports that token without ever yielding it on its own step."""
+    turn = _SpmTurn(
+        ("<|channel>", "thought", "▁reasoned", "<channel|>", "▁the", "▁answer"),
+        specials = ("<|channel>", "<channel|>"),
+        chat_template = "x",
+        ends = "length",
+    )
+    assert _run_mlx_reasoning_stream(monkeypatch, turn)[-1].endswith(" the answer")
+
+
+def test_mlx_reasoning_matches_a_stop_sequence_the_detokenizer_held_to_the_end(monkeypatch):
+    """As on the VLM path: the flush ending the turn is the first the sequence is visible in."""
+    turn = _SpmTurn(
+        ("<|channel>", "thought", "\u2581reasoned", "<channel|>", "\u2581Answer", "\u2581STOP"),
+        specials = ("<|channel>", "<channel|>"),
+        chat_template = "x",
+    )
+    snapshots = _run_mlx_reasoning_stream(monkeypatch, turn, stop = "STOP")
+    assert snapshots[-1] == "<think> reasoned</think> Answer "
+
+
 def test_mlx_reasoning_keeps_an_eos_control_that_closes_a_tool_envelope(monkeypatch):
     """The trim is envelope-aware: the same marker terminates a real Inkling call."""
-    pieces = {
-        1: "<|channel>",
-        2: "thought",
-        3: "reasoned",
-        4: "<channel|>",
-        5: "<|content_invoke_tool_json|>",
-        6: '{"name":"terminal","args":{}}',
-        7: "<|end_message|>",
-    }
-    snapshots = _run_mlx_reasoning_stream(monkeypatch, pieces, {1, 4, 5, 7}, 7)
+    turn = _SpmTurn(
+        (
+            "<|channel>",
+            "thought",
+            "▁reasoned",
+            "<channel|>",
+            "<|content_invoke_tool_json|>",
+            '{"name":"terminal","args":{}}',
+            "<|end_message|>",
+        ),
+        specials = (
+            "<|channel>",
+            "<channel|>",
+            "<|content_invoke_tool_json|>",
+            "<|end_message|>",
+        ),
+        eos = "<|end_message|>",
+        chat_template = "x",
+        ends = "stop",
+    )
+    snapshots = _run_mlx_reasoning_stream(monkeypatch, turn)
     assert snapshots[-1].endswith("<|end_message|>")
 
 
@@ -4898,3 +6435,1317 @@ def test_mlx_keeps_a_think_closer_whose_opener_came_from_the_prefill(monkeypatch
     final = snapshots[-1]
     assert final.startswith("<think>"), final
     assert "</think>" in final, f"the closer was trimmed, leaving the block open: {final!r}"
+
+
+def test_mlx_vlm_prompt_cache_session_prefills_on_mlx_vlm_default_step(monkeypatch):
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend, VLMPromptSnapshotStore
+
+    names = ("mlx_vlm", "mlx_vlm.generate", "mlx_vlm.generate.common", "mlx_vlm.models")
+    modules = {name: types.ModuleType(name) for name in names + ("mlx_vlm.models.cache",)}
+    modules["mlx_vlm.generate.common"].DEFAULT_PREFILL_STEP_SIZE = 1234
+    modules["mlx_vlm.models.cache"].make_prompt_cache = lambda _model, max_kv_size = None: []
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    class LanguageModel:
+        pass
+
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._vlm_snapshot_store = VLMPromptSnapshotStore(10**6)
+    backend._vlm_snapshot_store_unavailable = False
+    backend._vlm_is_diffusion_model = lambda _model: False
+    backend._model = SimpleNamespace(config = SimpleNamespace(), language_model = LanguageModel())
+    backend._kv_cache_window = None
+    backend.active_model_name = "m"
+    session = backend._vlm_prompt_cache_session("base")
+    assert mlx_inference.vlm_prefill_step() == 1234 and session.step == 1234
+    assert mlx_inference.shape_stable_prefix(1300, step = session.step) == 1234
+
+
+# ── Unset generation budget ──────────────────────────────────────────────
+
+_BUDGET_WINDOW = 2048
+_BUDGET_PROMPT_N = 37
+_BUDGET_BOS = "<s>"
+_IMAGE_TURN = [{"role": "user", "content": [{"type": "image"}]}]
+_TEXT_TURN = [{"role": "user", "content": "hi"}]
+
+
+def _budget_backend(
+    monkeypatch,
+    served = _BUDGET_WINDOW,
+    marker_tokens = 0,
+):
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "llama"})
+    backend._tokenizer = SimpleNamespace(
+        all_special_tokens = [],
+        # The text and vision marker rules only disagree once the template emits the BOS.
+        bos_token = _BUDGET_BOS if marker_tokens else None,
+        encode = lambda _p, add_special_tokens = True: list(
+            range(_BUDGET_PROMPT_N + (marker_tokens if add_special_tokens else 0))
+        ),
+        decode = lambda _ids, **_k: "ok",
+    )
+    backend._served_context = served
+    return backend
+
+
+def _run_text_budget(
+    monkeypatch,
+    max_new_tokens,
+    served = _BUDGET_WINDOW,
+    cached = None,
+):
+    from core.inference import mlx_inference
+
+    seen = {}
+    mlx_lm = types.ModuleType("mlx_lm")
+    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    sample_utils.make_sampler = lambda **_k: object()
+    mlx_lm.sample_utils = sample_utils
+
+    def _stream(_model, _tokenizer, **kwargs):
+        seen["max_tokens"] = kwargs.get("max_tokens")
+        yield _Resp("ok", 1)
+
+    mlx_lm.stream_generate = _stream
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_k: None)
+
+    backend = _budget_backend(monkeypatch, served = served)
+    monkeypatch.setattr(
+        backend,
+        "_render_text_prompt",
+        lambda *_a, **_k: SimpleNamespace(prompt = "P", reasoning_channel_markers = None),
+        raising = False,
+    )
+    if cached is not None:
+        # A cache hit: the full token list beside the uncached remainder.
+        monkeypatch.setattr(
+            backend,
+            "_prepare_prompt_cache",
+            lambda _p, _a: ("TAIL", object(), "k", cached, len(cached) - 4),
+        )
+    list(backend._generate_text(_TEXT_TURN, 0.0, 1.0, 0, 0.0, max_new_tokens, 1.0, None))
+    return seen["max_tokens"]
+
+
+def _run_vlm_budget(
+    monkeypatch,
+    messages,
+    image,
+    max_new_tokens,
+    served = _BUDGET_WINDOW,
+    marker_tokens = 0,
+):
+    seen = {}
+    mlx_vlm = types.ModuleType("mlx_vlm")
+
+    def _stream(*_a, **kwargs):
+        seen["max_tokens"] = kwargs.get("max_tokens")
+        yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: f"{_BUDGET_BOS}<image> p",
+    )
+
+    backend = _budget_backend(monkeypatch, served = served, marker_tokens = marker_tokens)
+    backend._is_vlm = True
+    backend._model = SimpleNamespace()
+    backend._processor = SimpleNamespace(tokenizer = backend._tokenizer)
+    args = (messages, [image] if image is not None else None, 0, 1, 0, 0, max_new_tokens, 1, None)
+    list(backend._generate_vlm(*args, _adapter_state = False))
+    return seen["max_tokens"]
+
+
+def test_mlx_text_resolves_an_unset_budget_against_the_served_window(monkeypatch):
+    assert _run_text_budget(monkeypatch, None) == _BUDGET_WINDOW - _BUDGET_PROMPT_N
+
+
+def test_mlx_text_budget_counts_the_cached_prefix_too(monkeypatch):
+    # Sizing from the 4-token uncached tail would treat the cached prefix as free room.
+    budget = _run_text_budget(monkeypatch, None, served = 4096, cached = list(range(300)))
+
+    assert budget == 4096 - 300
+
+
+def test_mlx_vlm_does_not_size_a_budget_from_a_prompt_carrying_an_image(monkeypatch):
+    # An image is one placeholder token in the rendered prompt and many once expanded.
+    from core.inference.runtime_context import UNSET_GENERATION_BUDGET
+    budget = _run_vlm_budget(monkeypatch, _IMAGE_TURN, object(), None, served = 32768)
+
+    assert budget == UNSET_GENERATION_BUDGET
+
+
+def test_mlx_vlm_image_budget_stays_inside_a_narrow_served_window(monkeypatch):
+    # A load pinned below the default rotates its KV cache at the served window, so a flat
+    # 2048 would evict the image it is still answering about.
+    budget = _run_vlm_budget(monkeypatch, _IMAGE_TURN, object(), None, served = 1024)
+
+    assert budget == 1024 - _BUDGET_PROMPT_N
+
+
+def test_mlx_vlm_counts_a_text_only_turn_by_the_vision_marker_rule(monkeypatch):
+    # A vision model still counts a text-only turn, by mlx_vlm's marker rule, not the text one.
+    budget = _run_vlm_budget(monkeypatch, _TEXT_TURN, None, None, served = 32768, marker_tokens = 1)
+
+    assert budget == 32768 - _BUDGET_PROMPT_N - 1
+
+
+def test_mlx_passes_an_explicit_budget_through_both_paths(monkeypatch):
+    assert _run_text_budget(monkeypatch, 4096) == 4096
+    assert _run_vlm_budget(monkeypatch, _IMAGE_TURN, object(), 4096) == 4096
+
+
+def test_mlx_unset_budget_falls_back_when_the_prompt_cannot_be_counted(monkeypatch):
+    from core.inference.runtime_context import UNSET_GENERATION_BUDGET
+
+    backend = _budget_backend(monkeypatch)
+    backend._tokenizer = None
+
+    assert backend._unset_generation_budget("P") == UNSET_GENERATION_BUDGET
+
+
+def test_mlx_count_strips_replayed_mcp_images_off_the_event_loop(monkeypatch):
+    import base64
+    import io
+    import json
+    import threading
+    from PIL import Image
+    from core.inference import mcp_images
+    from routes import inference as route
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), "blue").save(buffer, format = "PNG")
+    envelope = (
+        "screenshot result\n"
+        + mcp_images.SENTINEL
+        + json.dumps(
+            [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+        )
+    )
+    history = [
+        {"role": "user", "content": "Read the screenshot"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "mcp__screen__shot", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": "mcp__screen__shot", "content": envelope},
+        {"role": "user", "content": "Describe it"},
+    ]
+    loop_thread = threading.get_ident()
+    split_threads = []
+    original_split = mcp_images.split_images
+
+    def track_split(content):
+        if mcp_images.SENTINEL in content:
+            split_threads.append(threading.get_ident())
+        return original_split(content)
+
+    monkeypatch.setattr(mcp_images, "split_images", track_split)
+    monkeypatch.setattr(route, "split_mcp_images", track_split)
+    backend = _RenderRecordingBackend()
+    response = _count_route(monkeypatch, backend, messages = history, enable_tools = False)
+    assert response.status_code == 200
+    assert split_threads and all(thread != loop_thread for thread in split_threads)
+    assert backend.messages[1]["tool_calls"][0]["function"]["name"] == "mcp__screen__shot"
+    assert backend.messages[2]["content"] == "screenshot result"
+
+
+_CLIP_B64 = "AAAAGGZ0eXBtcDQy"  # a bare mp4 box header, decoded byte-for-byte by the backend
+
+
+def _require_video_stack_module():
+    """`_require_video_stack`, returning the package so a test can restand its ``utils``."""
+    _require_video_stack()
+    import mlx_vlm
+
+    return mlx_vlm
+
+
+def _require_video_stack():
+    """Both halves: guarding on one alone let a test needing both run on a runner with only the
+    other, and the decoder lands in 0.5.0 while the install floor is 0.4.4."""
+    utils = pytest.importorskip("mlx_vlm.utils")
+    if not callable(getattr(utils, "load_video", None)):
+        pytest.skip("the installed mlx-vlm predates the 0.5.0 clip decoder")
+    pytest.importorskip("cv2")
+    return utils
+
+
+def _video_vlm_backend(monkeypatch, streams):
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(MODEL_CONFIG = {})
+
+    def _vlm_stream(*args, **kwargs):
+        paths = kwargs.get("video")
+        streams.append((args, kwargs, [Path(p).read_bytes() for p in paths] if paths else None))
+        yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    real_vlm_utils = _require_video_stack()
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", real_vlm_utils)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<video> marked",
+    )
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "qwen3_5"})
+    backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
+    backend._is_vlm = True
+    return backend
+
+
+def test_mlx_vlm_a_video_turn_never_resumes_a_prompt_cache_snapshot(monkeypatch):
+    """A snapshot spans the video rows but is keyed by token ids the clip does not vary, so a
+    later clip would resume the earlier one's vision rows and its mRoPE grid."""
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    backend._vlm_is_diffusion_model = lambda _model: False
+    monkeypatch.setattr(type(backend), "_vlm_prompt_cache_store", lambda self: object())
+    monkeypatch.setattr(type(backend), "_vlm_media_token_ids", lambda self, _config: (7,))
+    monkeypatch.setattr(type(backend), "_vlm_media_block", lambda self, *_a: None)
+    cache_module = types.ModuleType("mlx_vlm.models.cache")
+    cache_module.make_prompt_cache = lambda _model, max_kv_size = None: []
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models", types.ModuleType("mlx_vlm.models"))
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models.cache", cache_module)
+
+    # Control: without a clip the same call builds a session, so the None below is the video rule.
+    assert backend._vlm_prompt_cache_session(False, None, "prompt") is not None
+    assert backend._vlm_prompt_cache_session(False, None, "prompt", has_video = True) is None
+
+    # And the stream says so: a clip reaches mlx-vlm with no cache to resume from.
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+    args = (turn, None, 0, 1, 0, 0, 1, 1, None)
+    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    ((_, stream_kwargs, _),) = streams
+    assert "prompt_cache" not in stream_kwargs
+    assert "prompt_cache_state" not in stream_kwargs
+
+
+def test_mlx_vlm_a_video_turn_releases_retained_snapshots(monkeypatch):
+    """A video turn resumes nothing, so retained snapshots are pure occupancy against the
+    frame budget it is about to allocate."""
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    released = []
+    monkeypatch.setattr(type(backend), "_release_vlm_snapshots", lambda self: released.append(True))
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+    args = (turn, None, 0, 1, 0, 0, 1, 1, None)
+
+    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    assert released == [True]
+
+
+def test_mlx_vlm_an_unset_budget_is_capped_for_a_video_turn(monkeypatch):
+    """A clip expands furthest past its placeholder, so the counted prompt understates the real
+    one by more than an image does."""
+    from core.inference.runtime_context import UNSET_GENERATION_BUDGET
+
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    monkeypatch.setattr(
+        type(backend),
+        "_unset_generation_budget",
+        lambda self, *_args, **_kwargs: UNSET_GENERATION_BUDGET * 8,
+    )
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+    args = (turn, None, 0, 1, 0, 0, None, 1, None)
+
+    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    assert streams[-1][1]["max_tokens"] == UNSET_GENERATION_BUDGET
+
+
+def test_mlx_vlm_video_clip_lives_on_disk_only_for_the_stream(monkeypatch):
+    """The clip lives on disk only for the stream, including when the caller closes it early."""
+    import base64
+
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+    args = (turn, None, 0, 1, 0, 0, 1, 1, None)
+
+    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    ((stream_args, stream_kwargs, contents),) = streams
+    assert stream_args[3] is None, "no image was attached"
+    assert contents == [base64.b64decode(_CLIP_B64)]
+    assert not any(Path(p).exists() for p in stream_kwargs["video"])
+
+    gen = backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)
+    assert next(gen) == "ok"
+    (path,) = streams[-1][1]["video"]
+    assert Path(path).exists()
+    gen.close()
+    assert not Path(path).exists()
+
+
+def _tiny_clip(
+    path,
+    width = 32,
+    height = 24,
+    frames = 12,
+):
+    # importorskip: two of the three callers reach here before any other guard.
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 4.0, (width, height))
+    for index in range(frames):
+        frame = np.zeros((height, width, 3), np.uint8)
+        frame[:, index : index + 4] = 255
+        writer.write(frame)
+    writer.release()
+    return str(path)
+
+
+def test_mlx_vlm_the_decoded_frame_stack_is_bounded(monkeypatch, tmp_path):
+    """A small upload can decode to gigabytes; the rate is the one knob every release passes on."""
+    import base64
+
+    from core.inference import mlx_inference
+
+    _require_video_stack()
+    clip = _tiny_clip(tmp_path / "clip.mp4")
+    per_frame = 2 * 3 * 32 * 24
+    plain = SimpleNamespace()
+    slower = SimpleNamespace(video_processor = SimpleNamespace(fps = 1.0))
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 6)
+    assert mlx_inference._video_frame_rate(clip, plain) == 2.0
+    assert mlx_inference._video_frame_rate(clip, slower) == 1.0
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 4)
+    assert mlx_inference._video_frame_rate(clip, plain) == pytest.approx(4 / 3)
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 3)
+    with pytest.raises(RuntimeError, match = "32x24 frames are too large"):
+        mlx_inference._video_frame_rate(clip, plain)
+
+    unopenable = tmp_path / "header"
+    unopenable.write_bytes(base64.b64decode(_CLIP_B64))
+    assert mlx_inference._video_frame_rate(str(unopenable), plain) is None
+
+
+def test_mlx_vlm_a_clip_with_an_unreadable_rate_is_still_bounded(monkeypatch):
+    """mlx-vlm decodes such a clip at an assumed rate instead of refusing it, so skipping the
+    budget here is the one path around it."""
+    from core.inference import mlx_inference
+
+    _require_video_stack()
+    cv2 = pytest.importorskip("cv2")
+    measurements = {
+        cv2.CAP_PROP_FRAME_WIDTH: 32.0,
+        cv2.CAP_PROP_FRAME_HEIGHT: 24.0,
+        cv2.CAP_PROP_FRAME_COUNT: 12.0,
+        cv2.CAP_PROP_FPS: 0.0,
+    }
+
+    class _RatelessCapture:
+        def __init__(self, _path):
+            pass
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            return measurements[prop]
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(cv2, "VideoCapture", _RatelessCapture)
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", 2 * 3 * 32 * 24 * 6)
+    assert mlx_inference._video_frame_rate("clip.mp4", SimpleNamespace()) == 0.5
+
+
+def test_mlx_vlm_the_frame_rate_follows_an_older_mlx_vlm_decoder(monkeypatch, tmp_path):
+    """Older releases hand load_video only ``fps``, so its signature is the sampling source."""
+    from core.inference import mlx_inference
+
+    mlx_vlm = _require_video_stack_module()
+
+    def load_video(
+        video_path,
+        fps = 1.5,
+        nframes = None,
+        min_frames = 8,
+        max_frames = 768,
+    ):
+        raise AssertionError("never decoded here")
+
+    monkeypatch.setattr(mlx_vlm, "utils", SimpleNamespace(load_video = load_video))
+    clip = _tiny_clip(tmp_path / "clip.mp4")
+    per_frame = 2 * 3 * 32 * 24
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 12)
+    assert mlx_inference._video_frame_rate(clip, SimpleNamespace()) == 1.5
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 7)
+    with pytest.raises(RuntimeError, match = "8 of them"):
+        mlx_inference._video_frame_rate(clip, SimpleNamespace())
+
+
+def test_mlx_vlm_the_frame_rate_rides_the_stream(monkeypatch, tmp_path):
+    import base64
+    import tempfile
+
+    from core.inference import mlx_inference
+
+    clip_b64 = base64.b64encode(Path(_tiny_clip(tmp_path / "clip.mp4")).read_bytes()).decode()
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(spool))
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", 2 * 3 * 32 * 24 * 4)
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+
+    assert list(
+        backend._generate_vlm(
+            turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = clip_b64
+        )
+    ) == ["ok"]
+    assert streams[0][1]["fps"] == pytest.approx(4 / 3)
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", 2 * 3 * 32 * 24 * 3)
+    gen = backend._generate_vlm(
+        turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = clip_b64
+    )
+    with pytest.raises(RuntimeError, match = "too large to decode"):
+        next(gen)
+    assert len(streams) == 1, "a refused clip never reaches mlx-vlm"
+    assert list(spool.glob("unsloth-video-*")) == []
+
+
+def test_mlx_vlm_a_video_turn_whose_render_is_unusable_is_refused_not_recovered(monkeypatch):
+    """Registered renderers take image and audio counts only, so recovery would drop the clip."""
+    backend = _video_vlm_backend(monkeypatch, [])
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, messages, **_k: f"{messages[0]['content'][0]} serialized",
+    )
+    turn = [{"role": "user", "content": [{"type": "image"}, {"type": "video"}]}]
+    with pytest.raises(RuntimeError, match = "for a video turn"):
+        list(
+            backend._generate_vlm(
+                turn, [object()], 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = _CLIP_B64
+            )
+        )
+
+
+def test_mlx_vlm_an_undecodable_clip_leaves_no_file_behind(monkeypatch, tmp_path):
+    import binascii
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    backend = _video_vlm_backend(monkeypatch, [])
+    turn = [{"role": "user", "content": [{"type": "video"}]}]
+    with pytest.raises(binascii.Error):
+        list(
+            backend._generate_vlm(
+                turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = "A"
+            )
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_mlx_vlm_structured_video_items_must_match_attached_clips(monkeypatch):
+    backend = _video_vlm_backend(monkeypatch, [])
+    args = (None, 0, 1, 0, 0, 1, 1, None)
+    without_part = [{"role": "user", "content": [{"type": "text", "text": "what moves"}]}]
+    with pytest.raises(RuntimeError, match = "0 structured video item.*1 attached video"):
+        list(backend._generate_vlm(without_part, *args, _adapter_state = False, video = _CLIP_B64))
+    with_part = [{"role": "user", "content": [{"type": "video"}]}]
+    with pytest.raises(RuntimeError, match = "1 structured video item.*0 attached video"):
+        list(backend._generate_vlm(with_part, *args, _adapter_state = False))
+
+
+def test_mlx_generate_chat_response_attaches_the_video_part_and_forwards_the_clip(monkeypatch):
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    _require_video_stack()
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    captured = []
+    backend._generate_vlm = lambda messages, *_args, **kwargs: (
+        captured.append((messages, kwargs)) or iter(())
+    )
+    list(
+        backend.generate_chat_response([{"role": "user", "content": "what moves"}], video = _CLIP_B64)
+    )
+    messages, kwargs = captured[0]
+    assert messages[-1]["content"] == [{"type": "video"}, {"type": "text", "text": "what moves"}]
+    assert kwargs["video"] == _CLIP_B64
+
+    backend._is_vlm = False
+    with pytest.raises(RuntimeError, match = "loaded model does not read video"):
+        list(backend.generate_chat_response([{"role": "user", "content": "hi"}], video = _CLIP_B64))
+
+    backend._is_vlm = True
+    monkeypatch.setattr(mlx_inference, "_mlx_vlm_decodes_video", lambda: False)
+    with pytest.raises(RuntimeError, match = "installed mlx-vlm does not read video"):
+        list(backend.generate_chat_response([{"role": "user", "content": "hi"}], video = _CLIP_B64))
+
+
+def test_mlx_vlm_decodes_video_only_with_its_clip_decoder(monkeypatch):
+    """The declared mlx-vlm range starts before load_video existed."""
+    from core.inference import mlx_inference
+
+    mlx_vlm = _require_video_stack_module()
+
+    assert mlx_inference._mlx_vlm_decodes_video() is True
+    monkeypatch.setattr(mlx_vlm, "utils", SimpleNamespace(prepare_inputs = object()))
+    assert mlx_inference._mlx_vlm_decodes_video() is False
+
+
+def test_mlx_reads_video_asks_the_processor_and_the_template(monkeypatch):
+    """The processor must carry a video component and the template must place a marker."""
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import _VIDEO_PROBE_MESSAGES, _mlx_reads_video
+
+    _require_video_stack()
+    renders = {}
+
+    def _render(_target, messages, **_kwargs):
+        if messages is _VIDEO_PROBE_MESSAGES:
+            outcome = renders["video"]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return "hi"
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation", _render
+    )
+    with_video = SimpleNamespace(video_processor = object(), tokenizer = SimpleNamespace())
+    renders["video"] = "<|video_pad|> hi"
+    assert _mlx_reads_video(with_video) is True
+    assert _mlx_reads_video(SimpleNamespace(tokenizer = SimpleNamespace())) is False
+    assert _mlx_reads_video(None) is False
+    renders["video"] = "hi"
+    assert _mlx_reads_video(with_video) is False
+    renders["video"] = f"{_VIDEO_PROBE_MESSAGES[0]['content'][0]} hi"
+    assert _mlx_reads_video(with_video) is False
+    renders["video"] = ValueError("no video in this template")
+    assert _mlx_reads_video(with_video) is False
+    renders["video"] = "<|video_pad|> hi"
+    monkeypatch.setattr(mlx_inference, "_mlx_vlm_decodes_video", lambda: False)
+    assert _mlx_reads_video(with_video) is False, "a release without the decoder"
+
+
+def test_mlx_reads_video_rejects_a_clip_rendered_as_prose(monkeypatch):
+    """An installed override can render the part as ordinary text, which differs from the text
+    render while marking nothing -- the model would then answer without the clip."""
+    from core.inference.mlx_inference import _VIDEO_PROBE_MESSAGES, _mlx_reads_video
+
+    _require_video_stack()
+    renders = {}
+
+    def _render(_target, messages, **_kwargs):
+        return renders["video"] if messages is _VIDEO_PROBE_MESSAGES else "hi"
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation", _render
+    )
+    named = SimpleNamespace(
+        video_processor = object(),
+        video_token = "<|video_pad|>",
+        tokenizer = SimpleNamespace(),
+    )
+
+    renders["video"] = "video hi"
+    assert _mlx_reads_video(named) is False
+    renders["video"] = "[part] hi"
+    assert _mlx_reads_video(named) is False
+    renders["video"] = "<|video_pad|> hi"
+    assert _mlx_reads_video(named) is True
+
+    # A model naming no placeholder keeps the render difference as the only evidence there is.
+    unnamed = SimpleNamespace(video_processor = object(), tokenizer = SimpleNamespace())
+    renders["video"] = "video hi"
+    assert _mlx_reads_video(unnamed) is True
+
+
+def _sampling_release(monkeypatch, **utils_fields):
+    """Stand mlx_vlm.utils up in one release's shape, so one processor can be read on each."""
+    mlx_vlm = _require_video_stack_module()
+    monkeypatch.setattr(mlx_vlm, "utils", SimpleNamespace(**utils_fields))
+
+
+def _legacy_load_video(
+    video_path,
+    fps = 2.0,
+    nframes = None,
+    min_frames = 4,
+    max_frames = 768,
+):
+    raise AssertionError("never decoded here")
+
+
+def _resolving_utils():
+    """The 0.7.0 shape: a resolver that reads the processor, terminating in the library defaults."""
+
+    def resolve_video_sampling(processor, _overrides):
+        component = getattr(processor, "video_processor", None)
+        declared = {}
+        if component is not None:
+            hook = getattr(component, "video_sampling_defaults", None)
+            declared = (
+                hook()
+                if callable(hook)
+                else {n: getattr(component, n, None) for n in ("fps", "min_frames")}
+            )
+        return SimpleNamespace(
+            fps = declared.get("fps") or 2.0,
+            min_frames = declared.get("min_frames") or 4,
+            nframes = declared.get("nframes"),
+        )
+
+    return {"load_video": _legacy_load_video, "resolve_video_sampling": resolve_video_sampling}
+
+
+@pytest.mark.parametrize(
+    "processor, expected_fps",
+    [
+        (SimpleNamespace(), 2.0),
+        (SimpleNamespace(video_processor = SimpleNamespace(fps = 1.0)), 1.0),
+        (SimpleNamespace(video_processor = SimpleNamespace(fps = 4.0)), 4.0),
+        (SimpleNamespace(video_processor = SimpleNamespace()), 2.0),
+        (
+            SimpleNamespace(
+                video_processor = SimpleNamespace(
+                    video_sampling_defaults = lambda: {"fps": 0.5, "min_frames": 4}
+                )
+            ),
+            0.5,
+        ),
+    ],
+)
+def test_mlx_vlm_every_release_reads_one_models_rate_the_same_way(
+    monkeypatch, processor, expected_fps
+):
+    """A model's declared rate must not depend on which mlx-vlm is installed.
+
+    Studio pins ``mlx-vlm>=0.4.4,<=0.7.1``, which spans both shapes: releases with no resolver
+    and, from 0.7.0, releases that have one. Reading the rate only through the resolver left
+    every install on the older shape sampling at the library default instead of the rate the
+    checkpoint asked for.
+    """
+    from core.inference import mlx_inference
+
+    seen = []
+    for utils_fields in (
+        {"load_video": _legacy_load_video},  # 0.5.0 and the whole 0.6 line
+        _resolving_utils(),  # 0.7.0
+    ):
+        with pytest.MonkeyPatch.context() as patch:
+            _sampling_release(patch, **utils_fields)
+            seen.append(mlx_inference._video_sampling_target(processor))
+
+    assert seen[0] == seen[1], "the installed mlx-vlm changed the sampling this model asked for"
+    assert seen[0] == (expected_fps, 4, None)
+
+
+def test_mlx_vlm_a_release_naming_no_fps_knob_still_bounds_a_clip(monkeypatch):
+    """Forward compatibility: an unknown load_video signature must not make a clip a KeyError."""
+    from core.inference import mlx_inference
+
+    def load_video(
+        video_path,
+        sampling = None,
+        **sampling_kwargs,
+    ):
+        raise AssertionError("never decoded here")
+
+    _sampling_release(monkeypatch, load_video = load_video)
+    assert mlx_inference._video_sampling_target(SimpleNamespace()) == (2.0, 4, None)
+    assert mlx_inference._video_sampling_target(
+        SimpleNamespace(video_processor = SimpleNamespace(fps = 1.0))
+    ) == (1.0, 4, None)
+
+
+def test_mlx_vlm_without_opencv_refuses_a_clip_by_name(monkeypatch):
+    """The capability must not promise what the decoder cannot deliver.
+
+    mlx-vlm's ``load_video`` and the frame budget both import cv2. OpenCV ships as an mlx-vlm
+    dependency, but a stack that lost it used to still report ``has_video_input``, so the composer
+    offered video and the request died with ModuleNotFoundError mid-stream instead of being refused.
+    """
+    from core.inference import mlx_inference
+
+    _require_video_stack()
+    assert mlx_inference._mlx_vlm_decodes_video() is True
+
+    monkeypatch.setitem(sys.modules, "cv2", None)
+    assert mlx_inference._mlx_vlm_decodes_video() is False
+    assert (
+        _mlx_reads_video_probe(monkeypatch) is False
+    ), "a model must not advertise video once the decoder is gone"
+
+
+def _mlx_reads_video_probe(monkeypatch):
+    from core.inference.mlx_inference import _mlx_reads_video
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<video> marked",
+    )
+    return _mlx_reads_video(SimpleNamespace(video_processor = object(), tokenizer = SimpleNamespace()))
+
+
+# ── Multi-image capability ────────────────────────────────────────────────
+
+_RENDERER = "core.inference.chat_template_helpers.apply_chat_template_for_generation"
+
+
+def _vlm_runtime(monkeypatch, marker = "<|image|>"):
+    """A backend already classified with ``marker`` as its image token, plus a stubbed mlx-vlm."""
+    from core.inference import mlx_inference
+
+    calls = []
+
+    def _render(_target, messages, **_kwargs):
+        def _flat(part):
+            return "<|image|>" if part.get("type") == "image" else part.get("text", "")
+
+        return "".join(
+            body if isinstance(body, str) else "".join(map(_flat, body or ()))
+            for body in (message.get("content") for message in messages)
+        )
+
+    def _vlm_stream(model, processor, prompt, images, **kwargs):
+        calls.append({"prompt": prompt, "images": images})
+        yield SimpleNamespace(text = "ok", prompt_tokens = 1, generation_tokens = 1)
+
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(_RENDERER, _render)
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
+    )
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "gemma4"})
+    backend._processor = SimpleNamespace(
+        chat_template = "template", tokenizer = SimpleNamespace(chat_template = "nested")
+    )
+    backend._is_vlm = True
+    backend._multi_image_marker = marker
+    return backend, calls
+
+
+def test_several_images_reach_the_runtime_in_the_order_they_were_attached(monkeypatch):
+    """Binding is positional, so a reordered list answers about the wrong picture, not an error."""
+    backend, calls = _vlm_runtime(monkeypatch)
+    first, second = object(), object()
+    history = [{"role": "user", "content": "ask"}, {"role": "user", "content": "compare"}]
+
+    assert list(
+        backend.generate_chat_response(history, images = [first, second], max_new_tokens = 4)
+    ) == ["ok"]
+    assert calls[-1]["images"] == [first, second]
+    assert calls[-1]["prompt"].count("<|image|>") == 2
+
+    only = [{"role": "user", "content": "describe"}]
+    list(backend.generate_chat_response(only, image = first, max_new_tokens = 4))
+    list(backend.generate_chat_response(only, images = [first], max_new_tokens = 4))
+    assert calls[-2] == calls[-1] == {"prompt": "<|image|>describe", "images": [first]}
+
+
+@pytest.mark.parametrize(
+    "marker, render, error",
+    [
+        ("<|image|>", "<|image|>only one", "marked 1 image"),
+    ],
+    ids = ["the render collapsed a marker"],
+)
+def test_a_render_that_cannot_bind_every_image_is_refused(monkeypatch, marker, render, error):
+    """One image is still taken either way; too few markers would describe one picture twice."""
+    backend, _calls = _vlm_runtime(monkeypatch, marker = marker)
+    if render is not None:
+        monkeypatch.setattr(_RENDERER, lambda *_a, **_k: render)
+
+    turn = [{"role": "user", "content": "compare"}]
+    with pytest.raises((ValueError, RuntimeError), match = error):
+        list(backend.generate_chat_response(turn, images = [object(), object()]))
+
+
+def test_a_single_image_template_is_served_one_picture_not_refused(monkeypatch):
+    """A template that marks one image cannot bind several, but a resumed chat carrying
+    replayed MCP pictures must still be answered: the caller's attachment, or else the
+    newest picture, is served with its own marker and the others are left out."""
+    backend, calls = _vlm_runtime(monkeypatch, marker = None)
+    older, newer = object(), object()
+    turn = [{"role": "user", "content": "compare"}]
+
+    assert list(backend.generate_chat_response(turn, images = [older, newer])) == ["ok"]
+    assert calls[-1]["images"] == [newer]
+    assert calls[-1]["prompt"].count("<|image|>") == 1
+
+    attachment = object()
+    list(backend.generate_chat_response(turn, image = attachment, images = [older]))
+    assert calls[-1]["images"] == [attachment]
+    assert calls[-1]["prompt"].count("<|image|>") == 1
+
+
+@pytest.mark.parametrize("merged_question", [False, True])
+def test_single_image_replay_notes_describe_only_retained_pixels(monkeypatch, merged_question):
+    from core.inference.mcp_images import IMAGE_TURN_TEXT, image_marker_parts, placeholder_turn
+
+    backend, calls = _vlm_runtime(monkeypatch, marker = None)
+    older, newer = object(), object()
+    previous_image = placeholder_turn(1)
+    if merged_question:
+        previous_image["content"].append({"type": "text", "text": "Keep this user question."})
+    history = [
+        {"role": "user", "content": "Inspect the first screenshot."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "first",
+                    "type": "function",
+                    "function": {
+                        "name": "mcp__test__screenshot",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "first", "content": "[1 image returned]"},
+        previous_image,
+        {"role": "assistant", "content": "The first screenshot was inspected."},
+        {"role": "user", "content": "Inspect the next screenshot."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "second",
+                    "type": "function",
+                    "function": {
+                        "name": "mcp__test__screenshot",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "second", "content": "[1 image returned]"},
+        placeholder_turn(1),
+    ]
+    assert list(backend.generate_chat_response(history, images = [older, newer])) == ["ok"]
+    assert calls[-1]["images"] == [newer]
+    assert calls[-1]["prompt"].count("<|image|>") == 1
+    if merged_question:
+        assert "Keep this user question." in calls[-1]["prompt"]
+        assert "(0 of 1)" in calls[-1]["prompt"]
+    else:
+        assert calls[-1]["prompt"].count(IMAGE_TURN_TEXT) == 1
+    assert len(image_marker_parts(history)) == 2
+
+
+@pytest.mark.parametrize("module", ["mlx_lm.models.cache", "mlx_vlm.models.cache"])
+@pytest.mark.parametrize(
+    "bits, head_dim", [(5, 128), (6, 128), (3, 256), (5, 256), (6, 256), (8, 128)]
+)
+def test_an_empty_cache_converted_before_generation_decodes_at_every_width(module, bits, head_dim):
+    # Upstream sizes an empty QuantizedKVCache one packed word too wide at these widths.
+    mx = pytest.importorskip("mlx.core")
+    cache_module = pytest.importorskip(module)
+    from core.inference.mlx_inference import _quantize_kv_entries
+
+    (cache,) = _quantize_kv_entries([cache_module.KVCache()], bits)
+    for _ in range(300):
+        token = mx.random.normal((1, 2, 1, head_dim))
+        keys, _values = cache.update_and_fetch(token, token)
+        restored = mx.dequantize(*keys, group_size = 64, bits = bits)
+        mx.eval(restored)
+    assert restored.shape == (1, 2, 300, head_dim)
+
+
+def test_a_random_model_decoding_through_mlx_lm_emits_only_the_schema():
+    """Real mlx_lm pipelining (the next step is masked before this token is yielded) with a
+    random model: only the grammar can make the reply a valid document."""
+    mx = _metal_mx()
+    pytest.importorskip("mlx_lm")
+    from mlx_lm import stream_generate
+    from mlx_lm.models import llama
+    from mlx_lm.sample_utils import make_sampler
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    from core.inference.grammar_constraint import make_grammar_logits_processor
+
+    tokenizer = _char_tokenizer()
+    tokenizer.chat_template = "{{ messages[0].content }}"
+    mx.random.seed(0)
+    model = llama.Model(
+        llama.ModelArgs(
+            model_type = "llama",
+            hidden_size = 32,
+            num_hidden_layers = 1,
+            intermediate_size = 64,
+            num_attention_heads = 2,
+            num_key_value_heads = 2,
+            rms_norm_eps = 1e-5,
+            vocab_size = len(tokenizer),
+        )
+    )
+    schema = {
+        "type": "object",
+        "properties": {"a": {"enum": ["x", "y"]}, "b": {"type": "boolean"}},
+        "required": ["a", "b"],
+        "additionalProperties": False,
+    }
+    wrapped = TokenizerWrapper(tokenizer)
+    constraint = build_constraint({"type": "json_schema", "schema": schema}, wrapped, "p")
+    text = "".join(
+        chunk.text
+        for chunk in stream_generate(
+            model,
+            wrapped,
+            tokenizer.encode("go", add_special_tokens = False),
+            max_tokens = 64,
+            sampler = make_sampler(temp = 1.0),
+            logits_processors = [make_grammar_logits_processor(constraint)],
+        )
+    )
+    document = json.loads(text)
+    assert document["a"] in ("x", "y") and isinstance(document["b"], bool)
+    assert set(document) == {"a", "b"}
+
+
+def _constrained_vlm_reply(
+    monkeypatch,
+    pieces,
+    *,
+    allows_reasoning,
+    markers,
+    specials = (),
+):
+    """Snapshots ``_generate_vlm`` yields for scripted text under a stand-in grammar."""
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(MODEL_CONFIG = {}, apply_chat_template = None)
+    mlx_vlm.stream_generate = lambda *_a, **_k: iter(
+        [SimpleNamespace(text = piece, prompt_tokens = 1, generation_tokens = 1) for piece in pieces]
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_a, **_k: "user: hi\nassistant: <think>\n",
+    )
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
+    )
+    monkeypatch.setattr(
+        mlx_inference, "detect_reasoning_channel_markers", lambda *_a, **_k: markers
+    )
+    monkeypatch.setattr(
+        mlx_inference,
+        "_build_grammar_constraint",
+        lambda *_a, **_k: SimpleNamespace(
+            allows_reasoning = allows_reasoning,
+            stops_on = lambda _ids: None,
+            decoded_dropping = lambda _ids = None: None,
+        ),
+    )
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_k: None)
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_is_diffusion", lambda _model: False)
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
+    backend._processor = SimpleNamespace(chat_template = "template", all_special_tokens = specials)
+    args = ([{"role": "user", "content": "hi"}], [], 0.7, 0.9, 40, 0.01, 64, 1.0, None)
+    return list(backend._generate_vlm(*args, response_format = {"type": "json_object"}))
+
+
+def test_a_document_only_vlm_reply_is_not_rewritten_by_the_reasoning_normalizer(monkeypatch):
+    document = '{"city":"<think>Paris</think>"}'
+    snapshots = _constrained_vlm_reply(
+        monkeypatch,
+        [document[:12], document[12:]],
+        allows_reasoning = False,
+        markers = ("<think>", "</think>"),
+    )
+    assert snapshots[-1] == document
+
+
+def test_an_allowed_vlm_reasoning_block_keeps_its_opener_when_the_closer_is_special(monkeypatch):
+    snapshots = _constrained_vlm_reply(
+        monkeypatch,
+        ["x", "</think>", '{"a":1}'],
+        allows_reasoning = True,
+        markers = None,
+        specials = ("</think>",),
+    )
+    assert snapshots[-1] == '<think>\nx</think>{"a":1}'
+
+
+def test_the_text_grammar_is_told_a_closer_survives_whenever_the_prefill_is(monkeypatch):
+    """Client tools run the native decoder, which keeps a special </think>: the prefill then
+    re-emits the opener, so the grammar must allow the close rather than refuse the request."""
+    from core.inference import mlx_inference
+
+    mlx_lm = types.ModuleType("mlx_lm")
+    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    sample_utils.make_sampler = lambda **_k: object()
+    mlx_lm.sample_utils = sample_utils
+    mlx_lm.stream_generate = lambda *_a, **_k: iter([_Resp("ok", 1)])
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_k: None)
+    monkeypatch.setattr(mlx_inference, "decoder_preserves_token", lambda *_a, **_k: True)
+    seen = {}
+
+    def _capture(*_a, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(mlx_inference, "_build_grammar_constraint", _capture)
+    backend = _budget_backend(monkeypatch)
+    monkeypatch.setattr(
+        backend,
+        "_render_text_prompt",
+        lambda *_a, **_k: SimpleNamespace(prompt = "P<think>", reasoning_channel_markers = None),
+        raising = False,
+    )
+    list(
+        backend._generate_text(
+            _TEXT_TURN,
+            0.0,
+            1.0,
+            0,
+            0.0,
+            8,
+            1.0,
+            None,
+            tools = [{"type": "function", "function": {"name": "f"}}],
+            response_format = {"type": "json_object"},
+            reasoning_is_extracted = True,
+        )
+    )
+    assert seen["reply_keeps_special_tokens"] is True
+
+
+@pytest.mark.parametrize("constrained", [False, True])
+def test_a_constrained_plain_reply_is_decoded_without_space_cleanup(monkeypatch, constrained):
+    from core.inference import mlx_inference
+
+    mlx_lm = types.ModuleType("mlx_lm")
+    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    sample_utils.make_sampler = lambda **_k: object()
+    mlx_lm.sample_utils = sample_utils
+    mlx_lm.stream_generate = lambda *_a, **_k: iter([_Resp("ok", 1)])
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_k: None)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_build_grammar_constraint",
+        lambda *_a, **_k: SimpleNamespace(
+            allows_reasoning = False, decoded_dropping = lambda _ids: None
+        )
+        if constrained
+        else None,
+    )
+    backend = _budget_backend(monkeypatch)
+    decodes = []
+
+    def _decode(_ids, **kwargs):
+        decodes.append(kwargs)
+        return "ok"
+
+    backend._tokenizer.decode = _decode
+    monkeypatch.setattr(
+        backend,
+        "_render_text_prompt",
+        lambda *_a, **_k: SimpleNamespace(prompt = "P", reasoning_channel_markers = None),
+        raising = False,
+    )
+    list(
+        backend._generate_text(
+            _TEXT_TURN,
+            0.0,
+            1.0,
+            0,
+            0.0,
+            8,
+            1.0,
+            None,
+            response_format = {"type": "json_object"} if constrained else None,
+        )
+    )
+    assert decodes
+    # " ." inside a grammar-approved string must reach the client unchanged.
+    for kwargs in decodes:
+        assert kwargs.get("clean_up_tokenization_spaces") is (False if constrained else None)
+
+
+def test_a_special_token_the_reply_would_drop_is_refused_not_silently_deleted():
+    """llguidance spells a forced literal with a special id when one matches, and a decode that
+    skips special tokens would delete it from a reply reported as valid."""
+    tokenizer = _char_tokenizer("ab", markers_are_special = True)
+    special = tokenizer.convert_tokens_to_ids("ab")
+    fmt = {"type": "json_schema", "schema": {"const": "ab"}}
+
+    def _after_quote(constraint):
+        for token in tokenizer.encode('"', add_special_tokens = False):
+            _allowed(constraint, len(tokenizer))
+            constraint.advance(int(token))
+        return _allowed(constraint, len(tokenizer))
+
+    assert special in _after_quote(
+        build_constraint(fmt, tokenizer, "p", reply_keeps_special_tokens = True)
+    )
+    with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
+        _after_quote(build_constraint(fmt, tokenizer, "p"))
+
+
+def test_only_the_specials_the_decoder_drops_are_withheld_from_the_document():
+    """A native decoder keeps its allowlist and drops every other special id, so the grammar is
+    held to exactly that set, not to all specials or none."""
+    tokenizer = _char_tokenizer("ab", "cd", markers_are_special = True)
+    dropped, kept = (tokenizer.convert_tokens_to_ids(t) for t in ("ab", "cd"))
+
+    def _after_quote(literal):
+        constraint = build_constraint(
+            {"type": "json_schema", "schema": {"const": literal}},
+            tokenizer,
+            "p",
+            reply_keeps_special_tokens = True,
+        )
+        constraint.decoded_dropping({dropped})
+        for token in tokenizer.encode('"', add_special_tokens = False):
+            _allowed(constraint, len(tokenizer))
+            constraint.advance(int(token))
+        return _allowed(constraint, len(tokenizer))
+
+    assert kept in _after_quote("cd")
+    with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
+        _after_quote("ab")
+
+
+def test_the_text_path_hands_the_constraint_its_decoders_dropped_ids(monkeypatch):
+    from core.inference import mlx_inference
+
+    mlx_lm = types.ModuleType("mlx_lm")
+    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    sample_utils.make_sampler = lambda **_k: object()
+    mlx_lm.sample_utils = sample_utils
+    mlx_lm.stream_generate = lambda *_a, **_k: iter([_Resp("ok", 1)])
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_k: None)
+    seen = []
+    constraint = SimpleNamespace(allows_reasoning = False, decoded_dropping = seen.append)
+    monkeypatch.setattr(mlx_inference, "_build_grammar_constraint", lambda *_a, **_k: constraint)
+
+    class _Decoder:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def dropped_ids(self):
+            return frozenset({7})
+
+    monkeypatch.setattr(mlx_inference, "NativeToolTokenDecoder", _Decoder)
+    backend = _budget_backend(monkeypatch)
+    monkeypatch.setattr(
+        backend,
+        "_render_text_prompt",
+        lambda *_a, **_k: SimpleNamespace(prompt = "P", reasoning_channel_markers = None),
+        raising = False,
+    )
+    run = lambda **kw: list(
+        backend._generate_text(
+            _TEXT_TURN,
+            0.0,
+            1.0,
+            0,
+            0.0,
+            8,
+            1.0,
+            None,
+            response_format = {"type": "json_object"},
+            **kw,
+        )
+    )
+    try:
+        run(tools = [{"type": "function", "function": {"name": "f"}}])
+    except Exception:
+        pass  # the stand-in decoder cannot decode; the handoff happened before generation
+    assert seen and seen[0] == frozenset({7})
+    seen.clear()
+    run()
+    assert seen == [None], "a plain skip_special_tokens decode drops every special id"
+
+
+def test_a_tokenizer_end_token_the_runtime_does_not_stop_on_is_withheld_too():
+    """llguidance ends only on the runtime stops, so the tokenizer's own end token is just
+    another special id the decode drops, and a literal spelled only by it is refused."""
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    wrapped = TokenizerWrapper(tokenizer, eos_token_ids = [runtime_stop])
+    constraint = build_constraint(
+        {"type": "json_schema", "schema": {"const": "<eos>"}}, wrapped, "p"
+    )
+    for token in tokenizer.encode('"', add_special_tokens = False):
+        _allowed(constraint, len(tokenizer))
+        constraint.advance(int(token))
+    with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
+        _allowed(constraint, len(tokenizer))
+
+
+def test_the_grammar_ends_on_the_stop_the_decode_loop_names():
+    """mlx-vlm stops on config ids the tokenizer may not carry; told them, the finished
+    document is closed by that id rather than the tokenizer's end token."""
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tokenizer, "p")
+    constraint.stops_on([runtime_stop])
+    for token_id in tokenizer.encode('{"a":1}', add_special_tokens = False):
+        _allowed(constraint, len(tokenizer))
+        constraint.advance(int(token_id))
+    assert _allowed(constraint, len(tokenizer)) == {runtime_stop}

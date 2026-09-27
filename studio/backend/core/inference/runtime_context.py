@@ -14,6 +14,9 @@ from typing import Any, Optional
 #: window from the model reports it as native but does not serve past it.
 MAX_REQUESTABLE_CONTEXT = 1048576
 
+#: Budget for an unset limit when there is no free context to size it from.
+UNSET_GENERATION_BUDGET = 2048
+
 
 def _field(source: Any, name: str) -> Any:
     """Key or attribute, since mlx.nn.Module is a dict; a raiser is absent, never a failed load."""
@@ -71,3 +74,30 @@ def runtime_context_length(model: Any, fallback: Optional[int] = None) -> Option
         if value_int > 0:
             return value_int
     return None
+
+
+def generation_budget_for_window(
+    window: Optional[int], prompt_length: int, max_new_tokens: Optional[int]
+) -> Optional[int]:
+    """Resolve a generation budget, where ``None`` means the caller set no limit.
+
+    An unset limit becomes the context the prompt leaves free. An explicit one is returned
+    untouched, so asking for more than fits still gets the backend's overflow error.
+    """
+    if max_new_tokens is not None:
+        return max_new_tokens
+    if not window:
+        return UNSET_GENERATION_BUDGET
+    free = int(window) - int(prompt_length)
+    # No room left: take the default and let the backend's overflow check decide. A floor
+    # of 1 would pass that check on a model loaded narrower than its checkpoint.
+    return free if free > 0 else UNSET_GENERATION_BUDGET
+
+
+def generation_budget_within_context(
+    model: Any, prompt_length: int, max_new_tokens: Optional[int]
+) -> Optional[int]:
+    """``generation_budget_for_window`` against the window a loaded model declares."""
+    return generation_budget_for_window(
+        runtime_context_length(model), prompt_length, max_new_tokens
+    )

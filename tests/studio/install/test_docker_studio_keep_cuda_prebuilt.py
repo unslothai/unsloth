@@ -273,6 +273,7 @@ def _run_keep_decision(
     requested_tag,
     repo = FORK,
     env = None,
+    damage = None,
 ):
     install_dir = tmp_path / "llama.cpp"
     (install_dir / "build" / "bin").mkdir(parents = True, exist_ok = True)
@@ -284,6 +285,25 @@ def _run_keep_decision(
         for path in (install_dir / "llama-server", install_dir / "build" / "bin" / "llama-server"):
             path.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
             path.chmod(0o755)
+    runtime_dir = install_dir / "build" / "bin"
+    quantize = runtime_dir / "llama-quantize"
+    quantize.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    quantize.chmod(0o755)
+    for name in (
+        "libllama-common.so.0",
+        "libllama.so.0",
+        "libggml.so.0",
+        "libggml-base.so.0",
+        "libggml-cpu.so.0",
+        "libmtmd.so.0",
+        "libllama-server-impl.so",
+        "libllama-quantize-impl.so",
+        "libggml-cuda.so",
+        "libggml-hip.so",
+    ):
+        (runtime_dir / name).write_bytes(b"library")
+    if damage is not None:
+        (runtime_dir / damage).unlink()
     script = tmp_path / "drive.sh"
     script.write_text(_SH_HARNESS, encoding = "utf-8")
     stub_dir = _stub_bin(tmp_path)
@@ -291,6 +311,7 @@ def _run_keep_decision(
     run_env.pop("UNSLOTH_LLAMA_KEEP_PREBUILT", None)
     run_env.pop("UNSLOTH_LLAMA_RELEASE_TAG", None)
     run_env["PATH"] = f"{stub_dir}{os.pathsep}{run_env.get('PATH', '')}"
+    run_env["SCRIPT_DIR"] = str(MODULE_PATH.parent)
     run_env.update(env or {})
     proc = subprocess.run(
         [
@@ -486,3 +507,22 @@ def test_dockerfile_studio_sets_the_knob_and_asserts_the_cuda_backend():
     assert (
         "exit 1" in text[assertion : assertion + 600]
     ), "a missing CUDA backend library must fail the build, not just print"
+
+
+@requires_bash
+@pytest.mark.parametrize("marker", [_BASE_IMAGE_MARKER, _INSTALLER_CUDA_MARKER])
+@pytest.mark.parametrize("damage", ["libggml-base.so.0", "llama-quantize"])
+def test_docker_keep_does_not_preserve_a_runtime_preflight_rejects(tmp_path, marker, damage):
+    assert (
+        _run_keep_decision(
+            tmp_path,
+            marker = marker,
+            server = True,
+            requested_tag = RELEASE_TAG,
+            env = ON,
+            damage = damage,
+        )
+        == "REPLACE"
+    )
+    health = INSTALL_LLAMA_PREBUILT.installed_runtime_health(tmp_path / "llama.cpp")
+    assert health is not None and not health[0]

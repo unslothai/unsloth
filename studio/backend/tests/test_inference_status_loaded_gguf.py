@@ -206,6 +206,18 @@ def test_status_publishes_mmproj_cpu_recovery(status_route):
     assert status.mmproj_fallback_reason == "cpu_offload"
 
 
+def test_status_publishes_the_running_load_warning(status_route):
+    assert status_route(_StatusBackend("org/A-GGUF")).memory_warning is None
+
+    backend = _StatusBackend("org/A-GGUF")
+    backend.last_load_warning = (
+        "Not enough disk space to download BF16 (7.5 GB needed, 7.5 GB free), "
+        "so Q4_1 (2.4 GB) was loaded instead."
+    )
+
+    assert status_route(backend).memory_warning == backend.last_load_warning
+
+
 def test_status_publishes_an_explicit_text_only_mmproj_fallback(status_route):
     backend = _StatusBackend("org/Vision-GGUF")
     backend.is_vision = False

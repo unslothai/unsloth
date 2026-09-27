@@ -24,6 +24,16 @@ function cleanTemplate(value: string | null | undefined): string | null {
   return value?.trim() ? value : null;
 }
 
+function cleanTensorSplit(value: number[] | null | undefined): number[] | null {
+  if (!value || value.length < 2) {
+    return null;
+  }
+  if (!value.every((v) => Number.isFinite(v) && v >= 0)) {
+    return null;
+  }
+  return value.some((v) => v > 0) ? value : null;
+}
+
 export function applyPerModelConfigToRuntime(
   config: PerModelConfig,
   options: { isDiffusion?: boolean } = {},
@@ -56,6 +66,10 @@ export function applyPerModelConfigToRuntime(
     specDraftNMax: config.specDraftNMax ?? null,
     specDraftCacheDtype: config.specDraftCacheDtype ?? null,
     nParallel: config.nParallel ?? null,
+    reasoningBudget: options.isDiffusion ? -1 : config.reasoningBudget,
+    reasoningBudgetMessage: options.isDiffusion
+      ? ""
+      : config.reasoningBudgetMessage,
     // the diffusion runner ignores the llama-server batch flags
     nBatch: options.isDiffusion ? null : (config.nBatch ?? null),
     nUbatch: options.isDiffusion ? null : (config.nUbatch ?? null),
@@ -73,8 +87,8 @@ export function applyPerModelConfigToRuntime(
       : (config.disableVision ?? false),
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
     // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is a standing
-    // preference so an absent mode falls back to the persisted one. The per-GPU split ratio is
-    // never remembered. The GPU pick is reconciled against the GPUs present now. A diffusion
+    // preference so an absent mode falls back to the persisted one. The per-GPU split is never
+    // stored. The GPU pick is reconciled against the GPUs present now. A diffusion
     // config is sanitized to gpuMemoryMode "auto" because the mode does not apply, not because
     // the user chose Auto: writing that into the live standing preference would strand the session
     // on Auto, since the load skips saveGpuMemoryMode for diffusion and the next ordinary GGUF
@@ -84,7 +98,7 @@ export function applyPerModelConfigToRuntime(
       : (config.gpuMemoryMode ?? readPersistedGpuMemoryMode()),
     gpuLayers: config.gpuLayers ?? GPU_LAYERS_AUTO,
     nCpuMoe: config.nCpuMoe ?? 0,
-    splitRatio: null,
+    splitRatio: options.isDiffusion ? null : cleanTensorSplit(config.tensorSplit),
     selectedGpuIds: gpuSelection.ids,
     selectedGpuIndexKind: gpuSelection.indexKind,
   });
@@ -114,6 +128,14 @@ export function currentRuntimePerModelConfig(
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
     nParallel: s.nParallel ?? null,
+    reasoningBudget:
+      s.reasoningBudget === s.loadedReasoningBudget
+        ? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget)
+        : s.reasoningBudget,
+    reasoningBudgetMessage:
+      s.reasoningBudgetMessage === s.loadedReasoningBudgetMessage
+        ? (s.loadedReasoningBudgetMessageRequested ?? s.reasoningBudgetMessage)
+        : s.reasoningBudgetMessage,
     nBatch: s.nBatch ?? null,
     nUbatch: s.nUbatch ?? null,
     loadMode: s.loadMode ?? null,
@@ -123,12 +145,13 @@ export function currentRuntimePerModelConfig(
     disableVision: s.disableVision ?? false,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous model's GPU Memory
-    // settings back. The split ratio is intentionally never remembered.
+    // settings back, split included (never stored).
     gpuMemoryMode: s.gpuMemoryMode,
     gpuLayers: s.gpuLayers,
     nCpuMoe: s.nCpuMoe,
     selectedGpuIds: s.selectedGpuIds,
     selectedGpuIndexKind: s.selectedGpuIndexKind,
+    tensorSplit: s.splitRatio,
   };
 }
 
@@ -147,6 +170,8 @@ export function perModelConfigsEqual(
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
+    a.reasoningBudget === b.reasoningBudget &&
+    a.reasoningBudgetMessage === b.reasoningBudgetMessage &&
     (a.nBatch ?? null) === (b.nBatch ?? null) &&
     (a.nUbatch ?? null) === (b.nUbatch ?? null) &&
     (a.loadMode ?? null) === (b.loadMode ?? null) &&

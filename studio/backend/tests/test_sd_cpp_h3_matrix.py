@@ -425,3 +425,55 @@ def test_h3_cancellation_precedes_the_binary_install(h3_host, platform, hw_label
         sd_cpp_backend.ensure_h3_sd_cpp_binary = original
     assert ensures == []
     assert host.downloads == []
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+@pytest.mark.parametrize("hw_label,backend,device", [h for h in HARDWARE if h[1] == "rocm"])
+def test_h3_revet_catches_a_managed_tree_rebuilt_for_another_accelerator(
+    h3_host, platform, hw_label, backend, device, monkeypatch
+):
+    """A ROCm build installed over the tree mid-download answers the boolean re-vet exactly as the Vulkan rung did."""
+    host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
+
+    def _accelerator_of(binary):
+        return "rocm" if swapped["done"] else "vulkan"
+
+    import utils.hf_xet_fallback as xet
+
+    real_download = xet.hf_hub_download_with_xet_fallback
+
+    def _download(*args, **kwargs):
+        swapped["done"] = True
+        return real_download(*args, **kwargs)
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", _accelerator_of)
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+
+    with pytest.raises(RuntimeError, match = "built for a different accelerator"):
+        host.run()
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+@pytest.mark.parametrize("hw_label,backend,device", [h for h in HARDWARE if h[1] == "rocm"])
+def test_h3_revet_does_not_invent_a_change_for_an_unrecorded_tree(
+    h3_host, platform, hw_label, backend, device, monkeypatch
+):
+    """None is "cannot tell", not "it changed"; refusing on it would refuse every SD_CLI_PATH build."""
+    host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
+
+    import utils.hf_xet_fallback as xet
+
+    real_download = xet.hf_hub_download_with_xet_fallback
+
+    def _download(*args, **kwargs):
+        swapped["done"] = True
+        return real_download(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "_installed_accelerator_of",
+        lambda binary: None if swapped["done"] else "vulkan",
+    )
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+
+    host.run()

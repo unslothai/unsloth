@@ -30,6 +30,8 @@ from core.inference.tool_call_parser import (
     strip_tool_markup,
 )
 
+from growth import assert_linear  # tests/_shared, on sys.path via tests/conftest.py
+
 
 # GLM string-vs-JSON-encoded value coercion (finding B in plan)
 
@@ -223,45 +225,36 @@ def test_kimi_bare_counter_id_is_dropped():
 
 
 def test_deepseek_v3_1_huge_truncated_body_is_linear():
-    """Adversarial input: DeepSeek envelope with no JSON brace and a
-    50k-char body. A regex-based ``[^\\n<]+?`` name capture is O(N^2)
-    here; the parser uses ``str.find`` on the sep marker so it stays
-    linear. Budget 1s to flag any future regression."""
-    import time as _time
-
-    text = "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn<｜tool▁sep｜>" + "x" * 50_000
-    start = _time.time()
-    calls = parse_tool_calls_from_text(text)
-    elapsed = _time.time() - start
-    assert elapsed < 1.0, f"V3 path is non-linear: {elapsed:.2f}s"
-    assert calls == []
+    """Adversarial input: DeepSeek envelope with no JSON brace and a long
+    body. A regex-based ``[^\\n<]+?`` name capture is O(N^2) here; the
+    parser uses ``str.find`` on the sep marker so it stays linear."""
+    build = lambda n: "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn<｜tool▁sep｜>" + "x" * n
+    assert assert_linear(parse_tool_calls_from_text, build, "V3", 50_000) == []
 
 
 def test_deepseek_r1_huge_fenceless_body_is_linear():
     """R1 detection used a greedy ``([^\\n]+)\\n```json`` regex that is O(N^2) on a
     fence-less body of repeated ``function<sep>`` tokens. The parser now scans with
-    ``str.find``; budget 1s to flag any regression."""
-    import time as _time
+    ``str.find``."""
+    build = lambda n: "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * n
+    assert assert_linear(parse_tool_calls_from_text, build, "R1", 10_000) == []
 
-    text = "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * 40_000
-    start = _time.time()
-    calls = parse_tool_calls_from_text(text)
-    elapsed = _time.time() - start
-    assert elapsed < 1.0, f"R1 path is non-linear: {elapsed:.2f}s"
-    assert calls == []
+
+def test_deepseek_r1_fenceless_body_with_one_distant_object_is_linear():
+    """The same body with a single ``{`` after it, which is the shape that survived the
+    first fix for #10507: seeking the next object per marker found one every time and
+    rescanned the tail to reach it, so the sweep stayed quadratic while the fence-less
+    case above had gone linear."""
+    build = lambda n: "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * n + '{"a": 1}'
+    assert_linear(parse_tool_calls_from_text, build, "R1 distant-object", 10_000)
 
 
 def test_glm_unclosed_body_many_arg_keys_is_linear():
     """An unclosed GLM ``<tool_call>`` body runs to EOF; a lazy-group ``finditer``
     over many bare ``<arg_key>`` tokens was O(N^2). The parser now walks pairs with
-    ``str.find``; budget 1s."""
-    import time as _time
-
-    text = "<tool_call>foo\n" + "<arg_key>k" * 40_000
-    start = _time.time()
-    parse_tool_calls_from_text(text)
-    elapsed = _time.time() - start
-    assert elapsed < 1.0, f"GLM path is non-linear: {elapsed:.2f}s"
+    ``str.find``."""
+    build = lambda n: "<tool_call>foo\n" + "<arg_key>k" * n
+    assert_linear(parse_tool_calls_from_text, build, "GLM", 10_000)
 
 
 def test_deepseek_r1_fenced_json_parses():

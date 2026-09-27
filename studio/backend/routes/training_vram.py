@@ -7,6 +7,7 @@ models when they fit. STT is evicted before chat when training needs memory.
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from hub.utils.hf_tokens import HfTokenArg, normalize_token
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -117,7 +118,7 @@ def summarize_resident_stt() -> Dict[str, Any]:
 def can_keep_chat_during_training(
     *,
     model_name: str,
-    hf_token: Optional[str],
+    hf_token: HfTokenArg,
     training_type: str,
     load_in_4bit: bool,
     batch_size: int,
@@ -146,10 +147,9 @@ def can_keep_chat_during_training(
 
         # Full finetuning runs in 16-bit, so ignore the 4-bit request or we under-count.
         effective_4bit = False if training_type == "Full Finetuning" else load_in_4bit
-        hf_token_arg = hf_token or None
 
         est_kwargs = dict(
-            hf_token = hf_token_arg,
+            hf_token = normalize_token(hf_token),
             training_type = training_type,
             load_in_4bit = effective_4bit,
             batch_size = batch_size,

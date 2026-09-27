@@ -17,6 +17,9 @@ import sys
 import types
 
 import pytest
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("accelerate")
@@ -490,7 +493,7 @@ def test_the_repair_stands_aside_for_an_offloaded_embedding():
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available(),
+    not has_real_accelerator(),
     reason = "needs two real devices; `cpu` plus one card is enough, a CPU-only runner is not",
 )
 def test_the_whole_sequence_against_real_accelerate():
