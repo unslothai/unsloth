@@ -151,6 +151,8 @@ interface ModelSelectorProps {
   placeholder?: string;
   /** Offer linked instances beside On Device. Only the chat and Images pickers pass this. */
   linkedPicker?: LinkedPickerKind;
+  /** Linked instance the selection runs on when its id doesn't say so (an Images pick). */
+  linkedMachine?: string | null;
 }
 
 function ModelSelectorTrigger({
@@ -782,6 +784,7 @@ export function ModelSelector({
   placeholder,
   loaded,
   linkedPicker,
+  linkedMachine,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -841,7 +844,7 @@ export function ModelSelector({
     return all;
   }, [externalModels, loraModels, models]);
 
-  const currentModel = useMemo(() => {
+  const selectedModel = useMemo(() => {
     if (!selected) return undefined;
     // A cached vendor copy loads for its unsloth mirror; name it by the mirror's option.
     const mirrorId =
@@ -902,6 +905,15 @@ export function ModelSelector({
     externalConnections,
     t,
   ]);
+
+  const currentModel = useMemo(() => {
+    if (!selectedModel || !linkedMachine) return selectedModel;
+    return {
+      ...selectedModel,
+      description: `@${linkedMachine}`,
+      icon: <HugeiconsIcon icon={CloudServerIcon} className="size-4" />,
+    };
+  }, [selectedModel, linkedMachine]);
 
   function handleSelect(id: string, meta: ModelSelectorChangeMeta) {
     if (onValueChange) {

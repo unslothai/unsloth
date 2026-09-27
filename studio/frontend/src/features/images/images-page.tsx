@@ -66,6 +66,10 @@ import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
+import {
+  refreshLinkedMachines,
+  useLinkedMachinesStore,
+} from "@/features/model-picker/linked/linked-machines";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import {
@@ -2323,6 +2327,16 @@ export function ImagesPage({
     [],
   );
 
+  const [imagesMachine, setImagesMachineState] = useState(getImagesMachine);
+  const imagesMachineName = useLinkedMachinesStore((state) =>
+    imagesMachine
+      ? state.instances.find((i) => i.id === imagesMachine)?.name
+      : undefined,
+  );
+  useEffect(() => {
+    if (imagesMachine) void refreshLinkedMachines();
+  }, [imagesMachine]);
+
   const refreshStatus = useCallback(async () => {
     const ticket = ++statusTicket.current;
     try {
@@ -3368,6 +3382,7 @@ export function ImagesPage({
       const machine = pickMeta.linkedInstanceId ?? null;
       if (machine !== getImagesMachine()) {
         setImagesMachine(machine);
+        setImagesMachineState(machine);
         void refreshStatus();
       }
       const meta: ModelSelectorChangeMeta = machine
@@ -4613,6 +4628,7 @@ export function ImagesPage({
             ) : (
               <ModelSelector
                 linkedPicker="image"
+                linkedMachine={imagesMachineName}
                 triggerDataTour="images-model"
                 models={imageModels}
                 value={status?.loaded ? status.repo_id ?? undefined : undefined}

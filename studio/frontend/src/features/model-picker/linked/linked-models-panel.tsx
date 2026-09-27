@@ -30,6 +30,7 @@ import {
   CapabilityScope,
   ModelRow,
 } from "../components/model-selector/pickers";
+import { detectCapabilities } from "../components/model-selector/model-capabilities";
 import type { ModelSelectorChangeMeta } from "../components/model-selector/types";
 import {
   linkedCachedModels,
