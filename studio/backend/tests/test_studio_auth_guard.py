@@ -2387,6 +2387,18 @@ def test_a_return_reopens_the_directory_it_lands_in(studio_home):
         assert tools._references_studio_credential_here(ordinary, workdir) is False, ordinary
 
 
+def test_two_self_referential_assignments_in_one_quoted_string_do_not_hang(studio_home):
+    # Mis-parsed `VAR=$VAR` pairs inside one quoted word used to expand forever in the assignment
+    # pre-scan and wedge the backend; ordinary logging commands must classify quickly.
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    for ordinary in (
+        'echo "hb=$hb fl=$fl"',
+        "echo 'A=$A B=$B'",
+        'echo "x=$x y=$y"',
+    ):
+        assert tools._references_studio_credential_here(ordinary, workdir) is False, ordinary
+
+
 def test_every_home_variable_is_checked_before_the_expansion(studio_home):
     home = studio_home
     # The expansion rewrites all of the studio-home names from their last assignment, so one name
