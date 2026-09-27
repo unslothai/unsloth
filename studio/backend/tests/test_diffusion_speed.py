@@ -2015,6 +2015,30 @@ def test_a_tiled_dit_decode_stays_eager_unless_the_compile_is_forced(monkeypatch
     assert calls["compiled"] == (2 if forced else 1)
 
 
+@pytest.mark.parametrize("offload_active", [False, True])
+def test_vae_decode_compile_fallback_relayouts_an_eager_16bit_decode(monkeypatch, offload_active):
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    _stub_lazy_compile(monkeypatch, lambda: _BackendCompilerFailed("LoweringException"))
+    torch = sys.modules["torch"]
+    pipe = _Pipe(with_compile = True)
+    pipe.vae.dtype = "torch.bfloat16"
+    applied = apply_speed_optims(
+        pipe,
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_MAX,
+        offload_active = offload_active,
+    )
+    assert applied["compiled_vae_decode"] is True
+    assert pipe.vae.mem_format == torch.channels_last
+    assert pipe.vae.decode(1) == 1
+    assert pipe.vae._unsloth_compiled_decode is False
+    assert pipe.vae.mem_format == (
+        torch.channels_last if offload_active else torch.contiguous_format
+    )
+
+
 @pytest.mark.parametrize("kind", ["runtime", "oom"])
 def test_vae_decode_non_compile_errors_are_not_swallowed(monkeypatch, kind):
     def failure():

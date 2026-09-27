@@ -451,6 +451,14 @@ def apply_speed_optims(
         pipe, target, applied["compiled_vae_decode"], offload_active
     ):
         applied["channels_last"] = not _vae_contiguous(pipe, logger)
+    elif applied["compiled_vae_decode"] and not _channels_last_decode_wins(
+        pipe, target, False, offload_active
+    ):
+        # A decode compile that fails at first call falls back eager: relayout then.
+        try:
+            pipe.vae._unsloth_eager_contiguous = True
+        except Exception:  # noqa: BLE001
+            pass
 
     if mode == SPEED_MAX:
         if on_cuda:
@@ -1121,6 +1129,12 @@ def _guard_compiled_decode(
                         del vae.decode
                 except Exception:  # noqa: BLE001 - `failed` still routes this wrapper to eager
                     pass
+                if getattr(vae, "_unsloth_eager_contiguous", False):
+                    try:
+                        import torch
+                        vae.to(memory_format = torch.contiguous_format)
+                    except Exception:  # noqa: BLE001 - optimisation only
+                        pass
                 if logger is not None:
                     logger.warning(
                         "diffusion.speed: torch.compile failed on the VAE decode (%s); decoding eager",
