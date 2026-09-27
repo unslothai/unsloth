@@ -513,6 +513,7 @@ def _scratch(kind, device, numel, dtype):
 # UNSLOTH_BNB_TRITON=0 keeps the bitsandbytes ctypes path.
 _USE_NF4_KERNELS = False
 _TRITON_GEMV_EAGER = False
+_is_compiling = torch.compiler.is_compiling
 if (
     DEVICE_TYPE in ("cuda", "hip")
     and HAS_CUDA_STREAM
@@ -961,8 +962,11 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         absmax, shape, dtype, blocksize, stats, code2, absmax2, offset, blocksize2 = (
             _unpack_quant_state(quant_state)
         )
+        if shape[1] % blocksize != 0:
+            # The gemv kernels assume each weight row starts a new quantization block.
+            return torch_matmul(X, fast_dequantize(W, quant_state).t(), out = out)
         device = W.device
-        CUDA_STREAM = _get_tensor_stream(W)
+        CUDA_STREAM = c_void_p(_gpu_getCurrentRawStream(device.index))
 
         bout = shape[0]
 
@@ -1038,14 +1042,14 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
     ):
         if quant_state is None:
             return torch_matmul(X, W, out = out)
+        if not _USE_NF4_KERNELS or not (_TRITON_GEMV_EAGER or _is_compiling()):
+            return _fast_gemv_ctypes(X, W, quant_state, out)
         absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2 = (
             _unpack_quant_state(quant_state)
         )
         if shape[1] % blocksize != 0:
-            # Both gemv kernels assume each weight row starts a new quantization block.
+            # The gemv kernels assume each weight row starts a new quantization block.
             return torch_matmul(X, fast_dequantize(W, quant_state).t(), out = out)
-        if not _USE_NF4_KERNELS or not (_TRITON_GEMV_EAGER or torch.compiler.is_compiling()):
-            return _fast_gemv_ctypes(X, W, quant_state, out)
         try:
             return gemv_nf4(
                 X,
