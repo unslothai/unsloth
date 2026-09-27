@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Gemma / Gemma2 inputs are scaled by sqrt(hidden_size) exactly once.
-
-From transformers 5.4.0 the embedding module applies the scale itself (an `embed_scale` buffer);
-before that the model forward did. Unsloth's fast forwards used to scale unconditionally, so on
-5.4+ the embeddings were scaled twice and the models produced garbage.
-"""
+"""Gemma / Gemma2 inputs are scaled by sqrt(hidden_size) exactly once, on every transformers version."""
 
 import types
 
@@ -29,7 +24,6 @@ def test_embedding_applies_scale_detection():
     assert embedding_applies_scale(torch.nn.Embedding(4, 2)) is False
     assert embedding_applies_scale(_Scaled()) is True
     assert embedding_applies_scale(None) is False
-    # PEFT LoRA and modules_to_save wrappers.
     assert embedding_applies_scale(types.SimpleNamespace(base_layer = _Scaled())) is True
     assert embedding_applies_scale(types.SimpleNamespace(original_module = _Scaled())) is True
     assert (
@@ -39,7 +33,6 @@ def test_embedding_applies_scale_detection():
 
 @pytest.mark.parametrize("arch", ["gemma", "gemma2"])
 def test_detection_tracks_installed_transformers(arch):
-    # Drift guard: the installed Gemma embedding either carries embed_scale or it does not.
     module = pytest.importorskip(f"transformers.models.{arch}.modeling_{arch}")
     config_cls = getattr(module, "GemmaConfig" if arch == "gemma" else "Gemma2Config", None)
     if config_cls is None:

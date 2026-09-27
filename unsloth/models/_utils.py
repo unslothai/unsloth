@@ -3993,12 +3993,7 @@ def _accelerate_execution_device(module):
 
 
 def embedding_applies_scale(embedding) -> bool:
-    """True if the input embedding already multiplies by sqrt(hidden_size) itself.
-
-    Gemma and Gemma2 moved the normalizer into GemmaTextScaledWordEmbedding / Gemma2TextScaledWordEmbedding
-    (an `embed_scale` buffer) in transformers 5.4.0; before that the model forward applied it. Looks through
-    PEFT wrappers (`base_layer`, `original_module`).
-    """
+    """True if the embedding applies sqrt(hidden_size) itself (Gemma / Gemma2 from transformers 5.4.0), through PEFT wrappers."""
     for _ in range(4):
         if embedding is None:
             return False

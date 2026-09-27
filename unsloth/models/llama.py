@@ -970,7 +970,6 @@ def LlamaModel_fast_forward(
 
     train_embed_tokens = self.embed_tokens.weight.requires_grad
 
-    # From transformers 5.4.0 the Gemma embedding applies the normalizer itself.
     if IS_GEMMA and not embedding_applies_scale(self.embed_tokens):
         normalizer = torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
 
