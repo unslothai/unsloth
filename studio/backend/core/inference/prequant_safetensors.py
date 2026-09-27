@@ -101,7 +101,19 @@ def _torchao_helpers() -> Optional[tuple]:
         )
     except Exception:  # noqa: BLE001 - torchao absent, too old, or the module moved
         return None
+    # 0.14 has this module but no Int8Tensor: unflatten fails (KeyError '_data') after planning.
+    if _version_tuple(_torchao_version()) < MIN_TORCHAO_VERSION:
+        return None
     return flatten_tensor_state_dict, unflatten_tensor_state_dict
+
+
+def _version_tuple(version: Optional[str]) -> tuple:
+    """Unparseable reads as new enough (the feature import decides)."""
+    try:
+        parts = str(version).split("+")[0].split(".")
+        return (int(parts[0]), int(parts[1]))
+    except Exception:  # noqa: BLE001
+        return (999, 0)
 
 
 def _torchao_version() -> Optional[str]:
@@ -285,6 +297,47 @@ def _drop_field(value: Any, name: str, removed: list) -> Any:
     return value
 
 
+def _header_without_inert_tensor_field(
+    header: dict, tensors: dict, name: str, *, path: str
+) -> Optional[dict]:
+    import torch
+
+    pruned = dict(header)
+    victims = []
+    for key, value in header.items():
+        if key in (UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY, UNSLOTH_ROOT_KEYS_KEY):
+            continue
+        try:
+            parsed = json.loads(value)
+        except Exception:  # noqa: BLE001 - not every header entry is JSON
+            continue
+        names = parsed.get("_tensor_data_names") if isinstance(parsed, dict) else None
+        if not isinstance(names, list) or name not in names or "." not in key:
+            continue
+        module_fqn, weight_name = key.rsplit(".", 1)
+        flat_key = f"{module_fqn}._{weight_name}_{name}"
+        tensor = tensors.get(flat_key)
+        if tensor is None:
+            raise ValueError(
+                f"{path} lists {name!r} for {key} but has no {flat_key!r} tensor; the checkpoint "
+                "is incomplete or was edited"
+            )
+        if bool(torch.any(tensor != 0)):
+            raise ValueError(
+                f"{path} records a non-zero {name!r} for {key}, which this torchao "
+                f"({_torchao_version() or 'unknown'}) cannot construct. Upgrade torchao to read "
+                "this checkpoint."
+            )
+        parsed["_tensor_data_names"] = [n for n in names if n != name]
+        pruned[key] = json.dumps(parsed)
+        victims.append(flat_key)
+    if not victims:
+        return None
+    for flat_key in victims:
+        tensors.pop(flat_key, None)
+    return pruned
+
+
 def _header_without_unconstructible_fields(
     unflatten: Any,
     tensors: Any,
@@ -334,7 +387,13 @@ def _header_without_unconstructible_fields(
                     continue
                 pruned[key] = json.dumps(_drop_field(parsed, name, removed))
             if not removed:
-                break
+                # Tensor field, e.g. 0.18's all-zero ``zero_point`` that 0.16 cannot take.
+                pruned = _header_without_inert_tensor_field(header, tensors, name, path = path)
+                if pruned is None:
+                    break
+                dropped.append(name)
+                header = pruned
+                continue
             live = [v for v in removed if v not in _INERT_FIELD_VALUES]
             if live:
                 raise ValueError(
