@@ -285,7 +285,18 @@ try {
     Check "with no venv and no system Python the probe finds nothing" ($null -eq (Get-StudioEarlyPython))
     Check "and it recorded that the venv was unknown when it looked" (
         $script:StudioEarlyPythonProbedWithoutVenv -eq $true)
+    $global:StudioHome = $tmp
+    $global:StudioRedirectMode = "env"
     $global:VenvDir = $venvHome
+    Check "a custom home that is not yet Unsloth's does not run its venv interpreter" ($null -eq (Get-StudioEarlyPython))
+    $script:StudioEarlyPythonProbed = $false
+    [System.IO.File]::WriteAllText((Join-Path $venvHome ".unsloth-studio-owned"), "")
+    Check "a custom home carrying the ownership marker does" (
+        "$(Get-StudioEarlyPython)" -like ("*" + $venvBin + "*"))
+    Remove-Item -LiteralPath (Join-Path $venvHome ".unsloth-studio-owned") -Force
+    $script:StudioEarlyPythonProbed = $false
+    $script:StudioEarlyPython = $null
+    $global:StudioRedirectMode = "default"
     $found = Get-StudioEarlyPython
     Check "once the venv directory is known the venv interpreter is found after all" (
         -not [string]::IsNullOrWhiteSpace($found))
@@ -312,7 +323,7 @@ try {
     ${function:Get-StudioEarlyPython} = $savedFinder2
     Remove-Item Function:Test-Path -ErrorAction SilentlyContinue
     Remove-Item Function:Get-Command -ErrorAction SilentlyContinue
-    Remove-Variable -Name VenvDir -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable -Name VenvDir, StudioHome, StudioRedirectMode -Scope Global -ErrorAction SilentlyContinue
     $script:ResolveCalls = 0
     $savedInvoke = ${function:Invoke-StudioEarlyPython}
     function Invoke-StudioEarlyPython { param($Exe, $Path, $TimeoutMs) $script:ResolveCalls++; return $Path }
