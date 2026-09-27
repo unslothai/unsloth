@@ -347,10 +347,77 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             p = tl.where(cols < S, tl.exp(x - m_row) * inv, 0.0)
             tl.store(p_ptr + row * P_STRIDE + cols, p.to(p_ptr.dtype.element_ty), mask = cols < P_STRIDE)
 
+    @triton.jit
+    def _dup_up_add(
+        o_ptr, x_ptr, C, T_o, H_o, W_o, t_off, repeats,
+        osb, osc, ost, osh, osw, xsb, xsc, xst, xsh, xsw,
+        FT: tl.constexpr, FS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
+    ):  # fmt: skip
+        # o[b, c, t, h, w] += DupUp3D(x)[b, c, t + t_off, h, w]: repeat_interleave + depth-to-space, gathered in place
+        pid_p = tl.program_id(0)
+        bt = tl.program_id(1)
+        pid_c = tl.program_id(2)
+        t = bt % T_o
+        b = bt // T_o
+        p = pid_p * BLOCK_P + tl.arange(0, BLOCK_P)
+        pm = p < H_o * W_o
+        ho = p // W_o
+        wo = p - ho * W_o
+        c = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+        cm = c < C
+        m = pm[:, None] & cm[None, :]
+        tt = t + t_off
+        ti = tt // FT
+        a = tt - ti * FT
+        hi = ho // FS
+        i = ho - hi * FS
+        wi = wo // FS
+        j = wo - wi * FS
+        k = ((c[None, :] * FT + a) * FS + i[:, None]) * FS + j[:, None]
+        src = k // repeats
+        x_off = (b.to(tl.int64) * xsb + ti.to(tl.int64) * xst + (hi.to(tl.int64) * xsh + wi.to(tl.int64) * xsw)[:, None]
+                 + src.to(tl.int64) * xsc)  # fmt: skip
+        o_off = (b.to(tl.int64) * osb + t.to(tl.int64) * ost + (ho.to(tl.int64) * osh + wo.to(tl.int64) * osw)[:, None]
+                 + c.to(tl.int64)[None, :] * osc)  # fmt: skip
+        xv = tl.load(x_ptr + x_off, mask = m, other = 0.0).to(tl.float32)
+        ov = tl.load(o_ptr + o_off, mask = m, other = 0.0).to(tl.float32)
+        tl.store(o_ptr + o_off, (ov + xv).to(o_ptr.dtype.element_ty), mask = m)
+
+    @triton.jit
+    def _up_nearest2x(
+        x_ptr, out_ptr, C, T_o, H, W, xsb, xsc, xst, xsh, xsw,
+        INTERLEAVE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
+    ):  # fmt: skip
+        # out (B*T_o, 2H, 2W, C) channels-last = nearest 2x of x, where with INTERLEAVE x is Wan's time_conv output
+        # (B, 2C, T_o/2, H, W) and frame 2t+j takes channels [jC, (j+1)C): the reshape/stack/permute done by gather
+        pid_p = tl.program_id(0)
+        bt = tl.program_id(1)
+        pid_c = tl.program_id(2)
+        t = bt % T_o
+        b = bt // T_o
+        p = pid_p * BLOCK_P + tl.arange(0, BLOCK_P)
+        pm = p < 4 * H * W
+        ho = p // (2 * W)
+        wo = p - ho * (2 * W)
+        c = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+        cm = c < C
+        m = pm[:, None] & cm[None, :]
+        if INTERLEAVE:
+            ti = t // 2
+            ch = (t - ti * 2) * C + c
+        else:
+            ti = t
+            ch = c
+        x_off = (b.to(tl.int64) * xsb + ti.to(tl.int64) * xst
+                 + ((ho // 2).to(tl.int64) * xsh + (wo // 2).to(tl.int64) * xsw)[:, None] + ch.to(tl.int64)[None, :] * xsc)  # fmt: skip
+        v = tl.load(x_ptr + x_off, mask = m, other = 0.0)
+        o_off = (bt.to(tl.int64) * (4 * H * W) + p.to(tl.int64))[:, None] * C + c[None, :]
+        tl.store(out_ptr + o_off, v, mask = m)
+
     return types.SimpleNamespace(
         gn_partials = _gn_partials, gn_combine = _gn_combine, gn_apply = _gn_apply, rms_act = _rms_act,
         bias_residual = _bias_residual, dcae_up_add = _dcae_up_add,
-        softmax_rows = _softmax_rows,
+        softmax_rows = _softmax_rows, dup_up_add = _dup_up_add, up_nearest2x = _up_nearest2x,
     )
 
 
@@ -1028,6 +1095,106 @@ def _fast_rms_act(norm: Any) -> Any:
     return fast
 
 
+def dup_up_add(out: Any, x: Any, dup: Any, first_chunk: bool) -> Any:
+    """``out + DupUp3D(x, first_chunk)`` added into ``out`` (a fresh tensor) without materialising the shortcut."""
+    k = _kernels()
+    ft, fs, rep = int(dup.factor_t), int(dup.factor_s), int(dup.repeats)
+    b, c, t_o, h_o, w_o = out.shape
+    t_off = ft - 1 if first_chunk else 0
+    if (x.shape[2] * ft - t_off, x.shape[3] * fs, x.shape[4] * fs) != (t_o, h_o, w_o) or c != dup.out_channels:
+        raise ValueError("dup_up_add: shape mismatch")
+    block_c = min(128, _next_pow2(c))
+    block_p = max(1, 4096 // block_c)
+    grid = ((h_o * w_o + block_p - 1) // block_p, b * t_o, (c + block_c - 1) // block_c)
+    k.dup_up_add[grid](
+        out, x, c, t_o, h_o, w_o, t_off, rep, *out.stride(), *x.stride(),
+        FT = ft, FS = fs, BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
+    )  # fmt: skip
+    return out
+
+
+def up_nearest2x(x: Any, interleave: bool) -> Any:
+    """(B*T', C, 2H, 2W) channels-last nearest 2x upsample of a (B, C[*2], T, H, W) tensor; ``interleave`` also does
+    Wan's time_conv (B, 2C, T) -> (B, C, 2T) frame interleave. ``nearest-exact`` == ``nearest`` at an exact 2x."""
+    torch = _torch()
+    k = _kernels()
+    b, c2, t, h, w = x.shape
+    c = c2 // 2 if interleave else c2
+    t_o = 2 * t if interleave else t
+    out = torch.empty((b * t_o, 2 * h, 2 * w, c), dtype = x.dtype, device = x.device)
+    block_c = min(128, _next_pow2(c))
+    block_p = max(1, 4096 // block_c)
+    grid = ((4 * h * w + block_p - 1) // block_p, b * t_o, (c + block_c - 1) // block_c)
+    k.up_nearest2x[grid](
+        x, out, c, t_o, h, w, *x.stride(), INTERLEAVE = interleave, BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4
+    )
+    return out.permute(0, 3, 1, 2), t_o
+
+
+def _fast_wan_resample(mod: Any) -> Any:
+    import torch.nn.functional as F
+
+    conv = mod.resample[1]
+
+    def fast(x: Any, feat_cache: Any = None, feat_idx: Any = None) -> Any:
+        if feat_idx is None:
+            feat_idx = [0]
+        b = x.shape[0]
+        interleave = False
+        y = x
+        if mod.mode == "upsample3d" and feat_cache is not None:
+            idx = feat_idx[0]
+            if feat_cache[idx] is None:
+                feat_cache[idx] = "Rep"
+            else:
+                prev = None if isinstance(feat_cache[idx], str) else feat_cache[idx]
+                y, new = causal_conv(mod.time_conv, x, prev)
+                feat_cache[idx] = new
+                interleave = True
+            feat_idx[0] += 1
+        up, t_o = up_nearest2x(y, interleave)
+        out = F.conv2d(up, conv.weight, conv.bias, conv.stride, conv.padding)
+        return out.view(b, t_o, out.shape[1], out.shape[2], out.shape[3]).permute(0, 2, 1, 3, 4)
+
+    return fast
+
+
+def _wan_resample_ok(mod: Any) -> bool:
+    torch = _torch()
+    seq = getattr(mod, "resample", None)
+    return (
+        getattr(mod, "mode", None) in ("upsample2d", "upsample3d")
+        and isinstance(seq, torch.nn.Sequential)
+        and len(seq) == 2
+        and isinstance(seq[0], torch.nn.Upsample)
+        and seq[0].mode in ("nearest", "nearest-exact")
+        and tuple(float(f) for f in (seq[0].scale_factor or ())) == (2.0, 2.0)
+        and isinstance(seq[1], torch.nn.Conv2d)
+        and (mod.mode == "upsample2d" or _conv_kind(getattr(mod, "time_conv", None)) == "3d")
+    )
+
+
+def _fast_wan_residual_up(block: Any) -> Any:
+    def fast(x: Any, feat_cache: Any = None, feat_idx: Any = None, first_chunk: bool = False) -> Any:
+        if feat_idx is None:
+            feat_idx = [0]
+        x_in = x  # the stock ``x.clone()`` guards nothing: no block below writes its input
+        for resnet in block.resnets:
+            x = resnet(x, feat_cache = feat_cache, feat_idx = feat_idx) if feat_cache is not None else resnet(x)
+        if block.upsampler is not None:
+            if feat_cache is not None:
+                x = block.upsampler(x, feat_cache = feat_cache, feat_idx = feat_idx)
+            else:
+                x = block.upsampler(x)
+        if block.avg_shortcut is not None:
+            if x.data_ptr() == x_in.data_ptr():
+                x = x.clone()
+            x = dup_up_add(x, x_in, block.avg_shortcut, first_chunk)
+        return x
+
+    return fast
+
+
 def install_wan_vae(vae: Any, logger: Any = None) -> int:
     """Patch the residual blocks, causal convs and output heads of a Wan-lineage VAE. Returns patch count."""
     torch = _torch()
@@ -1057,6 +1224,12 @@ def install_wan_vae(vae: Any, logger: Any = None) -> int:
             name = type(module).__name__
             if name.endswith("ResidualBlock") and _wan_resblock_fusable(module):
                 _guard(module, _fast_wan_resblock(module), _stock_forward(module), "residual block", logger)
+                n += 1
+            elif name.endswith("ResidualUpBlock") and hasattr(module, "avg_shortcut") and hasattr(module, "resnets"):
+                _guard(module, _fast_wan_residual_up(module), _stock_forward(module), "residual up block", logger)
+                n += 1
+            elif name.endswith("Resample") and _wan_resample_ok(module):
+                _guard(module, _fast_wan_resample(module), _stock_forward(module), "resample", logger)
                 n += 1
             elif (
                 name.endswith("AttentionBlock")

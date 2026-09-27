@@ -142,6 +142,21 @@ def test_wan_fused_matches_stock_across_chunks(tiled, monkeypatch):
 
 
 @needs_cuda
+def test_wan22_residual_decoder_fused_matches_stock():
+    # Wan-2.2 5B layout: residual up blocks (DupUp3D shortcut), patch_size 2, temporal-upsample resamples
+    from diffusers import AutoencoderKLWan
+
+    torch.manual_seed(0)
+    vae = AutoencoderKLWan(
+        base_dim = 32, decoder_base_dim = 32, z_dim = 8, dim_mult = [1, 2, 2, 2], num_res_blocks = 1, in_channels = 12,
+        out_channels = 12, is_residual = True, patch_size = 2, scale_factor_spatial = 16,
+        latents_mean = [0.0] * 8, latents_std = [1.0] * 8,
+    ).cuda().half().eval()  # fmt: skip
+    z = torch.randn(1, 8, 3, 6, 8, device = "cuda", dtype = torch.float16)
+    _check(vae, z, min_psnr = 45)
+
+
+@needs_cuda
 def test_qwenimage_single_frame_fused_matches_stock():
     from diffusers import AutoencoderKLQwenImage
 
