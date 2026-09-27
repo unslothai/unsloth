@@ -322,8 +322,8 @@ function DropdownMenuSubContent({
   // With alignEnd, alignOffset applies from the bottom edge.
   const resolvedAlignOffset =
     endAligned && endShift !== null ? endShift - (alignOffset ?? 0) : alignOffset;
-  const hidden =
-    (isMobile && contentWidth === 0) || (endAligned && endShift === null);
+  // Transparent, not hidden, while measuring: hidden content misses Radix's keyboard autofocus.
+  const measuring = endAligned && endShift === null;
   return (
     // Portaled like DropdownMenuContent: rendered inline, the fixed popper
     // wrapper is a descendant of the parent menu's scroll container, so any
@@ -336,10 +336,13 @@ function DropdownMenuSubContent({
         alignOffset={resolvedAlignOffset}
         style={{
           ...style,
-          visibility: hidden ? "hidden" : style?.visibility,
+          visibility:
+            isMobile && contentWidth === 0 ? "hidden" : style?.visibility,
         }}
         className={cn(
           "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 bg-popover text-popover-foreground min-w-36 max-w-[calc(100vw-32px)] rounded-lg p-1 duration-100 z-50 origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden",
+          // !important so the fade-in animation cannot reveal it early.
+          measuring && "opacity-0!",
           className,
         )}
         {...props}
