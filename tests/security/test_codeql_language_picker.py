@@ -29,7 +29,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _script() -> str:
-    doc = yaml.safe_load(WORKFLOW.read_text())
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
     return doc["jobs"]["changes"]["steps"][0]["run"]
 
 
