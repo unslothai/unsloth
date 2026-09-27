@@ -147,3 +147,13 @@ def test_a_broken_backport_never_fails_the_compile(monkeypatch):
     monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
     vae = types.SimpleNamespace(decode = lambda x: x)
     assert ds_mod._compile_vae_decode(types.SimpleNamespace(vae = vae), None) is True
+
+
+def test_proof_available_on_a_patched_or_fixed_torch(monkeypatch):
+    assert bp.proof_available() is True
+    bp.uninstall()
+    monkeypatch.setattr(bp, "_stock_proves", lambda _cls: True)
+    assert bp.proof_available() is True
+    bp.uninstall()
+    monkeypatch.setenv(bp.BACKPORTS_ENV, "0")
+    assert bp.proof_available() is False

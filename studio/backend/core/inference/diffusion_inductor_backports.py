@@ -139,3 +139,9 @@ def uninstall() -> None:
 
 def is_installed() -> bool:
     return "original" in _STATE
+
+
+def proof_available() -> bool:
+    """Whether inductor can prove the stream-merge divisibility: stock torch 2.14+ or this backport installed."""
+    install()
+    return is_installed() or bool(_STATE.get("not_needed"))
