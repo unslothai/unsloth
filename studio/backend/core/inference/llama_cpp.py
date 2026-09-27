@@ -11234,7 +11234,6 @@ class LlamaCppBackend:
         try:
             from utils.hardware import gpu_query
 
-            # _nvlink_topology already caches this for the process and has its own refresh.
             result = gpu_query.run_nvidia_smi(
                 ["nvidia-smi", "topo", "-m"],
                 cache = False,
@@ -13230,8 +13229,7 @@ class LlamaCppBackend:
         try:
             from utils.hardware import gpu_query
 
-            # Decision-critical (placement / fit): always a new reading, never a cached one.
-            # When the CLI is hung it raises as before, so the MIG-aware NVML branch below runs.
+            # Placement / fit: never a cached reading. A hung CLI raises so the MIG-aware NVML branch runs.
             result = gpu_query.run_nvidia_smi(
                 [
                     "nvidia-smi",

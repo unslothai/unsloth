@@ -1,18 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""Cached, coalesced nvidia-smi reads (utils/hardware/gpu_query.py).
-
-Driven by a real executable named ``nvidia-smi`` on PATH whose answers, latency and exit
-status each test controls, so the child-process, timeout and parsing paths all run for real.
-The properties pinned here:
-
-* concurrent identical static or display queries start one child;
-* static and display reads keep their own TTL; decision-critical reads have none;
-* a Studio load/unload/train invalidation forces the next display read to fetch afresh;
-* a slow CLI holds a caller for its own timeout, not for the child's lifetime;
-* a fit check never gets a cached or shared reading, only its own new one;
-* failures and a missing CLI are passed through uncached, as before.
-"""
+"""Cached, coalesced nvidia-smi reads, driven by a real fake ``nvidia-smi`` on PATH."""
 
 from __future__ import annotations
 
@@ -124,7 +112,6 @@ def smi(tmp_path, monkeypatch):
 
 @pytest.fixture
 def llama_probe(monkeypatch):
-    """LlamaCppBackend._get_gpu_memory with only the nvidia-smi branch reachable."""
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: False))
     monkeypatch.setattr(
         LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/opt/llama-server")
@@ -144,7 +131,6 @@ def _free_by_index(result):
     return {d["index"]: round(d["vram_total_gb"] - d["vram_used_gb"], 2) for d in result["devices"]}
 
 
-# ── Classification ────────────────────────────────────────────────────────────
 
 
 def test_classification():
@@ -162,11 +148,9 @@ def test_classification():
     assert gpu_query.classify(live) == gpu_query.CRITICAL
     with gpu_query.display_reads():
         assert gpu_query.classify(live) == gpu_query.DISPLAY
-    # Anything unrecognised is treated as the strictest category.
     assert gpu_query.classify(["nvidia-smi", "-q"]) == gpu_query.CRITICAL
 
 
-# ── Coalescing ────────────────────────────────────────────────────────────────
 
 
 def test_concurrent_identical_display_queries_start_one_child(smi):
@@ -194,7 +178,6 @@ def test_concurrent_identical_display_queries_start_one_child(smi):
 
 
 def test_concurrent_fit_checks_each_run_the_cli(smi, llama_probe):
-    """A fit check never shares a reading: each one's sample is taken after it began."""
     smi.set(delay = 0.3)
     threads = [threading.Thread(target = llama_probe) for _ in range(4)]
     for t in threads:
@@ -205,9 +188,6 @@ def test_concurrent_fit_checks_each_run_the_cli(smi, llama_probe):
 
 
 def test_concurrent_fit_checks_never_answer_from_before_they_started(smi, llama_probe):
-    """Memory keeps changing under 16 threads of fit checks; each answer must be a reading
-    taken after its own call began (free memory here only grows, so it is at least the value
-    current at the call)."""
     lock = threading.Lock()
     current = [1000]
     stop = threading.Event()
@@ -257,7 +237,6 @@ def test_different_queries_are_not_merged(smi):
     assert smi.calls("--query-gpu") == 2
 
 
-# ── TTL per category ──────────────────────────────────────────────────────────
 
 
 def test_fit_checks_always_read_afresh(smi, llama_probe):
@@ -278,7 +257,6 @@ def test_display_reads_are_served_stale_while_one_child_refreshes(smi, monkeypat
     t0 = time.monotonic()
     with gpu_query.display_reads():
         stale = _free_by_index(nvidia.get_visible_gpu_utilization([0, 1]))
-    # Answered from the cache immediately, not after the 0.5 s child.
     assert time.monotonic() - t0 < 0.3
     assert stale == first
     deadline = time.monotonic() + 5
@@ -290,7 +268,6 @@ def test_display_reads_are_served_stale_while_one_child_refreshes(smi, monkeypat
 
 
 def test_display_ttl_does_not_leak_into_fit_checks(smi, monkeypatch):
-    """A cached display reading must never answer a critical read."""
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_DISPLAY_TTL", "60")
     with gpu_query.display_reads():
         nvidia.get_visible_gpu_utilization([0, 1])
@@ -311,14 +288,10 @@ def test_static_inventory_is_cached_until_redetection(smi):
     assert smi.calls("memory.total") == 1
     assert smi.calls("-L") == 1
     assert smi.calls("compute_cap") == 1
-    # The topology keeps its own process-lifetime cache with an explicit refresh, so the
-    # helper does not cache it a second time (only the bounded wait applies).
     assert smi.calls("topo") == 5
-    # A model load does not touch the static inventory...
     gpu_memory_events.invalidate_gpu_memory("load")
     nvidia.get_physical_gpu_inventory()
     assert smi.calls("memory.total") == 1
-    # ...a hardware re-detection does.
     gpu_query.invalidate_static("redetect")
     nvidia.get_physical_gpu_inventory()
     assert smi.calls("memory.total") == 2
@@ -337,7 +310,6 @@ def test_a_static_read_after_redetection_does_not_join_an_older_child(smi):
     assert smi.calls("-L") == 2
 
 
-# ── Invalidation on Studio's own load / unload / training ─────────────────────
 
 
 def test_display_after_a_load_reads_afresh_inside_the_ttl(smi, monkeypatch):
@@ -350,7 +322,6 @@ def test_display_after_a_load_reads_afresh_inside_the_ttl(smi, monkeypatch):
         smi.set_free(1024, 1024)  # the model now occupies the cards
 
     load_model()
-    # Well inside the TTL, but the load invalidated it: the panel shows the new low at once.
     with gpu_query.display_reads():
         after = _free_by_index(nvidia.get_visible_gpu_utilization([0, 1]))
     assert after == {0: 1.0, 1: 1.0}
@@ -358,7 +329,6 @@ def test_display_after_a_load_reads_afresh_inside_the_ttl(smi, monkeypatch):
 
 
 def test_studio_load_unload_and_training_methods_invalidate():
-    """The real entry points carry the invalidation decorator (outermost)."""
     from core.inference import diffusion, inference, orchestrator, video
     from core.inference import native_audio, sd_cpp_backend
     from core.rag import embed_llama_server
@@ -433,7 +403,6 @@ def test_fresh_reads_always_run_the_cli(smi):
 
 
 def test_a_fit_check_waits_its_whole_timeout_on_a_slow_driver(smi):
-    """A driver that answers slowly must still be heard, as before, even after a timeout."""
     smi.set(delay = 1.5)
     argv = ["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"]
     with pytest.raises(subprocess.TimeoutExpired):
@@ -443,12 +412,9 @@ def test_a_fit_check_waits_its_whole_timeout_on_a_slow_driver(smi):
     assert out.stdout.split() == ["0,", "180000", "1,", "170000"]
 
 
-# ── Slow / hung nvidia-smi ────────────────────────────────────────────────────
 
 
 def test_a_slow_cli_holds_the_caller_only_for_its_timeout(smi, monkeypatch):
-    """subprocess.run(timeout=5) waits for the killed child without a deadline; here the
-    caller gets its answer (or its TimeoutExpired) on time."""
     monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 3.0)
     smi.set(delay = 2.0)
     t0 = time.monotonic()
@@ -464,9 +430,6 @@ def test_a_slow_cli_holds_the_caller_only_for_its_timeout(smi, monkeypatch):
 
 
 def test_a_child_the_kernel_cannot_reap_does_not_hold_the_caller(monkeypatch):
-    """What the congested 8x B200 host did: subprocess.run(timeout=5) kills nvidia-smi and
-    then blocks in wait() until the driver lets the process die, 25-100 s later. Emulated
-    with a runner that only returns (raising TimeoutExpired, as run() does) after 12 s."""
     gpu_query.reset()
     monkeypatch.delenv("UNSLOTH_GPU_QUERY_CACHE", raising = False)
     monkeypatch.setenv("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
@@ -481,11 +444,8 @@ def test_a_child_the_kernel_cannot_reap_does_not_hold_the_caller(monkeypatch):
     for _ in range(2):
         t0 = time.monotonic()
         out = nvidia.get_visible_gpu_utilization([0, 1])
-        # The caller's own "unavailable" answer, as before, after its 5 s timeout (plus the
-        # 1 s reaping grace) rather than after the 12 s the stuck child takes to be reaped.
         assert out["available"] is False
         assert time.monotonic() - t0 < 7.0
-    # A fit check never shares a child, so each ran its own, as before.
     assert len(calls) == 2
     gpu_query.reset()
 
@@ -512,13 +472,11 @@ def test_slow_cli_never_answers_a_fit_check_from_an_old_reading(smi, llama_probe
     smi.set_free(1000, 1000)  # another process took nearly all of both GPUs
     smi.set(delay = 12.0)
     monkeypatch.setattr(gpu_query, "run_nvidia_smi", _with_timeout(gpu_query.run_nvidia_smi, 0.5))
-    # Nothing new to answer with: the caller's own fallback chain (here: none) decides, as before.
     assert llama_probe() == []
     assert gpu_query.stats()["stale_served"] == 0
 
 
 def test_a_fit_check_does_not_join_an_older_child(smi, monkeypatch):
-    """On a slow driver an in-flight child may describe memory from seconds ago."""
     monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 4.0)
     smi.set(delay = 3.0)
     argv = ["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"]
@@ -540,17 +498,13 @@ def test_no_stale_fit_answer_across_a_load(smi, llama_probe, monkeypatch):
     gpu_memory_events.invalidate_gpu_memory("load")
     smi.set(delay = 12.0)
     monkeypatch.setattr(gpu_query, "run_nvidia_smi", _with_timeout(gpu_query.run_nvidia_smi, 0.5))
-    # Nothing safe to serve: the caller's own fallback chain (here: none) decides.
     assert llama_probe() == []
 
 
 def test_a_hung_cli_leaves_llama_cpp_its_own_mig_aware_fallback(smi, llama_probe, monkeypatch):
-    """The CLI timing out must reach llama.cpp's NVML branch, which knows MIG slices and
-    CUDA_VISIBLE_DEVICES, exactly as before; nothing may answer in its place."""
     monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 4.0)
     slice_rows = [(0, 5000, 10240)]
     monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory_nvml", staticmethod(lambda: slice_rows))
-    # A generic whole-GPU NVML answer (what a stand-in in the helper would give) must not win.
     monkeypatch.setenv("UNSLOTH_NVIDIA_LIBRARY_PROBE", "1")
     whole_gpu = [{"index": 0, "memory_total_mib": 81920, "memory_free_mib": 70000}]
     monkeypatch.setattr(gpu_query, "_nvml_rows", lambda timeout: whole_gpu, raising = False)
@@ -567,7 +521,6 @@ def _with_timeout(fn, timeout):
     return wrapped
 
 
-# ── Failures pass through exactly as before ───────────────────────────────────
 
 
 def test_failing_cli_is_not_cached(smi):

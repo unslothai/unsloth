@@ -403,8 +403,7 @@ def get_backend_visible_gpu_info(
             "index_kind": "physical",
         }
         if rows is None:
-            # nvidia-smi exists but did not answer (timeout, non-zero exit): an unknown, never
-            # evidence that the cards are gone. The caller keeps its last good inventory.
+            # No answer is unknown, not "no cards": the caller keeps its last good inventory.
             out["probe_failed"] = True
         else:
             out["smi_absent"] = True

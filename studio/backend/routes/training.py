@@ -1319,7 +1319,6 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
     from utils.hardware import get_gpu_utilization, gpu_query
 
     # Off-loop: the first call blocks on detection while the warm is importing torch.
-    # A display poll: a reading a few seconds old is fine and spares the driver.
     with gpu_query.display_reads():
         return await asyncio.to_thread(get_gpu_utilization)
 

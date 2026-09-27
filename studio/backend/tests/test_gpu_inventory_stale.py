@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A slow or failing GPU probe must not turn a detected GPU into "No GPU detected".
-
-Settings > Resources reads /api/system, which reads get_backend_visible_gpu_info. On a
-congested driver nvidia-smi times out and the torch fallback's device queries fail with it,
-so the probe came back ``available: False`` and the page said no GPU on a host that had
-reported one a poll earlier. The last inventory that found devices is now kept (marked
-``stale``) until a probe answers again; only nvidia-smi answering with zero rows is taken
-as proof that there is no GPU.
-"""
+"""A slow or failing GPU probe must not turn a detected GPU into "No GPU detected"."""
 
 from __future__ import annotations
 
@@ -34,7 +26,6 @@ def _cuda_host(monkeypatch):
     monkeypatch.setattr(hw, "_repair_smi_visible_devices", lambda devices, ids: True)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     monkeypatch.setattr(hw, "_last_good_visible_info", {})
-    # The torch fallback fails along with the driver in every case below.
     monkeypatch.setattr(hw, "_torch_get_device_inventory", lambda idx: [])
     monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: None)
 

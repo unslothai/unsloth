@@ -717,7 +717,6 @@ class InferenceOrchestrator:
 
                 live_free: dict[int, float] = {}
                 total_by_index: dict[int, float] = {}
-                # Paired with the worker's own bytes under this fence: same instant, so no cache.
                 with gpu_query.fresh_reads():
                     _live_devices = get_visible_gpu_utilization().get("devices", [])
                 for device in _live_devices:

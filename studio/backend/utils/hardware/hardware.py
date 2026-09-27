@@ -69,7 +69,6 @@ def invalidate_detection() -> int:
     global DETECTION_EPOCH
     from . import gpu_query
 
-    # A re-detection can follow a driver reload or a MIG change: drop the cached inventory.
     gpu_query.invalidate_static("hardware re-detection")
     with _EPOCH_LOCK:
         DETECTION_EPOCH += 1
@@ -5852,17 +5851,13 @@ def _repair_smi_visible_devices(
     return all(dev.get("memory_total_gb") is not None for dev in devices)
 
 
-# The last inventory that found devices, per (device type, visibility mask). A slow or failing
-# probe (a congested driver makes nvidia-smi time out and CUDA device queries fail with it) must
-# not turn a GPU the host already reported into "No GPU detected": detection only widens.
+# Last inventory that found devices, per (device type, mask): a failing probe must not mean "no GPU".
 _last_good_visible_info: Dict[tuple, Dict[str, Any]] = {}
 _last_good_visible_lock = threading.Lock()
 
 
 def get_backend_visible_gpu_info() -> Dict[str, Any]:
-    """Backend-visible GPU inventory. When the probe comes back empty and nothing proves the
-    host has no GPU (nvidia-smi answering with zero rows is the only such proof), the last
-    inventory that found devices under the same mask is returned instead, marked ``stale``."""
+    """Backend-visible GPU inventory; an unproven empty probe returns the last one, marked ``stale``."""
     device = get_device()
     key = (
         str(device),
@@ -5894,7 +5889,6 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
     stale = copy.deepcopy(last)
     stale["stale"] = True
     for dev in stale.get("devices") or []:
-        # Capacity is static; live usage is not, so it reads unknown rather than old.
         for k in ("vram_used_gb", "vram_free_gb", "vram_utilization_pct"):
             if k in dev:
                 dev[k] = None
