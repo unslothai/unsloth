@@ -22,6 +22,8 @@ import torch
 import triton
 import triton.language as tl
 
+from .nf4 import _HAS_MUL_RN
+
 __all__ = [
     "gemv_nf4",
 ]
@@ -42,6 +44,7 @@ def _gemv_nf4_kernel(
     BLOCKSIZE: tl.constexpr,
     BLOCKSIZE2: tl.constexpr,
     NESTED: tl.constexpr,
+    USE_MUL_RN: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
@@ -76,10 +79,22 @@ def _gemv_nf4_kernel(
         blk = rows64[:, None] * blocks_per_row + (k0 // BLOCKSIZE + nbs)[None, :]
         if NESTED:
             q = tl.load(ABSMAX + blk, mask = bmask, other = 0).to(tl.int32)
-            # Two separate fp32 roundings, as fast_dequantize does (launched without FMA fusion).
-            a = tl.load(CODE2 + q, mask = bmask, other = 0.0) * tl.load(
-                ABSMAX2 + blk // BLOCKSIZE2, mask = bmask, other = 0.0
-            )
+            c2 = tl.load(CODE2 + q, mask = bmask, other = 0.0)
+            s2 = tl.load(ABSMAX2 + blk // BLOCKSIZE2, mask = bmask, other = 0.0)
+            # Two separate fp32 roundings, as fast_dequantize does. PTX mul.rn is never contracted
+            # into an FMA, so the scale is the same whether or not the compiled graph re-emits
+            # this kernel with fp fusion on.
+            if USE_MUL_RN:
+                a = tl.inline_asm_elementwise(
+                    "mul.rn.f32 $0, $1, $2;",
+                    "=r,r,r",
+                    [c2, s2],
+                    dtype = tl.float32,
+                    is_pure = True,
+                    pack = 1,
+                )
+            else:
+                a = c2 * s2
             a = a + offset
         else:
             a = tl.load(ABSMAX + blk, mask = bmask, other = 0.0)
@@ -118,10 +133,10 @@ def _launch(kernel, X, W, absmax, code2, absmax2, offset, code, out, N, K, block
         BLOCKSIZE = blocksize,
         BLOCKSIZE2 = blocksize2 if nested else 1,
         NESTED = nested,
+        USE_MUL_RN = _HAS_MUL_RN,
         BLOCK_N = block_n,
         BLOCK_K = block_k,
         num_warps = num_warps,
-        enable_fp_fusion = False,
     )
     return out
 

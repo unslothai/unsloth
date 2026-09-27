@@ -80,6 +80,72 @@ def _as_list(s):
     return [s.absmax, s.shape, s.dtype, s.blocksize, [s.offset, state2], s.quant_type, s.code]
 
 
+_CONTROL = {}
+
+
+def _torch_compiles_lora_exactly(backend):
+    """Some torch versions (2.7) decompose the in-place LoRA addmm_/addmv_ differently when
+    compiled, even on a plain bf16 weight with no 4bit op in sight. Measure that on a control so
+    compiled-vs-eager checks stay exact wherever torch itself is exact."""
+    if backend not in _CONTROL:
+        g = torch.Generator(device = DEVICE).manual_seed(1)
+        r = lambda *s: torch.randn(*s, dtype = torch.bfloat16, device = DEVICE, generator = g)
+        W, A, B, X, x = r(512, 256), r(8, 256), r(512, 8), r(32, 256), r(256)
+
+        def control(X, x):
+            out = X @ W.t()
+            out.addmm_(X @ A.t(), B.t(), alpha = 2.0)
+            v = W @ x
+            v.addmv_(B, A @ x, alpha = 2.0)
+            return out, v
+
+        torch._dynamo.reset()
+        compiled = torch.compile(control, fullgraph = True, backend = backend)(X, x)
+        torch._dynamo.reset()
+        _CONTROL[backend] = all(torch.equal(a, b) for a, b in zip(compiled, control(X, x)))
+    return _CONTROL[backend]
+
+
+_TRACES_PARAMS4BIT = []
+
+
+@torch.library.custom_op("unsloth_test::passthrough", mutates_args = ())
+def _passthrough(x: torch.Tensor) -> torch.Tensor:
+    return x.clone()
+
+
+@_passthrough.register_fake
+def _(x):
+    return torch.empty_like(x)
+
+
+def _dynamo_traces_params4bit():
+    """Older Dynamo (torch 2.7) cannot hand a Params4bit weight to any torch.library op (nor call
+    some of its methods) without a graph break, whatever the op does. There the fast_lora paths
+    can only be checked for correctness under torch.compile, not for a single graph. Probed with
+    a throwaway op so a regression in the 4bit ops cannot turn the full-graph checks off."""
+    if not _TRACES_PARAMS4BIT:
+        lin = bnb.nn.Linear4bit(64, 64, bias = False, quant_type = "nf4").to(DEVICE)
+        fn = lambda x: x + _passthrough(lin.weight)[0, 0] + lin.weight.t()[0, 0]
+        torch._dynamo.reset()
+        breaks = torch._dynamo.explain(fn)(torch.ones(1, device = DEVICE)).graph_break_count
+        _TRACES_PARAMS4BIT.append(breaks == 0)
+        torch._dynamo.reset()
+    return _TRACES_PARAMS4BIT[0]
+
+
+def _assert_compiled_matches(
+    compiled,
+    eager,
+    backend = "inductor",
+):
+    if _torch_compiles_lora_exactly(backend):
+        assert torch.equal(compiled, eager)
+    else:
+        err = ((compiled.float() - eager.float()).abs().max() / eager.float().abs().max()).item()
+        assert err < 2e-2, err
+
+
 def _bits(t):
     return t.contiguous().view(torch.int16 if t.element_size() == 2 else torch.int32)
 
@@ -356,13 +422,15 @@ def test_fast_lora_compiles_fullgraph(nf4_kernels, which):
     }[which]
     X = torch.randn(2, 16, 256, dtype = torch.bfloat16, device = DEVICE)
     eager = _fwd_bwd(model, fn, X)
-    explained = torch._dynamo.explain(fn)(X.clone().requires_grad_())
-    assert explained.graph_break_count == 0, explained.break_reasons
+    fullgraph = _dynamo_traces_params4bit()
+    if fullgraph:
+        explained = torch._dynamo.explain(fn)(X.clone().requires_grad_())
+        assert explained.graph_break_count == 0, explained.break_reasons
     torch._dynamo.reset()
-    compiled = _fwd_bwd(model, torch.compile(fn, fullgraph = True), X)
+    compiled = _fwd_bwd(model, torch.compile(fn, fullgraph = fullgraph), X)
     assert len(compiled) == len(eager)
     for a, b in zip(eager, compiled):
-        assert torch.equal(a, b)
+        _assert_compiled_matches(b, a)
 
 
 def test_primitives_compile_fullgraph(nf4_kernels):
@@ -372,16 +440,20 @@ def test_primitives_compile_fullgraph(nf4_kernels):
     A = torch.randn(8, 256, dtype = torch.bfloat16, device = DEVICE) * 0.02
     B = torch.randn(512, 8, dtype = torch.bfloat16, device = DEVICE) * 0.02
     cases = [
-        (lambda q: U.fast_dequantize(q, s, use_global_buffer = True) * 1, (q,)),
-        (lambda q: U.fast_dequantize(q.t(), s) * 1, (q,)),
-        (lambda x: U.fast_gemv(x, q, s) * 1, (X1,)),
-        (lambda x: U.matmul_lora(x, q, s, A, B, 2.0) * 1, (X,)),
+        (lambda q: U.fast_dequantize(q, s, use_global_buffer = True) * 1, (q,), True),
+        (lambda q: U.fast_dequantize(q.t(), s) * 1, (q,), True),
+        (lambda x: U.fast_gemv(x, q, s) * 1, (X1,), True),
+        (lambda x: U.matmul_lora(x, q, s, A, B, 2.0) * 1, (X,), False),
     ]
-    for fn, args in cases:
+    for fn, args, always_exact in cases:
         explained = torch._dynamo.explain(fn)(*args)
         assert explained.graph_break_count == 0, explained.break_reasons
         torch._dynamo.reset()
-        assert torch.equal(torch.compile(fn, fullgraph = True)(*args), fn(*args))
+        compiled, eager = torch.compile(fn, fullgraph = True)(*args), fn(*args)
+        if always_exact:
+            assert torch.equal(compiled, eager)
+        else:
+            _assert_compiled_matches(compiled, eager)
         torch._dynamo.reset()
 
 
@@ -392,10 +464,12 @@ def test_fast_linear_forward_compiles_fullgraph(nf4_kernels, bsz):
     X = torch.randn(bsz, 1, 256, dtype = torch.bfloat16, device = DEVICE)
     with torch.inference_mode():
         eager = fn(X).clone()
-        explained = torch._dynamo.explain(fn)(X)
-        assert explained.graph_break_count == 0, explained.break_reasons
+        fullgraph = _dynamo_traces_params4bit()
+        if fullgraph:
+            explained = torch._dynamo.explain(fn)(X)
+            assert explained.graph_break_count == 0, explained.break_reasons
         torch._dynamo.reset()
-        compiled = torch.compile(fn, fullgraph = True, backend = "aot_eager")(X)
+        compiled = torch.compile(fn, fullgraph = fullgraph, backend = "aot_eager")(X)
     # aot_eager: inductor may lower the bsz=1 LoRA addmv differently (one bf16 ulp); the 4bit ops
     # themselves are what this checks.
-    assert torch.equal(compiled, eager)
+    _assert_compiled_matches(compiled, eager, backend = "aot_eager")
