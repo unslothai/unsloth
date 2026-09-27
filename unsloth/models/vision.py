@@ -1717,6 +1717,26 @@ def _tolerate_dtype_cast_on_quantized_model(enabled):
         PreTrainedModel.to = original_to
 
 
+def _compressed_tensors_packed_int(quantization_config) -> bool:
+    """compressed-tensors `pack-quantized` (INT4/INT8 words): transformers can decompress it exactly."""
+    get = (
+        quantization_config.get
+        if isinstance(quantization_config, dict)
+        else (lambda key, default = None: getattr(quantization_config, key, default))
+    )
+    return str(get("format", "") or "").lower() == "pack-quantized"
+
+
+def _compressed_tensors_decompress_config():
+    from transformers import CompressedTensorsConfig
+
+    params = inspect.signature(CompressedTensorsConfig.__init__).parameters
+    # transformers 5.x: `dequantize`; 4.57: `run_compressed = False`.
+    if "dequantize" in params:
+        return CompressedTensorsConfig(dequantize = True)
+    return CompressedTensorsConfig(run_compressed = False)
+
+
 class FastBaseModel:
     @staticmethod
     @_offline_aware_load
@@ -2299,7 +2319,16 @@ class FastBaseModel:
                         f"Unsloth: transformers cannot load this `{quant_method}` checkpoint in process."
                     )
                 quantizer_kwargs = {}
-                if quant_method == "compressed-tensors" or quantizer is None:
+                if (
+                    quant_method == "compressed-tensors"
+                    and load_in_16bit
+                    and user_quantization_config is None
+                    and _compressed_tensors_packed_int(quantization_config)
+                ):
+                    # A 16-bit load of packed INT4/INT8 kept compressed-tensors' packed Linear (no `.weight`),
+                    # so LoRA injection failed; decompress to 16-bit like the FP8 `dequantize` path does.
+                    kwargs["quantization_config"] = _compressed_tensors_decompress_config()
+                elif quant_method == "compressed-tensors" or quantizer is None:
                     pass
                 else:
                     # Cannot dequantize, since gpt-oss-20b MXFP4 would become gpt-oss-20b-BF16.
