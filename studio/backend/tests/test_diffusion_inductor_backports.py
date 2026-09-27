@@ -84,7 +84,7 @@ def test_torch_that_already_proves_it_is_left_alone(monkeypatch):
 
 
 def test_stock_probe_matches_torch_version(monkeypatch):
-    """Regressed in 2.12.0 (pytorch#177051), fixed in 2.14.0 (pytorch#184566); the probe, not the version, decides."""
+    """Regressed in 2.12.0, fixed in 2.14.0; the probe, not the version, decides."""
     monkeypatch.undo()
     major_minor = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2])
     proves = bp._stock_proves(sizevars.SizeVarAllocator)

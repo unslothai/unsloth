@@ -400,7 +400,7 @@ def apply_speed_optims(
     # Near-lossless, not bit-identical, so never on "off" (returned above).
     applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
 
-    if on_cuda:
+    if on_cuda and not _cudnn_benchmark_pointless(pipe):
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
 
     if on_cuda:
@@ -506,9 +506,28 @@ def _vae_single_frame(pipe: Any, logger: Any) -> bool:
         return False
 
 
+# VAEs MEASURED slower in channels_last; they keep the contiguous layout. AutoencoderKLQwenImage21 (a 2D conv net with
+# channel RMS norms), 1024 decode on B200: 72.7 ms contiguous vs 89 ms channels_last.
+_VAE_CHANNELS_LAST_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
+
+
+# DiT pipelines whose only conv net is one of these VAEs: cudnn.benchmark MEASURED no steady gain and a re-tune on
+# every new resolution. AutoencoderKLQwenImage21, Qwen-Image-2.1 fp8 on B200: steady decode 75.8 ms off vs 77.8 ms on,
+# first decode at a new resolution 0.08-0.17 s off vs 0.74-1.86 s on (each new size, every session).
+_CUDNN_BENCHMARK_DENY_VAES: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
+
+
+def _cudnn_benchmark_pointless(pipe: Any) -> bool:
+    if _denoiser_unet(pipe) is not None:
+        return False
+    return type(getattr(pipe, "vae", None)).__name__ in _CUDNN_BENCHMARK_DENY_VAES
+
+
 def _vae_channels_last(pipe: Any, logger: Any) -> bool:
     vae = getattr(pipe, "vae", None)
     if vae is None or not hasattr(vae, "to"):
+        return False
+    if type(vae).__name__ in _VAE_CHANNELS_LAST_DENY:
         return False
     try:
         import torch
@@ -820,9 +839,11 @@ def compile_dynamic(transformer: Any, dynamic: Optional[bool]) -> Optional[bool]
     """The ``dynamic`` a DiT is actually compiled with, so compile-cache fingerprints key on the same value.
 
     dynamic=True makes even the constant segment starts symbolic, and on Qwen-Image-2.1 the attention output cat
-    (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction, which inductor
-    cannot split (CantSplit, every render failed). Automatic dynamic (None) compiles the first shapes static and only
-    generalises what actually varies: stable after ~3 recompiles, same numerics."""
+    (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction. torch 2.12 / 2.13
+    cannot prove that split exact (CantSplit, every render failed); ``diffusion_inductor_backports`` restores the proof,
+    after which dynamic=True compiles, but measured slower than automatic dynamic (Qwen-Image-2.1 fp8 1024px on B200:
+    +6 s cold, +1.5% per step). Automatic dynamic (None) plus ``diffusion_dynamic_text`` compiles once and did not
+    recompile across 6 prompt lengths and 3 resolutions, so it stays."""
     if dynamic and transformer is not None and _carries_torchao_weights(transformer):
         return None
     return dynamic
