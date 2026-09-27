@@ -69,3 +69,4 @@ class LinkedInstanceInfo(BaseModel):
     disk_total_gb: Optional[float] = None
     disk_free_gb: Optional[float] = None
     uptime_seconds: Optional[float] = None
+    image_model: Optional[str] = Field(None, description = "Image model loaded on the remote, if any")
