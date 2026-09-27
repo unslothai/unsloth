@@ -108,6 +108,7 @@ LOCK_CHAIN = (
     "Get-StudioNativeFinalPath",
     "Resolve-StudioLinkTarget",
     "Get-StudioSubstTarget",
+    "Get-ElevationState",
     "Get-StudioEarlyPython",
     "Invoke-StudioEarlyPythonScript",
     "Invoke-StudioEarlyPython",
