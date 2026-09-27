@@ -557,6 +557,32 @@ def test_a_read_after_a_hung_child_does_not_wait_on_it(smi, monkeypatch):
     assert time.monotonic() - t0 < 1.0
 
 
+def test_display_reads_without_stale_wait_for_a_new_reading(smi, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GPU_QUERY_DISPLAY_TTL", "0.2")
+    with gpu_query.display_reads(max_stale = 0):
+        first = _free_by_index(nvidia.get_visible_gpu_utilization([0, 1]))
+    time.sleep(0.4)
+    smi.set_free(1000, 1000)  # another process allocated; no Studio event
+    with gpu_query.display_reads(max_stale = 0):
+        after = _free_by_index(nvidia.get_visible_gpu_utilization([0, 1]))
+    assert after != first
+    assert smi.calls("--query-gpu") == 2
+
+
+def test_display_reads_without_stale_still_survive_a_hung_cli(smi, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GPU_QUERY_DISPLAY_TTL", "0")
+    with gpu_query.display_reads(max_stale = 0):
+        good = nvidia.get_visible_gpu_utilization([0, 1])
+    monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 4.0)
+    smi.set(delay = 12.0)
+    monkeypatch.setattr(gpu_query, "run_nvidia_smi", _with_timeout(gpu_query.run_nvidia_smi, 0.5))
+    t0 = time.monotonic()
+    with gpu_query.display_reads(max_stale = 0):
+        out = nvidia.get_visible_gpu_utilization([0, 1])
+    assert time.monotonic() - t0 < 2.0
+    assert out == good
+
+
 def test_an_older_answer_does_not_overwrite_a_newer_empty_one(smi, monkeypatch):
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_DISPLAY_TTL", "3600")
     argv = ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader"]

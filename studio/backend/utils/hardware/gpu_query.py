@@ -90,8 +90,9 @@ def _background_timeout() -> float:
     return _env_float("UNSLOTH_GPU_QUERY_BACKGROUND_TIMEOUT", 120.0)
 
 
-_display_mode: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "unsloth_gpu_query_display", default = False
+# None outside display_reads(); inside, the oldest reading (seconds) served while one refreshes.
+_display_mode: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "unsloth_gpu_query_display", default = None
 )
 _fresh_mode: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "unsloth_gpu_query_fresh", default = False
@@ -99,9 +100,12 @@ _fresh_mode: contextvars.ContextVar[bool] = contextvars.ContextVar(
 
 
 @contextlib.contextmanager
-def display_reads() -> Iterator[None]:
-    """Live reads may be seconds old. Never wrap anything that decides placement or fit."""
-    token = _display_mode.set(True)
+def display_reads(max_stale: float = _DISPLAY_MAX_STALE_S) -> Iterator[None]:
+    """Live reads may be seconds old. Never wrap anything that decides placement or fit.
+
+    ``max_stale`` caps the reading served while one refresh runs; a hung CLI may still get
+    the last good reading up to 60 s old."""
+    token = _display_mode.set(float(max_stale))
     try:
         yield
     finally:
@@ -125,7 +129,7 @@ def classify(argv: Sequence[str]) -> str:
     fields = _query_fields(argv)
     if fields and set(fields) <= _STATIC_FIELDS:
         return STATIC
-    return DISPLAY if _display_mode.get() else CRITICAL
+    return DISPLAY if _display_mode.get() is not None else CRITICAL
 
 
 def _query_fields(argv: Sequence[str]) -> list[str]:
@@ -419,7 +423,7 @@ def run_nvidia_smi(
             entry is not None
             and entry.result is not None
             and kind == DISPLAY
-            and now - entry.at <= _DISPLAY_MAX_STALE_S
+            and now - entry.at <= min(_display_mode.get() or 0.0, _DISPLAY_MAX_STALE_S)
             and entry.gen == _events.generation()
         )
     if serve_stale:

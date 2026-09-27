@@ -2120,7 +2120,12 @@ def _get_cached_system_gpu_info(
             import contextlib
 
             from utils.hardware import gpu_query
-            with contextlib.nullcontext() if refresh_memory else gpu_query.display_reads():
+
+            # Already behind a 10 s cache, so no stale-while-revalidate on top: a miss waits for a
+            # new (shared) reading; only a hung CLI falls back to the last good one.
+            with (
+                contextlib.nullcontext() if refresh_memory else gpu_query.display_reads(max_stale = 0)
+            ):
                 utilization_info = get_visible_gpu_utilization() or {"devices": []}
         except Exception as e:
             logger.debug(f"Failed to get GPU utilization info: {e}")
