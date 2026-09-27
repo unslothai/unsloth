@@ -29025,9 +29025,8 @@ async def produce_openai_chat_completions(
     if _continue_final_message(payload):
         gen_kwargs["continue_final_message"] = True
 
-    # ── Client-tool passthrough (safetensors + MLX) ──────────────
-    # Client tools (or tool-result history) without server-side tools: render
-    # tools into the template, generate one turn, heal text-form calls (#6801).
+    # Client-tool passthrough (safetensors + MLX): render client tools, generate one turn,
+    # heal text-form calls (#6801). A catalog the model cannot render is refused, as on GGUF.
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
     # Classified against the processor body above, before the server loop's own gate:
     # that gate reads the same flag, and deciding it here left the loop enabled on a
