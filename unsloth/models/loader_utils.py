@@ -1324,6 +1324,9 @@ def _compressed_tensors_fp8_block_size(module, weights):
         return None
     strategy = getattr(weights, "strategy", None)
     strategy = str(getattr(strategy, "value", strategy))
+    # Block FP8 is opt-in: fp8_block_quant_linear trains ~2.5x slower than the decompressed bf16 model.
+    if strategy == "block" and os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_BLOCK_KERNELS", "0") != "1":
+        return None
     if (
         strategy not in _CT_FP8_STRATEGIES
         or getattr(weights, "dynamic", False)
@@ -1339,7 +1342,8 @@ def _compressed_tensors_fp8_block_size(module, weights):
         return None
     out_features, in_features = weight.shape
     if strategy == "tensor":
-        return [128, 128] if scale.numel() == 1 else None
+        # Routed as per-channel (scale broadcast per row): the rowwise paths beat the block kernel.
+        return [1, in_features] if scale.numel() == 1 else None
     if strategy == "channel":
         return (
             [1, in_features] if tuple(scale.shape) in ((out_features, 1), (out_features,)) else None
@@ -1406,7 +1410,9 @@ def _route_compressed_tensors_fp8_to_unsloth(model):
     converted = 0
     for module, block in routable:
         scale = module.weight_scale
-        if scale.dim() == 1 and scale.numel() > 1:
+        if scale.numel() == 1:
+            scale.data = scale.data.reshape(1, 1).expand(module.weight.shape[0], 1).contiguous()
+        elif scale.dim() == 1:
             scale.data = scale.data.view(-1, 1)
         module.weight.requires_grad_(False)
         scale.requires_grad_(False)

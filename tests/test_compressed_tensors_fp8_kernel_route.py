@@ -107,9 +107,10 @@ def test_weight_dequant_transposed_row_scale(shape):
     ],
 )
 @pytest.mark.parametrize("bias", [False, True])
-def test_fp8_modules_route_to_unsloth_kernels(strategy, shape, block, bias):
+def test_fp8_modules_route_to_unsloth_kernels(strategy, shape, block, bias, monkeypatch):
     from unsloth.models.loader_utils import _route_compressed_tensors_fp8_to_unsloth
 
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_BLOCK_KERNELS", "1")
     model, ref = _ct_model(*shape, strategy, bias = bias, block = block)
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 1
     lin = model.lin
@@ -121,6 +122,25 @@ def test_fp8_modules_route_to_unsloth_kernels(strategy, shape, block, bias):
     dX_ref = torch.ones(2, 5, shape[0], device = "cuda") @ ref
     assert float((y.float() - y_ref).norm() / y_ref.norm()) < 0.05
     assert float((dX.float() - dX_ref).norm() / dX_ref.norm()) < 0.01
+
+
+def test_block_fp8_is_opt_in(monkeypatch):
+    from unsloth.models.loader_utils import _route_compressed_tensors_fp8_to_unsloth
+
+    monkeypatch.delenv("UNSLOTH_COMPRESSED_TENSORS_FP8_BLOCK_KERNELS", raising = False)
+    model, _ = _ct_model(256, 256, "block", block = (128, 128))
+    assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
+
+
+def test_per_tensor_scale_routes_as_per_row():
+    from unsloth.models.loader_utils import _route_compressed_tensors_fp8_to_unsloth
+
+    model, _ = _ct_model(384, 256, "tensor")
+    scalar = float(model.lin.weight_scale.reshape(-1)[0])
+    assert _route_compressed_tensors_fp8_to_unsloth(model) == 1
+    assert tuple(model.lin.weight_scale.shape) == (384, 1)
+    assert bool((model.lin.weight_scale == scalar).all())
+    assert not hasattr(model.lin.weight, "block_size")
 
 
 def test_non_fp8_or_unsupported_modules_are_left_alone(monkeypatch):
@@ -167,10 +187,11 @@ def test_older_zoo_keeps_the_compressed_tensors_path(monkeypatch):
 
 
 @pytest.mark.parametrize("strategy, block", [("channel", None), ("block", (128, 128))])
-def test_single_token_fast_path_adds_the_bias_once(strategy, block):
+def test_single_token_fast_path_adds_the_bias_once(strategy, block, monkeypatch):
     from unsloth.kernels.utils import fast_linear_forward
     from unsloth.models.loader_utils import _route_compressed_tensors_fp8_to_unsloth
 
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_BLOCK_KERNELS", "1")
     model, ref = _ct_model(256, 256, strategy, bias = True, block = block)
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 1
     lin = model.lin
