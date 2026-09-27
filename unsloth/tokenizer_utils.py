@@ -336,7 +336,36 @@ def _apply_post_load_tokenizer_fixes(
     )
     if not fix_tokenizer:
         return tokenizer
-    return _fix_gemma4_base_bos_token(tokenizer, config = config)
+    tokenizer = _fix_gemma4_base_bos_token(tokenizer, config = config)
+    return _fix_post_load_chat_template(tokenizer)
+
+
+def _fix_post_load_chat_template(tokenizer):
+    """FastModel never calls load_correct_tokenizer, so a chat template that ignores add_generation_prompt
+    (ERNIE-4.5 always appends "<|im_start|>assistant\n<think>\n") was never repaired there: every training
+    text then ended in an open assistant header that train_on_responses_only supervised, and the fine-tuned
+    model never stopped generating. Same exclusions as load_correct_tokenizer; only a template whose output
+    ignores the flag is changed, and a repair failure leaves the template as it was."""
+    text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    old = getattr(text_tokenizer, "chat_template", None)
+    if not isinstance(old, str) or not old:
+        return tokenizer
+    name = str(getattr(text_tokenizer, "name_or_path", "")).lower()
+    if any(s in name for s in ("mistral", "qwen3guard")):
+        return tokenizer
+    if "[/INST]" in old and "[INST]" in old and "bos_token" in old and "eos_token" in old:
+        return tokenizer
+    try:
+        new = _fix_chat_template_for_tokenizer(text_tokenizer, old)
+    except RuntimeError:
+        raise  # UNSLOTH_STRICT_CHAT_TEMPLATE=1
+    except Exception:
+        return tokenizer
+    if isinstance(new, str) and new != old:
+        text_tokenizer.chat_template = new
+        if tokenizer is not text_tokenizer and getattr(tokenizer, "chat_template", None) == old:
+            tokenizer.chat_template = new
+    return tokenizer
 
 
 # A KAGGLE_* variable is not a Kaggle kernel: the Kaggle CLI reads KAGGLE_USERNAME / KAGGLE_KEY on ordinary machines, and redirecting their tokenizer cache to /tmp because of it was wrong.
@@ -1152,13 +1181,15 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
     open_tag = lambda body: "{%" + dash_l + " " + body + " " + dash_r + "%}"
 
     # Case 1: the template ends with a single trailing {{ expr }} that is the generation prefix, so wrap it in an {% if add_generation_prompt %} block.
+    # Whitespace around the expression is allowed (ERNIE-4.5 ends with `{%- endfor %}\n {{- "<|im_start|>assistant..." }}`); it moves inside the block with it.
+    trailing = after_endfor.strip()
     if (
         "{%" + dash_l + " if" not in after_endfor
         and "{%" + dash_l + " set " not in after_endfor
-        and after_endfor.startswith("{{")
-        and after_endfor.endswith("}}")
-        and after_endfor.count("{{") == 1
-        and after_endfor.count("}}") == 1
+        and trailing.startswith("{{")
+        and trailing.endswith("}}")
+        and trailing.count("{{") == 1
+        and trailing.count("}}") == 1
     ):
         wrapped = open_tag("if add_generation_prompt") + after_endfor + open_tag("endif")
         return chat_template[: end["end"]] + wrapped
