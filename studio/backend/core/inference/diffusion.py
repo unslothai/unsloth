@@ -103,6 +103,7 @@ from .diffusion_memory import (
     MEMORY_MODE_LOW_VRAM,
     ACTIVATION_TILE,
     DeviceMemory,
+    OFFLOAD_MODEL,
     OFFLOAD_NONE,
     OFFLOAD_STREAMING,
     apply_memory_plan,
@@ -111,6 +112,7 @@ from .diffusion_memory import (
     estimate_image_runtime_mib,
     estimate_safetensors_dense_mib,
     file_size_mib,
+    largest_streamable_companion_mib,
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
@@ -130,6 +132,7 @@ from .diffusion_memory import (
     vae_is_sliced,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
+from .media_decode_phase import decode_phase
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -1117,6 +1120,8 @@ class _GenState:
     first_step_at: float = 0.0
     # Computed once per step (in the callback) so it's stable between polls.
     eta_seconds: Optional[float] = None
+    # "decode" once pipe() enters its decoder, which runs after the last step callback.
+    phase: str = "denoise"
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -2068,16 +2073,19 @@ class DiffusionBackend:
                     is None
                 ):
                     reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
-            elif _memory_request_forces_offload(memory_mode, cpu_offload):
+            elif _memory_request_forces_offload(memory_mode, cpu_offload) and (
+                model_kind != "pipeline"
+                or normalize_memory_mode(memory_mode) == MEMORY_MODE_BALANCED
+            ):
                 # Not a measurement: balanced and low_vram name their policy outright, and the legacy flag forces
-                # model offload. Offload hooks move modules with Module.to(), which torchao tensors do not survive, so
-                # the loader skips the dense build for any of them, and the strict refusal then landed after the
-                # resident model was already gone. The two requests are incompatible on their face.
+                # model offload; refusing late would land after the resident model was already evicted.
                 requested_memory = normalize_memory_mode(memory_mode) or "cpu_offload"
                 reason = (
-                    f"'{requested_memory}' memory places the transformer under CPU offload, and "
-                    "torchao quantised tensors cannot be moved by the offload hooks, so the dense "
-                    "quant is skipped"
+                    f"'{requested_memory}' memory places the transformer under CPU offload, and a "
+                    "GGUF pick only swaps in the quantised dense transformer when it fits resident"
+                    if model_kind != "pipeline"
+                    else "'balanced' memory streams the transformer through group-offload hooks "
+                    "torchao weights do not survive; use low_vram to combine the two"
                 )
             elif not dense_transformer_supported(target):
                 reason = dense_transformer_unsupported_reason(target)
@@ -6233,11 +6241,7 @@ class DiffusionBackend:
                     )
 
                     # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and pre-quantised
-                    # pipelines; offloaded plans stay dense because torchao tensors cannot move. The pipeline is still
-                    # on the CPU here, unlike the GGUF path, which quantises after _assemble_pipe places it. Both
-                    # orders give bit-identical output: apply_memory_plan's one-shot `pipe.to(placement)` is survived
-                    # by the subclasses (measured on sm_89, fp8 and int8, max|diff| 0.0); only the per-forward offload
-                    # hooks are not.
+                    # pipelines; offloaded plans stay dense unless whole-module.
                     if (
                         pipe is not None
                         and kind == "pipeline"
@@ -6324,16 +6328,37 @@ class DiffusionBackend:
                                     native_scheme,
                                     plan.offload_policy,
                                 )
-                            if not keeps_resident and native_scheme is None:
-                                logger.info(
-                                    "diffusion.transformer_quant: skipped (the memory plan picked '%s' "
-                                    "offload, which moves the transformer via Module.to())",
-                                    plan.offload_policy,
+                            # Group offload is WRONG for torchao: its stream cache aliases weights and swap_tensors fails when compiled.
+                            quant_budget = int(plan.estimates.get("safe_device_budget_mib") or 0)
+                            quant_overhead = int(
+                                plan.estimates.get("runtime_headroom_mib") or 0
+                            ) + int(plan.estimates.get("base_overhead_mib") or 0)
+                            if (
+                                not keeps_resident
+                                and native_scheme is None
+                                and (
+                                    plan.offload_policy != OFFLOAD_MODEL
+                                    or estimate is None
+                                    or estimate.steady_transformer_mib + quant_overhead
+                                    > quant_budget
+                                    or (largest_streamable_companion_mib(pipe) or 0) > quant_budget
                                 )
-                                transformer_quant_decline = (
-                                    f"the memory plan picked '{plan.offload_policy}' offload, which moves "
-                                    "the transformer via Module.to(); torchao quantised tensors reject "
-                                    "that. Pin a resident memory mode to combine the two"
+                            ):
+                                if plan.offload_policy == OFFLOAD_MODEL:
+                                    transformer_quant_decline = (
+                                        "whole-module offload onloads each component whole, and the "
+                                        "quantised transformer or a text encoder is not known to fit "
+                                        "the device budget"
+                                    )
+                                else:
+                                    transformer_quant_decline = (
+                                        f"'{plan.offload_policy}' offload streams the transformer through "
+                                        "hooks torchao weights do not survive. Pin low_vram or a resident "
+                                        "memory mode to combine the two"
+                                    )
+                                logger.info(
+                                    "diffusion.transformer_quant: skipped (%s)",
+                                    transformer_quant_decline,
                                 )
                             elif native_scheme is None and pipeline_quant_uncompilable is not None:
                                 # Resident plan: torchao still needs the compile check skipped above.
@@ -8882,9 +8907,25 @@ class DiffusionBackend:
                             # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
+                        # Per chunk: a later chunk denoises again after an earlier one decoded.
+                        gen.phase = "denoise"
+
+                        def _enter_decode_phase(gen = gen) -> None:
+                            gen.phase = "decode"
+                            gen.eta_seconds = None
+
                         try:
-                            # inference_mode is faster than no_grad and numerically identical here.
-                            with torch.inference_mode(), protect_ctx:
+                            # torchao aten.to fails torch's aliasing check under inference_mode; model offload moves weights.
+                            with (
+                                (
+                                    torch.no_grad()
+                                    if state.transformer_quant
+                                    and state.offload_policy == OFFLOAD_MODEL
+                                    else torch.inference_mode()
+                                ),
+                                protect_ctx,
+                                decode_phase(pipe, _enter_decode_phase),
+                            ):
                                 out = render_thread.run(
                                     "diffusion", lambda: pipe(**chunk_kwargs).images
                                 )
@@ -9046,6 +9087,7 @@ class DiffusionBackend:
                 "total_steps": 0,
                 "fraction": 0.0,
                 "eta_seconds": None,
+                "phase": "denoise",
             }
         return {
             "active": True,
@@ -9053,6 +9095,7 @@ class DiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
+            "phase": gen.phase,
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:
