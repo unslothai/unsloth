@@ -30,6 +30,13 @@ foreach ($name in @(
     Invoke-Expression $fn[0].Extent.Text
 }
 
+# A failed native type is warned about before this rung runs, so the warning cannot promise
+# paths compared as written: the Python rung may still answer exactly.
+$degraded = @($ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "Write-StudioFinalPathDegraded"
+}, $true))[0].Extent.Text
+Check "the native-failure warning names the Python rung it falls back to" ($degraded -match 'Python resolver')
+
 # The native rung, forced off.
 function Initialize-StudioFinalPathNativeType { return $false }
 function Get-StudioNativeFinalPath { param([string]$Path) return $null }

@@ -2475,8 +2475,9 @@ exit 1
         # the same security software that blocks a type can be acting on the rest of
         # the run. Only the narrower claim is true, that the installer can continue.
         Write-StudioLine "[WARN] Could not load the native path resolver ($Reason)." -ForegroundColor Yellow
-        Write-StudioLine "       Continuing with the PowerShell resolver, which cannot recover a path's" -ForegroundColor Yellow
-        Write-StudioLine "       stored casing or expand an 8.3 name, so paths are compared as written." -ForegroundColor Yellow
+        Write-StudioLine "       Continuing with the Python resolver when an interpreter can answer, else the" -ForegroundColor Yellow
+        Write-StudioLine "       PowerShell one, which cannot recover a path's stored casing or expand an 8.3" -ForegroundColor Yellow
+        Write-StudioLine "       name, so it compares paths as written." -ForegroundColor Yellow
     }
 
     function Initialize-StudioFinalPathNativeType {
@@ -2962,7 +2963,7 @@ exit 1
                 $resolved = $null
                 if (-not $script:StudioNativeResolveWarned) {
                     $script:StudioNativeResolveWarned = $true
-                    Write-StudioLine "[WARN] Could not resolve a path with the native helper; continuing with the PowerShell resolver." -ForegroundColor Yellow
+                    Write-StudioLine "[WARN] Could not resolve a path with the native helper; continuing with the fallback resolvers." -ForegroundColor Yellow
                 }
             }
         }
