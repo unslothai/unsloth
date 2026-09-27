@@ -317,6 +317,30 @@ def test_the_scenario_loads_with_the_variant_field_and_unloads_by_model_path(
     assert results["gguf_variant"] == "UD-Q4_K_XL"
 
 
+def test_a_timed_out_read_that_returns_early_is_still_abandoned(s, monkeypatch):
+    """Windows timer granularity can end a timed-out read a few ms before the timeout."""
+
+    def early(base_url, method, path, payload = None, token = None, timeout = 900):
+        threading.Event().wait(timeout * 0.5)
+        return 0, "<urlopen error timed out>"
+
+    monkeypatch.setattr(s, "_request", early)
+    poller = s.StatusPoller("http://127.0.0.1:1", "t", interval = 0.02, read_timeout = 0.1)
+    poller.start()
+    threading.Event().wait(0.3)
+    poller.stop()
+    poller.join(timeout = 5)
+    assert poller.polls and all(timed_out for _, _, timed_out in poller.polls)
+
+
+def test_the_exercise_step_leaves_the_verdict_to_judge_exit_codes():
+    """Actions' pwsh exits with the last native exit code, and llama-quantize --help exits 1."""
+    workflow = yaml.safe_load(_text(WORKFLOW))
+    steps = [st for job in workflow["jobs"].values() for st in job["steps"]]
+    exercise = next(st for st in steps if st.get("id") == "exercise")["run"].strip()
+    assert exercise.splitlines()[-1].strip() == "exit 0"
+
+
 def test_the_poller_abandons_a_read_at_the_frontend_timeout_and_measures_the_stall(s, monkeypatch):
     """The frontend ticks every 5 s and abandons a status read after 10 s, so a stall is a stream of abandoned reads"""
     assert s.STATUS_READ_TIMEOUT_S == 10.0 and s.STATUS_INTERVAL_S == 5.0
@@ -1045,7 +1069,7 @@ def test_a_custom_studio_home_is_normalized_the_way_studio_normalizes_it(s, monk
 
 
 def test_a_portable_unsloth_home_resolves_studio_and_its_runtime(tmp_path):
-    """UNSLOTH_HOME puts studio\ under the master root and llama.cpp\ beside it, ahead of a studio home."""
+    """UNSLOTH_HOME puts studio under the master root and llama.cpp beside it, ahead of a studio home."""
     body = r"""
 $env:USERPROFILE = Join-Path $Work 'profile'
 foreach ($v in 'LLAMA_SERVER_PATH', 'UNSLOTH_LLAMA_CPP_PATH', 'UNSLOTH_STUDIO_HOME', 'STUDIO_HOME') { Remove-Item "Env:\$v" -ErrorAction SilentlyContinue }
@@ -1508,9 +1532,13 @@ def test_a_runtime_at_the_root_of_a_volume_is_refused_not_matched_against_everyt
 def test_revert_stops_only_the_elevated_studio_this_probe_started(tmp_path):
     """The Studio that prepare/run starts holds an administrator token."""
     _has(_revert(), "Stop-ProbeStudio $dir", "$studioStillRunning -or")
-    fake = tmp_path / "fakepy"
-    fake.write_text("#!/bin/sh\nexec sleep 300\n")
-    fake.chmod(0o755)
+    if os.name == "nt":
+        fake = tmp_path / "fakepy.cmd"
+        fake.write_text("@ping -n 300 127.0.0.1 >nul\r\n")
+    else:
+        fake = tmp_path / "fakepy"
+        fake.write_text("#!/bin/sh\nexec sleep 300\n")
+        fake.chmod(0o755)
     run = tmp_path / "run"
     run.mkdir()
     body = r"""

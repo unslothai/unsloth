@@ -341,7 +341,7 @@ class StatusPoller(threading.Thread):
         while not self._stop_event.is_set():
             start = time.monotonic()
             self.in_flight_since = start
-            status, _ = _request(
+            status, body = _request(
                 self.base_url,
                 "GET",
                 "/api/inference/status",
@@ -350,7 +350,8 @@ class StatusPoller(threading.Thread):
             )
             self.in_flight_since = None
             elapsed = time.monotonic() - start
-            timed_out = status == 0 and elapsed >= self.read_timeout
+            # Windows timer granularity can end a timed-out read a few ms before the timeout.
+            timed_out = status == 0 and (elapsed >= self.read_timeout or "timed out" in str(body))
             self.polls.append((start, elapsed * 1000.0, timed_out))
             # A read that ran past the tick is followed at once by the tick it blocked, as the frontend's queued refresh does
             self._stop_event.wait(max(0.0, self.interval - elapsed))
