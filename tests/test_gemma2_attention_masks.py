@@ -22,6 +22,7 @@ def _masks_reaching_attention(
     monkeypatch,
     flash,
     bsz = 2,
+    second_device = "cpu",
 ):
     seen = []
 
@@ -37,10 +38,13 @@ def _masks_reaching_attention(
     monkeypatch.setattr(g2, "fast_rms_layernorm_inference_gemma", lambda ln, x, w: x)
     monkeypatch.setattr(g2, "fast_geglu_inference", lambda mlp, x: x)
     # No per-device fp32 buffers on CPU; the stubbed norms never read them.
-    monkeypatch.setattr(g2, "per_layer_device", lambda layer: (torch.device("cpu"), slice(None)))
+    monkeypatch.setattr(
+        g2, "per_layer_device", lambda layer: (torch.device(layer.device), slice(None))
+    )
 
     hidden, cached = 8, 5
     layer = types.SimpleNamespace(
+        device = "cpu",
         input_layernorm = types.SimpleNamespace(weight = torch.ones(hidden)),
         post_attention_layernorm = None,
         pre_feedforward_layernorm = None,
@@ -52,7 +56,7 @@ def _masks_reaching_attention(
         hidden_size = hidden, sliding_window = 4096, torch_dtype = torch.float32
     )
     model = types.SimpleNamespace(
-        layers = [layer, layer],
+        layers = [layer, types.SimpleNamespace(**{**vars(layer), "device": second_device})],
         embed_tokens = lambda ids: torch.zeros(*ids.shape, hidden),
     )
     self = types.SimpleNamespace(model = model, config = config, max_seq_length = 64)
@@ -121,3 +125,40 @@ def test_prefill_global_layers_see_past_the_window():
     assert torch.equal(kept[1][1:], causal[1:])
     assert not kept[0][-1, 1]
     assert torch.equal(kept[0][1:], (causal & (q - k <= window))[1:])
+
+
+def test_decode_masks_follow_each_layer_device(monkeypatch):
+    # Pipeline-parallel device maps: a mask left on the first device fails on the next GPU's layer.
+    seen = _masks_reaching_attention(monkeypatch, flash = False, second_device = "meta")
+    assert [mask.device.type for _, mask in seen] == ["cpu", "meta"]
+
+
+@pytest.mark.skipif(
+    not has_real_cuda(), reason = "loads tiny Gemma checkpoints through FastLanguageModel on CUDA"
+)
+def test_prefill_masks_short_batches_and_4d():
+    from unsloth import FastLanguageModel
+
+    model, _ = FastLanguageModel.from_pretrained(
+        "trl-internal-testing/tiny-Gemma2ForCausalLM",
+        max_seq_length = 64,
+        load_in_4bit = False,
+        dtype = torch.float32,
+    )
+    FastLanguageModel.for_inference(model)
+    torch.manual_seed(0)
+    with torch.no_grad():
+        # More rows than tokens: a 4D mask sliced as mask[:q_len, :q_len] used to cut the batch axis.
+        ids = torch.randint(5, 100, (8, 2), device = "cuda")
+        batched = model(input_ids = ids, attention_mask = torch.ones_like(ids)).logits
+        single = model(input_ids = ids[3:4], attention_mask = torch.ones_like(ids[3:4])).logits
+        torch.testing.assert_close(batched[3:4], single, rtol = 1e-4, atol = 1e-4)
+        # A caller-built 4D causal mask matches the equivalent 2D mask.
+        ids = torch.randint(5, 100, (2, 5), device = "cuda")
+        keep = torch.ones(5, 5, dtype = torch.bool, device = "cuda").tril()
+        mask4d = torch.zeros(2, 1, 5, 5, device = "cuda").masked_fill(
+            ~keep, torch.finfo(torch.float32).min
+        )
+        from_4d = model(input_ids = ids, attention_mask = mask4d).logits
+        from_2d = model(input_ids = ids, attention_mask = torch.ones_like(ids)).logits
+        torch.testing.assert_close(from_4d, from_2d, rtol = 1e-4, atol = 1e-4)

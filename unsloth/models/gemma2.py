@@ -486,6 +486,10 @@ def Gemma2Model_fast_forward_inference(
         # For pipeline parallelism every tensor must be on the same device; this movement happens once per GPU in PP.
         layer_device, device_index = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
+        if SWA is not None:
+            SWA = move_to_device(layer_device, SWA)
+        if GA is not None:
+            GA = move_to_device(layer_device, GA)
 
         use_sliding_window = idx % 2 == 0
 
