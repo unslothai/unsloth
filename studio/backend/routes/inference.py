@@ -26934,6 +26934,17 @@ async def produce_openai_chat_completions(
         finally:
             _tracker.__exit__(None, None, None)
 
+    if not using_gguf and _messages_have_remote_image(payload.messages):
+        if not model_info.get("is_vision"):
+            raise _reject(
+                400, "Image provided but current model is text-only. Load a vision model."
+            )
+        try:
+            await asyncio.to_thread(_inline_request_remote_images, payload)
+        except HTTPException as exc:
+            raise _reject(exc.status_code, exc.detail)
+        _pre_parsed = None
+
     # ── Parse messages (handles multimodal content parts) ─────
     # Reuse the pre-hook parse when auto-switch did it, else parse now.
     if _pre_parsed is not None:
