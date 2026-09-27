@@ -34,6 +34,8 @@ foreach ($name in @(
     if ($fn.Count -lt 1) { throw "expected $name in install.ps1, found none" }
     Invoke-Expression $fn[0].Extent.Text
 }
+# A standard user: an elevated run declines this probe, and hosted Windows runners are elevated.
+function Get-ElevationState { return "false" }
 
 if ($env:OS -eq "Windows_NT") { function Test-StudioChildScriptDirectoryElevated { return $false } }
 
