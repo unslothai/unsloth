@@ -106,7 +106,8 @@ LOCK_CHAIN = (
     "Invoke-StudioEarlyPythonScript",
     "New-StudioChildScriptDirectory",
     "Test-StudioChildScriptDirectoryElevated",
-    "Invoke-StudioSystem32ToolBounded", "Get-StudioSystem32Tool",
+    "Invoke-StudioSystem32ToolBounded",
+    "Get-StudioSystem32Tool",
     "Test-StudioPathUnderAdminRoot",
     "Test-StudioSddlRightsAreWrite",
     "Test-StudioSddlPrincipalIsAdminOnly",
@@ -1934,12 +1935,21 @@ def test_a_hung_integrity_tool_cannot_stall_the_nvidia_probe(tmp_path: Path, sou
     python.chmod(0o755)
     script = tmp_path / "repro.ps1"
     script.write_text(_INTEGRITY_REPRO)
-    env = dict(os.environ, OS = "Windows_NT", SystemRoot = str(tmp_path / "Windows"),
-               TEMP = str(tmp_path), TMP = str(tmp_path), TMPDIR = str(tmp_path))
+    env = dict(
+        os.environ,
+        OS = "Windows_NT",
+        SystemRoot = str(tmp_path / "Windows"),
+        TEMP = str(tmp_path),
+        TMP = str(tmp_path),
+        TMPDIR = str(tmp_path),
+    )
     started = time.monotonic()
     result = subprocess.run(
         ["pwsh", "-NoProfile", "-File", str(script), str(REPO_ROOT / source), str(python)],
-        env = env, capture_output = True, text = True, timeout = 30,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 30,
     )
     assert result.returncode == 0, result.stderr
     assert time.monotonic() - started < 20, "a hung integrity utility outlived its deadline"
