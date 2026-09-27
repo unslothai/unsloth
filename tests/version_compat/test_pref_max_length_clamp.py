@@ -60,6 +60,17 @@ def test_prompt_length_stays_below_max_length():
     assert _run(2048, 1024, max_prompt_length = 512).max_prompt_length == 512
 
 
+def test_prompt_length_is_left_alone_without_a_clamp():
+    args = _run(2048, 1024, max_prompt_length = 1024)
+    assert args.max_length == 1024 and args.max_prompt_length == 1024
+
+
+def test_unset_prompt_length_stays_below_a_small_clamp():
+    # ORPO / CPO / KTO resolve None to 128, which must stay below max_length.
+    assert _run(64, 1024, max_prompt_length = None).max_prompt_length == 32
+    assert _run(512, 1024, max_prompt_length = None).max_prompt_length is None
+
+
 def test_model_without_a_limit_is_untouched():
     assert _run(None, 1024).max_length == 1024
 

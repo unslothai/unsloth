@@ -2579,8 +2579,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 "    if args.max_length is None or args.max_length > _unsloth_model_msl:\n"
                 "        print('Unsloth: `max_length = ' + str(args.max_length) + '` exceeds the model max_seq_length of ' + str(_unsloth_model_msl) + ', so it is reduced to ' + str(_unsloth_model_msl) + '.')\n"
                 "        args.max_length = _unsloth_model_msl\n"
-                "    if getattr(args, 'max_prompt_length', None) is not None and args.max_prompt_length >= args.max_length:\n"
-                "        args.max_prompt_length = args.max_length // 2\n"
+                # ORPO / CPO / KTO resolve a None prompt limit to 128, which must stay below max_length.
+                "        _unsloth_mpl = getattr(args, 'max_prompt_length', 0)\n"
+                "        if (_unsloth_mpl is None and args.max_length <= 128) or (_unsloth_mpl is not None and _unsloth_mpl >= args.max_length):\n"
+                "            args.max_prompt_length = args.max_length // 2\n"
             )
 
     if "model" in call_args:
