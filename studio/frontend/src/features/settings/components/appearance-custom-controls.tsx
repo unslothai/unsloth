@@ -66,6 +66,7 @@ import {
   usePalette,
   useTheme,
 } from "../stores/theme-store";
+import { COLOR_THEMES } from "../lib/color-themes";
 import { ColorPickerSwatch } from "./color-picker";
 import { normalizeSizeInputDraft } from "./size-input-value";
 
@@ -77,20 +78,7 @@ type DefaultModeColors = { [K in keyof CustomModeColors]: string };
 const PALETTE_DEFAULT_COLORS: Record<
   Palette,
   Record<ResolvedTheme, DefaultModeColors>
-> = {
-  standard: {
-    light: { accent: "#17b88b", background: "#fefefd", foreground: "#262626" },
-    dark: { accent: "#17b88b", background: "#181818", foreground: "#dfdfdf" },
-  },
-  classic: {
-    light: { accent: "#339cff", background: "#ffffff", foreground: "#1a1c1f" },
-    dark: { accent: "#4dabff", background: "#181818", foreground: "#dfdfdf" },
-  },
-  minimal: {
-    light: { accent: "#171717", background: "#ffffff", foreground: "#171717" },
-    dark: { accent: "#ededed", background: "#181818", foreground: "#dfdfdf" },
-  },
-};
+> = COLOR_THEMES;
 
 /**
  * Color override control for the CURRENTLY ACTIVE resolved mode. Only the
@@ -269,11 +257,13 @@ function FontSelect({
   defaultFont,
   onCommit,
   ariaLabel,
+  className,
 }: {
   value: string | null;
   defaultFont: string;
   onCommit: (next: string | null) => void;
   ariaLabel: string;
+  className?: string;
 }) {
   const t = useT();
   const defaultLabel = `${defaultFont} (${t("settings.appearance.custom.fontDefault")})`;
@@ -337,7 +327,10 @@ function FontSelect({
           type="button"
           aria-label={ariaLabel}
           aria-expanded={open}
-          className="flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-xs outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+          className={cn(
+            "flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-xs outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
+            className,
+          )}
         >
           <span
             className="min-w-0 truncate"
@@ -479,7 +472,7 @@ function FontSelect({
   );
 }
 
-export function UiFontRow() {
+export function UiFontRow({ className }: { className?: string }) {
   const t = useT();
   const uiFont = useAppearanceCustomStore((s) => s.customization.uiFont);
   const patch = useAppearanceCustomStore((s) => s.patch);
@@ -489,11 +482,12 @@ export function UiFontRow() {
       defaultFont={DEFAULT_FONT_NAMES.ui}
       onCommit={(next) => patch({ uiFont: next })}
       ariaLabel={t("settings.appearance.custom.uiFont.label")}
+      className={className}
     />
   );
 }
 
-export function HeadingFontRow() {
+export function HeadingFontRow({ className }: { className?: string }) {
   const t = useT();
   const headingFont = useAppearanceCustomStore(
     (s) => s.customization.headingFont,
@@ -505,11 +499,12 @@ export function HeadingFontRow() {
       defaultFont={DEFAULT_FONT_NAMES.heading}
       onCommit={(next) => patch({ headingFont: next })}
       ariaLabel={t("settings.appearance.custom.headingFont.label")}
+      className={className}
     />
   );
 }
 
-export function ChatFontRow() {
+export function ChatFontRow({ className }: { className?: string }) {
   const t = useT();
   const chatFont = useAppearanceCustomStore((s) => s.customization.chatFont);
   const patch = useAppearanceCustomStore((s) => s.patch);
@@ -519,11 +514,12 @@ export function ChatFontRow() {
       defaultFont={DEFAULT_FONT_NAMES.chat}
       onCommit={(next) => patch({ chatFont: next })}
       ariaLabel={t("settings.appearance.custom.chatFont.label")}
+      className={className}
     />
   );
 }
 
-export function CodeFontRow() {
+export function CodeFontRow({ className }: { className?: string }) {
   const t = useT();
   const codeFont = useAppearanceCustomStore((s) => s.customization.codeFont);
   const patch = useAppearanceCustomStore((s) => s.patch);
@@ -533,6 +529,7 @@ export function CodeFontRow() {
       defaultFont={DEFAULT_FONT_NAMES.code}
       onCommit={(next) => patch({ codeFont: next })}
       ariaLabel={t("settings.appearance.custom.codeFont.label")}
+      className={className}
     />
   );
 }
@@ -803,7 +800,8 @@ function SizeInput({
     onCommit(normalized.value);
   };
   return (
-    <div className="flex items-center gap-1.5">
+    // Tagged so settings search can land on a size input nested in its font row.
+    <div data-settings-label={ariaLabel} className="flex items-center gap-1.5">
       <Input
         type="number"
         inputMode="numeric"

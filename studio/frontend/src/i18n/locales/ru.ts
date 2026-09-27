@@ -1293,19 +1293,20 @@ export const ru = {
       title: "Оформление",
       description: "Как Unsloth выглядит на этом устройстве.",
       theme: {
-        title: "Тема",
-        label: "Цветовая схема",
+        title: "Внешний вид",
+        label: "Режим",
         description: "Светлая, тёмная или как в системе.",
         system: "Системная",
         light: "Светлая",
         dark: "Тёмная",
       },
       palette: {
-        label: "Цветовая палитра",
+        label: "Тема",
         description: "Цвета, используемые в Unsloth в светлой и тёмной теме.",
         standard: "Стандартная",
         classic: "Классическая",
         minimal: "Минималистичная",
+        moreThemes: "Другие темы",
       },
       custom: {
         chatWidth: {
@@ -1334,8 +1335,6 @@ export const ru = {
         resetAll: "Сбросить настройки оформления",
         preferencesTitle: "Параметры",
         colors: {
-          lightGroup: "Светлая тема",
-          darkGroup: "Тёмная тема",
           accent: "Акцент",
           background: "Фон",
           foreground: "Текст",

@@ -1270,19 +1270,20 @@ export const ja = {
       title: "外観",
       description: "このデバイスでの Unsloth の見た目。",
       theme: {
-        title: "テーマ",
-        label: "カラー構成",
+        title: "表示スタイル",
+        label: "モード",
         description: "ライト、ダーク、またはシステム設定に従います。",
         system: "システム",
         light: "ライト",
         dark: "ダーク",
       },
       palette: {
-        label: "カラーパレット",
+        label: "テーマ",
         description: "Unsloth 全体で使用される配色。ライト・ダーク両対応。",
         standard: "スタンダード",
         classic: "クラシック",
         minimal: "ミニマル",
+        moreThemes: "その他のテーマ",
       },
       custom: {
         chatWidth: {
@@ -1311,8 +1312,6 @@ export const ja = {
         resetAll: "カスタマイズをリセット",
         preferencesTitle: "環境設定",
         colors: {
-          lightGroup: "ライトテーマ",
-          darkGroup: "ダークテーマ",
           accent: "アクセント",
           background: "背景",
           foreground: "文字色",

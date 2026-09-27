@@ -1041,21 +1041,6 @@ test("carries the appearance customization so the shell paints in its own colors
   );
 });
 
-test("adapts root-scoped palette state to the snapshot shell", () => {
-  assert.match(
-    indexCss,
-    /\.reload-snapshot-shell:not\(\[data-palette\]\)[\s\S]*?\.palette-card\[data-palette-value="standard"\]/,
-  );
-  assert.match(
-    indexCss,
-    /\.reload-snapshot-shell\[data-palette="classic"\][\s\S]*?\.palette-card\[data-palette-value="classic"\]/,
-  );
-  assert.match(
-    indexCss,
-    /\.reload-snapshot-shell\[data-palette="minimal"\][\s\S]*?\.palette-card\[data-palette-value="minimal"\]/,
-  );
-});
-
 test("loads selected imported fonts before revealing the shell", async () => {
   const persistedAppearance = new Map([
     [

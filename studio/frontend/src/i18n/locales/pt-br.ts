@@ -1301,19 +1301,20 @@ export const ptBR = {
       title: "Aparência",
       description: "A aparência do Unsloth neste dispositivo.",
       theme: {
-        title: "Tema",
-        label: "Esquema de cores",
+        title: "Estilo visual",
+        label: "Modo",
         description: "Tema claro, escuro ou o mesmo do sistema.",
         system: "Sistema",
         light: "Claro",
         dark: "Escuro",
       },
       palette: {
-        label: "Paleta de cores",
+        label: "Tema",
         description: "Cores usadas no Unsloth, nos modos claro e escuro.",
         standard: "Padrão",
         classic: "Clássico",
         minimal: "Minimalista",
+        moreThemes: "Mais temas",
       },
       custom: {
         chatWidth: {
@@ -1342,8 +1343,6 @@ export const ptBR = {
         resetAll: "Redefinir personalização",
         preferencesTitle: "Preferências",
         colors: {
-          lightGroup: "Tema claro",
-          darkGroup: "Tema escuro",
           accent: "Destaque",
           background: "Fundo",
           foreground: "Texto",
