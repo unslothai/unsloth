@@ -2579,8 +2579,6 @@ def test_drain_returns_as_soon_as_the_cancelled_requests_unwind(monkeypatch):
     assert polls == 3
 
 
-
-
 def _ids(n):
     return [str(uuid.uuid4()) for _ in range(n)]
 

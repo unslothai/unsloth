@@ -5079,7 +5079,6 @@ def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
     assert backend.batch_unavailable_reason([plain, {**plain, **extra}]) is not None
 
 
-
 try:
     import mlx.core as _mx
     _METAL = _mx.metal.is_available()

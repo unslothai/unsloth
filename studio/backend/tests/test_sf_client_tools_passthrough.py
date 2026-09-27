@@ -1371,7 +1371,14 @@ def test_a_turn_asking_for_several_replies_sends_them_as_one_batch(monkeypatch):
 class _StoppedAfterFirstRowBackend(_ScriptedBackend):
     """A backend that cannot batch: rows run apart and a Stop skips the rest."""
 
-    def generate_chat_batch(self, rows, *, stats_holder = None, cancel_event = None, **kwargs):
+    def generate_chat_batch(
+        self,
+        rows,
+        *,
+        stats_holder = None,
+        cancel_event = None,
+        **kwargs,
+    ):
         self.batch_calls.append({"rows": rows, "shared": kwargs})
         yield 0, "partial"
         cancel_event.set()
