@@ -3,10 +3,14 @@
 
 "use client";
 
+import {
+  ATTACHMENT_PAGE_SCALES,
+  attachmentViewerMeta,
+} from "@/components/assistant-ui/attachment-viewer-meta";
 import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
 import { DocumentView, documentKind, isMarkdown } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
-import { MediaViewer, ScaleMenu } from "@/components/media-viewer";
+import { type MediaViewerActions, MediaViewer, ScaleMenu } from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import {
   attachmentBodyText,
@@ -14,14 +18,110 @@ import {
   readAttachmentText,
   truncateAttachmentPreviewText,
 } from "@/features/chat";
-import { formatBytes } from "@/features/hub";
+import { startLibraryChat } from "@/features/library";
 import { useT } from "@/i18n";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { downloadFile } from "@/lib/native-files";
 import { useAuiState } from "@assistant-ui/react";
+import { useNavigate } from "@tanstack/react-router";
 import { Slot } from "radix-ui";
-import { type FC, type PropsWithChildren, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import {
+  type FC,
+  type PropsWithChildren,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
-const SCALES = [0.5, 0.75, 1, 1.25, 1.5, 2];
+/** Opens an attachment in the Library's viewer; `load` is read on click, so nothing is copied until asked. */
+export const AttachmentViewer: FC<{
+  trigger: ReactNode;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  source: Pick<AttachmentSource, "name" | "contentType">;
+  meta: string;
+  media: boolean;
+  noun: "image" | "video" | "clip" | "file";
+  redactFromReload: boolean;
+  load?: () => Promise<Blob>;
+  saveAs?: { name: string; contentType: string };
+  flush?: boolean;
+  extra?: ReactNode;
+  children: ReactNode;
+}> = ({
+  trigger,
+  open,
+  onOpenChange,
+  source,
+  meta,
+  media,
+  noun,
+  redactFromReload,
+  load,
+  saveAs,
+  flush = true,
+  extra,
+  children,
+}) => {
+  const t = useT();
+  const navigate = useNavigate();
+  // Mounted on first open: every mounted viewer's project menu refetches the project list.
+  const [mounted, setMounted] = useState(open);
+  if (open && !mounted) setMounted(true);
+  const name = saveAs?.name ?? (source.name || "attachment");
+  const contentType = saveAs?.contentType ?? source.contentType;
+  const actions: MediaViewerActions = {
+    primary:
+      load && !redactFromReload
+        ? {
+            label: t("library.menu.chatAboutThis"),
+            icon: MessageCircleIcon,
+            onClick: () =>
+              void load()
+                .then((blob) => {
+                  const file = new File([blob], name, { type: contentType || blob.type });
+                  onOpenChange(false);
+                  startLibraryChat(navigate, { files: [file] });
+                })
+                .catch(() => toast.error(`Could not read ${name}`)),
+          }
+        : undefined,
+    onDownload: load
+      ? () =>
+          void load()
+            .then((blob) => downloadFile(blob, name, contentType || undefined))
+            .catch(() => toast.error(t("library.toast.downloadFailed", { name })))
+      : undefined,
+  };
+  return (
+    <>
+      <Slot.Root
+        onClick={() => onOpenChange(true)}
+        className="aui-attachment-preview-trigger cursor-pointer transition-colors hover:bg-accent/50"
+      >
+        {trigger}
+      </Slot.Root>
+      {mounted && (
+        <MediaViewer
+          open={open}
+          onOpenChange={onOpenChange}
+          title={source.name}
+          meta={meta}
+          media={media}
+          noun={noun}
+          flush={flush}
+          redactFromReload={redactFromReload}
+          extra={extra}
+          actions={actions}
+        >
+          {open && children}
+        </MediaViewer>
+      )}
+    </>
+  );
+};
 
 type Loaded = { blob?: Blob; text?: string; plain?: string; truncated?: boolean; error?: boolean };
 
@@ -104,56 +204,35 @@ const DocumentDialog: FC<
   }, [open, loaded, markdown, textFallback, source.name, source.contentType]);
 
   const blob = loaded?.blob;
-  const meta = [
-    source.name.split(".").pop()?.toUpperCase(),
-    blob ? formatBytes(blob.size) : null,
-    loaded?.truncated ? "preview truncated" : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-
   return (
-    <>
-      <Slot.Root
-        onClick={() => setOpen(true)}
-        className="aui-attachment-preview-trigger cursor-pointer transition-colors hover:bg-accent/50"
-      >
-        {children}
-      </Slot.Root>
-      <MediaViewer
-        open={open}
-        onOpenChange={(next) => {
-          setOpen(next);
-          if (!next) setLoaded(null);
-        }}
-        title={source.name}
-        meta={meta}
-        media={false}
-        noun="file"
-        flush={true}
-        redactFromReload={redactFromReload}
-        extra={
-          <ScaleMenu value={scale} scales={SCALES} onChange={(value) => setScale(Number(value))} />
-        }
-        actions={{
-          onDownload: blob
-            ? () =>
-                void (loaded?.plain !== undefined
-                  ? downloadFile(blob, `${source.name.replace(/\.[^.]+$/, "")}.txt`, "text/plain")
-                  : downloadFile(blob, source.name, source.contentType || undefined))
-            : undefined,
-        }}
-      >
-        {open && (
-          <DocumentBody
-            name={source.name}
-            contentType={source.contentType}
-            loaded={loaded ?? {}}
-            scale={scale}
-          />
-        )}
-      </MediaViewer>
-    </>
+    <AttachmentViewer
+      trigger={children}
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setLoaded(null);
+      }}
+      source={source}
+      meta={attachmentViewerMeta(source, blob?.size, loaded?.truncated && "preview truncated")}
+      media={false}
+      noun="file"
+      redactFromReload={redactFromReload}
+      load={blob ? () => Promise.resolve(blob) : undefined}
+      saveAs={
+        loaded?.plain !== undefined
+          ? { name: `${source.name.replace(/\.[^.]+$/, "")}.txt`, contentType: "text/plain" }
+          : undefined
+      }
+      extra={
+        <ScaleMenu
+          value={scale}
+          scales={ATTACHMENT_PAGE_SCALES}
+          onChange={(value) => setScale(Number(value))}
+        />
+      }
+    >
+      <DocumentBody name={source.name} contentType={source.contentType} loaded={loaded ?? {}} scale={scale} />
+    </AttachmentViewer>
   );
 };
 
