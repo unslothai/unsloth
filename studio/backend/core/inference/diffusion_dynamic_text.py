@@ -124,7 +124,12 @@ def _merge(current: str, extra: tuple[str, ...]) -> str:
     return ",".join(parts)
 
 
-def install(transformer: Any, logger: Any = None, *, dynamic: Any = None) -> bool:
+def install(
+    transformer: Any,
+    logger: Any = None,
+    *,
+    dynamic: Any = None,
+) -> bool:
     """Arm the family's sources around the DiT forward for a compile made with ``dynamic``. None (automatic dynamic):
     the dynamic and the unbacked sources. True: every dim is already dynamic, but a backed symbol still specialises a
     size of 1, so only the unbacked sources are armed (dense H3 compiles with dynamic=True). False (static): nothing."""

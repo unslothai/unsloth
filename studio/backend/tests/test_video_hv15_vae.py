@@ -119,11 +119,19 @@ def test_mask_allocates_nothing_quadratic_besides_the_output():
             super().__init__()
             self.storages = []
 
-        def __torch_dispatch__(self, func, types, args = (), kwargs = None):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
             out = func(*args, **(kwargs or {}))
             for t in tree_leaves(out):
                 if isinstance(t, torch.Tensor):
-                    self.storages.append((t.untyped_storage().data_ptr(), t.untyped_storage().nbytes()))
+                    self.storages.append(
+                        (t.untyped_storage().data_ptr(), t.untyped_storage().nbytes())
+                    )
             return out
 
     n_frame, n_hw = 6, 32
