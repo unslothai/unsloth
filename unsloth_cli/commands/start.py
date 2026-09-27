@@ -4536,8 +4536,9 @@ def write_opencode_config(
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
-        # A custom-provider model with no limit defaults to context 0, which silently disables OpenCode's auto-compaction; declare the real window and a sane output cap so it compacts instead of overflowing the server.
-        model_entry["limit"] = {"context": window, "output": min(window // 4, 8192)}
+        # Declare the real window for OpenCode's compaction and leave room for the
+        # prompt while allowing longer turns than the old 8192-token cap.
+        model_entry["limit"] = {"context": window, "output": min(window // 4, 32000)}
     _subdict(config, "provider")[_OPENCODE_PROVIDER] = {
         "npm": "@ai-sdk/openai-compatible",
         "name": "Unsloth Studio",

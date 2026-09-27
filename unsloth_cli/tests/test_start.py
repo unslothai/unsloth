@@ -5127,7 +5127,7 @@ def test_write_opencode_config_fresh(tmp_path):
     assert provider["options"] == {"baseURL": f"{BASE}/v1", "apiKey": "sk-unsloth-abc"}
     # Context limit must be declared, or OpenCode treats it as 0 and disables compaction.
     assert provider["models"] == {
-        MODEL["id"]: {"name": MODEL["id"], "limit": {"context": 131072, "output": 8192}}
+        MODEL["id"]: {"name": MODEL["id"], "limit": {"context": 131072, "output": 32000}}
     }
     assert config["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
     # Provider filters belong to the launch-time inline overlay, not this config writer.
@@ -6715,6 +6715,23 @@ def test_no_yolo_opencode_has_no_permission_block(fake_studio, tmp_path):
     # A non-yolo run on a fresh config writes no permission block; it only flips a prior
     # --yolo run's explicit allow back to ask (see the yolo-then-plain test below).
     assert "permission" not in config
+
+
+@pytest.mark.parametrize(
+    ("window", "expected_output"),
+    [(143616, 32000), (16384, 4096)],
+)
+def test_opencode_output_limit_tracks_context(tmp_path, window, expected_output):
+    path = tmp_path / "opencode.json"
+    model = {"id": "owner/model", "context_length": window}
+
+    start.write_opencode_config(BASE, "sk-unsloth-abc", model, path)
+
+    config = json.loads(path.read_text())
+    assert config["provider"][start._OPENCODE_PROVIDER]["models"][model["id"]]["limit"] == {
+        "context": window,
+        "output": expected_output,
+    }
 
 
 def test_no_yolo_opencode_flips_prior_yolo_allow_to_ask(fake_studio, tmp_path):
