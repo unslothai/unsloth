@@ -106,7 +106,7 @@ LOCK_CHAIN = (
     "Invoke-StudioEarlyPythonScript",
     "New-StudioChildScriptDirectory",
     "Test-StudioChildScriptDirectoryElevated",
-    "Get-StudioSystem32Tool",
+    "Invoke-StudioSystem32ToolBounded", "Get-StudioSystem32Tool",
     "Test-StudioPathUnderAdminRoot",
     "Test-StudioSddlRightsAreWrite",
     "Test-StudioSddlPrincipalIsAdminOnly",
@@ -1884,3 +1884,65 @@ Write-Output "EXACT:$((Resolve-StudioFinalPathInfo -Path '{studio_home}').Exact)
     assert [
         line for line in result.stdout.splitlines() if "Could not resolve a path exactly" in line
     ], result.stdout
+
+
+_INTEGRITY_REPRO = r"""
+param($Source, $FakePython)
+$ErrorActionPreference = 'Stop'
+$t = $null; $e = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($Source, [ref]$t, [ref]$e)
+foreach ($name in @('Get-StudioSystem32Tool', 'Invoke-StudioSystem32ToolBounded',
+        'Test-StudioChildScriptDirectoryElevated', 'New-StudioChildScriptDirectory',
+        'Get-NvidiaNvmlLibraryPath', 'Read-NvidiaLibraryRawViaPython')) {
+    $fn = @($ast.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true))
+    if ($fn.Count) { Invoke-Expression $fn[0].Extent.Text }
+}
+if (-not (Get-Command Read-NvidiaLibraryRawViaPython -ErrorAction SilentlyContinue)) { throw "no Python rung in $Source" }
+function Get-NvidiaProbePythonExe { return $FakePython }
+Write-Output "ANSWER:$(Read-NvidiaLibraryRawViaPython -TimeoutMs 1000)"
+"""
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "source, hung",
+    [
+        ("install.ps1", None),
+        ("install.ps1", "icacls.exe"),
+        ("install.ps1", "whoami.exe"),
+        ("studio/setup.ps1", "icacls.exe"),
+    ],
+)
+def test_a_hung_integrity_tool_cannot_stall_the_nvidia_probe(tmp_path: Path, source, hung):
+    """whoami and icacls run before the bounded child, so a utility that never exits
+    (an antivirus hold, a wedged token lookup) must cost a deadline, not the install."""
+    system32 = tmp_path / "Windows" / "System32"
+    system32.mkdir(parents = True)
+    tools = {"icacls.exe": "exit 0", "whoami.exe": 'printf "S-1-16-8192"'}
+    if hung == "whoami.exe":
+        # whoami is asked only once the label cannot be set.
+        tools["icacls.exe"] = "exit 1"
+    if hung:
+        tools[hung] = "exec sleep 60"
+    for name, body in tools.items():
+        tool = system32 / name
+        tool.write_text(f"#!/bin/sh\n{body}\n")
+        tool.chmod(0o755)
+    python = tmp_path / "python"
+    python.write_text('#!/bin/sh\ncat >/dev/null\nprintf "nvml;12;8;8.9"\n')
+    python.chmod(0o755)
+    script = tmp_path / "repro.ps1"
+    script.write_text(_INTEGRITY_REPRO)
+    env = dict(os.environ, OS = "Windows_NT", SystemRoot = str(tmp_path / "Windows"),
+               TEMP = str(tmp_path), TMP = str(tmp_path), TMPDIR = str(tmp_path))
+    started = time.monotonic()
+    result = subprocess.run(
+        ["pwsh", "-NoProfile", "-File", str(script), str(REPO_ROOT / source), str(python)],
+        env = env, capture_output = True, text = True, timeout = 30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert time.monotonic() - started < 20, "a hung integrity utility outlived its deadline"
+    if hung is None:
+        # Control: a healthy host still gets the Python answer, so the case above is not vacuous.
+        assert _lines(result, "ANSWER:") == ["ANSWER:nvml;12;8;8.9"], result.stdout

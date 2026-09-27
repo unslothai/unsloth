@@ -63,7 +63,7 @@ Write-Host "=== the two copies agree ==="
 $blockNames = @(
     "New-StudioChildScriptDirectory", "Get-NvidiaNvmlLibraryPath", "Read-NvidiaLibraryRawViaPython",
     "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory", "Test-StudioChildScriptDirectoryElevated",
-    "Get-StudioSystem32Tool", "Test-StudioPathUnderAdminRoot", "Test-StudioSddlRightsAreWrite",
+    "Invoke-StudioSystem32ToolBounded", "Get-StudioSystem32Tool", "Test-StudioPathUnderAdminRoot", "Test-StudioSddlRightsAreWrite",
     "Test-StudioSddlPrincipalIsAdminOnly", "Test-StudioSddlWritableByNonAdmin",
     "Test-StudioDirectoryIsAdminOnly", "Get-StudioLexicalParent"
 )
@@ -271,7 +271,7 @@ foreach ($file in @($installPs1, $setupPs1)) {
             $dirFn -notmatch 'New-Item -ItemType Directory[^\r\n]*-Force')),
         @("raises the integrity label rather than trusting a DACL", ($dirFn -match 'icacls' -and $dirFn -match 'setintegritylevel')),
         @("reads the label back rather than assuming it took", ($dirFn -match '\$labelled' -and $dirFn -match 'High Mandatory Level')),
-        @("does not depend on the English spelling of the label", ($dirFn -match '\$LASTEXITCODE -eq 0' -and $dirFn -match 'S-1-16-12288')),
+        @("does not depend on the English spelling of the label", ($dirFn -match '\$result.ExitCode -eq 0' -and $dirFn -match 'S-1-16-12288')),
         # Accepted on the path it HANDS BACK: a bracketed %TEMP% is a pattern that can match elsewhere.
         @("confirms the directory it returns really exists", ($dirFn -match 'Test-Path -LiteralPath \$dir -PathType Container')),
         @("cleans up a directory the pattern created elsewhere", ($dirFn -match 'Remove-Item -LiteralPath \$createdPath')),

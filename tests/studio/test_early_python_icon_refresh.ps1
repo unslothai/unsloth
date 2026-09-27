@@ -22,7 +22,7 @@ foreach ($name in @(
     "Invoke-StudioPythonShellIconRefresh",
     # What Get-StudioEarlyPython reaches on Windows: the elevation gate and its helpers. Off
     # Windows it never calls them, which is how a missing one once passed here and failed CI.
-    "Test-StudioChildScriptDirectoryElevated", "Get-StudioSystem32Tool", "Test-StudioPathUnderAdminRoot",
+    "Test-StudioChildScriptDirectoryElevated", "Invoke-StudioSystem32ToolBounded", "Get-StudioSystem32Tool", "Test-StudioPathUnderAdminRoot",
     "Test-StudioSddlRightsAreWrite", "Test-StudioSddlPrincipalIsAdminOnly",
     "Test-StudioSddlWritableByNonAdmin", "Test-StudioDirectoryIsAdminOnly", "Test-StudioInterpreterFileIsAdminOnly",
     "Get-StudioLexicalParent", "Write-StudioFinalPathDegraded", "Write-StudioLine"

@@ -27,7 +27,7 @@ function Get-Fn($name) {
 foreach ($name in @(
     "Get-StudioEarlyPython", "Invoke-StudioEarlyPython", "Invoke-StudioEarlyPythonScript",
     "Get-StudioPythonFinalPath", "New-StudioChildScriptDirectory", "Test-StudioChildScriptDirectoryElevated",
-    "Get-StudioSystem32Tool", "Test-StudioPathUnderAdminRoot",
+    "Invoke-StudioSystem32ToolBounded", "Get-StudioSystem32Tool", "Test-StudioPathUnderAdminRoot",
     "Test-StudioSddlRightsAreWrite", "Test-StudioSddlPrincipalIsAdminOnly",
     "Test-StudioSddlWritableByNonAdmin", "Test-StudioDirectoryIsAdminOnly",
     "Get-StudioLexicalParent", "Test-StudioInterpreterFileIsAdminOnly",

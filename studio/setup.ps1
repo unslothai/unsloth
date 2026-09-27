@@ -1406,11 +1406,50 @@ function Test-StudioPathUnderAdminRoot {
     return $false
 }
 
+function Invoke-StudioSystem32ToolBounded {
+    param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutMs = 3000)
+    $proc = $null
+    try {
+        # If policy forbids these types, decline. The caller treats an unreadable
+        # token as elevated and uses the inline probe when no private directory is safe.
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $Exe
+        if ($null -ne $psi.PSObject.Properties['ArgumentList']) {
+            foreach ($arg in $Arguments) { $null = $psi.ArgumentList.Add($arg) }
+        } else {
+            # The arguments here are paths and fixed switches; paths cannot contain quotes.
+            $psi.Arguments = (@($Arguments | ForEach-Object {
+                '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
+            }) -join ' ')
+        }
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $stdout = $proc.StandardOutput.ReadToEndAsync()
+        $null = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit($TimeoutMs)) {
+            try { $proc.Kill() } catch { }
+            return $null
+        }
+        $left = [Math]::Max(0, $TimeoutMs - [int]$clock.ElapsedMilliseconds)
+        if (-not $stdout.Wait($left)) { return $null }
+        return @{ Output = "$($stdout.Result)"; ExitCode = $proc.ExitCode }
+    } catch { return $null }
+    finally { if ($proc) { try { $proc.Dispose() } catch { } } }
+}
+
 function Test-StudioChildScriptDirectoryElevated {
     $groups = ""
     $whoami = Get-StudioSystem32Tool -Name "whoami.exe"
     if (-not $whoami) { return $true }
-    try { $groups = "$(& $whoami /groups 2>&1)" } catch { return $true }
+    try {
+        $result = Invoke-StudioSystem32ToolBounded -Exe $whoami -Arguments @('/groups')
+        if ($null -eq $result) { return $true }
+        $groups = "$($result.Output)"
+    } catch { return $true }
     if ([string]::IsNullOrWhiteSpace($groups)) { return $true }
     if ($groups -match "S-1-16-(12288|16384)") { return $true }
     if ($groups -match "S-1-16-\d+") { return $false }
@@ -1448,10 +1487,11 @@ function New-StudioChildScriptDirectory {
             return ""
         }
         try {
-            $null = & $icacls "$dir" /setintegritylevel "(OI)(CI)H" 2>&1
-            $labelled = ($LASTEXITCODE -eq 0)
-            if (-not $labelled) {
-                $labelled = ("$(& $icacls "$dir" 2>&1)" -match "S-1-16-12288|High Mandatory Level")
+            $result = Invoke-StudioSystem32ToolBounded -Exe $icacls -Arguments @($dir, '/setintegritylevel', '(OI)(CI)H')
+            $labelled = ($null -ne $result -and $result.ExitCode -eq 0)
+            if (-not $labelled -and $null -ne $result) {
+                $readback = Invoke-StudioSystem32ToolBounded -Exe $icacls -Arguments @($dir)
+                $labelled = ($null -ne $readback -and "$($readback.Output)" -match "S-1-16-12288|High Mandatory Level")
             }
         } catch { $labelled = $false }
         if ((-not $labelled) -and (Test-StudioChildScriptDirectoryElevated)) {
