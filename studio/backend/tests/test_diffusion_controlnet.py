@@ -434,3 +434,27 @@ def test_controlnet_streams_beside_a_calibrated_resident_tier(monkeypatch, polic
     )
     assert bool(calls) is streamed
     assert hasattr(p.controlnet, "device") is not streamed
+
+
+def test_a_calibrated_tier_refuses_a_controlnet_it_cannot_stream(monkeypatch):
+    # The resident fallback is only safe on tiers that budgeted flat headroom; a calibrated tier refuses instead.
+    import threading
+
+    from core.inference import diffusion as d
+
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers())
+    _allow_cn_security(monkeypatch)
+    monkeypatch.setattr(d, "_offload_controlnet_module", lambda m, device, logger: False)
+    b = d.DiffusionBackend()
+    st = _state()
+    st.offload_policy = "none"
+    st.calibrated_placement = True
+    b._state = st
+    resolved = dc.ResolvedControlNet("flux-union-pro", "repo/id", is_local = False)
+    with pytest.raises(ValueError, match = "balanced memory mode"):
+        b._controlnet_pipe(st, resolved, threading.Event())
+    assert b._cn_models == {} and b._cn_pipes == {}
+    st.calibrated_placement = False
+    st.offload_policy = "group"
+    p = b._controlnet_pipe(st, resolved, threading.Event())
+    assert hasattr(p.controlnet, "device")

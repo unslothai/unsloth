@@ -8002,14 +8002,23 @@ class DiffusionBackend:
                 del cn_model
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
             # Placement follows the base offload policy (resident base -> resident, offloaded -> group offload).
-            # A calibrated tier budgets only the base model, so its ControlNet streams too. Best-effort.
+            # A calibrated tier budgets only the base model, so its ControlNet streams too. Best-effort, except there:
+            # a resident fallback would overflow that tier.
+            calibrated = bool(getattr(state, "calibrated_placement", False))
             if (
-                getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE
-                or getattr(state, "calibrated_placement", False)
+                getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE or calibrated
             ) and (
                 _offload_controlnet_module(cn_model, state.device, logger)
             ):
                 pass
+            elif calibrated:
+                del cn_model
+                clear_gpu_cache()
+                raise ValueError(
+                    "This ControlNet could not be streamed from system memory, and loading it fully onto "
+                    "the GPU beside the model could run out of memory. Reload the model with the balanced "
+                    "memory mode to use ControlNet, or generate without it."
+                )
             else:
                 cn_model = cn_model.to(state.device)
             if cancel.is_set():
@@ -9490,7 +9499,7 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
     base model was loaded with an offload policy: forcing the ControlNet fully resident with
     ``.to(device)`` would defeat that low-VRAM placement and can OOM. Group offloading is applied
     to this single module, so it is isolated and reversible. Returns True on success; on any
-    failure the caller falls back to a resident placement, so this never blocks a load."""
+    failure the caller falls back to a resident placement (a calibrated tier refuses instead)."""
     try:
         import torch
         from diffusers.hooks import apply_group_offloading
