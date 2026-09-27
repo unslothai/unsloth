@@ -912,9 +912,17 @@ export function ModelSelector({
 
   const currentModel = useMemo(() => {
     if (!selectedModel || !linkedMachine) return selectedModel;
+    // One description, since a suffix span beside it loses the space before its dash.
+    const suffix =
+      "descriptionSuffix" in selectedModel
+        ? selectedModel.descriptionSuffix
+        : undefined;
     return {
       ...selectedModel,
-      description: `@${linkedMachine}`,
+      description: suffix
+        ? `@${linkedMachine} · ${suffix}`
+        : `@${linkedMachine}`,
+      descriptionSuffix: undefined,
       icon: <HugeiconsIcon icon={CloudServerIcon} className="size-4" />,
     };
   }, [selectedModel, linkedMachine]);
