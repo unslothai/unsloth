@@ -594,6 +594,7 @@ class OfficeAttachmentAdapter implements AttachmentAdapter {
     return byName ?? (type.includes("presentationml") ? "PPTX" : "XLSX");
   }
 
+  // Read at add: the composer drops the typed message before send(), so refuse unreadable files here.
   private readonly texts = new Map<string, string>();
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
@@ -1473,6 +1474,7 @@ export async function persistTemporaryThread({
     });
     const epoch = getAuthSessionEpoch();
     const records: MessageRecord[] = await Promise.all(parentsFirst(messages).map(async ({ parentId, message }) => {
+      // Documents kept in memory are uploaded now, before the File is lost to JSON.
       const attachments =
         message.role === "user"
           ? cloneAttachments(await persistAttachmentOriginals(message.attachments, epoch))

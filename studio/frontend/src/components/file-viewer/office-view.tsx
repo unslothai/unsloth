@@ -74,6 +74,7 @@ const MAX_DOCX_ELEMENTS = 50_000;
 const MAX_DOCX_PIXELS = 128 * 1024 * 1024;
 
 function sanitizeDocxHtml(html: string): { html: string; truncated: boolean } {
+  // Cut before parsing: mammoth escapes each < in text, so every one left is a tag.
   const opening = /<[a-z]/gi;
   let cut = -1;
   for (let count = 0; opening.exec(html); count++) {

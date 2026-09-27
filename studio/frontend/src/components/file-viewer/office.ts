@@ -43,6 +43,7 @@ function zipIndex(bytes: Uint8Array, view: DataView): Map<string, ZipEntry> | nu
   let at = view.getUint32(end + 16, true);
   const u64 = (offset: number) => (offset + 8 <= bytes.length ? Number(view.getBigUint64(offset, true)) : Number.NaN);
   if (count === 0xffff || at === 0xffffffff) {
+    // ZIP64: the real count and directory offset are in the record its locator points at.
     const locator = end - 20;
     if (locator < 0 || view.getUint32(locator, true) !== 0x07064b50) return null;
     const record = u64(locator + 8);
@@ -62,6 +63,7 @@ function zipIndex(bytes: Uint8Array, view: DataView): Map<string, ZipEntry> | nu
     const nameEnd = at + 46 + view.getUint16(at + 28, true);
     const extraEnd = nameEnd + view.getUint16(at + 30, true);
     if (size === 0xffffffff || originalSize === 0xffffffff || offset === 0xffffffff) {
+      // The ZIP64 extra field (0x0001) holds, in order, the 64-bit values that did not fit.
       let field = -1;
       for (let extra = nameEnd; extra + 4 <= extraEnd; extra += 4 + view.getUint16(extra + 2, true)) {
         if (view.getUint16(extra, true) === 1) {
@@ -81,6 +83,7 @@ function zipIndex(bytes: Uint8Array, view: DataView): Map<string, ZipEntry> | nu
       if (![size, originalSize, offset].every(Number.isSafeInteger)) return null;
     }
     const raw = bytes.subarray(at + 46, nameEnd);
+    // Bit 11 marks a UTF-8 name; otherwise one byte a character, as unzipSync reads it.
     const name = view.getUint16(at + 8, true) & 0x800 ? utf8.decode(raw) : String.fromCharCode(...raw);
     index.set(name, { offset, size, originalSize, method: view.getUint16(at + 10, true) });
     at = extraEnd + view.getUint16(at + 32, true);
@@ -344,9 +347,11 @@ const dateTokens = memo((code) => {
   };
 });
 
+/** `m` is minutes after an hour or before a second, otherwise the month. */
 function formatDate(serial: number, code: string): string | null {
   const { tokens, kinds, twelve, fraction } = dateTokens(code);
   const unit = 1000 / 10 ** fraction;
+  // The 1900 system counts a 29 February 1900 that never was (serial 60), so earlier serials run a day ahead.
   const whole = Math.floor(serial);
   const shifted = serial < 60 ? serial + 1 : serial;
   const date = new Date(Math.round(((shifted - 25569) * 86400000) / unit) * unit);
@@ -571,6 +576,7 @@ function pickSection(value: number, sections: string[]): { index: number; sign: 
   return { index: Math.min(2, sections.length - 1), sign };
 }
 
+/** `date1904`: dates count from 1904, 1,462 days after the 1900 system. */
 const splitSections = memo((code) => {
   const sections: string[] = [];
   let start = 0;
@@ -721,6 +727,7 @@ function readStyles(doc: Document | null): { styles: CellStyle[]; cut: boolean }
   let cut = false;
   for (const [index, fmt] of all(doc, "numFmt").entries()) {
     const code = fmt.getAttribute("formatCode") ?? "";
+    // Past Excel's own limits a format is read as General: the formatters cache by code, across files.
     const kept = index < MAX_NUM_FMTS && code.length <= MAX_FORMAT_CODE;
     cut ||= !kept;
     formats.set(Number(fmt.getAttribute("numFmtId")), kept ? code : "General");
@@ -869,6 +876,7 @@ function readSheet(
   }
   if (dataAt === -1) return { name, rows, widths, truncated: false, hidden };
   const data = text.slice(dataAt);
+  // Shared formulas: the master cell holds the text and comes before the cells sharing it.
   const shared = new Map<string, { formula: string; row: number; col: number }>();
   let truncated = false;
   let nextRow = 0;
@@ -1077,6 +1085,7 @@ function styleSections(bytes: Uint8Array | undefined): { doc: Document | null; c
     const end = start && !start.empty ? findTag(bytes, start.end, name, true) : null;
     if (!start || !end) return "";
     if (end.end - start.start > MAX_STYLE_SECTION_BYTES) return ((cut = true), "");
+    // Counted before it is parsed: tiny elements would build a DOM far larger than the bytes.
     let tags = 0;
     for (let at = start.start; at < end.end && tags <= MAX_STYLE_SECTION_TAGS; at++) {
       if (bytes[at] === 0x3c) tags++;
@@ -1293,6 +1302,7 @@ function imagePixels(b: Uint8Array): number | undefined {
   return undefined;
 }
 
+/** Decoded pixels of a raster within MAX_PICTURE_PIXELS, else undefined; never SVG (unbounded cost, Office keeps a PNG). */
 export function picturePixels(bytes: Uint8Array): number | undefined {
   const pixels = imagePixels(bytes);
   return pixels !== undefined && pixels <= MAX_PICTURE_PIXELS ? pixels : undefined;

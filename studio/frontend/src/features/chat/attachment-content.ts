@@ -832,6 +832,7 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
   }
 }
 
+// A text attachment's limit, in UTF-8 bytes. Cells are not capped, so the total must be.
 const MAX_OFFICE_TEXT_BYTES = MAX_TEXT_ATTACHMENT_BYTES;
 
 function utf8Within(text: string, limit: number): { bytes: number; end: number } {

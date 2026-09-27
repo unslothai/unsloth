@@ -23,6 +23,7 @@ const TYPE_KINDS: Record<string, DocumentKind> = {
   "text/tab-separated-values": "sheet",
 };
 
+// Own keys only: a name ending ".constructor" must not find Object.prototype's.
 function lookUp(table: Record<string, DocumentKind>, key: string): DocumentKind | undefined {
   return Object.hasOwn(table, key) ? table[key] : undefined;
 }

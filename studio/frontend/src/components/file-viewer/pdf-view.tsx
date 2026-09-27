@@ -19,6 +19,7 @@ const PAGE_GAP = 16;
 const EDGE = 24;
 const MAX_CANVAS_PIXELS = 32 * 1024 * 1024;
 const MAX_CANVAS_SIDE = 16384;
+// PDF.js skips larger images before decoding; a 600dpi letter/A4 scan still fits.
 const PDF_OPTIONS = { maxImageSize: 64 * 1024 * 1024 };
 const MIN_PIXEL_RATIO = 0.1;
 const MAX_TEXT_ITEMS = 20_000;

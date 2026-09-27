@@ -38,6 +38,7 @@ _SWEEP_INTERVAL_SECONDS = 600
 _sweep_lock = threading.Lock()
 # Held across save-publish and sweep check-and-remove, so a sweep never removes a just-refreshed file.
 _file_lock = threading.Lock()
+# Per originals folder: each account has its own, and one account's sweep must not delay another's.
 _last_sweep: dict[Path, float] = {}
 _due: dict[Path, tuple[float, contextvars.Context]] = {}
 _due_changed = threading.Condition()
