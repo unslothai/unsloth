@@ -1493,9 +1493,7 @@ def _kv_entry_windowed(entry):
 
 
 def _allocate_empty_quantized_exactly(cls):
-    """mlx-lm and mlx-vlm size an empty QuantizedKVCache as ``dim // (32 // bits)`` words, one too
-    many at 3/5/6 bits (128-dim heads at 5 or 6), so the first decode raises a broadcast error.
-    Allocate the first block at mx.quantize's real ``dim * bits // 32``; upstream then only grows it."""
+    """First block at mx.quantize's ``dim * bits // 32``; upstream's ``dim // (32 // bits)`` is a word too wide at 3/5/6 bits."""
     original = cls.update_and_fetch
     if getattr(original, "_unsloth_exact_empty_alloc", False):
         return
