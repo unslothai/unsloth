@@ -11,6 +11,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import remend from "remend";
 import { Streamdown } from "streamdown";
+import { hasIncompleteLinkRepair } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 
 /**
  * WHY THIS FILE EXISTS. `remend` is the incomplete-markdown repair Streamdown runs over a message
@@ -112,7 +113,7 @@ const MARKDOWN_TEXT = new URL(
  * streaming, so evaluating the real expression in that state is the same question the component
  * answers on the settled path.
  */
-function settledParseIncompleteMarkdown(): boolean {
+function settledParseIncompleteMarkdown(pendingLinkRepair = false): boolean {
   const source = readFileSync(MARKDOWN_TEXT, "utf8");
   const opened = source.indexOf("<Streamdown");
   assert.notEqual(
@@ -131,8 +132,9 @@ function settledParseIncompleteMarkdown(): boolean {
   );
   const value: unknown = new Function(
     "incrementalRender",
+    "pendingLinkRepair",
     `return (${expression});`,
-  )(null);
+  )(null, pendingLinkRepair);
   assert.equal(
     typeof value,
     "boolean",
@@ -147,12 +149,22 @@ function renderSettled(markdown: string): string {
       Streamdown,
       {
         mode: "streaming",
-        parseIncompleteMarkdown: settledParseIncompleteMarkdown(),
+        parseIncompleteMarkdown: settledParseIncompleteMarkdown(
+          hasIncompleteLinkRepair(markdown),
+        ),
       },
       markdown,
     ),
   );
 }
+
+test("a settled unfinished link remains text without a blocked placeholder", () => {
+  const html = renderSettled("See [example](https://exa");
+  assert.match(html, /See \[example\]\(/);
+  assert.match(html, /https:\/\/exa/);
+  assert.doesNotMatch(html, /\[blocked\]|streamdown:incomplete-link/);
+  assert.match(renderSettled("See [example](javascript:alert)"), /\[blocked\]/);
+});
 
 test("the settled render path runs the repair, not just the package", () => {
   // THE TESTS ABOVE CALL `remend` THEMSELVES, so all of them pass while the UI has the repair

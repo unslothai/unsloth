@@ -910,6 +910,20 @@ export type IncrementalMarkdownRender = {
   parseMarkdownIntoBlocks: (markdown: string) => string[];
 };
 
+const INCOMPLETE_LINK_REPAIR = "](streamdown:incomplete-link)";
+
+export function hasIncompleteLinkRepair(
+  source: string,
+  repaired = remend(source),
+): boolean {
+  if (!repaired.includes(INCOMPLETE_LINK_REPAIR)) return false;
+  if (!source.includes(INCOMPLETE_LINK_REPAIR)) return true;
+  return (
+    repaired.split(INCOMPLETE_LINK_REPAIR).length >
+    source.split(INCOMPLETE_LINK_REPAIR).length
+  );
+}
+
 // Marker facts the retained prefix carries into the tail repair.
 type RetainedContext = {
   multilineKatex: boolean;
@@ -1349,7 +1363,10 @@ export class IncrementalMarkdownCache {
   private renderFullDocument(markdown: string): IncrementalMarkdownRender {
     this.resetIncrementalState(markdown);
     this.fullDocumentMode = true;
-    return this.render(remend(markdown));
+    const repaired = remend(markdown);
+    return this.render(
+      hasIncompleteLinkRepair(markdown, repaired) ? markdown : repaired,
+    );
   }
 
   // The text handed to the cache is not always an extension of the last one: `preprocessLaTeX`
@@ -1456,6 +1473,12 @@ export class IncrementalMarkdownCache {
 
     const repaired =
       this.repairOpenFence() ?? repairTail(this.tail, this.context);
+
+    // Remend completes a pending link with an internal URL that Streamdown displays as
+    // "[blocked]". Keep the unfinished tail literal until its destination arrives.
+    if (hasIncompleteLinkRepair(this.tail, repaired)) {
+      return this.render(this.tail);
+    }
 
     // globally scoped definitions must stay in the same rendered document as
     // their uses, so neither construct can retain an independently parsed prefix.
