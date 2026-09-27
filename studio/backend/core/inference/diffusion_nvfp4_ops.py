@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FlashInfer NVFP4 kernels as ``torch.library`` custom ops (so ``fullgraph = True`` works), plus
-the backend decision. Fake impls must match FlashInfer's allocation EXACTLY: a wrong meta shape is
-a silently mis-sized buffer. torch and flashinfer import lazily for torch-free hosts.
-"""
+"""FlashInfer NVFP4 kernels as custom ops (for ``fullgraph``); fake impls must match its allocation EXACTLY."""
 
 from __future__ import annotations
 
@@ -47,12 +44,12 @@ def _swizzled_sf_numel(
     cols: int,
     row_size: int = 128,
 ) -> int:
-    """Copied, not imported: a fake impl must not touch the FlashInfer JIT machinery."""
+    """Swizzled scale-factor element count; copied so fake impls never touch the FlashInfer JIT."""
     return ((rows + row_size - 1) // row_size * row_size) * ((cols + 3) // 4 * 4)
 
 
 def _device_guard(t: Any):
-    """EVERY flashinfer call needs this: it has no device guard, and a foreign device bricks the card."""
+    """``torch.cuda.device`` for the tensor's device; EVERY flashinfer call needs one (a foreign device bricks the card)."""
     import torch
     return torch.cuda.device(t.device)
 
@@ -76,7 +73,7 @@ def _is_capturing() -> bool:
 
 
 def _barrier(device: Any):
-    """Per-device 1-element buffer, UNCACHED under capture: an allocation made in a capture dies with the graph."""
+    """Per-device 1-element bf16 barrier buffer, uncached while capturing (it would die with the graph)."""
     import torch
 
     index = _device_index(device)
@@ -118,11 +115,8 @@ def _quantize_impl(x: Any, global_sf: Any):
 
 
 def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend: str):
-    """NVFP4 GEMM on a row-major ``[N, K/2]`` weight (a ``.T`` input would be an alias Dynamo must track).
-
-    A kernel MUST run between the activation quantiser and this GEMM: cutlass launches with PDL but its
-    ``griddepcontrol`` is compiled out, so ``torch.empty`` alone is NOT enough; a one-element fill is.
-    """
+    """NVFP4 GEMM on a row-major ``[N, K/2]`` weight. A kernel (any, not ``torch.empty``) MUST run between
+    the quantiser and this GEMM: cutlass launches with PDL but ``griddepcontrol`` is compiled out."""
     import flashinfer
     import torch
 
@@ -274,7 +268,7 @@ _LUT_CACHE: dict = {}
 
 
 def e2m1_lut(device: Any):
-    """Memoised so it is never ALLOCATED under a graph capture (valid only while recording)."""
+    """The signed e2m1 decode table on ``device``, memoised so it is never first allocated during capture."""
     import torch
 
     key = (str(device.type), device.index)
@@ -296,8 +290,7 @@ def dequantize_nvfp4_weight(
     *,
     dtype: Any = None,
 ):
-    """Dense ``[N, K]`` weight, TRANSIENT (never cache it). Arithmetic in torchao's order, so it
-    matches the unprotected step bit for bit."""
+    """The packed NVFP4 operand as a TRANSIENT dense ``[N, K]`` weight, in torchao's exact arithmetic order."""
     import torch
 
     if dtype is None:
@@ -319,12 +312,13 @@ def dequantize_nvfp4_weight(
 
 
 def sf_matrix_shape(rows: int, cols: int) -> tuple[int, int]:
+    """FlashInfer's 2D view of a swizzled scale buffer (leading dim is padded, not ``rows``)."""
     padded_cols = (cols + 3) // 4 * 4
     return (_swizzled_sf_numel(rows, cols, 128) // padded_cols, padded_cols)
 
 
 def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
-    """A tiny guarded quantise + GEMM, memoised per device: only a JIT build proves FlashInfer runs."""
+    """A tiny GUARDED 128x256 quantise + GEMM on ``device``, memoised per device. Never raises."""
     from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
 
     if not nvfp4_diffusion_enabled():
@@ -501,7 +495,7 @@ def nvfp4_backend_reason(device: Any = None) -> str:
 
 
 def select_nvfp4_backend(device: Any = None) -> str:
-    """An explicit ``flashinfer`` that fails import, capability or preflight falls back to torchao."""
+    """``"torchao"`` or ``"flashinfer"`` for ``device``; a failing explicit ``flashinfer`` falls back to torchao."""
     backend, reason = _resolve_backend(device)
     if backend != BACKEND_FLASHINFER and nvfp4_backend_env() == BACKEND_FLASHINFER:
         key = (str(device), reason)

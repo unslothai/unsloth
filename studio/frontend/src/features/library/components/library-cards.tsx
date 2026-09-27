@@ -42,6 +42,15 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
   );
 }
 
+// Audio and code glyphs are thin line art, so they get a larger size.
+const CARD_ICON_CLASS = "size-7";
+const LARGE_CARD_ICON_CLASS = "size-8.5";
+
+function cardIconClass(item: LibraryItem): string {
+  const kind = fileKind(item);
+  return kind === "audio" || kind === "code" ? LARGE_CARD_ICON_CLASS : CARD_ICON_CLASS;
+}
+
 const MIN_THUMB_RATIO = 2 / 3;
 const MAX_THUMB_RATIO = 3 / 2;
 
@@ -62,7 +71,7 @@ function ImageThumb({
   if (failed || (url !== null && url === brokenUrl)) {
     return (
       <div className={cn("flex aspect-square items-center justify-center", className)}>
-        <KindIcon item={item} className="h-auto w-1/4 max-w-9" />
+        <KindIcon item={item} className="h-auto w-1/5 max-w-7" />
       </div>
     );
   }
@@ -198,7 +207,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
             {item.name}
           </p>
           <div className="flex flex-1 items-center justify-center">
-            <KindIcon item={item} className="size-9" />
+            <KindIcon item={item} className={cardIconClass(item)} />
           </div>
           <p className="truncate pr-6 text-ui-13 text-muted-foreground">
             {showTime && formatCardTime(item.updatedAt, locale)}
@@ -228,7 +237,7 @@ function FolderCard({
         className={CARD_SURFACE}
       >
         <div className="flex aspect-square items-center justify-center">
-          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className="size-9" />
+          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className={CARD_ICON_CLASS} />
         </div>
       </CardFrame>
       <button

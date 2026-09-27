@@ -204,6 +204,110 @@ def apply_small_m_padding(
     return wrapped
 
 
+# Per-family int8 ConvRot (group, rotated fqn suffixes); not an exclusion, so plain artifacts still validate.
+_INT8_FAMILY_CONVROT: dict[str, tuple[int, tuple[str, ...]]] = {
+    "qwen-image-2.1": (
+        256,
+        (
+            "attn.to_q",
+            "attn.to_k",
+            "attn.to_v",
+            "attn.to_out.0",
+            "img_mlp.gate_layer",
+            "img_mlp.proj",
+            "img_mlp.out",
+        ),
+    ),
+}
+
+
+_INT8_FAMILY_CONVROT_FILENAME: dict[str, str] = {
+    "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
+}
+
+INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
+
+
+def int8_convrot_enabled() -> bool:
+    return (_os.environ.get(INT8_CONVROT_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def convrot_spec_for_scheme(
+    scheme: str, family: Optional[str] = None
+) -> tuple[int, tuple[str, ...]]:
+    """The family's int8 ConvRot table entry, regardless of the opt-in flag."""
+    if scheme != TQ_INT8:
+        return 0, ()
+    return _INT8_FAMILY_CONVROT.get(str(family or "").strip().lower(), (0, ()))
+
+
+def convrot_prequant_filename(scheme: str, family: Optional[str] = None) -> Optional[str]:
+    if scheme != TQ_INT8:
+        return None
+    return _INT8_FAMILY_CONVROT_FILENAME.get(str(family or "").strip().lower())
+
+
+def convrot_fqns(
+    transformer: Any, filter_fn: Any, group: int, suffixes: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Quantized Linears matching ``suffixes`` with width divisible by ``group`` (LoRA ``base_layer`` stays exact)."""
+    from .diffusion_convrot import rotatable_fqns
+
+    rotatable, _ = rotatable_fqns(transformer, filter_fn, group)
+    names = tuple(n for s in suffixes for n in (s, s + ".base_layer"))
+    return tuple(f for f in rotatable if any(f == n or f.endswith("." + n) for n in names))
+
+
+def apply_runtime_convrot(
+    transformer: Any,
+    scheme: str,
+    family: Optional[str],
+    filter_fn: Any,
+    *,
+    target: Any = None,
+    logger: Any = None,
+) -> tuple[str, ...]:
+    """Rotate BEFORE quantize_; a later failure leaves an exact dense model, so fallback stays correct."""
+    group, suffixes = convrot_spec_for_scheme(scheme, family)
+    if not group or not int8_convrot_enabled():
+        return ()
+    from .diffusion_convrot import CONVROT_ATTR, CONVROT_KIND, rotate_linears_, warm_rotation_cache
+
+    rotated = rotate_linears_(
+        transformer, convrot_fqns(transformer, filter_fn, group, suffixes), group
+    )
+    if rotated:
+        # forward device, not the weights' (CPU-first quantize)
+        weight = transformer.get_submodule(rotated[0]).weight
+        device = getattr(target, "torch_device", None) or getattr(target, "device", None)
+        dtype = getattr(target, "dtype", None)
+        try:
+            warm_rotation_cache(
+                transformer,
+                device or weight.device,
+                dtype if dtype is not None and not isinstance(dtype, str) else weight.dtype,
+            )
+        except Exception:  # noqa: BLE001 - only saves one recompile
+            pass
+    try:
+        setattr(
+            transformer,
+            CONVROT_ATTR,
+            {"kind": CONVROT_KIND, "group": group, "linears": len(rotated)},
+        )
+    except Exception:  # noqa: BLE001 - diagnostic marker only
+        pass
+    if logger is not None:
+        logger.info(
+            "diffusion.transformer_quant: ConvRot group %d on %d %s linears (%s)",
+            group,
+            len(rotated),
+            scheme,
+            family,
+        )
+    return rotated
+
+
 # nvfp4 raises on an empty activation; HunyuanVideo-1.5's attention trim hits it every t2v render.
 _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
 _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
@@ -213,7 +317,6 @@ _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
 
 
 def zero_row_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
-    """Tokens needing the empty-activation guard; nvfp4 only (fp8 / mxfp8 reduce per row)."""
     if scheme != TQ_NVFP4:
         return ()
     return _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS.get(str(family or "").strip().lower(), ())
@@ -226,7 +329,7 @@ def apply_zero_row_guard(
     *,
     logger: Any = None,
 ) -> tuple[str, ...]:
-    """Wrap this family's zero-row-reachable quantized Linears after quantize; not best-effort."""
+    """Guard zero-row-reachable quantized Linears; call AFTER quantization (else the first t2v render crashes)."""
     tokens = zero_row_tokens_for_scheme(scheme, family)
     if not tokens:
         return ()
@@ -297,10 +400,8 @@ _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
 
 @dataclass(frozen = True)
 class _AutoPrefer:
-    """A family's own head of the ``auto`` order, tried AHEAD of the family-blind ``_AUTO_LADDER``.
-
-    Dropped below ``floor`` and, unless ``consumer_ok``, on consumer GPUs. ``gated``: needs a
-    passing record for THIS base on this device's backend; ``backend``: needs that NVFP4 backend."""
+    """A family's head of the ``auto`` order, ahead of ``_AUTO_LADDER``; off below ``floor`` or on consumer GPUs
+    (unless ``consumer_ok``), and ``gated`` / ``backend`` need a passing record / backend for THIS device."""
 
     floor: tuple[int, int]
     schemes: tuple[str, ...]
@@ -354,6 +455,7 @@ def _nvfp4_gate_passed(family, base_repo) -> bool:
 
 
 def _nvfp4_gate_backend_ok(family, base_repo, device: Any) -> bool:
+    """Whether a passing gate record was measured on the backend this device selects; failure keeps the deny."""
     if not nvfp4_diffusion_enabled():
         return False
     try:
@@ -367,6 +469,7 @@ def _nvfp4_gate_backend_ok(family, base_repo, device: Any) -> bool:
 
 
 def _nvfp4_backend_is(device: Any, name: str) -> bool:
+    """Whether ``select_nvfp4_backend`` picks ``name`` for ``device``; failure drops the head."""
     if not nvfp4_diffusion_enabled():
         return False
     try:
@@ -381,7 +484,7 @@ def _family_denied(
     scheme: str,
     base_repo: Optional[str] = None,
 ) -> bool:
-    """nvfp4 is the one entry a gate record can lift, per BASE: a sibling base stays denied."""
+    """Whether the deny table rules ``scheme`` out; a gate record lifts nvfp4 per BASE, not per family."""
     if scheme not in _FAMILY_SCHEME_DENY.get(str(family or "").strip().lower(), ()):
         return False
     if scheme == TQ_NVFP4 and _nvfp4_gate_passed(family, base_repo):
@@ -400,7 +503,7 @@ def _family_train_denied(
     scheme: str,
     base_repo: Optional[str] = None,
 ) -> bool:
-    """``_family_denied`` plus training-only additions: a superset, never a bypass."""
+    """``_family_denied`` plus training-only denies (always a superset); nvfp4 is denied for every family."""
     if scheme == TQ_NVFP4:
         return True
     key = str(family or "").strip().lower()
@@ -437,8 +540,7 @@ def family_denies_scheme(
     scheme: str,
     base_repo: Optional[str] = None,
 ) -> bool:
-    """Whether the measured deny list rules ``scheme`` out for ``family``, regardless of hardware.
-    Public so the refusal message can tell a family deny from a missing kernel."""
+    """Whether the deny list rules ``scheme`` out for ``family``, so a refusal can tell it from a missing kernel."""
     return _family_denied(family, scheme, base_repo)
 
 
@@ -449,6 +551,7 @@ def explain_unusable_scheme(
     *,
     prequant_missing: bool = False,
 ) -> str:
+    """Why an EXPLICIT ``scheme`` got None: family deny, unusable torchao, or a GPU without the kernels."""
     if nvfp4_blocked(scheme):
         return nvfp4_disabled_message()
     if family_denies_scheme(family, scheme, base_repo):
@@ -531,10 +634,12 @@ def _strip_paths(text: str) -> str:
 _SMOKE_CACHE: dict[tuple[str, str], bool] = {}
 
 
-def _smoke_cache_device_key(device: str) -> str:
-    """``device`` qualified with the current CUDA index, so each card is validated on its own."""
+def _smoke_cache_device_key(device: str, ordinal: Optional[int] = None) -> str:
+    """``device`` qualified with the current CUDA index, or ``ordinal`` when given."""
     if device != "cuda":
         return device
+    if ordinal is not None:
+        return f"cuda:{ordinal}"
     try:
         import torch
         return f"cuda:{torch.cuda.current_device()}"
@@ -929,14 +1034,9 @@ def select_transformer_quant_scheme(
     ``auto`` walks the per-arch ladder and returns the first scheme passing a real quantise+matmul
     smoke test, so an unavailable Blackwell fp4/mx kernel lands on fp8/int8 with no error. An
     explicit scheme is honored only if supported (else None), never swapped. ``family`` applies the
-    measured deny list (``_FAMILY_SCHEME_DENY``): schemes that produce black frames / out-of-bar
-    drift are skipped by ``auto`` and refused when explicit.
-
-    ``base_repo`` keys the per-base nvfp4 deny lift. ``require_prequant`` schemes are offered by
-    AUTO only when ``has_prequant`` finds a hosted checkpoint; EXPLICIT opts into a build.
-
-    ``unproven_ok`` is for the PRE-EVICTION route gate: a resident model can fail the smoke test for
-    want of VRAM, so it answers only "provably unusable here".
+    measured deny list; ``base_repo`` keys its per-base nvfp4 lift. ``require_prequant``: schemes AUTO
+    offers only with a hosted checkpoint (the gate measured that artifact, not an on-the-fly build).
+    ``unproven_ok`` is for the PRE-EVICTION gate, where a resident model can fail the smoke test for VRAM.
     """
     requested = normalize_transformer_quant(requested)
     if requested is None or not dense_transformer_supported(target):
@@ -984,10 +1084,11 @@ def dense_quant_host_capable(target: Any) -> bool:
     # import fails, so an ABI skew would advertise a fast path every load then falls back from.
     if torchao_unavailable_reason() is not None:
         return False
-    cap = _capability()
+    ordinal = getattr(target, "ordinal", None)
+    cap = _capability(ordinal)
     if cap is None:
         return False
-    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
+    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")), ordinal)
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
             return any(_SMOKE_CACHE.get((scheme, card), True) for scheme in without_nvfp4(schemes))
@@ -1047,10 +1148,7 @@ def _auto_scheme_order(
     cap: tuple[int, int],
     base_repo: Optional[str] = None,
 ) -> tuple[str, ...]:
-    """The schemes ``auto`` would try on this GPU for this family, best first, before the deny list
-    and the smoke probe have their say. Empty when no tier matches, head or not: a capability below
-    every tier has no dense quant path at all. Shared by ``select_transformer_quant_scheme`` and
-    ``auto_scheme_candidates`` so the two can never disagree."""
+    """Schemes ``auto`` would try here, best first, before deny list and smoke probe; empty below every tier."""
     tier: tuple[str, ...] = ()
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
@@ -1088,11 +1186,12 @@ def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> 
     published ladder sharpens as loads record verdicts instead of paying for them here."""
     if not dense_transformer_supported(target):
         return ()
-    cap = _capability()
+    ordinal = getattr(target, "ordinal", None)
+    cap = _capability(ordinal)
     if cap is None:
         return ()
     device = str(getattr(target, "device", "cuda"))
-    card = _smoke_cache_device_key(device)
+    card = _smoke_cache_device_key(device, ordinal)
     return tuple(
         scheme
         for scheme in _auto_scheme_order(family, device, cap)
@@ -1101,10 +1200,10 @@ def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> 
     )
 
 
-def _capability() -> Optional[tuple[int, int]]:
+def _capability(ordinal: Optional[int] = None) -> Optional[tuple[int, int]]:
     try:
         import torch
-        major, minor = torch.cuda.get_device_capability()
+        major, minor = torch.cuda.get_device_capability(ordinal)
         return (int(major), int(minor))
     except Exception:
         return None
@@ -1691,11 +1790,7 @@ def quantize_transformer(
     offload: bool = False,
     act_int8: Optional[bool] = None,
 ) -> Optional[str]:
-    """Quantise ``pipe.transformer``'s FLOP-heavy linears in place with the arch-chosen scheme.
-    Returns the scheme engaged, or None when disabled / unsupported / failed (caller loads GGUF).
-    Best-effort: never raises for an unsupported environment (failure leaves it dense).
-    ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None auto-detects,
-    True/False force it. ``base_repo`` (UPSTREAM id) selects the per-layer NVFP4 policy."""
+    """Quantise ``pipe.transformer`` in place, returning the scheme or None (GGUF); ``base_repo`` picks the NVFP4 policy."""
     native = native_quant_scheme(target, mode, family = family, offload = offload)
     if native is not None:
         if act_int8 is None:
@@ -1746,15 +1841,17 @@ def quantize_transformer(
         # exclude_tokens_for_scheme, whose list is baked into prequant metadata.
         exclude = exclude_tokens_for_scheme(scheme, family) + ("lora_",)
         divisible = divisible_for_scheme(scheme)
+        filter_fn = make_filter_fn(
+            min_features,
+            exclude_name_tokens = exclude,
+            require_bf16 = scheme in _REQUIRE_BF16_SCHEMES,
+            require_divisible = divisible,
+        )
+        apply_runtime_convrot(transformer, scheme, family, filter_fn, target = target, logger = logger)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),
-            filter_fn = make_filter_fn(
-                min_features,
-                exclude_name_tokens = exclude,
-                require_bf16 = scheme in _REQUIRE_BF16_SCHEMES,
-                require_divisible = divisible,
-            ),
+            filter_fn = filter_fn,
         )
         # Pad this family's small-M linears now that the weights are quantized and in place. Not best-effort: a raise
         # here means the transformer is quantized but not safely compilable, so it falls into the except below and the

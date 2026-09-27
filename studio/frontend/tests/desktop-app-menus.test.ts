@@ -8,6 +8,19 @@ import test from "node:test";
 import { readSrc, readText, registerBundlerResolver } from "./helpers/kit.ts";
 
 // The menu is native and the hook is React, so the contract between them is asserted on source.
+// The native menu exists only on macOS (every item in app_menu.rs is cfg(target_os = "macos"),
+// and the renderer only sends accelerators when it has app menus), so its chords are resolved
+// as a Mac resolves them whatever the runner is. Node's own navigator reports process.platform
+// ("Linux x86_64", "Win32", "darwin"), none of which isMacPlatform reads as a Mac, and the Go
+// items' workspace shortcuts default to Ctrl+1-9 only on a Mac.
+Object.defineProperty(globalThis, "navigator", {
+  configurable: true,
+  value: {
+    platform: "MacIntel",
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+  },
+});
+
 const APP_MENU = readText("../../src-tauri/src/app_menu.rs");
 const MAIN_RS = readText("../../src-tauri/src/main.rs");
 const HOOK = readSrc("app/use-app-menu-actions.ts");
@@ -20,10 +33,18 @@ const rowsOf = (table: string) =>
   )].map((m) => m[1]);
 const fileActions = rowsOf("FILE_ROWS");
 const viewActions = rowsOf("VIEW_ROWS");
-const rustActions = [...fileActions, ...viewActions];
-const hookActions = [...CHORDS.match(/export type AppMenuAction =([^;]+);/)![1].matchAll(/"([a-z-]+)"/g)].map(
-  (m) => m[1],
-);
+const goActions = rowsOf("GO_ROWS");
+const settingsActions = rowsOf("SETTINGS_ROWS");
+const helpActions = rowsOf("HELP_ROWS");
+const rustActions = [...fileActions, ...viewActions, ...goActions, ...helpActions];
+const HELP = readSrc("components/help-actions.ts");
+const actionsOf = (source: string, type: string) =>
+  [...source.match(new RegExp(`export type ${type} =([^;]+);`))![1].matchAll(/"([a-z-]+)"/g)].map(
+    (m) => m[1],
+  );
+// The Help actions are typed beside the Help menu the sidebar shares.
+assert.match(CHORDS, /export type AppMenuAction =\s*\| HelpAction/);
+const hookActions = [...actionsOf(CHORDS, "AppMenuAction"), ...actionsOf(HELP, "HelpAction")];
 
 test("the menus and the renderer name the same actions", () => {
   assert.deepEqual(fileActions, ["new-chat", "new-temporary-chat", "open-folder"]);
@@ -38,13 +59,53 @@ test("the menus and the renderer name the same actions", () => {
     "zoom-out",
     "actual-size",
   ]);
+  assert.deepEqual(helpActions, [
+    "help-documentation",
+    "help-keyboard-shortcuts",
+    "help-whats-new",
+    "help-troubleshooting",
+    "help-system-status",
+    "help-send-feedback",
+  ]);
+  const helpGroups = [...HELP.match(/HELP_GROUPS[^=]*=([\s\S]*?);/)![1].matchAll(/"([a-z-]+)"/g)].map(
+    (m) => m[1],
+  );
+  assert.deepEqual(helpGroups, helpActions, "the sidebar's Help lists the menu's items in order");
+  assert.deepEqual(goActions, [
+    "go-chat",
+    "go-projects",
+    "go-library",
+    "go-hub",
+    "go-train",
+    "go-recipes",
+    "go-images",
+    "go-video",
+    "go-audio",
+    "go-export",
+  ]);
+  assert.match(APP_MENU, /Row::Submenu\("Settings", SETTINGS_ROWS\)/);
   assert.deepEqual([...hookActions].sort(), [...rustActions].sort());
+});
+
+test("Go > Settings lists every Settings page, in the dialog's order", () => {
+  const dialog = readSrc("features/settings/settings-dialog.tsx");
+  const tabs = [...dialog.slice(dialog.indexOf("const TABS")).matchAll(/id: "([a-z-]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(settingsActions, tabs.slice(0, settingsActions.length).map((tab) => `settings-${tab}`));
+  const store = readSrc("features/settings/stores/settings-dialog-store.ts");
+  const known = [...store.match(/SETTINGS_TABS = \[([\s\S]*?)\]/)![1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+  assert.deepEqual([...settingsActions].sort(), known.map((tab) => `settings-${tab}`).sort());
+  assert.match(CHORDS, /export type SettingsMenuAction = `settings-\$\{SettingsTab\}`;/);
+  // Only the pages this account can open are live, as in the dialog's own tab rail.
+  assert.match(ROOT, /`settings-\$\{tab\}`,\s*!isAuthFlowRoute && settingsTabVisible\(tab, isOwner\)/);
 });
 
 test("every action is handled in the app shell", () => {
   for (const action of rustActions) {
     assert.ok(ROOT.includes(`"${action}":`), `__root.tsx handles ${action}`);
   }
+  // Help items for owner-only pages are off for managed accounts, in both menus.
+  assert.match(ROOT, /isAuthFlowRoute \|\| !helpActionAvailable\(action, isOwner\)/);
+  assert.match(readSrc("components/app-sidebar.tsx"), /\.filter\(\(action\) => helpActionAvailable\(action, isOwner\)\)/);
 });
 
 test("both sides use the same event and command names", () => {
@@ -203,9 +264,12 @@ test("menu chords follow the user's bindings and never steal a web shortcut's ch
       .replace("+[", "+BracketLeft")
       .replace("+]", "+BracketRight")
       .replace("+=", "+Equal")
-      .replace(/\+-$/, "+Minus");
+      .replace(/\+-$/, "+Minus")
+      .replace("+/", "+Slash");
   for (const action of rustActions) {
-    assert.equal(defaults[action as keyof typeof defaults], native(rustAccel(action)!), action);
+    // An empty accelerator is an item with no chord.
+    const accel = rustAccel(action);
+    assert.equal(defaults[action as keyof typeof defaults], accel ? native(accel) : null, action);
   }
   // Rebound: the item shows the new chord.
   assert.equal(
@@ -234,8 +298,9 @@ test("menu chords follow the user's bindings and never steal a web shortcut's ch
   // The list matches what the native menu actually holds: Tauri's default items plus our Quit.
   assert.match(MAIN_RS, /MenuItemBuilder::with_id\(APP_QUIT_MENU_ID, "Quit Unsloth"\)\s*\.accelerator\("CmdOrCtrl\+Q"\)/);
   const { MENU_CHORDS, NATIVE_MENU_CHORDS } = await import("../src/app/app-menu-chords.ts");
+  // An item with no chord (Go > Library) has nothing to collide with.
   for (const { chord } of Object.values(MENU_CHORDS)) {
-    assert.ok(!NATIVE_MENU_CHORDS.has(chord), `${chord} is not a native chord`);
+    if (chord) assert.ok(!NATIVE_MENU_CHORDS.has(chord), `${chord} is not a native chord`);
   }
   // A chord without Cmd or Ctrl never reaches the menu, which would take it from text fields.
   assert.equal(
@@ -262,4 +327,27 @@ test("Back and Forward follow page history, and zoom steps the interface scale",
   assert.match(ROOT, /"zoom-in": zoomBy\(1\)/);
   assert.match(ROOT, /"zoom-out": zoomBy\(-1\)/);
   assert.match(ROOT, /"actual-size": \(\) => useInterfaceScaleStore\.getState\(\)\.reset\(\)/);
+});
+
+test("Help items reuse the icon of the Settings tab they open", () => {
+  const dialog = readSrc("features/settings/settings-dialog.tsx");
+  const tabIcon = (id: string) =>
+    dialog.match(new RegExp(`id: "${id}",\\s*labelKey: "[^"]+",\\s*icon: (\\w+)`))?.[1];
+  const helpIcon = (action: string) => HELP.match(new RegExp(`"${action}": \\{[^}]*icon: (\\w+)`))?.[1];
+  for (const [action, tab] of [
+    ["help-keyboard-shortcuts", "keyboard-shortcuts"],
+    ["help-troubleshooting", "debugging"],
+    ["help-system-status", "resources"],
+  ]) {
+    // Both sides must be found: two misses would compare equal and pass.
+    const icon = tabIcon(tab);
+    assert.ok(icon, `the ${tab} tab's icon`);
+    assert.equal(helpIcon(action), icon, action);
+  }
+});
+
+test("About Unsloth uses the info icon Studio uses everywhere else", () => {
+  const sidebar = readSrc("components/app-sidebar.tsx");
+  const about = sidebar.slice(0, sidebar.indexOf('{t("shell.helpMenu.about")}'));
+  assert.match(about.slice(about.lastIndexOf("<HugeiconsIcon")), /^<HugeiconsIcon icon=\{InformationCircleIcon\}/);
 });

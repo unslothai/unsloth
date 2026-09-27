@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from hub.utils.hf_errors import modelscope_missing
 from loggers import get_logger
 
 from .diffusion_attention import (
@@ -99,6 +100,8 @@ from .diffusion_memory import (
     settled_snapshot_device_memory,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
+from .media_decode_phase import decode_phase as _decode_phase
+from . import diffusion_render_thread as render_thread
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -732,72 +735,8 @@ def _completed_step_poller(pump: Any, poll_seconds: float = 0.1):
         thread.join(timeout = 2.0)
 
 
-# The decoders a video pipeline may run after its denoise loop, in the order the modular MiniMax-H3
-# workflow runs them. Wrapping the bound method is the one hook every family shares.
-_DECODE_ATTRS = ("vae", "audio_vae")
-
-# How hard the end-of-denoise marker tries before it gives up and flips the phase at the host
-# position. The hold-off refuses without blocking, so most refusals are the 10 Hz poller holding
-# the lock for a couple of event queries; 20 tries 20 ms apart covers several poll ticks and costs
-# nothing when uncontended, while a real capture outlasts it and takes the host-position fallback.
 _BOUNDARY_MARK_ATTEMPTS = 20
 _BOUNDARY_MARK_RETRY_SECONDS = 0.02
-
-
-@contextlib.contextmanager
-def _decode_phase(pipe: Any, on_decode: Any):
-    """Flip the reported phase to "decode" the instant the decoder is entered.
-
-    HunyuanVideo-1.5, Wan and MiniMax-H3's modular workflow all run the decode INSIDE the pipeline
-    call with nothing between the denoise loop and it, so a phase set only after ``pipe()`` returns
-    reports the whole decode as the last denoise step. On H3 that decode plus its post-processing
-    is ~3.9 s of the render, and the VAE decode is the memory peak.
-
-    Note what this hook is and is not: it is the one HOST position that knows the denoise loop is
-    over, and nothing more. On a family where the host runs ahead of the device, the denoise
-    kernels can still be queued when it fires, so the caller must treat it as "mark the boundary",
-    not as "the denoise finished" -- see ``_CompletedStepTicker.mark_boundary``.
-
-    ``on_decode`` fires at most once per generation and must not raise. Every wrapper installed
-    here is removed again, including when the decode raises -- and restored to whatever was there,
-    since the speed layer may have already put a compiled decode in the instance ``__dict__``.
-    """
-    fired = {"done": False}
-    restore: list = []
-
-    def _wrap(original: Any):
-        def _decode(*args: Any, **kwargs: Any) -> Any:
-            if not fired["done"]:
-                fired["done"] = True
-                on_decode()
-            return original(*args, **kwargs)
-
-        return _decode
-
-    for name in _DECODE_ATTRS:
-        owner = getattr(pipe, name, None)
-        original = getattr(owner, "decode", None) if owner is not None else None
-        if not callable(original):
-            continue
-        had_own = "decode" in getattr(owner, "__dict__", {})
-        try:
-            owner.decode = _wrap(original)
-        except Exception:  # noqa: BLE001 -- a decoder that refuses assignment goes unreported
-            continue
-        restore.append((owner, original, had_own))
-    try:
-        yield
-    finally:
-        for owner, original, had_own in restore:
-            try:
-                if had_own:
-                    owner.decode = original
-                else:
-                    # Nothing was shadowing the class method, so leave nothing behind -- a bound
-                    # method parked in a module's __dict__ is a reference cycle back to the module.
-                    del owner.decode
-            except Exception:  # noqa: BLE001 -- cleanup is best-effort
-                pass
 
 
 def _assert_pick_is_not_speech(
@@ -1433,7 +1372,7 @@ def _transformer_names(pipe: Any, fam: VideoFamily) -> tuple[str, ...]:
 
 
 def _video_transformer_quant_backend(state: Any) -> Optional[str]:
-    """Read from the module tree; both experts share one backend. Never raises."""
+    """Which NVFP4 kernel path the loaded denoiser(s) run, or None. Never raises."""
     if getattr(state, "transformer_quant", None) != "nvfp4":
         return None
     try:
@@ -2293,7 +2232,7 @@ class VideoBackend:
 
             with self._lock:
                 if self._load_token == token and self._loading is not None:
-                    self._loading.error = redact_native_paths(str(exc))
+                    self._loading.error = modelscope_missing(exc) or redact_native_paths(str(exc))
 
     def _run_load_h3_native(
         self,
@@ -3077,7 +3016,7 @@ class VideoBackend:
         text_encoder_quant: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
     ) -> Optional[str]:
-        """The plan's seed scheme; ``DENOISER_SEED_DECLINED`` if the load would offload."""
+        """The pre-download auto denoiser scheme, None, or ``DENOISER_SEED_DECLINED`` if the plan would offload."""
         try:
             if kind != "pipeline" or getattr(fam, "modular_workflow", None):
                 return None
@@ -3270,7 +3209,7 @@ class VideoBackend:
         cancel_event: Optional[threading.Event] = None,
         local_files_only: bool = False,
     ) -> None:
-        """Pre-fetch hosted denoiser checkpoint(s) under the load's cancel event; best effort."""
+        """Pre-fetch the hosted denoiser checkpoint(s) under the load's cancel event; best effort except cancellation."""
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         from core.inference.diffusion_prequant import candidate_filenames_of
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -3311,7 +3250,7 @@ class VideoBackend:
         *,
         kind: str = "pipeline",
     ) -> bool:
-        """True when hosted pre-quantized denoisers replace ALL dense DiT shards; never raises."""
+        """True when hosted pre-quantized checkpoints replace ALL the family's dense DiT shards; offline, never raises."""
         try:
             scheme = normalize_transformer_quant(transformer_quant)
             # An unresolved "auto" must NOT drop dense shards; the backend settles it first.
@@ -3334,7 +3273,7 @@ class VideoBackend:
         base: Optional[str],
         h3_task: Optional[str] = None,
     ) -> list[Any]:
-        """Every ``PrequantSource`` a seeded load would open, or ``[]``; never raises."""
+        """Every ``PrequantSource`` a seeded load would open, or ``[]``; registry only, never raises."""
         scheme = (transformer_quant or "").strip().lower()
         if scheme in ("", "auto", "off", "none"):
             return []
@@ -3358,7 +3297,7 @@ class VideoBackend:
         base: Optional[str],
         h3_task: Optional[str] = None,
     ) -> tuple[str, ...]:
-        """Repo id(s) a seeded denoiser is fetched from, for the in-flight delete guard."""
+        """Hosted repo id(s) a seeded denoiser is fetched from, for the in-flight delete guard."""
         return tuple(
             dict.fromkeys(
                 src.location
@@ -3377,7 +3316,8 @@ class VideoBackend:
         api: Any,
         h3_task: Optional[str] = None,
     ) -> tuple[Optional[str], list[tuple[str, int]]]:
-        """``(repo_id, [(rfilename, size)])`` for all hosted denoisers or ``(None, [])``."""
+        """``(repo_id, [(rfilename, size)])`` for every hosted denoiser artifact, or ``(None, [])``, so preflight
+        counts the checkpoint that replaces the dropped dense shards."""
         sources = VideoBackend._denoiser_prequant_source_list(fam, transformer_quant, base, h3_task)
         if not sources or any(getattr(src, "kind", None) != "repo" for src in sources):
             return None, []
@@ -3518,8 +3458,7 @@ class VideoBackend:
     ) -> list[tuple[str, int]]:
         """The (rfilename, size) list a load actually needs from the base repo.
 
-        Single source of truth for the progress estimate AND the scoped pre-download,
-        so the two can never disagree. Excluded on purpose:
+        Shared by the progress estimate and the scoped pre-download. Excluded on purpose:
         - root-level packaged checkpoints (ComfyUI-style singles; 170 GB of the LTX-2
           repo) -- the diffusers pipeline only reads per-component subfolders;
         - the duplicate ``text_encoder/diffusion_pytorch_model*`` shard set (the LTX-2
@@ -3536,15 +3475,10 @@ class VideoBackend:
         - the dense weight shards of the denoiser partition this load opens, under
           ``skip_transformer_weights``, supplied instead by a hosted PRE-QUANTIZED
           denoiser checkpoint (H3's transformer is 66.3 GB of its base repo).
-          ``transformer/config.json`` stays; ``skip_transformer_components`` names the covered ones.
+          ``transformer/config.json`` is kept for the same reason the pre-cast
+          encoders keep theirs; ``skip_transformer_components`` names the covered denoisers.
 
-        ``h3_task`` picks the H3 denoiser partition. The base repo ships two, and a load only ever
-        brings up one: ``transformer/`` for fl2va (which also covers text-only) and
-        ``transformer_ref/`` for ref2va. They are 66.28 GB each, so the scoped list carries exactly
-        one of them, never both. Substituting rather than listing both is what keeps the stage at
-        one denoiser: listing only ``transformer/`` staged the wrong 66.28 GB for a ref2va load and
-        left the right one to be fetched inline, outside the download manager's disk preflight and
-        cancellation."""
+        ``h3_task`` picks the ONE H3 partition staged (``transformer/`` or ``transformer_ref/``)."""
         from .diffusion_te_prequant import is_prequant_covered_weight
         from .video_minimax_h3 import H3_TASK_REFERENCES
 
@@ -4599,10 +4533,7 @@ class VideoBackend:
             log: bool,
             denoiser_gb: Optional[float] = None,
         ) -> tuple[Any, Any, bool]:
-            """``(plan, bf16_plan, quant_replanned)`` for a text-encoder budget of ``scale`` x
-            its bf16 size. Pure and cheap (``plan_diffusion_memory`` is arithmetic), so the
-            dense-encoder plan can be rebuilt below if the pre-cast injection does not land.
-            ``denoiser_gb`` replaces the bf16 DiT term for a SEEDED load (steady and peak)."""
+            """``(plan, bf16_plan, quant_replanned)``; ``denoiser_gb`` prices a SEEDED DiT (peak == steady)."""
             text_encoder_gb = components[1] * scale if components is not None else 0.0
             # dtype_scale doubles bf16 terms when the fp16 promotion lands fp32 on an accelerator. A vae_force_fp32
             # family is the one component it must NOT touch: its table term is already recorded at fp32 and assembly
@@ -7126,7 +7057,7 @@ class VideoBackend:
                     self._reset_step_cache(pipe)
                 try:
                     with torch.inference_mode(), protect_ctx, progress_ctx(), sigma_ctx:
-                        output = pipe(**kwargs)
+                        output = render_thread.run("video", lambda: pipe(**kwargs))
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); under offload the onloaded modules would
                     # stay on the GPU.

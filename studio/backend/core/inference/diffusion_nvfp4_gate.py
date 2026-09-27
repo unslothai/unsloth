@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The checked-in record of which NVFP4 checkpoints passed the accuracy gate, per family, base and
-policy. Verdicts are re-derived, never trusted as stored. Torch-free: the smoke-probe child reads it.
-"""
+"""Checked-in NVFP4 accuracy-gate verdicts per (family, base, policy); torch-free (the smoke probe reads it)."""
 
 from __future__ import annotations
 
@@ -75,7 +73,7 @@ def nvfp4_gate_records(
     *,
     path: Any = None,
 ) -> tuple:
-    """Without a base there are none: a sibling base's verdict must never be inherited."""
+    """Gate records for ``(family, base_repo)``, optionally pinned to ``policy_id``; none without a base."""
     fam = str(family or "").strip().lower()
     base = _canonical(base_repo)
     if not fam or not base:
@@ -100,7 +98,7 @@ def nvfp4_gate_record(
     *,
     path: Any = None,
 ) -> Optional[dict]:
-    """The first record only; whether nvfp4 is allowed is ``_passing_record``'s question."""
+    """The first gate record for ``(family, base_repo)``, or None (not whether nvfp4 is allowed)."""
     matched = nvfp4_gate_records(family, base_repo, policy_id, path = path)
     return matched[0] if matched else None
 
@@ -111,7 +109,7 @@ def _passing_records(
     *,
     path: Any = None,
 ) -> tuple:
-    """Every PASS at the resolved policy: one checkpoint's failure must not mask a later pass."""
+    """Every PASS for this family and base at the resolved policy; a failure must not mask a later pass."""
     try:
         from .diffusion_nvfp4_policy import resolve_policy
         policy = resolve_policy(family, base_repo)
@@ -157,7 +155,7 @@ def nvfp4_gate_backends(
     *,
     path: Any = None,
 ) -> tuple:
-    """Every backend a passing record was measured on: one policy can hold artifacts on either."""
+    """Every NVFP4 backend a passing record was measured on, lowercased, deduplicated, in file order."""
     backends: list[str] = []
     for record in _passing_records(family, base_repo, path = path):
         backend = str(record.get("backend") or "").strip().lower()

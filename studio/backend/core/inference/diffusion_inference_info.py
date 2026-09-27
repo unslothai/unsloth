@@ -24,7 +24,6 @@ def _round1(value: float) -> float:
 
 
 def _family_base_repos() -> dict[str, str]:
-    """Family name -> DEFAULT base repo; a variant load prices itself via ``estimate_dense_quant``."""
     return {fam.name.strip().lower(): fam.base_repo for fam in _FAMILIES}
 
 

@@ -71,12 +71,14 @@ def test_the_lever_wraps_the_chunk_render_itself():
             continue
         names = set()
         for item in node.items:
-            expr = item.context_expr
-            if isinstance(expr, ast.Name):
-                names.add(expr.id)
-            elif isinstance(expr, ast.Call):
-                func = expr.func
-                names.add(func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", ""))
+            for expr in ast.walk(item.context_expr):
+                if isinstance(expr, ast.Name):
+                    names.add(expr.id)
+                elif isinstance(expr, ast.Call):
+                    func = expr.func
+                    names.add(
+                        func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                    )
         if "protect_ctx" in names:
             wrapped.append(names)
     assert wrapped, "the protect context is never entered"
@@ -329,7 +331,6 @@ def _cuda_or_skip():
 
 
 def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monkeypatch):
-    """Two tuned captures, each replay bit-identical to its branch's un-graphed forward."""
     torch = _cuda_or_skip()
     import torch.nn as nn
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig

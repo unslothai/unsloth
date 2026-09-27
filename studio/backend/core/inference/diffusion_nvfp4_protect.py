@@ -3,8 +3,8 @@
 
 """Per-step precision for the NVFP4 backend: which denoising steps run W4A16 instead of W4A4.
 
-The step counter wraps ``pipe.scheduler.step`` (called once per step, after the forward). Off by
-default: the protected set must be MEASURED per model, a borrowed one can do worse than none.
+A protected step dequantises to a transient bf16 weight; the counter wraps ``pipe.scheduler.step``.
+The set must be MEASURED per model (a copied set did worse than none), so it is off unless named.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ def protect_steps_env() -> str:
 
 
 def parse_protect_steps(spec: Any, total_steps: int) -> tuple:
-    """Out-of-range indices are dropped; a non-integer token DOES raise, never silently nothing."""
+    """``spec`` resolved against ``total_steps``, sorted; out-of-range drops, a non-integer token raises."""
     total = int(total_steps)
     if total <= 0:
         return ()
@@ -67,7 +67,7 @@ def parse_protect_steps(spec: Any, total_steps: int) -> tuple:
 
 
 class NVFP4StepController:
-    """``protected`` is a plain bool, never a property: Dynamo would compile one variant per STEP."""
+    """Current step and whether it is protected; ``protected`` is a plain bool (a property recompiles per STEP)."""
 
     def __init__(self, spec: Any = None) -> None:
         self.spec: str = ""
@@ -91,7 +91,7 @@ class NVFP4StepController:
         return len(self._layers)
 
     def configure(self, spec: Any) -> "NVFP4StepController":
-        """``armed`` is a compile guard: configure before the first forward."""
+        """Set the schedule before the first forward: ``armed`` is a compile guard."""
         raw = "" if spec is None else str(spec).strip().lower()
         self.spec = "" if raw in _OFF_TOKENS else raw
         self.armed = bool(self.spec)
@@ -172,7 +172,7 @@ def protect_generation(
     controller: Optional[NVFP4StepController] = None,
     logger: Any = None,
 ):
-    """A no-op when the lever is off; a pipeline with no scheduler to count protects NOTHING."""
+    """Drive ``controller`` across one generation, then restore; no scheduler protects NOTHING."""
     ctls = [controller] if controller is not None else pipeline_controllers(pipe)
     ctl = ctls[0]
     if not ctl.armed:
@@ -252,6 +252,7 @@ def protect_graph_key(
     *,
     controller: Optional[NVFP4StepController] = None,
 ) -> tuple:
+    """CUDA-graph key suffix for the branch in flight (a graph records ONE branch), or ``()`` when off."""
     ctl = controller if controller is not None else module_controller(module)
     if not ctl.armed:
         return ()

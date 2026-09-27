@@ -1957,3 +1957,38 @@ def test_managed_load_runs_the_worker_security_gates(monkeypatch, trust_remote_c
 def test_only_vllm_torchao_loads_keep_extra_headroom(engine, options, reserve):
     from core.inference.engine_adapters import memory_reserve_mib
     assert memory_reserve_mib(engine, options) == reserve
+
+
+def test_a_spelled_out_text_response_format_is_not_structured_output():
+    from types import SimpleNamespace
+    from routes import inference as route
+
+    def payload(**fields):
+        base = dict(
+            use_adapter = None,
+            response_format = None,
+            continue_final_message = False,
+            enable_thinking = None,
+            preserve_thinking = None,
+            reasoning_effort = None,
+            model_extra = {},
+        )
+        return SimpleNamespace(**{**base, **fields})
+
+    assert not route._managed_engine_unsupported_controls(payload())
+    assert not route._managed_engine_unsupported_controls(payload(response_format = {"type": "text"}))
+    assert route._managed_engine_unsupported_controls(
+        payload(response_format = {"type": "json_object"})
+    )
+    assert route._managed_engine_unsupported_controls(payload(reasoning_effort = "high"))
+
+
+def test_an_audio_model_that_also_reads_images_is_refused_as_audio():
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from routes import inference as route
+
+    config = SimpleNamespace(is_gguf = False, is_lora = False, is_audio = True, is_vision = True)
+    with pytest.raises(HTTPException) as refused:
+        route._reject_unsupported_managed_kind(SimpleNamespace(engine = "vllm"), config)
+    assert "detected as an audio model" in refused.value.detail

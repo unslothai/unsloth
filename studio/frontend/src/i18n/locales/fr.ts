@@ -94,6 +94,10 @@ export const fr = {
     rateLimitedTitle: "Limite de requêtes Hugging Face atteinte",
     rateLimitedBody:
       "Patientez un instant, puis relancez la recherche de {noun}.",
+    modelScope: "ModelScope",
+    useModelScope: "Utiliser ModelScope",
+    useModelScopeHint: "Rechercher et télécharger depuis ModelScope à la place. Vous pouvez revenir en arrière dans les Paramètres.",
+    useModelScopeFailed: "Impossible de passer à ModelScope.",
     hfToken: {
       label: "Token HF",
       saved: "Enregistré",
@@ -125,6 +129,16 @@ export const fr = {
     shutdown: "Arrêter",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Documentation",
+      keyboardShortcuts: "Raccourcis clavier",
+      whatsNew: "Nouveautés",
+      troubleshooting: "Dépannage",
+      systemStatus: "État du système",
+      sendFeedback: "Envoyer des commentaires",
+      about: "À propos d'Unsloth",
+    },
     find: {
       label: "Rechercher dans la page",
       previous: "Résultat précédent",
@@ -179,6 +193,9 @@ export const fr = {
       noChats: "Aucune discussion",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Tous les projets sont epingles",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "Tous les projets sont épinglés ou dans des sections",
+      noProjects: "Aucun projet",
       showMore: "Afficher plus",
       showLess: "Afficher moins",
       settings: "Paramètres",
@@ -224,16 +241,42 @@ export const fr = {
       byProject: "Par projet",
       inOneList: "Dans une seule liste",
       sortChatsBy: "Trier les discussions par",
-      sortPinnedBy: "Trier les épinglés par",
-      priority: "Priorité",
       lastUpdated: "Dernière mise à jour",
       manualOrder: "Ordre manuel",
       switchedToManual: "Tri manuel : faites glisser les lignes pour les réorganiser",
       organizeChats: "Organiser les discussions",
       organizeProjects: "Organiser les projets",
       sortPinnedChats: "Trier les discussions épinglées",
-      moveUp: "Monter",
-      moveDown: "Descendre",
+      // Header of the menu's section-visibility toggles.
+      show: "Afficher",
+      newSection: "Nouvelle section",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "Nouvelle section",
+      createDescription: "Regroupez les discussions et les projets comme vous le souhaitez",
+      namePlaceholder: "Nom de la section",
+      create: "Créer la section",
+      renameTitle: "Renommer la section",
+      renameDescription: "Donnez un nouveau nom à cette section",
+      edit: "Modifier",
+      remove: "Retirer la section",
+      markAllRead: "Tout marquer comme lu",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "Déplacer vers",
+      section: "Section",
+      sectionsHeading: "Sections",
+      removeFromProject: "Retirer du projet",
+      newSection: "Nouvelle section",
+      removeFromSection: "Retirer de la section",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "Retirer de {name}",
+      // Shown in a section with nothing filed in it yet.
+      empty: "Faites glisser des discussions ou des projets ici",
+      sectionOptions: "Options de la section",
+      newChatInSection: "Nouveau chat dans {name}",
+      deleted: "Section « {name} » supprimée",
+      undo: "Annuler",
     },
     dialog: {
       deleteChat: {
@@ -1061,6 +1104,19 @@ export const fr = {
         saveError:
           "Impossible de mettre à jour le réglage de lancement à la connexion.",
       },
+      hub: {
+        source: "Source des modèles",
+        sourceDescription: "Où le hub de modèles recherche et télécharge. Choisissez ModelScope si Hugging Face est bloqué ou lent sur votre réseau.",
+        sourceFallback: "ModelScope n'a pas pu démarrer, Hugging Face est donc utilisé. Consultez les journaux d'Unsloth.",
+        sectionTitle: "Hub de modèles",
+        endpoint: "Point de terminaison Hugging Face",
+        endpointDescription: "Source de téléchargement des modèles et jeux de données. Laissez vide pour huggingface.co, ou saisissez un miroir comme https://hf-mirror.com.",
+        datasetsServer: "L'utiliser aussi pour les aperçus de jeux de données",
+        datasetsServerDescription: "Envoyer aussi les aperçus de jeux de données (HF_DATASETS_SERVER) à ce point de terminaison. À activer seulement si le miroir les fournit.",
+        invalidEndpoint: "Saisissez une URL http(s) sans identifiants ni paramètres. Le http simple ne fonctionne que pour une adresse locale.",
+        saveFailed: "Impossible d'enregistrer les réglages du hub.",
+        loadFailed: "Impossible de charger les réglages du hub.",
+      },
       downloads: {
         sectionTitle: "Téléchargements",
         transport: "Transport de téléchargement",
@@ -1259,19 +1315,20 @@ export const fr = {
       title: "Apparence",
       description: "L'apparence d'Unsloth sur cet appareil.",
       theme: {
-        title: "Thème",
-        label: "Mode de couleur",
+        title: "Style visuel",
+        label: "Mode",
         description: "Clair, sombre ou selon votre système.",
         system: "Système",
         light: "Clair",
         dark: "Sombre",
       },
       palette: {
-        label: "Palette",
+        label: "Thème",
         description: "Couleurs utilisées dans Unsloth, en mode clair et sombre.",
         standard: "Standard",
         classic: "Classique",
         minimal: "Minimale",
+        moreThemes: "Plus de thèmes",
       },
       custom: {
         chatWidth: {
@@ -1285,8 +1342,6 @@ export const fr = {
         resetAll: "Réinitialiser la personnalisation",
         preferencesTitle: "Préférences",
         colors: {
-          lightGroup: "Thème clair",
-          darkGroup: "Thème sombre",
           accent: "Accent",
           background: "Arrière-plan",
           foreground: "Premier plan",
@@ -3107,6 +3162,11 @@ export const fr = {
       gridView: "Vue en grille",
       listView: "Vue en liste",
       settings: "Paramètres de la Bibliothèque",
+      sort: "Trier",
+      sortDefault: "Ordre par défaut",
+      sortName: "Nom",
+      sortModified: "Modifié",
+      sortSize: "Taille",
     },
     create: {
       note: "Note",

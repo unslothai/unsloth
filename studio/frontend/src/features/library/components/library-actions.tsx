@@ -109,7 +109,7 @@ export function LibraryActionsMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="w-60"
+        className="library-actions-menu w-52"
         onClick={(event) => event.stopPropagation()}
       >
         <DropdownMenuItem onSelect={() => actions.chatAbout(target)}>
@@ -147,7 +147,7 @@ export function LibraryActionsMenu({
             <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className={ICON} />
             {t("library.menu.addToFolder")}
           </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="max-h-[min(--spacing(80),var(--radix-dropdown-menu-content-available-height))] w-56">
+          <DropdownMenuSubContent className="library-actions-menu max-h-[min(--spacing(80),var(--radix-dropdown-menu-content-available-height))] w-48">
             <DropdownMenuItem onSelect={() => actions.moveToNewFolder(target)}>
               <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className={ICON} />
               {t("library.menu.newFolder")}

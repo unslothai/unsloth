@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""NVFP4 flashinfer device guard and ordering barrier. Stubs ``torch`` and ``flashinfer``: neither the
-launch device nor the call ORDER inside an opaque custom op is observable on one GPU."""
+"""Kernel-side tests for the NVFP4 flashinfer path: the device guard and the ordering barrier."""
 
 from __future__ import annotations
 

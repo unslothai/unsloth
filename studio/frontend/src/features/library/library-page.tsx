@@ -65,7 +65,11 @@ import { ConfirmDeleteDialog, NameDialog } from "./components/library-dialogs";
 import { LibraryList } from "./components/library-list";
 import { LibraryPreview } from "./components/library-preview";
 import { LibraryHeader } from "./components/library-header";
-import { LibraryToolbar, type NewAction } from "./components/library-toolbar";
+import {
+  type LibrarySortChoice,
+  LibraryToolbar,
+  type NewAction,
+} from "./components/library-toolbar";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive, matchesFilters } from "./filters";
 import { LIBRARY_TABS, type LibrarySearch, type LibraryTab } from "./search";
 import { useLibraryStore } from "./store";
@@ -212,7 +216,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
 
   const [query, setQuery] = useState("");
-  const [filters, setFilters] = useState<LibraryFilters>(() =>
+  const [chosenFilters, setFilters] = useState<LibraryFilters>(() =>
     search.filter === "files" ? { sources: new Set(), types: new Set(FILE_TYPES) } : EMPTY_FILTERS,
   );
   const [selection, setSelection] = useState<Set<string>>(new Set());
@@ -245,6 +249,27 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     [navigate],
   );
 
+  // "Default order" falls back to the sort in Library settings.
+  const gridSortValue = (search.sort ? SORT_STATES[search.sort].key : "default") as LibrarySortChoice;
+  const gridSort = {
+    value: gridSortValue,
+    activity: tab === "suggested" && !folderId,
+    showSize: Boolean(folderId) || tab !== "folders",
+    // Reselecting the checked key keeps its direction, which list view may have flipped.
+    onChange: (choice: LibrarySortChoice) =>
+      choice !== gridSortValue &&
+      go(
+        {
+          ...search,
+          sort:
+            choice === "default"
+              ? undefined
+              : sortParam({ key: choice, desc: choice !== "name" }),
+        },
+        true,
+      ),
+  };
+
   const [parentOfOpen, setParentOfOpen] = useState<string | null>(null);
   if (currentFolder && currentFolder.parentId !== parentOfOpen) {
     setParentOfOpen(currentFolder.parentId);
@@ -268,6 +293,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const needle = query.trim().toLowerCase();
 
   const kindFilter = folderId ? undefined : KIND_TABS[tab];
+  // Folders have no filter menu, so tab filters do not apply inside them.
+  const filterMode = folderId || tab === "folders" ? "none" : kindFilter ? "source" : "all";
+  const filters = filterMode === "none" ? EMPTY_FILTERS : chosenFilters;
 
   const shownTabs = LIBRARY_TABS.filter((entry) => entry === tab || tabVisible(entry));
 
@@ -849,9 +877,10 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             <LibraryToolbar
               filters={filters}
               onFiltersChange={setFilters}
-              filterMode={!folderId && tab === "folders" ? "none" : kindFilter ? "source" : "all"}
+              filterMode={filterMode}
               view={view}
               onViewChange={setView}
+              sort={view === "grid" && (folderId || tab !== "favorites") ? gridSort : undefined}
               search={query}
               onSearchChange={setQuery}
               searchPlaceholder={t(folderId ? "library.searchFolder" : "library.searchLibrary")}

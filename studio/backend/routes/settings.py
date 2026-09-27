@@ -50,6 +50,7 @@ from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_err
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
     PERSONALIZATION_VERSION,
+    drop_unknown_palette,
     get_personalization,
     set_personalization,
 )
@@ -79,6 +80,13 @@ from utils import systemone_settings
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
+)
+from utils.hub_settings import (
+    HubSettings,
+    active_source,
+    get_hub_settings,
+    set_hub_settings,
+    set_hub_source,
 )
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.reasoning_budget import validate_reasoning_budget_message
@@ -673,6 +681,22 @@ class DownloadTransportResponse(BaseModel):
     xet_unavailable_reason: Optional[str] = None
     auto_resolves_to: str
     auto_reason: Optional[str] = None
+
+
+class HubSettingsPayload(BaseModel):
+    hf_endpoint: str = Field(max_length = 2048)
+    datasets_server_follows_endpoint: StrictBool
+
+
+class HubSourcePayload(BaseModel):
+    source: Literal["huggingface", "modelscope"]
+
+
+class HubSettingsResponse(BaseModel):
+    hf_endpoint: str
+    datasets_server_follows_endpoint: bool
+    source: Literal["huggingface", "modelscope"]
+    active_source: Literal["huggingface", "modelscope"]
 
 
 class XetNoticeReservePayload(BaseModel):
@@ -1442,6 +1466,52 @@ def update_download_transport(
             log = logger,
         ) from exc
     return _download_transport_response(mode)
+
+
+def _hub_settings_response(settings: HubSettings) -> HubSettingsResponse:
+    return HubSettingsResponse(
+        hf_endpoint = settings.hf_endpoint,
+        datasets_server_follows_endpoint = settings.datasets_server_follows_endpoint,
+        source = settings.source,
+        active_source = active_source(),
+    )
+
+
+# Owner only: the endpoint can name a private address that other accounts' clients must not learn.
+@_owner_settings_router.get("/hub", response_model = HubSettingsResponse)
+def get_hub(current_subject: str = Depends(get_current_subject)) -> HubSettingsResponse:
+    return _hub_settings_response(get_hub_settings())
+
+
+@_owner_settings_router.put("/hub", response_model = HubSettingsResponse)
+def update_hub(
+    payload: HubSettingsPayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HubSettingsResponse:
+    # The endpoint receives the installation's Hugging Face token, like the token routes above.
+    require_ui_session(via_api_key)
+    try:
+        settings = set_hub_settings(payload.hf_endpoint, payload.datasets_server_follows_endpoint)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid Hugging Face endpoint."),
+            event = "settings.update_hub_failed",
+            log = logger,
+        ) from exc
+    return _hub_settings_response(settings)
+
+
+@_owner_settings_router.put("/hub/source", response_model = HubSettingsResponse)
+def update_hub_source(
+    payload: HubSourcePayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HubSettingsResponse:
+    require_ui_session(via_api_key)
+    return _hub_settings_response(set_hub_source(payload.source))
 
 
 @_owner_settings_router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
@@ -3925,11 +3995,40 @@ class PersonalizationAppearance(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
     theme: Literal["light", "dark", "system"] = "system"
-    palette: Literal["standard", "classic", "minimal"] = "standard"
+    palette: Literal[
+        "standard",
+        "classic",
+        "minimal",
+        "blueberry",
+        "butterfly-pea",
+        "cherry",
+        "cinnamon",
+        "cotton-candy",
+        "dragon-fruit",
+        "earl-grey",
+        "espresso",
+        "honey",
+        "licorice",
+        "macaron",
+        "matcha",
+        "mint",
+        "neon-cyberpunk",
+        "oat-milk",
+        "peach",
+        "pina-paraiso",
+        "plum",
+        "tangerine",
+        "taro",
+        "wasabi",
+        "yuzu",
+    ] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
     customization: PersonalizationCustomization = Field(
         default_factory = PersonalizationCustomization
     )
+
+
+_PALETTE_IDS = frozenset(get_args(PersonalizationAppearance.model_fields["palette"].annotation))
 
 
 class PersonalizationPayload(BaseModel):
@@ -3954,7 +4053,7 @@ class PersonalizationResponse(PersonalizationPayload):
 def get_personalization_settings(
     current_subject: str = Depends(get_current_subject),
 ) -> PersonalizationResponse:
-    stored = get_personalization()
+    stored = drop_unknown_palette(get_personalization(), _PALETTE_IDS)
     response = PersonalizationResponse.model_validate(stored or {})
     response.saved = bool(stored)
     appearance = stored.get("appearance") if isinstance(stored, dict) else None
@@ -3999,8 +4098,10 @@ def update_personalization_settings(
             log = logger,
         ) from exc
     # Return the stored record, not the defaults-filled request, so the response
-    # matches storage (and the next GET) for fields the client omitted.
-    return PersonalizationPayload.model_validate(merged)
+    # matches storage (and the next GET) for fields the client omitted. An unknown
+    # stored palette is filtered like GET does; clients send a palette with every
+    # save, so the next save replaces it.
+    return PersonalizationPayload.model_validate(drop_unknown_palette(merged, _PALETTE_IDS))
 
 
 # Backs Settings > Logs: the session log always existed, but its path was only printed to a console

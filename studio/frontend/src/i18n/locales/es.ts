@@ -94,6 +94,10 @@ export const es = {
     rateLimitedTitle: "Se alcanzó el límite de solicitudes de Hugging Face",
     rateLimitedBody:
       "Espera un momento y vuelve a intentar la búsqueda de {noun}.",
+    modelScope: "ModelScope",
+    useModelScope: "Usar ModelScope",
+    useModelScopeHint: "Busca y descarga desde ModelScope en su lugar. Puedes volver a cambiarlo en Ajustes.",
+    useModelScopeFailed: "No se pudo cambiar a ModelScope.",
     hfToken: {
       label: "Token de HF",
       saved: "Guardado",
@@ -124,6 +128,16 @@ export const es = {
     shutdown: "Apagar",
   },
   shell: {
+    // The Help submenu of the account menu, and the desktop app's Help menu.
+    helpMenu: {
+      documentation: "Documentación",
+      keyboardShortcuts: "Atajos de teclado",
+      whatsNew: "Novedades",
+      troubleshooting: "Solución de problemas",
+      systemStatus: "Estado del sistema",
+      sendFeedback: "Enviar comentarios",
+      about: "Acerca de Unsloth",
+    },
     find: {
       label: "Buscar en la página",
       previous: "Coincidencia anterior",
@@ -178,6 +192,9 @@ export const es = {
       noChats: "Sin chats",
       // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Todos los proyectos fijados",
+      // Same, when some of them are filed in custom sections instead.
+      allProjectsFiled: "Todos los proyectos están fijados o en secciones",
+      noProjects: "No hay proyectos",
       showMore: "Mostrar más",
       showLess: "Mostrar menos",
       settings: "Configuración",
@@ -223,16 +240,42 @@ export const es = {
       byProject: "Por proyecto",
       inOneList: "En una sola lista",
       sortChatsBy: "Ordenar chats por",
-      sortPinnedBy: "Ordenar fijados por",
-      priority: "Prioridad",
       lastUpdated: "Última actualización",
       manualOrder: "Orden manual",
       switchedToManual: "Orden manual: arrastra las filas para reordenarlas",
       organizeChats: "Organizar chats",
       organizeProjects: "Organizar proyectos",
       sortPinnedChats: "Ordenar chats fijados",
-      moveUp: "Subir",
-      moveDown: "Bajar",
+      // Header of the menu's section-visibility toggles.
+      show: "Mostrar",
+      newSection: "Nueva sección",
+    },
+    // User-made sidebar sections that group chats and projects.
+    sections: {
+      createTitle: "Nueva sección",
+      createDescription: "Agrupa chats y proyectos como quieras",
+      namePlaceholder: "Nombre de la sección",
+      create: "Crear sección",
+      renameTitle: "Renombrar sección",
+      renameDescription: "Dale un nombre nuevo a esta sección",
+      edit: "Editar",
+      remove: "Quitar sección",
+      markAllRead: "Marcar todo como leído",
+      // The row menu's one submenu for projects and sections, and its headings.
+      moveTo: "Mover a",
+      section: "Sección",
+      sectionsHeading: "Secciones",
+      removeFromProject: "Quitar del proyecto",
+      newSection: "Nueva sección",
+      removeFromSection: "Quitar de la sección",
+      // Names the project or section the row leaves; the two above are for when it is not one.
+      removeFrom: "Quitar de {name}",
+      // Shown in a section with nothing filed in it yet.
+      empty: "Arrastra chats o proyectos aquí",
+      sectionOptions: "Opciones de sección",
+      newChatInSection: "Nuevo chat en {name}",
+      deleted: "Sección «{name}» eliminada",
+      undo: "Deshacer",
     },
     dialog: {
       deleteChat: {
@@ -1057,6 +1100,19 @@ export const es = {
         loadError: "No se pudo cargar el ajuste de inicio automático.",
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
       },
+      hub: {
+        source: "Origen de los modelos",
+        sourceDescription: "Dónde busca y descarga el hub de modelos. Elige ModelScope si Hugging Face está bloqueado o es lento en tu red.",
+        sourceFallback: "No se pudo iniciar ModelScope, así que se usa Hugging Face. Revisa los registros de Unsloth.",
+        sectionTitle: "Hub de modelos",
+        endpoint: "Endpoint de Hugging Face",
+        endpointDescription: "De dónde se descargan los modelos y conjuntos de datos. Déjalo vacío para usar huggingface.co o escribe un espejo como https://hf-mirror.com.",
+        datasetsServer: "Usarlo también para las vistas previas de datos",
+        datasetsServerDescription: "Enviar también las vistas previas de conjuntos de datos (HF_DATASETS_SERVER) a este endpoint. Actívalo solo si el espejo las ofrece.",
+        invalidEndpoint: "Escribe una URL http(s) sin credenciales ni parámetros. http sin cifrar solo funciona con una dirección local.",
+        saveFailed: "No se pudo guardar la configuración del hub.",
+        loadFailed: "No se pudo cargar la configuración del hub.",
+      },
       downloads: {
         sectionTitle: "Descargas",
         transport: "Transporte de descarga",
@@ -1255,19 +1311,20 @@ export const es = {
       title: "Apariencia",
       description: "Cómo se ve Unsloth en este dispositivo.",
       theme: {
-        title: "Tema",
-        label: "Esquema de color",
+        title: "Estilo visual",
+        label: "Modo",
         description: "Claro, oscuro o según tu sistema.",
         system: "Sistema",
         light: "Claro",
         dark: "Oscuro",
       },
       palette: {
-        label: "Paleta de colores",
+        label: "Tema",
         description: "Colores usados en Unsloth, en modo claro y oscuro.",
         standard: "Estándar",
         classic: "Clásica",
         minimal: "Minimalista",
+        moreThemes: "Más temas",
       },
       custom: {
         chatWidth: {
@@ -1281,8 +1338,6 @@ export const es = {
         resetAll: "Restablecer la personalización",
         preferencesTitle: "Preferencias",
         colors: {
-          lightGroup: "Tema claro",
-          darkGroup: "Tema oscuro",
           accent: "Acento",
           background: "Fondo",
           foreground: "Primer plano",
@@ -3093,6 +3148,11 @@ export const es = {
       gridView: "Vista de cuadrícula",
       listView: "Vista de lista",
       settings: "Ajustes de la Biblioteca",
+      sort: "Ordenar",
+      sortDefault: "Orden predeterminado",
+      sortName: "Nombre",
+      sortModified: "Modificado",
+      sortSize: "Tamaño",
     },
     create: {
       note: "Nota",
