@@ -718,3 +718,7 @@ def test_originals_upload_takes_any_name_and_caps_tool_only_files_higher(tmp_pat
         with pytest.raises(HTTPException) as refused:
             upload(name, data)
         assert refused.value.status_code == 413, name
+
+
+def test_rtf_label_is_stripped_from_the_stored_text():
+    assert chat_history._attachment_body_text("[RTF: notes.rtf]\nhello") == "hello"

@@ -56,6 +56,8 @@ export function convertedImageType(file: {
 }
 
 const MAX_CONVERTED_IMAGE_BYTES = 20 * 1024 * 1024;
+// iOS Safari, the one browser that decodes HEIC, refuses canvases past 16.7 megapixels.
+const MAX_CONVERTED_IMAGE_PIXELS = 16_777_216;
 
 export async function normalizeChatImage(file: File): Promise<File> {
   const type = convertedImageType(file);
@@ -73,9 +75,15 @@ export async function normalizeChatImage(file: File): Promise<File> {
         `This app can't read ${file.name}. Convert it to JPEG or PNG and attach it again.`,
       );
     }
+    const scale = Math.min(
+      1,
+      Math.sqrt(
+        MAX_CONVERTED_IMAGE_PIXELS / (image.naturalWidth * image.naturalHeight),
+      ),
+    );
     const canvas = document.createElement("canvas");
-    canvas.width = image.naturalWidth;
-    canvas.height = image.naturalHeight;
+    canvas.width = Math.max(1, Math.floor(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.floor(image.naturalHeight * scale));
     const context = canvas.getContext("2d");
     if (!context) {
       throw new Error(`Could not convert ${file.name}.`);
@@ -84,7 +92,7 @@ export async function normalizeChatImage(file: File): Promise<File> {
       context.fillStyle = "#fff";
       context.fillRect(0, 0, canvas.width, canvas.height);
     }
-    context.drawImage(image, 0, 0);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
     const blob = await new Promise<Blob | null>((resolve) =>
       canvas.toBlob(resolve, type, 0.92),
     );

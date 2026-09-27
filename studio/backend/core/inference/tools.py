@@ -19807,6 +19807,8 @@ _ATTACHMENTS_DIR = ".unsloth_attachments"
 _ATTACHMENT_PREFIX_LEN = 12
 _ATTACHMENT_NAME_BYTES = 80
 _UNSAFE_NAME_CHARS = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|]')
+# Windows device names stay reserved with any extension (NUL.tar.gz is NUL).
+_RESERVED_NAME = re.compile(r"(?:CON|PRN|AUX|NUL|COM\d|LPT\d)", re.IGNORECASE)
 
 
 def sandbox_attachment_path(sha256: str, name: str) -> str:
@@ -19819,6 +19821,8 @@ def sandbox_attachment_path(sha256: str, name: str) -> str:
         room = _ATTACHMENT_NAME_BYTES - len(ext.encode())
         # Stripped again so the basename the frontend sends back derives this same path.
         base = (stem.encode()[:room].decode("utf-8", "ignore").rstrip(" .") or "attachment") + ext
+    if _RESERVED_NAME.fullmatch(base.split(".", 1)[0].rstrip(" ")):
+        base = "_" + base
     return f"{_ATTACHMENTS_DIR}/{sha256[:_ATTACHMENT_PREFIX_LEN]}/{base}"
 
 

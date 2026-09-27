@@ -982,7 +982,7 @@ def _decode_attachment_base64(payload: str) -> bytes:
 
 
 _ATTACHMENT_TAG_RE = re.compile(r"<attachment name=[^\n]*>\n(.*)\n</attachment>", re.DOTALL)
-_ATTACHMENT_LABEL_RE = re.compile(r"\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX): [^\n]*\]\n")
+_ATTACHMENT_LABEL_RE = re.compile(r"\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n")
 
 
 def _attachment_body_text(text: str) -> str:

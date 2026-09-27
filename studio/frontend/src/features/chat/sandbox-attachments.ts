@@ -30,6 +30,9 @@ export function sandboxAttachmentPath(sha256: string, name: string): string {
     }
     base = (kept.replace(/[ .]+$/, "") || "attachment") + ext;
   }
+  if (/^(?:CON|PRN|AUX|NUL|COM\d|LPT\d)$/i.test(base.split(".", 1)[0].trimEnd())) {
+    base = `_${base}`;
+  }
   return `.unsloth_attachments/${sha256.slice(0, 12)}/${base}`;
 }
 

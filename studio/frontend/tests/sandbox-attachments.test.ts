@@ -40,6 +40,10 @@ const PATHS: [string, string][] = [
   ["b".repeat(10) + "." + "x".repeat(100), "b".repeat(10)],
   ["..", "attachment"],
   ["e".repeat(100), "e".repeat(80)],
+  ["CON.csv", "_CON.csv"],
+  ["nul.tar.gz", "_nul.tar.gz"],
+  ["com1", "_com1"],
+  ["CONSOLE.txt", "CONSOLE.txt"],
 ];
 
 test("the sandbox path is the server's, and its basename derives it again", () => {

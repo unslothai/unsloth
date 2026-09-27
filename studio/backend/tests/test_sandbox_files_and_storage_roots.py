@@ -3323,6 +3323,10 @@ def test_sandbox_attachment_paths_match_the_frontend():
         ("..", "attachment"),
         ("e" * 100, "e" * 80),
         ("c" * 78 + ". ." + "z" * 20, "c" * 78),
+        ("CON.csv", "_CON.csv"),
+        ("nul.tar.gz", "_nul.tar.gz"),
+        ("com1", "_com1"),
+        ("CONSOLE.txt", "CONSOLE.txt"),
     ):
         path = sandbox_attachment_path(sha, name)
         assert path == f".unsloth_attachments/abababababab/{base}", name
