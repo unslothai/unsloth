@@ -1645,7 +1645,9 @@ def _calibrated_activation(fam: Any, target: Any) -> Any:
         return None
     # Measured without input images: a reference family the generation guard cannot size (no reference_resolutions)
     # would run up to four ~1 MP references past the 2048 canvas the promoted tier budgets.
-    if getattr(fam, "reference", False) and not tuple(getattr(fam, "reference_resolutions", ()) or ()):
+    if getattr(fam, "reference", False) and not tuple(
+        getattr(fam, "reference_resolutions", ()) or ()
+    ):
         return None
     # Measured at 16-bit: an fp16-incompatible family promoted to fp32 (Z-Image on pre-Ampere) holds ~2x.
     compute = _resolve_diffusion_compute_dtype(fam, getattr(target, "dtype", None))
@@ -8005,9 +8007,9 @@ class DiffusionBackend:
             # A calibrated tier budgets only the base model, so its ControlNet streams too. Best-effort, except there:
             # a resident fallback would overflow that tier.
             calibrated = bool(getattr(state, "calibrated_placement", False))
-            if (
-                getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE or calibrated
-            ) and (_offload_controlnet_module(cn_model, state.device, logger)):
+            if (getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE or calibrated) and (
+                _offload_controlnet_module(cn_model, state.device, logger)
+            ):
                 pass
             elif calibrated:
                 del cn_model
