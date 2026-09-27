@@ -376,6 +376,7 @@ def test_studio_load_unload_and_training_methods_invalidate():
         diffusion.DiffusionBackend.unload,
         video.VideoBackend.load_pipeline,
         video.VideoBackend.unload,
+        sd_cpp_backend.SdCppDiffusionBackend._run_load,
         sd_cpp_backend.SdCppDiffusionBackend.unload,
         embed_llama_server.LlamaServerBackend._spawn,
         embed_llama_server.LlamaServerBackend._kill_process,

@@ -2525,6 +2525,7 @@ class SdCppDiffusionBackend:
         ).start()
         return self.status()
 
+    @_invalidates_gpu_memory("sd.cpp load")
     def _run_load(
         self,
         *,
