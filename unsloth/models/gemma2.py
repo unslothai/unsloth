@@ -70,8 +70,7 @@ except:
 if HAS_FLASH_ATTENTION_SOFTCAPPING:
     from flash_attn import flash_attn_func
 
-# Cached decode through flash_attn_with_kvcache (softcap, window_size and cache_leftpad all exist
-# from flash-attn 2.6.3, the HAS_FLASH_ATTENTION_SOFTCAPPING floor). UNSLOTH_GEMMA2_FLASH_DECODE=0 opts out.
+# softcap, window_size and cache_leftpad all exist from flash-attn 2.6.3, the HAS_FLASH_ATTENTION_SOFTCAPPING floor.
 _FLASH_DECODE = (
     HAS_FLASH_ATTENTION_SOFTCAPPING
     and DEVICE_TYPE == "cuda"
@@ -86,12 +85,7 @@ _FLASH_DECODE_PROBED = {}
 
 
 def _gemma2_flash_decode(Q, K_cache, V_cache, kv_seq_len, leftpad, scale, softcap, window):
-    """One-token Gemma2 attention over the paged cache.
-
-    Q: [bsz, n_heads, 1, head_dim]. K_cache, V_cache: [max_len, bsz, n_kv_heads, head_dim], valid up to
-    kv_seq_len; rows are left padded by leftpad ([bsz] int32 or None). window is the number of keys a
-    sliding layer attends to (None for global layers). Returns [bsz, 1, n_heads, head_dim].
-    """
+    """One-token attention over the paged cache [max_len, bsz, n_kv_heads, head_dim], left padded by leftpad."""
     return flash_attn_with_kvcache(
         Q.transpose(1, 2),
         K_cache.permute(1, 0, 2, 3),
