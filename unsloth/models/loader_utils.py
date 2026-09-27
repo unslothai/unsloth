@@ -1781,9 +1781,10 @@ def _decompress_compressed_tensors_model(model):
     return True
 
 
-def _prepare_compressed_tensors_model(model):
+def _prepare_compressed_tensors_model(model, full_finetuning = False):
     """Route FP8 compressed-tensors to Unsloth kernels, else decompress once here."""
-    if not _route_compressed_tensors_fp8_to_unsloth(model):
+    # Routed FP8 weights are frozen, so full finetuning always takes the decompressed bf16 weights.
+    if full_finetuning or not _route_compressed_tensors_fp8_to_unsloth(model):
         _decompress_compressed_tensors_model(model)
 
 

@@ -323,3 +323,16 @@ def test_rowwise_dequant_fallback_follows_the_input_dtype(dtype, monkeypatch):
     ref = W.float() * s
     assert y.dtype == dtype and dX.dtype == dtype
     assert float((y.float() - X.float() @ ref.t()).norm() / (X.float() @ ref.t()).norm()) < 0.01
+
+
+def test_full_finetuning_skips_the_frozen_fp8_route(monkeypatch):
+    from unsloth.models import loader_utils
+
+    model, _ = _ct_model(256, 256, "channel")
+    decompressed = []
+    monkeypatch.setattr(loader_utils, "_decompress_compressed_tensors_model", decompressed.append)
+    loader_utils._prepare_compressed_tensors_model(model, full_finetuning = True)
+    assert decompressed == [model]
+    assert not getattr(model.lin, "_unsloth_compressed_tensors_fp8", False)
+    loader_utils._prepare_compressed_tensors_model(model)
+    assert model.lin._unsloth_compressed_tensors_fp8

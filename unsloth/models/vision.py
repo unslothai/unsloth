@@ -2375,7 +2375,7 @@ class FastBaseModel:
                     variant = kwargs.get("variant"),
                     dtype = torch_dtype,
                 )
-                _prepare_compressed_tensors_model(model)
+                _prepare_compressed_tensors_model(model, full_finetuning = full_finetuning)
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
                     _dequantize_leftover_fp8_params(
                         model,
