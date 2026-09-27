@@ -17,6 +17,7 @@ import {
   deleteChatAttachment,
   emitChatAttachmentDeleted,
   fetchChatAttachmentBlob,
+  isTextAttachmentName,
   listChatAttachments,
 } from "@/features/chat";
 import {
@@ -193,12 +194,9 @@ function toSortTime(value: string | number | null | undefined): number {
 // tab synchronously and point it at the URL once resolved. A blocked synchronous open is surfaced
 // instead of silently losing the file after the asynchronous URL lookup. The Tauri webview has no
 // window.open at all, so it goes through the OS opener.
-async function openResolvedUrl(
-  resolve: () => Promise<string | null>,
-): Promise<void> {
+async function openResolvedUrl(resolve: () => Promise<string>): Promise<void> {
   if (isTauri) {
     const url = await resolve();
-    if (url === null) return;
     const { openUrl } = await import("@tauri-apps/plugin-opener");
     await openUrl(url);
     return;
@@ -210,16 +208,12 @@ async function openResolvedUrl(
     );
   }
   win.opener = null;
-  let url: string | null;
+  let url: string;
   try {
     url = await resolve();
   } catch (err) {
     win.close();
     throw err;
-  }
-  if (url === null) {
-    win.close();
-    return;
   }
   win.location.replace(url);
 }
@@ -265,8 +259,6 @@ const EXT_BY_MIME: Record<string, string> = {
 };
 
 // Name the save after the bytes the route actually returns. Uploaded documents come back as
-// extracted text (TextAttachmentAdapter also wraps it in <attachment name=...>), so text/plain is
-// .txt whatever the upload was called. Managed content parts arrive named "Chat image"/"Chat audio"
 // with no extension at all, which the OS cannot recognise. A dot at index 0 is a dotfile (.env),
 // not an extension: treating it as one would strip the whole name and save a bare ".txt".
 function extensionStart(name: string): number {
@@ -278,7 +270,7 @@ function savedAttachmentName(name: string, blobType: string): string {
   const mime = blobType.split(";")[0].trim().toLowerCase();
   const dot = extensionStart(name);
   if (mime === "text/plain") {
-    if (name.toLowerCase().endsWith(".txt")) return name;
+    if (name.toLowerCase().endsWith(".txt") || isTextAttachmentName(name)) return name;
     return `${dot === -1 ? name : name.slice(0, dot)}.txt`;
   }
   if (dot !== -1) return name;
@@ -320,11 +312,6 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
       }
       await openResolvedUrl(async () => {
         const blob = await fetchChatAttachmentBlob(att.messageId, att.id);
-        // A kept original is served as octet-stream: a tab would save it nameless.
-        if (blob.type === "application/octet-stream") {
-          await downloadFile(blob, att.name, blob.type);
-          return null;
-        }
         const url = URL.createObjectURL(blob);
         // Give the new tab time to load the blob before revoking.
         setTimeout(() => URL.revokeObjectURL(url), 60_000);

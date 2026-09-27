@@ -24,6 +24,7 @@ from pydantic import (
 )
 
 from auth.authentication import get_current_subject
+from core import chat_originals
 from auth import policy
 from routes.chat_generation_runs import cancel_account_run
 from core.inference.llama_server_args import (
@@ -831,7 +832,7 @@ async def delete_threads(
     # Archived turns and uploaded documents are keyed by thread id and unreferenced once the thread
     # is gone, so drop them rather than leaking scopes per deleted chat.
     await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff = cutoff)
-    await run_in_threadpool(_sweep_attachment_files)
+    await run_in_threadpool(chat_originals.sweep)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
 
 
@@ -951,48 +952,6 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
     return result
 
 
-def _sweep_attachment_files() -> None:
-    from storage.chat_attachment_store import sweep_attachments
-    try:
-        sweep_attachments()
-    except Exception:  # noqa: BLE001 - the deletion itself already succeeded
-        logger.warning("chat_history.attachment_sweep_failed", exc_info = True)
-
-
-@router.post("/attachment-files")
-def upload_attachment_file(
-    file: UploadFile = File(...), current_subject: str = Depends(get_current_subject)
-) -> dict:
-    """Store an attachment's original bytes for tools, with a preview when only the python tool can read it."""
-    from storage.chat_attachment_store import (
-        AttachmentTooLarge,
-        EmptyAttachment,
-        attachment_path,
-        store_attachment,
-        sweep_attachments_if_due,
-    )
-
-    try:
-        attachment_id, size = store_attachment(file.file)
-    except AttachmentTooLarge as exc:
-        raise HTTPException(status_code = 413, detail = str(exc)) from exc
-    except EmptyAttachment as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    sweep_attachments_if_due()
-    from core.chat_attachment_preview import preview_attachment
-    from core.inference.tools import sandbox_attachment_path
-
-    filename = file.filename or ""
-    stored = attachment_path(attachment_id)
-    preview = preview_attachment(stored, filename) if stored is not None else None
-    return {
-        "id": attachment_id,
-        "sizeBytes": size,
-        "sandboxPath": sandbox_attachment_path(attachment_id, filename),
-        **({"preview": preview} if preview else {}),
-    }
-
-
 @router.get("/attachments")
 def list_attachments(
     limit: Annotated[int, Query(ge = 1, le = 100)] = 50,
@@ -1022,6 +981,19 @@ def _decode_attachment_base64(payload: str) -> bytes:
         raise HTTPException(status_code = 422, detail = "Attachment data is corrupt") from exc
 
 
+_ATTACHMENT_TAG_RE = re.compile(r"<attachment name=[^\n]*>\n(.*)\n</attachment>", re.DOTALL)
+_ATTACHMENT_LABEL_RE = re.compile(r"\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX): [^\n]*\]\n")
+
+
+def _attachment_body_text(text: str) -> str:
+    """An attachment's text without its chat wrapper, as the file itself reads."""
+    tagged = _ATTACHMENT_TAG_RE.fullmatch(text)
+    if tagged:
+        return tagged.group(1)
+    labelled = _ATTACHMENT_LABEL_RE.match(text)
+    return text[labelled.end() :] if labelled else text
+
+
 _AUDIO_FORMAT_MEDIA_TYPES = {
     "mp3": "audio/mpeg",
     "wav": "audio/wav",
@@ -1041,26 +1013,47 @@ def _safe_image_media_type(media_type: str) -> str:
     return "application/octet-stream"
 
 
+@router.post("/attachment-originals")
+def upload_attachment_original(
+    file: UploadFile = File(...), current_subject: str = Depends(get_current_subject)
+) -> dict:
+    """Store a chat document's original file; the message records the returned hash. Sync, so
+    disk writes run in the threadpool."""
+    from pathlib import PurePath
+
+    if PurePath(file.filename or "").suffix.lower() not in chat_originals.EXTENSIONS:
+        raise HTTPException(status_code = 415, detail = "Only documents keep their original file")
+    try:
+        sha256, size = chat_originals.save(iter(lambda: file.file.read(1024 * 1024), b""))
+    except chat_originals.TooLarge:
+        raise HTTPException(status_code = 413, detail = f"{file.filename} is too large")
+    chat_originals.sweep()
+    return {"sha256": sha256, "sizeBytes": size}
+
+
 @router.get("/attachments/{message_id}/{attachment_id}/file")
 def get_attachment_file(
     message_id: str,
     attachment_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    """One attachment's content: the original file when kept, image, audio or video bytes, or text."""
+    """Serve one attachment's stored content: a document's original file, image, audio or video
+    bytes, or extracted text."""
     import urllib.parse
 
     from fastapi.responses import FileResponse, Response
 
-    from storage.chat_attachment_store import attachment_path
-
     attachment = get_chat_attachment(message_id, attachment_id)
     if attachment is None:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
-    stored = attachment.get("storedFile")
-    original = attachment_path(stored.get("id")) if isinstance(stored, dict) else None
+
+    original = chat_originals.path_for(attachment)
     if original is not None:
-        return FileResponse(original, media_type = "application/octet-stream")
+        return FileResponse(
+            original,
+            media_type = "application/octet-stream",
+            headers = {"X-Content-Type-Options": "nosniff"},
+        )
 
     attachment_content_type = attachment.get("contentType")
     texts: list[str] = []
@@ -1112,7 +1105,7 @@ def get_attachment_file(
             return Response(content = _decode_attachment_base64(file_data), media_type = mime_type)
         text = part.get("text")
         if isinstance(text, str) and text:
-            texts.append(text)
+            texts.append(_attachment_body_text(text))
     if texts:
         return Response(content = "\n".join(texts), media_type = "text/plain; charset=utf-8")
     raise HTTPException(status_code = 404, detail = "Attachment has no stored content")
@@ -1138,7 +1131,7 @@ def delete_attachment(
         ) from exc
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
-    _sweep_attachment_files()
+    chat_originals.sweep()
     return {"ok": True}
 
 
@@ -1277,6 +1270,7 @@ async def delete_project(
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
     # The project's chats go with it, so their archives and documents have to as well.
     await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff = cutoff)
+    await run_in_threadpool(chat_originals.sweep)
     if project.get("sandboxPath"):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
@@ -1384,7 +1378,6 @@ async def delete_project(
     # Each member chat had its own sandbox for anything it wrote before joining
     # the project, and deleting the project removes the only records of them.
     _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)
-    await run_in_threadpool(_sweep_attachment_files)
     # Those folders are reachable from nothing now, so the caller is told which
     # ones survived and can offer the delete once.
     return ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)
@@ -1439,8 +1432,8 @@ def save_thread_message(
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     try:
-        return ChatMessage(
-            **upsert_chat_message(payload.model_dump(), allow_generation_edit = allow_generation_edit)
+        saved = upsert_chat_message(
+            payload.model_dump(), allow_generation_edit = allow_generation_edit
         )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
@@ -1455,6 +1448,8 @@ def save_thread_message(
             log = logger,
             headers = _conflict_headers(exc),
         ) from exc
+    chat_originals.sweep()
+    return ChatMessage(**saved)
 
 
 @router.put("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
@@ -1475,16 +1470,11 @@ def replace_thread_messages(
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     messages = [message.model_dump() for message in payload.messages]
     try:
-        return ChatMessageListResponse(
-            messages = [
-                ChatMessage(**m)
-                for m in sync_chat_messages(
-                    thread_id,
-                    messages,
-                    prune_missing = payload.pruneMissing,
-                    deleted_message_ids = payload.deletedMessageIds,
-                )
-            ]
+        synced = sync_chat_messages(
+            thread_id,
+            messages,
+            prune_missing = payload.pruneMissing,
+            deleted_message_ids = payload.deletedMessageIds,
         )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
@@ -1499,6 +1489,8 @@ def replace_thread_messages(
             log = logger,
             headers = _conflict_headers(exc),
         ) from exc
+    chat_originals.sweep()
+    return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced])
 
 
 @router.get("/count", response_model = ChatCountResponse)
@@ -1620,10 +1612,10 @@ async def clear_history(
     await run_in_threadpool(
         _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
     )
+    await run_in_threadpool(chat_originals.sweep)
     # "Clear all chats" is the common bulk delete.
     # delete_files matches DELETE /threads: off by default, since the files are the user's.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
-    await run_in_threadpool(_sweep_attachment_files)
     # Search thumbnails are keyed by id, not thread. reapable_image_ids is the original clear's own
     # snapshot off the ledger, so a replay's reap cannot reach a newer chat's images.
     if not replayed or reapable_image_ids:

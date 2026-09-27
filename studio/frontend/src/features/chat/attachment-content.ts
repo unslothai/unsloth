@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type Unzipped, strFromU8, unzipSync, zipSync } from "fflate";
+import { type Unzipped, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import {
+  MAX_TEXT_ATTACHMENT_BYTES,
   TEXT_ATTACHMENT_ACCEPT,
   decodeTextAttachmentBytes,
   isTextAttachmentName,
@@ -12,21 +13,11 @@ import {
   MAX_OPEN_DOCUMENT_ARCHIVE_BYTES,
   MAX_OPEN_DOCUMENT_XML_BYTES,
   readOpenDocumentAttachmentContent,
-  readOfficeOpenXmlAttachmentContent,
 } from "./open-document";
 import {
   OPEN_DOCUMENT_SPREADSHEET_MIME,
   OPEN_DOCUMENT_TEXT_MIME,
-  OFFICE_OPEN_XML_MIMES,
-  isOfficeOpenXmlAttachmentName,
-  IWORK_MIMES,
-  isIworkAttachmentName,
-  RTF_MIMES,
-  isRtfAttachmentName,
-  isToolOnlyAttachmentName,
 } from "./open-document-accept";
-import { readIworkAttachmentContent } from "./iwork";
-import { readRtfAttachmentContent } from "./rtf";
 
 export type AttachmentTextLabel =
   | "PDF"
@@ -35,11 +26,7 @@ export type AttachmentTextLabel =
   | "ODS"
   | "ODT"
   | "XLSX"
-  | "PPTX"
-  | "RTF"
-  | "PAGES"
-  | "NUMBERS"
-  | "KEY";
+  | "PPTX";
 
 export { TEXT_ATTACHMENT_ACCEPT };
 
@@ -58,8 +45,7 @@ const PDF_ATTACHMENT_RE = /\.pdf$/i;
 const DOCX_ATTACHMENT_RE = /\.docx$/i;
 const HTML_ATTACHMENT_RE = /\.x?html?$/i;
 const OPEN_DOCUMENT_ATTACHMENT_RE = /\.(ods|odt)$/i;
-const LABELLED_ATTACHMENT_TEXT_RE =
-  /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF|PAGES|NUMBERS|KEY): [^\n]*\]\n/;
+const LABELLED_ATTACHMENT_TEXT_RE = /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX): [^\n]*\]\n/;
 const ATTACHMENT_TAG_OPEN_RE = /^<attachment name=[^\n]*>\n/;
 const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 // Both wrappers start on the first line, so only a prefix is matched against.
@@ -113,6 +99,7 @@ const XML_NAMED_ENTITIES: Record<string, string> = {
  *  the webview. fflate allocates at the declared size and stops, so mammoth is handed a
  *  repack of fflate's output. */
 const MAX_DOCX_UNPACKED_BYTES = 2 * MAX_OPEN_DOCUMENT_ARCHIVE_BYTES;
+const MAX_DOCX_ENTRIES = 100_000;
 const AUDIO_EXTENSION_MIMES: Record<string, string> = {
   wav: "audio/wav",
   mp3: "audio/mpeg",
@@ -493,33 +480,6 @@ export function isOpenDocumentAttachment(
   );
 }
 
-export function isOfficeOpenXmlAttachment(
-  name: string | undefined,
-  contentType: string | undefined,
-): boolean {
-  const mime = contentType?.toLowerCase() ?? "";
-  return (
-    OFFICE_OPEN_XML_MIMES.some((accepted) => accepted.toLowerCase() === mime) ||
-    isOfficeOpenXmlAttachmentName(name ?? "")
-  );
-}
-
-export function isRtfAttachment(
-  name: string | undefined,
-  contentType: string | undefined,
-): boolean {
-  const mime = contentType?.toLowerCase() ?? "";
-  return RTF_MIMES.includes(mime) || isRtfAttachmentName(name ?? "");
-}
-
-export function isIworkAttachment(
-  name: string | undefined,
-  contentType: string | undefined,
-): boolean {
-  const mime = contentType?.toLowerCase() ?? "";
-  return IWORK_MIMES.includes(mime) || isIworkAttachmentName(name ?? "");
-}
-
 // CompositeAttachmentAdapter selects the first matching accept string. Text comes before the
 // document-specific adapters, so previews must apply the same MIME-or-extension match
 // before looking at PDF/DOCX/HTML names.
@@ -547,7 +507,7 @@ function isTextAttachment(
 // loses the typed message along with the file.
 export function getDocumentAttachmentSizeError(
   file: File,
-  label: "PDF" | "DOCX",
+  label: "PDF" | "DOCX" | "XLSX" | "PPTX",
 ): string | null {
   return file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES
     ? `${label} file is too large: ${file.name}`
@@ -556,7 +516,7 @@ export function getDocumentAttachmentSizeError(
 
 export function assertDocumentAttachmentSize(
   file: File,
-  label: "PDF" | "DOCX",
+  label: "PDF" | "DOCX" | "XLSX" | "PPTX",
 ): void {
   const error = getDocumentAttachmentSizeError(file, label);
   if (error) {
@@ -642,18 +602,73 @@ type DocxArchive = {
 /** Inflates the archive under fflate's declared-size allocation. An entry past the XML ceiling
  *  is left out rather than refused: mammoth opens the package parts and whatever the
  *  relationships point at, so a large unreferenced part must still preview.
- *  `assertDocxPartSizes` refuses the ones mammoth would have parsed. */
-function unpackDocxEntries(filename: string, bytes: Uint8Array): DocxArchive {
+ *  `assertDocxPartSizes` refuses the ones mammoth would have parsed. `keepLarge` keeps them
+ *  (still marked oversized) for the viewer, which needs large images as well as text. */
+const DOCX_IMAGE_PART = /\.(png|jpe?g|gif|bmp|tiff?|emf|wmf|svg|webp)$/i;
+
+function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => boolean; used: Set<string> } {
+  const names = new Set<string>();
+  const read = (name: string) =>
+    unzipSync(bytes, {
+      filter: (entry) => {
+        names.add(entry.name);
+        return entry.name === name && entry.originalSize <= MAX_OPEN_DOCUMENT_XML_BYTES;
+      },
+    })[name];
+  const types = read(DOCX_CONTENT_TYPES_PART);
+  const defaults = new Map<string, string>();
+  const overrides = new Map<string, string>();
+  const markup = types ? strFromU8(types).replace(XML_NON_ELEMENT_RE, "") : "";
+  for (const [, tag, attributes] of markup.matchAll(/<(?:[\w.-]+:)?(Default|Override)\b([^>]*)>/g)) {
+    const values = new Map<string, string>();
+    for (const [, key, double, single] of attributes!.matchAll(XML_ATTRIBUTE_RE)) {
+      values.set(key!, double ?? single ?? "");
+    }
+    const type = (values.get("ContentType") ?? "").toLowerCase();
+    if (tag === "Default") defaults.set((values.get("Extension") ?? "").toLowerCase(), type);
+    else overrides.set((values.get("PartName") ?? "").replace(/^\//, "").toLowerCase(), type);
+  }
+  const isImage = (name: string) => {
+    const dot = name.lastIndexOf(".");
+    const type =
+      overrides.get(name.toLowerCase()) ?? (dot === -1 ? undefined : defaults.get(name.slice(dot + 1).toLowerCase()));
+    return type ? type.startsWith("image/") : DOCX_IMAGE_PART.test(name);
+  };
+  const targetsOf = (path: string) =>
+    readDocxXmlTargets(read(docxRelationshipsPath(path)), path.slice(0, Math.max(0, path.lastIndexOf("/"))));
+  const resolve = (targets: string[] | undefined, fallback: string) =>
+    targets?.find((path) => names.has(path)) ?? fallback;
+  const main = resolve(targetsOf("").get(DOCX_MAIN_DOCUMENT_TYPE), DOCX_MAIN_DOCUMENT_FALLBACK);
+  const mainTargets = targetsOf(main);
+  const used = new Set([...mainTargets.values()].flat());
+  for (const name of DOCX_BODY_PART_NAMES) {
+    const path = resolve(mainTargets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`), `word/${name}.xml`);
+    for (const target of [...targetsOf(path).values()].flat()) used.add(target);
+  }
+  return { isImage, used };
+}
+
+function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = false): DocxArchive {
   const names = new Set<string>();
   const oversized = new Set<string>();
+  let count = 0;
+  unzipSync(bytes, {
+    filter: () => {
+      if (++count > MAX_DOCX_ENTRIES) throw new Error(`DOCX file is too large: ${filename}`);
+      return false;
+    },
+  });
+  const images = keepLarge ? docxPreviewImages(bytes) : null;
   let unpacked = 0;
 
   const entries = unzipSync(bytes, {
     filter: (entry) => {
       names.add(entry.name);
+      const image = images?.isImage(entry.name) ?? false;
+      if (image && !images!.used.has(entry.name)) return false;
       if (entry.originalSize > MAX_OPEN_DOCUMENT_XML_BYTES) {
         oversized.add(entry.name);
-        return false;
+        if (!image) return false;
       }
       unpacked += entry.originalSize;
       if (unpacked > MAX_DOCX_UNPACKED_BYTES) {
@@ -669,7 +684,7 @@ function unpackDocxEntries(filename: string, bytes: Uint8Array): DocxArchive {
 /** Refuses the parts mammoth goes on to parse when they exceed the XML ceiling. mammoth takes
  *  no entry filter, so the set is resolved as findPartPaths resolves it, each falling back
  *  to a fixed name when no target resolves. Both sides read the same bytes. */
-function assertDocxPartSizes(filename: string, archive: DocxArchive): void {
+function assertDocxPartSizes(filename: string, archive: DocxArchive): string {
   const { entries, names, oversized } = archive;
   const bound = (path: string) => {
     if (oversized.has(path)) {
@@ -707,6 +722,7 @@ function assertDocxPartSizes(filename: string, archive: DocxArchive): void {
       bound(docxRelationshipsPath(path));
     }
   }
+  return mainDocument;
 }
 
 /** The archive mammoth is given: fflate's own output, so a part that lies about its size
@@ -718,6 +734,44 @@ export function repackDocxAttachmentArchive(
   const archive = unpackDocxEntries(filename, bytes);
   assertDocxPartSizes(filename, archive);
   return zipSync(archive.entries, { level: 0 });
+}
+
+const XML_TOKEN_RE =
+  /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<[?!][\s\S]*?>|<(\/?)([^\s/>]+)(?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*\s*(\/?)>/g;
+const PARAGRAPH_RE = /<(?:[\w.-]+:)?p[\s/>]/;
+
+function cutDocxParagraphs(xml: string, max: number): string | null {
+  const open: string[] = [];
+  let count = 0;
+  XML_TOKEN_RE.lastIndex = 0;
+  for (let match = XML_TOKEN_RE.exec(xml); match; match = XML_TOKEN_RE.exec(xml)) {
+    const [, closing, name, empty] = match;
+    if (!name) continue;
+    if (!closing && !empty) {
+      open.push(name);
+      continue;
+    }
+    if (closing) open.pop();
+    if (/(?:^|:)p$/.test(name) && ++count === max) {
+      const end = XML_TOKEN_RE.lastIndex;
+      if (!PARAGRAPH_RE.test(xml.slice(end))) return null;
+      return `${xml.slice(0, end)}${open.reverse().map((tag) => `</${tag}>`).join("")}`;
+    }
+  }
+  return null;
+}
+
+export function repackDocxPreviewArchive(
+  filename: string,
+  bytes: Uint8Array,
+  maxParagraphs: number,
+): { archive: Uint8Array; truncated: boolean } {
+  const archive = unpackDocxEntries(filename, bytes, true);
+  const mainDocument = assertDocxPartSizes(filename, archive);
+  const main = archive.entries[mainDocument];
+  const cut = main ? cutDocxParagraphs(strFromU8(main), maxParagraphs) : null;
+  if (cut !== null) archive.entries[mainDocument] = strToU8(cut);
+  return { archive: zipSync(archive.entries, { level: 0 }), truncated: cut !== null };
 }
 
 /** The bytes of a view, as an ArrayBuffer, without copying when it owns one. jszip reads the
@@ -776,6 +830,92 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
   } finally {
     await pdf.destroy();
   }
+}
+
+// A text attachment's limit, in UTF-8 bytes. Cells are not capped, so the total must be.
+const MAX_OFFICE_TEXT_BYTES = MAX_TEXT_ATTACHMENT_BYTES;
+
+function utf8Within(text: string, limit: number): { bytes: number; end: number } {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    const pair = code >= 0xd800 && code < 0xdc00 && i + 1 < text.length;
+    const size = code < 0x80 ? 1 : code < 0x800 ? 2 : pair ? 4 : 3;
+    if (bytes + size > limit) return { bytes, end: i };
+    bytes += size;
+    if (pair) i++;
+  }
+  return { bytes, end: text.length };
+}
+
+function textBudget(limit: number) {
+  let left = limit;
+  let cut = false;
+  return {
+    take(text: string): string {
+      if (cut) return "";
+      const { bytes, end } = utf8Within(text, Math.max(0, left - 1));
+      if (end < text.length) cut = true;
+      left -= bytes + 1;
+      return text.slice(0, end);
+    },
+    get cut() {
+      return cut;
+    },
+  };
+}
+
+export async function extractOfficeAttachmentText(
+  file: File,
+  label: "XLSX" | "PPTX",
+): Promise<string> {
+  assertDocumentAttachmentSize(file, label);
+  const [{ MAX_SHEET_COLUMNS, MAX_SHEET_ROWS, readPptx, readXlsx }, buffer] = await Promise.all([
+    import("@/components/file-viewer/office"),
+    file.arrayBuffer(),
+  ]);
+  const bytes = new Uint8Array(buffer);
+  const budget = textBudget(MAX_OFFICE_TEXT_BYTES);
+  const parts: string[] = [];
+  if (label === "PPTX") {
+    const deck = readPptx(bytes, { images: false });
+    for (const [index, slide] of deck.slides.entries()) {
+      if (budget.cut) break;
+      const lines = [budget.take(`Slide ${index + 1}`)];
+      for (const box of slide.boxes) {
+        for (const p of box.paragraphs ?? []) lines.push(budget.take(p.text));
+        if (box.caption) lines.push(budget.take(box.caption));
+        for (const row of box.table ?? []) lines.push(row.map((cell) => budget.take(cell)).join("\t"));
+      }
+      parts.push(lines.join("\n"));
+    }
+    if (deck.truncated && !budget.cut) {
+      parts.push(`[Truncated: only the first ${deck.slides.length} slides are included.]`);
+    }
+  } else {
+    for (const sheet of readXlsx(bytes)) {
+      if (budget.cut) break;
+      const lines = [budget.take(`Sheet: ${sheet.name}`)];
+      for (const row of sheet.rows) {
+        if (!row || budget.cut) continue;
+        const line = Array.from(row, (cell) => budget.take(cell?.text ?? ""))
+          .filter((_, index) => !sheet.hidden?.columns.has(index))
+          .join("\t")
+          .trimEnd();
+        if (line) lines.push(line);
+      }
+      if (sheet.truncated) {
+        lines.push(
+          `[Truncated: only part of the workbook is included, at most ${MAX_SHEET_ROWS} rows and ${MAX_SHEET_COLUMNS} columns per sheet.]`,
+        );
+      }
+      parts.push(lines.join("\n"));
+    }
+  }
+  if (budget.cut) {
+    parts.push(`[Truncated: the text stops after ${MAX_OFFICE_TEXT_BYTES.toLocaleString("en-US")} bytes.]`);
+  }
+  return parts.join("\n\n");
 }
 
 export async function extractDocxAttachmentText(file: File): Promise<string> {
@@ -871,28 +1011,6 @@ export async function readAttachmentText(
     );
     return { label, text, truncated: false };
   }
-  if (isOfficeOpenXmlAttachment(name, contentType)) {
-    const { label, text } = await readOfficeOpenXmlAttachmentContent(
-      file,
-      name,
-    );
-    return { label, text, truncated: false };
-  }
-  if (isRtfAttachment(name, contentType)) {
-    const { label, text } = await readRtfAttachmentContent(file, name);
-    return { label, text, truncated: false };
-  }
-  if (isIworkAttachment(name, contentType)) {
-    const { label, text } = await readIworkAttachmentContent(file, name);
-    return { label, text, truncated: false };
-  }
-  if (isToolOnlyAttachmentName(name)) {
-    return {
-      label: null,
-      text: `${name} has no preview: only the python tool can read it.`,
-      truncated: false,
-    };
-  }
   return { label: null, ...(await readBoundedText(file)) };
 }
 
@@ -932,13 +1050,28 @@ async function readBoundedText(
 // adapter's header rather than showing it. The stored payload has no size limit, so the
 // wrapper is matched on a prefix and only the capped body is copied out.
 export function parseAttachmentText(raw: string): AttachmentText {
+  const { label, start, end } = attachmentBodyRange(raw);
+  return { label, ...sliceAttachmentBody(raw, start, end) };
+}
+
+export function attachmentBodyText(raw: string): string {
+  const { start, end } = attachmentBodyRange(raw);
+  return raw.slice(start, Math.max(start, end));
+}
+
+function attachmentBodyRange(raw: string): {
+  label: AttachmentTextLabel | null;
+  start: number;
+  end: number;
+} {
   const head = raw.slice(0, MAX_ATTACHMENT_WRAPPER_LENGTH);
 
   const labelled = head.match(LABELLED_ATTACHMENT_TEXT_RE);
   if (labelled) {
     return {
       label: labelled[1] as AttachmentTextLabel,
-      ...sliceAttachmentBody(raw, labelled[0].length, raw.length),
+      start: labelled[0].length,
+      end: raw.length,
     };
   }
 
@@ -946,15 +1079,12 @@ export function parseAttachmentText(raw: string): AttachmentText {
   if (tagOpen && raw.endsWith(ATTACHMENT_TAG_CLOSE)) {
     return {
       label: null,
-      ...sliceAttachmentBody(
-        raw,
-        tagOpen[0].length,
-        raw.length - ATTACHMENT_TAG_CLOSE.length,
-      ),
+      start: tagOpen[0].length,
+      end: raw.length - ATTACHMENT_TAG_CLOSE.length,
     };
   }
 
-  return { label: null, ...sliceAttachmentBody(raw, 0, raw.length) };
+  return { label: null, start: 0, end: raw.length };
 }
 
 function sliceAttachmentBody(

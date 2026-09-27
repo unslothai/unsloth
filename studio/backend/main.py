@@ -663,6 +663,18 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         return
     _start_linked_folder_auto_sync(generation)
 
+    try:
+        from core import chat_originals
+        from core.training.account_jobs import startup_reconciliation_accounts
+        from utils.account_context import run_as
+
+        for account in startup_reconciliation_accounts():
+            if _post_warm_retired(generation):
+                return
+            run_as(account, chat_originals.sweep, True)
+    except Exception:  # noqa: BLE001
+        pass
+
     # Last, and deliberately so: it is the only item here that is pure latency work rather than
     # correctness, so everything above keeps its place in the queue. Roughly 5.3s of diffusers
     # import that the first image load would otherwise pay, moved onto this thread, and only on
@@ -810,12 +822,6 @@ async def lifespan(app: FastAPI):
             _run_as(_account, reconcile_orphaned_ingestion_jobs)
         except Exception as exc:
             _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
-
-        try:
-            from storage.chat_attachment_store import sweep_attachments
-            _run_as(_account, sweep_attachments)
-        except Exception as exc:
-            _lifespan_log.warning("chat attachment sweep failed at startup: %s", exc)
 
     try:
         # The boot pass above only settles runs orphaned by the previous process. A run that wedges while this one
@@ -1322,7 +1328,6 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/v1/videos",
     "/api/inference/videos",
 )
-_CHAT_ATTACHMENT_UPLOAD_PATH = "/api/chat/attachment-files"
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
@@ -1333,7 +1338,6 @@ _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     _DIFFUSION_DATASET_UPLOAD_PATH,
     *_STT_MULTIPART_UPLOAD_PATHS,
     *_VIDEO_MULTIPART_UPLOAD_PATHS,
-    _CHAT_ATTACHMENT_UPLOAD_PATH,
     _LIBRARY_UPLOAD_PATH,
 )
 # Which of those may arrive with no Content-Length and be counted instead of refused. Deliberately NOT the
@@ -1353,9 +1357,6 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
             upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
             VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
         )
-    if path.rstrip("/") == _CHAT_ATTACHMENT_UPLOAD_PATH:
-        from storage.chat_attachment_store import MAX_ATTACHMENT_BYTES
-        return upload_request_limit_bytes(MAX_ATTACHMENT_BYTES)
     if path.rstrip("/") == _LIBRARY_UPLOAD_PATH:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes

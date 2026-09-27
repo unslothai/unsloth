@@ -5,7 +5,7 @@
  * what ffmpeg reads, not what the webview can play. Extensions ride along
  * because MIME is unreliable for mkv and some mov files. */
 export const VIDEO_ACCEPT =
-  "video/mp4,video/x-m4v,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,video/mpeg,video/x-ms-wmv,video/x-flv,video/3gpp,video/ogg,video/mp2t,.mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv,.m2ts";
+  "video/mp4,video/x-m4v,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,video/mpeg,video/x-ms-wmv,video/x-flv,video/3gpp,video/ogg,.mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv";
 
 // Matches _MAX_VIDEO_B64_CHARS in the backend, so the composer does not accept
 // a clip the route refuses. The native reader's cap is a higher backstop.
@@ -35,7 +35,6 @@ const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
   ".flv": "video/x-flv",
   ".3gp": "video/3gpp",
   ".ogv": "video/ogg",
-  ".m2ts": "video/mp2t",
 };
 
 const VIDEO_EXTENSIONS = Object.keys(VIDEO_MIME_BY_EXTENSION);
@@ -220,22 +219,12 @@ async function read3gpTracks(file: File): Promise<BmffTracks> {
  * by box count and by the size of the track table rather than by the file.
  */
 export function needsAttachmentTrackInspection(file: File): boolean {
-  return /\.(3gp|m?ts)$/i.test(file.name);
-}
-
-/** Mirrors `is_mpeg_transport_stream` in native_path_policy.rs. */
-export function isMpegTransportStreamBytes(head: Uint8Array): boolean {
-  return [
-    [0, 188],
-    [4, 192],
-  ].some(([start, packet]) =>
-    [0, 1, 2].every((index) => head[start! + index * packet!] === 0x47),
-  );
+  return /\.3gp$/i.test(file.name);
 }
 
 /**
  * The file an attachment surface should classify, with an audio-only 3GP
- * restamped as audio and a .ts or .mts file as a transport stream or text.
+ * restamped as audio.
  *
  * A voice recording and a clip share the .3gp extension, and the browser
  * answers "" or video/3gpp for both, so the name alone sends the recording to
@@ -247,23 +236,6 @@ export function isMpegTransportStreamBytes(head: Uint8Array): boolean {
 export async function classifiedAttachmentFile(file: File): Promise<File> {
   if (!needsAttachmentTrackInspection(file)) {
     return file;
-  }
-  if (!/\.3gp$/i.test(file.name)) {
-    let head: Uint8Array;
-    try {
-      head = new Uint8Array(await file.slice(0, 4 + 3 * 192).arrayBuffer());
-    } catch {
-      return file;
-    }
-    const corrected = isMpegTransportStreamBytes(head)
-      ? "video/mp2t"
-      : "text/plain";
-    return corrected === file.type
-      ? file
-      : new File([file], file.name, {
-          type: corrected,
-          lastModified: file.lastModified,
-        });
   }
   let tracks: BmffTracks;
   try {

@@ -142,7 +142,6 @@ import {
   useNativeIntentStore,
 } from "@/features/native-intents";
 import { nativeAttachmentIntentToFile } from "@/features/native-intents/native-attachment-file";
-import { normalizeChatImage } from "@/features/chat/image-normalize";
 import {
   attachLibraryChatFiles,
   useLibraryChatHandoffStore,
@@ -3028,9 +3027,7 @@ const Composer: FC<{
         prev.modelLoading ||
         state.params.checkpoint !== prev.params.checkpoint ||
         state.residentCheckpoint !== prev.residentCheckpoint ||
-        state.loadedIsMultimodal !== prev.loadedIsMultimodal ||
-        state.codeToolsEnabled !== prev.codeToolsEnabled ||
-        state.supportsTools !== prev.supportsTools
+        state.loadedIsMultimodal !== prev.loadedIsMultimodal
       ) {
         void retry();
       }
@@ -3408,9 +3405,7 @@ const Composer: FC<{
             const intent = intents[index]!;
             let file: File;
             try {
-              file = await normalizeChatImage(
-                await nativeAttachmentIntentToFile(intent),
-              );
+              file = await nativeAttachmentIntentToFile(intent);
             } catch (error) {
               // Report once below rather than one toast per file: a whole batch
               // can go unreadable at once (volume ejected, tokens expired).
@@ -6447,8 +6442,9 @@ const ComposerToolsMenu: FC<{
   );
   const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
     const activeCheckpoint = s.params.checkpoint;
+    // No model yet: offer audio too, since files attached now wait for the model loaded next.
     if (!activeCheckpoint || s.modelLoading) {
-      return false;
+      return true;
     }
     const activeModel = s.models.find((m) => m.id === activeCheckpoint);
     return Boolean(activeModel?.hasAudioInput);

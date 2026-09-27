@@ -3922,6 +3922,8 @@ class PersonalizationCustomization(BaseModel):
     uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
     codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
     chatWidth: Literal["standard", "wide", "full"] = "standard"
+    composerAttachments: Literal["cards", "compact"] = "cards"
+    sentAttachments: Literal["auto", "list", "chips"] = "auto"
     contrast: int = Field(50, ge = 0, le = 100)
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
@@ -4003,6 +4005,8 @@ class PersonalizationResponse(PersonalizationPayload):
     # overrides instead of treating a server-filled default as an explicit value.
     customizationSaved: bool = False
     chatWidthSaved: bool = False
+    composerAttachmentsSaved: bool = False
+    sentAttachmentsSaved: bool = False
     paletteSaved: bool = False
     greetingSlothSaved: bool = False
 
@@ -4019,6 +4023,12 @@ def get_personalization_settings(
     profile = stored.get("profile") if isinstance(stored, dict) else None
     response.customizationSaved = isinstance(appearance, dict) and "customization" in appearance
     response.chatWidthSaved = isinstance(customization, dict) and "chatWidth" in customization
+    response.composerAttachmentsSaved = (
+        isinstance(customization, dict) and "composerAttachments" in customization
+    )
+    response.sentAttachmentsSaved = (
+        isinstance(customization, dict) and "sentAttachments" in customization
+    )
     response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
     response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
     return response

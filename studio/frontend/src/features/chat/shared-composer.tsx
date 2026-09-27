@@ -65,11 +65,6 @@ import { classifiedAttachmentFiles, isVideoFile } from "@/lib/video-utils";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
-import {
-  CHAT_IMAGE_ACCEPT,
-  isChatImageFile,
-  normalizeChatImage,
-} from "./image-normalize";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
@@ -242,6 +237,7 @@ export interface CompareHandle {
   waitForRunEnd: () => Promise<void>;
 }
 
+const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
@@ -596,7 +592,6 @@ export function SharedComposer({
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  const [convertingImages, setConvertingImages] = useState(0);
   const [pendingAudio, setPendingAudio] = useState<{
     name: string;
     base64: string;
@@ -1045,7 +1040,6 @@ export function SharedComposer({
       let droppedImageForUnavailable = false;
       let audioSizeError: string | null = null;
       let videoUnsupported = false;
-      let conversionError: string | null = null;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
@@ -1067,33 +1061,19 @@ export function SharedComposer({
           videoUnsupported = true;
           continue;
         }
-        if (!isChatImageFile(file)) continue;
+        if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
         if (file.size > MAX_IMAGE_SIZE) continue;
         if (attachUnavailableReason) {
           droppedImageForUnavailable = true;
           continue;
         }
-        let image: File;
-        setConvertingImages((count) => count + 1);
-        try {
-          image = await normalizeChatImage(file);
-        } catch (error) {
-          conversionError ??=
-            error instanceof Error ? error.message : String(error);
-          continue;
-        } finally {
-          setConvertingImages((count) => count - 1);
-        }
-        next.push({ id: crypto.randomUUID(), file: image });
+        next.push({ id: crypto.randomUUID(), file });
       }
       if (droppedImageForUnavailable && attachUnavailableReason) {
         toast.error(attachUnavailableReason);
       }
       if (audioSizeError) {
         toast.error(audioSizeError);
-      }
-      if (conversionError) {
-        toast.error(conversionError);
       }
       if (videoUnsupported) {
         toast.error("Video can't be attached in compare mode", {
@@ -1117,7 +1097,8 @@ export function SharedComposer({
           const supported = files.some(
             (file) =>
               isAudioAttachmentFile(file) ||
-              (isChatImageFile(file) && file.size <= MAX_IMAGE_SIZE),
+              (file.type.match(/^image\/(jpeg|png|webp|gif)$/i) &&
+                file.size <= MAX_IMAGE_SIZE),
           );
           if (!supported) throw new Error("Unsupported compare attachment");
           await addFiles(files);
@@ -1170,7 +1151,7 @@ export function SharedComposer({
   useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
-    if (composingRef.current || convertingImages > 0) {
+    if (composingRef.current) {
       resetPromptQueue();
       return;
     }
@@ -2058,7 +2039,6 @@ export function SharedComposer({
     !busy &&
     !isComposing &&
     !isDictating &&
-    convertingImages === 0 &&
     !sendUnavailableReason;
 
   // Compare mode swaps this composer in for the single-chat one and only one is ever on screen, so the
@@ -2458,7 +2438,7 @@ export function SharedComposer({
           <input
             ref={fileInputRef}
             type="file"
-            accept={CHAT_IMAGE_ACCEPT}
+            accept={IMAGE_ACCEPT}
             multiple
             className="hidden"
             onChange={(e) => {

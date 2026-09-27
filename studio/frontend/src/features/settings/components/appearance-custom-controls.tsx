@@ -49,7 +49,9 @@ import {
   DEFAULT_CUSTOMIZATION,
   MAX_IMPORTED_FONTS,
   MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH,
+  type ComposerAttachmentsSetting,
   type ReduceMotionSetting,
+  type SentAttachmentsSetting,
   UI_FONT_SIZE_RANGE,
   isDefaultCustomization,
   useAppearanceCustomStore,
@@ -912,6 +914,75 @@ export function ChatWidthSelect() {
         {(["standard", "wide", "full"] as const).map((width) => (
           <SelectItem key={width} value={width}>
             {t(`settings.appearance.custom.chatWidth.${width}`)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+const COMPOSER_ATTACHMENTS_OPTIONS: ComposerAttachmentsSetting[] = [
+  "cards",
+  "compact",
+];
+
+export function ComposerAttachmentsSelect() {
+  const t = useT();
+  const value = useAppearanceCustomStore(
+    (s) => s.customization.composerAttachments,
+  );
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  return (
+    <Select
+      value={value}
+      onValueChange={(next) => {
+        if (next === "cards" || next === "compact") {
+          patch({ composerAttachments: next });
+        }
+      }}
+    >
+      <SelectTrigger
+        className="w-40"
+        aria-label={t("settings.appearance.custom.composerAttachments.label")}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {COMPOSER_ATTACHMENTS_OPTIONS.map((option) => (
+          <SelectItem key={option} value={option}>
+            {t(`settings.appearance.custom.composerAttachments.${option}`)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+const SENT_ATTACHMENTS_OPTIONS: SentAttachmentsSetting[] = ["auto", "list", "chips"];
+
+export function SentAttachmentsSelect() {
+  const t = useT();
+  const value = useAppearanceCustomStore((s) => s.customization.sentAttachments);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  return (
+    <Select
+      value={value}
+      onValueChange={(next) => {
+        if (next === "auto" || next === "list" || next === "chips") {
+          patch({ sentAttachments: next });
+        }
+      }}
+    >
+      <SelectTrigger
+        className="w-40"
+        aria-label={t("settings.appearance.custom.sentAttachments.label")}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {SENT_ATTACHMENTS_OPTIONS.map((option) => (
+          <SelectItem key={option} value={option}>
+            {t(`settings.appearance.custom.sentAttachments.${option}`)}
           </SelectItem>
         ))}
       </SelectContent>
