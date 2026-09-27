@@ -10,7 +10,6 @@ import subprocess
 import gc
 import sys
 import types
-import weakref
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
@@ -3350,7 +3349,6 @@ def _vlm_backend(
         chat_template = "t", tokenizer = backend._tokenizer, apply_chat_template = lambda *a, **k: ""
     )
     backend._model = object()
-    monkeypatch.setattr(type(backend), "_kv_quant_generate_kwargs", lambda self: {})
     return backend
 
 
@@ -5361,7 +5359,6 @@ def test_a_text_load_whose_engine_cannot_batch_says_so_before_it_commits(monkeyp
 
     backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
     backend._model, backend._tokenizer, backend._is_vlm = object(), object(), False
-    monkeypatch.setattr(type(backend), "_kv_quant_generate_kwargs", lambda self: {})
     for gap in ("BatchGenerator.insert missing", None):
         monkeypatch.setattr(engine, "stream_unavailable_reason", lambda *a, **k: gap)
         assert backend.resident_unavailable_reason({}) == gap
@@ -5387,7 +5384,6 @@ def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
 
     backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
     backend._model, backend._tokenizer, backend._is_vlm = object(), object(), False
-    monkeypatch.setattr(type(backend), "_kv_quant_generate_kwargs", lambda self: {})
     monkeypatch.setattr(engine, "stream_unavailable_reason", lambda *a, **k: None)
     plain = {"messages": [], "images": [], "image_ordinal": 0}
 
@@ -5397,33 +5393,20 @@ def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
     assert backend.batch_unavailable_reason([plain, {**plain, **extra}]) is not None
 
 
-def test_a_load_with_a_per_request_context_budget_does_not_batch(monkeypatch):
+def test_a_quantized_or_budgeted_kv_cache_does_not_batch(monkeypatch):
     from core.inference.mlx_inference import MLXInferenceBackend
     from unsloth_zoo.mlx import generate as engine
 
     backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
     backend._model, backend._tokenizer, backend._is_vlm = object(), object(), False
-    backend._batches_on_vlm, backend._kv_context_budget = False, None
-    monkeypatch.setattr(type(backend), "_kv_quant_generate_kwargs", lambda self: {})
+    backend._kv_quant, backend._kv_context_budget = {"kv_bits": None}, None
     monkeypatch.setattr(engine, "stream_unavailable_reason", lambda *a, **k: None)
     assert backend.resident_unavailable_reason({}) is None
 
-    backend._kv_context_budget = 4096
-    assert backend.resident_unavailable_reason({}) is not None
-    assert backend.batch_unavailable_reason([{}, {}]) is not None
-
-
-def test_a_partly_quantized_cache_does_not_batch():
-    from core.inference.mlx_inference import MLXInferenceBackend
-
-    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
-    backend._batches_on_vlm, backend._kv_context_budget = True, None
-    backend._kv_quant = {"kv_bits": 8, "eligibility": "full"}
-    assert backend._kv_policy_batch_reason() is None
-    assert backend._kv_quant_batch_kwargs() == {"kv_bits": 8}
-
-    backend._kv_quant = {"kv_bits": 8, "eligibility": "partial"}
-    assert "unquantized" in backend._kv_policy_batch_reason()
+    for quant, budget in (({"kv_bits": 8}, None), ({"kv_bits": None}, 4096)):
+        backend._kv_quant, backend._kv_context_budget = quant, budget
+        assert backend.resident_unavailable_reason({}) is not None
+        assert backend.batch_unavailable_reason([{}, {}]) is not None
 
 
 try:
@@ -5580,80 +5563,6 @@ def test_a_vision_reply_stopped_partway_reports_the_tokens_it_actually_used(batc
             f"row {row} delivered {len(seen)} snapshots and reported "
             f"{usage['completion_tokens']} of {entire['completion_tokens']} tokens"
         )
-
-
-def test_a_text_load_asking_for_a_quantized_cache_batches_on_the_runtime_that_can(monkeypatch):
-    import gc  # the module-level name is rebound to grammar_constraint further down
-
-    _install_fake_mlx(monkeypatch)
-    calls = []
-    _install_fake_fast_mlx(monkeypatch, calls)
-    import unsloth_zoo.mlx.loader as loader
-    from core.inference import mlx_inference
-    from core.inference.mlx_inference import MLXInferenceBackend
-
-    monkeypatch.setattr(mlx_inference, "_mlx_lm_tokenizer", lambda n, m, p: p.tokenizer)
-    events, config = [], SimpleNamespace(identifier = "fake/text", is_vision = False)
-    collect = gc.collect
-    monkeypatch.setattr(gc, "collect", lambda: (events.append("collected"), collect())[0])
-    monkeypatch.setattr(sys.modules["mlx.core"], "clear_cache", lambda: events.append("cleared"))
-    monkeypatch.setattr(
-        mlx_inference, "_drain_generation_streams", lambda mx: events.append("drained")
-    )
-
-    def probe(model, *a):
-        events.append("probed " + ("view" if hasattr(model, "language_model") else "load"))
-        return eligibility, "", 1
-
-    monkeypatch.setattr(mlx_inference, "_kv_quant_eligibility", probe)
-    refs, build = [], loader.FastMLXModel.from_pretrained
-
-    def remember(*a, **k):
-        if not k["text_only"] and eligibility == "unbuildable":
-            raise ValueError("Model type nemotron-nas not supported")
-        assert k["text_only"] is False or not refs or refs[-1][0] or refs[-1][1]() is None
-        model, other = build(*a, **k)
-        model.cycle = model  # as the loader's bound methods do: alive until collected
-        refs.append((k["text_only"], weakref.ref(model)))
-        events.append("built lm" if k["text_only"] else "built vlm")
-        return model, other
-
-    monkeypatch.setattr(loader.FastMLXModel, "from_pretrained", staticmethod(remember))
-    retried = ["collected", "drained", "cleared", "built lm", "probed load"]
-    cases = (  # (pinned window, eligibility of the build, what the load did, batches on mlx-vlm)
-        (4096, "full", ["built lm", "probed load"], False),
-        (0, "refused", ["built vlm", "probed view"] + retried, False),
-        (0, "unbuildable", retried, False),
-        # A batch quantizes every layer, so a load keeping some unquantized stays on mlx-lm.
-        (0, "partial", ["built vlm", "probed view"] + retried, False),
-        (0, "full", ["built vlm", "probed view"], True),
-    )
-    for max_seq_length, eligibility, did, on_vlm in cases:
-        del events[:]
-        backend = MLXInferenceBackend()
-        assert backend.load_model(config, max_seq_length = max_seq_length, kv_bits = 8)
-        assert (events, backend._is_vlm, backend._batches_on_vlm) == (did, False, on_vlm)
-    assert backend._model.language_model is backend._batch_model is not backend._model
-    assert backend._kv_policy_batch_reason() is None
-    backend._batches_on_vlm = False
-    assert "without a runtime that batches it" in backend._kv_policy_batch_reason()
-
-
-def test_a_text_prompt_batched_on_mlx_vlm_drops_the_bos_the_batch_adds(monkeypatch):
-    _install_fake_mlx(monkeypatch)
-    from core.inference.mlx_inference import MLXInferenceBackend
-
-    seen = []  # (the batch asks for special tokens, what its tokenizer then encodes, expected)
-    generate = types.ModuleType("unsloth_zoo.mlx.generate")
-    generate.vlm_batch_adds_special_tokens = lambda model, processor: seen[-1][0]
-    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.generate", generate)
-    backend = MLXInferenceBackend()
-    backend._tokenizer = SimpleNamespace(bos_token = "<s>", bos_token_id = 1)
-    backend._render_text_prompt = lambda messages, **kw: SimpleNamespace(prompt = "<s>hi")
-    backend._batch_processor = SimpleNamespace(encode = lambda text, add_special_tokens: seen[-1][1])
-    for case in ((True, [1, 7], "hi"), (True, [7], "<s>hi"), (False, [1, 7], "<s>hi")):
-        seen.append(case)
-        assert backend._render_text_prompt_for_vlm_batch([]) == (case[2], backend._tokenizer)
 
 
 import numpy as np  # noqa: E402
