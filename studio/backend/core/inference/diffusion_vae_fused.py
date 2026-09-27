@@ -176,10 +176,10 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     @triton.jit
     def _rms_act(
         x_ptr, out_ptr, w_ptr, b_ptr, ib_ptr, cache_ptr,
-        C, T, H, W, Ho, Wo, ph, pw, To, front, n_cache, scale,
+        C, T, H, W, Ho, Wo, ph, pw, To, front, n_cache, scale, eps,
         sb, sc, st, sh, sw, cb, cc, ct, ch, cw,
         NORM: tl.constexpr, ACT: tl.constexpr, HAS_BIAS: tl.constexpr, HAS_IN_BIAS: tl.constexpr,
-        REPLICATE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
+        REPLICATE: tl.constexpr, MEAN_SQ: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
     ):  # fmt: skip
         # out (B, To, Ho, Wo, C) = [front frames] + act(norm(x + ib)); REPLICATE: replicate-padded in T (front), H, W
         pid_p = tl.program_id(0)
@@ -216,7 +216,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             else:
                 tl.store(out_ptr + out_off, tl.zeros([BLOCK_P, BLOCK_C], out_ptr.dtype.element_ty), mask = m)
         else:
-            t = tl.maximum(t_o - front, 0)
+            t = tl.minimum(tl.maximum(t_o - front, 0), T - 1)
             off = (
                 b.to(tl.int64) * sb
                 + t.to(tl.int64) * st
@@ -230,11 +230,16 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 v = tl.where(m, v, 0.0)
             if NORM:
                 ss = tl.sum(v * v, axis = 1)
-                inv = 1.0 / tl.maximum(tl.sqrt(ss), 1e-12)
-                gw = tl.load(w_ptr + c, mask = cmask, other = 0.0).to(tl.float32) * scale
-                v = v * inv[:, None] * gw[None, :]
-                if HAS_BIAS:
-                    v = v + tl.load(b_ptr + c, mask = cmask, other = 0.0).to(tl.float32)[None, :]
+                if MEAN_SQ:
+                    # LTX PerChannelRMSNorm: x / sqrt(mean(x^2) + eps), no affine
+                    v = v / tl.sqrt(ss / C + eps)[:, None]
+                else:
+                    # Wan-lineage RMS_norm: F.normalize(x) * sqrt(C) * gamma (+ bias)
+                    inv = 1.0 / tl.maximum(tl.sqrt(ss), 1e-12)
+                    gw = tl.load(w_ptr + c, mask = cmask, other = 0.0).to(tl.float32) * scale
+                    v = v * inv[:, None] * gw[None, :]
+                    if HAS_BIAS:
+                        v = v + tl.load(b_ptr + c, mask = cmask, other = 0.0).to(tl.float32)[None, :]
             if ACT:
                 v = v / (1.0 + tl.exp(-v))
             tl.store(out_ptr + out_off, v.to(out_ptr.dtype.element_ty), mask = m)
@@ -454,8 +459,14 @@ def rms_norm_reference(x: Any, norm: Any, act: bool, in_bias: Any = None) -> Any
     return F.silu(y) if act else y
 
 
+def _is_pixel_norm(norm: Any) -> bool:
+    return type(norm).__name__ == "PerChannelRMSNorm" and getattr(norm, "channel_dim", 1) == 1
+
+
 def _rms_params(norm: Any) -> Optional[tuple]:
     torch = _torch()
+    if _is_pixel_norm(norm):
+        return None, None, False, 1.0
     gamma = norm.gamma.reshape(-1)
     bias = norm.bias
     has_bias = isinstance(bias, torch.Tensor)
@@ -483,7 +494,11 @@ def _rms_fusable(x: Any, norm: Any, cache: Any) -> bool:
                 and cache.device == x.device
             )
         )
-        and (norm is None or (getattr(norm, "channel_first", False) and _rms_params(norm) is not None))
+        and (
+            norm is None
+            or _is_pixel_norm(norm)
+            or (getattr(norm, "channel_first", False) and _rms_params(norm) is not None)
+        )
     )
 
 
@@ -496,6 +511,7 @@ def rms_norm_act(
     cache: Any = None,
     in_bias: Any = None,
     replicate_pad: Optional[tuple] = None,
+    back: int = 0,
 ) -> Any:
     """``cat([cache or zeros] -> front frames, silu?(rms_norm(x + in_bias)))`` along T, as ONE channels-last_3d tensor.
 
@@ -504,16 +520,19 @@ def rms_norm_act(
     stock ``torch.cat`` + causal ``F.pad`` input of a conv.
 
     ``replicate_pad=(ph, pw)``: HunyuanVideo-1.5's ``F.pad(mode="replicate")`` instead: ``front`` copies of the first
-    frame and ``ph`` / ``pw`` replicated rows / columns each side (``cache`` must be None)."""
+    frame and ``ph`` / ``pw`` replicated rows / columns each side (``cache`` must be None); ``back`` copies of the
+    last frame (LTX-2's non-causal decoder)."""
     torch = _torch()
     if replicate_pad is not None and cache is not None:
         raise ValueError("replicate padding takes no cache")
+    if back and replicate_pad is None:
+        raise ValueError("back frames need replicate padding")
     if not _rms_fusable(x, norm, cache):
         y = rms_norm_reference(x, norm, act, in_bias)
         if replicate_pad is not None:
             import torch.nn.functional as F
             ph, pw = replicate_pad
-            y = F.pad(y, (pw, pw, ph, ph, front, 0), mode = "replicate")
+            y = F.pad(y.float(), (pw, pw, ph, ph, front, back), mode = "replicate").to(y.dtype)
             return y.contiguous(memory_format = torch.channels_last_3d)
         if front:
             import torch.nn.functional as F
@@ -525,14 +544,16 @@ def rms_norm_act(
             y = F.pad(y, (0, 0, 0, 0, front - n_cache, 0))
         return y.contiguous(memory_format = torch.channels_last_3d)
     k = _kernels()
-    if norm is not None:
+    mean_sq = norm is not None and _is_pixel_norm(norm)
+    if norm is not None and not mean_sq:
         gamma, bias, has_bias, scale = _rms_params(norm)
     else:
         gamma, bias, has_bias, scale = x, x, False, 1.0
+    eps = float(getattr(norm, "eps", 0.0) or 0.0) if mean_sq else 0.0
     b, c, t, h, w = x.shape
     ph, pw = replicate_pad if replicate_pad is not None else (0, 0)
     ho, wo = h + 2 * ph, w + 2 * pw
-    to = t + front
+    to = t + front + back
     n_cache = 0 if cache is None else min(front, cache.shape[2])
     cache_t = x if cache is None else cache[:, :, cache.shape[2] - n_cache :]
     out = torch.empty((b, to, ho, wo, c), dtype = x.dtype, device = x.device)
@@ -541,10 +562,10 @@ def rms_norm_act(
     grid = ((ho * wo + block_p - 1) // block_p, b * to)
     k.rms_act[grid](
         x, out, gamma, bias, in_bias if in_bias is not None else x, cache_t,
-        c, t, h, w, ho, wo, ph, pw, to, front, n_cache, scale,
+        c, t, h, w, ho, wo, ph, pw, to, front, n_cache, scale, eps,
         *x.stride(), *cache_t.stride(),
         NORM = norm is not None, ACT = bool(act), HAS_BIAS = has_bias, HAS_IN_BIAS = in_bias is not None,
-        REPLICATE = replicate_pad is not None, BLOCK_P = block_p, BLOCK_C = block_c,
+        REPLICATE = replicate_pad is not None, MEAN_SQ = mean_sq, BLOCK_P = block_p, BLOCK_C = block_c,
         num_warps = 4 if block_c * block_p <= 4096 else 8,
     )  # fmt: skip
     return out.permute(0, 4, 1, 2, 3)
@@ -1250,6 +1271,130 @@ def install_hv15_vae(vae: Any, logger: Any = None) -> int:
     return n
 
 
+# ----------------------------------------------------------------------------------------------------------------
+# LTX-2 / LTX-2.3: PerChannelRMSNorm, first/last-frame replicate temporal pad, zero spatial pad (left to cuDNN)
+
+
+def _ltx_conv_ok(conv: Any) -> bool:
+    torch = _torch()
+    inner = getattr(conv, "conv", None)
+    return (
+        isinstance(inner, torch.nn.Conv3d)
+        and inner.padding_mode == "zeros"
+        and inner.padding[0] == 0
+        and inner.stride[0] == 1
+        and inner.dilation[0] == 1
+        and len(getattr(conv, "kernel_size", ())) == 3
+        and conv.kernel_size[0] % 2 == 1
+    )
+
+
+def ltx_conv(
+    conv: Any, x: Any, causal: bool, *, norm: Any = None, act: bool = False, in_bias: Any = None, with_bias: bool = True
+) -> Any:
+    """``LTX2VideoCausalConv3d.forward`` over ``silu?(pixel_norm?(x + in_bias))``, pad + norm + act in one pass."""
+    import torch.nn.functional as F
+
+    kt = conv.kernel_size[0]
+    front, back = (kt - 1, 0) if causal else ((kt - 1) // 2, (kt - 1) // 2)
+    inner = conv.conv
+    if kt == 1 and norm is None and not act and in_bias is None:
+        y = x
+    else:
+        y = rms_norm_act(x, norm, act, front = front, back = back, in_bias = in_bias, replicate_pad = (0, 0))
+    return F.conv3d(y, inner.weight, inner.bias if with_bias else None, inner.stride, inner.padding, inner.dilation)
+
+
+def _ltx_resnet_ok(block: Any) -> bool:
+    torch = _torch()
+    return (
+        _is_pixel_norm(getattr(block, "norm1", None))
+        and _is_pixel_norm(getattr(block, "norm2", None))
+        and isinstance(getattr(block, "nonlinearity", None), torch.nn.SiLU)
+        and _ltx_conv_ok(getattr(block, "conv1", None))
+        and _ltx_conv_ok(getattr(block, "conv2", None))
+        and getattr(block, "per_channel_scale1", None) is None
+        and getattr(block, "per_channel_scale2", None) is None
+        and getattr(block, "scale_shift_table", None) is None
+    )
+
+
+def _fast_ltx_resnet(block: Any) -> Any:
+    import torch.nn.functional as F
+
+    def fast(inputs: Any, temb: Any = None, generator: Any = None, causal: bool = True) -> Any:
+        if block.training and block.dropout.p:
+            return _stock_forward(block)(inputs, temb, generator, causal = causal)
+        h = ltx_conv(block.conv1, inputs, causal, norm = block.norm1, act = True, with_bias = False)
+        h = ltx_conv(block.conv2, h, causal, norm = block.norm2, act = True, in_bias = block.conv1.conv.bias, with_bias = False)
+        res = inputs
+        if block.norm3 is not None:
+            res = block.norm3(res.movedim(1, -1)).movedim(-1, 1)
+        if block.conv_shortcut is not None:
+            sc = block.conv_shortcut
+            res = F.conv3d(res, sc.weight, sc.bias, sc.stride, sc.padding)
+        return add_bias_residual(h, block.conv2.conv.bias, res)
+
+    return fast
+
+
+def _fast_ltx_conv(conv: Any) -> Any:
+    def fast(hidden_states: Any, causal: bool = True) -> Any:
+        return ltx_conv(conv, hidden_states, causal)
+
+    return fast
+
+
+def _fast_pixel_norm_act(norm: Any) -> Any:
+    def fast(x: Any, channel_dim: Any = None) -> Any:
+        if x.dim() != 5 or channel_dim not in (None, 1):
+            return _torch().nn.functional.silu(type(norm).forward(norm, x, channel_dim))
+        return rms_norm_act(x, norm, True)
+
+    return fast
+
+
+def install_ltx2_vae(vae: Any, logger: Any = None) -> int:
+    torch = _torch()
+    if vae is None or not runtime_ok():
+        return 0
+    n = 0
+    for part_name in ("encoder", "decoder"):
+        part = getattr(vae, part_name, None)
+        if part is None:
+            continue
+        norm_out, act = getattr(part, "norm_out", None), getattr(part, "conv_act", None)
+        if (
+            _is_pixel_norm(norm_out)
+            and isinstance(act, torch.nn.SiLU)
+            and getattr(part, "time_embedder", None) is None
+            and "forward" not in norm_out.__dict__
+        ):
+            _guard(
+                norm_out,
+                _fast_pixel_norm_act(norm_out),
+                lambda x, channel_dim = None, _n = norm_out: torch.nn.functional.silu(type(_n).forward(_n, x, channel_dim)),
+                "norm_out",
+                logger,
+            )
+            act.forward = lambda x: x
+            act._unsloth_vae_fused = True
+            n += 1
+        for module in part.modules():
+            if "forward" in module.__dict__:
+                continue
+            if type(module).__name__.endswith("ResnetBlock3d") and _ltx_resnet_ok(module):
+                _guard(module, _fast_ltx_resnet(module), _stock_forward(module), "resnet", logger)
+                n += 1
+        for module in part.modules():
+            if "forward" in module.__dict__:
+                continue
+            if type(module).__name__ == "LTX2VideoCausalConv3d" and _ltx_conv_ok(module):
+                _guard(module, _fast_ltx_conv(module), _stock_forward(module), "causal conv", logger)
+                n += 1
+    return n
+
+
 def install_vectorised_blend(vae: Any) -> int:
     """Replace a VAE's per-row python ``blend_v`` / ``blend_h`` / ``blend_t`` loops (extent x 4 launches each) with
     the bit-identical one-pass :func:`blend_seam`."""
@@ -1272,5 +1417,8 @@ def install(vae: Any, logger: Any = None, level: str = "fused") -> int:
         return install_wan_vae(vae, logger)
     if name == "AutoencoderKLHunyuanVideo15":
         n = install_hv15_vae(vae, logger)
+        return n + (install_vectorised_blend(vae) if n else 0)
+    if name == "AutoencoderKLLTX2Video":
+        n = install_ltx2_vae(vae, logger)
         return n + (install_vectorised_blend(vae) if n else 0)
     return 0
