@@ -7367,3 +7367,21 @@ def test_the_text_path_hands_the_constraint_its_decoders_dropped_ids(monkeypatch
     seen.clear()
     run()
     assert seen == [None], "a plain skip_special_tokens decode drops every special id"
+
+
+def test_a_tokenizer_end_token_the_runtime_does_not_stop_on_is_withheld_too():
+    """llguidance ends only on the runtime stops, so the tokenizer's own end token is just
+    another special id the decode drops, and a literal spelled only by it is refused."""
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    wrapped = TokenizerWrapper(tokenizer, eos_token_ids = [runtime_stop])
+    constraint = build_constraint(
+        {"type": "json_schema", "schema": {"const": "<eos>"}}, wrapped, "p"
+    )
+    for token in tokenizer.encode('"', add_special_tokens = False):
+        _allowed(constraint, len(tokenizer))
+        constraint.advance(int(token))
+    with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
+        _allowed(constraint, len(tokenizer))

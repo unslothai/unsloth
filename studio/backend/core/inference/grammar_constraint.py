@@ -439,8 +439,8 @@ def _stripped_special_ids(
             )
         except Exception:
             return ()
-    # llguidance falls back to the tokenizer's own end token when the runtime names none.
-    keep = set(stop_ids or ()) | {getattr(inner, "eos_token_id", None)}
+    # llguidance ends on the runtime stops, or on the tokenizer's own end token when there are none.
+    keep = set(stop_ids) if stop_ids else {getattr(inner, "eos_token_id", None)}
     return tuple(sorted({int(i) for i in ids if 0 <= int(i) < int(n_vocab)} - keep))
 
 
