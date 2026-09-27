@@ -13,7 +13,6 @@ from types import SimpleNamespace
 import pytest
 
 from core.inference import worker
-from core.inference.inference import InferenceBackend
 from core.inference.worker import RowRefused
 from core.inference.worker import StopLedger
 
@@ -380,17 +379,18 @@ def test_a_batch_that_will_not_open_still_answers_the_reply(monkeypatch):
     assert len(backend.apart) == 1, "it was decoded one reply at a time"
 
 
-class _NoSeedBackend(_DecliningBackend):
-    """Transformers-shaped: wraps() carries the real signature, which declares no seed."""
-
-    @functools.wraps(InferenceBackend.generate_chat_response)
-    def generate_chat_response(self, *args, **kwargs):
-        inspect.signature(InferenceBackend.generate_chat_response).bind(self, *args, **kwargs)
-        yield "reply"
-
-
 def test_a_row_override_the_backend_cannot_take_is_dropped_not_raised():
     """The route varies the seed per row, and the fallback decodes on backends without one."""
+    InferenceBackend = pytest.importorskip("core.inference.inference").InferenceBackend
+
+    class _NoSeedBackend(_DecliningBackend):
+        """Transformers-shaped: wraps() carries the real signature, which declares no seed."""
+
+        @functools.wraps(InferenceBackend.generate_chat_response)
+        def generate_chat_response(self, *args, **kwargs):
+            inspect.signature(InferenceBackend.generate_chat_response).bind(self, *args, **kwargs)
+            yield "reply"
+
     _backend, sent = _run(None, backend = _NoSeedBackend("a reply asks for stop sequences"))
     kinds = [event["type"] for event in sent if event["type"] != "batch_state"]
 

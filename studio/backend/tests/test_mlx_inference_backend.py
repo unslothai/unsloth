@@ -5093,20 +5093,22 @@ BATCH_VLM_MODEL = "mlx-community/SmolVLM-256M-Instruct-4bit"
 
 
 @pytest.fixture(scope = "module")
-def batch_backend():
+def batch_backend(allow_outbound_network):
     from core.inference.mlx_inference import MLXInferenceBackend
 
     loaded = MLXInferenceBackend()
-    loaded.load_model(BATCH_MODEL)
+    with allow_outbound_network():
+        loaded.load_model(BATCH_MODEL)
     return loaded
 
 
 @pytest.fixture(scope = "module")
-def batch_vlm_backend():
+def batch_vlm_backend(allow_outbound_network):
     from core.inference.mlx_inference import MLXInferenceBackend
 
     loaded = MLXInferenceBackend()
-    loaded.load_model(SimpleNamespace(identifier = BATCH_VLM_MODEL, is_vision = True))
+    with allow_outbound_network():
+        loaded.load_model(SimpleNamespace(identifier = BATCH_VLM_MODEL, is_vision = True))
     return loaded
 
 
