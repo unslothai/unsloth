@@ -152,8 +152,7 @@ class Int4PackedLinear(nn.Linear):
         return
 
     def _apply(self, fn, *args, **kwargs):
-        # Casts never touch the packed words, scales or zero points (a fp32 scale must stay exact);
-        # only moves apply to them, and the compute dtype follows a floating cast.
+        # Casts skip packed words, scales and zero points (fp32 scale stays exact); moves still apply.
         try:
             probe = fn(torch.empty(0, dtype = torch.bfloat16))
             dtype, device = probe.dtype, probe.device

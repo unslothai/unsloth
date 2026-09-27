@@ -340,8 +340,7 @@ def _sm_count(index):
     return torch.cuda.get_device_properties(index).multi_processor_count
 
 
-# Measured on B200 against dequantize + cuBLAS and bitsandbytes' gemv (bench_kernels.py): the fused
-# CUDA-core kernel only pays off for a few rows; past that cuBLAS on the exact decode wins.
+# B200: fused kernel only wins for a few rows; past that decode + cuBLAS wins.
 GEMV_MAX_ROWS = 4
 
 
@@ -376,8 +375,7 @@ def int4_matmul(
         y = torch.empty((M, N), dtype = x.dtype, device = x.device)
     grid = (n_blocks, split, M)
     args = (x2, P, S, Z, G, y, M, N, K, KP, x2.stride(0), sp, ss, sz, y.stride(0))
-    # Reuse the compiled kernel directly (half the launch cost of the JIT path) under the same
-    # specialization: Triton keys on value 1 and 16-divisibility of ints and pointers.
+    # Reuse the compiled kernel (half the JIT launch cost); Triton specializes on ==1 and 16-divisibility.
     key = (
         x.device.index,
         M,
