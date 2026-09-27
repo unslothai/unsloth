@@ -11,6 +11,7 @@ folders Studio owns lets every later launch skip the walk. Read and execute only
 
 from __future__ import annotations
 
+import contextlib
 from contextlib import contextmanager
 import json
 import logging
@@ -70,7 +71,13 @@ def _transaction():
             path.parent.mkdir(parents = True, exist_ok = True)
             lock = FileLock(str(path) + ".lock", timeout = LOCK_TIMEOUT_SECONDS)
             lock.acquire()
-        except (OSError, Timeout) as exc:
+        except Timeout as exc:
+            # Another Studio process is still granting: its tree may be half propagated.
+            raise ReadGrantError(
+                f"another Studio process holds the MXC read-grant record: {exc}"
+            ) from exc
+        except OSError as exc:
+            # No lock file means no process can be granting through this record either.
             logger.warning("Could not lock the MXC read-grant record: %s", exc)
             yield None
             return
@@ -296,12 +303,26 @@ def _revoke(root: str) -> tuple[bool, str]:
     return _icacls(root, "/remove:g", f"*{ALL_APPLICATION_PACKAGES}")
 
 
+def _save_quietly(record: dict) -> None:
+    """Persist a record change after the ACL already matches it; a failed write only costs a retry."""
+    try:
+        _save_record(record)
+    except OSError as exc:
+        logger.warning("Could not update the MXC read-grant record: %s", exc)
+
+
 def _revoke_recorded_root(record: dict, key: str) -> str:
     """Take back one recorded grant: "revoked", "dropped" (nothing of Studio's left there), or "failed"."""
     if not os.path.isdir(key):
         record.pop(key)
         return "dropped"
-    if _identity(key) != record[key].get("identity"):
+    current = _identity(key)
+    if current is None:
+        logger.warning(
+            "Not revoking the MXC read grant on %s yet: its identity could not be read", key
+        )
+        return "failed"
+    if current != record[key].get("identity"):
         # Moved, replaced, or reached through a new junction: revoking would edit a folder Studio never touched.
         logger.warning(
             "Not revoking the MXC read grant on %s: it is no longer the folder Studio granted", key
@@ -318,17 +339,34 @@ def _revoke_recorded_root(record: dict, key: str) -> str:
 
 
 def _ensure_root(record: dict, root: str) -> bool:
-    """Grant one root if it is eligible; True when wxc-exec will skip it. Saves the record as it goes."""
+    """Grant one root if it is eligible; True when wxc-exec will skip it. Saves the record as it goes.
+
+    Raises ReadGrantError when a grant Studio started may be half propagated and cannot be settled.
+    """
     key = os.path.normcase(root)
     entry = record.get(key)
     pending = entry is not None and entry.get("state") == "pending"
+    if entry is not None:
+        current = _identity(root)
+        if current is None:
+            if pending:
+                raise ReadGrantError(f"the unfinished MXC read grant on {root} cannot be checked")
+            logger.info(
+                "Keeping the per-launch MXC grant for %s: its identity could not be read", root
+            )
+            return False
+        if current != entry.get("identity"):
+            # Another folder now sits at this path; Studio's claim is void and its ACL is not Studio's.
+            record.pop(key)
+            _save_quietly(record)
+            entry, pending = None, False
     reason = ineligible_reason(root, deep = key not in _scanned)
     if reason is not None:
         _scanned.discard(key)
         if entry is not None:
             # A folder Studio granted gained a credential file or a link: take the grant back.
             outcome = _revoke_recorded_root(record, key)
-            _save_record(record)
+            _save_quietly(record)
             if outcome == "failed":
                 raise ReadGrantError(f"could not revoke the MXC read grant on {root} ({reason})")
         logger.info("Keeping the per-launch MXC grant for %s: %s", root, reason)
@@ -337,6 +375,10 @@ def _ensure_root(record: dict, root: str) -> bool:
     try:
         covers, explicit = _package_aces(root)
     except OSError as exc:
+        if pending:
+            raise ReadGrantError(
+                f"the unfinished MXC read grant on {root} cannot be checked: {exc}"
+            ) from exc
         logger.info("Keeping the per-launch MXC grant for %s: %s", root, exc)
         return False
     if covers and not pending:
@@ -350,6 +392,8 @@ def _ensure_root(record: dict, root: str) -> bool:
         return False
     identity = _identity(root)
     if identity is None:
+        if pending:
+            raise ReadGrantError(f"the unfinished MXC read grant on {root} cannot be checked")
         logger.info("Keeping the per-launch MXC grant for %s: its identity could not be read", root)
         return False
     record[key] = {"state": "pending", "identity": identity}
@@ -370,22 +414,23 @@ def _ensure_root(record: dict, root: str) -> bool:
     ok, output = _grant(root)
     if ok:
         record[key] = {"state": "complete", "identity": identity}
-        try:
-            _save_record(record)
-        except OSError as exc:
-            # The pending entry stays on disk, so the next launch redoes the grant.
-            logger.warning("Could not mark the MXC read grant on %s complete: %s", root, exc)
+        # On a failed write the pending entry stays on disk, so the next launch redoes the grant.
+        _save_quietly(record)
         logger.info("Granted ALL APPLICATION PACKAGES read access to %s once", root)
         return True
-    # A partly propagated grant would let wxc-exec skip files the container cannot read.
+    # A partly propagated grant would let wxc-exec skip files the container cannot read. The pending
+    # entry stays on disk until the rollback is known to have hit the folder Studio granted.
+    if _identity(root) != identity:
+        raise ReadGrantError(
+            f"the MXC read grant on {root} failed ({output}) and the folder changed"
+        )
     restored, restore_output = _revoke(root)
     if not restored:
-        # The pending entry stays on disk, so the next launch retries the whole grant.
         raise ReadGrantError(
             f"the MXC read grant on {root} failed ({output}) and could not be rolled back ({restore_output})"
         )
     record.pop(key, None)
-    _save_record(record)
+    _save_quietly(record)
     logger.warning("Could not add the persistent MXC read grant to %s: %s", root, output)
     return False
 
@@ -416,14 +461,20 @@ def revoke_recorded() -> tuple[str, ...]:
     if not _on_windows() or not record_path().exists():
         return ()
     restored: list[str] = []
-    with _transaction() as record:
+    try:
+        transaction = _transaction()
+        record = transaction.__enter__()
+    except ReadGrantError as exc:
+        # Cleanup never blocks a launch; the entries stay and the next check retries.
+        logger.warning("Deferring the MXC read-grant cleanup: %s", exc)
+        return ()
+    with contextlib.ExitStack() as stack:
+        stack.push(transaction)
         if not record:
             return ()
         for key in list(record):
             if _revoke_recorded_root(record, key) == "revoked":
                 restored.append(key)
-        try:
-            _save_record(record)
-        except OSError as exc:
-            logger.warning("Could not update the MXC read-grant record: %s", exc)
+        # A failed revoke keeps its entry, so the next launch or capability check retries it.
+        _save_quietly(record)
     return tuple(restored)

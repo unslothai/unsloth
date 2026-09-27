@@ -227,11 +227,99 @@ def test_revocation_never_follows_a_folder_that_was_replaced(host, tmp_path):
     other.mkdir()
     try:
         os.symlink(other, venv, target_is_directory = True)
+        linked = True
     except OSError:
         os.mkdir(venv)  # no symlinks here: a fresh folder at the same path has another identity
+        linked = False
     assert mxc_read_grants.revoke_recorded() == ()
     assert ("revoke", os.path.normcase(venv)) not in host.calls
+    # A link cannot be identified, so the entry waits; a different folder voids it.
+    assert (_record() != {}) is linked
+
+
+def test_an_unreadable_identity_keeps_the_record_for_a_later_revoke(host, monkeypatch):
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    monkeypatch.setattr(mxc_read_grants, "_identity", lambda _root: None)
+    assert mxc_read_grants.revoke_recorded() == ()
+    assert _states() == {os.path.normcase(venv): "complete"}
+    assert ("revoke", os.path.normcase(venv)) not in host.calls
+
+
+def test_a_replaced_folder_is_not_adopted_through_a_stale_record(host, tmp_path):
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    os.replace(venv, tmp_path / "moved-away")
+    _runtime(host)  # a new folder at the same path, carrying its owner's own entry for the group
+    host.explicit.add(os.path.normcase(venv))
+    host.granted.discard(os.path.normcase(venv))
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert host.calls == [("grant", venv)]
     assert _record() == {}
+
+
+@pytest.mark.parametrize("unknown", ["aces", "identity"])
+def test_an_unfinished_grant_that_cannot_be_checked_refuses_the_launch(host, monkeypatch, unknown):
+    venv = _runtime(host)
+    identity = mxc_read_grants._identity(venv)
+    mxc_read_grants._save_record(
+        {os.path.normcase(venv): {"state": "pending", "identity": identity}}
+    )
+    if unknown == "aces":
+
+        def unreadable(_root):
+            raise OSError(5, "Access is denied")
+
+        monkeypatch.setattr(mxc_read_grants, "_package_aces", unreadable)
+    else:
+        monkeypatch.setattr(mxc_read_grants, "_identity", lambda _root: None)
+    with pytest.raises(mxc_read_grants.ReadGrantError, match = "cannot be checked"):
+        mxc_read_grants.ensure([venv])
+    assert _states() == {os.path.normcase(venv): "pending"}
+
+
+def test_a_record_write_failure_after_a_clean_rollback_does_not_block_the_launch(host, monkeypatch):
+    venv = _runtime(host)
+    host.fail_grant = True
+    real_save = mxc_read_grants._save_record
+    writes = []
+
+    def save_then_fail(grants):
+        writes.append(dict(grants))
+        if len(writes) > 1:
+            raise PermissionError("disk went read-only")
+        real_save(grants)
+
+    monkeypatch.setattr(mxc_read_grants, "_save_record", save_then_fail)
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert host.calls == [("grant", venv), ("revoke", venv)]
+
+
+def test_another_process_mid_grant_refuses_the_launch_but_not_the_cleanup(host, monkeypatch):
+    from filelock import FileLock
+
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    monkeypatch.setattr(mxc_read_grants, "LOCK_TIMEOUT_SECONDS", 0.2)
+    holder = FileLock(str(mxc_read_grants.record_path()) + ".lock")
+    holder.acquire()
+    try:
+        # Held by "another process": this launch cannot know whether that grant finished.
+        mxc_read_grants._scanned.clear()
+        host.granted.discard(os.path.normcase(venv))
+        monkeypatch.setattr(mxc_read_grants, "_lock", __import__("threading").Lock())
+        with pytest.raises(mxc_read_grants.ReadGrantError, match = "another Studio process"):
+            _in_thread(lambda: mxc_read_grants.ensure([venv]))
+        assert _in_thread(mxc_read_grants.revoke_recorded) == ()
+    finally:
+        holder.release()
+
+
+def _in_thread(function):
+    """filelock is reentrant within a thread, so a second holder must run on another thread."""
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        return pool.submit(function).result()
 
 
 def test_off_windows_nothing_is_touched(host, monkeypatch):
