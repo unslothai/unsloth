@@ -99,10 +99,12 @@ def test_flash_decode_leftpad_follows_layer_device(monkeypatch):
     assert [kw["leftpad"].device.type for kw in seen] == ["cpu", "meta"]
 
 
+@pytest.mark.parametrize("rows", [[[0, 1, 1, 1, 1, 1]], []])
 @pytest.mark.parametrize("gap_row", [[1, 1, 0, 1, 1, 1], [1, 1, 1, 1, 1, 0]])
-def test_flash_decode_falls_back_for_non_left_padding(monkeypatch, gap_row):
+def test_flash_decode_falls_back_for_non_left_padding(monkeypatch, gap_row, rows):
     # cache_leftpad only skips leading zeros; an interior or trailing masked key needs the manual masks.
-    seen = _decode_kwargs(monkeypatch, bsz = 2, flash = True, mask = [[0, 1, 1, 1, 1, 1], gap_row])
+    mask = rows + [gap_row]
+    seen = _decode_kwargs(monkeypatch, bsz = len(mask), flash = True, mask = mask)
     for kw in seen:
         assert kw["flash_decode"] is False
         assert kw["leftpad"] is None
