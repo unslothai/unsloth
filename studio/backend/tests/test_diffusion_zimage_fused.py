@@ -151,7 +151,8 @@ class ZImageTransformer2DModel(torch.nn.Module):
 def test_kill_switch_on_a_later_load_restores_the_processor(monkeypatch):
     cls = zmod.ZSingleStreamAttnProcessor
     stock = cls.__dict__["__call__"]
-    zf.install(ZImageTransformer2DModel())  # CPU weights: class patched now, modules at the first forward
+    # CPU weights: the class is patched now, the modules at the first forward.
+    zf.install(ZImageTransformer2DModel())
     assert getattr(cls.__dict__["__call__"], "__unsloth_zimage_fused__", False)
     monkeypatch.setenv(zf.ZIMAGE_FUSED_ENV, "0")
     assert zf.install(ZImageTransformer2DModel()) == {"real_rope": False, "fused_qkv": 0}
