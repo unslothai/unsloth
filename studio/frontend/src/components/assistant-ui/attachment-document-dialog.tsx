@@ -8,7 +8,12 @@ import { DocumentView, documentKind, isMarkdown } from "@/components/file-viewer
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { MediaViewer, ScaleMenu } from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
-import { attachmentBodyText, fetchChatAttachmentBlob, truncateAttachmentPreviewText } from "@/features/chat";
+import {
+  attachmentBodyText,
+  fetchChatAttachmentBlob,
+  readAttachmentText,
+  truncateAttachmentPreviewText,
+} from "@/features/chat";
 import { formatBytes } from "@/features/hub";
 import { useT } from "@/i18n";
 import { downloadFile } from "@/lib/native-files";
@@ -80,7 +85,11 @@ const DocumentDialog: FC<
       .then(async (blob) => {
         let next: Loaded = { blob };
         if (markdown) {
-          const { text, truncated } = truncateAttachmentPreviewText(await blob.text());
+          // A composer File decodes as its adapter read it (BOM, UTF-16); Blob.text() is UTF-8 only.
+          const { text, truncated } =
+            blob instanceof File
+              ? await readAttachmentText(blob, source.name, source.contentType)
+              : truncateAttachmentPreviewText(await blob.text());
           next = { blob, text, truncated };
         } else if (textFallback && blob.type.startsWith("text/")) {
           const { text, truncated } = truncateAttachmentPreviewText(await blob.text());
@@ -92,7 +101,7 @@ const DocumentDialog: FC<
     return () => {
       cancelled = true;
     };
-  }, [open, loaded, markdown, textFallback]);
+  }, [open, loaded, markdown, textFallback, source.name, source.contentType]);
 
   const blob = loaded?.blob;
   const meta = [
