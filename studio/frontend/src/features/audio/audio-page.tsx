@@ -39,6 +39,7 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { useSidebar } from "@/components/ui/sidebar";
 import { Textarea } from "@/components/ui/textarea";
 import { usePlatformStore } from "@/config/env";
 import {
@@ -291,6 +292,7 @@ export function AudioPage({
   const initialReadySent = useRef(false);
   // Clear the floating sidebar toggle on mobile.
   const isMobileShell = useIsMobileShell();
+  const { pinned } = useSidebar();
   const [mode, setMode] = useState<CreateMode>("speak");
   const { rootStyle: railRootStyle } = useMediaRailWidth("audio");
   const tourSteps = useMemo(() => buildAudioTourSteps({ mode }), [mode]);
@@ -2667,7 +2669,12 @@ export function AudioPage({
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
-            isMobileShell ? "pl-12" : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
+            isMobileShell
+            ? "pl-12"
+            : // Collapsed in the desktop app, start where Chat and Images do, clear of the titlebar buttons.
+              !pinned && isTauri
+              ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+              : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
           )}
         >
           {/* A long resident model name must yield to the mode pill instead of painting over it. */}

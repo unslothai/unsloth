@@ -103,6 +103,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
+import { useSidebar } from "@/components/ui/sidebar";
 import { NegativePromptField } from "@/components/negative-prompt-field";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
@@ -936,6 +937,7 @@ function VideoGenerator({
   const initialReadySent = useRef(false);
   // Clear the floating sidebar toggle on mobile.
   const isMobileShell = useIsMobileShell();
+  const { pinned } = useSidebar();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
   const nvfp4Diffusion = useNvfp4Diffusion();
@@ -3679,7 +3681,12 @@ function VideoGenerator({
       <div
         className={cn(
           "@container pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start justify-between pr-2 pt-[var(--studio-chat-header-padding-top,11px)]",
-          isMobileShell ? "pl-12" : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
+          isMobileShell
+            ? "pl-12"
+            : // Collapsed in the desktop app, start where Chat and Images do, clear of the titlebar buttons.
+              !pinned && isTauri
+              ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+              : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
         )}
       >
         {/* min-w-0: without it a long resident model name pushes the Images link off a phone screen. */}
