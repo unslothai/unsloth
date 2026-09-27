@@ -158,18 +158,22 @@ def _ensure_project_workspace(root_path: str) -> str:
     return str(root_resolved)
 
 
-def chat_attachment_blob_is_referenced(blob_id: str) -> bool:
-    """Whether any stored message names this sha256 blob id; an unreadable database answers True."""
+_SHA256_ID = re.compile(r"[0-9a-f]{64}")
+
+
+def chat_attachment_referenced_blob_ids() -> "set[str] | None":
+    """Every sha256 blob id a stored message names, in one pass; None when the database is unreadable."""
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT 1 FROM chat_messages WHERE attachments_json LIKE ? LIMIT 1",
-            (f"%{blob_id}%",),
-        ).fetchone()
-        return row is not None
+        ids: set[str] = set()
+        for (attachments_json,) in conn.execute(
+            "SELECT attachments_json FROM chat_messages WHERE attachments_json LIKE '%storedFile%'"
+        ):
+            ids.update(_SHA256_ID.findall(attachments_json or ""))
+        return ids
     except sqlite3.Error:
-        logger.warning("Could not check references for chat attachment %s; keeping it", blob_id)
-        return True
+        logger.warning("Could not check references for chat attachments; keeping them")
+        return None
     finally:
         conn.close()
 

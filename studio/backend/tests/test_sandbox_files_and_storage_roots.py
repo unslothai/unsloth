@@ -3296,6 +3296,9 @@ def test_attachments_are_copied_into_the_sandbox_once(tmp_path, monkeypatch, dir
     long_copy = workdir / tools.sandbox_attachment_path(sheet, long_name)
     assert long_copy.read_bytes() == b"a,b\n" and long_copy.suffix == ".xlsx"
     assert 70 < len(long_copy.name.encode()) <= 80
+    for name in ("a" * 79 + " ." + "x" * 20, "c" * 78 + ". ." + "z" * 20, long_name):
+        path = tools.sandbox_attachment_path(sheet, name)
+        assert tools.sandbox_attachment_path(sheet, path.rsplit("/", 1)[-1]) == path
     assert tools.session_sandbox_has_files(session) is False
     copy.write_bytes(b"edited")
     tools.materialize_sandbox_attachments(session, [(sheet, "data.csv")])

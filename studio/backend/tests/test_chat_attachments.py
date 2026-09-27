@@ -433,8 +433,6 @@ def test_delete_attachment_route_then_404(tmp_path, monkeypatch):
     assert excinfo.value.status_code == 404
 
 
-
-
 def _upload(data: bytes, filename: str = "book.xlsx") -> dict:
     import io
 
@@ -993,6 +991,27 @@ def test_attachment_sweep_keeps_referenced_and_recent_files(tmp_path, monkeypatc
     monkeypatch.setattr(store, "_root", lambda: tmp_path / "other")
     store.sweep_attachments_if_due()
     assert sorted(store._swept_at) == sorted([root, tmp_path / "other"])
+
+
+def test_attachment_sweep_reads_references_once(tmp_path, monkeypatch):
+    from storage import chat_attachment_store as store
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    ids = [_upload(data)["id"] for data in (b"one", b"two", b"three")]
+    root = store.attachment_path(ids[0]).parent
+    for name in ids:
+        os.utime(root / name, (1, 1))
+    calls = []
+    real = studio_db.chat_attachment_referenced_blob_ids
+    monkeypatch.setattr(
+        studio_db, "chat_attachment_referenced_blob_ids", lambda: calls.append(1) or real()
+    )
+    assert store.sweep_attachments() == 3 and len(calls) == 1
+
+    kept = _upload(b"kept")["id"]
+    os.utime(root / kept, (1, 1))
+    monkeypatch.setattr(studio_db, "chat_attachment_referenced_blob_ids", lambda: None)
+    assert store.sweep_attachments() == 0 and (root / kept).exists()
 
 
 def test_attachment_file_serves_the_stored_original(tmp_path, monkeypatch):

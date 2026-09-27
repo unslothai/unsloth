@@ -3028,7 +3028,9 @@ const Composer: FC<{
         prev.modelLoading ||
         state.params.checkpoint !== prev.params.checkpoint ||
         state.residentCheckpoint !== prev.residentCheckpoint ||
-        state.loadedIsMultimodal !== prev.loadedIsMultimodal
+        state.loadedIsMultimodal !== prev.loadedIsMultimodal ||
+        state.codeToolsEnabled !== prev.codeToolsEnabled ||
+        state.supportsTools !== prev.supportsTools
       ) {
         void retry();
       }

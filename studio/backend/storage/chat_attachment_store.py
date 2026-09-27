@@ -89,7 +89,7 @@ def sweep_attachments_if_due(now: float | None = None) -> int:
 
 def sweep_attachments(now: float | None = None) -> int:
     """Delete expired blobs no stored message names, and abandoned partial uploads. Returns the count."""
-    from storage.studio_db import chat_attachment_blob_is_referenced
+    from storage.studio_db import chat_attachment_referenced_blob_ids
 
     root = _root()
     if not root.is_dir():
@@ -97,6 +97,7 @@ def sweep_attachments(now: float | None = None) -> int:
     cutoff = (time.time() if now is None else now) - SWEEP_GRACE_SECONDS
     removed = 0
     with _lock:
+        referenced = None
         for entry in os.scandir(root):
             is_blob = bool(_ID.fullmatch(entry.name))
             if not is_blob and not entry.name.startswith(_PARTIAL_PREFIX):
@@ -104,8 +105,13 @@ def sweep_attachments(now: float | None = None) -> int:
             try:
                 if entry.stat(follow_symlinks = False).st_mtime > cutoff:
                     continue
-                if is_blob and chat_attachment_blob_is_referenced(entry.name):
-                    continue
+                if is_blob:
+                    if referenced is None:
+                        referenced = chat_attachment_referenced_blob_ids()
+                        if referenced is None:
+                            return removed
+                    if entry.name in referenced:
+                        continue
                 os.unlink(entry.path)
                 removed += 1
             except FileNotFoundError:

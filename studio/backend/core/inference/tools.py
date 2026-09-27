@@ -19720,7 +19720,8 @@ def sandbox_attachment_path(blob_id: str, name: str) -> str:
         stem, ext = os.path.splitext(base)
         ext = ext if len(ext.encode()) <= 16 else ""
         room = _ATTACHMENT_NAME_BYTES - len(ext.encode())
-        base = stem.encode()[:room].decode("utf-8", "ignore") + ext
+        # Stripped again so the basename the frontend sends back derives this same path.
+        base = (stem.encode()[:room].decode("utf-8", "ignore").rstrip(" .") or "attachment") + ext
     return f"{_ATTACHMENTS_DIR}/{blob_id[:_ATTACHMENT_PREFIX_LEN]}/{base}"
 
 

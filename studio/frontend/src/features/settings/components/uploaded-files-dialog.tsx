@@ -193,9 +193,12 @@ function toSortTime(value: string | number | null | undefined): number {
 // tab synchronously and point it at the URL once resolved. A blocked synchronous open is surfaced
 // instead of silently losing the file after the asynchronous URL lookup. The Tauri webview has no
 // window.open at all, so it goes through the OS opener.
-async function openResolvedUrl(resolve: () => Promise<string>): Promise<void> {
+async function openResolvedUrl(
+  resolve: () => Promise<string | null>,
+): Promise<void> {
   if (isTauri) {
     const url = await resolve();
+    if (url === null) return;
     const { openUrl } = await import("@tauri-apps/plugin-opener");
     await openUrl(url);
     return;
@@ -207,12 +210,16 @@ async function openResolvedUrl(resolve: () => Promise<string>): Promise<void> {
     );
   }
   win.opener = null;
-  let url: string;
+  let url: string | null;
   try {
     url = await resolve();
   } catch (err) {
     win.close();
     throw err;
+  }
+  if (url === null) {
+    win.close();
+    return;
   }
   win.location.replace(url);
 }
@@ -313,6 +320,11 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
       }
       await openResolvedUrl(async () => {
         const blob = await fetchChatAttachmentBlob(att.messageId, att.id);
+        // A kept original is served as octet-stream: a tab would save it nameless.
+        if (blob.type === "application/octet-stream") {
+          await downloadFile(blob, att.name, blob.type);
+          return null;
+        }
         const url = URL.createObjectURL(blob);
         // Give the new tab time to load the blob before revoking.
         setTimeout(() => URL.revokeObjectURL(url), 60_000);

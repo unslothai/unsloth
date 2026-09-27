@@ -684,7 +684,7 @@ function cellText(
     switch (view.getUint8(1)) {
       case 2: // number
       case 10: // currency
-        text = decimal ?? (double === null ? "" : String(double));
+        text = decimal ?? (double === null ? "" : String(Number(double.toPrecision(15))));
         break;
       case 3:
         text = lists.get(STRING_LIST)?.get(stringId) ?? "";
@@ -696,7 +696,7 @@ function cellText(
         text = double ? "TRUE" : "FALSE";
         break;
       case 7: // duration, in seconds
-        text = double === null ? "" : String(double);
+        text = double === null ? "" : String(Number(double.toPrecision(15)));
         break;
       case 8:
         text = "#ERROR";
