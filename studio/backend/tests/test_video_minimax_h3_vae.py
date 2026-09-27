@@ -982,7 +982,9 @@ def test_the_fused_decoder_reservation_turns_off_the_forced_vae_block_compile(mo
     assert H.reserve_h3_fast_decoder(vae, speed_mode = "default", workflow = "t2va") is True
     assert ds_mod._vae_decode_compile_allowed(pipe, "default") is False
     # the reservation predicts exactly what apply_h3_vae_speedups then engages
-    assert H.LEVER_FUSED_DECODER in H.apply_h3_vae_speedups(vae, speed_mode = "default", workflow = "t2va")
+    assert H.LEVER_FUSED_DECODER in H.apply_h3_vae_speedups(
+        vae, speed_mode = "default", workflow = "t2va"
+    )
 
 
 @pytest.mark.parametrize("case", ["off", "fast_disabled", "no_fast_path"])
@@ -1006,7 +1008,9 @@ def test_the_h3_load_reserves_the_fused_decoder_before_the_speed_optims():
 
     tree = ast.parse((pathlib.Path(H.__file__).parent / "video.py").read_text(encoding = "utf-8"))
     load = next(
-        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_load_h3_modular_pipeline"
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_load_h3_modular_pipeline"
     )
 
     def calls(name):
