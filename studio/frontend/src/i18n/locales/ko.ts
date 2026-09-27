@@ -1280,8 +1280,6 @@ export const ko = {
         resetAll: "사용자 지정 초기화",
         preferencesTitle: "환경설정",
         colors: {
-          lightGroup: "라이트 테마",
-          darkGroup: "다크 테마",
           accent: "강조색",
           background: "배경",
           foreground: "전경",

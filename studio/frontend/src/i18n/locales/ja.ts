@@ -1266,8 +1266,6 @@ export const ja = {
         resetAll: "カスタマイズをリセット",
         preferencesTitle: "環境設定",
         colors: {
-          lightGroup: "ライトテーマ",
-          darkGroup: "ダークテーマ",
           accent: "アクセント",
           background: "背景",
           foreground: "文字色",

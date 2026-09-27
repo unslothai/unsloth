@@ -1270,8 +1270,6 @@ export const it = {
         resetAll: "Ripristina la personalizzazione",
         preferencesTitle: "Preferenze",
         colors: {
-          lightGroup: "Tema chiaro",
-          darkGroup: "Tema scuro",
           accent: "Accento",
           background: "Sfondo",
           foreground: "Primo piano",

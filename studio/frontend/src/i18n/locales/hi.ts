@@ -1287,8 +1287,6 @@ export const hi = {
         resetAll: "कस्टमाइज़ेशन रीसेट करें",
         preferencesTitle: "प्राथमिकताएं",
         colors: {
-          lightGroup: "लाइट थीम",
-          darkGroup: "डार्क थीम",
           accent: "एक्सेंट",
           background: "पृष्ठभूमि",
           foreground: "अग्रभूमि",

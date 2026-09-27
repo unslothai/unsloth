@@ -1267,8 +1267,6 @@ export const zhCN = {
         resetAll: "重置自定义",
         preferencesTitle: "偏好设置",
         colors: {
-          lightGroup: "浅色主题",
-          darkGroup: "深色主题",
           accent: "强调色",
           background: "背景",
           foreground: "前景",

@@ -1284,8 +1284,6 @@ export const ar = {
         resetAll: "إعادة تعيين التخصيص",
         preferencesTitle: "التفضيلات",
         colors: {
-          lightGroup: "المظهر الفاتح",
-          darkGroup: "المظهر الداكن",
           accent: "لون التمييز",
           background: "الخلفية",
           foreground: "اللون الأمامي",

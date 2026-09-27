@@ -1309,8 +1309,6 @@ export const fr = {
         resetAll: "Réinitialiser la personnalisation",
         preferencesTitle: "Préférences",
         colors: {
-          lightGroup: "Thème clair",
-          darkGroup: "Thème sombre",
           accent: "Accent",
           background: "Arrière-plan",
           foreground: "Premier plan",

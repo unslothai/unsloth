@@ -28,14 +28,12 @@ import { SidebarNavCustomizer } from "../components/sidebar-nav-customizer";
 import { SettingsSection } from "../components/settings-section";
 import { ThemeSegmented } from "../components/theme-segmented";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
-import { useTheme } from "../stores/theme-store";
 
 const FONT_CONTROL_CLASS = "flex w-76 max-w-full items-center gap-2";
 const FONT_SELECT_CLASS = "w-auto min-w-0 flex-1";
 
 export function AppearanceTab() {
   const t = useT();
-  const { resolved } = useTheme();
   const { pinned, setPinned } = useSidebarPin();
   // The sidebar's "Customize sidebar" entry lands mid-page, so scroll its section into view.
   const sidebarNavSectionRef = useRef<HTMLDivElement | null>(null);
@@ -72,15 +70,6 @@ export function AppearanceTab() {
         <SettingsRow label={t("settings.appearance.palette.label")}>
           <ColorThemeSelect />
         </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection
-        title={t(
-          resolved === "light"
-            ? "settings.appearance.custom.colors.lightGroup"
-            : "settings.appearance.custom.colors.darkGroup",
-        )}
-      >
         <SettingsRow label={t("settings.appearance.custom.colors.accent")}>
           <ActiveColorControl
             colorKey="accent"

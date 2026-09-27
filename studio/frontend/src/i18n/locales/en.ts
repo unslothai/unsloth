@@ -1287,8 +1287,6 @@ export const en = {
         resetAll: "Reset customization",
         preferencesTitle: "Preferences",
         colors: {
-          lightGroup: "Light theme",
-          darkGroup: "Dark theme",
           accent: "Accent",
           background: "Background",
           foreground: "Foreground",

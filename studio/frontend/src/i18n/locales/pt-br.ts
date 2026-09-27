@@ -1297,8 +1297,6 @@ export const ptBR = {
         resetAll: "Redefinir personalização",
         preferencesTitle: "Preferências",
         colors: {
-          lightGroup: "Tema claro",
-          darkGroup: "Tema escuro",
           accent: "Destaque",
           background: "Fundo",
           foreground: "Texto",

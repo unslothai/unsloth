@@ -1310,8 +1310,6 @@ export const de = {
         resetAll: "Anpassungen zurücksetzen",
         preferencesTitle: "Weitere Optionen",
         colors: {
-          lightGroup: "Helles Design",
-          darkGroup: "Dunkles Design",
           accent: "Akzentfarbe",
           background: "Hintergrund",
           foreground: "Vordergrund",

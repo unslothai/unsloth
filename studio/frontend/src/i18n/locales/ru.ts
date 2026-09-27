@@ -1289,8 +1289,6 @@ export const ru = {
         resetAll: "Сбросить настройки оформления",
         preferencesTitle: "Параметры",
         colors: {
-          lightGroup: "Светлая тема",
-          darkGroup: "Тёмная тема",
           accent: "Акцент",
           background: "Фон",
           foreground: "Текст",
