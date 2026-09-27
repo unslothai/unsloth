@@ -36,9 +36,13 @@ def _block(n, bs):
 
 @pytest.mark.parametrize("kind", ["rowwise", "block128", "block64"])
 def test_transposed_view_dequantizes_stored_layout(F, kind):
-    q, s, ref = _rowwise(256) if kind == "rowwise" else _block(256, 128 if kind == "block128" else 64)
+    q, s, ref = (
+        _rowwise(256) if kind == "rowwise" else _block(256, 128 if kind == "block128" else 64)
+    )
     torch.testing.assert_close(F.weight_dequant(q, s, torch.float32), ref, rtol = 1e-2, atol = 1e-4)
-    torch.testing.assert_close(F.weight_dequant(q.t(), s, torch.float32), ref.t(), rtol = 1e-2, atol = 1e-4)
+    torch.testing.assert_close(
+        F.weight_dequant(q.t(), s, torch.float32), ref.t(), rtol = 1e-2, atol = 1e-4
+    )
 
 
 @pytest.mark.parametrize("kind", ["rowwise", "block128"])
