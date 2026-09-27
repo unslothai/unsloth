@@ -41485,6 +41485,8 @@ async def openai_image_generations(
 
     With media auto-switch on, ``model`` names the image model to serve on and is loaded
     when it is not the resident one; with it off ``model`` stays informational."""
+    if linked := await linked_instances.resolve(request, body.model):
+        return await _forward_linked(request, "images/generations", linked, current_subject)
     # Refused before the row is opened, as on /audio/speech: a request rejected before any
     # work is not traffic worth a red error row.
     if body.stream:

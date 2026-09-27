@@ -81,6 +81,8 @@ export interface ModelSelectorChangeMeta {
   /** Detected local audio architecture, used when a filesystem path has no Hub id. */
   audioType?: string | null;
   nativePathExpiresAtMs?: number | null;
+  /** Picked from a linked instance's list: the Images page loads and generates there. */
+  linkedInstanceId?: string;
 }
 
 /** Full on-disk requirement for a model pick, including its checkpoint and companion assets

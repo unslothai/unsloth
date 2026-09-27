@@ -320,3 +320,89 @@ def test_stream_usage_is_requested_counted_and_hidden_unless_asked(monkeypatch, 
     assert content == (sse if caller_asked else sse.replace(usage, b"\n"))
     assert ("set_usage", ("entry-1",), {"prompt_tokens": 5, "completion_tokens": 7}) in monitor.calls
     assert ("append_reply", ("entry-1", "hi é"), {}) in monitor.calls
+
+
+@pytest.mark.parametrize(
+    "method, path, ok",
+    [
+        ("GET", "api/hub/cached-gguf", True),
+        ("GET", "api/hub/gguf-variants", True),
+        ("POST", "api/hub/download", True),
+        ("POST", "api/inference/load", True),
+        ("POST", "api/inference/images/generate", True),
+        ("GET", "api/inference/images/gallery/abc/file", True),
+        ("DELETE", "api/hub/download", False),
+        ("GET", "api/auth/api-keys", False),
+        ("POST", "api/settings/anything", False),
+        ("GET", "api/inference/images/../../auth/api-keys", False),
+        ("POST", "api/train/start", False),
+    ],
+)
+def test_proxy_only_reaches_the_picker_and_image_routes(method, path, ok):
+    assert linked_instances.proxy_allowed(method, path) is ok
+
+
+def _proxy_request(method: str, query: bytes = b"", body: bytes = b"", headers: dict | None = None) -> Request:
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    header_list = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+    return Request(
+        {"type": "http", "method": method, "path": "/p", "query_string": query, "headers": header_list},
+        receive,
+    )
+
+
+def test_proxy_sends_the_key_and_rewrites_gallery_urls(monkeypatch):
+    instance = linked_instances_db.create_instance("colab", "https://remote.example", REMOTE_KEY)
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen.update(
+            url = str(request.url),
+            auth = request.headers.get("authorization"),
+            hop = request.headers.get(linked_instances.HOP_HEADER),
+            hf = request.headers.get("x-unsloth-hf-token"),
+            body = request.content,
+        )
+        return httpx.Response(
+            200,
+            json = {"images": [{"id": "i1", "url": "/api/inference/images/gallery/i1/file", "prompt": "/api/x"}]},
+        )
+
+    _remote(handler, monkeypatch)
+    request = _proxy_request(
+        "POST", body = b'{"prompt": "a sloth"}', headers = {"content-type": "application/json", "x-unsloth-hf-token": "hf_x", "cookie": "s=1"}
+    )
+    response = asyncio.run(linked_instances.proxy(request, instance, "api/inference/images/generate"))
+    assert seen["url"] == "https://remote.example/api/inference/images/generate"
+    assert seen["auth"] == f"Bearer {REMOTE_KEY}" and seen["hop"] == "1" and seen["hf"] == "hf_x"
+    assert seen["body"] == b'{"prompt": "a sloth"}'
+    image = json.loads(response.body)["images"][0]
+    assert image["url"] == f"/api/linked-instances/{instance['id']}/proxy/api/inference/images/gallery/i1/file"
+    assert image["prompt"] == "/api/x"
+
+
+def test_proxy_keeps_the_query_and_streams_binary(monkeypatch):
+    instance = linked_instances_db.create_instance("colab", "https://remote.example", REMOTE_KEY)
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, content = b"\x89PNG", headers = {"content-type": "image/png"})
+
+    _remote(handler, monkeypatch)
+    request = _proxy_request("GET", query = b"repo_id=unsloth%2Fa")
+    response = asyncio.run(linked_instances.proxy(request, instance, "api/hub/gguf-variants"))
+
+    async def body():
+        return b"".join([chunk async for chunk in response.body_iterator])
+
+    assert seen["url"] == "https://remote.example/api/hub/gguf-variants?repo_id=unsloth%2Fa"
+    assert response.media_type == "image/png" and asyncio.run(body()) == b"\x89PNG"

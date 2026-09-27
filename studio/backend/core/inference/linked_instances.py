@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import re
 import socket
 import time
 from typing import Optional
@@ -20,7 +21,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from fastapi import HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from core.inference.api_monitor import api_monitor
 from storage import linked_instances_db
@@ -361,6 +362,96 @@ async def catalog_objects(request: Optional[Request]) -> list[dict]:
 
 def forget(instance_id: str) -> None:
     _catalog_cache.pop(instance_id, None)
+
+
+# What the model picker and the Images page may reach on a linked instance: its model lists,
+# downloads, loads, and image generation. Anything else (settings, keys, training) stays local.
+_PROXY_ROUTES = (
+    (re.compile(r"api/system"), {"GET"}),
+    (re.compile(r"api/models/(list|diffusion-loras|diffusion-controlnets)"), {"GET"}),
+    (
+        re.compile(
+            r"api/hub/(local|cached-gguf|cached-models|gguf-variants|download-status"
+            r"|active-downloads|download-progress|gguf-download-progress)"
+        ),
+        {"GET"},
+    ),
+    (re.compile(r"api/hub/download(/cancel)?"), {"POST"}),
+    (re.compile(r"api/inference/(status|load-progress)"), {"GET"}),
+    (re.compile(r"api/inference/(load|unload)"), {"POST"}),
+    (re.compile(r"api/inference/images/[A-Za-z0-9_./-]+"), {"GET", "POST", "PATCH", "DELETE"}),
+)
+_PROXY_REQUEST_HEADERS = ("content-type", "accept", "x-unsloth-hf-token")
+_GALLERY_PREFIX = "/api/inference/images/"
+
+
+def proxy_allowed(method: str, path: str) -> bool:
+    return ".." not in path and any(
+        pattern.fullmatch(path) and method in methods for pattern, methods in _PROXY_ROUTES
+    )
+
+
+def _rewrite_urls(value: object, prefix: str) -> object:
+    """Point the remote's own image URLs back through this proxy."""
+    if isinstance(value, dict):
+        return {k: _rewrite_urls(v, prefix) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_rewrite_urls(v, prefix) for v in value]
+    if isinstance(value, str) and value.startswith(_GALLERY_PREFIX):
+        return prefix + value
+    return value
+
+
+async def proxy(request: Request, instance: dict, path: str) -> Response:
+    """Relay one allowlisted Unsloth Studio API call to ``instance`` with its key."""
+    headers = await asyncio.to_thread(_auth_headers, instance)
+    for name in _PROXY_REQUEST_HEADERS:
+        if value := request.headers.get(name):
+            headers[name] = value
+    client = _client()
+    upstream_request = client.build_request(
+        request.method,
+        f"{instance['base_url']}/{path}",
+        params = request.query_params,
+        content = await request.body(),
+        headers = headers,
+        # Loads download first and generations run for minutes.
+        timeout = httpx.Timeout(3600.0, connect = 10.0),
+    )
+    try:
+        upstream = await client.send(upstream_request, stream = True)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code = 502,
+            detail = f"Linked instance '{instance['name']}' is unreachable ({type(exc).__name__}).",
+        ) from exc
+
+    media_type = upstream.headers.get("content-type", "application/json")
+    if media_type.startswith("application/json"):
+        try:
+            content = await upstream.aread()
+        finally:
+            await upstream.aclose()
+        try:
+            payload = json.loads(content)
+        except ValueError:
+            return Response(content, status_code = upstream.status_code, media_type = media_type)
+        prefix = f"/api/linked-instances/{instance['id']}/proxy"
+        return JSONResponse(_rewrite_urls(payload, prefix), status_code = upstream.status_code)
+
+    async def relay():
+        try:
+            async for chunk in upstream.aiter_bytes():
+                yield chunk
+        finally:
+            await upstream.aclose()
+
+    passthrough = {
+        k: v for k, v in upstream.headers.items() if k.lower() in ("content-disposition", "cache-control")
+    }
+    return StreamingResponse(
+        relay(), status_code = upstream.status_code, media_type = media_type, headers = passthrough
+    )
 
 
 # Read-only endpoints every Unsloth Studio serves to an API key, old releases included.

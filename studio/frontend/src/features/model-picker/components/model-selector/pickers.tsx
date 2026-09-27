@@ -546,7 +546,7 @@ const CAPABILITY_BADGES: {
 /** Which capability glyphs are worth drawing in the current picker; null draws them all. A
  *  media picker has already filtered to one kind, so its own kind is not information (Audio
  *  on Video is the exception). Context, not a prop, since it comes from the picker. */
-const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | null>(
+export const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | null>(
   null,
 );
 
@@ -1090,7 +1090,7 @@ function ConnectedGroupHeading({
   );
 }
 
-function ModelRow({
+export function ModelRow({
   label,
   meta,
   selected,

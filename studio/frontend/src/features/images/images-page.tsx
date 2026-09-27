@@ -221,6 +221,8 @@ import {
   generateDiffusionImage,
   getDiffusionLoadProgress,
   getDiffusionStatus,
+  getImagesMachine,
+  setImagesMachine,
   getGallery,
   getGenerateProgress,
   listDiffusionControlNets,
@@ -3360,7 +3362,17 @@ export function ImagesPage({
 
   // The chat picker emits (modelId, quant + filename) for a GGUF, or just (modelId) for a curated safetensors pick.
   const handleModelSelect = useCallback(
-    (id: string, meta: ModelSelectorChangeMeta) => {
+    (id: string, pickMeta: ModelSelectorChangeMeta) => {
+      // A pick from a linked instance loads and generates there; its load fetches what is missing,
+      // so it skips this machine's download manager.
+      const machine = pickMeta.linkedInstanceId ?? null;
+      if (machine !== getImagesMachine()) {
+        setImagesMachine(machine);
+        void refreshStatus();
+      }
+      const meta: ModelSelectorChangeMeta = machine
+        ? { ...pickMeta, source: "local" }
+        : pickMeta;
       // A Download only selection fetches files; it does not take over the page. Retiring the staged
       // intent and claiming the page for it stranded a load that was already downloading: that model
       // finished downloading and then never loaded, with no toast and nothing to retry from.
@@ -3548,6 +3560,7 @@ export function ImagesPage({
       loadOrStage,
       pickGuard,
       quant,
+      refreshStatus,
       revertPick,
     ],
   );
@@ -4599,6 +4612,7 @@ export function ImagesPage({
               />
             ) : (
               <ModelSelector
+                linkedPicker="image"
                 triggerDataTour="images-model"
                 models={imageModels}
                 value={status?.loaded ? status.repo_id ?? undefined : undefined}

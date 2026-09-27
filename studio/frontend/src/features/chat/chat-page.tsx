@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isLinkedModelId } from "@/features/model-picker/linked/linked-id";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import {
   applyModelLoadConfigToRuntime,
@@ -4134,6 +4135,7 @@ export function ChatPage({
             )}
             {view.mode !== "compare" && (
               <ModelSelector
+                linkedPicker="chat"
                 models={models}
                 loraModels={loraModels}
                 externalModels={externalModels}
@@ -4143,9 +4145,9 @@ export function ChatPage({
                 // selection behind, so the tick stayed on a released model.
                 loaded={chatModelLoaded({
                   checkpoint: inferenceParams.checkpoint,
-                  isExternalModel: isExternalModelId(
-                    inferenceParams.checkpoint,
-                  ),
+                  isExternalModel:
+                    isExternalModelId(inferenceParams.checkpoint) ||
+                    isLinkedModelId(inferenceParams.checkpoint),
                   residentCheckpoint,
                 })}
                 activeGgufVariant={activeGgufVariant}

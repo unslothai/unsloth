@@ -19,9 +19,11 @@ import { useNpuStatus } from "@/features/npu";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
+import { useIsAccountOwner } from "@/features/auth";
 import {
   CheckmarkCircle02Icon,
   CloudIcon,
+  CloudServerIcon,
   Download01Icon,
   RemoveCircleIcon,
   StarIcon,
@@ -63,6 +65,13 @@ import {
 } from "./model-selector/model-catalog";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
+import { loadLinkedChatWithToast } from "../linked/linked-load-toast";
+import { type LinkedPickerKind, useLinkedMachines } from "../linked/linked-machines";
+import {
+  type LinkedChatPick,
+  LinkedModelsPanel,
+} from "../linked/linked-models-panel";
+import { MachineSwitch } from "../linked/machine-switch";
 import { loraOptionLabel } from "./model-selector/row-meta";
 import { isFineTunedSource } from "./model-selector/source-tabs";
 import type {
@@ -140,6 +149,8 @@ interface ModelSelectorProps {
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
+  /** Offer linked instances beside On Device. Only the chat and Images pickers pass this. */
+  linkedPicker?: LinkedPickerKind;
 }
 
 function ModelSelectorTrigger({
@@ -353,6 +364,8 @@ function ModelSelectorContent({
   task,
   catalog,
   communityModelPolicy,
+  linkedPicker,
+  onLinkedChatPick,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -382,8 +395,21 @@ function ModelSelectorContent({
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
   communityModelPolicy?: CommunityModelPolicy;
+  linkedPicker?: LinkedPickerKind;
+  onLinkedChatPick?: (
+    instance: NonNullable<ReturnType<typeof useLinkedMachines>["instance"]>,
+    pick: LinkedChatPick,
+  ) => void;
 }) {
   const t = useT();
+  const isOwner = useIsAccountOwner();
+  const machines = useLinkedMachines(
+    linkedPicker ?? "chat",
+    open && !!linkedPicker && isOwner,
+  );
+  const showMachineSwitch =
+    !!linkedPicker && isOwner && machines.instances.length > 0;
+  const linkedInstance = showMachineSwitch ? machines.instance : null;
   const hasSelection = Boolean(value);
   const hasExternal = externalModels.length > 0;
   // The Fine-tuned tab is for fine-tuned models only; local models (LM Studio, Ollama, custom folders) live in Hub.
@@ -427,7 +453,9 @@ function ModelSelectorContent({
   );
   // Connected is only valid while external providers exist; fall back otherwise.
   const effectiveHubSection: HubSection =
-    hubSection === "connected" && !hasExternal ? "recommended" : hubSection;
+    hubSection === "connected" && (!hasExternal || linkedInstance)
+      ? "recommended"
+      : hubSection;
 
   const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
     null,
@@ -539,6 +567,42 @@ function ModelSelectorContent({
     }
     onConfigRequestAdopted?.(configRequest.requestId);
   }, [adoptedConfigRequestId, configRequest, onConfigRequestAdopted]);
+  const sectionToggle = (
+    <div className="flex max-w-full shrink-0 items-center">
+      <PillTabs
+        // Wider tabs than the shared default. The panel reserves
+        // --picker-tab-pad a pill, so keep the two in step.
+        className={cn(
+          "[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]",
+          showMachineSwitch && "rounded-r-none pr-0.5",
+        )}
+        ariaLabel={t("picker.hubSectionAriaLabel")}
+        tabs={
+          linkedInstance
+            ? hubSectionTabs.filter((tab) => tab.value !== "connected")
+            : hubSectionTabs
+        }
+        value={effectiveHubSection}
+        onValueChange={(next) => {
+          const section = next as HubSection;
+          setHubSection(section);
+          saveLastHubSection(section);
+        }}
+        fit={true}
+      />
+      {showMachineSwitch ? (
+        <MachineSwitch
+          instances={machines.instances}
+          statuses={machines.statuses}
+          infos={machines.infos}
+          value={linkedInstance}
+          onValueChange={machines.setMachine}
+          className="rounded-l-none border-l border-border/60"
+        />
+      ) : null}
+    </div>
+  );
+
   const handlePick = (id: string, meta: ModelSelectorChangeMeta) => {
     if (meta.source === "external") {
       onSelect(id, meta);
@@ -631,6 +695,24 @@ function ModelSelectorContent({
           </div>
         ) : (
           <>
+            {linkedInstance && linkedPicker ? (
+              <LinkedModelsPanel
+                kind={linkedPicker}
+                instance={linkedInstance}
+                status={machines.statuses[linkedInstance.id]}
+                info={machines.infos[linkedInstance.id]}
+                section={
+                  effectiveHubSection === "downloaded"
+                    ? "downloaded"
+                    : "recommended"
+                }
+                sectionToggle={sectionToggle}
+                catalog={catalog}
+                value={value}
+                onPickChat={(pick) => onLinkedChatPick?.(linkedInstance, pick)}
+                onPickImage={onSelect}
+              />
+            ) : (
             <HubModelPicker
               models={models}
               additionalOnDeviceModels={additionalOnDeviceModels}
@@ -652,23 +734,9 @@ function ModelSelectorContent({
               communityModelPolicy={communityModelPolicy}
               npu={npu}
               section={effectiveHubSection}
-              sectionToggle={
-                <PillTabs
-                  // Wider tabs than the shared default. The panel reserves
-                  // --picker-tab-pad a pill, so keep the two in step.
-                  className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
-                  ariaLabel={t("picker.hubSectionAriaLabel")}
-                  tabs={hubSectionTabs}
-                  value={effectiveHubSection}
-                  onValueChange={(next) => {
-                    const section = next as HubSection;
-                    setHubSection(section);
-                    saveLastHubSection(section);
-                  }}
-                  fit={true}
-                />
-              }
+              sectionToggle={sectionToggle}
             />
+            )}
           </>
         )}
       </TooltipProvider>
@@ -714,6 +782,7 @@ export function ModelSelector({
   hubCapability,
   placeholder,
   loaded,
+  linkedPicker,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -814,6 +883,16 @@ export function ModelSelector({
           : t(disabled ? "picker.modelDisabled" : "picker.modelDropped"),
       };
     }
+    // "@colab/unsloth/Qwen3-4B-GGUF": name the model, say where it runs.
+    if (!found && selected.startsWith("@")) {
+      const slash = selected.indexOf("/");
+      return {
+        id: selected,
+        name: modelDisplayName(selected.slice(slash + 1)),
+        description: selected.slice(0, slash),
+        icon: <HugeiconsIcon icon={CloudServerIcon} className="size-4" />,
+      };
+    }
     return found ?? { id: selected, name: fallbackName };
   }, [
     selected,
@@ -902,6 +981,13 @@ export function ModelSelector({
         task={task}
         catalog={catalog}
         communityModelPolicy={communityModelPolicy}
+        linkedPicker={linkedPicker}
+        onLinkedChatPick={(instance, pick) => {
+          setOpen(false);
+          void loadLinkedChatWithToast(instance, pick, (modelId) =>
+            onValueChange?.(modelId, { source: "external", isLora: false }),
+          );
+        }}
       />
     </Popover>
   );

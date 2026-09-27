@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isLinkedModelId } from "@/features/model-picker/linked/linked-id";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import { minPSamplingPayload } from "../lib/min-p-policy";
 import {
@@ -5247,7 +5248,9 @@ export function createOpenAIStreamAdapter(
           findLatestUserVideoBase64(currentTurnMessages),
       );
       const generationCandidate = isDurableRunCandidate({
-        externalProvider: isExternalRequest,
+        // A linked model streams from the remote through /v1; the durable runner is local only.
+        externalProvider:
+          isExternalRequest || isLinkedModelId(params.checkpoint),
         modelIsAudio: activeModel?.isAudio,
         loadedIsDiffusion: runtime.loadedIsDiffusion,
         // Turn-scoped, not thread-scoped: see currentTurnCarriesMedia above.
