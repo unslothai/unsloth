@@ -2998,6 +2998,11 @@ export const ja = {
       gridView: "グリッド表示",
       listView: "リスト表示",
       settings: "ライブラリの設定",
+      sort: "並べ替え",
+      sortDefault: "デフォルトの順序",
+      sortName: "名前",
+      sortModified: "更新日時",
+      sortSize: "サイズ",
     },
     create: {
       note: "メモ",

@@ -8,6 +8,19 @@ import test from "node:test";
 import { readSrc, readText, registerBundlerResolver } from "./helpers/kit.ts";
 
 // The menu is native and the hook is React, so the contract between them is asserted on source.
+// The native menu exists only on macOS (every item in app_menu.rs is cfg(target_os = "macos"),
+// and the renderer only sends accelerators when it has app menus), so its chords are resolved
+// as a Mac resolves them whatever the runner is. Node's own navigator reports process.platform
+// ("Linux x86_64", "Win32", "darwin"), none of which isMacPlatform reads as a Mac, and the Go
+// items' workspace shortcuts default to Ctrl+1-9 only on a Mac.
+Object.defineProperty(globalThis, "navigator", {
+  configurable: true,
+  value: {
+    platform: "MacIntel",
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+  },
+});
+
 const APP_MENU = readText("../../src-tauri/src/app_menu.rs");
 const MAIN_RS = readText("../../src-tauri/src/main.rs");
 const HOOK = readSrc("app/use-app-menu-actions.ts");
