@@ -3110,11 +3110,9 @@ def test_kv_quant_probe_reports_what_the_runtime_would_really_do(monkeypatch):
     windowed = lambda: [lm_cache.KVCache(), lm_cache.RotatingKVCache(max_size = 8)]
     assert elig(windowed) == "partial"
     assert "sliding-window" in verdict(windowed)[1]
-    # A skip the window does not explain falls back to the general reason.
     mixed = lambda: windowed() + [lm_cache.CacheList(lm_cache.KVCache())]
     assert verdict(mixed)[0] == "partial" and "sliding-window" not in verdict(mixed)[1]
     assert elig(lambda: [lm_cache.RotatingKVCache(max_size = 8)]) == "none"
-    # Attention that rejects the converted entry fails in the probe's second pass.
     assert elig(windowed, attends_quantized = False) == "refused"
     # Mixed quantizable/non-quantizable is a real success, reported as partial.
     assert elig(lambda: [lm_cache.KVCache(), lm_cache.CacheList(lm_cache.KVCache())]) == "partial"
