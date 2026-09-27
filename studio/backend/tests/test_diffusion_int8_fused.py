@@ -283,3 +283,25 @@ def test_cpu_placed_model_is_swapped_at_the_first_forward():
 
 def test_offload_skips_install():
     assert fused.install(torch.nn.Linear(8, 8), offload_active = True) == 0
+
+
+@needs_cuda
+@pytest.mark.parametrize("kind", ["gelu", "swiglu"])
+def test_convrot_linears_keep_the_stock_forward(kind):
+    # MiniMax-H3's hosted int8 checkpoint swaps its MLP Linears onto ConvRotLinear, which rotates the input by a block
+    # Hadamard before the GEMM. The fused forward calls _int_mm on the weight directly and would skip the rotation.
+    from core.inference.diffusion_convrot import _install_rotation
+
+    if kind == "gelu":
+        ff = _quantized_ff()
+        lins = (ff.net[0].proj, ff.net[2])
+    else:
+        from diffusers.models.attention import FeedForward
+
+        torch.manual_seed(0)
+        ff = _quantize(FeedForward(256, inner_dim = 512, activation_fn = "swiglu", bias = False).cuda().to(torch.bfloat16).eval())
+        lins = (ff.net[0].proj, ff.net[2])
+    for lin in lins:
+        _install_rotation(lin, 16)
+    assert fused.install(ff) == 0
+    assert not fused.is_installed(ff)

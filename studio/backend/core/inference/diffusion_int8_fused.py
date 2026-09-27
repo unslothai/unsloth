@@ -617,6 +617,15 @@ def _prepare_swiglu(module: Any) -> bool:
     return True
 
 
+def _exact_linear(*modules: Any) -> bool:
+    """Every module is a plain nn.Linear, not a subclass. A subclass can change what the GEMM sees (ConvRot's
+    ConvRotLinear rotates its input by a block Hadamard first), and the fused forward calls _int_mm on the
+    weight directly, so it would silently skip that step."""
+    from torch import nn
+
+    return all(type(m) is nn.Linear for m in modules)
+
+
 def _ff_eligible(module: Any) -> bool:
     try:
         from diffusers.models.activations import GELU
@@ -631,7 +640,7 @@ def _ff_eligible(module: Any) -> bool:
     act, drop, down = net[0], net[1], net[2]
     if type(act) is not GELU or getattr(act, "approximate", None) != "tanh":
         return False
-    if type(drop).__name__ != "Dropout" or type(down).__name__ != "Linear":
+    if type(drop).__name__ != "Dropout" or not _exact_linear(act.proj, down):
         return False
     if any(type(extra).__name__ != "Dropout" for extra in net[3:]):
         return False
@@ -646,6 +655,8 @@ def _flux_single_eligible(module: Any) -> bool:
         if type(act).__name__ != "GELU" or getattr(act, "approximate", None) != "tanh":
             return False
         if getattr(module.attn, "heads", None) is None or not getattr(module.attn, "pre_only", False):
+            return False
+        if not _exact_linear(module.proj_mlp, module.proj_out):
             return False
         return _plain_int8_weight(module.proj_mlp.weight) and _plain_int8_weight(module.proj_out.weight)
     except Exception:  # noqa: BLE001
