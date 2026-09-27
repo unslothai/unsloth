@@ -50,6 +50,7 @@ from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_err
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
     PERSONALIZATION_VERSION,
+    drop_unknown_palette,
     get_personalization,
     set_personalization,
 )
@@ -4015,6 +4016,9 @@ class PersonalizationAppearance(BaseModel):
     )
 
 
+_PALETTE_IDS = frozenset(get_args(PersonalizationAppearance.model_fields["palette"].annotation))
+
+
 class PersonalizationPayload(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
@@ -4037,7 +4041,7 @@ class PersonalizationResponse(PersonalizationPayload):
 def get_personalization_settings(
     current_subject: str = Depends(get_current_subject),
 ) -> PersonalizationResponse:
-    stored = get_personalization()
+    stored = drop_unknown_palette(get_personalization(), _PALETTE_IDS)
     response = PersonalizationResponse.model_validate(stored or {})
     response.saved = bool(stored)
     appearance = stored.get("appearance") if isinstance(stored, dict) else None
@@ -4082,8 +4086,9 @@ def update_personalization_settings(
             log = logger,
         ) from exc
     # Return the stored record, not the defaults-filled request, so the response
-    # matches storage (and the next GET) for fields the client omitted.
-    return PersonalizationPayload.model_validate(merged)
+    # matches storage (and the next GET) for fields the client omitted. An unknown
+    # stored palette stays on disk for the build that wrote it.
+    return PersonalizationPayload.model_validate(drop_unknown_palette(merged, _PALETTE_IDS))
 
 
 # Backs Settings > Logs: the session log always existed, but its path was only printed to a console
