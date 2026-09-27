@@ -2297,8 +2297,8 @@ def test_parallel_slots_setting_wired_end_to_end():
     # Click-time snapshot, /load body, validate preflight, cross-model reset and
     # failed-switch rollback all carry the value.
     assert "pendingLoadConfig?.nParallel" in runtime
-    # GGUF-gated, like the compare pane: a transformers load has no slots.
-    assert "n_parallel: isGguf ? loadNParallel : null," in runtime
+    # Both backends take a width: llama-server slots, or the MLX batch width.
+    assert "n_parallel: loadNParallel," in runtime
     assert "n_parallel: validateNParallel," in runtime
     assert "loadNParallel = pendingLoadConfig?.nParallel ?? null;" in runtime
     assert "n_parallel: rollbackState.loadedNParallel," in runtime
@@ -2342,9 +2342,10 @@ def test_parallel_slots_reach_an_api_load_through_the_server_mirror():
     assert "n_parallel = payload.n_parallel," in route
     store = _read_backend("utils/openai_auto_switch_settings.py")
     assert 'entry["n_parallel"] = n_parallel' in store
-    # GGUF-only, like the picker: a safetensors load has no llama-server slots.
-    gguf_block = store.split("    if is_gguf:", 1)[1]
-    assert 'kwargs["n_parallel"] = override["n_parallel"]' in gguf_block
+    # Ungated: MLX sizes its batch by the same width llama-server sizes its slots by.
+    shared, gguf_block = store.split("    if is_gguf:", 1)
+    assert '("n_parallel", "n_parallel"),' in shared
+    assert "n_parallel" not in gguf_block.split("\n\n", 1)[0]
 
 
 def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
@@ -2367,9 +2368,9 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     # The cached-GGUF branch keeps the remembered override via the gated local...
     assert "nParallel: committedSlots," in gguf_branch
     assert "nParallel: null," not in gguf_branch
-    # ...
-    assert "nParallel: null," in non_gguf_branch
-    assert "loadedNParallel: null," in non_gguf_branch
+    # ...and so does the non-GGUF branch, now that an MLX load takes a width too.
+    assert "nParallel: committedSlots," in non_gguf_branch
+    assert "loadedNParallel: committedSlots," in non_gguf_branch
 
     fresh_default = adapter.split(
         "      return { loaded: false, blockedByTrustRemoteCode: false };", 1
@@ -2385,10 +2386,11 @@ def test_hydration_clears_the_slot_baseline_for_a_slotless_model():
     """The baseline is what a rollback re-sends and what preset capture reads, so a model
     that cannot have slots must not inherit the previous GGUF's count."""
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    # A non-GGUF load reports its width too, so only the explicit null echo means slotless.
     assert (
-        "(status.is_gguf === false || status.requested_parallel_slots === null) && {" in src
-    ), "the slotless clear must key on is_gguf or an explicit null echo"
-    clear = src.index("status.is_gguf === false || status.requested_parallel_slots === null")
+        "status.requested_parallel_slots === null && {" in src
+    ), "the slotless clear must key on an explicit null echo"
+    clear = src.index("status.requested_parallel_slots === null && {")
     assert "loadedNParallel: null," in src[clear : clear + 200]
     # Never `!= null`: that also matches the absent field an older backend sends.
     assert "status.requested_parallel_slots !== null && {" not in src
@@ -2488,8 +2490,8 @@ def test_hydration_restores_a_remembered_slot_override():
         ": hydratingExistingModel)" in status
     ), "storage is read on a fresh store or a model change, never on a steady poll"
     assert (
-        "const rememberedNParallel = status.is_gguf && remembered?.remembered" in status
-    ), "slots are a llama.cpp knob; reading MLX's record must not seed one"
+        "const rememberedNParallel = remembered?.remembered" in status
+    ), "a remembered width seeds the control on either backend"
     assert (
         "...(seedLoadParams && (slotsUnseeded || slotsModelChanged) &&" in status
     ), "the seed fires in both cases the clear leaves the control blank"
