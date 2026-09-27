@@ -1085,7 +1085,6 @@ def LlamaModel_fast_forward(
                     attention_mask, seq_length, inputs_embeds.dtype, key_value_length
                 )
             else:
-                # A caller-built 4D mask is used as given for both layer types.
                 dynamic_SWA_mask = attention_mask
                 dynamic_GA_mask = attention_mask
             use_static_mask = False

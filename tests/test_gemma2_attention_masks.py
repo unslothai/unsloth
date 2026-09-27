@@ -158,7 +158,6 @@ def test_prefill_masks_short_batches_and_4d(monkeypatch):
         batched = model(input_ids = ids, attention_mask = torch.ones_like(ids)).logits
         single = model(input_ids = ids[3:4], attention_mask = torch.ones_like(ids[3:4])).logits
         torch.testing.assert_close(batched[3:4], single, rtol = 1e-4, atol = 1e-4)
-        # A caller-built 4D causal mask matches the equivalent 2D mask.
         ids = torch.randint(5, 100, (2, 5), device = "cuda")
         keep = torch.ones(5, 5, dtype = torch.bool, device = "cuda").tril()
         mask4d = torch.zeros(2, 1, 5, 5, device = "cuda").masked_fill(
@@ -196,7 +195,6 @@ def test_unpadded_prefill_uses_static_masks(monkeypatch):
     ids = torch.arange(10, 10 + n, device = "cuda").repeat(8, 1)
     with torch.no_grad():
         model(input_ids = ids, attention_mask = torch.ones_like(ids))
-    # Shared [max_seq_length, max_seq_length] masks, not one [bsz, 1, n, n] copy per row.
     assert all(m.dim() == 2 for m in masks.values())
     kept = {idx: (m[:n, :n] == 0).cpu() for idx, m in masks.items()}
     assert kept[1][-1].sum() == n
