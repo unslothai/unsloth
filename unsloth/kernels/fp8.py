@@ -32,6 +32,29 @@ def _fp8_triton_device_context(tensor: torch.Tensor):
     return nullcontext()
 
 
+def _opaque_under_compile(name, fake):
+    # torch.compile records the launcher as one custom op instead of tracing it: tracing breaks the graph
+    # (device_count) and recompiles the Triton kernel under dynamic shapes 40-80x slower. Eager calls skip the op.
+    def decorator(fn):
+        if not hasattr(torch.library, "custom_op") or not hasattr(torch.compiler, "is_compiling"):
+            return fn
+        try:
+            op = torch.library.custom_op(f"unsloth::{name}", fn, mutates_args = ())
+        except RuntimeError:  # Already registered by an earlier import of this module.
+            return fn
+        op.register_fake(fake)
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if torch.compiler.is_compiling():
+                return op(*args, **kwargs)
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 try:
     from transformers.integrations.finegrained_fp8 import FP8Linear
 except:
@@ -90,11 +113,17 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     tl.store(y_ptr + offs, y, mask = mask)
 
 
+@_opaque_under_compile(
+    "fp8_weight_dequant_block",
+    lambda x, s, block_size = 128, dtype = torch.bfloat16: torch.empty_like(
+        x, dtype = dtype, memory_format = torch.contiguous_format
+    ),
+)
 def weight_dequant_block(
     x: torch.Tensor,
     s: torch.Tensor,
     block_size: int = 128,
-    dtype = torch.bfloat16,
+    dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
     if not x.is_contiguous():
         x = x.contiguous()
@@ -153,6 +182,13 @@ def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
     tl.store(s_ptr + pid, s)
 
 
+@_opaque_under_compile(
+    "fp8_act_quant",
+    lambda x, block_size = 128: (
+        x.new_empty(x.shape, dtype = torch.float8_e4m3fn),
+        x.new_empty(*x.shape[:-1], x.shape[-1] // block_size, dtype = torch.float32),
+    ),
+)
 def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, torch.Tensor]:
     if not x.is_contiguous():
         x = x.contiguous()
@@ -250,6 +286,12 @@ def _w8a8_block_fp8_matmul(
     tl.store(c_ptrs, c, mask = c_mask)
 
 
+@_opaque_under_compile(
+    "fp8_block_matmul_triton",
+    lambda A, B, As, Bs, block_size, output_dtype = torch.float32: A.new_empty(
+        A.shape[:-1] + (B.shape[0],), dtype = output_dtype
+    ),
+)
 def w8a8_block_fp8_matmul_triton(
     A: torch.Tensor,
     B: torch.Tensor,
@@ -317,14 +359,20 @@ def w8a8_block_fp8_matmul_triton(
     return C
 
 
+@_opaque_under_compile(
+    "fp8_block_matmul_torchao",
+    lambda A, B, As, Bs, block_size, output_dtype = torch.bfloat16: A.new_empty(
+        A.shape[:-1] + (B.shape[0],), dtype = output_dtype
+    ),
+)
 def torchao_block_matmul(
     act_q: torch.Tensor,
     weight_q: torch.Tensor,
     act_scale: torch.Tensor,
     weight_scale: torch.Tensor,
-    block_size: tuple[int, int],
+    block_size: list[int],
     output_dtype: torch.dtype = torch.bfloat16,
-):
+) -> torch.Tensor:
     with _fp8_triton_device_context(act_q):
         out = torchao_blockwise_gemm(
             act_q.contiguous(),
