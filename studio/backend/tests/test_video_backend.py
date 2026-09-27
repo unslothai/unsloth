@@ -11690,8 +11690,8 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     )
     # Cached: a content-addressed blob of the official size is the file, with no hashing; anything else in its place is not.
     _, hashed = _ltx23_verdict_store(monkeypatch, tmp_path)
-    blobs = tmp_path / "blobs"
-    blobs.mkdir()
+    blobs = tmp_path / "models--Lightricks--LTX-2.3" / "blobs"
+    blobs.mkdir(parents = True)
     good = blobs / video_ltx2.LTX23_PREQUANT_SOURCE_SHA256
     with open(good, "wb") as fh:
         fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)  # sparse
@@ -11702,6 +11702,19 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     assert video_ltx2.ltx23_source_file_verified(snap / name)
     assert hashed == []
     assert video_ltx2.ltx23_prequant_eligible(name, "Lightricks/LTX-2.3")
+    # The digest as a file name outside the official repo's blobs is not an identity: it is hashed like any local file.
+    elsewhere = tmp_path / "mine"
+    elsewhere.mkdir()
+    fake = elsewhere / video_ltx2.LTX23_PREQUANT_SOURCE_SHA256
+    with open(fake, "wb") as fh:
+        fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)
+    (snap / name).unlink()
+    (snap / name).symlink_to(fake)
+    monkeypatch.setattr(video_ltx2, "ltx23_source_sha256", lambda path: hashed.append(path) or "1" * 64)
+    assert not video_ltx2.ltx23_source_file_verified(snap / name)
+    assert hashed
+    (snap / name).unlink()
+    (snap / name).symlink_to(good)
     bad = blobs / ("0" * 64)
     with open(bad, "wb") as fh:
         fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)  # right size, wrong content (zeros)
