@@ -273,3 +273,19 @@ def test_fp8_weights_off_the_gpu_keep_the_compressed_tensors_path():
     model.cpu()
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
     assert not hasattr(model.lin, "_unsloth_compressed_tensors_fp8")
+
+
+def test_compiled_block_fp8_linear_passes_the_input_gradient():
+    # torch 2.11 compiled this backward to zeros once Dynamo could trace the whole autograd.Function.
+    from unsloth.kernels.fp8 import fp8_linear
+
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    W = (torch.randn(256, 256, device = "cuda") * 0.05).to(torch.float8_e4m3fn)
+    s = torch.rand(2, 2, device = "cuda") * 0.01 + 0.001
+    W.block_size = s.block_size = [128, 128]
+    ref = W.float() * s.repeat_interleave(128, 0).repeat_interleave(128, 1)
+    X = torch.randn(2, 5, 256, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    (dX,) = torch.autograd.grad(fp8_linear(X, W, s).float().sum(), X)
+    dX_ref = torch.ones(2, 5, 256, device = "cuda") @ ref
+    assert float((dX.float() - dX_ref).norm() / dX_ref.norm()) < 0.01

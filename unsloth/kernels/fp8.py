@@ -24,17 +24,25 @@ from unsloth_zoo.temporary_patches.common import torch_compile
 torch_matmul = torch.matmul
 
 
-# Read once: device_count() inside a compiled region is a graph break ("torch.* op returned non-Tensor").
+# Read once for the decode GEMV: device_count() in a compiled region graph-breaks ("torch.* op returned non-Tensor").
 _CUDA_MULTI_DEVICE = torch.cuda.is_available() and torch.cuda.device_count() > 1
 _XPU_MULTI_DEVICE = (
     hasattr(torch, "xpu") and torch.xpu.is_available() and torch.xpu.device_count() > 1
 )
 
 
-def _fp8_triton_device_context(tensor: torch.Tensor):
-    if tensor.device.type == "cuda" and _CUDA_MULTI_DEVICE:
+def _fp8_triton_device_context(tensor: torch.Tensor, static_device_count = False):
+    # static_device_count only for forward-only kernels: letting Dynamo trace through the per-call count
+    # made torch 2.11 compile FP8BlockQuantLinear's backward to a zero input gradient.
+    if tensor.device.type == "cuda" and (
+        _CUDA_MULTI_DEVICE if static_device_count else torch.cuda.device_count() > 1
+    ):
         return torch.cuda.device(tensor.device)
-    if tensor.device.type == "xpu" and _XPU_MULTI_DEVICE:
+    if tensor.device.type == "xpu" and (
+        _XPU_MULTI_DEVICE
+        if static_device_count
+        else (hasattr(torch, "xpu") and torch.xpu.device_count() > 1)
+    ):
         return torch.xpu.device(tensor.device)
     return nullcontext()
 
@@ -440,7 +448,7 @@ def fp8_rowwise_gemv(X, weight, weight_scale):
         X = X.contiguous()
     scale = weight_scale if weight_scale.is_contiguous() else weight_scale.contiguous()
     block_n = 1 if N <= 4096 else (4 if N <= 32768 else 8)
-    with _fp8_triton_device_context(X):
+    with _fp8_triton_device_context(X, static_device_count = True):
         _fp8_rowwise_gemv_kernel[(triton.cdiv(N, block_n),)](
             X, weight, scale, out, N, K, weight.stride(0), BLOCK_N = block_n, BLOCK_K = 512, num_warps = 2
         )
