@@ -670,6 +670,123 @@ def test_the_recipe_popover_renders_the_build_fields():
         assert f"image.{key} ?" in popover
 
 
+@pytest.fixture
+def recipe_e2e_client(monkeypatch, tmp_path):
+    """Full HTTP path: generate -> gallery list -> PNG file bytes, with real image_gallery.save."""
+
+    class _Backend(_EngagedBackend):
+        def generate(
+            self,
+            *,
+            seed = None,
+            batch_size = 1,
+            prompts = None,
+            seeds = None,
+            **kwargs,
+        ):
+            pytest.importorskip("PIL")
+            from PIL import Image
+
+            if not self.loaded:
+                raise RuntimeError("No diffusion model is loaded.")
+            return {
+                "images": [Image.new("RGB", (512, 512), (40, 80, 120)) for _ in range(batch_size)],
+                "seed": seed if seed is not None else 4242,
+                "repo_id": "x/z-image",
+                "model_kind": "gguf",
+                "gguf_filename": "z-image-Q4_K_M.gguf",
+                "transformer_quant": self.engaged,
+                "text_encoder_quant": "fp8",
+                "memory_mode": "balanced",
+                "offload_policy": "model",
+                "speed_mode": "default",
+                "attention_backend": "_native_cudnn",
+                "transformer_cache": "fbcache",
+                "cpu_offload": True,
+                "baked_loras": [],
+                "workflow": "img2img",
+                "reference_resolution": None,
+                "localized_edit": None,
+            }
+
+    backend = _Backend()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    import core.inference.diffusion_engine_router as engine_router
+
+    monkeypatch.setattr(engine_router, "select_and_activate_engine", lambda fam, **kw: backend)
+    monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: backend)
+    monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **kw: "diffusers")
+    monkeypatch.setattr(engine_router, "_active_engine_name", "diffusers")
+    monkeypatch.setattr(engine_router, "_fallback_reason", None)
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: None)
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: None)
+    monkeypatch.setattr(gallery, "studio_root", lambda: tmp_path)
+
+    app = FastAPI()
+    app.include_router(studio_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
+    return TestClient(app), backend
+
+
+def test_recipe_e2e_generate_response_png_and_file_endpoint_agree(recipe_e2e_client):
+    """HTTP smoke: wire JSON, embedded PNG chunk, and gallery file download match."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    from core.inference.image_gallery import RECIPE_SCHEMA_VERSION
+
+    client, _backend = recipe_e2e_client
+    assert (
+        client.post(
+            "/api/inference/images/load",
+            json = {
+                "model_path": "unsloth/Z-Image-Turbo-GGUF",
+                "gguf_filename": "z-image-Q4_K_M.gguf",
+            },
+        ).status_code
+        == 200
+    )
+
+    gen = client.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "a sloth in a recipe test",
+            "seed": 99,
+            "steps": 4,
+            "guidance": 1.0,
+            "strength": 0.55,
+        },
+    )
+    assert gen.status_code == 200, gen.text
+    wire = gen.json()["images"][0]
+    image_id = wire["id"]
+
+    for key, expected in (
+        ("speed_mode", "default"),
+        ("attention_backend", "_native_cudnn"),
+        ("transformer_cache", "fbcache"),
+        ("cpu_offload", True),
+        ("workflow", "img2img"),
+        ("transformer_quant", _EngagedBackend.engaged),
+        ("text_encoder_quant", "fp8"),
+    ):
+        assert wire.get(key) == expected, f"generate response {key}={wire.get(key)!r}, want {expected!r}"
+
+    listed = client.get("/api/inference/images/gallery").json()["images"]
+    assert any(row["id"] == image_id for row in listed)
+
+    png_resp = client.get(f"/api/inference/images/gallery/{image_id}/file")
+    assert png_resp.status_code == 200
+    assert png_resp.headers["content-type"].startswith("image/png")
+    embedded = json.loads(Image.open(io.BytesIO(png_resp.content)).text["unsloth"])
+    assert embedded["schema_version"] == RECIPE_SCHEMA_VERSION
+    assert embedded["speed_mode"] == "default"
+    assert embedded["workflow"] == "img2img"
+    assert embedded["prompt"] == "a sloth in a recipe test"
+
+
 def test_png_recipe_stamps_schema_version(tmp_gallery):
     pytest.importorskip("PIL")
     from PIL import Image
