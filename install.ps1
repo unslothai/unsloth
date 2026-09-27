@@ -2536,12 +2536,13 @@ function Install-UnslothStudio {
                 try {
                     $mode = Get-Variable -Name StudioRedirectMode -ValueOnly -ErrorAction Stop
                     $studioHomeValue = Get-Variable -Name StudioHome -ValueOnly -ErrorAction Stop
+                    # The guard's own predicates; one not yet defined this early throws, which declines.
                     $ours = ($mode -ne 'env') -or
-                        (Test-Path -LiteralPath (Join-Path $studioHomeValue ".unsloth-studio-owned") -PathType Leaf) -or
                         (Test-Path -LiteralPath (Join-Path $venvDirValue ".unsloth-studio-owned") -PathType Leaf) -or
                         (Test-Path -LiteralPath (Join-Path $studioHomeValue "share\studio.conf") -PathType Leaf) -or
                         (Test-Path -LiteralPath (Join-Path $studioHomeValue "bin\unsloth.exe") -PathType Leaf) -or
-                        (Test-Path -LiteralPath (Join-Path $studioHomeValue "bin\unsloth.cmd") -PathType Leaf)
+                        (Test-StudioPlainFile -Path (Join-Path $studioHomeValue ".unsloth-studio-owned")) -or
+                        (Test-UnslothCmdShimFile (Join-Path $studioHomeValue "bin\unsloth.cmd"))
                 } catch { $ours = $false }
                 if (-not $ours) {
                     if ($requireAdminRoot) { $rejectedForWritability = $true }

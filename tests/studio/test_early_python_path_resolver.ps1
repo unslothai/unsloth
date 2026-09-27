@@ -32,7 +32,8 @@ foreach ($name in @(
     "Test-StudioSddlWritableByNonAdmin", "Test-StudioDirectoryIsAdminOnly",
     "Get-StudioLexicalParent", "Test-StudioInterpreterFileIsAdminOnly",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
-    "Resolve-StudioFinalPathInfo", "Resolve-StudioFinalPathsInOneChild", "Write-StudioFinalPathDegraded"
+    "Resolve-StudioFinalPathInfo", "Resolve-StudioFinalPathsInOneChild", "Write-StudioFinalPathDegraded",
+    "Test-StudioPlainFile", "Test-UnslothCmdShimFile"
 )) {
     $text = Get-Fn $name
     if (-not $text) { throw "expected $name in install.ps1, found none" }
@@ -295,6 +296,17 @@ try {
     Check "a custom home carrying the ownership marker does" (
         "$(Get-StudioEarlyPython)" -like ("*" + $venvBin + "*"))
     Remove-Item -LiteralPath (Join-Path $venvHome ".unsloth-studio-owned") -Force
+    # The shim counts only as the guard reads it, by content, never by name.
+    New-Item -ItemType Directory -Force -Path (Join-Path $tmp "bin") | Out-Null
+    Set-Content -LiteralPath (Join-Path $tmp "bin\unsloth.cmd") -Value "@echo planted"
+    $script:StudioEarlyPythonProbed = $false
+    $script:StudioEarlyPython = $null
+    Check "a planted unsloth.cmd does not make a custom home Unsloth's" ($null -eq (Get-StudioEarlyPython))
+    Set-Content -LiteralPath (Join-Path $tmp "bin\unsloth.cmd") -Value "@rem unsloth-studio-managed-launcher`r`n@python -c `"from unsloth_cli import app`""
+    $script:StudioEarlyPythonProbed = $false
+    $script:StudioEarlyPython = $null
+    Check "Unsloth's own launcher does" ("$(Get-StudioEarlyPython)" -like ("*" + $venvBin + "*"))
+    Remove-Item -LiteralPath (Join-Path $tmp "bin") -Recurse -Force
     $script:StudioEarlyPythonProbed = $false
     $script:StudioEarlyPython = $null
     $global:StudioRedirectMode = "default"
