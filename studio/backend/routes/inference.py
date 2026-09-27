@@ -1768,6 +1768,8 @@ _LLAMA_STREAM_KEEPALIVE = _LlamaStreamKeepalive()
 _OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
 # Paired with the above: the slot is ours, so a suspended client clock starts now.
 _OPENAI_ADMISSION_SSE_DONE = ": admission-done\n\n"
+# A server-side tool still running, unlike a stall keep-alive: durable runs renew their lease on it.
+_OPENAI_TOOL_HEARTBEAT_SSE = ": tool-heartbeat\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # Cap on waiting for a cancelled teardown task. Request.is_disconnected() can swallow
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
@@ -26920,7 +26922,7 @@ async def produce_openai_chat_completions(
 
                         if event["type"] == "heartbeat":
                             # Tool-wrapper heartbeat while a server-side tool blocks; keeps SSE alive.
-                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            yield _OPENAI_TOOL_HEARTBEAT_SSE
                             continue
 
                         if event["type"] in ("tool_output", "tool_args"):
@@ -28726,8 +28728,8 @@ async def produce_openai_chat_completions(
                         )
 
                     if event["type"] == "heartbeat":
-                        # Tool-execution wrapper heartbeat -> SSE keepalive.
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        # Tool-execution wrapper heartbeat -> SSE comment.
+                        yield _OPENAI_TOOL_HEARTBEAT_SSE
                         continue
 
                     if event["type"] in ("tool_output", "tool_args"):
