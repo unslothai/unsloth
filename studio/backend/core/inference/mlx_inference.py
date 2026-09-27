@@ -3,7 +3,6 @@
 interface, using mlx-lm/mlx-vlm instead of torch/transformers for model loading and generation."""
 
 import inspect
-import json
 import copy
 import difflib
 import hashlib
