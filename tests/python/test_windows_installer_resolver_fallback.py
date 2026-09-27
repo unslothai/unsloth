@@ -115,6 +115,8 @@ LOCK_CHAIN = (
     "Test-StudioDirectoryIsAdminOnly",
     "Test-StudioInterpreterFileIsAdminOnly",
     "Get-StudioLexicalParent",
+    "Test-StudioPlainFile",
+    "Test-UnslothCmdShimFile",
     "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",
     "Get-StudioLexicalPath",
