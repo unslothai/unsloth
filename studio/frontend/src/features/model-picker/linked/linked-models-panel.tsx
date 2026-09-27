@@ -315,7 +315,6 @@ export function LinkedModelsPanel({
                   expectedBytes: extra?.bytes,
                 })
           }
-          tags={gguf && !onDevice ? ["GGUF"] : undefined}
         />
         {gguf && open ? (
           <VariantRows
