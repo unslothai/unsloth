@@ -4552,8 +4552,7 @@ export function ImagesPage({
   );
 
   return (
-    // The chat-style layout gives this page no outer top inset, so clear the custom titlebar here as chat does.
-    // 34px on win/linux, 0 under macOS's native one.
+    // The chat-style layout gives this page no outer top inset, so it applies the content inset itself, as chat does.
     <div
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
       style={railRootStyle}
