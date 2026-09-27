@@ -3991,3 +3991,16 @@ def test_both_generation_paths_forward_the_image_ordinal():
         assert "image_ordinal = image_ordinal" in inspect.getsource(method), (
             f"{method.__name__} accepts the ordinal but does not put it on the " "worker command"
         )
+
+
+def test_a_count_during_a_dispatched_generation_is_refused_at_once():
+    o = _bare_orchestrator(reads_stops = True)
+    o._mailboxes["running"] = queue.Queue()
+    sent = []
+    o._send_cmd = sent.append
+
+    with pytest.raises(RuntimeError, match = "generation is in progress"):
+        o.count_chat_tokens([{"role": "user", "content": "hi"}])
+
+    assert sent == [], "the count reached a worker that reads no command until the reply ends"
+    assert o._gen_lock.acquire(blocking = False), "the refusal kept the generation lock"

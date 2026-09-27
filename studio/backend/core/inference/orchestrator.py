@@ -2488,6 +2488,12 @@ class InferenceOrchestrator:
         nowhere."""
         if not self._gen_lock.acquire(blocking = False):
             raise RuntimeError("Cannot count tokens while a generation is in progress")
+        # A dispatched generation holds no _gen_lock, and the worker reads no command while it runs.
+        with self._mailbox_lock:
+            dispatched = bool(self._mailboxes)
+        if dispatched:
+            self._gen_lock.release()
+            raise RuntimeError("Cannot count tokens while a generation is in progress")
         request_id = str(uuid.uuid4())
         read_one, _drain, release_mailbox = self._direct_reader(request_id)
         try:
