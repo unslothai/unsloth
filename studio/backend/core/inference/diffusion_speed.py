@@ -396,7 +396,7 @@ def apply_speed_optims(
     # Near-lossless, not bit-identical, so never on "off" (returned above).
     applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
 
-    if on_cuda:
+    if on_cuda and not _cudnn_benchmark_pointless(pipe):
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
 
     if on_cuda:
@@ -494,9 +494,20 @@ def fp16_unet_offloaded(target: Any, pipe: Any, *, offload_active: bool) -> bool
 
 
 # VAEs MEASURED slower in channels_last; they keep the contiguous layout. AutoencoderKLQwenImage21 (a 2D conv net with
-# channel RMS norms), 1024 decode on B200: 72.7 ms contiguous vs 89 ms channels_last, and channels_last + cudnn.benchmark
-# re-tunes 1-1.7 s on every new resolution where contiguous does not.
+# channel RMS norms), 1024 decode on B200: 72.7 ms contiguous vs 89 ms channels_last.
 _VAE_CHANNELS_LAST_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
+
+
+# DiT pipelines whose only conv net is one of these VAEs: cudnn.benchmark MEASURED no steady gain and a re-tune on
+# every new resolution. AutoencoderKLQwenImage21, Qwen-Image-2.1 fp8 on B200: steady decode 75.8 ms off vs 77.8 ms on,
+# first decode at a new resolution 0.08-0.17 s off vs 0.74-1.86 s on (each new size, every session).
+_CUDNN_BENCHMARK_DENY_VAES: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
+
+
+def _cudnn_benchmark_pointless(pipe: Any) -> bool:
+    if _denoiser_unet(pipe) is not None:
+        return False
+    return type(getattr(pipe, "vae", None)).__name__ in _CUDNN_BENCHMARK_DENY_VAES
 
 
 def _vae_channels_last(pipe: Any, logger: Any) -> bool:
