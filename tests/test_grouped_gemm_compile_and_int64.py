@@ -30,7 +30,7 @@ try:
         KernelConfigForward,
     )
 except Exception as exc:  # pragma: no cover - depends on the installed stack
-    pytest.skip(f"grouped_gemm is unimportable here: {exc}", allow_module_level = True)
+    pytest.skip(reason = f"grouped_gemm is unimportable here: {exc}", allow_module_level = True)
 
 requires_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(), reason = "grouped GEMM needs a real CUDA device"
@@ -72,7 +72,7 @@ def test_kernels_are_opaque_ops_for_the_compiler():
     """allow_in_graph is what let the compiler trace through the launch."""
     if not hasattr(torch.library, "custom_op"):
         pytest.skip(
-            "torch < 2.4 has no torch.library.custom_op; the kernels fall back to dynamo.disable"
+            reason = "torch < 2.4 has no torch.library.custom_op; the kernels fall back to dynamo.disable"
         )
     for name in ("grouped_gemm_forward", "grouped_gemm_dX", "grouped_gemm_dW"):
         assert hasattr(torch.ops.unsloth, name)
@@ -107,7 +107,7 @@ def test_weight_past_2_pow_31_elements_reads_the_right_expert():
     n_experts, N, K, tokens = 129, 4096, 4096, 256  # 129 * 4096 * 4096 > 2^31
     need = n_experts * N * K * 2 + (1 << 30)
     if torch.cuda.mem_get_info()[0] < need:
-        pytest.skip(f"needs {need / 2**30:.1f} GiB free for a > 2^31 element bf16 weight")
+        pytest.skip(reason = f"needs {need / 2**30:.1f} GiB free for a > 2^31 element bf16 weight")
     torch.manual_seed(0)
     W = torch.empty(n_experts, N, K, device = "cuda", dtype = torch.bfloat16)
     W[:-1].zero_()
