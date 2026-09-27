@@ -531,16 +531,21 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
             (Join-Path $_ '.cache')
         }) | Where-Object { $_ } | Select-Object -Unique
         $absentBefore = @($candidates | Where-Object { -not (Test-Path -LiteralPath $_) })
-        $python = Install-Studio
-        $created = @($absentBefore | Where-Object { Test-Path -LiteralPath $_ })
-        $baselinePath = Join-Path $dir 'baseline.json'
-        if ($created.Count -gt 0 -and (Test-Path -LiteralPath $baselinePath)) {
-            $b = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
-            $b.StudioInstalledByProbe = $true
-            # Merged, not replaced.
-            $b.StudioInstallRoots = @(@($b.StudioInstallRoots) + $created |
-                Where-Object { $_ } | Select-Object -Unique)
-            Save-ProbeBaseline $b $baselinePath
+        try {
+            $python = Install-Studio
+        } finally {
+            # The installer may be cancelled after creating administrator-owned trees.
+            # Record them even when Ctrl+C bypasses its catch and normal return.
+            $created = @($absentBefore | Where-Object { Test-Path -LiteralPath $_ })
+            $baselinePath = Join-Path $dir 'baseline.json'
+            if ($created.Count -gt 0 -and (Test-Path -LiteralPath $baselinePath)) {
+                $b = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+                $b.StudioInstalledByProbe = $true
+                # Merged, not replaced.
+                $b.StudioInstallRoots = @(@($b.StudioInstallRoots) + $created |
+                    Where-Object { $_ } | Select-Object -Unique)
+                Save-ProbeBaseline $b $baselinePath
+            }
         }
         if (-not $python) {
             # prepare cannot go on: no Studio to start, so nothing loads inside the window.
@@ -715,8 +720,18 @@ function Get-UnrevertedLabel([string] $dir) {
     $self = Get-PendingEntry $dir
     foreach ($entry in @(Get-ChildItem -LiteralPath (Get-PendingRegistry) -File -Filter '*.txt' -ErrorAction SilentlyContinue)) {
         if ($entry.FullName -eq $self) { continue }
-        $recorded = Get-Content -LiteralPath $entry.FullName -Raw -ErrorAction SilentlyContinue
-        if ($recorded) { $candidates += $recorded.Trim() }
+        # A pending machine-wide claim remains authoritative when its WorkDir is
+        # disconnected, renamed or unreadable. Do not snapshot its changes as baseline.
+        $recorded = Get-Content -LiteralPath $entry.FullName -Raw -ErrorAction Stop
+        if (-not $recorded -or -not $recorded.Trim()) {
+            throw "pending probe entry $($entry.FullName) is empty; recover its baseline and revert before preparing another label"
+        }
+        $other = $recorded.Trim()
+        $path = Join-Path $other 'baseline.json'
+        if (-not (Test-Path -LiteralPath $path)) { return $other }
+        try { $b = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json }
+        catch { return $other }
+        if (-not $b -or -not $b.RevertCompletedAt) { return $other }
     }
     foreach ($other in $candidates) {
         if ((Get-PendingEntry $other) -eq $self) { continue }
@@ -735,7 +750,7 @@ function Invoke-Prepare {
     $unreverted = Get-UnrevertedLabel $dir
     if ($unreverted) {
         $name = Split-Path -Leaf $unreverted
-        throw "label '$name' has not been reverted, so this machine still carries its changes (and its audit policy would be taken for a pre-existing one). Run .\sac-probe.ps1 -Stage revert -Label $name -WorkDir '$(Split-Path -Parent $unreverted)' first, then prepare label '$Label'."
+        throw "label '$name' has not been reverted, so this machine still carries its changes (and its audit policy would be taken for a pre-existing one). Run .\sac-probe.ps1 -Stage revert -Label $name -WorkDir '$(Split-Path -Parent $unreverted)' first, then prepare label '$Label'. If that evidence folder is gone for good, restore the machine by hand and delete its record under $(Get-PendingRegistry)."
     }
     $ROLLBACK_POLICY = Get-RollbackPolicyPath $dir
     Write-Section 'Baseline'
@@ -850,6 +865,7 @@ function Invoke-Prepare {
 
     # Every failure from here on rolls back the policy once it was copied.
     $policyCopied = $false
+    $prepareCompleted = $false
   try {
     if ($AuditPolicy) {
         Write-Section 'Audit policy'
@@ -946,10 +962,10 @@ function Invoke-Prepare {
     (Get-Date).ToString('o') | Set-Content -LiteralPath (Join-Path $dir 'window-start.txt') -Encoding UTF8
 
     Initialize-Studio $dir $true
-  } catch {
-    $failure = $_
-    # A failed prepare must not leave the policy it applied behind.
-    if ($policyCopied) {
+    $prepareCompleted = $true
+  } finally {
+    # Pipeline cancellation bypasses catch, but finally still rolls the policy back.
+    if ($policyCopied -and -not $prepareCompleted) {
         Write-Warning 'prepare failed after applying the audit policy; rolling the policy back'
         try {
             $mounted = Mount-Efi
@@ -979,7 +995,6 @@ function Invoke-Prepare {
             Write-Warning "could not roll back the audit policy: $_ (run .\sac-probe.ps1 -Stage revert -Label $Label)"
         }
     }
-    throw $failure
   }
 
     Write-Host ''

@@ -833,6 +833,8 @@ def test_trees_the_installer_created_are_recorded_even_when_the_install_fails():
     warning = "Write-Warning 'Studio still not found after the installer ran."
     _before(init, "$created = @($absentBefore", warning)
     _before(init, "$b.StudioInstallRoots = @(", warning)
+    # Ctrl+C mid-install skips a catch and the normal return, never a finally.
+    _before(init, "$python = Install-Studio", "} finally {", "$created = @($absentBefore")
 
 
 def test_prepare_fails_when_a_running_studio_cannot_be_restarted():
@@ -2108,6 +2110,42 @@ def test_studios_cpu_fallback_runtime_is_scoped_as_llama_cpp():
     tail = "\\Users\\u\\.unsloth\\studio\\runtime\\" + "llama-cpu-*\\"
     assert fnmatch.fnmatchcase(
         "C:\\Users\\u\\.unsloth\\studio\\runtime\\llama-cpu-ab12\\ggml-cpu.dll", "*" + tail + "*"
+    )
+
+
+def test_a_cancelled_prepare_still_rolls_the_policy_back(tmp_path):
+    """Ctrl+C during the positive control or Studio startup skipped the catch that held the rollback."""
+    _drive_stages(
+        tmp_path,
+        r"""
+function Get-SacState { [pscustomobject]@{ Policies = @(if (Test-Path -LiteralPath $NOISG_DEST) { [pscustomobject]@{ PolicyID = '{aaaa}'; FriendlyName = 'AuditNoISG' } }) } }
+function Test-AuditPolicyEvaluating { $true }
+# break from inside a called function unwinds like a pipeline stop: finally runs, catch does not.
+function Initialize-Studio { break }
+$Label = 'cancelled'
+foreach ($once in 1) { Invoke-Prepare }
+if (Test-Path -LiteralPath $NOISG_DEST) { exit 121 }
+if ($false -ne (Read-Baseline 'cancelled').AuditPolicyApplied) { exit 122 }
+exit 0
+""",
+    )
+
+
+def test_a_pending_label_whose_workdir_is_unavailable_still_blocks_prepare(tmp_path):
+    """A disconnected or renamed -WorkDir hid A's baseline, so B saved A's probe policy as pre-existing."""
+    _drive_stages(
+        tmp_path,
+        r"""
+function Get-SacState { [pscustomobject]@{ Policies = @(if (Test-Path -LiteralPath $NOISG_DEST) { [pscustomobject]@{ PolicyID = '{aaaa}'; FriendlyName = 'AuditNoISG' } }) } }
+function Test-AuditPolicyEvaluating { $true }
+$first = Join-Path $Work 'first'; $other = Join-Path $Work 'second'
+$WorkDir = $first; $Label = 'A'; Invoke-Prepare
+Rename-Item -LiteralPath $first -NewName 'first-offline'
+$WorkDir = $other; $Label = 'B'
+try { Invoke-Prepare; exit 131 } catch { if ("$_" -notlike "*label 'A' has not been reverted*delete its record under*") { Write-Host "$_"; exit 132 } }
+if (Test-Path -LiteralPath (Join-Path $other 'B/rollback')) { exit 133 }
+exit 0
+""",
     )
 
 
