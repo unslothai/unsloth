@@ -101,7 +101,7 @@ export function ApiKeysTab() {
   };
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-6">
+    <div className="settings-page">
       <header className="flex min-w-0 flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.apiKeys.title")}
@@ -151,7 +151,7 @@ export function ApiKeysTab() {
       </AnimatePresence>
 
       <section className="flex min-w-0 flex-col">
-        <h2 className="mb-2 text-sm font-semibold text-foreground">
+        <h2 className="settings-heading mb-2 text-sm font-semibold">
           {t("settings.apiKeys.accessTokens")}
         </h2>
         {error ? (

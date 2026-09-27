@@ -858,7 +858,7 @@ export function UsageExamples({
 
   return (
     <section className="flex min-w-0 max-w-full flex-col">
-      <h2 className="mb-2 text-sm font-semibold text-foreground">
+      <h2 className="settings-heading mb-2 text-sm font-semibold">
         {t("settings.apiKeys.usageExamples")}
       </h2>
       <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">

@@ -1289,19 +1289,20 @@ export const en = {
       title: "Appearance",
       description: "How Unsloth looks on this device.",
       theme: {
-        title: "Theme",
-        label: "Color scheme",
+        title: "Visual style",
+        label: "Mode",
         description: "Light, dark, or follow your system.",
         system: "System",
         light: "Light",
         dark: "Dark",
       },
       palette: {
-        label: "Color palette",
+        label: "Theme",
         description: "Colors used across Unsloth, in light and dark mode.",
         standard: "Standard",
         classic: "Classic",
         minimal: "Minimal",
+        moreThemes: "More themes",
       },
       custom: {
         chatWidth: {
@@ -1315,8 +1316,6 @@ export const en = {
         resetAll: "Reset customization",
         preferencesTitle: "Preferences",
         colors: {
-          lightGroup: "Light theme",
-          darkGroup: "Dark theme",
           accent: "Accent",
           background: "Background",
           foreground: "Foreground",
