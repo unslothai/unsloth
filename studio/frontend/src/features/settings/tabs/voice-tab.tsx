@@ -1015,6 +1015,7 @@ export function VoiceTab() {
             <SettingsRow
               label={t("settings.voice.dictation.sttModelLabel")}
               description={t("settings.voice.dictation.sttModelDescription")}
+              alignTop={true}
             >
               <div className="flex w-56 flex-col items-stretch gap-2">
                 <SttModelPicker
