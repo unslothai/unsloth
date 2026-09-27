@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Gemma2 attention masks: batched decode passes tensor padding masks even when flash-attn
-softcapping is installed (decode attention is manual matmul and ignores anything but a tensor),
-single-row decode passes none, and prefill keeps the global layers unwindowed."""
+"""Gemma2 decode and prefill masks: padding, single-row decode and unwindowed global layers."""
 
 import types
 
@@ -59,7 +57,6 @@ def _masks_reaching_attention(
     )
     self = types.SimpleNamespace(model = model, config = config, max_seq_length = 64)
     past = [(torch.zeros(bsz, 1, cached, 4), torch.zeros(bsz, 1, cached, 4))] * 2
-    # Row 1 is left padded by two tokens.
     attention_mask = torch.tensor([[1] * (cached + 1), [0, 0] + [1] * (cached - 1)])[:bsz]
     with pytest.raises(_Captured):
         g2.Gemma2Model_fast_forward_inference(
@@ -121,8 +118,6 @@ def test_prefill_global_layers_see_past_the_window():
     k = torch.arange(n)[None]
     causal = (k <= q) & (k >= 1)  # key 0 is padding
     kept = {idx: (m.reshape(-1, n, n)[0] == 0).cpu() for idx, m in masks.items()}
-    # Global layer: every non-padded past key, no window.
     assert torch.equal(kept[1][1:], causal[1:])
-    # Sliding layer: the window cuts the far past.
     assert not kept[0][-1, 1]
     assert torch.equal(kept[0][1:], (causal & (q - k <= window))[1:])

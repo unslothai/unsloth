@@ -1015,8 +1015,7 @@ def LlamaModel_fast_forward(
     else:
         padding_mask = None
 
-        # Gemma2 builds separate sliding and global masks from the 2D mask below; a 4D sliding
-        # mask here would pass through unchanged and window the global layers too.
+        # Gemma2 builds its own masks below; a 4D sliding mask here would also window the global layers.
         if IS_GEMMA2:
             # No padding: keep the flash path, which windows each layer itself.
             if HAS_FLASH_ATTENTION_SOFTCAPPING and bool(attention_mask.all()):
@@ -1065,8 +1064,7 @@ def LlamaModel_fast_forward(
             # Unsloth needs a 2D mask, not [2, 1, n, n] (#853), converted to float not bool
             # (pytorch/pytorch#103749).
 
-            # Always materialised: the SDPA helper returns None for an all-ones mask, which the
-            # softcapping kernels cannot take.
+            # The SDPA helper returns None for an all-ones mask; the softcapping kernels need a tensor.
             key_value_length = past_key_values_length + seq_length
             dynamic_SWA_mask = AttentionMaskConverter(
                 is_causal = True, sliding_window = self.config.sliding_window
