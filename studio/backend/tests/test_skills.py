@@ -1054,7 +1054,6 @@ def test_linked_agents_skill_stays_read_only_in_the_dialog(isolated_skills, tmp_
     assert (root / "linked").is_symlink()
 
 
-
 @pytest.mark.parametrize("linked_level", [".agents", "skills"])
 def test_skill_under_a_linked_agents_root_stays_read_only(isolated_skills, tmp_path, linked_level):
     home, _ = isolated_skills
@@ -1074,9 +1073,12 @@ def test_skill_under_a_linked_agents_root_stays_read_only(isolated_skills, tmp_p
         skills.update_skill("rooted", "Changed", "Changed", home = home)
     with pytest.raises(skills.SkillError, match = "unsafe"):
         skills.delete_skill("rooted", home = home)
-    assert (real / "skills" / "rooted" / "SKILL.md").read_text(encoding = "utf-8").endswith(
-        "\n---\nInstructions"
+    assert (
+        (real / "skills" / "rooted" / "SKILL.md")
+        .read_text(encoding = "utf-8")
+        .endswith("\n---\nInstructions")
     )
+
 
 def test_authenticated_create_read_update_and_delete_routes(isolated_skills, monkeypatch):
     home, _ = isolated_skills

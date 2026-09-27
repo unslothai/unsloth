@@ -704,7 +704,11 @@ def _editable_skill(
     except OSError as exc:
         raise SkillError("Agent Skills directory is missing or unsafe.") from exc
     # Same ancestors create_skill refuses: a linked root would send the write outside it.
-    ancestors = (base / _MANAGED_SKILLS_DIR,) if managed else (base / ".agents", base / ".agents" / "skills")
+    ancestors = (
+        (base / _MANAGED_SKILLS_DIR,)
+        if managed
+        else (base / ".agents", base / ".agents" / "skills")
+    )
     _require_unlinked_agent_path(base, *ancestors)
     entry = ancestors[-1] / record["name"]
     if record["linked"] or _is_linked_path(entry) or skill_dir != entry:
