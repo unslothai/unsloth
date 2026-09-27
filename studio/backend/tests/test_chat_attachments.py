@@ -681,8 +681,14 @@ def test_a_sweep_rechecks_a_stale_snapshot_before_removing(tmp_path, monkeypatch
     path = chat_originals.originals_dir() / sha256
     os.utime(path, (0, 0))
     studio_db.upsert_chat_thread(_thread())
-    attachment = {"id": "att-1", "type": "document", "name": "a.pdf", "contentType": "application/pdf",
-                  "content": [{"type": "text", "text": "x"}], "original": {"sha256": sha256, "sizeBytes": size}}
+    attachment = {
+        "id": "att-1",
+        "type": "document",
+        "name": "a.pdf",
+        "contentType": "application/pdf",
+        "content": [{"type": "text", "text": "x"}],
+        "original": {"sha256": sha256, "sizeBytes": size},
+    }
     studio_db.upsert_chat_message(_message("msg-1", attachments = [attachment]))
     # A fork committed after the scan's snapshot: the file is still referenced.
     monkeypatch.setattr(studio_db, "referenced_chat_original_hashes", lambda: set())
