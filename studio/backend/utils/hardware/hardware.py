@@ -5852,14 +5852,63 @@ def _repair_smi_visible_devices(
     return all(dev.get("memory_total_gb") is not None for dev in devices)
 
 
-def get_backend_visible_gpu_info() -> Dict[str, Any]:
-    device = get_device()
+# The last inventory that found devices, per (device type, visibility mask). A slow or failing
+# probe (a congested driver makes nvidia-smi time out and CUDA device queries fail with it) must
+# not turn a GPU the host already reported into "No GPU detected": detection only widens.
+_last_good_visible_info: Dict[tuple, Dict[str, Any]] = {}
+_last_good_visible_lock = threading.Lock()
 
+
+def get_backend_visible_gpu_info() -> Dict[str, Any]:
+    """Backend-visible GPU inventory. When the probe comes back empty and nothing proves the
+    host has no GPU (nvidia-smi answering with zero rows is the only such proof), the last
+    inventory that found devices under the same mask is returned instead, marked ``stale``."""
+    device = get_device()
+    key = (
+        str(device),
+        os.environ.get("CUDA_VISIBLE_DEVICES"),
+        os.environ.get("HIP_VISIBLE_DEVICES"),
+        os.environ.get("ZE_AFFINITY_MASK"),
+    )
+    info = _probe_backend_visible_gpu_info(device)
+    confirmed_empty = info.pop("_confirmed_empty", False)
+    info.pop("probe_failed", None)
+    info.pop("smi_absent", None)
+    if info.get("available") and info.get("devices"):
+        with _last_good_visible_lock:
+            _last_good_visible_info[key] = copy.deepcopy(info)
+        return info
+    if confirmed_empty:
+        with _last_good_visible_lock:
+            _last_good_visible_info.pop(key, None)
+        return info
+    with _last_good_visible_lock:
+        last = _last_good_visible_info.get(key)
+    if last is None:
+        return info
+    logger.warning(
+        "GPU inventory probe came back empty after an earlier read found %d device(s); "
+        "keeping that inventory (marked stale) instead of reporting no GPU.",
+        len(last.get("devices") or []),
+    )
+    stale = copy.deepcopy(last)
+    stale["stale"] = True
+    for dev in stale.get("devices") or []:
+        # Capacity is static; live usage is not, so it reads unknown rather than old.
+        for k in ("vram_used_gb", "vram_free_gb", "vram_utilization_pct"):
+            if k in dev:
+                dev[k] = None
+    return stale
+
+
+def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_visible_ids = get_parent_visible_gpu_ids()
         # Held back in case torch cannot size them either: an unknown total is a poor
         # answer, but losing the card outright is worse than the pre-repair behaviour.
         unrepaired_smi_result: Optional[Dict[str, Any]] = None
+        # nvidia-smi answered and listed no card under this mask: the one proof of "no GPU".
+        smi_answered_empty = False
         # Try native SMI first (nvidia-smi; skipped for ROCm).
         if device == DeviceType.CUDA and not IS_ROCM:
             try:
@@ -5869,6 +5918,12 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                 result = nvidia.get_backend_visible_gpu_info(
                     parent_visible_spec["numeric_ids"],
                     parent_visible_spec["raw"],
+                )
+                smi_answered_empty = (
+                    not result.get("available")
+                    and not result.get("probe_failed")
+                    and not result.get("smi_absent")
+                    and result.get("index_kind") != "unresolved"
                 )
                 if result.get("available"):
                     if _repair_smi_visible_devices(
@@ -5981,6 +6036,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
             "parent_visible_gpu_ids": parent_visible_ids,
             "devices": [],
             "index_kind": "physical",
+            "_confirmed_empty": smi_answered_empty,
         }
 
     if device == DeviceType.MLX:

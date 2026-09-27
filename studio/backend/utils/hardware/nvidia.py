@@ -395,13 +395,20 @@ def get_backend_visible_gpu_info(
     visible_ordinals = _visible_ordinal_map(parent_visible_ids)
     rows = _query_gpu_inventory("get_backend_visible_gpu_info")
     if rows is None or rows is NVIDIA_SMI_ABSENT:
-        return {
+        out = {
             "available": False,
             "backend_cuda_visible_devices": backend_cuda_visible_devices,
             "parent_visible_gpu_ids": parent_visible_ids or [],
             "devices": [],
             "index_kind": "physical",
         }
+        if rows is None:
+            # nvidia-smi exists but did not answer (timeout, non-zero exit): an unknown, never
+            # evidence that the cards are gone. The caller keeps its last good inventory.
+            out["probe_failed"] = True
+        else:
+            out["smi_absent"] = True
+        return out
 
     devices = []
     for row in rows:
