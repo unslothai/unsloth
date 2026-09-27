@@ -655,19 +655,69 @@ def _flux_single_class_is_arch_patched(module: Any) -> bool:
         return False
 
 
-def install(transformer: Any, logger: Any = None) -> int:
-    """Point every eligible block of ``transformer`` at the fused forward. Idempotent; returns the count.
-    Must run before the first compiled forward (the regional compile traces whatever ``forward`` is then)."""
-    if int8_fused_disabled() or transformer is None:
-        return 0
+def resident_cuda_device(module: Any) -> Any:
+    """The one CUDA device every parameter of ``module`` lives on (NVIDIA, not ROCm), else None."""
     try:
         import torch
-        dev = next((p.device for p in transformer.parameters() if p.is_cuda), None)
+
+        if getattr(torch.version, "hip", None):
+            return None
+        devices = {p.device for p in module.parameters()}
     except Exception:  # noqa: BLE001
+        return None
+    if len(devices) != 1:
+        return None
+    dev = next(iter(devices))
+    return dev if dev.type == "cuda" else None
+
+
+def run_on_first_call(module: Any, key: str, fn: Any) -> None:
+    """Run ``fn(module)`` once, eagerly, right before ``module``'s first forward (after load-time placement moved
+    the weights, before the regional compile traces the blocks and before any CUDA-graph capture). Idempotent per key."""
+    hooks = module.__dict__.setdefault("_unsloth_first_call_hooks", {})
+    if key in hooks:
+        return
+
+    def _pre_hook(mod, args, kwargs):
+        handle = hooks.pop(key, None)
+        if handle is not None:
+            handle.remove()
+        try:
+            fn(mod)
+        except Exception:  # noqa: BLE001 - an optimisation: the stock path stays
+            pass
+        return None
+
+    hooks[key] = module.register_forward_pre_hook(_pre_hook, with_kwargs = True)
+
+
+def install(transformer: Any, logger: Any = None, offload_active: bool = False) -> int:
+    """Point every eligible block of ``transformer`` at the fused forward. Idempotent; returns the count (or the
+    count of candidates when the weights are not on the GPU yet: the swap then happens at the first forward).
+    Must run before the first compiled forward (the regional compile traces whatever ``forward`` is then)."""
+    if int8_fused_disabled() or transformer is None or offload_active:
         return 0
-    if dev is None or not _device_ok(dev.index if dev.index is not None else torch.cuda.current_device()):
-        return 0
+    if resident_cuda_device(transformer) is not None:
+        return _finalize(transformer, logger)
+    candidates = sum(1 for m in transformer.modules() if _ff_eligible(m) or _flux_single_eligible(m) or _swiglu_candidate(m))
+    if candidates:
+        run_on_first_call(transformer, "int8_fused", lambda t: _finalize(t, logger))
+    return candidates
+
+
+def _swiglu_candidate(module: Any) -> bool:
+    return _swiglu_spec(module) is not None or _split_spec(module) is not None
+
+
+def _finalize(transformer: Any, logger: Any = None) -> int:
     global _OP_HANDLE
+    dev = resident_cuda_device(transformer)
+    if dev is None:
+        return 0
+    import torch
+
+    if not _device_ok(dev.index if dev.index is not None else torch.cuda.current_device()):
+        return 0
     count = 0
     with _LOCK:
         _OP_HANDLE = _op()
@@ -688,7 +738,7 @@ def install(transformer: Any, logger: Any = None) -> int:
             module.forward = types.MethodType(fn, module)
             count += 1
     if logger is not None and count:
-        logger.info("diffusion.int8_fused: %d int8 GELU MLP region(s) run the fused dequant/GELU/quant kernel", count)
+        logger.info("diffusion.int8_fused: %d int8 MLP region(s) run the fused dequant/activation/quant kernel", count)
     return count
 
 

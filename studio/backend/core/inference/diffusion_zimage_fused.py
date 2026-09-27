@@ -218,38 +218,57 @@ def _share_storage(fused: Any, linears: list) -> bool:
     return True
 
 
-def install(transformer: Any, logger: Any = None) -> dict:
-    """Patch the Z-Image attention processor class and fuse each block's QKV. Idempotent; before the first compile."""
+def install(transformer: Any, logger: Any = None, offload_active: bool = False) -> dict:
+    """Patch the Z-Image attention processor class now; probe the card and fuse each block's QKV once the weights are
+    on the GPU (immediately if they already are, else right before the first forward). Before the first compile."""
     if zimage_fused_disabled() or type(transformer).__name__ != "ZImageTransformer2DModel":
         return {"real_rope": False, "fused_qkv": 0}
-    return install_modules(transformer, logger)
+    if not _patch_class(logger):
+        return {"real_rope": False, "fused_qkv": 0}
+    from .diffusion_int8_fused import resident_cuda_device, run_on_first_call
+
+    if resident_cuda_device(transformer) is not None:
+        return install_modules(transformer, logger, fuse_qkv = not offload_active)
+    run_on_first_call(transformer, "zimage_fused", lambda t: install_modules(t, logger, fuse_qkv = not offload_active))
+    return {"real_rope": None, "fused_qkv": None}
 
 
-def install_modules(root: Any, logger: Any = None) -> dict:
-    result = {"real_rope": False, "fused_qkv": 0}
-    if zimage_fused_disabled():
-        return result
+def _patch_class(logger: Any = None) -> bool:
     try:
         import importlib
 
-        import torch
-        mod = importlib.import_module(_MODULE)
-        cls = mod.ZSingleStreamAttnProcessor
+        cls = importlib.import_module(_MODULE).ZSingleStreamAttnProcessor
     except Exception:  # noqa: BLE001
-        return result
-    dev = next((p.device for p in root.parameters() if p.is_cuda), None)
-    if dev is None or getattr(torch.version, "hip", None):
-        return result
+        return False
     with _LOCK:
         current = cls.__dict__.get("__call__")
-        if not getattr(current, "__unsloth_zimage_fused__", False):
-            digest = _stock_digest(cls)
-            if digest not in _FINGERPRINTS["ZSingleStreamAttnProcessor.__call__"]:
-                if logger is not None:
-                    logger.info("diffusion.zimage_fused: stock attention kept: processor differs (%s)", digest)
-                return result
-            _STATE["stock"] = current
-            cls.__call__ = _make_call(current)
+        if getattr(current, "__unsloth_zimage_fused__", False):
+            return True
+        digest = _stock_digest(cls)
+        if digest not in _FINGERPRINTS["ZSingleStreamAttnProcessor.__call__"]:
+            if logger is not None:
+                logger.info("diffusion.zimage_fused: stock attention kept: processor differs (%s)", digest)
+            return False
+        _STATE["stock"] = current
+        cls.__call__ = _make_call(current)
+    return True
+
+
+def install_modules(root: Any, logger: Any = None, fuse_qkv: bool = True) -> dict:
+    result = {"real_rope": False, "fused_qkv": 0}
+    if zimage_fused_disabled() or not _patch_class(logger):
+        return result
+    import importlib
+
+    import torch
+
+    from .diffusion_int8_fused import resident_cuda_device
+
+    cls = importlib.import_module(_MODULE).ZSingleStreamAttnProcessor
+    dev = resident_cuda_device(root)
+    if dev is None:
+        return result
+    with _LOCK:
         index = dev.index if dev.index is not None else torch.cuda.current_device()
         if index not in _FUSION:
             try:
@@ -260,7 +279,7 @@ def install_modules(root: Any, logger: Any = None) -> dict:
                 _FUSION[index] = None
         result["real_rope"] = _FUSION[index] is not None
         for _name, module in root.named_modules():
-            if type(getattr(module, "processor", None)) is not cls:
+            if not fuse_qkv or type(getattr(module, "processor", None)) is not cls:
                 continue
             if _QKV_ATTR in module.__dict__:
                 result["fused_qkv"] += 1

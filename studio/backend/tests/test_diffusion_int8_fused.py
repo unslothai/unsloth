@@ -265,3 +265,21 @@ def _assert_within_compile_floor(compiled, stock_compiled, eager):
     ours = (compiled.float() - eager.float()).abs()
     assert ours.max().item() <= 1.5 * floor.max().item() + 1e-6
     assert ours.mean().item() <= 1.1 * floor.mean().item() + 1e-6
+
+
+@needs_cuda
+def test_cpu_placed_model_is_swapped_at_the_first_forward():
+    # Studio runs the speed optims BEFORE placement: install() on CPU weights defers to the first call.
+    ff = _quantized_ff().cpu()
+    assert fused.install(ff) == 1
+    assert not fused.is_installed(ff)
+    ff = ff.cuda()
+    x = torch.randn(1, 64, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        ff(x)
+    assert fused.is_installed(ff)
+    assert "_unsloth_first_call_hooks" in ff.__dict__ and not ff.__dict__["_unsloth_first_call_hooks"]
+
+
+def test_offload_skips_install():
+    assert fused.install(torch.nn.Linear(8, 8), offload_active = True) == 0

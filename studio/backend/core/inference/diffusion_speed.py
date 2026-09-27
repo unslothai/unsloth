@@ -749,13 +749,13 @@ def _compile_repeated_blocks(
         # Before the compile: the regional compile traces whatever forward the blocks carry at the first call.
         try:
             from .diffusion_int8_fused import install as install_int8_fused
-            install_int8_fused(transformer, logger)
+            install_int8_fused(transformer, logger, offload_active = offload_active)
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused mlp", exc)
         if type(transformer).__name__ == "ZImageTransformer2DModel":
             try:
                 from .diffusion_zimage_fused import install as install_zimage_fused
-                install_zimage_fused(transformer, logger)
+                install_zimage_fused(transformer, logger, offload_active = offload_active)
             except Exception as exc:  # noqa: BLE001 - optimisation only
                 _warn(logger, "z-image fused attention", exc)
         try:
