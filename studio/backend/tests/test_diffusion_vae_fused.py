@@ -589,13 +589,25 @@ def test_shape_args_do_not_multiply_jit_variants():
         assert all(params[a].do_not_specialize for a in args), name
     cl = torch.channels_last_3d
     seen = None
-    for t, h, w, front in ((4, 16, 16, 2), (1, 16, 16, 2), (3, 13, 17, 1), (1, 7, 9, 2), (5, 1, 33, 0)):
-        x = torch.randn(1, 64, t, h, w, device = "cuda", dtype = torch.float16).contiguous(memory_format = cl)
-        cache = torch.randn(1, 64, 1, h, w, device = "cuda", dtype = torch.float16).contiguous(memory_format = cl)
+    for t, h, w, front in (
+        (4, 16, 16, 2),
+        (1, 16, 16, 2),
+        (3, 13, 17, 1),
+        (1, 7, 9, 2),
+        (5, 1, 33, 0),
+    ):
+        x = torch.randn(1, 64, t, h, w, device = "cuda", dtype = torch.float16).contiguous(
+            memory_format = cl
+        )
+        cache = torch.randn(1, 64, 1, h, w, device = "cuda", dtype = torch.float16).contiguous(
+            memory_format = cl
+        )
         out = F.rms_norm_act(x, None, act = True, front = front, cache = cache if front else None)
         ref = torch.nn.functional.silu(x)
         if front:
-            ref = torch.cat([torch.zeros_like(cache[:, :, :front - 1]), cache, ref], 2)
-        torch.testing.assert_close(out, ref, atol = 2e-3, rtol = 2e-3)  # fp32 silu vs fp16 opmath: last-ulp
+            ref = torch.cat([torch.zeros_like(cache[:, :, : front - 1]), cache, ref], 2)
+        torch.testing.assert_close(
+            out, ref, atol = 2e-3, rtol = 2e-3
+        )  # fp32 silu vs fp16 opmath: last-ulp
         seen = seen or _variants(k.rms_act)
         assert _variants(k.rms_act) == seen, (t, h, w, front)
