@@ -107,3 +107,31 @@ def test_mapping_entries_keep_the_backend_exclusions(monkeypatch):
     )
     values = impl.values() if isinstance(impl, dict) else [impl]
     assert "sdpa" not in values
+
+
+def test_mapping_fallback_is_applied_per_key(monkeypatch):
+    # A large-head VLM falls back to {"": sdpa, text_config: flex}; a dict request must not collapse it to sdpa.
+    if not hasattr(transformers, "Qwen2VLConfig"):
+        pytest.skip("needs transformers with Qwen2-VL")
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
+
+    monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
+
+    def config():
+        c = transformers.Qwen2VLConfig()
+        t = c.text_config
+        t.hidden_size, t.num_attention_heads, t.num_key_value_heads, t.head_dim = 2048, 4, 2, 512
+        return c
+
+    scalar = _utils.resolve_attention_implementation(
+        Qwen2VLForConditionalGeneration, config(), "flash_attention_2", supports_sdpa = True
+    )
+    if not isinstance(scalar, dict):
+        pytest.skip("flex attention cannot be scoped to the decoder here")
+    impl = _utils.resolve_attention_implementation(
+        Qwen2VLForConditionalGeneration,
+        config(),
+        {"": "flash_attention_2", "text_config": "flash_attention_2"},
+        supports_sdpa = True,
+    )
+    assert impl == {"": scalar[""], "text_config": scalar["text_config"]}

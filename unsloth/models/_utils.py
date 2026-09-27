@@ -1061,11 +1061,18 @@ def _disable_flash_attention_if_needed(
             disable_reason = disable_reason,
             honor_config_attn_implementation = False,
         )
-        if isinstance(fallback, dict):
-            fallback = fallback.get("", "eager")
+        # A mapping fallback is per key (the large-head decoder gets flex, the rest sdpa).
+        def _fallback_for(key):
+            if isinstance(fallback, dict):
+                return fallback.get(key, fallback.get("", "eager"))
+            return fallback
+
         return _set_attn_impl(
             config,
-            {k: (fallback if _needs_fallback(v) else v) for k, v in explicit_request.items()},
+            {
+                k: (_fallback_for(k) if _needs_fallback(v) else v)
+                for k, v in explicit_request.items()
+            },
         )
 
     # Off for a float32 load: with no flash-specific reason the config never steered the choice, so a config-seeded "eager" must not drag an fp32 load from sdpa down to eager.
