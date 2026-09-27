@@ -35,7 +35,7 @@ import threading
 from contextvars import ContextVar
 
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
-from .context_window import _RESULT_NOTICE_RESERVE
+from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
 
 # The window of the model THIS request is served by, set by execute_tool for the call's duration. Left unset it falls
 # back to the process-global probe, which is wrong for an external-provider request: that runs Unsloth's tool loop
@@ -77,6 +77,8 @@ from utils.account_context import account_thread, current_account_id, is_owner_c
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
+
+from . import os_sandbox
 
 from loggers import get_logger
 
@@ -442,11 +444,29 @@ _QUOTED_REDIRECT_MARK = "\x02"
 _EXPANSION_CHARS = frozenset("$`")
 _QUOTED_EXPANSION_MARK = "\x04"
 # The characters punctuation_chars glues into one token. A run like `|&` matches no _SHELL_SEPARATORS entry, so the
-# sed screen read past the end of the command. `{`/`}` are absent so find's `{}` stays an ordinary word.
-_OPERATOR_TOKEN_CHARS = frozenset(";&|()`")
+# sed screen read past the end of the command. `{`/`}` are absent so find's `{}` stays an ordinary word. A newline
+# only reaches a token stream that asked for it (_COMMAND_POSITION_PUNCTUATION), where `;\n` arrives glued.
+_OPERATOR_TOKEN_CHARS = frozenset(";&|()`\n")
+# The operators the blocklist walk needs split off into tokens of their own. The newline is there because bash starts
+# a new command at a line break, where shlex sees only whitespace.
+_COMMAND_POSITION_PUNCTUATION = ";&|()`\n"
 # One shell redirection as the lexer hands it over. The target may be glued on (`2>/dev/null`) or be the next token;
 # `&` splits off under punctuation_chars, so `2>&1` arrives as three.
 _REDIRECTION_RE = re.compile(r"^(?:\d+|&)?(?:<<<|<<-|<<|<>|>>|>\||<&|>&|<|>)")
+
+
+def _punctuation_lexer(text: str, punctuation: str) -> "shlex.shlex":
+    """A word lexer that hands back every one of ``punctuation`` as its own token.
+
+    shlex counts a newline as whitespace, so asking for it in punctuation_chars alone yields
+    nothing: it has to leave the whitespace set as well, or the separator bash sees at a line break
+    never appears in the token stream.
+    """
+    lexer = shlex.shlex(text, posix = True, punctuation_chars = punctuation)
+    lexer.whitespace_split = True
+    if "\n" in punctuation:
+        lexer.whitespace = lexer.whitespace.replace("\n", "")
+    return lexer
 
 
 def _looks_like_separator(token: str) -> bool:
@@ -1033,9 +1053,7 @@ def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) 
     if _QUOTED_SEPARATOR_MARK not in masked:
         return frozenset()  # every separator character was bare
     try:
-        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        lexer.whitespace_split = True
-        marked = list(lexer)
+        marked = list(_punctuation_lexer(masked, punctuation))
     except ValueError:
         return frozenset()
     if len(marked) != len(tokens):
@@ -1061,9 +1079,7 @@ def _masked_tokens(
         mark if char in chars and states[index] else char for index, char in enumerate(text)
     )
     try:
-        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        lexer.whitespace_split = True
-        marked = list(lexer)
+        marked = list(_punctuation_lexer(masked, punctuation))
     except ValueError:
         return None
     return marked if len(marked) == len(tokens) else None
@@ -1104,9 +1120,7 @@ def _unquoted_expansion_indexes(
         for index, char in enumerate(text)
     )
     try:
-        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        lexer.whitespace_split = True
-        marked = list(lexer)
+        marked = list(_punctuation_lexer(masked, punctuation))
     except ValueError:
         return frozenset()
     if len(marked) != len(tokens):
@@ -1132,9 +1146,7 @@ def _unquoted_glob_indexes(text: str, tokens: "list[str]", punctuation: str) -> 
         for index, char in enumerate(text)
     )
     try:
-        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        lexer.whitespace_split = True
-        marked = list(lexer)
+        marked = list(_punctuation_lexer(masked, punctuation))
     except ValueError:
         return frozenset()
     if len(marked) != len(tokens):
@@ -1349,18 +1361,216 @@ def _is_start_title(token: str) -> bool:
 # `_BLOCKED_COMMANDS` is a never-mutated frozenset, so this alternation is a constant. Rebuilding it
 # per call cost an `re.escape` per blocked name: over a 2637 command corpus that was 567k calls and
 # 0.60s of 3.9s. None only if the set is empty.
-_BLOCKED_WORD_RE = (
-    re.compile(
+def _blocked_word_re(assignment_prefixes: bool):
+    """The command-position backstop, with and without the assignment-prefix step.
+
+    The backstop has no quoting model, so anything it steps over it steps over inside quotes too.
+    Skipping assignment prefixes is only needed when the lex raised and the token walk never
+    happened; running it when the walk succeeded refused `echo '; A=1 rm -rf x'`, which bash runs
+    as one `echo` (checked: the file survives). A quoted value may hold the rest of the line
+    (`p='1e rm -f victim'`), which is a binding the sed screen resolves, so those are deliberately
+    not stepped over either way.
+    """
+    if not _BLOCKED_COMMANDS:
+        return None
+    return re.compile(
         # No `coproc` alternative here, deliberately: with no quoting or command-position context this pass refused
         # `grep coproc rm file`. The token scan above knows where a command starts and handles the keyword.
         r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
-        r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
-        r"(" + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS)) + r")"
-        r"(?:\.(?:exe|com|bat|cmd))?\b"
+        + (r"(?:[A-Za-z_]\w*=[^\s'\"]*\s+)*" if assignment_prefixes else r"")
+        + r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
+        + r"("
+        + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
+        + r")"
+        + r"(?:\.(?:exe|com|bat|cmd))?\b"
     )
-    if _BLOCKED_COMMANDS
-    else None
-)
+
+
+# `_BLOCKED_COMMANDS` is a never-mutated frozenset, so both alternations are constants.
+_BLOCKED_WORD_RE = _blocked_word_re(False)
+_BLOCKED_WORD_RE_WITH_ASSIGNMENTS = _blocked_word_re(True)
+
+
+def _join_escaped_newlines(text: str) -> str:
+    """Remove a backslash-newline where the shell removes it, and only there.
+
+    The shell strips the pair before it reads a command, so the line break is not a boundary and
+    the words either side belong to one command: `echo hi \\<newline>A=1 rm -rf x` is one `echo`.
+    Inside SINGLE quotes it strips nothing, and that difference is load-bearing:
+    `sed -n '1e touch a\\<newline>rm -f victim' f` continues the executed payload onto the next
+    line, so joining there would drop a command that really runs. An escaped backslash consumes
+    both characters, which leaves a following newline standing, as the shell does. The pair is
+    removed rather than replaced, since it can fall inside a word: checked against the same
+    bash, `to\\<newline>uch f` runs `touch`.
+
+    Only a backslash-LF continues. Checked against bash 5.2.21: a backslash before CRLF escapes
+    the CARRIAGE RETURN, so the newline still starts a command and `echo hi \\<CRLF>rm -rf x`
+    really runs `rm`. Joining all three characters made that read as one `echo`.
+
+    A comment strips nothing either. Inside an unquoted `#` comment the backslash is comment
+    TEXT, so the newline still ends the comment and starts a command: `echo ok # comment
+    \\<newline>rm -rf ./build` really runs `rm`, and joining made it one comment that the
+    later lex then discarded whole. `#` opens a comment only at the start of a word, so
+    `ab#cd` is an ordinary word and `"a # b"` is quoted text; both were checked against the
+    same bash.
+
+    A `$(...)` substitution is parsed in a FRESH quoting context even inside double quotes, so
+    the state is pushed at `$(` and popped at the matching `)`. Checked against bash 5.2.21:
+    `echo "$(echo hi # c \\<newline>rm -f victim<newline>)"` really runs `rm`, because the `#`
+    opens a comment in there and the backslash is comment text; carrying the outer `in_double`
+    in made the pair look like a continuation and the `rm` vanished. The same probe confirms the
+    other half: single quotes work in there (`"$(echo 'a \\<newline>rm -f victim')"` strips
+    nothing and `rm` does NOT run), and a `)` inside them does not end the substitution.
+    Backticks are left alone, since the same probe shows `#` does not open a comment inside
+    `"`...`"`.
+    """
+    if "\\\n" not in text:
+        # Nothing to join, and every other branch below only copies the character it read, so the
+        # result is the input. One C-level scan instead of a Python loop over every character of
+        # the command: measured over a 200-line script that is most of the screening cost.
+        return text
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_single = in_double = in_comment = False
+    # (in_single, in_double, in_comment) for each enclosing `$(`, innermost last, and how many
+    # ordinary `(` groupings are open inside the innermost one. A subshell's `)` must not restore
+    # the outer state: `"$( (echo hi); echo ok # comment \<newline>rm -f victim<newline>)"` runs
+    # `rm` under the same bash, and closing early put the rest of the substitution back in double
+    # quotes, where the `#` opened no comment and the pair was joined away.
+    substitutions: "list[tuple[bool, bool, bool]]" = []
+    group_depth = 0
+    group_depths: list[int] = []
+    # Whether the character just emitted closed a `$(`, which keeps the word open.
+    closed_substitution = False
+    # How many `case ... esac` are open, per substitution. A case PATTERN closes with an unbalanced
+    # `)`, so inside a `case` no `)` may end the substitution: `"$(case x in x) echo hi;; esac;
+    # echo ok # comment \<newline>rm -f victim<newline>)"` really runs `rm`, and reading the
+    # pattern's `)` as the substitution's close put the rest back in double quotes, where the `#`
+    # opened no comment and the pair was joined away. Staying inside is the conservative direction.
+    case_depth = 0
+    case_depths: list[int] = []
+    # How many `${...}` parameter expansions are open, per substitution. A `)` inside one is part
+    # of the expansion, not the substitution's terminator: bash runs the `rm` in
+    # `"$(x=${v%)}; echo ok # comment \<newline>rm -f victim<newline>)"`, and reading that `)` as
+    # the close put the rest back in double quotes, where the `#` opened no comment.
+    brace_depth = 0
+    brace_depths: list[int] = []
+    word = ""
+    # Whether the word being read starts a command. `esac` CLOSES a case only there: in
+    # `case esac in x) ...;; esac; ...` the first `esac` is the word being matched on, and
+    # counting it closed the case early, which then let the pattern's `)` end the substitution and
+    # lost an `rm` that bash really runs. Both halves lean the same way: `case` is counted wherever
+    # it appears and `esac` only in command position, so the walk errs towards staying INSIDE.
+    at_command_position = True
+    word_at_command_position = True
+    while i < n:
+        ch = text[i]
+        was_substitution_close, closed_substitution = closed_substitution, False
+        if not in_single and not in_double and not in_comment:
+            if ch.isalpha() or ch == "_":
+                if not word:
+                    word_at_command_position = at_command_position
+                word += ch
+            else:
+                if word == "case":
+                    case_depth += 1
+                elif word == "esac" and word_at_command_position and case_depth:
+                    case_depth -= 1
+                if word:
+                    at_command_position = False
+                    word = ""
+                if ch in ";&|\n(":
+                    at_command_position = True
+                elif not ch.isspace():
+                    at_command_position = False
+        if not in_single and not in_comment and ch == "$" and text[i + 1 : i + 2] == "{":
+            brace_depth += 1
+            out.append("${")
+            i += 2
+            continue
+        if ch == "}" and brace_depth and not in_single and not in_comment:
+            brace_depth -= 1
+            out.append(ch)
+            i += 1
+            continue
+        if not in_single and not in_comment and ch == "$" and text[i + 1 : i + 2] == "(":
+            substitutions.append((in_single, in_double, in_comment))
+            group_depths.append(group_depth)
+            case_depths.append(case_depth)
+            brace_depths.append(brace_depth)
+            group_depth = case_depth = brace_depth = 0
+            in_single = in_double = in_comment = False
+            out.append("$(")
+            i += 2
+            continue
+        if ch == "(" and not in_single and not in_double and not in_comment and not brace_depth:
+            group_depth += 1
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ")" and not in_single and not in_double and not in_comment and not brace_depth:
+            if group_depth:
+                group_depth -= 1
+            elif case_depth:
+                pass  # a case PATTERN closes here, not the substitution
+            elif substitutions:
+                in_single, in_double, in_comment = substitutions.pop()
+                group_depth = group_depths.pop()
+                case_depth = case_depths.pop()
+                brace_depth = brace_depths.pop()
+                # A substitution's close stays INSIDE the surrounding word, unlike a subshell's or
+                # a control operator's, so a `#` right after it is ordinary text. Checked against
+                # bash 5.2.21: `echo $(printf x)#note \<newline>rm -rf victim` is one `echo` and
+                # the file survives, while reading the `)` as a word boundary opened a comment,
+                # kept the newline and reported `rm`.
+                out.append(ch)
+                i += 1
+                closed_substitution = True
+                continue
+            out.append(ch)
+            i += 1
+            continue
+        if in_comment:
+            if ch == "\n":
+                in_comment = False
+            out.append(ch)
+            i += 1
+            continue
+        if in_single:
+            if ch == "'":
+                in_single = False
+            out.append(ch)
+            i += 1
+            continue
+        if (
+            ch == "#"
+            and not in_double
+            and not was_substitution_close
+            and (not out or out[-1].isspace() or out[-1] in ";&|()")
+        ):
+            in_comment = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "\n":
+                # Removed, NOT replaced by a space: the pair can sit inside a word, and the
+                # shell closes it up. `r\\<newline>m -rf x` runs `rm`, so a space here split
+                # the command name and both the token walk and the backstop then missed it.
+                i += 2
+                continue
+            out.append(ch)
+            out.append(nxt)
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = True
+        elif ch == '"':
+            in_double = not in_double
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -1377,28 +1587,41 @@ def _find_blocked_commands(command: str) -> set[str]:
     # position.
     command = _decode_ansi_c(command, keep_one_word = True)
 
+    # The shell removes a backslash-newline before it reads a command, so the line break is not a
+    # boundary there and the words on both sides belong to one command: `echo hi \<newline>A=1 rm
+    # -rf x` is one `echo`, while `env \<newline>FOO=bar rm -rf x` really runs `rm` and stays
+    # blocked because joining puts `rm` at command position behind `env`. Joining here rather than
+    # only before the regex keeps the token walk and the backstop reading the same text.
+    command = _join_escaped_newlines(command)
+
     # punctuation_chars splits separators into their own tokens, so command position is detected even in `echo done;
-    # rm -rf x`. Keyed to the shell that will actually run this, not to the OS: on a Windows host with bash the
-    # non-posix lexer never split on `;`, so `if true; then rm -rf x; fi` came back with nothing blocked.
+    # rm -rf x` and at a line break. Keyed to the shell that will actually run this, not to the OS: on a Windows host
+    # with bash the non-posix lexer never split on `;`, so `if true; then rm -rf x; fi` came back with nothing
+    # blocked.
     lexed_posix = _shell_is_posix()
     try:
         if not lexed_posix:
             tokens = shlex.split(command, posix = False)
         else:
-            lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
-            lexer.whitespace_split = True
-            tokens = list(lexer)
+            tokens = list(_punctuation_lexer(command, _COMMAND_POSITION_PUNCTUATION))
     except ValueError:
         tokens = command.split()
         lexed_posix = False
+        lex_raised = True
+    else:
+        lex_raised = False
     # Which separator tokens the shell only produced because the quoting was stripped. The non-posix (cmd) lexer KEEPS
     # the quote marks and the split() fallback has no quoting model, so both report nothing and reach the same
     # verdict.
     quoted_separators = (
-        _quoted_separator_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+        _quoted_separator_indexes(command, tokens, _COMMAND_POSITION_PUNCTUATION)
+        if lexed_posix
+        else frozenset()
     )
     quoted_redirects = (
-        _quoted_redirection_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+        _quoted_redirection_indexes(command, tokens, _COMMAND_POSITION_PUNCTUATION)
+        if lexed_posix
+        else frozenset()
     )
     exec_flag_indexes, invocation_stops, redirect_indexes = _exec_scan_layout(
         tokens, quoted_separators, quoted_redirects
@@ -1602,8 +1825,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     # Regex catches blocked words at command boundaries shlex misses: inside $(rm -rf), <(rm), backtick chains, or
     # "foo;rm". Anchored to command-position delimiters, so it doesn't match in argument position.
     lowered = command.lower()
-    if _BLOCKED_WORD_RE is not None:
-        blocked.update(_BLOCKED_WORD_RE.findall(lowered))
+    backstop = _BLOCKED_WORD_RE_WITH_ASSIGNMENTS if lex_raised else _BLOCKED_WORD_RE
+    if backstop is not None:
+        blocked.update(backstop.findall(lowered))
 
     # A substitution at command position synthesizes the executed word, so `$(ls /usr/bin | grep
     # "^reb")` never reaches the scan above; screen the body instead. A variable launders the same
@@ -1792,7 +2016,9 @@ def _find_blocked_commands(command: str) -> set[str]:
         # never blocked.
         if glob_indexes is None:
             glob_indexes = (
-                _unquoted_glob_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+                _unquoted_glob_indexes(command, tokens, _COMMAND_POSITION_PUNCTUATION)
+                if lexed_posix
+                else frozenset()
             )
         alternatives, scan_overflowed, _live = _sed_invocation(
             tokens, i, sed_limit, invocation_stops, redirect_indexes, glob_indexes
@@ -8900,7 +9126,8 @@ def _is_trusted_windows_program_dir(path: str) -> bool:
 
 # not dot-named: the walks skip dot-dirs, which would hide a model's /tmp write. not "tmp": too common in a workspace,
 # and adopting one is what broke the walks.
-_SANDBOX_TEMP_DIRNAME = "unsloth-tmp"
+# Shared with os_sandbox: a drifted name would silently disable the scan's exemption.
+_SANDBOX_TEMP_DIRNAME = os_sandbox.TOOL_TEMP_DIRNAME
 
 
 def _sandbox_temp_dir(workdir: str) -> str:
@@ -9310,6 +9537,183 @@ def _bypass_preexec():
         os.setsid()
     except OSError:
         pass
+
+
+# Never read back by the executors, so a concurrent call can only make this stale.
+_last_tool_execution_record: "os_sandbox.ToolExecutionRecord | None" = None
+
+
+def _note_tool_execution(record) -> None:
+    """Built from a live probe, never from model output, so it is safe to show as a badge."""
+    global _last_tool_execution_record
+    if record is None:
+        return
+    _last_tool_execution_record = record
+    logger.info("tool execution mode: %s", record.as_dict())
+
+
+def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -> str:
+    """Require disable_sandbox for full access; checked here because managed accounts skip the planner."""
+    if tool_execution_mode not in os_sandbox.TOOL_EXECUTION_MODES:
+        raise os_sandbox.SandboxUnavailableError(
+            f"TOOL_EXECUTION_MODE_INVALID: {tool_execution_mode!r} is not a tool "
+            f"execution mode ({', '.join(os_sandbox.TOOL_EXECUTION_MODES)})",
+            remediation = "Use 'auto' or 'required'.",
+        )
+    if disable_sandbox:
+        return "full"
+    if tool_execution_mode == "full":
+        raise os_sandbox.SandboxUnavailableError(
+            "TOOL_EXECUTION_MODE_INVALID: full access is not requestable through "
+            "tool_execution_mode",
+            remediation = "Full access is granted with disable_sandbox (Bypass Permissions).",
+        )
+    return tool_execution_mode
+
+
+_with_session_packages = os_sandbox.with_session_packages
+
+
+def _software_safeguards_launch(plan, fault: str):
+    """Prepare an unisolated launch, retaining session packages and recording *fault*."""
+    full = plan.requested_mode == "full"
+    return os_sandbox.PreparedSandboxLaunch(
+        argv = plan.argv,
+        workdir = plan.workdir,
+        env = _with_session_packages(plan.env, plan.workdir),
+        preexec_fn = plan.preexec_fn,
+        backend = "software-safeguards",
+        timeout_seconds = plan.timeout_seconds,
+        close_fds = plan.close_fds,
+        terminate_descendants = plan.terminate_descendants,
+        execution_record = os_sandbox.ToolExecutionRecord(
+            requested_mode = plan.requested_mode,
+            # Do not claim software safeguards for a launch that skipped them.
+            effective_mode = "full" if full else "software_safeguards",
+            environment = sys.platform,
+            backend = "software-safeguards",
+            profile_id = "full-access" if full else "software-safeguards-v1",
+            probe_generation = "",
+            os_isolation = False,
+            retained_safeguards = tuple(
+                item
+                for item in (
+                    os_sandbox._FULL_SAFEGUARDS if full else os_sandbox._SOFTWARE_SAFEGUARDS
+                )
+                if item != "timeout" or plan.timeout_seconds is not None
+            ),
+            limitations = (
+                ("security_restrictions_disabled", fault)
+                if full
+                else (*os_sandbox._software_only_limitations(), fault)
+            ),
+        ),
+    )
+
+
+def _reaches_host_paths(kind: str, text: str) -> bool:
+    """Whether the call names a host path outside the silent roots: the check that put it in front of the user."""
+    try:
+        if kind == "python":
+            tree, error = _parse_python(text)
+            return error is None and _python_reaches_outside_sandbox(tree, text)
+        # Decoded like the approval classifier, or cat $'/home/u/x' prompts yet stays isolated.
+        decoded = _decode_ansi_c(text, keep_one_word = True)
+        command = decoded.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
+        for variant in {command, _expand_shell_assignments(_expand_param_defaults(command))}:
+            lexer = shlex.shlex(variant, posix = True, punctuation_chars = ";&|()")
+            lexer.whitespace_split = True
+            if _terminal_reaches_outside_sandbox(list(lexer), variant):
+                return True
+    except Exception:  # noqa: BLE001 - unclassifiable stays isolated
+        return False
+    return False
+
+
+def _prepare_tool_launch(plan, *, host_access_approved: bool = False):
+    """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
+    if host_access_approved and plan.requested_mode == "auto":
+        return _software_safeguards_launch(plan, "user_approved_host_access")
+    try:
+        prepared = os_sandbox.prepare_tool_launch(plan)
+        if plan.preexec_fn is not None and prepared.preexec_fn is None:
+            # Preserve setsid so timeout cleanup cannot kill the server's process group.
+            logger.warning(
+                "Sandbox backend %s dropped the launch pre-exec; restoring it",
+                prepared.backend,
+            )
+            prepared.preexec_fn = plan.preexec_fn
+        if prepared.execution_record is not None and not prepared.execution_record.os_isolation:
+            # The other door: os_sandbox returns its own fallback through here.
+            prepared.env = _with_session_packages(prepared.env, plan.workdir)
+        return prepared
+    except (os_sandbox.WorkdirUnsafeError, os_sandbox.SandboxBuildError):
+        # These failures can be tool-induced; fallback would let code remove its own boundary.
+        raise
+    except os_sandbox.SandboxUnavailableError:
+        # Any other refusal means the backend stopped being available.
+        if plan.requested_mode == "required" or (
+            plan.requested_mode not in os_sandbox.TOOL_EXECUTION_MODES
+        ):
+            raise
+        logger.warning(
+            "The sandbox backend is no longer available, running with software safeguards",
+            exc_info = True,
+        )
+        return _software_safeguards_launch(plan, "sandbox_became_unavailable")
+    except Exception as exc:  # noqa: BLE001 - construction failures never buy a host replay
+        if plan.requested_mode == "full":
+            return _software_safeguards_launch(plan, "sandbox_planner_error")
+        raise os_sandbox.SandboxBuildError(
+            f"sandbox preparation failed without host fallback: {exc}"
+        ) from exc
+
+
+# Launcher stderr prefixes for refusing to build the sandbox, not payload failures.
+_LAUNCHER_FAILURE_MARKERS = {
+    "bubblewrap": "bwrap: ",
+    "macos-seatbelt": "sandbox-exec: ",
+}
+
+
+def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> None:
+    """Drop a stale probe verdict found at exec, so it costs one call rather than the cache's lifetime."""
+    if prepared is None or prepared.backend == "software-safeguards":
+        return
+    if not output.startswith("Exit code "):
+        return
+    # Keyed on the backend that ran: Seatbelt reports `sandbox-exec:`, not `bwrap:`.
+    marker = _LAUNCHER_FAILURE_MARKERS.get(prepared.backend)
+    if marker is None or marker not in output[:400]:
+        return
+    logger.warning("The sandbox backend failed at launch; re-probing the capability")
+    try:
+        from .sandbox_probe import reset_probe_cache
+        reset_probe_cache()
+        if sys.platform == "linux":
+            from .sandbox_linux import reset_cache_verdicts
+            reset_cache_verdicts()
+    except Exception:  # noqa: BLE001 - a cache reset never breaks a tool result
+        logger.debug("could not reset the sandbox probe cache", exc_info = True)
+
+
+def _sandbox_refusal(exc) -> str:
+    """The remediation is part of the answer: the reader can fix the host."""
+    remediation = getattr(exc, "remediation", "") or ""
+    return _truncate(f"Execution error: {exc}{(' ' + remediation) if remediation else ''}")
+
+
+def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:
+    """The OUTER process needs its own session: every kill path is killpg based."""
+    popen_kwargs["cwd"] = prepared.workdir
+    popen_kwargs["env"] = prepared.env
+    if sys.platform != "win32":
+        popen_kwargs["preexec_fn"] = prepared.preexec_fn
+    popen_kwargs["close_fds"] = prepared.close_fds
+    if prepared.pass_fds:
+        # Empty for every fallback, so Windows never sees a kwarg it rejects.
+        popen_kwargs["pass_fds"] = tuple(prepared.pass_fds)
+    return popen_kwargs
 
 
 # Hardening the Unsloth parent is done once (PR_SET_DUMPABLE is process-global and sticky); guarded so repeated bypass
@@ -10340,15 +10744,9 @@ def _legacy_lock_peek(name: str) -> "threading.Lock | None":
 _LEGACY_SHARED_BUCKET = "_invalid"
 
 
-def _legacy_session_dir(session_id: str) -> "str | None":
-    """This session's directory at the legacy root, while one is still there.
-
-    Both names, like the migration itself: a chat from before the upgrade whose
-    id starts with the derived prefix kept its folder under the literal id.
-    """
-    if not is_owner_context():
-        return None
-    legacy_root = _legacy_sandbox_root()
+def _legacy_names(session_id: str) -> "list[str]":
+    """Every name this session's folder can have at the legacy root, which is also the key its move
+    is locked under."""
     names = [_sandbox_name(session_id)]
     if not _usable_session_id(session_id):
         # Before this change an id the filesystem could not hold shared one bucket with every other such chat: read
@@ -10358,13 +10756,50 @@ def _legacy_session_dir(session_id: str) -> "str | None":
         # Only the derived-prefix case: an id the old code could hold kept its folder under the literal name while
         # _sandbox_name now hashes it. A fallback name is nobody's chat: every session-less call ran in there.
         names.append(session_id)
-    for name in names:
+    return names
+
+
+def _marked_sandbox_after_moves(root: str, session_id: str) -> "str | None | bool":
+    """_marked_sandbox_in with every legacy move of this session held off, or False when no move of
+    it ever started. Under whichever name it was moved from: a chat whose id starts with the
+    derived prefix moves under the literal id, and its staging tree is marked with the derived one."""
+    locks = [_legacy_lock_peek(name) for name in _legacy_names(session_id)]
+    locks = [lock for lock in locks if lock is not None]
+    if not locks:
+        return False
+    # All at once, so no move can start between the wait and the look. A mover only ever holds one of these, so taking
+    # several in a fixed order cannot deadlock against it.
+    with contextlib.ExitStack() as held:
+        for lock in locks:
+            held.enter_context(lock)
+        return _marked_sandbox_in(root, session_id)
+
+
+def _legacy_session_dir(session_id: str) -> "str | None":
+    """This session's directory at the legacy root, while one is still there.
+
+    Both names, like the migration itself: a chat from before the upgrade whose
+    id starts with the derived prefix kept its folder under the literal id.
+    """
+    if not is_owner_context():
+        return None
+    legacy_root = _legacy_sandbox_root()
+    for name in _legacy_names(session_id):
         candidate = os.path.join(legacy_root, name)
-        if not os.path.isdir(candidate) or os.path.islink(candidate):
+        if os.path.islink(candidate):
             continue
+        if os.path.isdir(candidate):
+            lock = _legacy_lock_for(name)
+        else:
+            # Gone from the legacy root can mean sitting in staging, where neither root holds it and the caller would
+            # fall through to a destination that does not exist yet. The same durable trace
+            # _migrate_one_legacy_session waits on: an entry means a move began, so waiting on it lets the move land.
+            lock = _legacy_lock_peek(name)
+            if lock is None:
+                continue
         # Under this session's move lock, and checked again inside it: the move is a rename, so a path handed back
         # mid-move lists nothing and 404s every card. One that already ran sends the caller to the destination.
-        with _legacy_lock_for(name):
+        with lock:
             if os.path.isdir(candidate) and not os.path.islink(candidate):
                 return candidate
     return None
@@ -10734,6 +11169,14 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         # A migration that moved the tree but could not rename it into place leaves the only copy under a marked name,
         # at any root.
         ours = _marked_sandbox_in(root, session_id)
+        if ours and _STAGING_SUFFIX in os.path.basename(ours):
+            # A live move marks its staging tree before renaming it into place, so this can also be one still moving,
+            # which the rename is about to take away. Movers hold the session's lock for the whole move, so once it is
+            # free a staging tree that is still there is a stranded one, and one that landed or rolled back is found
+            # where it went.
+            settled = _marked_sandbox_after_moves(root, session_id)
+            if settled is not False:
+                ours = settled
         if ours:
             return ours
         # Right after an upgrade the files can still be at the legacy root: the move runs in the background and can
@@ -10741,6 +11184,13 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         legacy = _legacy_session_dir(session_id)
         if legacy:
             return legacy
+        if not os.path.isdir(workdir):
+            # The lookup above can have waited out a move the first scan ran ahead of. One whose rename and rollback
+            # both failed leaves the only copy in a marked staging tree, which that scan never saw. Only a session a
+            # move has touched pays for the second listing.
+            ours = _marked_sandbox_after_moves(root, session_id)
+            if ours:
+                return ours
     if not _root_is_ours() and not _owned_by_session(workdir, session_id):
         # In a root the user pointed us at this chat can be in a fallback whose name nothing recomputes, and a read
         # that stops here shows an empty sandbox and 404s the file cards already in the transcript.
@@ -12562,6 +13012,9 @@ def execute_tool(
     context_tokens = _UNSET_CONTEXT_TOKENS,
     search_images: bool = False,
     result_budget_tokens: int | None = None,
+    *,
+    tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -12574,7 +13027,11 @@ def execute_tool(
     tools; web_search / MCP are unchanged. ``output_callback``: optional ``callable(str)`` invoked
     with incremental stdout/stderr chunks while python/terminal executions run. Purely
     observational: the returned result string is identical with or without it. ``website_policy``:
-    hidden server-validated domain limits for web_search.
+    hidden server-validated domain limits for web_search. ``tool_execution_mode`` controls OS
+    isolation for python/terminal: ``"auto"`` isolates when available and otherwise preserves
+    existing behavior, while ``"required"`` refuses unisolated execution. Full access remains
+    controlled by ``disable_sandbox``; ``"full"`` here is refused. ``host_access_approved``: the user approved this
+    call at the confirmation prompt (see ``_prepare_tool_launch``).
     """
     from state.tool_policy import require_tool_access
 
@@ -12602,6 +13059,17 @@ def execute_tool(
         return (
             f"Error: {name} arguments {cause}, so nothing ran. Resend as complete JSON, "
             "split across smaller calls if the content is long."
+        )
+    # Block placeholders copied from compacted history before any tool can write them (#11839).
+    receipt_field = compaction_receipt_field(
+        arguments,
+        match_only = frozenset({"old_string"}) if name == "edit_file" else frozenset(),
+    )
+    if receipt_field is not None:
+        return (
+            f"Error: {name} '{receipt_field}' is a placeholder that stood in for earlier "
+            "arguments to save room, not content, so nothing ran. Write the actual content "
+            "out in full."
         )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "create_skill":
@@ -12774,6 +13242,8 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                tool_execution_mode = tool_execution_mode,
+                host_access_approved = host_access_approved,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -12785,6 +13255,8 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                tool_execution_mode = tool_execution_mode,
+                host_access_approved = host_access_approved,
             )
     # Same in-flight guard as the two above: it writes into the session workdir, so a chat deleted mid-call must not
     # unlink it underneath.
@@ -13615,6 +14087,94 @@ _UNICODE_BOM_CODECS = (
 _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
 
+_META_CHARSET_SCAN_BYTES = 2048
+# A comment or whole tag, quoted attribute values included, so markup inside them is never read as <meta>. As in the
+# browser prescan, an unterminated tag ends the scan.
+_HTML_TAG_RE = re.compile(
+    rb"<!--.*?(?:-->|\Z)|<([a-z][^\s/>]*)((?:[\s/](?:[^>\"']|\"[^\"]*\"|'[^']*')*)?)>|<[!/?][^>]*>|<[a-z!/?].*",
+    re.IGNORECASE | re.DOTALL,
+)
+_META_ATTR_RE = re.compile(rb"([^\s\"'/=>]+)(?:\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]*)))?")
+_META_CONTENT_CHARSET_RE = re.compile(rb"charset\s*=\s*[\"']?\s*([^\s\"';]+)", re.IGNORECASE)
+_XML_ENCODING_RE = re.compile(rb"\s*<\?xml\b[^>]*?encoding\s*=\s*[\"']([\w.:-]+)", re.IGNORECASE)
+# WHATWG Encoding labels by the Python codec that matches the browser decoder. A meta declaration
+# of UTF-16 or x-user-defined means UTF-8 or windows-1252; "replacement" labels are left out.
+_WHATWG_CHARSET_LABELS = {
+    "utf-8": (
+        "unicode-1-1-utf-8 unicode11utf8 unicode20utf8 utf-8 utf8 x-unicode20utf8 unicodefffe "
+        "utf-16be csunicode iso-10646-ucs-2 ucs-2 unicode unicodefeff utf-16 utf-16le"
+    ),
+    "cp866": "866 cp866 csibm866 ibm866",
+    "iso8859-2": (
+        "csisolatin2 iso-8859-2 iso-ir-101 iso8859-2 iso88592 iso_8859-2 iso_8859-2:1987 l2 "
+        "latin2"
+    ),
+    "iso8859-3": (
+        "csisolatin3 iso-8859-3 iso-ir-109 iso8859-3 iso88593 iso_8859-3 iso_8859-3:1988 l3 "
+        "latin3"
+    ),
+    "iso8859-4": (
+        "csisolatin4 iso-8859-4 iso-ir-110 iso8859-4 iso88594 iso_8859-4 iso_8859-4:1988 l4 "
+        "latin4"
+    ),
+    "iso8859-5": (
+        "csisolatincyrillic cyrillic iso-8859-5 iso-ir-144 iso8859-5 iso88595 iso_8859-5 "
+        "iso_8859-5:1988"
+    ),
+    "iso8859-6": (
+        "arabic asmo-708 csiso88596e csiso88596i csisolatinarabic ecma-114 iso-8859-6 "
+        "iso-8859-6-e iso-8859-6-i iso-ir-127 iso8859-6 iso88596 iso_8859-6 iso_8859-6:1987"
+    ),
+    "iso8859-7": (
+        "csisolatingreek ecma-118 elot_928 greek greek8 iso-8859-7 iso-ir-126 iso8859-7 iso88597 "
+        "iso_8859-7 iso_8859-7:1987 sun_eu_greek"
+    ),
+    "iso8859-8": (
+        "csiso88598e csisolatinhebrew hebrew iso-8859-8 iso-8859-8-e iso-ir-138 iso8859-8 "
+        "iso88598 iso_8859-8 iso_8859-8:1988 visual csiso88598i iso-8859-8-i logical"
+    ),
+    "iso8859-10": "csisolatin6 iso-8859-10 iso-ir-157 iso8859-10 iso885910 l6 latin6",
+    "iso8859-13": "iso-8859-13 iso8859-13 iso885913",
+    "iso8859-14": "iso-8859-14 iso8859-14 iso885914",
+    "iso8859-15": "csisolatin9 iso-8859-15 iso8859-15 iso885915 iso_8859-15 l9",
+    "iso8859-16": "iso-8859-16",
+    "koi8-r": "cskoi8r koi koi8 koi8-r koi8_r",
+    "koi8-u": "koi8-ru koi8-u",
+    "mac-roman": "csmacintosh mac macintosh x-mac-roman",
+    "cp874": "dos-874 iso-8859-11 iso8859-11 iso885911 tis-620 windows-874",
+    "cp1250": "cp1250 windows-1250 x-cp1250",
+    "cp1251": "cp1251 windows-1251 x-cp1251",
+    "cp1252": (
+        "ansi_x3.4-1968 ascii cp1252 cp819 csisolatin1 ibm819 iso-8859-1 iso-ir-100 iso8859-1 "
+        "iso88591 iso_8859-1 iso_8859-1:1987 l1 latin1 us-ascii windows-1252 x-cp1252 "
+        "x-user-defined"
+    ),
+    "cp1253": "cp1253 windows-1253 x-cp1253",
+    "cp1254": (
+        "cp1254 csisolatin5 iso-8859-9 iso-ir-148 iso8859-9 iso88599 iso_8859-9 iso_8859-9:1989 "
+        "l5 latin5 windows-1254 x-cp1254"
+    ),
+    "cp1255": "cp1255 windows-1255 x-cp1255",
+    "cp1256": "cp1256 windows-1256 x-cp1256",
+    "cp1257": "cp1257 windows-1257 x-cp1257",
+    "cp1258": "cp1258 windows-1258 x-cp1258",
+    "mac-cyrillic": "x-mac-cyrillic x-mac-ukrainian",
+    "gb18030": (
+        "chinese csgb2312 csiso58gb231280 gb2312 gb_2312 gb_2312-80 gbk iso-ir-58 x-gbk gb18030"
+    ),
+    "big5hkscs": "big5 big5-hkscs cn-big5 csbig5 x-x-big5",
+    "euc_jp": "cseucpkdfmtjapanese euc-jp x-euc-jp",
+    "iso2022_jp": "csiso2022jp iso-2022-jp",
+    "cp932": "csshiftjis ms932 ms_kanji shift-jis shift_jis sjis windows-31j x-sjis",
+    "cp949": (
+        "cseuckr csksc56011987 euc-kr iso-ir-149 korean ks_c_5601-1987 ks_c_5601-1989 ksc5601 "
+        "ksc_5601 windows-949"
+    ),
+}
+_WHATWG_CHARSET_CODECS = {
+    label: codec for codec, labels in _WHATWG_CHARSET_LABELS.items() for label in labels.split()
+}
+
 
 def _looks_binary(text: str) -> bool:
     """Whether control or undecodable characters exceed the binary threshold."""
@@ -13647,6 +14207,39 @@ def _has_single_byte_text_evidence(data: bytes) -> bool:
         return True
     ascii_text_bytes = sum(byte in _ASCII_TEXT_BYTES for byte in data)
     return ascii_text_bytes / len(data) >= _MIN_SINGLE_BYTE_ASCII_RATIO
+
+
+def _whatwg_codec(label: bytes) -> str | None:
+    return _WHATWG_CHARSET_CODECS.get(label.strip(b"\t\n\f\r ").decode("latin-1").lower())
+
+
+def _sniff_meta_charset(head: bytes, content_type: str) -> str | None:
+    # Browsers prescan <meta> only in HTML (first usable one wins, XML prolog as fallback) and read
+    # only the prolog in XML. A headerless body is XML if it opens with a prolog, HTML if it looks it.
+    prolog = _XML_ENCODING_RE.match(head)
+    if content_type:
+        is_html = content_type == "text/html"
+        is_xml = content_type in ("text/xml", "application/xml") or content_type.endswith("+xml")
+    else:
+        is_xml = prolog is not None
+        is_html = not is_xml and _looks_like_html(head.decode("latin-1"))
+    if is_html:
+        for tag in _HTML_TAG_RE.finditer(head):
+            if (tag.group(1) or b"").lower() != b"meta":
+                continue
+            attrs = {}
+            for name, *values in _META_ATTR_RE.findall(tag.group(2)):
+                attrs.setdefault(name.lower(), b"".join(values))
+            label = attrs.get(b"charset")
+            if label is None and attrs.get(b"http-equiv", b"").strip().lower() == b"content-type":
+                match = _META_CONTENT_CHARSET_RE.search(attrs.get(b"content", b""))
+                label = match and match.group(1)
+            codec = label and _whatwg_codec(label)
+            if codec:
+                return codec
+    elif not is_xml:
+        return None
+    return prolog and _whatwg_codec(prolog.group(1))
 
 
 def _extract_pdf_text(data: bytes) -> str:
@@ -14393,14 +14986,19 @@ def _fetch_url_raw(
             (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
             None,
         )
+        fallback_codec = (
+            bom_codec
+            or _sniff_meta_charset(raw_bytes[:_META_CHARSET_SCAN_BYTES], content_type)
+            or "utf-8"
+        )
         try:
-            raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+            raw_html = raw_bytes.decode(declared or fallback_codec, errors = "replace")
         except (LookupError, ValueError):
             # Survives lookup, fails the decode: base64/hex/zlib are not text codecs, "undefined" always raises, idna
             # rejects replace. The fallback cannot raise.
             declared = None
             declared_codec = None
-            raw_html = raw_bytes.decode(bom_codec or "utf-8", errors = "replace")
+            raw_html = raw_bytes.decode(fallback_codec, errors = "replace")
 
         # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
         if _looks_binary(raw_html):
@@ -15539,6 +16137,53 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
     return "\n\n---\n\n" + format_images_for_model(entries) + images_envelope(entries)
 
 
+# The first component of every network module and of every recognised prefix. `urllib.request`
+# and `urllib3` share `urllib`; `http.client` and `httpx` share `http`.
+_NETWORK_ROOT_NAMES = frozenset(
+    {
+        "socket",
+        "urllib",
+        "urllib3",
+        "http",
+        "httpx",
+        "requests",
+        "aiohttp",
+        "paramiko",
+        "fabric",
+        "asyncssh",
+    }
+)
+
+
+def _network_candidates_possible(nodes) -> bool:
+    """Whether ANY call in this tree could resolve to a network function.
+
+    The alias maps, the literal-value map, the shadow bookkeeping and the second visitor pass all
+    exist to answer questions about a recognised egress call, and every route to one names a
+    network module: an import of it, an import from it, or the module written out at the call
+    site, which is a `Name` either way. A tree with none of those has no candidate to resolve, so
+    the screen can skip all of it and still reach the same verdict. Ordinary tool code -- pandas,
+    matplotlib, plain arithmetic -- takes that path.
+
+    Read off the node list the other classifiers already build and cache for this tree, so it
+    costs one pass over a list rather than a walk. Deliberately generous: a local variable that
+    happens to be called `socket` turns the full path back on, which costs time and never a
+    verdict.
+    """
+    for node in nodes:
+        if isinstance(node, ast.Name):
+            if node.id in _NETWORK_ROOT_NAMES:
+                return True
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.partition(".")[0] in _NETWORK_ROOT_NAMES:
+                    return True
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").partition(".")[0] in _NETWORK_ROOT_NAMES:
+                return True
+    return False
+
+
 def _check_signal_escape_patterns(code: str):
     """Check for patterns that could escape signal-based timeouts. Returns (safe: bool, details:
     dict). Vendored from unsloth_zoo.rl_environments to avoid importing unsloth_zoo (needs GPU
@@ -15552,6 +16197,14 @@ def _check_signal_escape_patterns(code: str):
             "exception_catching": [],
             "warnings": [],
         }
+
+    # Whether a recognised egress call is possible AT ALL in this source. Every route to one -- an
+    # import, an alias of an import, a star import, or the module written out at the call -- spells
+    # the module's own name, so a source with none of these substrings has no candidate to resolve
+    # and the alias machinery below has nothing to say about it. One pass over the text, against
+    # three walks of the tree and a second visitor pass.
+    # Whether a recognised egress call is possible AT ALL in this tree. Read below.
+    network_possible = _network_candidates_possible(_tree_nodes(tree))
 
     signal_tampering = []
     exception_catching = []
@@ -15889,8 +16542,9 @@ def _check_signal_escape_patterns(code: str):
     if visitor.imports_signal and not signal_tampering:
         warnings.append("Code imports 'signal' module - review manually for safety")
 
-    # Static host policy: block metadata hosts and any literal host outside the trusted allowlist; uploads blocked
-    # regardless of host. Dynamic hosts are caught by the bash blocklist.
+    # Static host policy: block metadata hosts and any host outside the trusted allowlist; uploads blocked regardless
+    # of host. A host this screen cannot read is treated as untrusted, since nothing downstream screens python-tool
+    # code again.
     network_calls: list[dict] = []
     sensitive_file_reads: list[dict] = []
     _NETWORK_FQ_PREFIXES = (
@@ -15920,17 +16574,234 @@ def _check_signal_escape_patterns(code: str):
         "httpx.AsyncClient",
         "aiohttp.ClientSession",
     )
+    # The modules an alias is resolved back to, so `import urllib.request as u` and `from urllib.request import
+    _NETWORK_MODULES = frozenset(
+        {
+            "socket",
+            "urllib.request",
+            "urllib3",
+            "urllib3.connection",
+            "urllib3.connectionpool",
+            "urllib3.poolmanager",
+            "urllib3.util.connection",
+            "urllib3.contrib.socks",
+            "http.client",
+            "requests",
+            "requests.api",
+            "requests.sessions",
+            "httpx",
+            "aiohttp",
+            "aiohttp.client",
+            "paramiko",
+            "paramiko.client",
+            "paramiko.transport",
+            "fabric",
+            "fabric.connection",
+            "asyncssh",
+            "asyncssh.connection",
+        }
+    )
+    _HTTP_VERBS = ("get", "post", "put", "delete", "patch", "head", "options")
+    # Calls whose FIRST positional argument is the host or the URL. `socket.socket(AF_INET, ...)` and the
+    # session/client constructors take neither, so an unreadable first argument says nothing about them.
+    _NETWORK_URL_ARG0_FQ = frozenset(
+        {
+            "socket.create_connection",
+            "socket.getaddrinfo",
+            "urllib.request.urlopen",
+            "urllib.request.urlretrieve",
+            "http.client.HTTPConnection",
+            "http.client.HTTPSConnection",
+            *(
+                f"{module}.{verb}"
+                for module in ("requests", "requests.api", "httpx")
+                for verb in _HTTP_VERBS
+            ),
+        }
+    )
+    _HOST_ARG_ROOTS = ("socket.", "http.client.")
+    _NETWORK_DESTINATION_ARG = {
+        fq: (
+            0,
+            ("url", "fullurl", "host", "address"),
+            "host" if fq.startswith(_HOST_ARG_ROOTS) else "url",
+        )
+        for fq in _NETWORK_URL_ARG0_FQ
+    }
+    # `urllib3.request(method, url, ...)` is the same shape, and it matches the broad `urllib3.`
+    # prefix, so without an entry here the fallback read argument 0 (the method) and never looked
+    # at the destination. Signature checked against the installed urllib3 2.8.0.
+    _NETWORK_DESTINATION_ARG.update(
+        {
+            f"{module}.request": (1, ("url",), "url")
+            for module in (
+                "requests",
+                "requests.api",
+                "httpx",
+                "urllib3",
+                "aiohttp",
+                "aiohttp.client",
+            )
+        }
+    )
+    _NETWORK_DESTINATION_ARG["httpx.stream"] = (1, ("url",), "url")
+    _VERB_CLIENTS = (
+        "requests.Session",
+        "requests.sessions.Session",
+        "requests.session",
+        "requests.sessions.session",
+        "httpx.Client",
+        "httpx.AsyncClient",
+        "aiohttp.ClientSession",
+        "aiohttp.client.ClientSession",
+    )
+    _POOL_CLIENTS = (
+        "urllib3.PoolManager",
+        "urllib3.ProxyManager",
+        "urllib3.poolmanager.PoolManager",
+        "urllib3.poolmanager.ProxyManager",
+        "urllib3.proxy_from_url",
+        "urllib3.poolmanager.proxy_from_url",
+        "urllib3.contrib.socks.SOCKSProxyManager",
+    )
+    _SOCKET_CLIENTS = ("socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient")
+    _OPENER_CLIENTS = ("urllib.request.build_opener", "urllib.request.OpenerDirector")
+    _CLIENT_CLASSES = frozenset(
+        (*_VERB_CLIENTS, *_POOL_CLIENTS, *_SOCKET_CLIENTS, *_OPENER_CLIENTS)
+    )
+    _NETWORK_DESTINATION_ARG.update(
+        {
+            **{
+                f"{client}.{verb}": (0, ("url",), "url")
+                for client in _VERB_CLIENTS
+                for verb in _HTTP_VERBS
+            },
+            **{
+                f"{client}.request": (1, ("url",), "url")
+                for client in (*_VERB_CLIENTS, *_POOL_CLIENTS)
+            },
+            **{
+                f"{client}.stream": (1, ("url",), "url")
+                for client in ("httpx.Client", "httpx.AsyncClient")
+            },
+            **{
+                f"{client}.ws_connect": (0, ("url",), "url")
+                for client in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
+            },
+            **{
+                client: (None, ("base_url",), "url")
+                for client in ("httpx.Client", "httpx.AsyncClient")
+            },
+            **{
+                client: (0, ("base_url",), "url")
+                for client in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
+            },
+            **{
+                f"{client}.send": (0, ("request",), "url")
+                for client in (
+                    "httpx.Client",
+                    "httpx.AsyncClient",
+                    "requests.Session",
+                    "requests.sessions.Session",
+                )
+            },
+            **{
+                f"{client}.{method}": (1, ("url",), "url")
+                for client in _POOL_CLIENTS
+                for method in ("urlopen", "request_encode_url", "request_encode_body")
+            },
+            **{f"{client}.connection_from_url": (0, ("url",), "url") for client in _POOL_CLIENTS},
+            **{
+                f"{client}.connection_from_host": (0, ("host",), "host") for client in _POOL_CLIENTS
+            },
+            **{
+                f"{module}.{factory}": (0, ("url",), "url")
+                for factory, defined_in in (
+                    ("connection_from_url", "urllib3.connectionpool"),
+                    ("proxy_from_url", "urllib3.poolmanager"),
+                )
+                for module in ("urllib3", defined_in)
+            },
+            **{
+                f"{module}.ProxyManager": (0, ("proxy_url",), "url")
+                for module in ("urllib3", "urllib3.poolmanager")
+            },
+            "urllib3.contrib.socks.SOCKSProxyManager": (0, ("proxy_url",), "url"),
+            **{
+                f"httpx.{transport}": (None, ("proxy",), "proxy")
+                for transport in ("HTTPTransport", "AsyncHTTPTransport")
+            },
+            **{
+                f"{module}.{pool}": (0, ("host",), "host")
+                for module in ("urllib3", "urllib3.connectionpool")
+                for pool in ("HTTPConnectionPool", "HTTPSConnectionPool")
+            },
+            **{
+                f"urllib3.connection.{conn}": (0, ("host",), "host")
+                for conn in ("HTTPConnection", "HTTPSConnection")
+            },
+            "urllib3.util.connection.create_connection": (0, ("address",), "host"),
+            **{f"socket.socket.{m}": (0, ("address",), "host") for m in ("connect", "connect_ex")},
+            **{f"{opener}.open": (0, ("fullurl",), "url") for opener in _OPENER_CLIENTS},
+            "urllib.request.ProxyHandler": (None, (), "proxy"),
+            # A datagram names its address per send. `sendto(data, flags, address)` puts the int
+            # flags at index 1, which reads as unreadable and fails closed.
+            "socket.socket.sendto": (1, (), "host"),
+            "socket.socket.sendmsg": (3, (), "host"),
+            **{
+                f"{client}.connect": (0, ("hostname", "host"), "host")
+                for client in ("paramiko.SSHClient", "paramiko.client.SSHClient")
+            },
+            **{
+                f"{module}.Transport": (0, ("sock",), "host")
+                for module in ("paramiko", "paramiko.transport")
+            },
+            **{
+                f"{module}.Connection": (0, ("host",), "host")
+                for module in ("fabric", "fabric.connection")
+            },
+            **{
+                f"{module}.{fn}": (index, ("host",), "host")
+                for module in ("asyncssh", "asyncssh.connection")
+                for fn, index in (
+                    ("connect", 0),
+                    ("connect_reverse", 0),
+                    ("create_connection", 1),
+                )
+            },
+            **{
+                f"{module}.SSHClientConnectionOptions": (None, (), "host")
+                for module in ("asyncssh", "asyncssh.connection")
+            },
+        }
+    )
+    _NETWORK_FQ_PREFIXES = _NETWORK_FQ_PREFIXES + tuple(
+        fq
+        for fq in sorted(_NETWORK_DESTINATION_ARG)
+        if not any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES)
+    )
+    _NETWORK_ROOTS = frozenset(p.partition(".")[0] for p in _NETWORK_FQ_PREFIXES)
+    _PROXY_KEYWORDS = ("proxy", "proxies")
+    _DESTINATION_ATTRS = {
+        "proxies": frozenset(
+            (
+                "requests.Session",
+                "requests.sessions.Session",
+                "requests.session",
+                "requests.sessions.session",
+            )
+        ),
+        "base_url": frozenset(("httpx.Client", "httpx.AsyncClient")),
+    }
     _UPLOAD_HTTP_METHODS = (
-        "requests.post",
-        "requests.put",
-        "requests.patch",
-        "requests.delete",
-        "requests.request",
-        "httpx.post",
-        "httpx.put",
-        "httpx.patch",
-        "httpx.delete",
-        "httpx.request",
+        *(
+            f"{owner}.{verb}"
+            for owner in ("requests", "requests.api", "httpx", *_VERB_CLIENTS)
+            for verb in ("post", "put", "patch", "delete", "request")
+        ),
+        "aiohttp.request",
+        "aiohttp.client.request",
+        *(f"{owner}.stream" for owner in ("httpx", "httpx.Client", "httpx.AsyncClient")),
         "urllib.request.urlopen",
         "urllib.request.Request",
     )
@@ -16094,8 +16965,11 @@ def _check_signal_escape_patterns(code: str):
         if not host:
             return ""
         h = host.strip().lower().rstrip(".")
+        if "\\" in h:
+            # urllib3 ends the host at a backslash, httpx reads it as userinfo: trust neither.
+            return h
         if "@" in h:
-            h = h.split("@", 1)[1]
+            h = h.rsplit("@", 1)[1]
         if h.startswith("[") and "]" in h:
             h = h[1 : h.index("]")]
         elif h.count(":") == 1:
@@ -16363,16 +17237,1470 @@ def _check_signal_escape_patterns(code: str):
             return _HF_UPLOAD_PATH_VIOLATION
         return None
 
+    # Past this many candidate values for one expression, stop enumerating and treat the
+    # destination as unreadable: a screen that fans out without bound is a way to stall it.
+    _LITERAL_CANDIDATE_CAP = 8
+
+    def _stored_names(targets) -> "list[str]":
+        """Only the names a target actually binds.
+
+        Walking every `ast.Name` under the target also returns the BASE of an attribute or
+        subscript, which is read, not rebound: `r.debug = True` left `r` looking rebound and
+        dropped the `r -> requests` alias that the runtime still has, so the call after it went
+        unrecognised.
+        """
+        names: list[str] = []
+        stack = [t for t in targets if t is not None]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, ast.Name):
+                names.append(node.id)
+            elif isinstance(node, (ast.Tuple, ast.List)):
+                stack.extend(node.elts)
+            elif isinstance(node, ast.Starred):
+                stack.append(node.value)
+            # ast.Attribute / ast.Subscript bind nothing: their base is loaded.
+        return names
+
+    # Checked against `type(node)` before the chain below, since this runs twice for every node in
+    # the tree and nearly all of them bind nothing: an exact-type lookup beats a dozen isinstance
+    # calls, and ast nodes are never subclassed here.
+    _BINDING_NODE_TYPES = frozenset(
+        {
+            ast.Assign,
+            ast.Delete,
+            ast.AnnAssign,
+            ast.AugAssign,
+            ast.NamedExpr,
+            ast.For,
+            ast.AsyncFor,
+            ast.comprehension,
+            ast.withitem,
+            ast.ExceptHandler,
+            ast.MatchAs,
+            ast.MatchStar,
+            ast.MatchMapping,
+            ast.FunctionDef,
+            ast.AsyncFunctionDef,
+            ast.ClassDef,
+            ast.Lambda,
+            ast.Import,
+            ast.ImportFrom,
+        }
+    )
+
+    # Their handlers rebind first and then register, so generic_visit must not sweep them again.
+    _REBOUND_BY_HANDLER = (ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign)
+
+    # Statement kinds that really run when the module runs. A shadow REMOVES a way to recognise a
+    # call, so unlike everything else here it may only be believed when it cannot be skipped:
+    # `from requests import get as fetch` + `if False: fetch = print` + `fetch(...)` still calls
+    # `requests.get`, and popping the alias on that untaken branch hid the call completely. A
+    # binding inside an `if`, `try`, `for`, `while` or `with` is not one of these, so it leaves the
+    # alias in place and the call stays screened.
+    _UNCONDITIONAL_SHADOW_TYPES = frozenset(
+        {
+            ast.Assign,
+            ast.AnnAssign,
+            ast.AugAssign,
+            ast.Delete,
+            # An import shadows too, but never the names it binds to a network module itself:
+            # `import requests as client` then `import my_client as client` really calls
+            # `my_client.get`, and exempting every import left the stale candidate live. The two
+            # handlers register first and pass what they bound as `exempt`, so the import that
+            # registers an alias still cannot shadow the name it has just bound for every later
+            # line, which is what excluding them outright was working around.
+            ast.Import,
+            ast.ImportFrom,
+            ast.FunctionDef,
+            ast.AsyncFunctionDef,
+            ast.ClassDef,
+        }
+    )
+
+    def _binding_names(node) -> "list[str]":
+        """Every name a node binds, in whatever form: assignment, unpacking, walrus, import, def,
+        class, parameter, for target, `as` clause, del. One definition of "this name now means
+        something else", used both to invalidate module aliases and to collect literal values."""
+        if type(node) not in _BINDING_NODE_TYPES:
+            return []
+        if isinstance(node, (ast.Assign, ast.Delete)):
+            return _stored_names(node.targets)
+        if isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            return _stored_names([node.target])
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            return _stored_names([node.target])
+        if isinstance(node, ast.withitem):
+            return _stored_names([node.optional_vars])
+        if isinstance(node, ast.ExceptHandler):
+            return [node.name] if node.name else []
+        if isinstance(node, (ast.MatchAs, ast.MatchStar)):
+            return [node.name] if node.name else []
+        if isinstance(node, ast.MatchMapping):
+            return [node.rest] if node.rest else []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            args = getattr(node, "args", None)
+            slots = (
+                []
+                if args is None
+                else list(args.posonlyargs)
+                + list(args.args)
+                + list(args.kwonlyargs)
+                + [args.vararg, args.kwarg]
+            )
+            bound = [a.arg for a in slots if a is not None]
+            return ([node.name] if getattr(node, "name", None) else []) + bound
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return [
+                (alias.asname or alias.name.split(".")[0])
+                for alias in node.names
+                if (alias.asname or alias.name) != "*"
+            ]
+        return []
+
+    # What a name may be bound to and still be trusted to name `urllib.request.Request` or the
+    # module path leading to it.
+    _REQUEST_SAFE_BINDINGS = frozenset({"urllib", "urllib.request", "urllib.request.Request"})
+
+    def _scope_bodies(nodes, tree):
+        """`(scope id, statement list)` for the module and for every function, lambda and class body.
+
+        A shadow belongs to the scope whose body it sits directly in, so this is what says which
+        statements can shadow a name for which calls. The module is scope 0. A lambda has an
+        expression rather than a body, so it contributes no statements, only its parameters.
+        """
+        yield 0, getattr(tree, "body", [])
+        for node in nodes:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                yield id(node), node.body
+
+    def _names_bound_to_something_else(nodes) -> "set[str]":
+        """Every name bound ANYWHERE in the tree, in ANY scope, to something that is not part of
+        `urllib.request.Request`, plus `"*"` when a star import could have supplied it.
+
+        Unwrapping `urlopen(Request(url))` READS PAST a call, which is the one place where adding
+        a candidate makes the screen weaker rather than stronger, so it cannot use the accumulating
+        alias maps: a nested `def Request(_): return "https://evil.example/x"` really does decide
+        what the call inside that function reaches. Scope is ignored in the strict direction here,
+        so a binding anywhere is enough to refuse the unwrap and leave the argument reading as a
+        call, which the fail-closed rule then refuses.
+        """
+        out: set[str] = set()
+        for node in nodes:
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name not in _REQUEST_SAFE_BINDINGS:
+                        out.add(alias.asname or alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for alias in node.names:
+                    if alias.name == "*":
+                        if module != "urllib.request":
+                            out.add("*")
+                    elif f"{module}.{alias.name}" not in _REQUEST_SAFE_BINDINGS:
+                        out.add(alias.asname or alias.name)
+            elif isinstance(node, ast.Attribute) and node.attr == "Request":
+                # `urllib.request.Request = lambda _: "https://evil.example/x"` replaces the
+                # constructor without binding any NAME, so the name-level proof said nothing while
+                # the call returned the attacker's URL. A store to an attribute called `Request`
+                # anywhere refuses every unwrap.
+                if isinstance(node.ctx, (ast.Store, ast.Del)):
+                    out.add("*")
+            elif isinstance(node, ast.Call):
+                # `setattr(urllib.request, "Request", ...)` is the same mutation spelled as a call,
+                # and a computed attribute name could be `"Request"` too.
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name == "setattr" and len(node.args) >= 2:
+                    attr = node.args[1]
+                    if not isinstance(attr, ast.Constant) or attr.value == "Request":
+                        out.add("*")
+            else:
+                out.update(_binding_names(node))
+        return out
+
+    def _collect_literal_names(nodes) -> "dict[str, frozenset[str] | None]":
+        """Name -> every string literal it is bound to anywhere in the tree, or None once any
+        binding is something this screen cannot read. Order and scope are ignored on purpose: the
+        call site is then checked against EVERY value the name can hold, which stays sound without
+        reasoning about which branch ran or which loop iteration this is. Reading only the newest
+        binding would allow `if f: url = evil` / `else: url = allowed` / `get(url)`."""
+        values: "dict[str, set[str] | None]" = {}
+
+        def bind(name: str, literal: "str | None") -> None:
+            current = values[name] if name in values else set()
+            if current is None or literal is None:
+                values[name] = None
+                return
+            current.add(literal)
+            values[name] = None if len(current) > _LITERAL_CANDIDATE_CAP else current
+
+        for node in nodes:
+            literal_targets: list[str] = []
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                value = getattr(node, "value", None)
+                literal = value.value if isinstance(value, ast.Constant) else None
+                if isinstance(literal, str):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    # `a, b = "..."` gives neither name the string, so only a bare Name counts.
+                    literal_targets = [t.id for t in targets if isinstance(t, ast.Name)]
+            for name in _binding_names(node):
+                bind(name, literal if name in literal_targets else None)
+        return {k: (None if v is None else frozenset(v)) for k, v in values.items()}
+
+    def _literal_str_prefixes(node, names) -> "list[tuple[str, bool]]":
+        """Every text a string expression is statically known to START with, one entry per value its
+        names can hold, each with whether that text is the whole value. The head is what decides the
+        destination: a URL's scheme and host sit in front of whatever a concatenation or an f-string
+        appends at runtime. `("", False)` means unreadable, so a caller can fail closed on it."""
+        if isinstance(node, ast.Constant):
+            return [(node.value, True)] if isinstance(node.value, str) else [("", False)]
+        if isinstance(node, ast.Name):
+            bound = names.get(node.id)
+            return [(v, True) for v in sorted(bound)] if bound else [("", False)]
+        if isinstance(node, ast.NamedExpr):
+            return _literal_str_prefixes(node.value, names)  # get(url := "...") passes the value on
+        if isinstance(node, ast.JoinedStr):
+            text = ""
+            for part in node.values:
+                if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                    text += part.value
+                    continue
+                return [(text, False)]
+            return [(text, True)]
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            out: "list[tuple[str, bool]]" = []
+            for left, left_whole in _literal_str_prefixes(node.left, names):
+                if not left_whole:
+                    out.append((left, False))
+                    continue
+                out.extend(
+                    (left + right, right_whole)
+                    for right, right_whole in _literal_str_prefixes(node.right, names)
+                )
+                if len(out) > _LITERAL_CANDIDATE_CAP:
+                    return [("", False)]
+            return out or [("", False)]
+        return [("", False)]
+
+    def _alternatives(value) -> "list[ast.AST]":
+        """Every expression a value can evaluate to (conditional, `or`, walrus, `await`)."""
+        out: "list[ast.AST]" = []
+        stack = [value]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, ast.IfExp):
+                stack.extend((cur.body, cur.orelse))
+            elif isinstance(cur, ast.BoolOp):
+                stack.extend(cur.values)
+            elif isinstance(cur, (ast.NamedExpr, ast.Await)):
+                stack.append(cur.value)
+            else:
+                out.append(cur)
+        return out
+
+    def _constant_getattr(node) -> "ast.Attribute | None":
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        ):
+            return ast.Attribute(value = node.args[0], attr = node.args[1].value, ctx = ast.Load())
+        return None
+
+    def _reexported(fq: str) -> "str | None":
+        """The listed top-level re-export of a submodule name: `httpx._api.get` is `httpx.get`."""
+        parts = fq.split(".")
+        if len(parts) < 3 or parts[0] not in _NETWORK_ROOTS:
+            return None
+        if not all(p[:1].islower() or p[:1] == "_" for p in parts[1:-1]):
+            return None  # a class in the path makes this a method, not a module attribute
+        top = f"{parts[0]}.{parts[-1]}"
+        return top if top in _NETWORK_DESTINATION_ARG or top in _CLIENT_CLASSES else None
+
+    def _returns_of(function_name: str) -> str:
+        return f"{function_name}()"
+
+    # The clients that read the proxy environment variables; sockets and urllib3 do not, and
+    # aiohttp only when a session opts in with `trust_env`, which defaults to False.
+    _ENV_PROXY_CLIENTS = ("requests.", "urllib.request.")
+
+    def _reads_proxy_environment(node: ast.Call, recognised) -> bool:
+        trust = next((kw.value for kw in node.keywords if kw.arg == "trust_env"), None)
+        disabled = isinstance(trust, ast.Constant) and trust.value is False
+        if any(c.startswith("httpx.") for c in recognised):
+            return not disabled  # `trust_env=False` turns the environment off for httpx
+        if any(c.startswith(_ENV_PROXY_CLIENTS) for c in recognised):
+            return True
+        if any(c.startswith("aiohttp.") for c in recognised):
+            return trust is not None and not disabled
+        return False
+
+    _ENV_PROXY_VARIABLES = frozenset(
+        {"http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy", "ftp_proxy"}
+    )
+
+    _ROUTE_KEYWORDS = {
+        "paramiko.SSHClient.": ("sock",),
+        "paramiko.client.SSHClient.": ("sock",),
+        "fabric.": ("gateway",),
+        "asyncssh.": ("tunnel", "proxy_command"),
+    }
+    # Positional spellings of the same routes (paramiko 5.0.0, fabric 3.2.3 signatures).
+    _ROUTE_POSITIONS = {
+        "paramiko.SSHClient.connect": {10: "sock"},
+        "paramiko.client.SSHClient.connect": {10: "sock"},
+        "fabric.Connection": {4: "gateway", 7: "connect_kwargs"},
+        "fabric.connection.Connection": {4: "gateway", 7: "connect_kwargs"},
+    }
+    _UNREADABLE = ast.Name(id = "<unreadable>", ctx = ast.Load())
+
+    def _is_no_proxy(key) -> bool:
+        return isinstance(key, ast.Constant) and key.value == "no_proxy"
+
+    def _paired(target, value):
+        if not isinstance(target, (ast.Tuple, ast.List)):
+            yield target, value
+            return
+        if not isinstance(value, (ast.Tuple, ast.List)) or any(
+            isinstance(e, ast.Starred) for e in value.elts
+        ):
+            return
+        elts = target.elts
+        star = next((i for i, e in enumerate(elts) if isinstance(e, ast.Starred)), None)
+        if star is None:
+            if len(elts) != len(value.elts):
+                return
+            pairs = list(zip(elts, value.elts))
+        else:
+            before, after = elts[:star], elts[star + 1 :]
+            if len(value.elts) < len(before) + len(after):
+                return
+            pairs = list(zip(before, value.elts)) + list(
+                zip(after, value.elts[len(value.elts) - len(after) :])
+            )
+        for t, v in pairs:
+            yield from _paired(t, v)
+
     class NetworkAndIoVisitor(ast.NodeVisitor):
-        def visit_Call(self, node):
+        def __init__(self):
+            # Alias -> the module it binds, and bare name -> the network function it binds. The shell-exec half of
+            # this analyzer already resolves both; without them `import urllib.request as u; u.urlopen(...)` matched
+            # no prefix and a hardcoded attacker host passed the screen untouched.
+            # Name -> every network module ever bound to it, because this map is not scope
+            # aware: a nested `def f(): import socket as r` would otherwise overwrite an outer
+            # `import requests as r`, and the module-level `r.get(...)` after it would carry
+            # only unrecognised candidates. Accumulating keeps resolution monotone, so a binding
+            # anywhere can add a way to recognise a call and never take one away.
+            self.module_aliases: dict[str, set[str]] = {}
+            # Name -> every network function ever bound to it, accumulated for the same reason:
+            # `from requests import get as fetch` followed by a nested, never-called
+            # `from socket import inet_aton as fetch` still calls `requests.get` at module level,
+            # and overwriting the entry resolved the call to the unrecognised socket function.
+            self.func_aliases: dict[str, set[str]] = {}
+            # Name -> every string literal it can hold, None when unreadable. `url =
+            # "https://huggingface.co/x"; requests.get(url)` is still a host this screen can read.
+            # All three are read ONLY to answer a question about a recognised egress call, so
+            # when the source cannot name a network module none of them can change a verdict and
+            # none are built. That is the difference between walking this tree three more times
+            # and not touching it at all, and ordinary tool code takes the second path.
+            nodes = _tree_nodes(tree) if network_possible else ()
+            self.literal_names = _collect_literal_names(nodes) if network_possible else {}
+            # Names bound anywhere, in any scope, to something other than `urllib.request.Request`
+            # or the module path to it. Read only by `_unwrapped_url_arg`: see the note there.
+            self.rebound_anywhere = (
+                _names_bound_to_something_else(nodes) if network_possible else frozenset()
+            )
+            # The module-level statements that really run, by identity: only those may shadow an
+            # imported name. See `_UNCONDITIONAL_SHADOW_TYPES`. This also subsumes the old depth
+            # check, since nothing inside a function, lambda or class body is one of these.
+            # Statement id -> the id of the scope whose body it sits directly in (0 for the
+            # module). A shadow belongs to ONE scope: a local `def fetch` shadows the calls after it
+            # inside its own body, and says nothing about a call at module level.
+            self.unconditional_shadows: "dict[int, int]" = {}
+            if network_possible:
+                for scope, body in _scope_bodies(nodes, tree):
+                    for stmt in body:
+                        if type(stmt) in _UNCONDITIONAL_SHADOW_TYPES:
+                            self.unconditional_shadows[id(stmt)] = scope
+                        elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.NamedExpr):
+                            # `(fetch := print)` written as a statement of its own certainly runs,
+                            # but the statement is an `Expr` and the binding is the `NamedExpr`
+                            # inside it, so keying on the statement alone never saw it and the
+                            # stale alias outlived the rebinding. Only this shape: a walrus buried
+                            # in a larger expression may not be evaluated at all.
+                            self.unconditional_shadows[id(stmt.value)] = scope
+            # The scope being visited, innermost last, plus each one's parameter bindings.
+            self.scope_stack: list[int] = [0]
+            # Network modules star-imported, and the names rebound since. `from requests import *`
+            # binds `get` under no name this file can enumerate, so the callee is resolved against
+            # the star modules instead; without it one character (`*` for `get`) turned the screen
+            # off, since a bare `get(...)` matched no network prefix.
+            self.star_modules: set[str] = set()
+            # Name -> the module-level lines that shadow it, and the lines where a network module
+            # was star-imported. A shadow only takes effect for calls that CANNOT run before it:
+            # dropping the alias for the whole tree let `fetch(url)` written ABOVE `fetch = print`
+            # go unrecognised, when that call really is `requests.get`.
+            self.shadow_lines: "dict[tuple[str, int], list[tuple[int, int]]]" = {}
+            self.star_lines: "list[tuple[int, int]]" = []
+            # Name -> the positions where a network alias was registered for it. A shadow only
+            # counts while no alias registration follows it: `r = object()` then `r = requests`
+            # really leaves `r` as the module, and a permanent shadow suppressed the candidate the
+            # second assignment had just added.
+            self.alias_lines: "dict[str, list[tuple[int, int]]]" = {}
+            # A module-level shadow says nothing about a call inside a body, which can be invoked
+            # at any point, including before the rebinding; a shadow in the body's OWN scope does
+            # apply to the calls after it. Both follow from matching the shadow's scope.
+            # Aliases are gathered in a first pass over the whole tree and only then are calls
+            # checked, because a function body runs AFTER the module finishes reading:
+            # `def send(): fetch(...)` written ABOVE `from requests import get as fetch` still
+            # calls `requests.get`, and resolving as the walk went meant `send` was analysed before
+            # the import existed and the call was not recognised at all. The registering handlers
+            # do nothing on the second pass, so the maps and `shadowed` keep their final,
+            # order-independent state while every call is checked against them.
+            self.collecting = True
+            # Whether any alias map can ever be non-empty. See `_NETWORK_SOURCE_HINTS`.
+            self.aliases_possible = network_possible
+            self.instance_aliases: "dict[str, set[str]]" = {}
+            self.receiver_destinations: "dict[str, list[tuple[str, ast.AST]]]" = {}
+            self.path_links: "dict[str, set[str]]" = {}
+            self.proxy_owners: "dict[str, set[tuple[str, str]]]" = {}
+            self.class_family: "dict[int, str]" = {}
+            self.class_names: "dict[str, str]" = {}
+            self.properties: "list[tuple[str, str]]" = []
+            self.class_inits: "dict[str, list[ast.AST]]" = {}
+            self.method_self: "dict[int, tuple[str, str]]" = {}
+            if network_possible:
+                classes = [n for n in nodes if isinstance(n, ast.ClassDef)]
+                parent = {c.name: c.name for c in classes}
+
+                def find(name):
+                    while parent[name] != name:
+                        name = parent[name]
+                    return name
+
+                for c in classes:
+                    for base in c.bases:
+                        if isinstance(base, ast.Name) and base.id in parent:
+                            parent[find(base.id)] = find(c.name)
+                for c in classes:
+                    family = f"<{find(c.name)}>"
+                    self.class_family[id(c)] = family
+                    self.class_names[c.name] = family
+                    for fn in c.body:
+                        if isinstance(fn, ast.FunctionDef) and fn.name == "__init__":
+                            self.class_inits.setdefault(c.name, []).append(fn)
+                    for fn in c.body:
+                        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and not any(
+                            (getattr(d, "id", None) or getattr(d, "attr", None)) == "staticmethod"
+                            for d in fn.decorator_list
+                        ):
+                            params = fn.args.posonlyargs + fn.args.args
+                            if params:
+                                self.method_self[id(fn)] = (params[0].arg, family)
+                            if any(getattr(d, "id", None) == "property" for d in fn.decorator_list):
+                                self.properties.append((family, fn.name))
+                bases = {
+                    c.name: [b.id for b in c.bases if isinstance(b, ast.Name)] for c in classes
+                }
+                for name in bases:
+                    seen, stack = {name}, [name]
+                    while stack and name not in self.class_inits:
+                        for base in bases.get(stack.pop(), ()):
+                            if base in self.class_inits:
+                                self.class_inits[name] = self.class_inits[base]
+                                break
+                            if base not in seen:
+                                seen.add(base)
+                                stack.append(base)
+            self.self_names: "list[tuple[str, str]]" = []
+            self.local_functions: "dict[str, list[ast.AST]]" = {}
+            self.callable_aliases: "dict[str, set[str]]" = {}
+            self.def_names: "dict[int, str]" = {}
+            self.local_methods: "dict[str, list[tuple[ast.AST, int]]]" = {}
+            if network_possible:
+                for fn in nodes:
+                    if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        self.local_functions.setdefault(fn.name, []).append(fn)
+                        self.def_names[id(fn)] = fn.name
+                    elif isinstance(fn, (ast.Assign, ast.AnnAssign)) and isinstance(
+                        fn.value, ast.Lambda
+                    ):
+                        for target in getattr(fn, "targets", None) or [fn.target]:
+                            if isinstance(target, ast.Name):
+                                self.local_functions.setdefault(target.id, []).append(fn.value)
+                    elif isinstance(fn, ast.ClassDef):
+                        for m in fn.body:
+                            if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                skip = 1 if id(m) in self.method_self else 0
+                                self.local_methods.setdefault(m.name, []).append((m, skip))
+            # Every (target, value) that can carry a client, re-read after the gathering pass when a
+            # path it reads gains one: `def f(s): t = s` is visited before `f(requests.Session())`.
+            self.flows: "list[tuple]" = []
+            self.flows_from: "dict[str, list[int]]" = {}
+            self.pending_calls: "list[tuple]" = []
+            self.pending_proxies: "list[tuple]" = []
+            self.env_proxies: "list[ast.AST]" = []
+            self.dict_literals: "dict[str, list[ast.Dict]]" = {}
+            self.dict_entries: "dict[str, list[tuple]]" = {}
+            self.dict_mutated: "set[str]" = set()
+            self.os_names: "set[str]" = {"os"}
+            self.environ_names: "set[str]" = set()
+            for imp in nodes:
+                if isinstance(imp, ast.Import):
+                    for alias in imp.names:
+                        if alias.name == "os":
+                            self.os_names.add(alias.asname or "os")
+                elif isinstance(imp, ast.ImportFrom) and imp.module == "os":
+                    for alias in imp.names:
+                        if alias.name in ("environ", "environb"):
+                            self.environ_names.add(alias.asname or alias.name)
+
+        def _instance_key(self, target) -> "str | None":
+            family = self.class_family.get(self.scope_stack[-1])
+            if family is not None and isinstance(target, ast.Name):
+                return f"{family}.{target.id}"
+            return self._receiver_path(target)
+
+        def _record_flow(self, target, value, at, node) -> None:
+            if not self.collecting or self._instance_key(target) is None:
+                return
+            self.flows.append(
+                (target, value, at, node, tuple(self.scope_stack), tuple(self.self_names))
+            )
+
+        def _index_flows(self) -> None:
+            """Runs after the gathering pass, so an alias assigned below its use is already known."""
+            for index, (_t, value, _at, _n, scopes, selves) in enumerate(self.flows):
+                self.scope_stack, self.self_names = list(scopes), list(selves)
+                for alt in _alternatives(value):
+                    if isinstance(alt, ast.Call):
+                        for callee in self._local_callees(alt.func):
+                            self.flows_from.setdefault(_returns_of(callee), []).append(index)
+                    else:
+                        path = self._receiver_path(alt)
+                        if path is not None:
+                            self.flows_from.setdefault(path, []).append(index)
+
+        def _local_callees(self, func) -> "set[str]":
+            if isinstance(func, ast.Name):
+                names, seen, stack = set(), {func.id}, [func.id]
+                while stack:
+                    name = stack.pop()
+                    if name in self.local_functions:
+                        names.add(name)
+                    for source in self.callable_aliases.get(name, ()):
+                        if source not in seen:
+                            seen.add(source)
+                            stack.append(source)
+                return names
+            if isinstance(func, ast.Attribute) and func.attr in self.local_methods:
+                return {func.attr}
+            return set()
+
+        def _bind_call_arguments(self, node) -> None:
+            if isinstance(node.func, ast.Name):
+                targets = [
+                    (fn, skip)
+                    for name in sorted(self._local_callees(node.func))
+                    for fn in self.local_functions.get(name, ())
+                    for skip in ((0, 1) if id(fn) in self.method_self else (0,))
+                ] + [(fn, 1) for fn in self.class_inits.get(node.func.id, ())]
+            elif isinstance(node.func, ast.Attribute):
+                methods = self.local_methods.get(node.func.attr, [])
+                targets = methods + [(fn, 0) for fn, skip in methods if skip]
+            else:
+                return
+            at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            for fn, skip in targets:
+                positional = (fn.args.posonlyargs + fn.args.args)[skip:]
+                pairs = []
+                for param, arg in zip(positional, node.args):
+                    if isinstance(arg, ast.Starred):
+                        break
+                    pairs.append((param.arg, arg))
+                named = {a.arg for a in positional + fn.args.kwonlyargs}
+                pairs += [(kw.arg, kw.value) for kw in node.keywords if kw.arg in named]
+                for param, arg in pairs:
+                    target = ast.Name(id = param, ctx = ast.Store())
+                    self._link(target, arg)
+                    if self._is_environ(arg):
+                        self.environ_names.add(param)  # `configure(os.environ)`
+                    if isinstance(arg, ast.Name) and arg.id in self.os_names:
+                        self.os_names.add(param)  # `configure(os)`
+                    if isinstance(arg, ast.Attribute) and arg.attr in _DESTINATION_ATTRS:
+                        owner = self._receiver_path(arg.value)
+                        if owner is not None:
+                            self.proxy_owners.setdefault(param, set()).add((owner, arg.attr))
+                    self._record_flow(target, arg, at, fn)
+
+        def resolve_flows(self) -> None:
+            """Fixpoint: each pass past the subset check adds a client to a path, so this terminates."""
+            for call, scopes, selves in self.pending_calls:
+                self.scope_stack, self.self_names = list(scopes), list(selves)
+                self._bind_call_arguments(call)
+            for target, value, mutated, scopes, selves in self.pending_proxies:
+                self.scope_stack, self.self_names = list(scopes), list(selves)
+                self._apply_proxy(target, value, mutated)
+            for name in self.environ_names:
+                for key, value in self.dict_entries.get(name, ()):
+                    self._record_env_proxy(key, value)
+                if name in self.dict_mutated:
+                    self.env_proxies.append(_UNREADABLE)
+            for family, name in self.properties:
+                attribute = ast.Name(id = f"{family}.{name}", ctx = ast.Store())
+                returned = ast.Name(id = _returns_of(name), ctx = ast.Load())
+                self.flows.append((attribute, returned, (0, 0), attribute, (0,), ()))
+            self._index_flows()
+            queue = list(range(len(self.flows)))
+            while queue:
+                target, value, at, node, scopes, selves = self.flows[queue.pop()]
+                self.scope_stack, self.self_names = list(scopes), list(selves)
+                found = self._instances_named_by(value, at)
+                key = self._instance_key(target)
+                if key is None or found <= self.instance_aliases.get(key, set()):
+                    continue
+                self._register(target, (set(), set(), found), node)
+                queue.extend(self.flows_from.get(key, ()))
+            self.scope_stack, self.self_names = [0], []
+
+        def _receiver_path(self, expr) -> "str | None":
             parts: list[str] = []
-            cur = node.func
+            cur = expr
             while isinstance(cur, ast.Attribute):
                 parts.insert(0, cur.attr)
                 cur = cur.value
+            if not isinstance(cur, ast.Name):
+                return None
+            root = next((f for name, f in reversed(self.self_names) if name == cur.id), cur.id)
+            return ".".join([root] + parts)
+
+        def _roots(self, name: str) -> "list[str]":
+            roots = [next((f for n, f in reversed(self.self_names) if n == name), name)]
+            if name in self.class_names:
+                roots.append(self.class_names[name])  # `A.s` is the class attribute of `<A>`
+            family = self.class_family.get(self.scope_stack[-1])
+            if family is not None:
+                roots.append(f"{family}.{name}")
+            for root in list(roots):
+                roots += [f for f in self.instance_aliases.get(root, ()) if f.startswith("<")]
+            return list(dict.fromkeys(roots))
+
+        def _path_variants(self, expr) -> "list[str]":
+            parts: list[str] = []
+            cur = expr
+            while isinstance(cur, ast.Attribute):
+                parts.insert(0, cur.attr)
+                cur = cur.value
+            if not isinstance(cur, ast.Name):
+                return []
+            return [".".join([root] + parts) for root in self._roots(cur.id)]
+
+        def _instances_named_by(self, value, at) -> "set[str]":
+            found: set[str] = set()
+            for alt in _alternatives(value):
+                if isinstance(alt, ast.Call):
+                    found.update(
+                        c for c in self._fq_candidates(alt.func, at) if c in _CLIENT_CLASSES
+                    )
+                    for callee in self._local_callees(alt.func):
+                        found.update(self.instance_aliases.get(_returns_of(callee), ()))
+                    if isinstance(alt.func, ast.Name) and alt.func.id in self.class_names:
+                        found.add(self.class_names[alt.func.id])  # `API()` is an `<API>`
+                    if (
+                        isinstance(alt.func, ast.Name)
+                        and alt.func.id == "super"
+                        and not alt.args
+                        and self.self_names
+                    ):
+                        found.add(self.self_names[-1][1])  # `super()` in a method of `<S>`
+                    continue
+                receiver = isinstance(alt, ast.Name) and any(
+                    n == alt.id for n, _f in self.self_names
+                )
+                if isinstance(alt, ast.Name) and not receiver and self._is_shadowed(alt.id, at):
+                    continue
+                for path in self._path_variants(alt):
+                    found.update(self.instance_aliases.get(path, ()))
+            return found
+
+        def _shadowing_names(self, node) -> "list[str]":
+            """The names a node binds IN THE ENCLOSING scope, which is the only scope that can
+            shadow an imported name. A def or class binds its own name there and its parameters
+            inside itself, so only the name counts."""
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                return [node.name]
+            if isinstance(node, ast.Lambda):
+                return []
+            return _binding_names(node)
+
+        def _rebind(
+            self,
+            node,
+            exempt = (),
+        ) -> None:
+            # Rebinding a name drops the alias it carried. `import socket as requests; import
+            # requests` runs the real `requests.get`, and a kept entry rewrote the call to
+            # `socket.get`, which matches no network prefix and so went unscreened.
+            if self.collecting and id(node) in self.unconditional_shadows:
+                scope = self.unconditional_shadows[id(node)]
+                # Position, not just the line: `from requests import get as fetch; fetch = print;
+                # fetch(url)` puts all three on line 1, and comparing lines alone made the
+                # rebinding invisible, so a harmless local call was refused as `requests.get`.
+                where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    # A def or class binds its name after its defaults and bases run:
+                    # `import requests as fetch; def fetch(a = fetch.get(u))` calls requests.
+                    where = (node.body[0].lineno, node.body[0].col_offset)
+                for name in self._shadowing_names(node):
+                    if name in exempt:
+                        # A statement that REGISTERS an alias must not also shadow the name it just
+                        # bound: `s = r` after `import requests as r` carries the module to `s`,
+                        # and recording it as a shadow of `s` dropped that very candidate for
+                        # every later line.
+                        continue
+                    # The module set is deliberately NOT dropped: see __init__. A bare function
+                    # alias is shadowed, so a local `def get(...)` still shadows
+                    # `from requests import get` for the calls that follow it.
+                    self.shadow_lines.setdefault((name, scope), []).append(where)
+
+        def generic_visit(self, node):
+            """`ast.NodeVisitor.generic_visit`, inlined, plus the rebinding hook.
+
+            Wrapping it instead would spend a third Python frame per level of nesting and so cut
+            the nesting this screen survives by a third: measured, a 494-term `+` chain analysed
+            and a 329-term one raised RecursionError, where the limit is 494 either side now. The
+            handlers that record an alias do their own rebinding FIRST, so they are skipped here:
+            they call this after registering, and a second sweep would pop what they just set.
+            """
+            if self.unconditional_shadows and not isinstance(node, _REBOUND_BY_HANDLER):
+                self._rebind(node)
+            for _field, value in ast.iter_fields(node):
+                if isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, ast.AST):
+                            self.visit(item)
+                elif isinstance(value, ast.AST):
+                    self.visit(value)
+
+        def _register_alias(self, name: str, node) -> None:
+            """Note where a network alias was bound to `name`, so a shadow older than this one no
+            longer applies. See `_is_shadowed`."""
+            self.alias_lines.setdefault(name, []).append(
+                (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            )
+
+        def _is_shadowed(
+            self,
+            name: str,
+            at,
+            after_star: bool = False,
+        ) -> bool:
+            """Whether a module-level rebinding of `name` has certainly happened by `at`.
+
+            Positions are `(lineno, col_offset)`, so a semicolon-separated
+            `from requests import get as fetch; fetch = print; fetch(url)` orders correctly where
+            comparing lines alone made the rebinding invisible.
+
+            A call inside a function, lambda or class body is never shadowed: the body can be
+            invoked at any point, including before the rebinding. At module level the rebinding
+            counts only for what comes AFTER it, and only while no alias registration comes between
+            the two: the last `import`, `from ... import` or module-carrying assignment before the
+            call supersedes every shadow older than it. For a star-imported name the star import is
+            that registration, since it rebinds every exported name.
+            """
+            registrations = self.star_lines if after_star else self.alias_lines.get(name, ())
+            floor = max((where for where in registrations if where < at), default = (0, -1))
+            return any(
+                floor < where < at
+                for where in self.shadow_lines.get((name, self.scope_stack[-1]), ())
+            )
+
+        def _star_imported_fq(self, name: str, at) -> "str | None":
+            if self._is_shadowed(name, at, after_star = True):
+                return None  # a local def or assignment of that name is not the module's function
+            for module in sorted(self.star_modules):
+                fq = f"{module}.{name}"
+                if any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES):
+                    return fq
+            return None
+
+        def _visit_scope(self, node):
+            self._rebind(node)
+            if self.collecting:
+                # A parameter is bound for the whole body, so it shadows every call in it. The
+                # def's own position is used, which is after the import in the ordinary spelling.
+                where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                for name in _binding_names(node):
+                    if name != getattr(node, "name", None):
+                        self.shadow_lines.setdefault((name, id(node)), []).append(where)
+            # Decorators, defaults, annotations and bases are evaluated in the ENCLOSING scope, at
+            # the moment the def is executed, BEFORE any parameter is bound. Visiting them inside
+            # the new scope let a parameter shadow a call the parameter cannot possibly reach:
+            # `from requests import get as fetch` then
+            # `def f(fetch = print, x = fetch("http://evil.example/x"))` really calls the imported
+            # `requests.get` while defining `f`, and the `fetch` parameter hid it. Only the body
+            # belongs to the new scope.
+            for field, value in ast.iter_fields(node):
+                if field == "body":
+                    continue
+                if isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, ast.AST):
+                            self.visit(item)
+                elif isinstance(value, ast.AST):
+                    self.visit(value)
+            if self.collecting and isinstance(node, ast.ClassDef):
+                where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                inherited = {
+                    c
+                    for base in node.bases
+                    for c in self._fq_candidates(base, where)
+                    if c in _CLIENT_CLASSES or c in _NETWORK_DESTINATION_ARG
+                }
+                if inherited:
+                    self.func_aliases.setdefault(node.name, set()).update(inherited)
+                    family = self.class_family.get(id(node))
+                    if family is not None:
+                        self.instance_aliases.setdefault(family, set()).update(inherited)
+                    self._register_alias(node.name, node.body[0])
+            args = getattr(node, "args", None)
+            if self.collecting and args is not None:
+                positional = args.posonlyargs + args.args
+                defaults = list(
+                    zip(positional[len(positional) - len(args.defaults) :], args.defaults)
+                )
+                defaults += [
+                    (a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None
+                ]
+                where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                for param, default in defaults:
+                    self._carry(ast.Name(id = param.arg, ctx = ast.Store()), default, where, node)
+            self.scope_stack.append(id(node))
+            self_name = self.method_self.get(id(node))
+            if self_name is not None:
+                self.self_names.append(self_name)
+            try:
+                body = node.body
+                if isinstance(body, list):
+                    for item in body:
+                        if isinstance(item, ast.AST):
+                            self.visit(item)
+                elif isinstance(body, ast.AST):
+                    self.visit(body)
+            finally:
+                self.scope_stack.pop()
+                if self_name is not None:
+                    self.self_names.pop()
+
+        visit_FunctionDef = _visit_scope
+        visit_AsyncFunctionDef = _visit_scope
+        visit_ClassDef = _visit_scope
+        visit_Lambda = _visit_scope
+
+        def visit_Import(self, node):
+            if not self.collecting:
+                self.generic_visit(node)
+                return
+            registered: set[str] = set()
+            for alias in node.names:
+                if alias.asname and (
+                    alias.name in _NETWORK_MODULES or alias.name.partition(".")[0] in _NETWORK_ROOTS
+                ):
+                    self.module_aliases.setdefault(alias.asname, set()).add(alias.name)
+                    self._register_alias(alias.asname, node)
+                    registered.add(alias.asname)
+                elif not alias.asname and alias.name.partition(".")[0] in _NETWORK_ROOTS:
+                    # `import requests` needs no alias entry, since the name IS the module, but it
+                    # is still a binding of that name: without recording it, the import read as a
+                    # shadow of itself and a later `r = requests` was taken to copy something
+                    # already rebound. `import urllib.request` binds the root, `urllib`.
+                    self._register_alias(alias.name.partition(".")[0], node)
+                    registered.add(alias.name.partition(".")[0])
+            self._rebind(node, exempt = registered)
+            self.generic_visit(node)
+
+        def visit_ImportFrom(self, node):
+            if not self.collecting:
+                self.generic_visit(node)
+                return
+            registered: set[str] = set()
+            module = node.module or ""
+            for alias in node.names:
+                if alias.name == "*":
+                    if module in _NETWORK_MODULES:
+                        self.star_modules.add(module)
+                        self.star_lines.append(
+                            (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                        )
+                        # The import rebinds every name the module exports, so a binding that came
+                        # BEFORE it no longer shadows: `def get(url): ...` then
+                        # `from requests import *` really calls `requests.get`. Which names are
+                        # exported is not knowable here, and the ones that matter are exactly the
+                        # module's own functions, so all prior shadows are dropped. A binding after
+                        # the import still shadows: see `_is_shadowed`.
+                    continue
+                bound = alias.asname or alias.name
+                fq = f"{module}.{alias.name}"
+                if fq in _NETWORK_MODULES:
+                    # from urllib import request
+                    self.module_aliases.setdefault(bound, set()).add(fq)
+                    self._register_alias(bound, node)
+                    registered.add(bound)
+                elif module in _NETWORK_MODULES or _reexported(fq):
+                    self.func_aliases.setdefault(bound, set()).add(fq)
+                    self._register_alias(bound, node)
+                    registered.add(bound)
+            self._rebind(node, exempt = registered)
+            self.generic_visit(node)
+
+        def _modules_named_by(self, value, at) -> "set[str]":
+            """Every network module a value can name, following aliases, so `r = requests` keeps
+            `r.get(...)` screened instead of letting the assignment shed the module.
+
+            EVERY candidate is carried, not the first: `import requests as r` with a nested,
+            never-executed `import aiohttp as r` leaves `r` as `requests` at runtime, and
+            collapsing the set to one candidate resolved the later `s = r; s.get(...)` to the
+            unrecognised `aiohttp.get` and let a hostile host through.
+            """
+            alts = _alternatives(value)
+            if alts != [value]:
+                return set().union(*(self._modules_named_by(alt, at) for alt in alts))
+            parts: list[str] = []
+            cur = value
+            while isinstance(cur, ast.Attribute):
+                parts.insert(0, cur.attr)
+                cur = cur.value
+            if not isinstance(cur, ast.Name):
+                return set()
+            parts.insert(0, cur.id)
+            if self._is_shadowed(parts[0], at):
+                # The source of the copy was rebound before this line, so it no longer names the
+                # module: `import requests as r; r = object(); s = r` must not hand `s` a stale
+                # `requests`, or a later `s.get(...)` is refused for a call that cannot reach it.
+                return set()
+            heads = self.module_aliases.get(parts[0]) or {parts[0]}
+            found = {".".join(head.split(".") + parts[1:]) for head in heads}
+            # A package that merely CONTAINS a network module counts as well: `import
+            # urllib.request` binds `urllib`, so `u = urllib` then `u.request.urlopen(...)` is the
+            # same call written through the parent, and requiring the whole module here let it
+            # past.
+            return {
+                fq
+                for fq in found
+                if fq in _NETWORK_MODULES
+                or any(module.startswith(f"{fq}.") for module in _NETWORK_MODULES)
+            }
+
+        def _functions_named_by(self, value, at) -> "set[str]":
+            """Every network FUNCTION a value can name, the counterpart of `_modules_named_by`.
+
+            Without it an assignment shed the function the way it once shed the module:
+            `from requests import get as fetch` then `fetch = fetch`, or `g = fetch`, recorded the
+            target as shadowed and left the later call with no candidate at all.
+            """
+            alts = _alternatives(value)
+            if alts != [value]:
+                return set().union(*(self._functions_named_by(alt, at) for alt in alts))
+            value = _constant_getattr(value) or value
+            if isinstance(value, ast.Name):
+                if self._is_shadowed(value.id, at):
+                    # Same stale-source rule as `_modules_named_by`: `fetch = print` before
+                    # `g = fetch` means `g` is `print`, not the imported `requests.get`.
+                    return set()
+                return set(self.func_aliases.get(value.id) or ())
+            if isinstance(value, ast.Attribute):
+                return {
+                    fq
+                    for fq in self._fq_candidates(value, at)
+                    if any(fq.startswith(prefix) for prefix in _NETWORK_FQ_PREFIXES)
+                }
+            return set()
+
+        def _named_by(self, value, at) -> "tuple[set[str], set[str], set[str]]":
+            return (
+                self._modules_named_by(value, at),
+                self._functions_named_by(value, at),
+                self._instances_named_by(value, at),
+            )
+
+        def _register(self, target, named, node) -> bool:
+            """True when a name took an alias, exempting it from the shadow this statement records."""
+            modules, functions, instances = named
+            path = self._receiver_path(target)
+            family = self.class_family.get(self.scope_stack[-1])
+            if family is not None and isinstance(target, ast.Name):
+                path = f"{family}.{target.id}"
+            if path is not None and instances:
+                self.instance_aliases.setdefault(path, set()).update(instances)
+            if not isinstance(target, ast.Name):
+                return False
+            if modules:
+                self.module_aliases.setdefault(target.id, set()).update(modules)
+            if functions:
+                self.func_aliases.setdefault(target.id, set()).update(functions)
+            if modules or functions or any(not c.startswith("<") for c in instances):
+                self._register_alias(target.id, node)
+                return True
+            return False
+
+        def _carry(self, target, value, at, node) -> bool:
+            self._link(target, value)
+            self._record_flow(target, value, at, node)
+            return self._register(target, self._named_by(value, at), node)
+
+        def _link(self, target, value) -> None:
+            path = self._receiver_path(target)
+            if path is None:
+                return
+            for alt in _alternatives(value):
+                other = self._receiver_path(alt)
+                if other is not None and other != path:
+                    self.path_links.setdefault(path, set()).add(other)
+                    self.path_links.setdefault(other, set()).add(path)
+
+        def _linked_paths(self, path: str) -> "set[str]":
+            seen = {path}
+            stack = [path]
+            while stack:
+                for other in self.path_links.get(stack.pop(), ()):
+                    if other not in seen:
+                        seen.add(other)
+                        stack.append(other)
+            return seen
+
+        def _record_proxy(
+            self,
+            target,
+            value,
+            mutated = False,
+        ) -> None:
+            """Applied after call arguments are bound, so `configure(s.proxies)` still reaches `s`."""
+            if isinstance(target, ast.Subscript) and self._is_environ(target.value):
+                self._record_env_proxy(target.slice, value)
+                return
+            if isinstance(target, ast.Attribute) and self._is_environ(target):
+                self._record_env_mapping(value)  # `os.environ = {...}` replaces it wholesale
+                return
+            self.pending_proxies.append(
+                (target, value, mutated, tuple(self.scope_stack), tuple(self.self_names))
+            )
+
+        def _record_dict_mutation(self, name: str, method: str, args, keywords) -> None:
+            if method in ("setdefault", "__setitem__") and len(args) >= 2:
+                self.dict_entries.setdefault(name, []).append((args[0], args[1]))
+            elif method in ("update", "__ior__"):
+                for arg in args:
+                    if isinstance(arg, ast.Dict) and None not in arg.keys:
+                        self.dict_entries.setdefault(name, []).extend(zip(arg.keys, arg.values))
+                    else:
+                        self.dict_mutated.add(name)
+                for kw in keywords:
+                    if kw.arg is None:
+                        self.dict_mutated.add(name)
+                    else:
+                        self.dict_entries.setdefault(name, []).append(
+                            (ast.Constant(value = kw.arg), kw.value)
+                        )
+
+        def _record_env_mapping(self, mapping) -> None:
+            """Mapping merged into the environment; anything unreadable is recorded as unreadable."""
+            if isinstance(mapping, ast.Dict):
+                for k, v in zip(mapping.keys, mapping.values):
+                    if k is None:
+                        self.env_proxies.append(_UNREADABLE)
+                    else:
+                        self._record_env_proxy(k, v)
+            elif isinstance(mapping, ast.Name) and mapping.id in self.dict_literals:
+                if mapping.id in self.dict_mutated:
+                    self.env_proxies.append(_UNREADABLE)
+                for literal in self.dict_literals[mapping.id]:
+                    self._record_env_mapping(literal)
+                for key, value in self.dict_entries.get(mapping.id, ()):
+                    self._record_env_proxy(key, value)
+            elif (
+                isinstance(mapping, ast.Call)
+                and isinstance(mapping.func, ast.Name)
+                and mapping.func.id == "dict"
+                and not mapping.args
+            ):
+                for kw in mapping.keywords:
+                    if kw.arg is None:
+                        self.env_proxies.append(_UNREADABLE)
+                    else:
+                        self._record_env_proxy(ast.Constant(value = kw.arg), kw.value)
+            elif isinstance(mapping, (ast.List, ast.Tuple)) and all(
+                isinstance(e, ast.Tuple) and len(e.elts) == 2 for e in mapping.elts
+            ):
+                for e in mapping.elts:
+                    self._record_env_proxy(e.elts[0], e.elts[1])
+            else:
+                self.env_proxies.append(_UNREADABLE)
+
+        def _is_environ(self, node) -> bool:
+            node = _constant_getattr(node) or node  # `getattr(os, "environ")`
+            if isinstance(node, ast.Name):
+                return node.id in self.environ_names
+            return (
+                isinstance(node, ast.Attribute)
+                and node.attr in ("environ", "environb")  # `environb` shares `environ`'s data
+                and isinstance(node.value, ast.Name)
+                and node.value.id in self.os_names
+            )
+
+        def _record_env_proxy(self, key, value) -> None:
+            """requests, httpx and urllib honour the proxy environment by default."""
+            if isinstance(key, ast.Constant):
+                names = [key.value] if isinstance(key.value, str) else []
+                if isinstance(key.value, bytes):
+                    names = [key.value.decode("latin-1")]  # `os.environb[b"HTTPS_PROXY"]`
+            elif isinstance(key, ast.Name) and self.literal_names.get(key.id):
+                names = list(self.literal_names[key.id])  # `key = "HTTPS_PROXY"`
+            else:
+                # A key this screen cannot read may name a proxy variable: fail closed.
+                self.env_proxies.append(_UNREADABLE)
+                return
+            if any(name.lower() in _ENV_PROXY_VARIABLES for name in names):
+                self.env_proxies.append(value)
+
+        def _apply_proxy(self, target, value, mutated) -> None:
+            if isinstance(target, ast.Subscript) and self._is_environ(target.value):
+                self._record_env_proxy(target.slice, value)
+                return
+            if isinstance(target, ast.Subscript):
+                if _is_no_proxy(target.slice):
+                    return
+                target, mutated = target.value, True
+            if isinstance(target, ast.Attribute) and target.attr in _DESTINATION_ATTRS:
+                owners = {(self._receiver_path(target.value), target.attr)}
+            elif mutated and self._receiver_path(target) is not None:
+                owners = set().union(
+                    *(
+                        self.proxy_owners.get(path, ())
+                        for path in self._linked_paths(self._receiver_path(target))
+                    )
+                )
+            else:
+                return
+            for owner, attr in owners:
+                if owner is not None:
+                    self.receiver_destinations.setdefault(owner, []).append((attr, value))
+
+        def visit_Assign(self, node):
+            self._visit_binding(node, node.targets, node.value)
+
+        def visit_AnnAssign(self, node):
+            if node.value is None:
+                if self.collecting:
+                    self._rebind(node)
+                self.generic_visit(node)
+                return
+            self._visit_binding(node, [node.target], node.value)
+
+        def _visit_binding(self, node, targets, value_node):
+            if not self.collecting:
+                self.generic_visit(node)
+                return
+            at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            # Every value is read before any target is bound, so `f, g = g, f` swaps.
+            pairs = [
+                (target, value, self._named_by(value, at))
+                for whole in targets
+                for target, value in _paired(whole, value_node)
+            ]
+            if not isinstance(value_node, (ast.Tuple, ast.List)):
+                for whole in targets:
+                    if isinstance(whole, (ast.Tuple, ast.List)):
+                        for elt in whole.elts:  # `s, n = make()`: any element may be the client
+                            elt = elt.value if isinstance(elt, ast.Starred) else elt
+                            self._record_flow(elt, value_node, at, node)
+            registered: set[str] = set()
+            for target, value, named in pairs:
+                self._record_proxy(target, value)
+                self._link(target, value)
+                self._record_flow(target, value, at, node)
+                if isinstance(target, ast.Name) and isinstance(value, ast.Dict):
+                    self.dict_literals.setdefault(target.id, []).append(value)
+                if isinstance(target, ast.Name) and self._is_environ(value):
+                    self.environ_names.add(target.id)  # `env = os.environ`
+                if (
+                    isinstance(target, ast.Name)
+                    and isinstance(value, ast.Name)
+                    and value.id in self.os_names
+                ):
+                    self.os_names.add(target.id)  # `o = os`
+                if isinstance(target, ast.Name) and isinstance(value, ast.Lambda):
+                    returns = ast.Name(id = _returns_of(target.id), ctx = ast.Store())
+                    self._record_flow(returns, value.body, at, node)
+                if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+                    self._record_dict_mutation(
+                        target.value.id, "__setitem__", [target.slice, value], []
+                    )
+                if isinstance(target, ast.Name):
+                    for alt in _alternatives(value):
+                        if isinstance(alt, ast.Name) and alt.id != target.id:
+                            self.callable_aliases.setdefault(target.id, set()).add(alt.id)
+                        elif isinstance(alt, ast.Attribute) and alt.attr in self.local_methods:
+                            self.callable_aliases.setdefault(target.id, set()).add(alt.attr)
+                if isinstance(value, ast.Attribute) and value.attr in _DESTINATION_ATTRS:
+                    owner = self._receiver_path(value.value)
+                    alias = self._receiver_path(target)
+                    if owner is not None and alias is not None:
+                        self.proxy_owners.setdefault(alias, set()).add((owner, value.attr))
+                if self._register(target, named, node):
+                    registered.add(target.id)
+            self._rebind(node, exempt = registered)
+            self.generic_visit(node)
+
+        def visit_AugAssign(self, node):
+            if self.collecting:
+                if self._is_environ(node.target):
+                    self._record_env_mapping(node.value)
+                else:
+                    if isinstance(node.target, ast.Name):
+                        self._record_dict_mutation(node.target.id, "__ior__", [node.value], [])
+                    self._record_proxy(node.target, node.value, mutated = True)
+            self.generic_visit(node)
+
+        def visit_NamedExpr(self, node):
+            if self.collecting and isinstance(node.target, ast.Name):
+                at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                self._carry(node.target, node.value, at, node)
+            self.generic_visit(node)
+
+        def visit_Return(self, node):
+            function = self.def_names.get(self.scope_stack[-1])
+            if self.collecting and node.value is not None and function is not None:
+                at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                returns = ast.Name(id = _returns_of(function), ctx = ast.Store())
+                self._record_flow(returns, node.value, at, node)
+                if isinstance(node.value, (ast.Tuple, ast.List)):
+                    for elt in node.value.elts:  # `return requests.Session(), 1`
+                        self._record_flow(returns, elt, at, node)
+            self.generic_visit(node)
+
+        def _carry_loop(self, node) -> None:
+            if self.collecting and isinstance(node.iter, (ast.List, ast.Tuple, ast.Set)):
+                for elt in node.iter.elts:
+                    if isinstance(elt, ast.Starred):
+                        continue
+                    at = (getattr(elt, "lineno", 0), getattr(elt, "col_offset", 0))
+                    for target, value in _paired(node.target, elt):
+                        self._carry(target, value, at, elt)
+
+        def visit_For(self, node):
+            self._carry_loop(node)
+            self.generic_visit(node)
+
+        visit_AsyncFor = visit_For
+
+        def visit_comprehension(self, node):
+            self._carry_loop(node)
+            self.generic_visit(node)
+
+        def visit_withitem(self, node):
+            if self.collecting and node.optional_vars is not None:
+                ctx = node.context_expr
+                at = (getattr(ctx, "lineno", 0), getattr(ctx, "col_offset", 0))
+                self._carry(node.optional_vars, ctx, at, ctx)
+            self.generic_visit(node)
+
+        def _fq_candidates(
+            self,
+            func,
+            at = (0, 0),
+        ) -> "list[str]":
+            """Every fully qualified name a callee could be, written spelling first."""
+            alts = _alternatives(func)
+            if alts != [func]:
+                out: list[str] = []
+                for alt in alts:
+                    out.extend(c for c in self._fq_candidates(alt, at) if c not in out)
+                return out
+            parts: list[str] = []
+            cur = func
+            while True:
+                if isinstance(cur, ast.Attribute):
+                    parts.insert(0, cur.attr)
+                    cur = cur.value
+                elif _constant_getattr(cur) is not None:
+                    cur = _constant_getattr(cur)
+                else:
+                    break
             if isinstance(cur, ast.Name):
                 parts.insert(0, cur.id)
-            fq = ".".join(parts) if parts else ""
+            written = ".".join(parts) if parts else ""
+            candidates = [written] if written else []
+            if not self.aliases_possible:
+                return candidates
+            if len(parts) > 1 and parts[0] in self.module_aliases:
+                # A module alias is filtered the same way a function alias is: after
+                # `import requests as client; client = LocalClient()`, `client.get(target)` is a
+                # local API, and offering `requests.get` as a candidate refused it as egress.
+                if not self._is_shadowed(parts[0], at):
+                    for module in sorted(self.module_aliases[parts[0]]):
+                        fq = ".".join(module.split(".") + parts[1:])
+                        if module not in _NETWORK_MODULES and not any(
+                            m.startswith(f"{module}.") for m in _NETWORK_MODULES
+                        ):
+                            fq = _reexported(fq)
+                        if fq is not None:
+                            candidates.append(fq)
+            elif len(parts) == 1 and parts[0] in self.func_aliases:
+                if not self._is_shadowed(parts[0], at):
+                    candidates.extend(sorted(self.func_aliases[parts[0]]))
+            elif len(parts) == 1 and self.star_modules:
+                starred = self._star_imported_fq(parts[0], at)
+                if starred:
+                    candidates.append(starred)
+            held: "list[tuple[set[str], list[str]]]" = []
+            if not isinstance(cur, ast.Name):
+                if parts:
+                    classes = self._instances_named_by(cur, at)
+                    held.append((classes, parts))
+                    for family in (c for c in classes if c.startswith("<")):
+                        for k in range(len(parts)):
+                            path = ".".join([family] + parts[:k])
+                            if path in self.instance_aliases:
+                                held.append((self.instance_aliases[path], parts[k:]))
+            elif self.instance_aliases:
+                for root in self._roots(parts[0]):
+                    for k in range(1, len(parts)):
+                        path = ".".join([root] + parts[1:k])
+                        if path in self.instance_aliases and not (
+                            k == 1 and root == parts[0] and self._is_shadowed(parts[0], at)
+                        ):
+                            held.append((self.instance_aliases[path], parts[k:]))
+            for classes, rest in held:
+                for cls in sorted(classes):
+                    fq = ".".join([cls] + rest)
+                    # Only a method the table places counts: `s.mount(prefix, adapter)` sends
+                    # nothing, though `requests.Session` is a recognised prefix.
+                    if (
+                        fq in _NETWORK_DESTINATION_ARG or fq in _UPLOAD_HTTP_METHODS
+                    ) and fq not in candidates:
+                        candidates.append(fq)
+            for fq in list(candidates):
+                top = _reexported(fq)
+                if top is not None and top not in candidates:
+                    candidates.append(top)
+            return candidates
+
+        def _unwrapped_url_arg(self, node: ast.AST) -> ast.AST:
+            """`urlopen(Request(url))` carries the destination one call further in, so read it
+            there, but only once the callee is PROVEN to be `urllib.request.Request`.
+
+            Trusting any callee spelled `Request` reads the wrong value: a local
+            `def Request(_): return "https://evil.example/x"` made the screen check the
+            allowlisted argument while the runtime call sent the request somewhere else. An
+            unproven callee is left wrapped, so it reads as a call rather than a literal and the
+            fail-closed rule refuses it.
+            """
+            if isinstance(node, ast.Call) and node.args:
+                if "urllib.request.Request" not in self._fq_candidates(node.func):
+                    return node
+                cur = node.func
+                while isinstance(cur, ast.Attribute):
+                    cur = cur.value
+                root = cur.id if isinstance(cur, ast.Name) else None
+                if root is None or root in self.rebound_anywhere or "*" in self.rebound_anywhere:
+                    return node
+                return node.args[0]
+            return node
+
+        def visit_Call(self, node):
+            if self.collecting:
+                self.pending_calls.append((node, tuple(self.scope_stack), tuple(self.self_names)))
+                func = node.func
+                if isinstance(func, ast.Attribute) and (
+                    self._is_environ(func.value)
+                    or (
+                        func.attr == "putenv"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in self.os_names
+                    )
+                ):
+                    if func.attr in ("setdefault", "putenv", "__setitem__") and len(node.args) >= 2:
+                        self._record_env_proxy(node.args[0], node.args[1])
+                    elif func.attr in ("update", "__ior__"):
+                        for arg in node.args:
+                            self._record_env_mapping(arg)
+                        for kw in node.keywords:
+                            if kw.arg is None:
+                                self._record_env_mapping(kw.value)  # `update(**cfg)`
+                            else:
+                                self._record_env_proxy(ast.Constant(value = kw.arg), kw.value)
+                elif isinstance(func, ast.Attribute) and func.attr in (
+                    "update",
+                    "setdefault",
+                    "__setitem__",
+                    "__ior__",
+                ):
+                    if isinstance(func.value, ast.Name):
+                        self._record_dict_mutation(
+                            func.value.id, func.attr, node.args, node.keywords
+                        )
+                    args = node.args
+                    if func.attr in ("setdefault", "__setitem__"):
+                        args = [] if args and _is_no_proxy(args[0]) else args[1:2]
+                    for value in [
+                        *args,
+                        *(kw.value for kw in node.keywords if kw.arg != "no_proxy"),
+                    ]:
+                        self._record_proxy(func.value, value, mutated = True)
+                self.generic_visit(node)
+                return
+            # Resolving an alias may only ADD a way to recognise this call, never take one away.
+            # The alias map is not scope aware on purpose, so an `import socket as requests` inside
+            # a function body or an untaken branch would otherwise rewrite a module-level
+            # `requests.get(...)` to `socket.get`, which matches no network prefix, and carry a
+            # hardcoded host past a screen that refuses it on `main`. Both spellings are checked and
+            # the recognised one decides; the cost of checking a name the code does not really call
+            # is a refusal of a call that would not have run anyway.
+            fq_candidates = self._fq_candidates(
+                node.func, (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            )
+            # The root check first: every prefix starts with one of seven module names, so one set
+            # lookup rejects the ordinary call (`math.sqrt`, `df.head`) that would otherwise be
+            # tested against all twenty-five prefixes. Measured over a 300-call script that was
+            # 22500 `startswith` per screening.
+            recognised = (
+                [
+                    c
+                    for c in fq_candidates
+                    if c.partition(".")[0] in _NETWORK_ROOTS
+                    and any(c.startswith(p) for p in _NETWORK_FQ_PREFIXES)
+                ]
+                if network_possible
+                else []
+            )
+            fq = recognised[0] if recognised else (fq_candidates[0] if fq_candidates else "")
+
+            chooser = node.func
+            if (
+                network_possible
+                and isinstance(chooser, ast.Call)
+                and isinstance(chooser.func, ast.Name)
+                and chooser.func.id == "getattr"
+                and len(chooser.args) >= 2
+                and _constant_getattr(chooser) is None
+            ):
+                at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                owner = chooser.args[0]
+                if self._modules_named_by(owner, at) or self._instances_named_by(owner, at):
+                    network_calls.append(
+                        {
+                            "type": "unreadable_host_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: network call is chosen at runtime; "
+                                "call the function by name"
+                            ),
+                        }
+                    )
 
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:
@@ -16386,8 +18714,12 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch.
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "connect" and node.args:
+            if (
+                not recognised
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+                and node.args
+            ):
                 a0 = node.args[0]
                 host_lit = None
                 if isinstance(a0, ast.Tuple) and a0.elts:
@@ -16417,9 +18749,13 @@ def _check_signal_escape_patterns(code: str):
                             }
                         )
 
-            if fq and any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES):
-                # 1) Upload-shape check (host-independent).
-                if _call_is_upload_shape(node, fq):
+            if recognised:
+                # 1) Upload-shape check (host-independent), against EVERY recognised candidate for
+                # the same reason the destination signature is: `from requests import post as
+                # fetch` with an uncalled `from requests import get as fetch` really calls
+                # `requests.post`, and checking only the sorted-first `requests.get` let a file
+                # upload to an allowlisted host through.
+                if any(_call_is_upload_shape(node, c) for c in recognised):
                     network_calls.append(
                         {
                             "type": "upload_blocked",
@@ -16428,42 +18764,196 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-                # 2) Extract literal host (URL string or (host, port) tuple).
-                host_arg = None
-                url_arg = None
-                if node.args:
-                    a0 = node.args[0]
-                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        url_arg = a0.value
-                    elif isinstance(a0, ast.Tuple) and a0.elts:
-                        e0 = a0.elts[0]
-                        if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                            host_arg = e0.value
-                if url_arg and host_arg is None:
-                    m = re.match(r"^\w+://([^/?#]+)", url_arg)
-                    if m:
-                        host_arg = m.group(1)
+                # 2) Extract the host (URL string or (host, port) tuple) from wherever this call
+                # carries it, once per value that argument can hold: a name reused for two
+                # destinations is read as both, so one allowlisted spelling never vouches for
+                # the other.
+                hosts: list[str] = []
+                unreadable = False
+                # EVERY recognised candidate is read with its OWN signature, because one bare name
+                # can accumulate candidates that carry the destination in different places.
+                # `from requests import request as fetch` with an uncalled
+                # `from requests import get as fetch` really calls `requests.request`, so the URL
+                # is argument 1; reading only the sorted-first `requests.get` signature looked at
+                # argument 0, found the complete non-URL `"GET"`, and never saw the hostile
+                # argument. Checking each in turn keeps resolution monotone here too: a candidate
+                # may add a host or a fail-closed reason, never remove one.
+                specs = [
+                    _NETWORK_DESTINATION_ARG[c] for c in recognised if c in _NETWORK_DESTINATION_ARG
+                ]
+                destinations: "list[tuple[ast.AST, bool, str]]" = []
+                for index, keywords, kind in specs:
+                    if index is not None and len(node.args) > index:
+                        found = node.args[index]
+                    else:
+                        found = next(
+                            (kw.value for kw in node.keywords or [] if kw.arg in keywords), None
+                        )
+                    if found is not None and not (
+                        isinstance(found, ast.Constant) and found.value is None
+                    ):
+                        destinations.append((found, True, kind))
+                routed = list(node.keywords or [])
+                for fq, positions in _ROUTE_POSITIONS.items():
+                    if fq in recognised:
+                        for index, arg in enumerate(node.args):
+                            if isinstance(arg, ast.Starred):
+                                routed.append(ast.keyword(arg = "sock", value = _UNREADABLE))
+                                break
+                            if index in positions:
+                                routed.append(ast.keyword(arg = positions[index], value = arg))
+                for kw in routed:
+                    if isinstance(kw.value, ast.Constant) and kw.value.value is None:
+                        continue
+                    for prefix, routes in _ROUTE_KEYWORDS.items():
+                        if kw.arg in routes and any(c.startswith(prefix) for c in recognised):
+                            if kw.arg == "tunnel":
+                                destinations.append((kw.value, True, "host"))
+                            else:
+                                destinations.append((_UNREADABLE, True, "host"))
+                    if kw.arg == "connect_kwargs" and any(
+                        c.startswith("fabric.") for c in recognised
+                    ):
+                        # Fabric passes these to `SSHClient.connect`, so a `sock` routes the session.
+                        keys = list(kw.value.keys) if isinstance(kw.value, ast.Dict) else []
+                        known = isinstance(kw.value, ast.Dict)
+                        if isinstance(kw.value, ast.Name):
+                            name = kw.value.id
+                            known = name in self.dict_literals and name not in self.dict_mutated
+                            keys = [k for d in self.dict_literals.get(name, ()) for k in d.keys]
+                            keys += [k for k, _v in self.dict_entries.get(name, ())]
+                        if not known or any(
+                            not isinstance(k, ast.Constant) or k.value == "sock" for k in keys
+                        ):
+                            destinations.append((_UNREADABLE, True, "host"))
+                proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
+                if _reads_proxy_environment(node, recognised):
+                    proxies += self.env_proxies
+                if "urllib.request.ProxyHandler" in recognised and node.args:
+                    proxies.append(node.args[0])  # `ProxyHandler({"https": ...})`
+                if isinstance(node.func, ast.Attribute):
+                    owners = {c.rpartition(".")[0] for c in recognised}
+                    linked = set()
+                    for receiver in self._path_variants(node.func.value):
+                        linked |= self._linked_paths(receiver)
+                    for path in linked:
+                        proxies.extend(
+                            value
+                            for attr, value in self.receiver_destinations.get(path, ())
+                            if owners & _DESTINATION_ATTRS[attr]
+                        )
+                for proxy in proxies:
+                    if isinstance(proxy, ast.Name) and proxy.id in self.dict_literals:
+                        if proxy.id in self.dict_mutated:
+                            unreadable = True
+                        entries = [
+                            (k, v)
+                            for literal in self.dict_literals[proxy.id]
+                            for k, v in zip(literal.keys, literal.values)
+                        ] + list(self.dict_entries.get(proxy.id, ()))
+                        if any(k is None for k, _v in entries):
+                            unreadable = True
+                        values = [v for k, v in entries if k is not None and not _is_no_proxy(k)]
+                    elif isinstance(proxy, ast.Dict):
+                        if None in proxy.keys:
+                            unreadable = True  # `{**other}` merges a mapping not here to read
+                        values = [
+                            v for k, v in zip(proxy.keys, proxy.values) if not _is_no_proxy(k)
+                        ]
+                    else:
+                        values = [proxy]
+                    for value in values:
+                        if not (isinstance(value, ast.Constant) and value.value is None):
+                            destinations.append((value, True, "proxy"))
+                if specs:
+                    # A splat can carry the destination past both spellings, and its contents are
+                    # not here to read: `requests.get(**{"url": "http://evil.example/"})`.
+                    if any(isinstance(a, ast.Starred) for a in node.args or []) or any(
+                        kw.arg is None for kw in node.keywords or []
+                    ):
+                        unreadable = True
+                elif node.args:
+                    # Not a call whose destination this screen knows how to locate, so arg0 is read
+                    # for a literal host only and never made to fail closed.
+                    destinations.append((node.args[0], False, "url"))
+                for destination, fails_closed, kind in destinations:
+                    a0 = self._unwrapped_url_arg(destination)
+                    is_tuple = isinstance(a0, ast.Tuple)
+                    read = None if is_tuple and not a0.elts else (a0.elts[0] if is_tuple else a0)
+                    candidates = (
+                        [("", False)]
+                        if read is None
+                        else _literal_str_prefixes(read, self.literal_names)
+                    )
+                    for head, whole in candidates:
+                        host = None
+                        if is_tuple or kind == "host":
+                            if whole and head.strip():
+                                host = head.strip()
+                        else:
+                            # Leading whitespace is stripped by the client before the URL is
+                            # parsed, so it cannot be used to hide the host: checked against
+                            # requests 2.34.2, `" https://evil.example/x"` is prepared as
+                            # `https://evil.example/x` and really is fetched. Matching the raw
+                            # literal read that as no host at all and let it through. A value that
+                            # is still unparsable after stripping is left as no host, which is
+                            # right: the client raises `MissingSchema` on it rather than reaching
+                            # anything.
+                            # The URL parser drops tab, CR and LF anywhere in the URL.
+                            reading = re.sub(r"[\t\r\n]", "", head).lstrip()
+                            # aiohttp 3.14.3 treats `//host/x` as absolute and connects to `host`.
+                            m = re.match(r"^(?:\w+:)?//([^/?#]+)", reading)
+                            # The host ends at the first `/?#`, so a literal truncated past that point
+                            # still names it in full; one truncated inside it does not
+                            # (`"http://evil." + tld`).
+                            if m and (whole or reading[m.end(1) :]):
+                                host = m.group(1)
+                            elif not m and kind == "proxy" and whole and reading.strip():
+                                # requests prepends `http://` to a scheme-less proxy.
+                                host = reading.strip()
+                        relative = (
+                            kind == "url"
+                            and not is_tuple
+                            and re.match(r"^\s*/[^/]", head) is not None
+                        )
+                        if host is None:
+                            unreadable = unreadable or (fails_closed and not whole and not relative)
+                        else:
+                            hosts.append(host)
 
-                if host_arg:
-                    if _is_metadata_host(host_arg):
-                        network_calls.append(
-                            {
-                                "type": "metadata_host_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": "Blocked: cloud-metadata host",
-                            }
-                        )
-                    elif not _is_trusted_host(host_arg):
-                        network_calls.append(
-                            {
-                                "type": "untrusted_host_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": (
-                                    "Blocked: host not in sandbox allowlist; "
-                                    "use an allowed informational source"
-                                ),
-                            }
-                        )
+                # 3) A recognised egress call whose host cannot be read is untrusted, not absent.
+                # `urlopen("http://" + h)` reaches the attacker's host exactly as the spelled-out literal
+                # does, and no later screen sees python-tool code.
+                if unreadable and specs and (node.args or node.keywords):
+                    network_calls.append(
+                        {
+                            "type": "unreadable_host_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: network destination is not a literal the sandbox "
+                                "can check; write the allowed host out in full"
+                            ),
+                        }
+                    )
+                if any(_is_metadata_host(h) for h in hosts):
+                    network_calls.append(
+                        {
+                            "type": "metadata_host_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": "Blocked: cloud-metadata host",
+                        }
+                    )
+                elif any(not _is_trusted_host(h) for h in hosts):
+                    network_calls.append(
+                        {
+                            "type": "untrusted_host_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: host not in sandbox allowlist; "
+                                "use an allowed informational source"
+                            ),
+                        }
+                    )
 
             is_open_call = (
                 (isinstance(node.func, ast.Name) and node.func.id == "open")
@@ -16494,7 +18984,12 @@ def _check_signal_escape_patterns(code: str):
                         )
             self.generic_visit(node)
 
-    NetworkAndIoVisitor().visit(tree)
+    _network_visitor = NetworkAndIoVisitor()
+    if network_possible:
+        _network_visitor.visit(tree)  # pass 1: gather aliases, star imports and shadows
+        _network_visitor.resolve_flows()
+    _network_visitor.collecting = False
+    _network_visitor.visit(tree)  # pass 2: check every call against the final maps
 
     is_safe = (
         len(signal_tampering) == 0
@@ -16765,6 +19260,13 @@ def _cancel_watcher(
     short-circuit)."""
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
+            request_cancel = getattr(proc, "_unsloth_cancel", None)
+            if request_cancel is not None and request_cancel():
+                try:
+                    proc.wait(timeout = 5)
+                    return
+                except subprocess.TimeoutExpired:
+                    pass
             _killpg_captured(pgid)
             _kill_process_tree(proc)
             return
@@ -18142,11 +20644,15 @@ def _python_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    *,
+    tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
 ) -> str:
     """Execute Python code in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip the
     safety analysis and rlimit pre-exec, and use the host env minus secrets. output_callback:
     optional callable(str) streamed each stdout line as it is produced; the returned result is
-    unchanged."""
+    unchanged. tool_execution_mode selects automatic or required OS isolation; disable_sandbox
+    keeps full access as a separate explicit choice."""
     if not code or not code.strip():
         return "No code provided."
 
@@ -18179,6 +20685,8 @@ def _python_exec(
 
     tmp_path = None
     _scratch_name = None
+    # Bound before the try so the finally can release even when prepare raised.
+    prepared = None
     try:
         workdir = _get_workdir(session_id)
         confinement = _account_confinement()
@@ -18213,25 +20721,52 @@ def _python_exec(
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
+            # close_fds leaves 0-2 open, so an unset stdin would be the server's.
+            stdin = subprocess.DEVNULL,
             text = True,
             # Decode child output as utf-8 (it emits utf-8 via PYTHONIOENCODING); replace so non-ASCII output never
             # crashes the read on Windows.
             encoding = "utf-8",
             errors = "replace",
-            cwd = workdir,
-            env = safe_env,
         )
-        if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
-        else:
+        if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
         # -u forces unbuffered child stdout so a bare print() streams live
         # instead of sitting in the pipe's block buffer until exit. Applied
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        argv = _apply_confinement(confinement, popen_kwargs, [sys.executable, "-u", tmp_path])
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
+        base_preexec = (
+            None
+            if sys.platform == "win32"
+            else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
+        )
+        # Managed accounts keep their own boundary as the outer contract; `confines`, not `is not None` (placeholder).
+        if confinement is None or not confinement.confines:
+            prepared = _prepare_tool_launch(
+                os_sandbox.ToolLaunchPlan(
+                    argv = (sys.executable, "-u", tmp_path),
+                    workdir = workdir,
+                    env = safe_env,
+                    preexec_fn = base_preexec,
+                    requested_mode = requested_mode,
+                    timeout_seconds = timeout,
+                    execution_kind = "python",
+                    cancel_event = cancel_event,
+                ),
+                host_access_approved = host_access_approved and _reaches_host_paths("python", code),
+            )
+            proc = os_sandbox.spawn_prepared_launch(
+                prepared, **_apply_prepared_launch(prepared, popen_kwargs)
+            )
+            _note_tool_execution(prepared.execution_record)
+        else:
+            popen_kwargs.update(cwd = workdir, env = safe_env)
+            if sys.platform != "win32":
+                popen_kwargs["preexec_fn"] = base_preexec
+            argv = _apply_confinement(confinement, popen_kwargs, [sys.executable, "-u", tmp_path])
+            proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see _capture_process_group); None on Windows.
         pgid = _capture_process_group(proc)
@@ -18251,6 +20786,21 @@ def _python_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        if prepared is not None:
+            proc._unsloth_completion_reason = (
+                "timed_out"
+                if timed_out
+                else (
+                    "cancelled"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "finished"
+                )
+            )
+        if prepared is not None:
+            completion = os_sandbox.verify_prepared_completion(prepared, proc)
+            if completion is not None and completion.get("timedOut"):
+                timed_out = True
+            _note_tool_execution(prepared.execution_record)
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
@@ -18291,17 +20841,30 @@ def _python_exec(
         if session_id:
             result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
 
+        _forget_sandbox_capability_if_the_backend_failed(prepared, result)
         return result
 
+    except os_sandbox.SandboxUnavailableError as e:
+        if cancel_event is not None and cancel_event.is_set():
+            # A stop during the (on Windows DACL, multi-second) probe is a cancel, not a sandbox error.
+            return "Execution cancelled."
+        return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
         # been.
+        if prepared is not None and prepared.backend == "mxc-processcontainer":
+            _note_tool_execution(prepared.execution_record)
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
+        # Private mounts and descriptors, released on every exit path.
+        if prepared is not None:
+            prepared.cleanup()
+            os_sandbox.finalize_prepared_cleanup(prepared)
+            _note_tool_execution(prepared.execution_record)
         _forget_tool_pid(locals().get("proc"))
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -18318,11 +20881,14 @@ def _bash_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    *,
+    tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
 ) -> str:
     """Execute a bash command in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip
     the command blocklist and rlimit pre-exec, and use the host env minus secrets.
     output_callback: optional callable(str) streamed each stdout line as it is produced; the
-    returned result is unchanged."""
+    returned result is unchanged. tool_execution_mode follows _python_exec."""
     if not command or not command.strip():
         return "No command provided."
 
@@ -18356,6 +20922,7 @@ def _bash_exec(
     spill_dir = None
     spill_scope = None
     call_token = None
+    prepared = None
     _scratch_name = None
     try:
         try:
@@ -18374,25 +20941,52 @@ def _bash_exec(
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
+            # See _python_exec: the server's stdin must not reach a tool call.
+            stdin = subprocess.DEVNULL,
             text = True,
             # Match _python_exec: decode utf-8 with "replace" so invalid output bytes never raise UnicodeDecodeError
             # (which the streaming reader thread would swallow), keeping both paths byte-identical.
             encoding = "utf-8",
             errors = "replace",
-            cwd = workdir,
-            env = safe_env,
         )
-        if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
-        else:
+        if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
         shell_argv, _scratch_name = _shell_argv(command, workdir, confinement)
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.add(_scratch_name)
-        argv = _apply_confinement(confinement, popen_kwargs, shell_argv)
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
+        base_preexec = (
+            None
+            if sys.platform == "win32"
+            else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
+        )
+        if confinement is None or not confinement.confines:
+            prepared = _prepare_tool_launch(
+                os_sandbox.ToolLaunchPlan(
+                    argv = tuple(shell_argv),
+                    workdir = workdir,
+                    env = safe_env,
+                    preexec_fn = base_preexec,
+                    requested_mode = requested_mode,
+                    timeout_seconds = timeout,
+                    execution_kind = "terminal",
+                    cancel_event = cancel_event,
+                ),
+                host_access_approved = host_access_approved
+                and _reaches_host_paths("terminal", command),
+            )
+            proc = os_sandbox.spawn_prepared_launch(
+                prepared, **_apply_prepared_launch(prepared, popen_kwargs)
+            )
+            _note_tool_execution(prepared.execution_record)
+        else:
+            popen_kwargs.update(cwd = workdir, env = safe_env)
+            if sys.platform != "win32":
+                popen_kwargs["preexec_fn"] = base_preexec
+            argv = _apply_confinement(confinement, popen_kwargs, shell_argv)
+            proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see _python_exec); None on Windows.
         pgid = _capture_process_group(proc)
@@ -18411,6 +21005,21 @@ def _bash_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        if prepared is not None:
+            proc._unsloth_completion_reason = (
+                "timed_out"
+                if timed_out
+                else (
+                    "cancelled"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "finished"
+                )
+            )
+        if prepared is not None:
+            completion = os_sandbox.verify_prepared_completion(prepared, proc)
+            if completion is not None and completion.get("timedOut"):
+                timed_out = True
+            _note_tool_execution(prepared.execution_record)
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
@@ -18442,14 +21051,27 @@ def _bash_exec(
         # Only for a chat that has an id (see _python_exec).
         if session_id:
             result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
+        _forget_sandbox_capability_if_the_backend_failed(prepared, result)
         return result
 
+    except os_sandbox.SandboxUnavailableError as e:
+        if cancel_event is not None and cancel_event.is_set():
+            # A stop during the (on Windows DACL, multi-second) probe is a cancel, not a sandbox error.
+            return "Execution cancelled."
+        return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
         # been.
+        if prepared is not None and prepared.backend == "mxc-processcontainer":
+            _note_tool_execution(prepared.execution_record)
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
+        # Private mounts and descriptors, released on every exit path.
+        if prepared is not None:
+            prepared.cleanup()
+            os_sandbox.finalize_prepared_cleanup(prepared)
+            _note_tool_execution(prepared.execution_record)
         _forget_tool_pid(locals().get("proc"))
         if _scratch_name:
             with _scratch_lock:

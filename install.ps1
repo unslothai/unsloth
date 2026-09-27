@@ -7,8 +7,9 @@
 #
 # The web entry point cannot forward arguments, so it takes options as environment variables set
 # beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE,
-# UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a local run takes the equivalent flags
-# (--no-torch, --skip-autostart, --isolated-uv-cache, --python, --local).
+# UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a local run takes the
+# equivalent flags (--no-torch, --skip-autostart, --isolated-uv-cache, --no-rollback,
+# --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
 #
@@ -1602,6 +1603,46 @@ function Install-UnslothStudio {
             [int]$Code = 1
         )
         if ($Code -eq 0) { $Code = 1 }
+        # Here rather than at any one failure site: the largest writes are the venv and the torch
+        # install, and both exit through this function long before studio setup is reached, so a
+        # disk that filled during them used to surface as a bare exit code (#11313). Below 64 MB
+        # nothing useful unpacks, which makes it the cause rather than a coincidence. Folded into
+        # $Message as well as printed, because under --tauri nothing reaches the UI except the
+        # single line handed to Write-TauriLog.
+        $_diskSuffix = ""
+        try {
+            # Probed, not called outright: the early exits above happen before this file has
+            # defined the helper, and a command-not-found here would replace the real failure
+            # with a confusing one.
+            if ($StudioHome -and (Get-Command Get-StudioFreeSpaceBytes -CommandType Function -ErrorAction SilentlyContinue)) {
+                $_diskFree = Get-StudioFreeSpaceBytes -Path $StudioHome
+                if ($null -ne $_diskFree -and $_diskFree -lt 64MB) {
+                    $_diskMb = [math]::Round($_diskFree / 1MB)
+                    # What to advise depends on what actually happened to the old environment,
+                    # not on what was asked for. A discard that failed left a tree behind, and
+                    # deleting it is very likely what makes the retry fit; telling that user
+                    # there is nothing left to reclaim sends them away from the one thing that
+                    # would help. install.sh chooses between the same four.
+                    $_diskRemedy = if ($script:StudioVenvDiscardLeftover) {
+                        "Free some space and re-run. The previous environment could not be removed and is still at $($script:StudioVenvDiscardLeftover); deleting it will reclaim that space."
+                    } elseif ($script:StudioVenvDiscardSucceeded) {
+                        "Free some space and re-run. The previous environment was already discarded by --no-rollback, so the installer has nothing further of its own to reclaim."
+                    } elseif ($script:StudioNoRollback) {
+                        # Asked for, but nothing was there to discard: a first install, or a
+                        # failure before the replacement began.
+                        "Free some space and re-run."
+                    } else {
+                        "Free some space and re-run. --no-rollback (UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install."
+                    }
+                    $_diskSuffix = ": $StudioHome has only $_diskMb MB free, so the disk is full, which is very likely the cause. $_diskRemedy"
+                    if (-not $TauriMode) {
+                        Write-StudioLine "        $StudioHome has only $_diskMb MB free -- the disk is full, which is very likely the cause." -ForegroundColor Red
+                        Write-StudioLine "        $_diskRemedy" -ForegroundColor Red
+                    }
+                }
+            }
+        } catch { $_diskSuffix = "" }
+        $Message = "$Message$_diskSuffix"
         Write-TauriLog "ERROR_DEFAULT" $Message
         # Under `irm | iex` the session survives a failure; a leaked handoff would re-pin it.
         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
@@ -1948,6 +1989,19 @@ function Install-UnslothStudio {
     $SkipTorch = $false
     $SkipAutostart = $false
     $IsolateUvCache = $false
+    # Script-scoped: Start-StudioVenvRollback reads it, and tests/studio/test_install_rollback_lifecycle.ps1
+    # extracts that function on its own.
+    $script:StudioNoRollback = $false
+    # Set later by the cross-volume cache notice and read later still by Start-StudioVenvRollback.
+    # Initialised here rather than beside the other rollback state, which is reset AFTER that
+    # notice runs and would therefore clear it. Under `irm | iex` the script scope IS the caller's
+    # session, so a stale value from a previous run has to be cleared somewhere.
+    # Bounded WMI answer, taken at most once per run. Reset here for the same reason as the rest
+    # of this block: under `irm | iex` the script scope IS the caller's session.
+    $script:StudioVolumeList = $null
+    # Set by the --no-rollback discard when the environment it is about to delete reports XPU,
+    # read by the Intel scan once that tree is gone.
+    $script:StudioPreservedXpuVerdict = $false
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
     $argList = $args
@@ -1957,6 +2011,7 @@ function Install-UnslothStudio {
             "--tauri"    { $TauriMode = $true }
             "--no-torch" { $SkipTorch = $true }
             "--isolated-uv-cache" { $IsolateUvCache = $true }
+            "--no-rollback" { $script:StudioNoRollback = $true }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
@@ -1983,6 +2038,7 @@ function Install-UnslothStudio {
     if ($env:UNSLOTH_NO_TORCH -in @('1', 'true', 'yes', 'on')) { $SkipTorch = $true }
     if ($env:UNSLOTH_SKIP_AUTOSTART -in @('1', 'true', 'yes', 'on')) { $SkipAutostart = $true }
     if ($env:UNSLOTH_ISOLATE_UV_CACHE -in @('1', 'true', 'yes', 'on')) { $IsolateUvCache = $true }
+    if ($env:UNSLOTH_INSTALL_NO_ROLLBACK -in @('1', 'true', 'yes', 'on')) { $script:StudioNoRollback = $true }
 
     if ($script:UnslothVerbose) {
         $env:UNSLOTH_VERBOSE = '1'
@@ -2769,6 +2825,109 @@ exit 1
     function Get-StudioFinalPath {
         param([Parameter(Mandatory = $true)][string]$Path)
         return (Resolve-StudioFinalPathInfo -Path $Path).Path
+    }
+
+    # Free space for the disk-full diagnosis (#11313), answering $null rather than guessing: a
+    # number this cannot produce is a diagnosis it does not print.
+    # A Windows volume can be mounted at a DIRECTORY, and then the drive root is the wrong answer:
+    # GetPathRoot reduces C:\studio to C:\, so two paths on different volumes compare equal.
+    # Win32_Volume lists mount points by the path they are mounted at, so the longest Name that
+    # prefixes a path names the volume really holding it; anywhere CIM cannot answer, callers fall
+    # back to the drive-root logic, which is right for a lettered volume.
+    # Known limit: Name exposes ONE access path, so a volume reached through a second one falls
+    # back to the drive root, the pre-existing answer. Closing it needs a Win32_MountPoint join on
+    # every install, for a diagnostic. Split out so the matching is testable without a mount point.
+    function Select-StudioVolumeForPath {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
+              [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Volumes)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        # Unrooted means GetFullPath would anchor it to the current directory and invent a match
+        # on whichever volume that happens to be. No answer is the honest one.
+        if (-not [System.IO.Path]::IsPathRooted($Path)) { return $null }
+        $full = [System.IO.Path]::GetFullPath($Path)
+        # Name carries a trailing separator and GetFullPath does not, so a path that IS the mount
+        # point would miss its own volume. Appending one also keeps C:\studiofoo from matching a
+        # volume mounted at C:\studio.
+        if (-not $full.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+            $full += [System.IO.Path]::DirectorySeparatorChar
+        }
+        $best = $null
+        foreach ($vol in $Volumes) {
+            if (-not $vol -or -not $vol.Name) { continue }
+            if (-not $full.StartsWith($vol.Name, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            if ((-not $best) -or $vol.Name.Length -gt $best.Name.Length) { $best = $vol }
+        }
+        return $best
+    }
+
+    # Junctions and symlinks lie about which volume a path is on, so a studio home behind one is
+    # otherwise measured on the link's host drive. The lexical fallback keeps a resolver that
+    # cannot answer from costing the caller its measurement entirely.
+    function Resolve-StudioVolumeQueryPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        try {
+            $final = Get-StudioFinalPath -Path $Path
+            # Get-StudioFinalPath strips \\?\ deliberately, so a volume with no drive letter comes
+            # back as Volume{GUID}\..., which is NOT rooted: GetFullPath would then anchor it to
+            # the current directory and name an unrelated volume. Keep the caller's own path.
+            if ($final -and [System.IO.Path]::IsPathRooted($final)) { return $final }
+            return $Path
+        } catch { return $Path }
+    }
+
+    # Bounded out of process, as Invoke-BoundedVideoControllerScan documents: a degraded WMI
+    # repository blocks a CIM query indefinitely, and neither -ErrorAction nor try/catch bounds a
+    # query that never returns. Cached, timeouts included, so a broken repository costs once, and
+    # -Fresh for the free-space caller, whose cached FreeSpace would be a pre-failure snapshot.
+    function Get-StudioVolumeList {
+        param([switch]$Fresh)
+        if (-not $Fresh -and $null -ne $script:StudioVolumeList) { return $script:StudioVolumeList }
+        $script:StudioVolumeList = @()
+        $job = $null
+        try {
+            $job = Start-Job -ScriptBlock {
+                Get-CimInstance -ClassName Win32_Volume -ErrorAction SilentlyContinue |
+                    Select-Object Name, DeviceID, FreeSpace
+            }
+            if (Wait-Job -Job $job -Timeout 15) {
+                $script:StudioVolumeList = @(Receive-Job -Job $job -ErrorAction SilentlyContinue |
+                    Where-Object { $_ -and $_.Name })
+            } else {
+                Stop-Job -Job $job -ErrorAction SilentlyContinue
+            }
+        } catch {
+        } finally {
+            if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+        }
+        return $script:StudioVolumeList
+    }
+
+    function Get-StudioMountedVolume {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
+              [switch]$Fresh)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        if (-not ($IsWindows -or $env:OS -eq "Windows_NT")) { return $null }
+        try {
+            return (Select-StudioVolumeForPath -Path (Resolve-StudioVolumeQueryPath -Path $Path) `
+                -Volumes (Get-StudioVolumeList -Fresh:$Fresh))
+        } catch { return $null }
+    }
+
+    # GetPathRoot on a path that does not exist yet still names the volume it would be created on.
+    function Get-StudioFreeSpaceBytes {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        $queryPath = Resolve-StudioVolumeQueryPath -Path $Path
+        # -Fresh: this is the caller that wants a number, and a stale one is worse than none.
+        $mounted = Get-StudioMountedVolume -Path $queryPath -Fresh
+        if ($mounted -and $null -ne $mounted.FreeSpace) { return [int64]$mounted.FreeSpace }
+        try {
+            # The fallback needs the resolved path too: DriveInfo on the lexical one answers for
+            # the drive the junction lives on, not the drive it points at.
+            $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($queryPath))
+            if (-not $root) { return $null }
+            return ([System.IO.DriveInfo]::new($root)).AvailableFreeSpace
+        } catch { return $null }
     }
 
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
@@ -4123,6 +4282,244 @@ exit 1
         return "$reason Nothing was installed."
     }
 
+    function Test-MirrorConfigured {
+        param([ValidateSet('uv', 'pip')][string]$Tool)
+        if ($Tool -eq 'uv') {
+            if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
+            $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
+            $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml", "$env:ProgramData\uv\uv.toml")
+            $dir = (Get-Location -PSProvider FileSystem).ProviderPath
+            while ($dir) {
+                $pyproject = Join-Path $dir 'pyproject.toml'
+                if (Test-Path -LiteralPath (Join-Path $dir 'uv.toml') -PathType Leaf) { $files += Join-Path $dir 'uv.toml'; break }
+                if ((Test-Path -LiteralPath $pyproject -PathType Leaf) -and
+                    (Select-String -LiteralPath $pyproject -Pattern '^\s*\[+tool\.uv(\.|\])' -Quiet -ErrorAction SilentlyContinue)) { $files += $pyproject; break }
+                $dir = Split-Path -Parent $dir
+            }
+        } else {
+            if ("$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_NO_INDEX") { return $true }
+            $pattern = '^\s*(index[-_]url|extra[-_]index[-_]url|no[-_]index)\s*[=:]'
+            $files = @($env:PIP_CONFIG_FILE, $(if ($venv = Get-Variable VenvDir -ValueOnly -ErrorAction SilentlyContinue) { Join-Path $venv 'pip.ini' }), "$env:APPDATA\pip\pip.ini", "$env:USERPROFILE\pip\pip.ini", "$env:ProgramData\pip\pip.ini")
+        }
+        foreach ($file in $files) {
+            if ($file -and (Test-Path -LiteralPath $file -PathType Leaf) -and
+                (Select-String -LiteralPath $file -Pattern $pattern -Quiet -ErrorAction SilentlyContinue)) {
+                return $true
+            }
+        }
+        return $false
+    }
+
+    function Start-MirrorProbe {
+        param([string[]]$Urls, [double]$Seconds, [long]$LastByte)
+        $state = @{ Urls = $Urls; Seconds = $Seconds; LastByte = $LastByte; Clock = [System.Diagnostics.Stopwatch]::StartNew(); Requests = @{}; Heads = @{}; InTime = @{}; Bodies = @{}; Buffers = @{} }
+        $deadline = [System.Threading.Tasks.Task]::Delay([int]($Seconds * 1000))
+        foreach ($url in $Urls) {
+            $state.Requests[$url] = [System.Net.WebRequest]::Create($url)
+            # The CERNET mirrors answer 403 to a request without a User-Agent; a fresh connection keeps every probe cold, as curl's are.
+            $state.Requests[$url].UserAgent = 'unsloth-installer'
+            $state.Requests[$url].KeepAlive = $false
+            $state.Requests[$url].AddRange(0, $LastByte)
+            $state.Heads[$url] = $state.Requests[$url].GetResponseAsync()
+            $state.InTime[$url] = [System.Threading.Tasks.Task]::WhenAny([System.Threading.Tasks.Task[]]@($state.Heads[$url], $deadline))
+        }
+        return $state
+    }
+
+    function Wait-MirrorProbe {
+        param($Probe)
+        $results = @{}
+        $measure = { param($url) @([int]$Probe.Heads[$url].Result.StatusCode, [long]($Probe.Buffers[$url].Position / $Probe.Clock.Elapsed.TotalSeconds)) }
+        try {
+            while ($true) {
+                foreach ($url in $Probe.Urls) {
+                    if ($results.ContainsKey($url) -or -not $Probe.InTime[$url].IsCompleted) { continue }
+                    if (-not [object]::ReferenceEquals($Probe.InTime[$url].Result, $Probe.Heads[$url])) {
+                        $results[$url] = @(0, [long]0)
+                    } elseif ($Probe.Heads[$url].Status -ne 'RanToCompletion') {
+                        $failure = $Probe.Heads[$url].Exception.InnerException -as [System.Net.WebException]
+                        $results[$url] = @($(if ($failure -and $failure.Response) { [int]$failure.Response.StatusCode } else { 0 }), [long]0)
+                    } elseif (-not $Probe.Bodies.ContainsKey($url)) {
+                        $Probe.Buffers[$url] = [System.IO.MemoryStream]::new([byte[]]::new($Probe.LastByte + 65537))
+                        $Probe.Bodies[$url] = $Probe.Heads[$url].Result.GetResponseStream().CopyToAsync($Probe.Buffers[$url], 65536)
+                    } elseif ($Probe.Bodies[$url].IsCompleted) {
+                        $results[$url] = & $measure $url
+                    }
+                }
+                $pending = @($Probe.Urls | Where-Object { -not $results.ContainsKey($_) } | ForEach-Object { if ($Probe.Bodies.ContainsKey($_)) { $Probe.Bodies[$_] } else { $Probe.InTime[$_] } })
+                $left = [int](($Probe.Seconds - $Probe.Clock.Elapsed.TotalSeconds) * 1000)
+                if ($pending.Count -eq 0 -or $left -le 0) { break }
+                [void][System.Threading.Tasks.Task]::WaitAny([System.Threading.Tasks.Task[]]$pending, $left)
+            }
+            foreach ($url in $Probe.Urls) {
+                if ($results.ContainsKey($url)) { continue }
+                $results[$url] = if ($Probe.Buffers.ContainsKey($url)) { & $measure $url } else { @(0, [long]0) }
+            }
+        } finally {
+            foreach ($url in @($Probe.Requests.Keys)) {
+                $Probe.Requests[$url].Abort()
+                if ($Probe.Heads[$url].Status -eq 'RanToCompletion') { $Probe.Heads[$url].Result.Dispose() }
+            }
+        }
+        return $results
+    }
+
+    function Get-MirrorDnsServers {
+        try {
+            [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object { $_.OperationalStatus -eq 'Up' } |
+                ForEach-Object { $_.GetIPProperties().DnsAddresses } | ForEach-Object { "$_" }
+        } catch {}
+    }
+
+    # No network call: a mainland China time zone, or a resolver from a mainland public DNS or cloud, as _mirror_in_china in install.sh.
+    function Test-MirrorInChina {
+        try { if ((Get-TimeZone).Id -in 'China Standard Time', 'Asia/Shanghai', 'Asia/Chongqing', 'Asia/Chungking', 'Asia/Harbin', 'Asia/Urumqi', 'Asia/Kashgar', 'PRC') { return $true } } catch {}
+        return [bool](@(Get-MirrorDnsServers) -match '^(223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[0459]|182\.254\.116\.116|119\.28\.28\.28|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98))$')
+    }
+
+    function Invoke-MirrorFallback {
+        param([switch]$SpareOnly)
+        $optIn = "$env:UNSLOTH_MIRROR_FALLBACK".Trim()
+        # When off, a retry state inherited from a parent is dropped so nothing downstream acts on it.
+        if ($optIn -match '^(0|false|no|off)$' -or ($optIn -notmatch '^(1|true|yes|on)$' -and -not (Test-MirrorInChina))) {
+            Remove-Item Env:_UNSLOTH_MIRROR_SPARE -ErrorAction SilentlyContinue
+            return
+        }
+        if ($env:_UNSLOTH_MIRROR_PROBED) { return }
+        if (-not $SpareOnly) { $env:_UNSLOTH_MIRROR_PROBED = '1' }
+        $cernet = 'https://tuna.mirrors.cernet.edu.cn'
+        $npmMirror = 'https://registry.npmmirror.com'
+        $pypiMirror = "$cernet/pypi/web/simple"
+        $minBps = 1MB
+        $useUv = -not (Test-MirrorConfigured -Tool uv)
+        $usePip = -not (Test-MirrorConfigured -Tool pip)
+        $uvWheel = 'packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl'
+        $torchWheel = 'whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl'
+        $nodeTarball = 'v24.18.0/node-v24.18.0-linux-x64.tar.gz'
+        $artifact = @{
+            'pypi' = "https://files.pythonhosted.org/$uvWheel"; 'cernet-pypi' = "$cernet/pypi/web/$uvWheel"
+            'torch' = "https://download-r2.pytorch.org/$torchWheel"; 'cernet-torch' = "$cernet/pytorch/$torchWheel"
+            'node' = "https://nodejs.org/dist/$nodeTarball"; 'npmmirror-node' = "$npmMirror/-/binary/node/$nodeTarball"
+            'npm' = 'https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz'; 'npmmirror' = "$npmMirror/typescript/-/typescript-5.9.3.tgz"
+            'astral' = 'https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz'
+        }
+        $hosts = [ordered]@{}
+        if ($useUv -or $usePip) { $hosts['pypi'] = @('pypi', 'cernet-pypi', $pypiMirror, 'https://pypi.org/simple/uv/', "$pypiMirror/uv/") }
+        if (-not "$env:UNSLOTH_PYTORCH_MIRROR$env:UNSLOTH_TORCH_INDEX_URL") {
+            $hosts['torch'] = @('torch', 'cernet-torch', "$cernet/pytorch/whl", 'https://download.pytorch.org/whl/cpu/torch/', "$cernet/pytorch/whl/cpu/torch/")
+        }
+        if (-not $env:UNSLOTH_NODE_MIRROR) { $hosts['node'] = @('node', 'npmmirror-node', "$npmMirror/-/binary/node", $null, $null) }
+        if (-not "$env:UNSLOTH_NPM_REGISTRY$env:NPM_CONFIG_REGISTRY") { $hosts['npm'] = @('npm', 'npmmirror', $npmMirror, $null, $null) }
+        if (-not "$env:UNSLOTH_UV_WHEEL_MIRROR$env:UV_DOWNLOAD_URL$env:INSTALLER_DOWNLOAD_URL$env:UV_INSTALLER_GHE_BASE_URL$env:UV_INSTALLER_GITHUB_BASE_URL") {
+            $hosts['uvbin'] = @('astral', 'cernet-pypi', "$cernet/pypi/web", $null, $null)
+        }
+        if ($hosts.Count -eq 0) { return }
+        $varsOf = {
+            param($name)
+            $to = if ($hosts.Contains($name)) { $hosts[$name][2] }
+            switch ($name) {
+                'pypi' {
+                    if ($useUv) { "UV_DEFAULT_INDEX=$to" }
+                    if ($usePip) { "PIP_INDEX_URL=$to" }
+                }
+                'unsynced' {
+                    # Only for one rerun: uv's unsafe-first-match fetches every package from every index, and fails outright when one is unreachable.
+                    if ($useUv) {
+                        'UV_DEFAULT_INDEX=https://pypi.org/simple'; "UV_INDEX=$pypiMirror"
+                        "UV_INDEX_STRATEGY=$(if ($env:UV_INDEX_STRATEGY) { $env:UV_INDEX_STRATEGY } else { 'unsafe-first-match' })"
+                    }
+                    if ($usePip) { 'PIP_EXTRA_INDEX_URL=https://pypi.org/simple'; "PIP_INDEX_URL=$pypiMirror" }
+                }
+                'torch' { "UNSLOTH_PYTORCH_MIRROR=$to" }
+                'node' { "UNSLOTH_NODE_MIRROR=$to" }
+                'npm' { "UNSLOTH_NPM_REGISTRY=$to" }
+                'uvbin' { "UNSLOTH_UV_WHEEL_MIRROR=$to" }
+            }
+        }
+        $env:_UNSLOTH_MIRROR_SPARE = @($hosts.Keys | ForEach-Object { (@($_) + @(& $varsOf $_)) -join '|' }) -join ' '
+        if ($SpareOnly -or (Test-UvEnvFlag 'UV_OFFLINE')) { return }
+        $answered = @{}
+        $codeOf = { param($index, $result) if ($index -and "$($answered[$index][0])" -notmatch '^2\d\d$') { 0 } else { $result[0] } }
+        # PS 5.1 may pin TLS 1.0/1.1 (every probed host refuses it; Tls|Tls12 still fails) and queues past 2 connections per host.
+        $savedProtocol = [System.Net.ServicePointManager]::SecurityProtocol
+        $savedLimit = [System.Net.ServicePointManager]::DefaultConnectionLimit
+        if ([int]$savedProtocol -ne 0) { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 }
+        [System.Net.ServicePointManager]::DefaultConnectionLimit = [Math]::Max($savedLimit, 16)
+        try {
+            $defaults = @($hosts.Values | ForEach-Object { $_[0] } | Select-Object -Unique)
+            $indexes = Start-MirrorProbe -Urls @($hosts.Values | ForEach-Object { $_[3] } | Where-Object { $_ }) -Seconds 4 -LastByte 1023
+            $timed = @{}
+            foreach ($name in $defaults) { $timed[$name] = (Wait-MirrorProbe (Start-MirrorProbe -Urls $artifact[$name] -Seconds 1.5 -LastByte 1048575))[$artifact[$name]] }
+            $answered = Wait-MirrorProbe $indexes
+            $slow = @($hosts.Keys | Where-Object {
+                $code = & $codeOf $hosts[$_][3] $timed[$hosts[$_][0]]
+                $code -eq 0 -or ($code -ge 300 -and $code -lt 400) -or ($code -ge 200 -and $code -lt 300 -and $timed[$hosts[$_][0]][1] -lt $minBps)
+            })
+            if ($slow.Count -eq 0) { return }
+            $sources = @($slow | ForEach-Object { $hosts[$_][1] } | Select-Object -Unique)
+            $indexes = Start-MirrorProbe -Urls @($slow | ForEach-Object { $hosts[$_][3]; $hosts[$_][4] } | Where-Object { $_ }) -Seconds 4 -LastByte 1023
+            $race = Wait-MirrorProbe (Start-MirrorProbe -Urls @($slow | ForEach-Object { $artifact[$hosts[$_][0]] }; $sources | ForEach-Object { $artifact[$_] }) -Seconds 4 -LastByte 1048575)
+            $sourceIndexes = Wait-MirrorProbe $indexes
+            foreach ($url in $sourceIndexes.Keys) { $answered[$url] = $sourceIndexes[$url] }
+        } finally {
+            [System.Net.ServicePointManager]::SecurityProtocol = $savedProtocol
+            [System.Net.ServicePointManager]::DefaultConnectionLimit = $savedLimit
+        }
+        $used = $false
+        foreach ($name in $slow) {
+            $default = $race[$artifact[$hosts[$name][0]]]
+            $mirror = $race[$artifact[$hosts[$name][1]]]
+            $how = if ("$(& $codeOf $hosts[$name][3] $default)" -match '^2\d\d$') { 'slow' } else { 'blocked' }
+            $defaultBps = if ($how -eq 'slow') { $default[1] } else { [long]0 }
+            if ("$(& $codeOf $hosts[$name][4] $mirror)" -notmatch '^2\d\d$' -or $defaultBps -ge $minBps -or $mirror[1] -le $defaultBps) { continue }
+            Set-MirrorEnv @(& $varsOf $name)
+            $env:_UNSLOTH_MIRROR_SPARE = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -notlike "$name|*" }) -join ' '
+            if ($name -eq 'pypi' -and $how -eq 'slow') { $env:_UNSLOTH_MIRROR_SPARE = (@(-split $env:_UNSLOTH_MIRROR_SPARE) + ((@('unsynced') + @(& $varsOf 'unsynced')) -join '|')) -join ' ' }
+            step "mirror" "$(Get-MirrorName $name) is $how ($($defaultBps -shr 10) KB/s, mirror $($mirror[1] -shr 10) KB/s); using $($hosts[$name][2])" "Yellow"
+            $used = $true
+        }
+        if ($used) { substep "Set UNSLOTH_MIRROR_FALLBACK=0 to always use the default hosts." }
+    }
+
+    function Get-MirrorName {
+        param([string]$Name)
+        @{ pypi = 'PyPI'; unsynced = 'The PyPI mirror'; torch = 'download.pytorch.org'; node = 'nodejs.org'; npm = 'registry.npmjs.org'; uvbin = 'releases.astral.sh (uv)' }[$Name]
+    }
+
+    function Set-MirrorEnv {
+        param([string[]]$Pairs)
+        foreach ($pair in $Pairs) { Set-Item "Env:$($pair.Split('=', 2)[0])" $pair.Split('=', 2)[1] }
+    }
+
+    function Pop-MirrorSpare {
+        param([string]$Name)
+        $entry = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -like "$Name|*" })
+        if (-not $entry) { return }
+        $env:_UNSLOTH_MIRROR_SPARE = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -notlike "$Name|*" }) -join ' '
+        $pairs = @($entry[0].Split('|') | Select-Object -Skip 1)
+        step "mirror" "$(Get-MirrorName $Name) failed; retrying through $($pairs[0].Split('=', 2)[1])" "Yellow"
+        return $pairs
+    }
+
+    function Use-MirrorSpare {
+        param([string]$Name)
+        $pairs = @(Pop-MirrorSpare $Name)
+        Set-MirrorEnv $pairs
+        return $pairs.Count -gt 0
+    }
+
+    function Get-MirrorFailedHost {
+        param([string]$Output, [string]$Ran)
+        if ($Output -notmatch 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up') {
+            if ($Output -match 'only \S+ (.* )?(is|are) available|no versions? of|not found in the package registry|could not find a version that satisfies|no matching distribution found') { 'unsynced' }
+            return
+        }
+        if ($Output -match 'download(-r2)?\.pytorch\.org') { 'torch' }
+        elseif ($Output -match 'registry\.npmjs\.org') { 'npm' }
+        elseif ($Output -match 'pypi\.org|pythonhosted\.org') { 'pypi' }
+        elseif ($Ran -and $Output -notmatch 'https?://') { $Ran }
+    }
+
     # ── END SHARED WITH studio/setup.ps1 ──
 
     # Redact index-URL credentials (userinfo + ?query= + #fragment) from captured installer
@@ -4139,8 +4536,17 @@ exit 1
     function Invoke-InstallCommand {
         param(
             [Parameter(Mandatory = $true)][ScriptBlock]$Command,
-            [string]$Label = "install command"
+            [string]$Label = "install command",
+            [switch]$NoMirror
         )
+        if ($script:InstallTorchMirror) {
+            foreach ($v in $Command.Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.IsUnqualified }, $true)) {
+                $value = $ExecutionContext.SessionState.PSVariable.GetValue($v.VariablePath.UserPath)
+                if (@($value) -like 'https://download.pytorch.org/whl*') {
+                    Set-Variable -Name $v.VariablePath.UserPath -Value ($value -replace '^https://download\.pytorch\.org/whl', $script:InstallTorchMirror.TrimEnd('/'))
+                }
+            }
+        }
         # A pinned index must beat an inherited uv mirror (#6898); UV_NO_CONFIG=1 blocks uv.toml.
         $savedUvIndex = $null
         if ($Command.ToString() -match '--default-index') {
@@ -4157,6 +4563,7 @@ exit 1
             # Reset to avoid stale values from prior native commands.
             $global:LASTEXITCODE = 0
             Write-TauriLog "OUTPUT_CLEAR" $Label
+            $collected = [System.Text.StringBuilder]::new()
             if ($script:UnslothVerbose) {
                 # Merge stderr into stdout so progress/warning output stays visible
                 # without flipping $? on successful native commands (PS 5.1 treats
@@ -4164,13 +4571,20 @@ exit 1
                 # Redact per record: uv echoes index URLs (credentials and all) in
                 # its errors, and verbose mode must not bypass the quiet path's
                 # redaction. ForEach-Object/Out-Host leave $LASTEXITCODE untouched.
-                & $Command 2>&1 | ForEach-Object {
-                    Write-UvDownloadMarker "$_"
-                    Redact-InstallOutput "$_"
-                } | Out-Host
+                if ($NoMirror -or -not $env:_UNSLOTH_MIRROR_SPARE) {
+                    & $Command 2>&1 | ForEach-Object {
+                        Write-UvDownloadMarker "$_"
+                        Redact-InstallOutput "$_"
+                    } | Out-Host
+                } else {
+                    & $Command 2>&1 | ForEach-Object {
+                        [void]$collected.AppendLine("$_")
+                        Write-UvDownloadMarker "$_"
+                        Redact-InstallOutput "$_"
+                    } | Out-Host
+                }
             } else {
                 # Streamed, not collected, so a marker reaches the app mid-download.
-                $collected = [System.Text.StringBuilder]::new()
                 & $Command 2>&1 | ForEach-Object {
                     $line = "$_"
                     [void]$collected.AppendLine($line)
@@ -4187,7 +4601,6 @@ exit 1
             } else {
                 Write-TauriLog "ERROR_OUTPUT" "$Label failed (exit code $exitCode)"
             }
-            return $exitCode
         } finally {
             $ErrorActionPreference = $prevEap
             if ($savedUvIndex) {
@@ -4195,6 +4608,34 @@ exit 1
                 foreach ($n in $savedUvIndex.Keys) { if ($null -ne $savedUvIndex[$n]) { Set-Item "Env:$n" $savedUvIndex[$n] } }
             }
         }
+        if ($exitCode -eq 0 -or $NoMirror -or -not $env:_UNSLOTH_MIRROR_SPARE) { return $exitCode }
+        return (Invoke-InstallMirrorRetry -Code $exitCode -Command $Command -Label $Label -Output $collected.ToString())
+    }
+
+    function Invoke-InstallMirrorRetry {
+        param([int]$Code, [ScriptBlock]$Command, [string]$Label, [string]$Output)
+        $words = @(foreach ($n in $Command.Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)) {
+            if ($n -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $n.Value } else { $ExecutionContext.SessionState.PSVariable.GetValue($n.VariablePath.UserPath) }
+        }) | ForEach-Object { "$_" }
+        $torchArg = [bool](@($words) -like 'https://download.pytorch.org/whl*')
+        $pinned = [bool](@($words) -match '^--(index-url|default-index)$')
+        $ran = if ($torchArg) { 'torch' } elseif ($pinned -or @($words) -match '^(--find-links|--no-index|--torch-backend.*|venv)$|://') { '' } else { 'pypi' }
+        $failed = Get-MirrorFailedHost -Output $Output -Ran $ran
+        $ownIndex = $pinned -or @($words) -contains '--no-index'
+        if (-not (($failed -eq 'torch' -and $torchArg) -or ($failed -eq 'pypi' -and -not $pinned) -or ($failed -eq 'unsynced' -and -not $ownIndex))) { return $Code }
+        $pairs = @(Pop-MirrorSpare $failed)
+        if (-not $pairs) { return $Code }
+        $saved = @{}
+        foreach ($pair in $pairs) { $saved[$pair.Split('=', 2)[0]] = [Environment]::GetEnvironmentVariable($pair.Split('=', 2)[0]) }
+        $savedTorch = $script:InstallTorchMirror
+        Set-MirrorEnv $pairs
+        if ($failed -eq 'torch') { $script:InstallTorchMirror = $env:UNSLOTH_PYTORCH_MIRROR }
+        $code = Invoke-InstallCommand -Command $Command -Label $Label -NoMirror
+        if ($code -ne 0) {
+            foreach ($n in $saved.Keys) { [Environment]::SetEnvironmentVariable($n, $saved[$n]) }
+            $script:InstallTorchMirror = $savedTorch
+        }
+        return $code
     }
 
     function Invoke-InstallCommandRetry {
@@ -4214,7 +4655,7 @@ exit 1
         }
         $attempt = 1
         while ($true) {
-            $code = Invoke-InstallCommand -Command $Command -Label $Label
+            $code = Invoke-InstallCommand -Command $Command -Label $Label -NoMirror:($attempt -lt $maxAttempts)
             if ($code -eq 0) { return 0 }
             if ($attempt -ge $maxAttempts) { return $code }
             substep ("retrying ""$Label"" after transient failure (attempt $($attempt + 1)/$maxAttempts, waiting ${delay}s)...") "Yellow"
@@ -6541,6 +6982,11 @@ exit 0
     if ($SkipTorch) { $InitialGpuBranch = "no_torch" }
     Write-TauriDiag -GpuBranch $InitialGpuBranch -TorchIndexFamily "none" -PythonVersionForDiag $DiagPythonVersion
 
+    foreach ($_mirrorEnvName in @('_UNSLOTH_MIRROR_PROBED', '_UNSLOTH_MIRROR_SPARE', 'UV_INDEX', 'UV_DEFAULT_INDEX', 'UV_INDEX_STRATEGY', 'PIP_INDEX_URL', 'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY', 'UNSLOTH_UV_WHEEL_MIRROR')) {
+        $script:MirrorEnvSaved[$_mirrorEnvName] = [Environment]::GetEnvironmentVariable($_mirrorEnvName)
+    }
+    Invoke-MirrorFallback
+
     # ── Install uv ──
     Write-TauriLog "STEP" "Installing uv package manager"
     $UvMinVersion = "0.8.16"
@@ -6677,16 +7123,20 @@ exit 0
     # prepend as astral's install.ps1, but it fetches a data file with a pinned
     # SHA-256 instead of running remote script text in-process.
     # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-    # Bumping the version means bumping all 3 hashes:
+    # Bumping the version means bumping all 3 hashes, and each Wheel/WheelSha256 from https://pypi.org/pypi/uv/<ver>/json:
     #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
     $UvPinnedVersion = "0.12.1"
     $UvPinnedAssets = @{
-        "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A" }
-        "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568" }
-        "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97" }
+        "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A"
+                      Wheel = "packages/0d/a4/467c99c76fefa8b1259a1d382a5e49f73068f38a2d58db401504a783ed2c/uv-0.12.1-py3-none-win_amd64.whl"; WheelSha256 = "BD02F2DA212E6A983115DC64A6FC94E9256C2D60E056D6B669DE0A6025AAEC05" }
+        "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568"
+                      Wheel = "packages/68/80/ec1acbf8e22dc4866f9070c30b064728cc0da73bedc30f2fbfdc0c5901a7/uv-0.12.1-py3-none-win_arm64.whl"; WheelSha256 = "EAD7AD064F291A5DF358C3FFA8FFAB347A32BD5A75A6A068CA22254C2539A829" }
+        "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97"
+                      Wheel = "packages/fd/02/f73e4867c0748eaa3dea90cdfeb73d15bab0f04802c5c20bb37fc14918fe/uv-0.12.1-py3-none-win32.whl"; WheelSha256 = "173EE216F17D89FC39F65339D311A53584FC7DE4918D27C0F3C7EDAFABC6B54D" }
     }
 
     function Install-UvFromRelease {
+        $script:UvReleaseUnfetched = $false
         $arch = Get-HostMachineArch
         if (-not $UvPinnedAssets.ContainsKey($arch)) {
             substep "No uv build is published for this architecture ($arch)." "Yellow"
@@ -6694,6 +7144,8 @@ exit 0
         }
         $asset  = $UvPinnedAssets[$arch].Asset
         $wanted = $UvPinnedAssets[$arch].Sha256
+        $remote = $asset
+        $wheelDir = $null
 
         # Same destination priority as astral's installer, so an existing uv is
         # replaced in place and the PATH probe further below still finds it.
@@ -6722,6 +7174,11 @@ exit 0
             @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
         } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
             @("$($env:UV_INSTALLER_GITHUB_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
+        } elseif ($env:UNSLOTH_UV_WHEEL_MIRROR) {
+            $remote = $UvPinnedAssets[$arch].Wheel
+            $wanted = $UvPinnedAssets[$arch].WheelSha256
+            $wheelDir = "uv-$UvPinnedVersion.data/scripts"
+            @("$($env:UNSLOTH_UV_WHEEL_MIRROR.TrimEnd('/'))")
         } else {
             @("https://releases.astral.sh/github/uv/releases/download/$UvPinnedVersion",
               "https://github.com/astral-sh/uv/releases/download/$UvPinnedVersion")
@@ -6735,14 +7192,16 @@ exit 0
             # body is a successful download by every measure Invoke-WebRequest has, and checking
             # afterwards spends the only attempt on it.
             $downloaded = $false
+            $script:UvReleaseUnfetched = $true
             foreach ($base in $uvBase) {
                 substep "downloading uv $UvPinnedVersion ($arch) from $base..." "Yellow"
                 try {
-                    Invoke-WebRequest -UseBasicParsing -OutFile $zip -Uri "$base/$asset"
+                    Invoke-WebRequest -UseBasicParsing -OutFile $zip -Uri "$base/$remote"
                 } catch {
                     substep "uv download failed: $($_.Exception.Message)" "Yellow"
                     continue
                 }
+                $script:UvReleaseUnfetched = $false
                 $actual = ""
                 try { $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash } catch {}
                 if ($actual -eq $wanted) {
@@ -6755,11 +7214,11 @@ exit 0
             }
             if (-not $downloaded) { return $false }
 
-            # The Windows archives are flat: uv.exe, uvx.exe, uvw.exe at the root.
             Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
             [System.IO.Directory]::CreateDirectory($destDir) | Out-Null
+            $srcRoot = if ($wheelDir) { Join-Path $work $wheelDir } else { $work }
 
-            $stagedUv = Join-Path $work "uv.exe"
+            $stagedUv = Join-Path $srcRoot "uv.exe"
             if (-not (Test-Path -LiteralPath $stagedUv)) {
                 substep "uv.exe was not present in $asset." "Yellow"
                 return $false
@@ -6779,7 +7238,7 @@ exit 0
             # install rather than leaving half a set behind quietly.
             $ok = $true
             foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
-                $src = Join-Path $work $exe
+                $src = Join-Path $srcRoot $exe
                 if (-not (Test-Path -LiteralPath $src)) { continue }
                 $dst = Join-Path $destDir $exe
                 try {
@@ -6841,7 +7300,7 @@ exit 0
         # winget unavailable or it didn't put uv on PATH: install the pinned
         # release directly (ARM64 runners, machines without the Store).
         if (-not (Test-UvVersionOk)) {
-            Install-UvFromRelease | Out-Null
+            if (@(Install-UvFromRelease)[-1] -ne $true -and $script:UvReleaseUnfetched -and (Use-MirrorSpare uvbin)) { Install-UvFromRelease | Out-Null }
             Refresh-SessionPath
         }
     }
@@ -6873,7 +7332,6 @@ exit 0
     # installer is a command-not-found.
     Write-StudioRootOwnerMarker -Root $StudioHome
     Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
-
     # Bytecode compilation can exceed uv's 60s default on slow machines ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
         $env:UV_COMPILE_BYTECODE_TIMEOUT = "180"
@@ -6901,6 +7359,13 @@ exit 0
     # The existing interpreter's platform tag, read before any rollback move takes it away.
     $script:PrevVenvPlatformTag = $null
     $script:StudioVenvRollbackActive = $false
+    # Set only by --no-rollback, so a branch that needs the previous tree can tell
+    # "already deleted on purpose" from "not moved aside yet".
+    $script:StudioVenvRollbackDiscarded = $false
+    # Set by the discard itself, so the disk-full remedy describes what happened rather than what
+    # was requested.
+    $script:StudioVenvDiscardSucceeded = $false
+    $script:StudioVenvDiscardLeftover = $null
     $script:StudioVenvRollbackPartial = $false
     # Reset per run: under `irm | iex` the script scope IS the caller's session.
     $script:PrevTorchVer = ""
@@ -6998,6 +7463,46 @@ exit 0
         return ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue))
     }
 
+    # A wedged torch import or a hanging Intel driver init -- what the XPU probes below exist to
+    # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
+    # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
+    # deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
+    # (timeout, crash, exception) reads as .Ok = $false; .Error carries WHICH one, since stderr
+    # used to be drained and discarded, leaving a driver-level DLL load error and a missing torch
+    # indistinguishable. Defined above the Intel scan: PowerShell binds a function when it runs.
+    function Invoke-BoundedPythonProbe {
+        param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
+        $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
+        if (-not $PythonExe -or -not $Code) { return $result }
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $PythonExe
+            $psi.Arguments = "-c `"$Code`""
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+                try { $proc.Kill() } catch {}
+                # Synthesised, not read back: waiting on the reader tasks of a wedged child
+                # would reintroduce the hang this helper exists to bound.
+                $result.Error = "python did not answer within $TimeoutSec seconds"
+                return $result
+            }
+            $result.Output = $outTask.GetAwaiter().GetResult()
+            # Kept, not discarded: the only place a failed probe's OSError / WinError text exists.
+            $result.Error = $errTask.GetAwaiter().GetResult()
+            $result.Ok = ($proc.ExitCode -eq 0)
+            return $result
+        } catch {
+            $result.Error = $_.Exception.Message
+            return $result
+        }
+    }
+
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
         $stamp = Get-Date -Format "yyyyMMddHHmmss"
@@ -7044,13 +7549,56 @@ exit 0
             }
             throw
         }
+        # --no-rollback / UNSLOTH_INSTALL_NO_ROLLBACK: drop the old environment now instead of at
+        # commit, for the disk-constrained cross-volume case. The rename still happens first, so
+        # uv never builds into an occupied path. Clearing the state before the delete is what the
+        # commit path does too: an interrupt must not restore a half-deleted backup.
+        if ($script:StudioNoRollback) {
+            $discard = $script:StudioVenvRollbackDir
+            # The Intel scan rescues an adapter WMI cannot classify by asking the PREVIOUS
+            # environment's torch whether XPU works, and deleting that tree takes the only
+            # interpreter that can answer. Opting out must cost disk, never hardware, so the
+            # verdict is taken first and the scan reads it. Wrapped, because a probe that cannot
+            # run must not cost the rename.
+            try {
+                $_discardPy = Join-Path $discard "Scripts\python.exe"
+                if (Test-Path -LiteralPath $_discardPy -ErrorAction SilentlyContinue) {
+                    $_discardXpu = Invoke-BoundedPythonProbe -PythonExe $_discardPy `
+                        -Code 'import torch; print(torch.xpu.is_available())'
+                    if ($_discardXpu.Ok -and $_discardXpu.Output -match '(?m)^\s*True\s*$') {
+                        $script:StudioPreservedXpuVerdict = $true
+                    }
+                }
+            } catch { }
+            $script:StudioVenvRollbackActive = $false
+            $script:StudioVenvRollbackDir = $null
+            # Distinct from "never started". Inactive alone cannot tell the two apart, and the
+            # ARM64 migration below reads it to decide whether it still has a tree to move.
+            $script:StudioVenvRollbackDiscarded = $true
+            # The helper already names the reason it could not delete. What it must not do is
+            # report success anyway: a tree left behind by an open handle, a reparse point or a
+            # long path frees none of the space this flag exists to free.
+            if (Remove-StudioVenvTreeWithRetry -Path $discard -Label "previous environment" -LinkAware) {
+                $script:StudioVenvDiscardSucceeded = $true
+                substep "previous environment discarded (--no-rollback); a failed install cannot be undone"
+            } else {
+                $script:StudioVenvDiscardLeftover = $discard
+                substep "it is no longer used for rollback; remove $discard by hand to reclaim the space." "Yellow"
+            }
+            return
+        }
         substep "previous environment preserved for rollback"
     }
 
     function Remove-StudioVenvTreeWithRetry {
         param(
             [Parameter(Mandatory = $true)][string]$Path,
-            [Parameter(Mandatory = $true)][string]$Label
+            [Parameter(Mandatory = $true)][string]$Label,
+            # Only the --no-rollback discard asks for this. Test-StudioPathPresent is the stricter
+            # check and arguably the right default, but making it the default would change what
+            # this reports on installs that never passed the flag, and this change is meant to be
+            # invisible to them.
+            [switch]$LinkAware
         )
         $lastError = $null
         for ($attempt = 1; $attempt -le 3; $attempt++) {
@@ -7059,7 +7607,12 @@ exit 0
             } catch {
                 $lastError = $_.Exception.Message
             }
-            if (-not (Test-Path -LiteralPath $Path)) { return $true }
+            # Under -LinkAware, Test-Path is not enough: it follows a directory reparse point, so
+            # a dangling one that could not be unlinked reads as absent and this would report a
+            # removal that did not happen. The discard acts on that answer by clearing the
+            # rollback state and telling the user the environment is gone.
+            $stillThere = if ($LinkAware) { Test-StudioPathPresent -Path $Path } else { Test-Path -LiteralPath $Path }
+            if (-not $stillThere) { return $true }
             if ($attempt -lt 3) { Start-Sleep -Milliseconds (250 * $attempt) }
         }
         Write-StudioLine "[WARN] Could not remove $Label at $Path" -ForegroundColor Yellow
@@ -7320,8 +7873,14 @@ exit 0
         if ((Get-HostMachineArch) -eq "arm64" -and (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
             $script:PrevVenvPlatformTag = Get-PythonPlatformTag $VenvPython
         }
-        # New layout already exists -- replace only after preserving rollback copy.
-        substep "preserving existing environment for rollback..."
+        # New layout already exists -- replace only after preserving rollback copy, unless the
+        # caller asked for no copy at all, in which case this line would be contradicted by the
+        # "discarded" one Start-StudioVenvRollback prints a moment later.
+        if ($script:StudioNoRollback) {
+            substep "moving the existing environment aside..."
+        } else {
+            substep "preserving existing environment for rollback..."
+        }
         try {
             Start-StudioVenvRollback -ExistingDir $VenvDir
         } catch {
@@ -7397,10 +7956,23 @@ exit 0
         # anything the user pip-installed there is not reinstalled. The old tree is kept
         # under $StudioHome as unsloth_studio.arm64.* rather than deleted with the ordinary
         # rollback, so it can still be read: $script:StudioVenvRollbackPreserve below.
-        substep "the ARM64 environment is kept under $StudioHome as unsloth_studio.arm64.*;" "Yellow"
-        substep "re-install any extra packages you had added to it, or set UNSLOTH_ALLOW_ARM64_PYTHON=1 to keep it." "Yellow"
+        # Only when there is a tree to keep. Under --no-rollback it is either already gone or
+        # about to be, and the arms below say which; printing this as well leaves the user
+        # looking for an unsloth_studio.arm64.* that was never written, and told that packages
+        # they are about to lose are recoverable.
+        if (-not ($script:StudioVenvRollbackDiscarded -or $script:StudioNoRollback)) {
+            substep "the ARM64 environment is kept under $StudioHome as unsloth_studio.arm64.*;" "Yellow"
+            substep "re-install any extra packages you had added to it, or set UNSLOTH_ALLOW_ARM64_PYTHON=1 to keep it." "Yellow"
+        }
         try {
-            if ($script:StudioVenvRollbackActive) {
+            if ($script:StudioVenvRollbackDiscarded) {
+                # --no-rollback already deleted it. There is nothing to move and nothing to
+                # keep, and calling Start-StudioVenvRollback here would try to rename a
+                # directory that is gone, throw, and take the whole migration out through
+                # Exit-InstallFailure -- after the environment had already been destroyed.
+                substep "the previous ARM64 environment was discarded by --no-rollback, so there is" "Yellow"
+                substep "nothing to copy packages out of; the x64 environment is built fresh." "Yellow"
+            } elseif ($script:StudioVenvRollbackActive) {
                 # The ordinary reinstall already moved this environment aside; a second
                 # Start-StudioVenvRollback would try to move a directory that is no longer
                 # there and throw, taking every architecture migration out through
@@ -7409,9 +7981,18 @@ exit 0
                 $script:StudioVenvRollbackPreserve = $true
             } else {
                 Start-StudioVenvRollback -ExistingDir $VenvDir
-                # After the move, so a rollback that never started cannot leave the flag set
-                # for some later unrelated rollback to act on.
-                $script:StudioVenvRollbackPreserve = $true
+                if ($script:StudioVenvRollbackDiscarded) {
+                    # --no-rollback discarded it inside that call, so there is no tree to
+                    # preserve and setting the flag would mark one that does not exist. The
+                    # user asked for no old environments kept and that is what they get; say
+                    # so here, where a moment ago the message promised the opposite.
+                    substep "the previous ARM64 environment was discarded by --no-rollback rather than kept;" "Yellow"
+                    substep "the x64 environment is built fresh, and extra packages are not recoverable." "Yellow"
+                } else {
+                    # After the move, so a rollback that never started cannot leave the flag set
+                    # for some later unrelated rollback to act on.
+                    $script:StudioVenvRollbackPreserve = $true
+                }
             }
         } catch {
             Write-StudioLine "[ERROR] Could not move the ARM64 environment aside: $($_.Exception.Message)" -ForegroundColor Red
@@ -7445,7 +8026,14 @@ exit 0
         if ($_woaMigPlatform -ne "win-arm64") {
             $_woaMigLabel = if ($_woaMigPlatform) { $_woaMigPlatform } else { "unknown" }
             substep "windows on arm: the migrated environment is $_woaMigLabel, not win-arm64 --" "Yellow"
-            substep "rebuilding it as ARM64; the previous one is kept for rollback." "Yellow"
+            # Varied, not printed flat: the call below discards under --no-rollback, and telling
+            # the user the previous environment is recoverable when it is about to be deleted is
+            # the same promise the ARM64 mismatch branch above already had to stop making.
+            if ($script:StudioNoRollback) {
+                substep "rebuilding it as ARM64; --no-rollback discards the previous one rather than keeping it." "Yellow"
+            } else {
+                substep "rebuilding it as ARM64; the previous one is kept for rollback." "Yellow"
+            }
             try {
                 Start-StudioVenvRollback -ExistingDir $VenvDir
                 # Left set, the install step below would --no-deps into an empty venv.
@@ -7972,14 +8560,13 @@ exit 0
     }
 
     # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
-    # answers. Versions are major*1000 + minor*10. Read in a runspace of its own under a deadline:
-    # a wedged driver can block inside the library, and the deadline leaves that runspace behind.
+    # answers. Versions are major*1000 + minor*10. One runspace + deadline per reader: a shared one let slow NVML starve CUDA.
     function Read-NvidiaLibraryRaw {
-        param([int]$TimeoutMs = 10000)
+        param([int]$TimeoutMs = 30000)
         $type = Get-NvidiaLibraryProbeType
         if (-not $type) { return "" }
         $reader = {
-            param($T)
+            param($T, $Which)
             function Read-Nvml {
                 if ($T::nvmlInit_v2() -ne 0) { return "" }
                 try {
@@ -8021,26 +8608,30 @@ exit 0
                 return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
             }
             $r = ""
-            try { $r = Read-Nvml } catch { $r = "" }
-            if (-not $r) { try { $r = Read-Cuda } catch { $r = "" } }
+            try { if ($Which -eq "nvml") { $r = Read-Nvml } else { $r = Read-Cuda } } catch { $r = "" }
             return "$r"
         }
-        $ps = $null; $handle = $null
-        try {
-            $ps = [powershell]::Create()
-            $null = $ps.AddScript($reader.ToString()).AddArgument($type)
-            $handle = $ps.BeginInvoke()
-            if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutMs)) { return "" }
-            return "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
-        } catch { return "" }
-        finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+        foreach ($which in @("nvml", "cuda")) {
+            $ps = $null; $handle = $null; $r = ""
+            try {
+                $ps = [powershell]::Create()
+                $null = $ps.AddScript($reader.ToString()).AddArgument($type).AddArgument($which)
+                $handle = $ps.BeginInvoke()
+                if ($handle.AsyncWaitHandle.WaitOne($TimeoutMs)) {
+                    $r = "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
+                }
+            } catch { $r = "" }
+            finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+            if ($r) { return $r }
+        }
+        return ""
     }
 
     # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
     # host whose nvidia-smi is absent, stale or hangs (#9255). Twin of studio/nvidia_probe.py.
     # Cached. $null, or @{ Source; CudaMajor; CudaMinor; ComputeCaps ("8.9" strings); Count }.
     function Get-NvidiaLibraryInventory {
-        param([int]$TimeoutSec = 10)
+        param([int]$TimeoutSec = 30)
         if ($script:NvidiaLibraryInventoryProbed) { return $script:NvidiaLibraryInventory }
         $script:NvidiaLibraryInventoryProbed = $true
         $script:NvidiaLibraryInventory = $null
@@ -8653,47 +9244,6 @@ exit 0
     # true on unmapped arches too, and those install CPU torch.
     $AmdHasGpuWheels = [bool]($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch))
 
-    # ── Bounded "ask the venv python" probe ──
-    # A wedged torch import or a hanging Intel driver init -- what the XPU probes below exist to
-    # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
-    # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
-    # deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
-    # (timeout, crash, exception) reads as .Ok = $false; .Error carries WHICH one, since stderr
-    # used to be drained and discarded, leaving a driver-level DLL load error and a missing torch
-    # indistinguishable. Defined above the Intel scan: PowerShell binds a function when it runs.
-    function Invoke-BoundedPythonProbe {
-        param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
-        $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
-        if (-not $PythonExe -or -not $Code) { return $result }
-        try {
-            $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = $PythonExe
-            $psi.Arguments = "-c `"$Code`""
-            $psi.RedirectStandardOutput = $true
-            $psi.RedirectStandardError = $true
-            $psi.UseShellExecute = $false
-            $psi.CreateNoWindow = $true
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            $outTask = $proc.StandardOutput.ReadToEndAsync()
-            $errTask = $proc.StandardError.ReadToEndAsync()
-            if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-                try { $proc.Kill() } catch {}
-                # Synthesised, not read back: waiting on the reader tasks of a wedged child
-                # would reintroduce the hang this helper exists to bound.
-                $result.Error = "python did not answer within $TimeoutSec seconds"
-                return $result
-            }
-            $result.Output = $outTask.GetAwaiter().GetResult()
-            # Kept, not discarded: the only place a failed probe's OSError / WinError text exists.
-            $result.Error = $errTask.GetAwaiter().GetResult()
-            $result.Ok = ($proc.ExitCode -eq 0)
-            return $result
-        } catch {
-            $result.Error = $_.Exception.Message
-            return $result
-        }
-    }
-
     # Bounded Win32_VideoController scan: the query can block forever on a degraded WMI
     # repository, -ErrorAction only suppresses reported errors, and -OperationTimeoutSec is not
     # enforced for the local COM session this uses, so out of process with a wall-clock kill is
@@ -8808,6 +9358,13 @@ exit 0
         # A rerun has already moved the old venv to $script:StudioVenvRollbackDir and put an
         # empty one in its place, so probing $VenvPython would ask an interpreter with no torch.
         # Ask the preserved environment instead -- that is the migrated runtime this rescues.
+        # --no-rollback deleted that environment, so the answer was taken before it went. Same
+        # verdict, same effect: opting out of the rollback copy must not narrow the device set.
+        if ($script:StudioPreservedXpuVerdict) {
+            $HasIntelGpu = $true
+            $script:IsIntelXpu = $true
+            if (-not $IntelGpuLabel) { $IntelGpuLabel = "Intel GPU (detected by PyTorch XPU)" }
+        }
         $_xpuProbePy = $VenvPython
         if ($script:StudioVenvRollbackDir) {
             $_rollbackPy = Join-Path $script:StudioVenvRollbackDir "Scripts\python.exe"
@@ -9008,6 +9565,10 @@ exit 0
         if ($NvidiaSmiExe) {
             try {
                 $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
+                if ($LASTEXITCODE -eq 124) {
+                    substep "nvidia-smi did not answer within 10s; retrying with a 45s limit..." "Yellow"
+                    $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe -TimeoutSec 45
+                }
                 if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
                     $major = [int]$Matches[1]; $minor = [int]$Matches[2]
                 }
@@ -9022,6 +9583,9 @@ exit 0
                 return "$baseUrl/cpu"
             } else {
                 substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
+                $pinHint = if ($env:UNSLOTH_PYTORCH_MIRROR) { "UNSLOTH_TORCH_INDEX_FAMILY=" } else { "UNSLOTH_TORCH_INDEX_URL=$baseUrl/" }
+                substep "cu126 has no kernels for Blackwell (sm_100 / sm_120). To choose the wheel yourself, re-run with" "Yellow"
+                substep "  ${pinHint}cu128   (or cu130 on a driver that supports CUDA 13)" "Yellow"
                 return "$baseUrl/cu126"
             }
         }
@@ -9336,17 +9900,35 @@ exit 0
             "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
             "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
             "gfx1152" = "torch>=2.11.0,<2.12.0"
+            "gfx1030" = "torch>=2.11.0,<2.12.0"; "gfx1031" = "torch>=2.11.0,<2.12.0"
+            "gfx1032" = "torch>=2.11.0,<2.12.0"; "gfx1033" = "torch>=2.11.0,<2.12.0"
+            "gfx1034" = "torch>=2.11.0,<2.12.0"; "gfx1035" = "torch>=2.11.0,<2.12.0"
+            "gfx1036" = "torch>=2.11.0,<2.12.0"; "gfx1100" = "torch>=2.11.0,<2.12.0"
+            "gfx1101" = "torch>=2.11.0,<2.12.0"; "gfx1102" = "torch>=2.11.0,<2.12.0"
+            "gfx1103" = "torch>=2.11.0,<2.12.0"
         }
         # Companions track the torch ceiling for a consistent trio on AMD's per-arch index.
         $torchvisionFloorMap = @{
             "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
             "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
             "gfx1152" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1030" = "torchvision>=0.26.0,<0.27.0"; "gfx1031" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1032" = "torchvision>=0.26.0,<0.27.0"; "gfx1033" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1034" = "torchvision>=0.26.0,<0.27.0"; "gfx1035" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1036" = "torchvision>=0.26.0,<0.27.0"; "gfx1100" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1101" = "torchvision>=0.26.0,<0.27.0"; "gfx1102" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1103" = "torchvision>=0.26.0,<0.27.0"
         }
         $torchaudioFloorMap = @{
             "gfx1201" = "torchaudio>=2.11.0,<2.12.0"; "gfx1200" = "torchaudio>=2.11.0,<2.12.0"
             "gfx1151" = "torchaudio>=2.11.0,<2.12.0"; "gfx1150" = "torchaudio>=2.11.0,<2.12.0"
             "gfx1152" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1030" = "torchaudio>=2.11.0,<2.12.0"; "gfx1031" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1032" = "torchaudio>=2.11.0,<2.12.0"; "gfx1033" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1034" = "torchaudio>=2.11.0,<2.12.0"; "gfx1035" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1036" = "torchaudio>=2.11.0,<2.12.0"; "gfx1100" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1101" = "torchaudio>=2.11.0,<2.12.0"; "gfx1102" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1103" = "torchaudio>=2.11.0,<2.12.0"
         }
         $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
         if ($archFamily) {
@@ -9375,8 +9957,8 @@ exit 0
             # Only KNOWN-2.11 rocm (rocm7.2) gets the floor. Matches Test-RocmKnown211Version.
             $_pinRocm211 = ([int]$Matches[1] -eq 7 -and [int]$Matches[2] -eq 2)
         }
-        # Only the 2.11-allowlist gfx arches need the floor; others publish <2.11 and stay bare.
-        $_pinGfx211 = @('gfx120x-all', 'gfx1151', 'gfx1150', 'gfx1152') -contains $_pinLeaf
+        # Only the 2.11-allowlist gfx arches need the floor (gfx908 / gfx90a stay bare).
+        $_pinGfx211 = @('gfx120x-all', 'gfx1151', 'gfx1150', 'gfx1152', 'gfx103x-all', 'gfx110x-all') -contains $_pinLeaf
         if ($_pinGfx211 -or $_pinRocm211) {
             $ROCmIndexUrl = $TorchIndexUrl
             $ROCmTorchFloor = "torch>=2.11.0,<2.12.0"
@@ -9599,7 +10181,7 @@ exit 0
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.7" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.11" }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
@@ -9610,7 +10192,7 @@ exit 0
             # --no-deps means unsloth's own metadata is never read, so this spec IS the zoo
             # floor for this path. Keep it equal to the unsloth_zoo floor in pyproject.toml
             # (tests/test_installer_zoo_floor_parity.py enforces that).
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -9629,7 +10211,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -9881,7 +10463,7 @@ exit 0
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
             # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -9901,11 +10483,11 @@ exit 0
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
@@ -9942,7 +10524,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.6" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.7" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -10793,6 +11375,8 @@ sys.exit(2 if conflict else (0 if installed else 1))
 
 # Under `irm | iex` the script scope IS the caller's session; an earlier value must not leak.
 $script:WoaResolverEnvSaved = $null
+$script:MirrorEnvSaved = @{}
+$script:InstallTorchMirror = $null
 $script:WoaSessionOverrides = $null
 $script:TorchOverridesFile = $null
 try {
@@ -10806,6 +11390,11 @@ try {
             else { Set-Item "Env:$_woaEnvName" $_woaEnvValue }
         }
         $script:WoaResolverEnvSaved = $null
+    }
+    foreach ($_mirrorEnvName in @($script:MirrorEnvSaved.Keys)) {
+        $_mirrorEnvValue = $script:MirrorEnvSaved[$_mirrorEnvName]
+        if ($null -eq $_mirrorEnvValue) { Remove-Item "Env:$_mirrorEnvName" -ErrorAction SilentlyContinue }
+        else { Set-Item "Env:$_mirrorEnvName" $_mirrorEnvValue }
     }
     # UNSLOTH_KEPT_TORCH is a process-scoped handoff, and the session outlives the installer.
     Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue

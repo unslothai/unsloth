@@ -32,7 +32,7 @@ export const IGPU_CARVEOUT_NOTICE_TITLE = "This model could run faster";
  * of description floats it mid-toast, aligned to neither edge. Overridden here rather
  * than in that shared rule because every other toast's action IS the thing to do. */
 export const IGPU_CARVEOUT_ACTION_CLASS =
-  "!justify-self-end !h-[26px] !border !border-border !bg-transparent !px-3 " +
+  "!justify-self-end !h-[calc(26px*var(--ui-space-scale,1))] !border !border-border !bg-transparent !px-3 " +
   "!font-medium !text-foreground hover:!bg-accent";
 
 /** The model the notice on screen is about, so an unload can take it down.

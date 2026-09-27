@@ -399,13 +399,26 @@ test("selectModel weighs the config and the lease before confirming a reload", (
   // written only by a completed load, so this path must not adopt one.
   // Widened as the gate's preamble grows: what matters is that the guard opens the block
   // the identity check sits in, not how many reads it makes first.
+  // Scoped to the adoption short-circuit: the runtime also checks residency while
+  // cancelling a superseded run, and adopting an earlier occurrence would read this
+  // guard as missing.
   const guard = USE_CHAT_MODEL_RUNTIME.lastIndexOf(
     "if (!forceReload && !nativePathToken) {",
-    identityCheck,
+    confirmPrompt,
   );
   assert.ok(
     guard > 0,
     "the resident short-circuit no longer excludes native-lease picks",
+  );
+  // Scoped past the guard: the runtime also checks residency when it reconciles a
+  // cancelled run, and reading the first occurrence would measure the wrong block.
+  const adoptionIdentityCheck = USE_CHAT_MODEL_RUNTIME.indexOf(
+    "residentModelMatchesPick(status",
+    guard,
+  );
+  assert.ok(
+    adoptionIdentityCheck > guard && adoptionIdentityCheck < confirmPrompt,
+    "the resident short-circuit no longer wraps the identity check",
   );
 });
 

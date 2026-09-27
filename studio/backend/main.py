@@ -251,11 +251,10 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT or _MASTER_ROOT is not None:
     mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
 
 # huggingface_hub reads HF_ENDPOINT itself, at import, unnormalised and unvalidated.
-# Rewrite it first, before anything imports the library.
-from utils.hf_endpoint import normalize_hf_endpoint_env as _normalize_hf_endpoint_env
+from utils.hub_settings import apply_hub_settings as _apply_hub_settings
 
-_normalize_hf_endpoint_env()
-del _normalize_hf_endpoint_env
+_apply_hub_settings()
+del _apply_hub_settings
 
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
@@ -351,6 +350,7 @@ from routes import (
 from routes.llama import router as llama_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
+from routes.npu import router as npu_router
 from routes.preview import router as preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
@@ -365,10 +365,13 @@ from hub.utils.download_registry import (
     terminate_active_downloads as terminate_hub_downloads,
 )
 from routes.settings import router as settings_router
+from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
+from routes.library import router as library_router
 from routes.profile_stats import router as profile_stats_router
 from auth import policy as auth_policy, storage
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.utils.host_paths import redact_inventory_host_paths
 from utils.hardware import (
     start_background_detection,
     get_device,
@@ -395,11 +398,17 @@ from utils.client_ip import client_ip
 from utils.hf_endpoint import (
     DEFAULTS_BY_HEALTH_KEY as _HF_ENDPOINT_DEFAULTS,
     endpoint_is_reachable_by as _endpoint_is_reachable_by,
+    browser_hf_endpoint,
     csp_asset_sources,
     csp_connect_sources,
-    get_hf_endpoint,
     get_hf_datasets_server,
 )
+from hub import endpoint_proxy as _hub_endpoint_proxy
+from hub.modelscope.router import (
+    BROWSER_PREFIX as _MODELSCOPE_BROWSER_PREFIX,
+    build_router as _build_modelscope_router,
+)
+from utils.hub_settings import active_source as _active_hub_source
 from utils.update_status import (
     get_studio_install_source_status,
     get_studio_update_status,
@@ -746,6 +755,13 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         pass
 
+    try:
+        from hub.services.models.account_access import adopt_unnamed_public_proofs
+        from utils.hub_settings import operator_hf_endpoint
+        adopt_unnamed_public_proofs(operator_hf_endpoint())
+    except Exception:  # noqa: BLE001 -- unnamed proofs are then only ignored
+        _lifespan_log.warning("could not name recorded public-repo proofs", exc_info = True)
+
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
     if overlay_dir.is_dir():
@@ -1053,12 +1069,16 @@ def _reportable_hf_endpoints(request) -> dict:
     Cloudflare tunnel the peer IS loopback, being the local cloudflared process
     rather than the visitor, and an address it cannot determine reads as remote.
     """
+    from utils.hub_settings import saved_only_endpoints
+
+    # The owner-only settings route guards a saved endpoint; the browser reaches it through the relay.
+    hidden = saved_only_endpoints()
     reported = {}
     for key, value in (
-        ("hf_endpoint", get_hf_endpoint()),
+        ("hf_endpoint", browser_hf_endpoint()),
         ("hf_datasets_server", get_hf_datasets_server()),
     ):
-        if _endpoint_is_reachable_by(value, client_ip(request)):
+        if value not in hidden and _endpoint_is_reachable_by(value, client_ip(request)):
             reported[key] = value
         else:
             reported[key] = _HF_ENDPOINT_DEFAULTS[key]
@@ -1253,6 +1273,7 @@ import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
+    LIBRARY_UPLOAD_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
@@ -1274,6 +1295,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/settings",
     "/api/train",
     "/api/export",
+    "/api/library",
     "/mcp",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
@@ -1294,6 +1316,7 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/v1/videos",
     "/api/inference/videos",
 )
+_LIBRARY_UPLOAD_PATH = "/api/library/uploads"
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
@@ -1303,6 +1326,7 @@ _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     _DIFFUSION_DATASET_UPLOAD_PATH,
     *_STT_MULTIPART_UPLOAD_PATHS,
     *_VIDEO_MULTIPART_UPLOAD_PATHS,
+    _LIBRARY_UPLOAD_PATH,
 )
 # Which of those may arrive with no Content-Length and be counted instead of refused. Deliberately NOT the
 # whole set above: this middleware runs before authentication, and a counted body is a held body, so the dataset
@@ -1321,6 +1345,8 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
             upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
             VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
         )
+    if path.rstrip("/") == _LIBRARY_UPLOAD_PATH:
+        return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1572,7 +1598,11 @@ app.add_middleware(
     allow_headers = ["*"],
     # allow_headers is the REQUEST side; a response header is unreadable to JS unless
     # exposed, and Studio is cross-origin from tauri://localhost and tunnels.
-    expose_headers = ["X-Unsloth-Conflict-Kind"],
+    expose_headers = [
+        "X-Unsloth-Conflict-Kind",
+        "X-Unsloth-Refusal",
+        *_hub_endpoint_proxy.EXPOSED_HEADERS,
+    ],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight already cached by the browser
     # does not. Measured in WebKit: with Starlette's 600s default, a state-changing request still REACHED the
     # server after remote access was stopped. Keep the stale window short.
@@ -1612,6 +1642,7 @@ app.include_router(video_openai_router, prefix = "/api/inference", tags = ["infe
 app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"])
 
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(systemone_router, prefix = "/v1", tags = ["systemone"])
 # llama-server / Ollama discovery probes. Declares its own full paths (/props, /version, /api/tags, ...) so it
 # needs no prefix, and must be registered ahead of the SPA catch-all in serve_frontend() or /props and /version
 # go on resolving to index.html with a 200.
@@ -1625,11 +1656,13 @@ app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
+app.include_router(library_router, prefix = "/api/library", tags = ["library"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
+app.include_router(npu_router, prefix = "/api/npu", tags = ["npu"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
@@ -1637,6 +1670,20 @@ app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
+app.include_router(
+    _build_modelscope_router(browser = True),
+    prefix = _MODELSCOPE_BROWSER_PREFIX,
+    include_in_schema = False,
+)
+for _prefix, _upstream, _pages in (
+    (_hub_endpoint_proxy.HUB_PREFIX, browser_hf_endpoint, True),
+    (_hub_endpoint_proxy.DATASETS_SERVER_PREFIX, get_hf_datasets_server, False),
+):
+    app.include_router(
+        _hub_endpoint_proxy.build_router(_prefix, _upstream, anonymous_pages = _pages),
+        prefix = _prefix,
+        tags = ["hub"],
+    )
 app.include_router(youtube_router, prefix = "/api/youtube", tags = ["youtube"])
 
 # Re-wrap /v1/* client errors into OpenAI/Anthropic envelopes; non-/v1 keeps {"detail": ...}.
@@ -1914,6 +1961,17 @@ async def health_check(request: Request):
         # Unauthenticated on purpose: an endpoint URL is not a host fingerprint,
         # and the frontend needs it before a token exists.
         **_reportable_hf_endpoints(request),
+        "hub_source": _active_hub_source(),
+        "hub_proxy": _hub_endpoint_proxy.relay_path(
+            _hub_endpoint_proxy.HUB_PREFIX,
+            browser_hf_endpoint(),
+            _HF_ENDPOINT_DEFAULTS["hf_endpoint"],
+        ),
+        "datasets_server_proxy": _hub_endpoint_proxy.relay_path(
+            _hub_endpoint_proxy.DATASETS_SERVER_PREFIX,
+            get_hf_datasets_server(),
+            _HF_ENDPOINT_DEFAULTS["hf_datasets_server"],
+        ),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
     # Lockstep with /api/liveness: the launcher falls back to this route on a backend too old
@@ -1984,6 +2042,9 @@ async def health_check(request: Request):
         authed["chat_only_detail"] = snapshot[2]
         authed["device_type"] = device_type
         authed["apple_silicon"] = is_apple_silicon()
+        from utils.paths.file_manager import file_manager_kind
+
+        authed["file_manager"] = file_manager_kind()
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
         # Same for the deferred marker: the client reads it first and would keep the old reason.
@@ -2302,6 +2363,15 @@ def _dense_quant_supported() -> bool:
     return bool(_dense_quant_capability)
 
 
+def _nvfp4_diffusion_enabled() -> bool:
+    """Whether image and video generation may offer NVFP4 (``UNSLOTH_NVFP4_DIFFUSION``)."""
+    try:
+        from core.inference.diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+        return nvfp4_diffusion_enabled()
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return False
+
+
 def _dense_quant_schemes() -> list[str]:
     """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
     must never import torch, and the entry beside it refreshed both in one pass."""
@@ -2408,7 +2478,163 @@ def get_system_info(
         # pure read of that same pass.
         "dense_quant_supported": _dense_quant_supported(),
         "dense_quant_schemes": _dense_quant_schemes(),
+        # Torch-free env read, safe on this polled route.
+        "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
     }
+
+
+@app.get("/api/system/disk")
+def get_disk_space(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Free space where downloads land. One syscall, and nothing else.
+
+    Separate from /api/system because that route enumerates GPUs, reads package metadata and
+    samples CPU: fine for a screen the user is looking at, far too much to run on the chance
+    that a disk is filling. The low-disk notice asks for THIS instead, and only when a download
+    is about to start.
+
+    shutil.disk_usage is statvfs on Linux and macOS and GetDiskFreeSpaceExW on Windows, so this
+    is microseconds on every platform Studio runs on and needs no directory walk. Note that on
+    Windows it reports the quota available to the CALLING user, which is the number that decides
+    whether the download fits, so that difference is the correct one.
+
+    Measured at the models root rather than the filesystem root: those are different volumes
+    whenever HF_HUB_CACHE, or the Studio root, sits on another disk, and the free space that
+    matters is the one the bytes are going to.
+
+    Both roots that receive bytes are measured, not just the hub one. HF_XET_CACHE is resolved
+    independently of HF_HUB_CACHE and holds the Xet chunks every download now streams through,
+    so the two can sit on different volumes and the wrong one has ample room. The TIGHTEST
+    reading wins, because the volume that runs out first is the one that stops the download.
+    Deduplicated by device, so the ordinary install where both live on one disk still costs a
+    single syscall.
+    """
+    from utils.paths.storage_roots import hf_default_cache_dir, studio_root
+
+    # The ACTIVE caches, not the default ones. hf_default_cache_dir() is documented to ignore
+    # HF_HUB_CACHE and the Models Folder setting, so on a machine that moved its downloads to
+    # another volume it would answer about ~/.cache/huggingface, which has nothing to do with
+    # where the next model lands. One SQLite setting read, no walk.
+    roots = []
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        paths = get_hf_cache_paths()
+        roots.extend((paths.hub_cache, paths.xet_cache))
+    except Exception as exc:  # noqa: BLE001 - a settings read must not cost the reading
+        logger.debug(f"Could not resolve the active caches for the disk reading: {exc}")
+
+    def _locate(probe):
+        """(first existing ancestor, its device), or None when this root is unreadable.
+
+        Two failures that look alike and must not be treated alike. A MISSING directory is
+        ordinary, since the cache legitimately does not exist yet on a fresh install, and the
+        volume it would live on is its nearest existing parent. A permission error, an I/O
+        error or a network mount that is not answering is not missing: climbing past it would
+        report the parent filesystem's free space for a disk nothing could read, which is the
+        confidently wrong answer this route exists to avoid. Those leave the root unreadable.
+        """
+        try:
+            chain = [probe, *probe.parents]
+        except (OSError, ValueError, RuntimeError):
+            return None
+        for candidate in chain:
+            try:
+                return candidate, os.stat(candidate).st_dev
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError as exc:
+                logger.debug(f"Cache root {candidate} could not be read: {exc}")
+                return None
+        return None
+
+    def _read(candidate):
+        """The reading for one already-located directory, or None if it cannot be taken."""
+        try:
+            usage = shutil.disk_usage(candidate)
+        except (OSError, ValueError):
+            return None
+        return {
+            "path": str(candidate),
+            # Decimal GB, matching /api/system, so the two agree on screen.
+            "total_gb": round(usage.total / 1e9, 2),
+            "free_gb": round(usage.free / 1e9, 2),
+            "percent_used": (
+                round((usage.total - usage.free) / usage.total * 100, 1) if usage.total else 0
+            ),
+        }
+
+    # Locate first, THEN read. Deduplicating after the reading still paid a disk_usage per
+    # root, so the ordinary install with both caches on one disk was doing two probes to
+    # answer about one volume, which is the opposite of what the docstring promises and
+    # costs most on exactly the network mounts this is careful about.
+    located = []
+    seen = set()
+    unreadable = False
+    for root in roots:
+        found = _locate(root)
+        if found is None:
+            # An ACTIVE destination that cannot be read makes the whole answer unknown, rather
+            # than quietly leaving the other one to speak for it. Hub and Xet can sit on
+            # different volumes, so reporting the readable one's free space would be a
+            # confident number about a disk the download is not filling: the same mistake as
+            # climbing past an unreadable root, one level up.
+            unreadable = True
+            continue
+        candidate, device = found
+        if device in seen:
+            continue
+        seen.add(device)
+        located.append(candidate)
+
+    readings = [] if unreadable else [r for r in map(_read, located) if r is not None]
+    if not unreadable and len(readings) != len(located):
+        # A root that located but would not report is the same situation.
+        unreadable = True
+        readings = []
+
+    if unreadable:
+        # Nulls, not zeros, and not a fallback volume either: the caller reads this as
+        # "could not tell", which neither warns nor blocks a download.
+        return {"path": None, "total_gb": None, "free_gb": None, "percent_used": None}
+
+    if not readings:
+        # Nothing resolved: fall back to the same places the old reading used.
+        for probe in (hf_default_cache_dir(), studio_root(), Path(os.path.abspath(os.sep))):
+            found = _locate(probe)
+            reading = None if found is None else _read(found[0])
+            if reading is not None:
+                readings.append(reading)
+                break
+
+    if readings:
+        tightest = min(readings, key = lambda r: r["free_gb"])
+        answer = dict(tightest)
+        # An API key reaches this route through get_current_subject, and `path` is a raw host
+        # path naming the service account and its home layout. The repo already draws that
+        # boundary for the Hub inventory routes; a capacity reading is not a reason to cross
+        # it, and the low-disk client uses only the numbers.
+        #
+        # A managed account is the same disclosure by a different door: its session JWT also
+        # satisfies get_current_subject, and via_api_key is false for it, so the API-key test
+        # alone would hand it the owner's home layout. Resources is owner-only and
+        # /settings/caches sits behind _owner_settings_router, so the path is owner-only here
+        # too. Redacted rather than 403: requestStart and the poll loop call this for whoever
+        # is downloading, owner or not, and the numbers are what that caller needs. On a
+        # single-user install the context defaults to OWNER, so nothing changes.
+        #
+        # The INVENTORY redactor, not redact_host_paths: the latter runs _redact with
+        # redact_ambiguous_path=False and so leaves a field literally named "path" alone,
+        # which is the whole value here. Verified against the real helper, not assumed.
+        from utils.account_context import is_owner_context
+
+        return redact_inventory_host_paths(
+            answer, via_api_key = via_api_key or not is_owner_context()
+        )
+    # Every probe failed. Nulls, not zeros: diskPressure() reads a zero total as psutil having
+    # failed and a zero free as a full disk, and this is neither.
+    return {"path": None, "total_gb": None, "free_gb": None, "percent_used": None}
 
 
 @app.get("/api/system/gpu-visibility")

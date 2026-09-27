@@ -123,8 +123,10 @@ def test_mlx_install_respects_platform_mode_and_pins(
     if platform.startswith("macos"):
         # An update without torch announces the no-torch runtime deps on their own slot.
         # Two mac-arm slots: the MLX step, and the re-resolve after the core phase.
+        # The +1 is the diffusers main slot (11c), spent on every platform and every path.
         assert stack._TOTAL == (
             (12 if skip_base and not shared_base else 13)
+            + 1
             + 2 * int(enabled)
             + int(no_torch and not skip_base)
         )
@@ -270,11 +272,12 @@ def test_unsupported_apple_silicon_skips_mlx_without_failing_the_install(
     assert "MLX stack (skipped, no wheel for this macOS or Python)" in steps
     # A skipped step still spends its slot.
     # Two mac-arm slots even with no wheel: the re-resolve slot is spent unconditionally.
-    assert stack._TOTAL == (12 if skip_base and not shared_base else 13) + 2
+    # Plus the diffusers main slot (11c), which is likewise spent whatever it decides.
+    assert stack._TOTAL == (12 if skip_base and not shared_base else 13) + 1 + 2
 
 
 def test_supported_and_unsupported_hosts_share_one_progress_budget(monkeypatch):
-    """Same total either way, so the bar cannot end at 13/14 on an old Mac."""
+    """Same total either way, so the bar cannot end short of its own total on an old Mac."""
     _run_to_extras(
         monkeypatch,
         platform = "macos_arm",

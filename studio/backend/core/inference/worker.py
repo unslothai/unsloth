@@ -207,10 +207,16 @@ def _needs_nemotron_trust(model_name: str, hf_token: str | None = None) -> bool:
 def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     """Reconcile load_in_4bit with a LoRA adapter's recorded training method.
 
-    lora -> base is full precision (4bit off); qlora -> base is quantized (4bit
-    on); unknown method -> force off only when the base is not a -bnb-4bit repo.
+    A recorded unsloth_load_in_4bit wins; otherwise lora -> base is full precision
+    (4bit off); qlora -> base is quantized (4bit on); unknown method -> force off
+    only when the base is not a -bnb-4bit repo.
     A missing or unreadable adapter_config.json leaves the value unchanged.
     """
+    from utils.models.checkpoints import is_full_finetune_output
+
+    if load_in_4bit and not mc.is_lora and is_full_finetune_output(mc.path):
+        logger.info("Full fine-tune output has no quantization_config — setting load_in_4bit=False")
+        return False
     if not (mc.is_lora and mc.path):
         return load_in_4bit
 
@@ -223,6 +229,15 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     try:
         with open(adapter_cfg_path, encoding = "utf-8-sig") as f:
             adapter_cfg = json.load(f)
+        trained_in_4bit = adapter_cfg.get("unsloth_load_in_4bit")
+        if isinstance(trained_in_4bit, bool):
+            if trained_in_4bit != load_in_4bit:
+                logger.info(
+                    "adapter_config.json says unsloth_load_in_4bit=%s — setting load_in_4bit=%s",
+                    trained_in_4bit,
+                    trained_in_4bit,
+                )
+            return trained_in_4bit
         training_method = adapter_cfg.get("unsloth_training_method")
         if training_method == "lora" and load_in_4bit:
             logger.info("adapter_config.json says lora — setting load_in_4bit=False")

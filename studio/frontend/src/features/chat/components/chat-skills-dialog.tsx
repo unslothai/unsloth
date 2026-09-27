@@ -105,7 +105,7 @@ export function ChatSkillsDialog({
             return (
               <div
                 key={`${skill.source}:${skill.name}`}
-                className="rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-white/[0.06]"
+                className="rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
               >
                 <div className="flex items-start gap-3">
                   <div className="min-w-0 flex-1">

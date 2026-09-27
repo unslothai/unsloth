@@ -428,6 +428,10 @@ def test_a_git_requirement_is_matched_by_ref_not_version(monkeypatch, tmp_path) 
 
     monkeypatch.setattr(importlib.metadata, "distribution", _distribution(recorded))
     assert stack._direct_reference_is_installed(req, "triton_kernels") is True
+    # uv records the URL without ".git"; before this matched, every pass rebuilt the checkout.
+    uv_shape = {**recorded, "url": "https://example.invalid/triton"}
+    monkeypatch.setattr(importlib.metadata, "distribution", _distribution(uv_shape))
+    assert stack._direct_reference_is_installed(req, "triton_kernels") is True
 
     for broken in (
         {**recorded, "vcs_info": {"vcs": "git", "requested_revision": "main"}},
@@ -1079,7 +1083,7 @@ def test_every_install_entry_point_is_counted() -> None:
     source = STACK_PATH.read_text(encoding = "utf-8")
     tree = ast.parse(source)
     counted = {
-        "pip_install",
+        "_pip_install_once",
         "pip_install_try",
         "_uninstall_distribution",
         "_purge_recordless_distributions",
