@@ -381,13 +381,13 @@ def exclude_no_placement_params(device_map, model_class, config):
                     out[f"{prefix}.{tensor_name}" if prefix else tensor_name] = device
             module = getattr(module, part)
             prefix = f"{prefix}.{part}" if prefix else part
-    gib = sum(
-        t.numel() * t.element_size()
+    billions = sum(
+        t.numel()
         for n, t in list(meta.named_parameters()) + list(meta.named_buffers())
         if n in excluded
-    ) / 2**30
+    ) / 1e9
     print(
-        f"Unsloth: keeping {', '.join(excluded_modules)} ({gib:.1f} GiB, frozen) on CPU; "
+        f"Unsloth: keeping {', '.join(excluded_modules)} ({billions:.1f}B parameters, frozen) on CPU; "
         f"set UNSLOTH_PLACE_NO_PLACEMENT_PARAMS=1 to place it on the GPU instead."
     )
     del meta
