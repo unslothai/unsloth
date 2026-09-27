@@ -3,113 +3,108 @@
 
 "use client";
 
-import { AttachmentDocumentDialog } from "@/components/assistant-ui/attachment-document-dialog";
+
+import {
+  AttachmentDocumentDialog,
+  AttachmentViewer,
+} from "@/components/assistant-ui/attachment-document-dialog";
+import {
+  ATTACHMENT_PAGE_SCALES,
+  attachmentViewerMeta,
+} from "@/components/assistant-ui/attachment-viewer-meta";
 import { AudioPlayer } from "@/components/assistant-ui/audio-player";
+import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
+import type { AttachmentVideoPart } from "@/components/assistant-ui/attachment-selection";
 import {
   type AttachmentSource,
   useAttachmentSource,
 } from "@/components/assistant-ui/use-attachment-source";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import { CodeSourceView } from "@/components/code-source-view";
+import { ScaleMenu } from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   type AttachmentText,
+  ArtifactHtmlFrame,
   attachmentAudioSrc,
+  attachmentBodyText,
   attachmentTextLanguage,
   countAttachmentTextLines,
   parseAttachmentText,
   readAttachmentText,
   truncateAttachmentPreviewText,
 } from "@/features/chat";
-import { formatBytes } from "@/features/hub";
-import { MAX_HIGHLIGHT_CHARS, codeFence } from "@/lib/markdown-plugins";
+import { useT } from "@/i18n";
+import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { cn } from "@/lib/utils";
-import { code as codePlugin } from "@streamdown/code";
+import { PlayIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type FC,
   type PropsWithChildren,
+  type ReactNode,
   useEffect,
   useMemo,
   useState,
 } from "react";
-import { Streamdown } from "streamdown";
 
 type TextPreviewState =
   | { status: "loading" }
   | { status: "error" }
   | ({ status: "ready" } & AttachmentText);
 
-const SHIKI_THEME = ["github-light", "github-dark"] as [
-  "github-light",
-  "github-dark",
-];
+const WEB_PAGE_NAME = /\.(html?|xhtml)$/i;
 
-const AttachmentImage: FC<{ src: string }> = ({ src }) => {
-  const [isLoaded, setIsLoaded] = useState(false);
-  return (
-    <img
-      src={src}
-      alt="Preview"
-      className={cn(
-        "block h-auto max-h-[90dvh] w-auto max-w-[92vw] object-contain",
-        isLoaded
-          ? "aui-attachment-preview-image-loaded"
-          : "aui-attachment-preview-image-loading invisible",
-      )}
-      onLoad={() => setIsLoaded(true)}
-    />
-  );
-};
+const fetchBlob = (src: string): Promise<Blob> => fetch(src).then((response) => response.blob());
 
-const AttachmentPreviewTrigger: FC<PropsWithChildren> = ({ children }) => {
-  return (
-    <DialogTrigger
-      className="aui-attachment-preview-trigger cursor-pointer transition-colors hover:bg-accent/50"
-      asChild={true}
+const Zoomed: FC<{ scale: number; children: ReactNode }> = ({ scale, children }) => (
+  <div className="size-full overflow-hidden">
+    <div
+      className="origin-top-left"
+      style={{
+        width: `${100 / scale}%`,
+        height: `${100 / scale}%`,
+        transform: `scale(${scale})`,
+      }}
     >
       {children}
-    </DialogTrigger>
-  );
-};
+    </div>
+  </div>
+);
 
 const AttachmentImageDialog: FC<
-  PropsWithChildren<{ src: string; redactFromReload?: boolean }>
-> = ({ children, src, redactFromReload = false }) => {
+  PropsWithChildren<{ source: AttachmentSource; src: string; redactFromReload?: boolean }>
+> = ({ children, source, src, redactFromReload = false }) => {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [failed, setFailed] = useState(false);
   return (
-    <Dialog>
-      <AttachmentPreviewTrigger>{children}</AttachmentPreviewTrigger>
-      {/* Chrome-free lightbox: the image floats on the dimmed backdrop with
-          no dialog panel, and the close button sits in the screen corner. */}
-      <DialogContent
-        data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
-        overlayClassName="bg-black/70"
-        className="aui-attachment-preview-dialog-content top-0 left-0 grid h-dvh w-screen max-h-none max-w-none translate-x-0 translate-y-0 place-items-center overflow-hidden rounded-none border-0 bg-transparent p-0 shadow-none ring-0 sm:max-w-none [&>button]:fixed [&>button]:top-4 [&>button]:right-4 [&>button]:z-20 [&>button]:size-9 [&>button]:rounded-full [&>button]:bg-transparent [&>button]:text-white [&>button]:opacity-100 [&>button]:ring-0! [&>button]:hover:bg-white/25 [&>button]:hover:text-white [&_svg]:text-white"
-      >
-        <DialogTitle className="aui-sr-only sr-only">
-          Image Attachment Preview
-        </DialogTitle>
-        {/* Clicking the backdrop (anywhere off the image) closes the preview. */}
-        <DialogClose asChild={true}>
-          <div aria-hidden="true" className="absolute inset-0" />
-        </DialogClose>
-        <div className="aui-attachment-preview pointer-events-none relative z-10 flex items-center justify-center">
-          <span className="pointer-events-auto">
-            <AttachmentImage src={src} />
-          </span>
-        </div>
-      </DialogContent>
-    </Dialog>
+    <AttachmentViewer
+      trigger={children}
+      open={open}
+      onOpenChange={setOpen}
+      source={source}
+      meta={attachmentViewerMeta(source, source.file?.size)}
+      media={!failed}
+      noun="image"
+      redactFromReload={redactFromReload}
+      load={() => (source.file ? Promise.resolve(source.file) : fetchBlob(src))}
+    >
+      {failed ? (
+        <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>
+      ) : (
+        <img
+          src={src}
+          alt={source.name || "Image attachment"}
+          onError={() => setFailed(true)}
+          className="size-full object-contain"
+        />
+      )}
+    </AttachmentViewer>
   );
 };
 
-// Extraction only starts once the dialog has been opened: parsing every PDF or
+// Extraction only starts once the viewer has been opened: parsing every PDF or
 // spreadsheet in a thread up front would stall the composer.
 const useAttachmentTextPreview = (
   enabled: boolean,
@@ -155,51 +150,39 @@ const useAttachmentTextPreview = (
   return file ? fileState : sentState;
 };
 
-/**
- * The preview body: a source file keeps its syntax colours, prose stays plain.
- *
- * Highlighting is skipped past MAX_HIGHLIGHT_CHARS, the same ceiling the
- * transcript uses, so a long file still opens without tokenizing on the way in.
- */
-const AttachmentTextBody: FC<{ text: string; language: string | null }> = ({
-  text,
-  language,
-}) => {
-  const markdown = useMemo(() => {
-    if (!language || text.length > MAX_HIGHLIGHT_CHARS) {
-      return null;
-    }
-    const fence = codeFence(text);
-    return `${fence}${language}\n${text}\n${fence}`;
-  }, [text, language]);
-
-  if (!markdown) {
-    return (
-      <pre className="whitespace-pre-wrap break-words px-4 py-3 font-mono text-xs leading-relaxed">
-        {text}
-      </pre>
-    );
-  }
-
-  // streamdown draws its own card and language header, flattened here so the dialog panel is the only one
-  return (
-    <div className="[&_[data-streamdown=code-block-header]]:!hidden [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!rounded-none [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!px-4 [&_pre]:!py-3 [&_pre]:!text-xs [&_pre]:!leading-relaxed">
-      <Streamdown
-        mode="static"
-        plugins={{ code: codePlugin }}
-        controls={{ code: false }}
-        shikiTheme={SHIKI_THEME}
+const ViewButton: FC<{
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}> = ({ label, active, onClick, children }) => (
+  <Tooltip>
+    <TooltipTrigger asChild={true}>
+      <button
+        type="button"
+        aria-label={label}
+        aria-pressed={active}
+        onClick={onClick}
+        className={cn(
+          "flex size-9 shrink-0 items-center justify-center rounded-full outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring",
+          active && "bg-muted",
+        )}
       >
-        {markdown}
-      </Streamdown>
-    </div>
-  );
-};
+        {children}
+      </button>
+    </TooltipTrigger>
+    <TooltipContent>{label}</TooltipContent>
+  </Tooltip>
+);
 
 const AttachmentTextDialog: FC<
   PropsWithChildren<{ source: AttachmentSource; redactFromReload?: boolean }>
 > = ({ children, source, redactFromReload = false }) => {
+  const t = useT();
+  const [open, setOpen] = useState(false);
   const [opened, setOpened] = useState(false);
+  const [scale, setScale] = useState(1);
+  const [showCode, setShowCode] = useState(false);
   const state = useAttachmentTextPreview(
     opened,
     source.file,
@@ -207,90 +190,131 @@ const AttachmentTextDialog: FC<
     source.contentType,
     source.text,
   );
+  const ready = state.status === "ready" ? state : null;
   const preview = useMemo(
-    () =>
-      state.status === "ready"
-        ? truncateAttachmentPreviewText(state.text)
-        : undefined,
-    [state],
+    () => (ready ? truncateAttachmentPreviewText(ready.text) : undefined),
+    [ready],
   );
-  const language = useMemo(
-    () =>
-      state.status === "ready"
-        ? attachmentTextLanguage(source.name, state.label)
-        : null,
-    [state, source.name],
-  );
+  const truncated = Boolean(preview?.truncated || ready?.truncated);
+  // Highlighting stops at the transcript's ceiling so a long file opens without tokenizing.
+  const language = useMemo(() => {
+    if (!ready || !preview || preview.text.length > MAX_HIGHLIGHT_CHARS) return null;
+    return attachmentTextLanguage(source.name, ready.label);
+  }, [ready, preview, source.name]);
+  // A page's own HTML renders, as the Library shows it; text pulled out of a document never does.
+  const webPage = Boolean(ready && !ready.label && !truncated && WEB_PAGE_NAME.test(source.name));
   const meta = useMemo(() => {
-    if (state.status === "error") {
-      return "This file could not be read";
-    }
-    if (state.status !== "ready" || !preview) {
-      return "Reading file";
-    }
-    // Counting the capped text, not state.text: a sent attachment keeps its
+    if (state.status === "error") return "This file could not be read";
+    if (!ready || !preview) return "Reading file";
+    // Counting the capped text, not ready.text: a sent attachment keeps its
     // full payload in memory and splitting all of it would stall the webview.
     const lines = countAttachmentTextLines(preview.text);
-    return [
-      source.file ? formatBytes(source.file.size) : null,
+    return attachmentViewerMeta(
+      source,
+      source.file?.size,
       `${lines} ${lines === 1 ? "line" : "lines"}`,
-      state.label ? `text extracted from ${state.label}` : null,
-      preview.truncated || state.truncated ? "preview truncated" : null,
-    ]
-      .filter(Boolean)
-      .join(" · ");
-  }, [state, preview, source.file]);
+      ready.label && `text extracted from ${ready.label}`,
+      truncated && "preview truncated",
+    );
+  }, [state.status, ready, preview, source, truncated]);
+  // The preview caps a sent body, so the whole one is cut from the stored text on click.
+  const { file, text: sentText } = source;
+  const load = file
+    ? () => Promise.resolve<Blob>(file)
+    : ready && !ready.label && sentText !== undefined
+      ? () =>
+          Promise.resolve(
+            new Blob([attachmentBodyText(sentText)], { type: source.contentType || "text/plain" }),
+          )
+      : undefined;
+
+  let body: ReactNode;
+  if (!ready) {
+    body =
+      state.status === "error" ? (
+        <p className="m-auto text-sm text-muted-foreground">This file could not be read.</p>
+      ) : (
+        <Spinner className="m-auto size-6" />
+      );
+  } else if (!preview?.text.trim()) {
+    body = (
+      <p className="m-auto text-sm text-muted-foreground">
+        {truncated
+          ? "No readable text in the part of this file the preview reads."
+          : "No readable text in this file."}
+      </p>
+    );
+  } else if (webPage && !showCode) {
+    body = (
+      <Zoomed scale={scale}>
+        <ArtifactHtmlFrame code={preview.text} title={source.name} fill />
+      </Zoomed>
+    );
+  } else {
+    const code = truncated ? `${preview.text}\n\n…` : preview.text;
+    body = (
+      <Zoomed scale={scale}>
+        {language || webPage ? (
+          <CodeSourceView code={code} language={language ?? "html"} className="px-6 pb-6" />
+        ) : (
+          <pre className="size-full overflow-auto whitespace-pre-wrap break-words px-6 pb-6 font-mono text-sm leading-relaxed select-text">
+            {code}
+          </pre>
+        )}
+      </Zoomed>
+    );
+  }
 
   return (
-    <Dialog
-      onOpenChange={(isOpen) => {
-        if (isOpen) {
-          setOpened(true);
-        }
+    <AttachmentViewer
+      trigger={children}
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) setOpened(true);
       }}
-    >
-      <AttachmentPreviewTrigger>{children}</AttachmentPreviewTrigger>
-      <DialogContent
-        data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
-        className="aui-attachment-text-dialog-content gap-4 sm:max-w-2xl"
-      >
-        <DialogHeader className="gap-1 pr-10">
-          <DialogTitle className="truncate">
-            {source.name || "Attachment"}
-          </DialogTitle>
-          <DialogDescription className="text-xs">{meta}</DialogDescription>
-        </DialogHeader>
-        <div className="overflow-hidden rounded-2xl border bg-muted/40">
-          {state.status === "loading" ? (
-            <div className="flex h-32 items-center justify-center">
-              <Spinner className="size-5 text-muted-foreground" />
-            </div>
-          ) : preview?.text.trim() ? (
-            <div className="overlay-scrollbar-gutter max-h-[60dvh] overflow-y-auto">
-              <AttachmentTextBody text={preview.text} language={language} />
-            </div>
-          ) : (
-            <div className="px-4 py-6 text-muted-foreground text-sm">
-              {state.status === "error"
-                ? "This file could not be read."
-                : state.status === "ready" && state.truncated
-                  ? "No readable text in the part of this file the preview reads."
-                  : "No readable text in this file."}
+      source={source}
+      meta={meta}
+      media={false}
+      noun="file"
+      redactFromReload={redactFromReload}
+      load={load}
+      extra={
+        <>
+          <ScaleMenu
+            value={scale}
+            scales={ATTACHMENT_PAGE_SCALES}
+            onChange={(value) => setScale(Number(value))}
+          />
+          {webPage && (
+            <div className="mr-1 flex items-center gap-1">
+              <ViewButton label={t("library.preview.code")} active={showCode} onClick={() => setShowCode(true)}>
+                <CodeToggleIcon className="size-4.5" />
+              </ViewButton>
+              <ViewButton
+                label={t("library.preview.preview")}
+                active={!showCode}
+                onClick={() => setShowCode(false)}
+              >
+                <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-5" />
+              </ViewButton>
             </div>
           )}
-        </div>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    >
+      {body}
+    </AttachmentViewer>
   );
 };
 
 /**
- * The player, and the only place a sent clip's data URL is built.
+ * The player, and the only place a sent clip's data URL is built for playback.
  *
  * Joining the header onto the base64 payload copies up to MAX_AUDIO_SIZE of
  * it, and a transcript mounts `useAttachmentSource` once per tile and again
- * per dialog, so the join waits until DialogContent renders, which Radix only
- * does once the dialog is open.
+ * per dialog, so the join waits until the viewer renders its body, which it
+ * only does once open.
  */
 const AttachmentAudioBody: FC<{ source: AttachmentSource }> = ({ source }) => {
   const src = useMemo(() => {
@@ -303,36 +327,88 @@ const AttachmentAudioBody: FC<{ source: AttachmentSource }> = ({ source }) => {
   }, [source.src, source.audio, source.contentType, source.name]);
 
   return src ? (
-    <AudioPlayer src={src} filename={source.name || "attachment.wav"} />
+    <div className="m-auto w-full max-w-lg px-6">
+      <AudioPlayer src={src} filename={source.name || "attachment.wav"} />
+    </div>
   ) : null;
 };
 
 const AttachmentAudioDialog: FC<
   PropsWithChildren<{ source: AttachmentSource; redactFromReload?: boolean }>
 > = ({ children, source, redactFromReload = false }) => {
+  const [open, setOpen] = useState(false);
+  const { file, src, audio } = source;
   return (
-    <Dialog>
-      <AttachmentPreviewTrigger>{children}</AttachmentPreviewTrigger>
-      <DialogContent
-        data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
-        className="aui-attachment-audio-dialog-content gap-4 sm:max-w-lg"
-      >
-        <DialogHeader className="gap-1 pr-10">
-          <DialogTitle className="truncate">
-            {source.name || "Audio attachment"}
-          </DialogTitle>
-          <DialogDescription className="text-xs">
-            {[
-              source.file ? formatBytes(source.file.size) : null,
-              source.contentType || "audio",
-            ]
-              .filter(Boolean)
-              .join(" · ")}
-          </DialogDescription>
-        </DialogHeader>
-        <AttachmentAudioBody source={source} />
-      </DialogContent>
-    </Dialog>
+    <AttachmentViewer
+      trigger={children}
+      open={open}
+      onOpenChange={setOpen}
+      source={source}
+      meta={attachmentViewerMeta(source, file?.size)}
+      media={false}
+      noun="clip"
+      redactFromReload={redactFromReload}
+      // Built on click, like the player's: a sent clip is only base64 until someone asks for it.
+      load={
+        file
+          ? () => Promise.resolve(file)
+          : src || audio
+            ? () => fetchBlob(src ?? attachmentAudioSrc(audio!, source.contentType, source.name))
+            : undefined
+      }
+    >
+      <AttachmentAudioBody source={source} />
+    </AttachmentViewer>
+  );
+};
+
+const attachmentVideoSrc = (video: AttachmentVideoPart): string =>
+  video.data.startsWith("data:") ? video.data : `data:${video.mimeType};base64,${video.data}`;
+
+const AttachmentVideoBody: FC<{ source: AttachmentSource; onError: () => void }> = ({
+  source,
+  onError,
+}) => {
+  const src = useMemo(
+    () => source.src ?? (source.video ? attachmentVideoSrc(source.video) : undefined),
+    [source.src, source.video],
+  );
+  return src ? (
+    <video src={src} controls autoPlay onError={onError} className="size-full object-contain" />
+  ) : null;
+};
+
+const AttachmentVideoDialog: FC<
+  PropsWithChildren<{ source: AttachmentSource; redactFromReload?: boolean }>
+> = ({ children, source, redactFromReload = false }) => {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const { file, src, video } = source;
+  return (
+    <AttachmentViewer
+      trigger={children}
+      open={open}
+      onOpenChange={setOpen}
+      source={source}
+      meta={attachmentViewerMeta(source, file?.size)}
+      media={!failed}
+      noun="video"
+      redactFromReload={redactFromReload}
+      load={
+        file
+          ? () => Promise.resolve(file)
+          : src || video
+            ? () => fetchBlob(src ?? attachmentVideoSrc(video!))
+            : undefined
+      }
+    >
+      {failed ? (
+        <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>
+      ) : (
+        <AttachmentVideoBody source={source} onError={() => setFailed(true)} />
+      )}
+    </AttachmentViewer>
   );
 };
 
@@ -344,7 +420,7 @@ export const AttachmentPreviewDialog: FC<
 
   if (source.kind === "image") {
     return source.src ? (
-      <AttachmentImageDialog src={source.src} redactFromReload={redactFromReload}>
+      <AttachmentImageDialog source={source} src={source.src} redactFromReload={redactFromReload}>
         {children}
       </AttachmentImageDialog>
     ) : (
@@ -357,6 +433,16 @@ export const AttachmentPreviewDialog: FC<
       <AttachmentAudioDialog source={source} redactFromReload={redactFromReload}>
         {children}
       </AttachmentAudioDialog>
+    ) : (
+      children
+    );
+  }
+
+  if (source.kind === "video") {
+    return source.src || source.video ? (
+      <AttachmentVideoDialog source={source} redactFromReload={redactFromReload}>
+        {children}
+      </AttachmentVideoDialog>
     ) : (
       children
     );
