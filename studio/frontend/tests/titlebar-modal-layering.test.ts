@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -14,8 +16,17 @@ const OVERLAY_SLOTS = [
   "alert-dialog-overlay",
   "sheet-overlay",
 ];
+const DIALOG_SURFACE_CLASSES =
+  /<(?:DialogContent|AlertDialogContent|CommandDialog)\b(?:[^>]|=>)*?\bclassName="([^"]*)"/g;
+const WHOLE_WINDOW_CENTRE = /(?:^|\s)(?:max-sm:)?top-1\/2(?:\s|$)/;
 const MODAL_BAND_RULE =
   /:root:has\(([\s\S]*?)\)\s*\[data-slot="window-titlebar"\]\s*\{\s*background-color:/;
+
+/** Every component under src, so a new dialog cannot slip past. */
+const COMPONENTS = readdirSync(join(import.meta.dirname, "../src"), {
+  recursive: true,
+  encoding: "utf8",
+}).filter((path) => path.endsWith(".tsx"));
 
 function zIndex(block: string): number {
   const match = block.match(Z_INDEX_PATTERN);
@@ -54,4 +65,17 @@ test("the titlebar band is painted while a dimming modal backdrop is up", () => 
       slot,
     );
   }
+});
+
+// A top-* class at a call site makes twMerge drop the base's chrome-aware centre, so a plain
+// top-1/2 centres on the whole window and the titlebar covers the dialog's top.
+test("dialogs that set their own top still centre below the window chrome", () => {
+  let checked = 0;
+  for (const file of COMPONENTS) {
+    for (const [, classes] of readSrc(file).matchAll(DIALOG_SURFACE_CLASSES)) {
+      checked += 1;
+      assert.doesNotMatch(classes, WHOLE_WINDOW_CENTRE, file);
+    }
+  }
+  assert.ok(checked > 10, `only ${checked} dialog surfaces matched`);
 });
