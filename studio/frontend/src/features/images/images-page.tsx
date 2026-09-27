@@ -5322,7 +5322,6 @@ export function ImagesPage({
                 >
                   Generate
                 </Button>
-                {/* A resident full pipeline reloads by repo id alone; GGUF/single_file residents need a prior load. */}
                 {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
