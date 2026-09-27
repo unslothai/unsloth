@@ -100,7 +100,7 @@ $fns = @(
     "Test-StudioCanDefineNativeTypes", "Test-StudioEmitInChildProcess", "New-StudioDynamicAssembly",
     "New-StudioEmittedNativeType",
     "Initialize-StudioFinalPathNativeType", "Get-StudioNativeFinalPath",
-    "Get-StudioEarlyPython", "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython",
+    "Get-ElevationState", "Get-StudioEarlyPython", "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo",
