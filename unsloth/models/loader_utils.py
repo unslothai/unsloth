@@ -272,9 +272,11 @@ def _single_device_index(device_map):
             return int(device_map.split(":", 1)[1])
         except ValueError:
             return None
-    if device_map in ("cuda", "auto", "sequential", "balanced", "balanced_low_0") or isinstance(
-        device_map, _DefaultDeviceMap
-    ) or device_map in AUTOMATIC_DEVICE_MAPS:
+    if (
+        device_map in ("cuda", "auto", "sequential", "balanced", "balanced_low_0")
+        or isinstance(device_map, _DefaultDeviceMap)
+        or device_map in AUTOMATIC_DEVICE_MAPS
+    ):
         try:
             if DEVICE_TYPE_TORCH == "cuda" and torch.cuda.device_count() == 1:
                 return 0
@@ -332,7 +334,9 @@ def exclude_no_placement_params(device_map, model_class, config):
         with init_empty_weights():
             meta = model_class._from_config(config)
     except Exception as error:
-        print(f"Unsloth: could not build {model_class.__name__} on meta to place {names} ({error}).")
+        print(
+            f"Unsloth: could not build {model_class.__name__} on meta to place {names} ({error})."
+        )
         return device_map
     matched = {
         name
@@ -369,7 +373,7 @@ def exclude_no_placement_params(device_map, model_class, config):
             continue
         module = meta.get_submodule(key) if key else meta
         prefix = key
-        parts = path[len(key) + 1:].split(".") if key else path.split(".")
+        parts = path[len(key) + 1 :].split(".") if key else path.split(".")
         for part in parts:
             for child_name, _ in module.named_children():
                 if child_name != part:
@@ -381,11 +385,14 @@ def exclude_no_placement_params(device_map, model_class, config):
                     out[f"{prefix}.{tensor_name}" if prefix else tensor_name] = device
             module = getattr(module, part)
             prefix = f"{prefix}.{part}" if prefix else part
-    billions = sum(
-        t.numel()
-        for n, t in list(meta.named_parameters()) + list(meta.named_buffers())
-        if n in excluded
-    ) / 1e9
+    billions = (
+        sum(
+            t.numel()
+            for n, t in list(meta.named_parameters()) + list(meta.named_buffers())
+            if n in excluded
+        )
+        / 1e9
+    )
     print(
         f"Unsloth: keeping {', '.join(excluded_modules)} ({billions:.1f}B parameters, frozen) on CPU; "
         f"set UNSLOTH_PLACE_NO_PLACEMENT_PARAMS=1 to place it on the GPU instead."

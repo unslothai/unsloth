@@ -5,6 +5,7 @@ GPU transformers could not escape it (it only does so when the next device is a 
 FastModel sent the whole model to CPU and the first CUDA forward failed. The helper must
 place every other tensor where the map put it and leave the table out, and must return the
 map untouched for any model without the attribute."""
+
 import pytest
 import torch
 from torch import nn
@@ -25,7 +26,7 @@ class Table(nn.Module):
     def __init__(self):
         super().__init__()
         self.ngram_embedding = ScaledEmbedding(1000, 8)
-        self.register_buffer("offsets", torch.zeros(4, dtype=torch.long))
+        self.register_buffer("offsets", torch.zeros(4, dtype = torch.long))
 
 
 class Ple(nn.Module):
@@ -53,7 +54,7 @@ class Inner(nn.Module):
 class Model(nn.Module):
     _no_placement_params = ["ple.ple_embedding.ngram_embedding.weight"]
 
-    def __init__(self, config=None):
+    def __init__(self, config = None):
         super().__init__()
         self.model = Inner()
         self.lm_head = nn.Linear(8, 10)
@@ -75,7 +76,9 @@ def check(device_map, device):
     names = [n for n, _ in list(Model().named_parameters()) + list(Model().named_buffers())]
     table = "model.layers.1.ple.ple_embedding.ngram_embedding."
     # The whole owning module stays off the map, its weight_scale included.
-    assert not covered(device_map, table + "weight") and not covered(device_map, table + "weight_scale")
+    assert not covered(device_map, table + "weight") and not covered(
+        device_map, table + "weight_scale"
+    )
     for n in names:
         if not n.startswith(table):
             assert covered(device_map, n), n
@@ -113,26 +116,49 @@ def test_multi_gpu_string_left_to_transformers(monkeypatch):
 def test_real_qwen4_exp_on_meta(monkeypatch):
     mod = pytest.importorskip("transformers.models.qwen4_exp.modeling_qwen4_exp")
     from transformers.models.qwen4_exp.configuration_qwen4_exp import Qwen4ExpTextConfig
+
     cfg = Qwen4ExpTextConfig(
-        hidden_size=64, num_hidden_layers=4, num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-        indexer_n_heads=2, indexer_kv_heads=1, indexer_head_dim=16, indexer_budget=16, indexer_compress_ratio=4,
-        linear_num_key_heads=2, linear_num_value_heads=2, linear_key_head_dim=16, linear_value_head_dim=16,
-        num_experts=4, num_experts_per_tok=2, moe_intermediate_size=16, shared_expert_intermediate_size=16,
-        vocab_size=128, hc_count=2, hc_lowrank=8, ple_layer_ids=[2], ngram_vocab_size_base=100, eos_token_id=1,
+        hidden_size = 64,
+        num_hidden_layers = 4,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 16,
+        indexer_n_heads = 2,
+        indexer_kv_heads = 1,
+        indexer_head_dim = 16,
+        indexer_budget = 16,
+        indexer_compress_ratio = 4,
+        linear_num_key_heads = 2,
+        linear_num_value_heads = 2,
+        linear_key_head_dim = 16,
+        linear_value_head_dim = 16,
+        num_experts = 4,
+        num_experts_per_tok = 2,
+        moe_intermediate_size = 16,
+        shared_expert_intermediate_size = 16,
+        vocab_size = 128,
+        hc_count = 2,
+        hc_lowrank = 8,
+        ple_layer_ids = [2],
+        ngram_vocab_size_base = 100,
+        eos_token_id = 1,
     )
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
     out = exclude_no_placement_params("sequential", mod.Qwen4ExpForCausalLM, cfg)
     assert isinstance(out, dict)
     assert not covered(out, "model.layers.1.ple.ple_embedding.ngram_embedding.weight")
-    assert covered(out, "model.layers.1.ple.key_proj.weight") and covered(out, "model.layers.3.mlp.experts.down_proj")
+    assert covered(out, "model.layers.1.ple.key_proj.weight") and covered(
+        out, "model.layers.3.mlp.experts.down_proj"
+    )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
 def test_bnb_hooks_leave_the_cpu_table_alone():
     """A 4bit load used to see cuda + cpu parameters, dispatch the table as an offloaded
     'cpu' block, and copy it to the GPU on every forward (110 GB peak on Qwen3.8-Flash-Next
     truncated to 4 layers, 159 s for one step)."""
     from unsloth.models.vision import _attach_bnb_multidevice_hooks
+
     model = Model()
     model.is_loaded_in_4bit = True
     model.to("cuda:0")
@@ -143,7 +169,7 @@ def test_bnb_hooks_leave_the_cpu_table_alone():
     assert table.weight.device.type == "cpu"
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="needs 2 CUDA devices")
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs 2 CUDA devices")
 def test_split_ancestors_get_input_hooks():
     """A split model: the table's ancestors lost their dispatch hooks, so ids from cuda:0 met
     a buffer on cuda:1 inside the n-gram module (Qwen3.8-Flash-Next vision cell)."""

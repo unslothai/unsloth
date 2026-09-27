@@ -207,12 +207,17 @@ def _infer_device_map_from_loaded_model(model, skip = ()):
 
     def _assign(module, prefix):
         params = [
-            (n, p) for n, p in module.named_parameters(remove_duplicate = False)
+            (n, p)
+            for n, p in module.named_parameters(remove_duplicate = False)
             if (f"{prefix}.{n}" if prefix else n) not in skip
         ]
-        if not params and skip and any(
-            (f"{prefix}.{n}" if prefix else n) in skip
-            for n, _ in module.named_parameters(remove_duplicate = False)
+        if (
+            not params
+            and skip
+            and any(
+                (f"{prefix}.{n}" if prefix else n) in skip
+                for n, _ in module.named_parameters(remove_duplicate = False)
+            )
         ):
             return
         if not params:
@@ -433,6 +438,7 @@ def _hook_no_placement_ancestors(model):
     tensors sit on ONE card gets an input-aligning hook to that card; the table module
     itself stays unhooked (it gathers on CPU). No-op on one device."""
     from .loader_utils import no_placement_tensor_names
+
     unplaced = no_placement_tensor_names(model)
     if not unplaced:
         return 0
@@ -441,7 +447,9 @@ def _hook_no_placement_ancestors(model):
     except ImportError:
         return 0
     placed_devices = {
-        p.device for n, p in model.named_parameters() if n not in unplaced and p.device.type != "cpu"
+        p.device
+        for n, p in model.named_parameters()
+        if n not in unplaced and p.device.type != "cpu"
     }
     if len(placed_devices) < 2:
         return 0
@@ -460,7 +468,8 @@ def _hook_no_placement_ancestors(model):
                 continue
             devices = {
                 t.device
-                for n, t in list(module.named_parameters(prefix = path)) + list(module.named_buffers(prefix = path))
+                for n, t in list(module.named_parameters(prefix = path))
+                + list(module.named_buffers(prefix = path))
                 if n not in unplaced
             }
             if len(devices) != 1:
@@ -470,7 +479,9 @@ def _hook_no_placement_ancestors(model):
                 continue
             add_hook_to_module(
                 module,
-                AlignDevicesHook(execution_device = device, io_same_device = False, skip_keys = skip_keys),
+                AlignDevicesHook(
+                    execution_device = device, io_same_device = False, skip_keys = skip_keys
+                ),
             )
             hooked += 1
     return hooked
