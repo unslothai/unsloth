@@ -36,7 +36,9 @@ _BLOCK = 128
 _TOKENIZER_REPO = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 _KEEP_16BIT = "model.layers.1.self_attn.o_proj"
 
-needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "bitsandbytes 4bit needs a GPU")
+needs_cuda = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "bitsandbytes 4bit needs a GPU"
+)
 
 
 def _feature_unavailable():
@@ -48,7 +50,8 @@ def _feature_unavailable():
 
 
 needs_feature = pytest.mark.skipif(
-    _feature_unavailable() is not None, reason = f"fp8 -> 4bit loading unavailable: {_feature_unavailable()}"
+    _feature_unavailable() is not None,
+    reason = f"fp8 -> 4bit loading unavailable: {_feature_unavailable()}",
 )
 needs_fp8_gpu = pytest.mark.skipif(
     not torch.cuda.is_available() or torch.cuda.get_device_capability() < (8, 9),
@@ -73,7 +76,9 @@ def _quantize_block_fp8(weight):
 
 def _dequantize_reference(quant, scale):
     rows, cols = quant.shape
-    expanded = scale.float().repeat_interleave(_BLOCK, 0)[:rows].repeat_interleave(_BLOCK, 1)[:, :cols]
+    expanded = (
+        scale.float().repeat_interleave(_BLOCK, 0)[:rows].repeat_interleave(_BLOCK, 1)[:, :cols]
+    )
     return (quant.float() * expanded).to(torch.bfloat16)
 
 
@@ -143,7 +148,6 @@ def _build(root, moe):
     torch.manual_seed(0)
     if moe:
         from transformers import Qwen3MoeConfig, Qwen3MoeForCausalLM
-
         config = Qwen3MoeConfig(
             intermediate_size = 320,
             moe_intermediate_size = 192,  # ragged: 1.5 blocks
@@ -155,7 +159,6 @@ def _build(root, moe):
         model = Qwen3MoeForCausalLM(config)
     else:
         from transformers import Qwen3Config, Qwen3ForCausalLM
-
         config = Qwen3Config(intermediate_size = 320, **common)  # ragged: 2.5 blocks
         model = Qwen3ForCausalLM(config)
     model = model.to(torch.bfloat16)
@@ -207,7 +210,9 @@ def _assert_same(a, b):
             va, vb = ea[key], eb[key]
             if isinstance(va, torch.Tensor):
                 assert va.dtype == vb.dtype and va.shape == vb.shape, (name, key)
-                assert torch.equal(va.reshape(-1).view(torch.uint8), vb.reshape(-1).view(torch.uint8)), (name, key)
+                assert torch.equal(
+                    va.reshape(-1).view(torch.uint8), vb.reshape(-1).view(torch.uint8)
+                ), (name, key)
             else:
                 assert va == vb, (name, key)
 
@@ -228,7 +233,6 @@ def _load(loader, path, **kwargs):
 def _reference_config():
     from transformers import BitsAndBytesConfig
     from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
-
     return BitsAndBytesConfig(
         load_in_4bit = True,
         bnb_4bit_use_double_quant = True,
@@ -242,6 +246,7 @@ def _free(*models):
     for model in models:
         del model
     import gc
+
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -273,7 +278,8 @@ def test_moe_fp8_loads_nf4_experts_bit_identical(moe_pair):
     fp8_dir, deq_dir = moe_pair
     model = _load(FastModel, fp8_dir, load_in_4bit = True)
     experts = [
-        name for name, p in model.named_parameters()
+        name
+        for name, p in model.named_parameters()
         if ".experts." in name and type(p).__name__ == "Params4bit"
     ]
     # gate_up_proj and down_proj stacks on both layers go through Unsloth's bnb expert path.
@@ -304,7 +310,8 @@ def test_checkpoint_16bit_modules_stay_16bit(dense_pair):
         quantization_config = quantization_config.to_dict()
     # Saved with the model, so a reload of the 4bit save keeps it in 16bit too.
     assert any(
-        p.replace("\\", "").rstrip("$") == _KEEP_16BIT for p in quantization_config["llm_int8_skip_modules"]
+        p.replace("\\", "").rstrip("$") == _KEEP_16BIT
+        for p in quantization_config["llm_int8_skip_modules"]
     )
     _free(model)
 
@@ -389,7 +396,9 @@ def test_moe_merged_16bit_save_equals_dequantized_checkpoint(moe_pair, tmp_path)
         fp8_dir, max_seq_length = 64, dtype = torch.bfloat16, load_in_4bit = True
     )
     assert _count_4bit(model) > 0
-    model = FastModel.get_peft_model(model, r = 8, target_modules = ["q_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
+    model = FastModel.get_peft_model(
+        model, r = 8, target_modules = ["q_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    )
     # lora_B starts at zero, so the merge must give back the dequantized fp8 weights exactly,
     # read from the fp8 shards on disk rather than the NF4 copy in memory.
     model.save_pretrained_merged(str(tmp_path / "merged"), tokenizer, save_method = "merged_16bit")
@@ -436,12 +445,21 @@ def test_arming_needs_an_explicit_request(monkeypatch):
     monkeypatch.delenv("UNSLOTH_FP8_TO_NF4", raising = False)
     config = _fp8_config()
     # Outside a from_pretrained call nothing is explicit: today's behaviour.
-    assert check_and_disable_bitsandbytes_loading(config, load_in_4bit = True, verbose = False)[:2] == (False, False)
+    assert check_and_disable_bitsandbytes_loading(config, load_in_4bit = True, verbose = False)[:2] == (
+        False,
+        False,
+    )
     assert config.quantization_config["quant_method"] == "fp8"
 
     @fp8_to_nf4.track_explicit_4bit_request
-    def from_pretrained(model_name = None, load_in_4bit = True, **kwargs):
-        return check_and_disable_bitsandbytes_loading(config, load_in_4bit = load_in_4bit, verbose = False)
+    def from_pretrained(
+        model_name = None,
+        load_in_4bit = True,
+        **kwargs,
+    ):
+        return check_and_disable_bitsandbytes_loading(
+            config, load_in_4bit = load_in_4bit, verbose = False
+        )
 
     assert from_pretrained("x")[:2] == (False, False)
     config = _fp8_config()
@@ -463,7 +481,10 @@ def test_non_block_fp8_and_8bit_are_not_armed(monkeypatch):
     monkeypatch.setenv("UNSLOTH_FP8_TO_NF4", "1")
     config = _fp8_config()
     config.quantization_config.pop("weight_block_size")
-    assert check_and_disable_bitsandbytes_loading(config, load_in_4bit = True, verbose = False)[:2] == (False, False)
+    assert check_and_disable_bitsandbytes_loading(config, load_in_4bit = True, verbose = False)[:2] == (
+        False,
+        False,
+    )
     config = _fp8_config()
     assert check_and_disable_bitsandbytes_loading(
         config, load_in_4bit = False, load_in_8bit = True, verbose = False
@@ -474,7 +495,6 @@ def test_non_block_fp8_and_8bit_are_not_armed(monkeypatch):
 @needs_feature
 def test_scaled_weights_stored_as_integers_are_refused():
     from unsloth.models import fp8_to_nf4
-
     fp8_to_nf4._refuse_packed_scaled_weights(
         {"a.weight": "F8_E4M3", "a.weight_scale_inv": "F32", "b.weight": "BF16", "n.scale": "F32"}
     )
@@ -487,7 +507,10 @@ def test_packed_fp4_expert_checkpoints_are_not_armed(monkeypatch):
     monkeypatch.setenv("UNSLOTH_FP8_TO_NF4", "1")
     config = _fp8_config()
     config.quantization_config["expert_dtype"] = "fp4"
-    assert check_and_disable_bitsandbytes_loading(config, load_in_4bit = True, verbose = False)[:2] == (False, False)
+    assert check_and_disable_bitsandbytes_loading(config, load_in_4bit = True, verbose = False)[:2] == (
+        False,
+        False,
+    )
     assert config.quantization_config["quant_method"] == "fp8"
 
 

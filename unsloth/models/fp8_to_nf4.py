@@ -189,7 +189,13 @@ def _transformers_supports_fp8_to_nf4() -> Optional[str]:
         from transformers.quantizers.quantizer_bnb_4bit import Bnb4BitHfQuantizer  # noqa: F401
     except Exception:
         return "this transformers has no weight-conversion loader (transformers >= 5 is needed)"
-    for name in ("WeightConverter", "WeightRenaming", "ConversionOps", "rename_source_key", "spawn_materialize"):
+    for name in (
+        "WeightConverter",
+        "WeightRenaming",
+        "ConversionOps",
+        "rename_source_key",
+        "spawn_materialize",
+    ):
         if not hasattr(cml, name):
             return f"transformers.core_model_loading has no `{name}`"
     if not hasattr(cml.WeightTransform, "add_tensor"):
@@ -218,7 +224,12 @@ def fp8_to_nf4_armed(config) -> bool:
     return config is not None and getattr(config, UNSLOTH_FP8_TO_NF4_ATTR, None) is not None
 
 
-def maybe_arm_fp8_to_nf4(config, load_in_4bit, load_in_8bit, verbose = True) -> bool:
+def maybe_arm_fp8_to_nf4(
+    config,
+    load_in_4bit,
+    load_in_8bit,
+    verbose = True,
+) -> bool:
     """Arm an fp8 -> NF4 load. True means: keep load_in_4bit, the fp8 block was parked on `config`
     and removed from it, and the load must pass this `config` to from_pretrained."""
     if not load_in_4bit or load_in_8bit or config is None:
@@ -266,7 +277,10 @@ def maybe_arm_fp8_to_nf4(config, load_in_4bit, load_in_8bit, verbose = True) -> 
     try:
         stripped = []
         for holder in holders:
-            if str((_quant_dict(holder.quantization_config) or {}).get("quant_method", "")).lower() == "fp8":
+            if (
+                str((_quant_dict(holder.quantization_config) or {}).get("quant_method", "")).lower()
+                == "fp8"
+            ):
                 stripped.append(holder is not config)
                 try:
                     delattr(holder, "quantization_config")
@@ -350,10 +364,14 @@ class _LoadState:
         self.fp8_keys = {k for k, v in headers.items() if v in _FP8_SAFETENSORS}
         # `<module>.scale` is DeepSeek-V4's name for weight_scale_inv (renamed by the fp8 quantizer too).
         self.dot_scale_keys = {
-            k for k in headers if k.endswith(".scale") and (k[: -len(".scale")] + ".weight") in self.fp8_keys
+            k
+            for k in headers
+            if k.endswith(".scale") and (k[: -len(".scale")] + ".weight") in self.fp8_keys
         }
         # Activation scales (static fp8) are not needed for a weight dequant, so they are not tracked.
-        self.scale_keys = {k for k in headers if k.endswith(".weight_scale_inv")} | self.dot_scale_keys
+        self.scale_keys = {
+            k for k in headers if k.endswith(".weight_scale_inv")
+        } | self.dot_scale_keys
         self.native_keys = self.fp8_keys | self.scale_keys
         # Refined to the keys the model has a parameter for once the renaming is known (the
         # checkpoint's MTP layers, which transformers drops as unexpected, never reach a converter).
@@ -392,7 +410,13 @@ def _scale_as_fp32(scale: torch.Tensor) -> torch.Tensor:
     return scale.to(torch.float32)
 
 
-def _dequantize_block_fp8(weight, scale, block, dtype, out = None):
+def _dequantize_block_fp8(
+    weight,
+    scale,
+    block,
+    dtype,
+    out = None,
+):
     """``(weight.float() * scale_per_block).to(dtype)``, element by element the same product as a
     full expand of the scale grid, so the result is bit-identical to any dequant using that formula.
     Ragged last blocks (dims not a multiple of the block) are supported. Works in row chunks to
@@ -486,8 +510,11 @@ def _target_keeps_fp8(model, full_layer_name) -> bool:
 def _merge_accepts_stacked_tensor() -> bool:
     try:
         from transformers.core_model_loading import MergeModulelist
+
         stacked = torch.zeros(2, 1, 1)
-        merged = MergeModulelist(dim = 0).convert({"a": stacked}, source_patterns = ["a"], target_patterns = ["b"])
+        merged = MergeModulelist(dim = 0).convert(
+            {"a": stacked}, source_patterns = ["a"], target_patterns = ["b"]
+        )
         return next(iter(merged.values())) is stacked
     except Exception:
         return False
@@ -500,7 +527,12 @@ def _build_classes():
         """Dequantize fp8 sources with their scales to the load dtype; drop scale entries. `stack`
         pre-allocates the stacked output a following MergeModulelist(dim=0) accepts as is."""
 
-        def __init__(self, generic = False, stack = False, fuse = None):
+        def __init__(
+            self,
+            generic = False,
+            stack = False,
+            fuse = None,
+        ):
             self.generic = generic
             self.stack = stack
             # (weight patterns in merge order, concat dim): this op then replaces a following
@@ -508,7 +540,14 @@ def _build_classes():
             # stack, so the only 16-bit tensor ever held is that stack.
             self.fuse = fuse
 
-        def _fused(self, input_dict, target_patterns, state, model = None, full_layer_name = None):
+        def _fused(
+            self,
+            input_dict,
+            target_patterns,
+            state,
+            model = None,
+            full_layer_name = None,
+        ):
             patterns, cat_dim = self.fuse
             groups = []
             for pattern in patterns:
@@ -517,9 +556,15 @@ def _build_classes():
                     continue
                 weights = weights if isinstance(weights, list) else [weights]
                 scales = input_dict.get(_scale_pattern_for(pattern))
-                scales = (scales if isinstance(scales, list) else [scales]) if scales is not None else None
+                scales = (
+                    (scales if isinstance(scales, list) else [scales])
+                    if scales is not None
+                    else None
+                )
                 if scales is not None and len(scales) != len(weights):
-                    raise ValueError(f"Unsloth: {len(weights)} fp8 weights but {len(scales)} scales")
+                    raise ValueError(
+                        f"Unsloth: {len(weights)} fp8 weights but {len(scales)} scales"
+                    )
                 groups.append((weights, scales))
             if not groups:
                 return {}
@@ -529,7 +574,9 @@ def _build_classes():
                     raise ValueError("Unsloth: experts of one projection have different shapes")
             for shape in shapes[1:]:
                 if any(a != b for i, (a, b) in enumerate(zip(shape, shapes[0])) if i != cat_dim):
-                    raise ValueError(f"Unsloth: expert stacks {shapes} cannot be concatenated on dim {cat_dim}")
+                    raise ValueError(
+                        f"Unsloth: expert stacks {shapes} cannot be concatenated on dim {cat_dim}"
+                    )
             final = list(shapes[0])
             final[cat_dim] = sum(shape[cat_dim] for shape in shapes)
             device = groups[0][0][0].device
@@ -544,7 +591,9 @@ def _build_classes():
                     weights[i] = None
                     if weight.dtype in _FP8_DTYPES:
                         if scales is None:
-                            raise RuntimeError("Unsloth: an fp8 expert weight has no weight_scale_inv")
+                            raise RuntimeError(
+                                "Unsloth: an fp8 expert weight has no weight_scale_inv"
+                            )
                         _dequantize_block_fp8(weight, scales[i], state.block, dtype, out = part[i])
                         state.dequantized += 1
                     elif weight.is_floating_point() and weight.element_size() >= 2:
@@ -559,11 +608,19 @@ def _build_classes():
 
         @torch.no_grad()
         def convert(
-            self, input_dict, source_patterns = None, target_patterns = None, full_layer_name = None, model = None, **kwargs
+            self,
+            input_dict,
+            source_patterns = None,
+            target_patterns = None,
+            full_layer_name = None,
+            model = None,
+            **kwargs,
         ):
             state = _STATE
             if state is None:
-                raise RuntimeError("Unsloth: fp8 -> 4bit dequantize ran outside an fp8 -> 4bit load")
+                raise RuntimeError(
+                    "Unsloth: fp8 -> 4bit dequantize ran outside an fp8 -> 4bit load"
+                )
             block, dtype = state.block, _output_dtype(model, full_layer_name, state.dtype)
             if _target_keeps_fp8(model, full_layer_name):
                 # modules_to_convert (Qwen3.8's n-gram table): stays fp8 with its own per-tensor scale.
@@ -605,7 +662,9 @@ def _build_classes():
                 out = None
                 if self.stack and isinstance(value, list) and len(weights) > 0:
                     first = weights[0]
-                    out = torch.empty((len(weights), *first.shape), dtype = dtype, device = first.device)
+                    out = torch.empty(
+                        (len(weights), *first.shape), dtype = dtype, device = first.device
+                    )
                     outputs = out
                 else:
                     outputs = []
@@ -635,7 +694,9 @@ def _build_classes():
                     target = full_layer_name if full_layer_name is not None else "weight"
                     result[target] = outputs if out is not None else outputs[0]
                 else:
-                    result[key] = outputs if (out is not None or isinstance(value, list)) else outputs[0]
+                    result[key] = (
+                        outputs if (out is not None or isinstance(value, list)) else outputs[0]
+                    )
             return result
 
         @property
@@ -691,12 +752,17 @@ def _install_spawn_materialize_tag() -> bool:
         except TypeError:
             return job
         arguments = bound.arguments
-        if arguments.get("sharding_op", None) is not None or arguments.get("thread_pool", None) is not None:
+        if (
+            arguments.get("sharding_op", None) is not None
+            or arguments.get("thread_pool", None) is not None
+        ):
             return job
         tensor = arguments.get("tensor")
         device = arguments.get("device", None)
         try:
-            job._unsloth_native_materialize = functools.partial(materialize_copy, tensor, device, None)
+            job._unsloth_native_materialize = functools.partial(
+                materialize_copy, tensor, device, None
+            )
         except Exception:
             pass
         return job
@@ -724,7 +790,10 @@ def _keep_fp8_embeddings(model, patterns) -> int:
     """The checkpoint's modules_to_convert are fp8 embedding tables too large to expand (Qwen3.8's
     51B-weight n-gram table): keep them fp8 with their per-tensor scale, as an fp8 load does."""
     try:
-        from transformers.integrations.finegrained_fp8 import FP8Embedding, replace_with_fp8_embedding
+        from transformers.integrations.finegrained_fp8 import (
+            FP8Embedding,
+            replace_with_fp8_embedding,
+        )
     except Exception:
         return 0
     replace_with_fp8_embedding(model, list(patterns))
@@ -932,12 +1001,21 @@ def install_fp8_to_nf4_quantizer() -> bool:
             self._unsloth_fp8_model = None
             # Here, not before loading: only now are the caller's key_mapping renamings known.
             keep, quantize = [], []
-            quantize_all = os.environ.get(_ENV_QUANTIZE_ALL, "0").strip().lower() in ("1", "true", "on", "yes")
+            quantize_all = os.environ.get(_ENV_QUANTIZE_ALL, "0").strip().lower() in (
+                "1",
+                "true",
+                "on",
+                "yes",
+            )
             if model is not None:
-                keep, quantize, reached = _high_precision_linears(model, _STATE.headers, weight_conversions)
+                keep, quantize, reached = _high_precision_linears(
+                    model, _STATE.headers, weight_conversions
+                )
                 _STATE.expected_fp8 = _STATE.fp8_keys & reached
                 _STATE.expected_scales = {
-                    key for key in _STATE.scale_keys if _weight_key_of_scale(key) in _STATE.expected_fp8
+                    key
+                    for key in _STATE.scale_keys
+                    if _weight_key_of_scale(key) in _STATE.expected_fp8
                 }
             if quantize_all:
                 # UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT=1 quantizes them too, like a load of the bf16 repo.
@@ -956,7 +1034,9 @@ def install_fp8_to_nf4_quantizer() -> bool:
             rebuilt_from = {}
             if _STATE.dot_scale_keys:
                 updated.append(
-                    WeightRenaming(source_patterns = r"^(.+)\.scale$", target_patterns = r"\1.weight_scale_inv")
+                    WeightRenaming(
+                        source_patterns = r"^(.+)\.scale$", target_patterns = r"\1.weight_scale_inv"
+                    )
                 )
             for conv in weight_conversions:
                 if isinstance(conv, WeightConverter):
@@ -985,7 +1065,9 @@ def install_fp8_to_nf4_quantizer() -> bool:
                 self._unsloth_fp8_model = None
                 rebuilt_from = self._unsloth_fp8_rebuilt or {}
                 self._unsloth_fp8_rebuilt = None
-                _finish_fp8_to_nf4_load(model, state, rebuilt_from, getattr(self, "_unsloth_fp8_kept", 0))
+                _finish_fp8_to_nf4_load(
+                    model, state, rebuilt_from, getattr(self, "_unsloth_fp8_kept", 0)
+                )
             return super()._process_model_after_weight_loading(model, **kwargs)
 
     mapping["bitsandbytes_4bit"] = UnslothFp8ToNf4Bnb4BitHfQuantizer
@@ -1045,7 +1127,9 @@ def _finish_fp8_to_nf4_load(model, state, rebuilt_from, kept):
             f"Set {_ENV}=0 to load the fp8 weights as they are."
         )
     kept_fp8 = (
-        f" {state.kept_fp8} fp8 embedding shards (modules_to_convert) stay fp8." if state.kept_fp8 else ""
+        f" {state.kept_fp8} fp8 embedding shards (modules_to_convert) stay fp8."
+        if state.kept_fp8
+        else ""
     )
     kept_note = (
         f" {kept} Linear layers the checkpoint stores in 16bit stay in 16bit "
