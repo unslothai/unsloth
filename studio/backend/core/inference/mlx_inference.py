@@ -2665,7 +2665,6 @@ class MLXInferenceBackend:
         if max_new_tokens is not None and int(max_new_tokens) == int(budget):
             max_new_tokens = None
         if prompt_tokens is None:
-            # Counted once: preparing media for sizing and again for admission doubles the cost.
             try:
                 prompt_tokens = range(self._count_prompt_tokens(prompt, images, audio, videos))
             except Exception as exc:
