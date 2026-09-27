@@ -47,10 +47,8 @@ def _gh(args: list[str]) -> tuple[int, str, str]:
 
 
 # What GitHub says when the commit is genuinely not there, measured:
-#
 #     gh api repos/unslothai/unsloth/commits/deadbeef00
 #     {"message":"No commit found for SHA: deadbeef00", ..., "status":"422"}
-#
 # Only that message releases the kernel. Status codes do not say it: 404 is
 # also an unreadable repository, 422 an ambiguous abbreviation, and reading
 # either as "gone" would delete the only copy of the result.

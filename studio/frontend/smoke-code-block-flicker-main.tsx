@@ -2,20 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Harness page for tests/studio/playwright_code_block_flicker.py: the real Thread, streaming a
-// reply that ends in code fences, sampling every code block's rendered HEIGHT per frame.
-//
-// The mechanism it catches: streamdown sets `content-visibility: auto` with
-// `contain-intrinsic-size: auto 200px` inline on every code-block wrapper. Such an element has no
-// LAST REMEMBERED SIZE until it has rendered once, so it lays out at the 200px fallback. The
-// re-render at the end of a stream REPLACES the node, and a replaced node is new, so it can lay
-// out at 200px for a frame before snapping back. That is the "reload" flicker src/index.css
-// describes. So the measurement is not a timing: did a TALL block go SHORT and back, and did the
-// thread's scrollHeight dip with it -- per frame, the resolution a flicker is visible at.
-//
-// Same shape as smoke-heavy-thread.html: vite entry, no backend, auth, GPU or model. Thread is
-// real because `.aui-thread-root` is where the override lives; a bare ThreadPrimitive.Root lacks
-// that class and would report no flicker on every tree.
-//
+// reply that ends in code fences, sampling every code block's rendered HEIGHT per frame. The
+// mechanism it catches: streamdown sets `content-visibility: auto` with `contain-intrinsic-size:
+// auto 200px` inline on every code-block wrapper. Such an element has no LAST REMEMBERED SIZE until
+// it has rendered once, so it lays out at the 200px fallback. The re-render at the end of a stream
+// REPLACES the node, and a replaced node is new, so it can lay out at 200px for a frame before
+// snapping back. That is the "reload" flicker src/index.css describes. So the measurement is not a
+// timing: did a TALL block go SHORT and back, and did the thread's scrollHeight dip with it -- per
+// frame, the resolution a flicker is visible at. Same shape as smoke-heavy-thread.html: vite entry,
+// no backend, auth, GPU or model. Thread is real because `.aui-thread-root` is where the override
+// lives; a bare ThreadPrimitive.Root lacks that class and would report no flicker on every tree.
 // useLocalRuntime with a generator adapter, not a seeded import: the flicker is at stream
 // FINALIZATION, and `thread.import` never passes through the running -> complete transition.
 
@@ -65,16 +61,13 @@ window.fetch = (input, init) => {
   return realFetch(input, init);
 };
 
-// ── CSS variants ────────────────────────────────────────────────────
-//
-// Each variant is a stylesheet appended AFTER src/index.css, not an edit to the tree. `?css=tree`
-// is the pass/fail run; the others exist so "no flicker" can be shown to be a property of the
-// tree rather than of the fixture.
-//
-// The prefix is deliberately OVERSPECIFIC. The tree's rules are scoped
-// (`.aui-thread-root[data-status="running"] ...`), so a variant at the obvious specificity loses
-// to them exactly where it matters and measures the tree under another name -- that once made
-// the pre-override variant report zero flickers, reading as "nothing to fix".
+// ── CSS variants ──────────────────────────────────────────────────── Each variant is a stylesheet
+// appended AFTER src/index.css, not an edit to the tree. `?css=tree` is the pass/fail run; the
+// others exist so "no flicker" can be shown to be a property of the tree rather than of the
+// fixture. The prefix is deliberately OVERSPECIFIC. The tree's rules are scoped
+// (`.aui-thread-root[data-status="running"] ...`), so a variant at the obvious specificity loses to
+// them exactly where it matters and measures the tree under another name -- that once made the
+// pre-override variant report zero flickers, reading as "nothing to fix".
 const HERE = ".aui-thread-root.aui-thread-root.aui-thread-root";
 const BLOCK = '[data-streamdown="code-block"]';
 
@@ -138,8 +131,6 @@ if (variantCss) {
   style.textContent = `@layer utilities { ${variantCss} }`;
   document.head.append(style);
 }
-
-// ── content ─────────────────────────────────────────────────────────
 
 const PROSE = [
   "The reception of a long thread is decided by what the renderer does on every interaction rather than by what it did once at load.",
@@ -208,8 +199,6 @@ function reply(fences: number, linesPerFence: number): string {
   }
   return parts.join("\n\n");
 }
-
-// ── sampling ────────────────────────────────────────────────────────
 
 type Frame = {
   t: number;

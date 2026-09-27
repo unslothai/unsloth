@@ -341,6 +341,7 @@ mod appimage_environment_tests {
 const STUDIO_MANAGED_RUNTIME_MUTEX_PREFIX: &str = "Global\\UnslothStudioManagedEnvironment-";
 
 pub(crate) const STUDIO_RUNTIME_GATE_HANDOFF_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF";
+pub(crate) const STUDIO_RUNTIME_GATE_BUSY: &str = "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again.";
 const STUDIO_RUNTIME_GATE_ACQUIRE_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_ACQUIRE";
 
 #[cfg(windows)]
@@ -402,10 +403,7 @@ fn acquire_named_studio_runtime_launch_guard(
             unsafe {
                 let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
             }
-            Err(
-                "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again."
-                    .to_string(),
-            )
+            Err(STUDIO_RUNTIME_GATE_BUSY.to_string())
         }
         _ => {
             let error = std::io::Error::last_os_error();
@@ -520,26 +518,23 @@ fn acquire_file_studio_runtime_launch_guard(
     use std::os::fd::AsRawFd;
 
     std::fs::create_dir_all(home)
-        .map_err(|error| format!("Could not create the Studio runtime lock directory: {error}"))?;
+        .map_err(|error| format!("Could not create the Unsloth runtime lock directory: {error}"))?;
     let path = home.join(".studio-runtime.lock");
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(&path)
-        .map_err(|error| format!("Could not open the Studio runtime lock: {error}"))?;
+        .map_err(|error| format!("Could not open the Unsloth runtime lock: {error}"))?;
     let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if result == 0 {
         return Ok(StudioManagedRuntimeLaunchGuard { file });
     }
     let error = std::io::Error::last_os_error();
     if error.kind() == std::io::ErrorKind::WouldBlock {
-        return Err(
-            "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again."
-                .to_string(),
-        );
+        return Err(STUDIO_RUNTIME_GATE_BUSY.to_string());
     }
-    Err(format!("Could not acquire the Studio runtime lock: {error}"))
+    Err(format!("Could not acquire the Unsloth runtime lock: {error}"))
 }
 
 #[cfg(unix)]
@@ -1173,6 +1168,66 @@ pub(crate) fn owned_backend_snapshot(
     Ok(snapshot)
 }
 
+/// Whether the handle that names *port* still refers to a process that EXISTS: a handle
+/// outlives its process, and another process can bind the freed port.
+/// Anything this cannot read leaves the handle trusted, so a running backend is never declared dead.
+pub(crate) fn owned_backend_on_port_is_running(state: &BackendState, port: u16) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let handle = match proc.owned.as_mut() {
+        Some(handle) => handle,
+        None => return false,
+    };
+    if handle.port() != Some(port) {
+        return false;
+    }
+    match handle {
+        OwnedBackendHandle::Spawned { child, .. } => !matches!(child.try_wait(), Ok(Some(_))),
+        OwnedBackendHandle::Adopted { pid, .. } => backend_pid_is_running(*pid),
+    }
+}
+
+/// Whether anything of ours COULD be on *port*, which is the question ABSENCE needs.
+///
+/// A handle we spawned names no port until a probe validates one, and for that whole window
+/// `owned_backend_on_port_is_running` calls our own starting backend somebody else's: right
+/// for presence, wrong here, since a refusal about a port we are about to bind proves nothing.
+pub(crate) fn owned_backend_could_bind_port(state: &BackendState, port: u16) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let handle = match proc.owned.as_mut() {
+        Some(handle) => handle,
+        None => return false,
+    };
+    match handle {
+        // A port it has not claimed yet is a port it may still claim.
+        OwnedBackendHandle::Spawned {
+            child,
+            reported_port,
+            ..
+        } => {
+            reported_port.is_none_or(|bound| bound == port)
+                && !matches!(child.try_wait(), Ok(Some(_)))
+        }
+        OwnedBackendHandle::Adopted {
+            port: owned_port,
+            pid,
+            ..
+        } => *owned_port == port && backend_pid_is_running(*pid),
+    }
+}
+
+/// Whether *pid* still exists: false only when the pid is PROVABLY gone. A zombie has exited
+/// but is unreaped, which `kill(pid, 0)` alone cannot see.
+pub(crate) fn backend_pid_is_running(pid: u32) -> bool {
+    crate::desktop_backend_owner::pid_is_not_dead(pid)
+        && !crate::process_identity::is_zombie(pid)
+}
+
 pub(crate) fn record_owned_backend_port_if_current(
     state: &BackendState,
     generation: u64,
@@ -1227,6 +1282,60 @@ pub(crate) fn clear_adopted_backend_if_current(
 
     warn!("Clearing adopted backend state after {reason}");
     proc.owned = None;
+    proc.port = None;
+    proc.diagnostics_session = None;
+    proc.adopted_watchdog_generation = None;
+    true
+}
+
+/// Drop a spawned backend handle whose child has provably exited, so a launch can spawn.
+///
+/// The counterpart of `clear_adopted_backend_if_current` for the arm this app owns. A
+/// `Spawned` handle with no validated port is normally a healthy cold start still
+/// importing torch, so a probe that does not verify is on its own no reason to clear
+/// anything: this fires only on an exit status the child has actually reported. Without
+/// it, a child that died without its stdout ever reaching EOF, which is the one case the
+/// crash detector in `read_output_stream` cannot see, leaves `has_owned_backend` true for
+/// the life of the app: every launch then answers `Backend is already running.` and every
+/// preflight answers `desktop_owned_backend_starting`.
+///
+/// Unlike the adopted case, this app wrote the owner file, so it is removed here too.
+pub(crate) fn clear_spawned_backend_if_exited(
+    state: &BackendState,
+    generation: u64,
+    reason: &str,
+) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if proc.generation != generation {
+        return false;
+    }
+    let status = match proc
+        .owned
+        .as_mut()
+        .and_then(OwnedBackendHandle::spawned_child_mut)
+    {
+        // One look, not the thirty of `exit_status_after_stdout_closed`. This runs on the
+        // preflight a window mount drives, so it must not block it for three seconds, and
+        // a child merely slow to be reaped is answered by the next preflight instead.
+        Some(child) => match child.try_wait() {
+            Ok(Some(status)) => status.to_string(),
+            Ok(None) => return false,
+            Err(error) => {
+                warn!("Could not read the spawned backend's exit status: {error}");
+                return false;
+            }
+        },
+        // Adopted, or nothing owned at all. Neither belongs to this function.
+        None => return false,
+    };
+
+    warn!("Clearing spawned backend state after {reason}; the child had exited: {status}");
+    if let Some(owned) = proc.owned.take() {
+        owned.remove_owner_metadata();
+    }
     proc.port = None;
     proc.diagnostics_session = None;
     proc.adopted_watchdog_generation = None;
@@ -1855,6 +1964,7 @@ fn windows_roots_from(
 /// PATH are absent: they are not single paths. Mirrors `_RELATIVE_PATH_ENV` in
 /// unsloth_cli/_system_dir_guard.py, held identical by a parity test.
 pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
+    "UNSLOTH_HOME",
     "UNSLOTH_STUDIO_HOME",
     "STUDIO_HOME",
     "UNSLOTH_STUDIO_DOCUMENTS_HOME",
@@ -1888,6 +1998,18 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "UNSLOTH_DG_SHIM",
     "UNSLOTH_COMPILE_LOCATION",
     "TORCHINDUCTOR_CACHE_DIR",
+    // storage_roots.py fills these only when blank, so a relative value the user set is kept as
+    // written and would name a different folder after the move.
+    "TORCH_EXTENSIONS_DIR",
+    "TORCH_HOME",
+    "TRITON_HOME",
+    "TRITON_CACHE_DIR",
+    "TRITON_DUMP_DIR",
+    "CUDA_CACHE_PATH",
+    "MPLCONFIGDIR",
+    "NUMBA_CACHE_DIR",
+    "DATA_DESIGNER_HOME",
+    "DATA_DESIGNER_MANAGED_ASSETS_PATH",
     "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR",
     "UNSLOTH_DIFFUSION_COND_CACHE_DIR",
     "HF_HOME",
@@ -1896,6 +2018,9 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "HF_XET_CACHE",
     "HF_DATASETS_CACHE",
     "HF_ASSETS_CACHE",
+    // transformers appends this to sys.path, so a relative value would import a
+    // different generated module after the move.
+    "HF_MODULES_CACHE",
     // huggingface_hub resolves the credential file from here; a relative value
     // would follow the child and silently lose access to gated repos.
     "HF_TOKEN_PATH",
@@ -2206,7 +2331,17 @@ fn names_a_path(name: &str, value: &str) -> bool {
 /// Names every managed spawn removes before starting the child: Tauri uses the
 /// legacy Unsloth root whatever the environment says. Resolving one can only
 /// invent a failure for a value the child is never going to see.
-const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"];
+///
+/// UNSLOTH_HOME moves the databases, assets and caches exactly as
+/// UNSLOTH_STUDIO_HOME does, plus the managed llama.cpp, node and whisper.cpp
+/// dirs. UNSLOTH_PORTABLE names no root but portable_mode() reads it on its own,
+/// repointing the Hugging Face and torch caches away from the shared user ones.
+pub(crate) const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &[
+    "UNSLOTH_HOME",
+    "UNSLOTH_STUDIO_HOME",
+    "STUDIO_HOME",
+    "UNSLOTH_PORTABLE",
+];
 
 /// Read only by the update and installer path (install_python_stack.py), so a
 /// stale value must not be able to fail a probe, a backend start or an auth
@@ -2252,6 +2387,58 @@ fn expand_windows_user(
         }
     };
     format!("{}{}", base, rest)
+}
+
+/// `~`, `~/rest` and `~name/rest` off Windows, the way posixpath.expanduser reads
+/// them, which is what the CLI this pins for reads them with.
+///
+/// The named form is the one that used to get away: `expand_windows_user` leaves
+/// `~alice` alone off Windows, so it fell through to the anchoring below and the
+/// child was handed `<cwd>/~alice/llama.cpp`, while the fingerprint in
+/// preflight::managed resolved the same value through getpwnam_r and watched
+/// Alice's tree. The two halves of one launch then graded different trees, so
+/// quarantining a file from the tree actually in use left the cached verdict
+/// standing. Same lookup here as there, so they cannot disagree.
+///
+/// An unknown name is left exactly as it arrived, which is also what
+/// expanduser does, and it is then anchored like any other relative value; both
+/// halves agree on that too.
+fn expand_posix_user(value: &str, home: Option<&std::path::Path>) -> String {
+    if !value.starts_with('~') {
+        return value.to_string();
+    }
+    let end = value[1..].find('/').map_or(value.len(), |offset| offset + 1);
+    let (name, rest) = (&value[1..end], &value[end..]);
+    if name.is_empty() {
+        // Bare `~`, which HOME answers.
+        return match home {
+            Some(home) => format!("{}{}", home.to_string_lossy(), rest),
+            None => value.to_string(),
+        };
+    }
+    match crate::preflight::managed::named_user_home(value, home) {
+        Some(resolved) => resolved.to_string_lossy().into_owned(),
+        None => value.to_string(),
+    }
+}
+
+/// Windows rules on Windows, the native ones off it, the same split every other
+/// reader in this function makes. Reading a POSIX value the Windows way is what
+/// left `~alice` unresolved.
+fn expand_user(
+    value: &str,
+    home: Option<&std::path::Path>,
+    username: Option<&str>,
+    windows: bool,
+) -> String {
+    if windows {
+        match home {
+            Some(home) => expand_windows_user(value, home, username),
+            None => value.to_string(),
+        }
+    } else {
+        expand_posix_user(value, home)
+    }
 }
 
 fn relative_override_pins_from(
@@ -2332,10 +2519,7 @@ fn relative_override_pins_from(
                 // that decides nothing here (an expanded %LOCALAPPDATA%, inline
                 // JSON, a 0/1 toggle) would be read as relative and refuse
                 // every spawn over a value no directory ever decided.
-                let entry = match home {
-                    Some(home) => expand_windows_user(entry, home, username.as_deref()),
-                    None => entry.to_string(),
-                };
+                let entry = expand_user(entry, home, username.as_deref(), windows);
                 let Some(entry) = expanded(name, &entry)? else {
                     continue;
                 };
@@ -2380,10 +2564,7 @@ fn relative_override_pins_from(
         let original = value.trim().to_string();
         // The tilde first and the variables second, the order the CLI guard uses,
         // so a value that names a folder through both reaches the same one.
-        let value = match home {
-            Some(home) => expand_windows_user(&original, home, username.as_deref()),
-            None => original.clone(),
-        };
+        let value = expand_user(&original, home, username.as_deref(), windows);
         let Some(value) = expanded(name, &value)? else {
             continue;
         };
@@ -2492,7 +2673,10 @@ fn relative_override_pins(
         // GetFullPathNameW on Windows, which is what knows each drive's own
         // current directory.
         |value| std::path::absolute(value).ok(),
-        dirs::home_dir().as_deref(),
+        // preflight::managed's own reader, not dirs::home_dir(): ntpath.expanduser
+        // answers USERPROFILE and dirs reads the known folder, so an overridden
+        // profile pinned the child to one tree while the fingerprint watched another.
+        crate::preflight::managed::tilde_home().as_deref(),
         skipped,
         cfg!(windows),
     )
@@ -3113,6 +3297,136 @@ mod tests {
         (port, tx, handle)
     }
 
+    // ── #9756: a spawned handle whose child has exited must not block the next launch ──
+    //
+    // The crash detector in `read_output_stream` clears the handle when the child's
+    // stdout reaches EOF, and `stop_backend_inner` clears it on a deliberate stop. A
+    // child that dies without either happening leaves the handle behind, and from then
+    // on `has_owned_backend` refuses every launch with "Backend is already running."
+    // while preflight reports `desktop_owned_backend_starting`.
+
+    #[cfg(unix)]
+    const ALREADY_EXITED: [&str; 3] = ["/bin/sh", "-c", "exit 3"];
+    #[cfg(unix)]
+    const STILL_RUNNING: [&str; 3] = ["/bin/sh", "-c", "exec sleep 30"];
+    #[cfg(windows)]
+    const ALREADY_EXITED: [&str; 3] = ["cmd", "/C", "exit 3"];
+    #[cfg(windows)]
+    const STILL_RUNNING: [&str; 3] = ["cmd", "/C", "ping -n 31 127.0.0.1"];
+
+    // Shaped like the real spawn in `start_backend`: a process group on Unix, a bare
+    // Child on Windows, where the app-wide job object already covers the tree.
+    fn spawn_test_child(args: &[&str]) -> Box<dyn ChildWrapper + Send> {
+        let mut cmd = Command::new(args[0]);
+        cmd.args(&args[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            let mut wrap = CommandWrap::from(cmd);
+            wrap.wrap(ProcessGroup::leader());
+            wrap.spawn().expect("spawn test child")
+        }
+        #[cfg(windows)]
+        {
+            Box::new(cmd.spawn().expect("spawn test child"))
+        }
+    }
+
+    // Reaped before the handle is built, so the test is about the clear and not about
+    // racing the kernel; `exit_status_after_stdout_closed_tests` already covers the race.
+    fn spawn_and_reap() -> Box<dyn ChildWrapper + Send> {
+        let mut child = spawn_test_child(&ALREADY_EXITED);
+        for _ in 0..100 {
+            match child.try_wait() {
+                Ok(Some(_)) => return child,
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(error) => panic!("could not poll the test child: {error}"),
+            }
+        }
+        panic!("the test child never exited");
+    }
+
+    fn state_with_spawned(child: Box<dyn ChildWrapper + Send>, generation: u64) -> BackendState {
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.generation = generation;
+            proc.port = Some(8888);
+            proc.owned = Some(OwnedBackendHandle::spawned(child, None, 4242, generation));
+        }
+        state
+    }
+
+    #[test]
+    fn a_dead_spawned_backend_is_cleared_and_stops_blocking_a_launch() {
+        let state = state_with_spawned(spawn_and_reap(), 5);
+        assert!(
+            state.lock().unwrap().has_owned_backend(),
+            "precondition: this is what makes start_backend answer Backend is already running."
+        );
+        assert!(clear_spawned_backend_if_exited(&state, 5, "test"));
+        let proc = state.lock().unwrap();
+        assert!(!proc.has_owned_backend(), "the dead handle still blocks a launch");
+        assert!(proc.port.is_none());
+        assert!(proc.diagnostics_session.is_none());
+    }
+
+    #[test]
+    fn a_live_spawned_backend_is_left_alone() {
+        // The regression guard that matters more than the fix: a handle with no
+        // validated port is usually a cold start still importing torch, and clearing it
+        // would abandon a backend that is about to come up.
+        let state = state_with_spawned(spawn_test_child(&STILL_RUNNING), 5);
+        assert!(!clear_spawned_backend_if_exited(&state, 5, "test"));
+        {
+            let mut proc = state.lock().unwrap();
+            assert!(proc.has_owned_backend(), "cleared a backend that was still running");
+            assert_eq!(proc.port, Some(8888));
+            if let Some(child) = proc
+                .owned
+                .as_mut()
+                .and_then(OwnedBackendHandle::spawned_child_mut)
+            {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    #[test]
+    fn a_dead_spawned_backend_from_an_older_generation_is_left_alone() {
+        // A launch that has already moved on owns the handle now.
+        let state = state_with_spawned(spawn_and_reap(), 5);
+        assert!(!clear_spawned_backend_if_exited(&state, 4, "test"));
+        assert!(state.lock().unwrap().has_owned_backend());
+    }
+
+    #[test]
+    fn an_adopted_backend_is_not_this_functions_business() {
+        // clear_adopted_backend_if_current owns that arm, and it probes liveness a
+        // different way: an adopted handle carries no child to try_wait on.
+        let state = new_backend_state();
+        let owner = crate::desktop_backend_owner::test_owner_state(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "desktop-owner-token",
+            8888,
+        );
+        {
+            let mut proc = state.lock().unwrap();
+            proc.generation = 5;
+            proc.owned = Some(OwnedBackendHandle::adopted(owner, 8888, 4242, 5));
+        }
+        assert!(!clear_spawned_backend_if_exited(&state, 5, "test"));
+        assert!(state.lock().unwrap().has_owned_backend());
+    }
+
+    #[test]
+    fn nothing_owned_is_not_an_error() {
+        let state = new_backend_state();
+        state.lock().unwrap().generation = 5;
+        assert!(!clear_spawned_backend_if_exited(&state, 5, "test"));
+    }
+
     #[test]
     fn stop_backend_rolls_back_shutdown_flag_when_adopted_stop_fails() {
         let (port, stop_listener, listener_thread) = listening_non_studio_port();
@@ -3327,11 +3641,13 @@ pub fn start_backend(
     #[cfg(target_os = "linux")]
     scrub_appimage_python_env(&mut cmd);
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // scrub so the spawned Python backend can't diverge. UNSLOTH_LLAMA_CPP_PATH
-    // is a pre-existing user-controlled llama.cpp dir override; keep it.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
+    // Tauri uses the legacy root whatever the environment says; scrub so the
+    // spawned Python backend can't diverge. Off the shared list, so a name added
+    // there cannot be honoured by the backend and missed here.
+    // UNSLOTH_LLAMA_CPP_PATH is a pre-existing user-controlled override; keep it.
+    for name in MANAGED_CHILD_SCRUBBED_ENV {
+        cmd.env_remove(name);
+    }
 
     // read_output_stream decodes as UTF-8; without these, Python encodes its
     // redirected streams with the locale code page and non-ASCII lands as U+FFFD.
@@ -3461,7 +3777,6 @@ pub fn start_backend(
     if let Some(stdout) = stdout {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
-        let shutdown_clone = Arc::clone(shutdown);
         let diagnostics_clone = diagnostics_state.clone();
         let backend_log_clone = backend_log.clone();
         std::thread::spawn(move || {
@@ -3469,7 +3784,6 @@ pub fn start_backend(
                 stdout,
                 &app_handle,
                 &state_clone,
-                &shutdown_clone,
                 &diagnostics_clone,
                 &backend_log_clone,
                 false,
@@ -3482,7 +3796,6 @@ pub fn start_backend(
     if let Some(stderr) = stderr {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
-        let shutdown_clone = Arc::clone(shutdown);
         let diagnostics_clone = diagnostics_state.clone();
         let backend_log_clone = backend_log.clone();
         std::thread::spawn(move || {
@@ -3490,7 +3803,6 @@ pub fn start_backend(
                 stderr,
                 &app_handle,
                 &state_clone,
-                &shutdown_clone,
                 &diagnostics_clone,
                 &backend_log_clone,
                 true,
@@ -3501,40 +3813,6 @@ pub fn start_backend(
     }
 
     Ok(generation)
-}
-
-pub(crate) fn request_staged_rollback_restart(app: &AppHandle, state: &BackendState) -> bool {
-    let home = diagnostics::studio_dir();
-    let recovered = match with_studio_runtime_launch_guard(|| {
-        if state
-            .lock()
-            .map(|process| process.has_owned_backend())
-            .unwrap_or(true)
-        {
-            return Ok(false);
-        }
-        crate::staged_update::recover_failed_activation(&home, || {})
-    }) {
-        Ok(recovered) => recovered,
-        Err(error) => {
-            error!("Staged backend rollback failed: {error}");
-            false
-        }
-    };
-    if !recovered {
-        return false;
-    }
-    #[cfg(target_os = "macos")]
-    match crate::schedule_staged_rollback_relaunch(app) {
-        Ok(()) => app.exit(0),
-        Err(error) => {
-            error!("Could not schedule staged rollback relaunch: {error}");
-            app.request_restart();
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    app.request_restart();
-    true
 }
 
 async fn generic_backend_health_ok(port: u16) -> bool {
@@ -3628,57 +3906,9 @@ async fn generic_backend_health_ok(port: u16) -> bool {
 const PORT_VALIDATION_RETRY_MIN: Duration = Duration::from_millis(250);
 const PORT_VALIDATION_RETRY_MAX: Duration = Duration::from_secs(5);
 
-fn pending_backend_validation(
-    required: Option<&str>,
-    readiness: &crate::desktop_backend_owner::OwnedBackendReadiness,
-    observed: Option<&str>,
-    torch_warm_in_progress: bool,
-) -> (bool, bool) {
-    let Some(required) = required else {
-        return (true, false);
-    };
-    let accepted = !torch_warm_in_progress
-        && matches!(
-            readiness,
-            crate::desktop_backend_owner::OwnedBackendReadiness::Ready
-        )
-        && observed.is_some_and(|observed| {
-            crate::desktop_update_policy::compare_versions(observed, required) >= 0
-        });
-    (accepted, !accepted && !torch_warm_in_progress)
-}
-
-fn staged_probe_requires_immediate_rejection(reason: &str) -> bool {
-    matches!(
-        reason,
-        "desktop_protocol_incompatible"
-            | "desktop_auth_unsupported"
-            | "desktop_manageability_unsupported"
-            | "desktop_backend_ownership_unsupported"
-            | "desktop_auth_secret_missing"
-            | "desktop_auth_secret_rejected"
-            | "desktop_auth_token_rejected"
-            | "desktop_auth_token_response_invalid"
-            | "desktop_backend_version_invalid"
-    )
-}
-
-fn roll_back_rejected_staged_backend(
-    app: &AppHandle,
-    state: &BackendState,
-    shutdown: &ShutdownFlag,
-    diagnostics_state: &DiagnosticsState,
-) {
-    let stopped = stop_backend(state, shutdown, Some(diagnostics_state));
-    if stopped.is_err() || !request_staged_rollback_restart(app, state) {
-        let _ = app.emit("server-crashed", ());
-    }
-}
-
 async fn validate_candidate_port(
     app: AppHandle,
     state: BackendState,
-    shutdown: ShutdownFlag,
     diagnostics_state: DiagnosticsState,
     session_id: String,
     generation: u64,
@@ -3686,10 +3916,6 @@ async fn validate_candidate_port(
     deadline: std::time::Instant,
 ) {
     let started = std::time::Instant::now();
-    let pending = crate::staged_update::pending_versions(&diagnostics::studio_dir());
-    let pending_backend_version = pending
-        .as_ref()
-        .map(|versions| versions.backend_version.as_str());
     let owner = {
         let proc = match state.lock() {
             Ok(proc) => proc,
@@ -3717,7 +3943,6 @@ async fn validate_candidate_port(
     let mut delay = PORT_VALIDATION_RETRY_MIN;
     let mut attempts = 0u32;
     let mut verified_late = false;
-    let mut validated_backend_version = None;
     let valid = loop {
         // Before the probe, not just after a failed one: the announcement
         // itself can arrive past the deadline on a very slow start, and the
@@ -3726,62 +3951,17 @@ async fn validate_candidate_port(
             break false;
         }
         attempts += 1;
-        let (ok, reject_staged) = if let Some(owner) = owner.clone() {
-            let (probe, torch_warm_in_progress) = if pending_backend_version.is_some() {
-                crate::desktop_backend_owner::probe_owned_backend_state_for_staged_activation(
-                    owner,
-                    Some(port),
-                )
-                .await
-            } else {
-                (
-                    crate::desktop_backend_owner::probe_owned_backend_state(
-                        owner,
-                        Some(port),
-                        false,
-                    )
+        let ok = if let Some(owner) = owner.clone() {
+            matches!(
+                crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false)
                     .await,
-                    false,
-                )
-            };
-            match probe {
                 crate::desktop_backend_owner::OwnedBackendProbe::Verified(
-                    crate::desktop_backend_owner::VerifiedOwnedBackend {
-                        port: verified_port,
-                        readiness,
-                        backend_version,
-                        ..
-                    },
-                ) => {
-                    let owned_port = verified_port == port;
-                    let (version_matches, reject_version) = pending_backend_validation(
-                        pending_backend_version,
-                        &readiness,
-                        backend_version.as_deref(),
-                        torch_warm_in_progress,
-                    );
-                    if owned_port && version_matches {
-                        validated_backend_version = backend_version;
-                    }
-                    (owned_port && version_matches, owned_port && reject_version)
-                }
-                crate::desktop_backend_owner::OwnedBackendProbe::Unmanageable {
-                    reason, ..
-                } if pending_backend_version.is_some() => {
-                    (false, staged_probe_requires_immediate_rejection(&reason))
-                }
-                _ => (false, false),
-            }
-        } else if pending_backend_version.is_some() {
-            (false, true)
+                    crate::desktop_backend_owner::VerifiedOwnedBackend { port: verified_port, .. }
+                ) if verified_port == port
+            )
         } else {
-            (generic_backend_health_ok(port).await, false)
+            generic_backend_health_ok(port).await
         };
-        if reject_staged {
-            warn!("Staged backend failed authenticated version validation");
-            roll_back_rejected_staged_backend(&app, &state, &shutdown, &diagnostics_state);
-            return;
-        }
         if ok {
             // A probe that started in time can still finish late. Emitting
             // server-port after the watchdog's server-start-timeout strands the
@@ -3811,14 +3991,6 @@ async fn validate_candidate_port(
     };
 
     if !valid {
-        if pending_backend_version.is_some()
-            && crate::staged_update::pending_versions(&diagnostics::studio_dir()).is_some()
-            && std::time::Instant::now() >= deadline
-        {
-            warn!("Staged backend validation timed out");
-            roll_back_rejected_staged_backend(&app, &state, &shutdown, &diagnostics_state);
-            return;
-        }
         if verified_late {
             warn!(
                 "Backend port {} verified after the start deadline; not emitting",
@@ -3860,23 +4032,6 @@ async fn validate_candidate_port(
             false
         }
     };
-
-    let activation_confirmed = if should_emit && pending_backend_version.is_some() {
-        validated_backend_version.as_deref().is_some_and(|version| {
-            crate::staged_update::confirm_activated(&diagnostics::studio_dir(), version)
-        })
-    } else {
-        true
-    };
-    if should_emit && !activation_confirmed {
-        if let Ok(mut proc) = state.lock() {
-            if proc.generation == generation && proc.port == Some(port) {
-                proc.port = None;
-            }
-        }
-        warn!("Staged backend confirmation changed during validation");
-        return;
-    }
 
     info!(
         "Validated backend port candidate {} valid={} emit={} in {}ms",
@@ -4000,7 +4155,6 @@ fn read_output_stream<R: std::io::Read>(
     stream: R,
     app: &AppHandle,
     state: &BackendState,
-    shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
     backend_log: &BackendLog,
     is_stderr: bool,
@@ -4071,14 +4225,12 @@ fn read_output_stream<R: std::io::Read>(
                 if let Some(port) = candidate_port {
                     let app_handle = app.clone();
                     let state_clone = Arc::clone(state);
-                    let shutdown_clone = Arc::clone(shutdown);
                     let diagnostics_clone = diagnostics_state.clone();
                     let session_id = backend_log.session_id.clone();
                     tauri::async_runtime::spawn(async move {
                         validate_candidate_port(
                             app_handle,
                             state_clone,
-                            shutdown_clone,
                             diagnostics_clone,
                             session_id,
                             generation,
@@ -4200,9 +4352,6 @@ fn read_output_stream<R: std::io::Read>(
             );
         }
         if emit_crash {
-            if request_staged_rollback_restart(app, state) {
-                return;
-            }
             error!("Backend process stdout closed unexpectedly (crash detected)");
             let _ = app.emit("server-crashed", ());
         }
@@ -4904,6 +5053,120 @@ mod managed_cli_working_dir_tests {
         // STUDIO_LOCAL_REPO stays: the update is the one child that reads it.
         assert!(!skipped.contains(&"STUDIO_LOCAL_REPO"));
         assert!(child_skipped_env().contains(&"STUDIO_LOCAL_REPO"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_named_user_override_is_pinned_where_the_fingerprint_watches() {
+        // Codex 3962298677, P2. The two halves of one launch resolved ~name
+        // differently: preflight::managed::llama_runtime_override_from reads it out
+        // of the password database, while this path read it with the Windows rule,
+        // which leaves it alone off Windows, so it was anchored under the directory
+        // being left. The child then graded <cwd>/~root/llama.cpp while the cache
+        // fingerprinted root's own tree, and quarantine under the tree actually in
+        // use never invalidated a Ready verdict.
+        //
+        // root is the one account every unix box has, which makes this checkable
+        // anywhere, and it is the account preflight::managed's own test uses.
+        let cwd = PathBuf::from("/mnt/work/session");
+        let work_dir = PathBuf::from("/home/me/.unsloth");
+        let pins = relative_override_pins_from(
+            Some(cwd.clone()),
+            &work_dir,
+            |name: &str| {
+                (name == "UNSLOTH_LLAMA_CPP_PATH").then(|| "~root/llama.cpp".to_string())
+            },
+            |value: &str| panic!("unexpected value needing the OS: {value}"),
+            Some(std::path::Path::new("/home/me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            false,
+        )
+        .unwrap();
+        let pinned = pins
+            .iter()
+            .find(|(name, _)| *name == "UNSLOTH_LLAMA_CPP_PATH")
+            .map(|(_, path)| path.clone())
+            .expect("the override has to be pinned, not dropped");
+        assert!(
+            !pinned.starts_with(&cwd),
+            "a named-user override was anchored under the directory being left: {}",
+            pinned.display()
+        );
+        // The same answer the fingerprint side reaches, through the same lookup.
+        let watched = crate::preflight::managed::named_user_home(
+            "~root/llama.cpp",
+            Some(std::path::Path::new("/home/me")),
+        )
+        .expect("root must resolve, or the lookup is not answering at all");
+        assert_eq!(pinned, watched, "the child and the cache must grade one tree");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unknown_named_user_is_left_alone_and_anchored_by_both_halves() {
+        // expanduser leaves a name it cannot resolve exactly as it arrived, so both
+        // halves fall through to anchoring it, and they still agree. Guessing here
+        // instead would invent a path neither the child nor the cache would use.
+        let cwd = PathBuf::from("/mnt/work/session");
+        let value = "~no-such-account-anywhere/llama.cpp";
+        let pins = relative_override_pins_from(
+            Some(cwd.clone()),
+            std::path::Path::new("/home/me/.unsloth"),
+            |name: &str| (name == "UNSLOTH_LLAMA_CPP_PATH").then(|| value.to_string()),
+            |value: &str| panic!("unexpected value needing the OS: {value}"),
+            Some(std::path::Path::new("/home/me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            pins,
+            vec![("UNSLOTH_LLAMA_CPP_PATH", cwd.join(value))],
+            "an unresolvable name is anchored, the way the fingerprint anchors it"
+        );
+    }
+
+    #[test]
+    fn the_child_and_the_fingerprint_expand_a_bare_tilde_to_one_home() {
+        // Codex 3973890105, P2, right about the disagreement and wrong about where it
+        // was: this caller passed dirs::home_dir(), not USERPROFILE, so the POSIX side
+        // already agreed. Windows was the odd one: ntpath.expanduser answers USERPROFILE
+        // and dirs reads the known folder, so an overridden profile pinned the child to
+        // one tree while preflight::managed fingerprinted another, and quarantine in the
+        // tree in use never invalidated a cached healthy result. One reader now.
+        let home = crate::preflight::managed::tilde_home();
+        let pinned = expand_user("~/llama.cpp", home.as_deref(), None, cfg!(windows));
+        let watched = crate::preflight::managed::llama_runtime_override_from(
+            Some("~/llama.cpp"),
+            home.as_deref(),
+            Some(std::path::Path::new("/nowhere-relative")),
+        );
+        assert_eq!(
+            Some(std::path::PathBuf::from(pinned)),
+            watched,
+            "the tree the child is pinned to and the tree the cache watches must be one"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bare_tilde_override_still_reaches_home_off_windows() {
+        // The form that already worked has to keep working: this used to go through
+        // expand_windows_user, whose empty-name arm answers home on any platform.
+        let pins = relative_override_pins_from(
+            Some(PathBuf::from("/mnt/work/session")),
+            std::path::Path::new("/home/me/.unsloth"),
+            |name: &str| (name == "UNSLOTH_LLAMA_CPP_PATH").then(|| "~/llama.cpp".to_string()),
+            |value: &str| panic!("unexpected value needing the OS: {value}"),
+            Some(std::path::Path::new("/home/me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            pins,
+            vec![("UNSLOTH_LLAMA_CPP_PATH", PathBuf::from("/home/me/llama.cpp"))]
+        );
     }
 
     #[test]
@@ -6123,99 +6386,6 @@ mod managed_cli_working_dir_tests {
         );
     }
 
-    #[test]
-    fn pending_activation_requires_a_ready_backend_at_or_above_the_required_version() {
-        use crate::desktop_backend_owner::OwnedBackendReadiness;
-
-        assert_eq!(
-            pending_backend_validation(None, &OwnedBackendReadiness::Ready, None, false),
-            (true, false)
-        );
-        assert_eq!(
-            pending_backend_validation(
-                Some("2026.9.1"),
-                &OwnedBackendReadiness::Ready,
-                Some("2026.9.1"),
-                false
-            ),
-            (true, false)
-        );
-        assert_eq!(
-            pending_backend_validation(
-                Some("2026.9.1"),
-                &OwnedBackendReadiness::Ready,
-                Some("2026.8.4"),
-                false
-            ),
-            (false, true)
-        );
-        assert_eq!(
-            pending_backend_validation(
-                Some("2026.9.1"),
-                &OwnedBackendReadiness::Ready,
-                Some("2026.9.2"),
-                false
-            ),
-            (true, false)
-        );
-        assert_eq!(
-            pending_backend_validation(
-                Some("2026.9.1"),
-                &OwnedBackendReadiness::Stale {
-                    reason: "desktop_backend_version_too_old".to_string()
-                },
-                Some("2026.9.1"),
-                false
-            ),
-            (false, true)
-        );
-    }
-
-    #[test]
-    fn pending_activation_waits_for_authenticated_backend_warmup() {
-        use crate::desktop_backend_owner::OwnedBackendReadiness;
-
-        assert_eq!(
-            pending_backend_validation(
-                Some("2026.9.1"),
-                &OwnedBackendReadiness::Ready,
-                Some("2026.9.1"),
-                true
-            ),
-            (false, false)
-        );
-    }
-
-    #[test]
-    fn pending_activation_retries_transient_authenticated_probe_failures() {
-        for reason in [
-            "desktop_login_probe_failed",
-            "desktop_auth_secret_probe_failed",
-            "desktop_auth_secret_probe_http_500 Internal Server Error",
-            "desktop_auth_health_unverified",
-            "error sending request for url",
-        ] {
-            assert!(!staged_probe_requires_immediate_rejection(reason));
-        }
-    }
-
-    #[test]
-    fn pending_activation_rejects_completed_incompatibility_evidence() {
-        for reason in [
-            "desktop_protocol_incompatible",
-            "desktop_auth_unsupported",
-            "desktop_manageability_unsupported",
-            "desktop_backend_ownership_unsupported",
-            "desktop_auth_secret_missing",
-            "desktop_auth_secret_rejected",
-            "desktop_auth_token_rejected",
-            "desktop_auth_token_response_invalid",
-            "desktop_backend_version_invalid",
-        ] {
-            assert!(staged_probe_requires_immediate_rejection(reason));
-        }
-    }
-
     // The platform the bug was reported on, on the Windows leg of studio-tauri-smoke:
     // a child must observe the chosen directory rather than the launcher's.
     #[cfg(windows)]
@@ -6317,5 +6487,172 @@ mod exit_status_after_stdout_closed_tests {
                 "child exiting after {delay_ms}ms was read as still alive"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod owned_backend_liveness_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    fn spawn_owned(args: &[&str]) -> Box<dyn ChildWrapper + Send> {
+        let mut cmd = Command::new(args[0]);
+        cmd.args(&args[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut wrap = CommandWrap::from(cmd);
+        wrap.wrap(ProcessGroup::leader());
+        wrap.spawn().expect("spawn test child")
+    }
+
+    #[cfg(windows)]
+    fn spawn_owned(args: &[&str]) -> Box<dyn ChildWrapper + Send> {
+        let mut cmd = Command::new(args[0]);
+        cmd.args(&args[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        CommandWrap::from(cmd).spawn().expect("spawn test child")
+    }
+
+    #[cfg(unix)]
+    const LIVE_CHILD: [&str; 3] = ["/bin/sh", "-c", "exec sleep 30"];
+    #[cfg(unix)]
+    const DEAD_CHILD: [&str; 3] = ["/bin/sh", "-c", "exit 0"];
+    #[cfg(windows)]
+    const LIVE_CHILD: [&str; 3] = ["cmd.exe", "/C", "ping -n 30 127.0.0.1"];
+    #[cfg(windows)]
+    const DEAD_CHILD: [&str; 3] = ["cmd.exe", "/C", "exit 0"];
+
+    fn state_owning(child: Box<dyn ChildWrapper + Send>, port: u16) -> BackendState {
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            let pid = 0;
+            proc.owned = Some(OwnedBackendHandle::spawned(child, None, pid, 1));
+            if let Some(handle) = proc.owned.as_mut() {
+                handle.set_reported_port(port);
+            }
+            proc.port = Some(port);
+        }
+        state
+    }
+
+    #[test]
+    fn a_child_that_is_still_running_is_ours() {
+        let state = state_owning(spawn_owned(&LIVE_CHILD), 8765);
+        assert!(owned_backend_on_port_is_running(&state, 8765));
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    #[test]
+    fn a_child_that_has_exited_leaves_the_port_to_strangers() {
+        let mut child = spawn_owned(&DEAD_CHILD);
+        let _ = child.wait();
+        let state = state_owning(child, 8765);
+        assert!(
+            !owned_backend_on_port_is_running(&state, 8765),
+            "an exited child still counted as the managed backend, so a foreign service on \
+             its port would be reported to the user as Unsloth still running"
+        );
+    }
+
+    #[test]
+    fn a_handle_for_another_port_is_not_this_port() {
+        let state = state_owning(spawn_owned(&LIVE_CHILD), 8765);
+        assert!(!owned_backend_on_port_is_running(&state, 8766));
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    #[test]
+    fn no_handle_at_all_is_not_a_managed_backend() {
+        let state = new_backend_state();
+        assert!(!owned_backend_on_port_is_running(&state, 8765));
+        assert!(!owned_backend_could_bind_port(&state, 8765));
+    }
+
+    /// While a handle has no port yet, presence reads every port as "not ours". Absence must
+    /// not agree, or a refusal during our own start becomes proof of death.
+    #[test]
+    fn a_child_that_has_not_reported_a_port_could_still_bind_the_one_asked_about() {
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.owned = Some(OwnedBackendHandle::spawned(
+                spawn_owned(&LIVE_CHILD),
+                None,
+                0,
+                1,
+            ));
+        }
+        assert!(
+            !owned_backend_on_port_is_running(&state, 8765),
+            "presence is unchanged: a handle with no port names no port"
+        );
+        assert!(
+            owned_backend_could_bind_port(&state, 8765),
+            "a live backend of ours that has not bound a port yet was ruled out as the owner \
+             of the port it is starting on, which is the slow start #10520 exists to survive"
+        );
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    #[test]
+    fn a_child_that_died_before_reporting_a_port_cannot_bind_anything() {
+        let mut child = spawn_owned(&DEAD_CHILD);
+        let _ = child.wait();
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.owned = Some(OwnedBackendHandle::spawned(child, None, 0, 1));
+        }
+        assert!(
+            !owned_backend_could_bind_port(&state, 8765),
+            "an exited child kept the fast path switched off for every port"
+        );
+    }
+
+    #[test]
+    fn a_handle_that_reported_another_port_does_not_cover_this_one() {
+        let state = state_owning(spawn_owned(&LIVE_CHILD), 8765);
+        assert!(
+            !owned_backend_could_bind_port(&state, 8766),
+            "a backend that has told us its port was still treated as a candidate for others"
+        );
+        assert!(owned_backend_could_bind_port(&state, 8765));
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    // The adopted half, where there is no child handle to wait on.
+    #[test]
+    fn an_adopted_pid_that_is_gone_is_not_running() {
+        assert!(backend_pid_is_running(std::process::id()));
+        // A real process run to completion, so this pid is PROVABLY gone; an unreadable pid stays trusted by design.
+        let mut child = spawn_owned(&DEAD_CHILD);
+        let pid = child.id();
+        let _ = child.wait();
+        assert!(
+            !backend_pid_is_running(pid),
+            "an adopted backend that has exited still read as running"
+        );
     }
 }

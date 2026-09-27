@@ -31,3 +31,7 @@ export function loadedContextFields(): Record<string, unknown> {
 export function savedContextPin(): null {
   return null;
 }
+
+export function adoptCachedRepoConfig(): null {
+  return null;
+}

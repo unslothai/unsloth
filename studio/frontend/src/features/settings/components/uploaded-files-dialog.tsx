@@ -189,10 +189,9 @@ function toSortTime(value: string | number | null | undefined): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-// Safari and Firefox block window.open after an await (the user gesture is
-// gone), so open a blank tab synchronously and point it at the URL once
-// resolved. A blocked synchronous open is surfaced instead of silently losing
-// the file after the asynchronous URL lookup. The Tauri webview has no
+// Safari and Firefox block window.open after an await (the user gesture is gone), so open a blank
+// tab synchronously and point it at the URL once resolved. A blocked synchronous open is surfaced
+// instead of silently losing the file after the asynchronous URL lookup. The Tauri webview has no
 // window.open at all, so it goes through the OS opener.
 async function openResolvedUrl(resolve: () => Promise<string>): Promise<void> {
   if (isTauri) {
@@ -258,13 +257,11 @@ const EXT_BY_MIME: Record<string, string> = {
   "audio/flac": "flac",
 };
 
-// Name the save after the bytes the route actually returns. Uploaded documents
-// come back as extracted text (TextAttachmentAdapter also wraps it in
-// <attachment name=...>), so text/plain is .txt whatever the upload was called.
-// Managed content parts arrive named "Chat image"/"Chat audio" with no
-// extension at all, which the OS cannot recognise.
-// A dot at index 0 is a dotfile (.env), not an extension: treating it as one
-// would strip the whole name and save a bare ".txt".
+// Name the save after the bytes the route actually returns. Uploaded documents come back as
+// extracted text (TextAttachmentAdapter also wraps it in <attachment name=...>), so text/plain is
+// .txt whatever the upload was called. Managed content parts arrive named "Chat image"/"Chat audio"
+// with no extension at all, which the OS cannot recognise. A dot at index 0 is a dotfile (.env),
+// not an extension: treating it as one would strip the whole name and save a bare ".txt".
 function extensionStart(name: string): number {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? dot : -1;
@@ -588,11 +585,11 @@ export function UploadedFilesView() {
                   <span className="flex min-w-0 items-center gap-2">
                     {/* Floor keeps the name visible when the chip and fixed
                       columns squeeze the cell at narrow widths. */}
-                    <span className="min-w-[3.5rem] truncate underline-offset-2 group-hover/name:underline">
+                    <span className="min-w-[calc(3.5rem*var(--ui-space-scale,1))] truncate underline-offset-2 group-hover/name:underline">
                       {row.name}
                     </span>
                     {row.typeLabel ? (
-                      <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px text-ui-9 font-medium uppercase tracking-wide text-muted-foreground dark:bg-white/[0.1]">
+                      <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px text-ui-9 font-medium uppercase tracking-wide text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]">
                         {row.typeLabel}
                       </span>
                     ) : null}

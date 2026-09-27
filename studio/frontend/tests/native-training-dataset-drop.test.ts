@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -14,6 +13,8 @@ import {
   nativeDropPositionHitsBounds,
   nativePathFilename,
 } from "../src/features/training/lib/native-dataset-drop.ts";
+
+import { readSrc, readText } from "./helpers/kit.ts";
 
 const BACKEND_DATASET_EXTENSIONS_PATTERN =
   /LOCAL_UPLOAD_EXTS\s*=\s*\{([^}]+)\}/s;
@@ -112,8 +113,8 @@ test("classifies native drops before truncating long display filenames", () => {
 });
 
 // Only WebView2 reports a device-pixel drop position; macOS and GTK already
-// report CSS pixels, so scaling those halved every hit test on a HiDPI display
-// and the zone never matched.
+// report CSS pixels at 100% zoom, so scaling those by the monitor factor halved
+// every hit test on a HiDPI display and the zone never matched.
 test("hit testing scales a Windows drop position to CSS pixels", () => {
   Object.defineProperty(globalThis, "navigator", {
     value: { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64)" },
@@ -147,13 +148,7 @@ test("hit testing takes a macOS drop position as-is", () => {
 });
 
 test("native dataset drops track runtime window scale changes", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/studio/sections/use-dataset-uploads.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/studio/sections/use-dataset-uploads.ts");
 
   assert.equal(source.includes("currentWindow.onScaleChanged("), true);
   assert.equal(source.includes("scaleFactor = payload.scaleFactor"), true);
@@ -161,14 +156,10 @@ test("native dataset drops track runtime window scale changes", () => {
 });
 
 test("frontend, backend, and Rust accept the same native dataset extensions", () => {
-  const backendSource = readFileSync(
-    new URL("../../backend/hub/services/datasets/local.py", import.meta.url),
-    "utf8",
+  const backendSource = readText(
+    "../../backend/hub/services/datasets/local.py",
   );
-  const rustSource = readFileSync(
-    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
-    "utf8",
-  );
+  const rustSource = readText("../../src-tauri/src/native_path_policy.rs");
   const backend = [
     ...(backendSource
       .match(BACKEND_DATASET_EXTENSIONS_PATTERN)?.[1]
@@ -193,16 +184,9 @@ test("frontend, backend, and Rust accept the same native dataset extensions", ()
 });
 
 test("training document redirects match Data Recipes", () => {
-  const backendSource = readFileSync(
-    new URL("../../backend/routes/data_recipe/seed.py", import.meta.url),
-    "utf8",
-  );
-  const recipeSource = readFileSync(
-    new URL(
-      "../src/features/recipe-studio/dialogs/seed/unstructured-drop-zone.tsx",
-      import.meta.url,
-    ),
-    "utf8",
+  const backendSource = readText("../../backend/routes/data_recipe/seed.py");
+  const recipeSource = readSrc(
+    "features/recipe-studio/dialogs/seed/unstructured-drop-zone.tsx",
   );
   const backend = extractLiteralExtensions(
     backendSource,

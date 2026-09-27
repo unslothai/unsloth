@@ -18,6 +18,23 @@ from utils.datasets.chat_templates import apply_chat_template_to_dataset
 from utils.datasets.format_conversion import convert_chatml_to_alpaca
 from utils.datasets.iterable import is_streaming_dataset
 
+
+def _shared_setup_1(request, training_route):
+    backend = SimpleNamespace(
+        current_job_id = None,
+        is_training_active = lambda: False,
+        start_training = lambda **kwargs: pytest.fail("backend should not start"),
+    )
+
+    with (
+        patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+    return exc_info
+
+
 datasets = pytest.importorskip("datasets")
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -261,18 +278,7 @@ def test_streaming_start_rejects_train_on_completions_before_backend_start():
         max_steps = 10,
     )
 
-    backend = SimpleNamespace(
-        current_job_id = None,
-        is_training_active = lambda: False,
-        start_training = lambda **kwargs: pytest.fail("backend should not start"),
-    )
-
-    with (
-        patch.object(training_route, "get_training_backend", return_value = backend),
-        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
-    ):
-        with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+    exc_info = _shared_setup_1(request, training_route)
 
     assert exc_info.value.status_code == 422
     assert "train_on_completions" in exc_info.value.detail
@@ -296,18 +302,7 @@ def test_streaming_start_requires_separate_eval_split(eval_split):
         max_steps = 10,
     )
 
-    backend = SimpleNamespace(
-        current_job_id = None,
-        is_training_active = lambda: False,
-        start_training = lambda **kwargs: pytest.fail("backend should not start"),
-    )
-
-    with (
-        patch.object(training_route, "get_training_backend", return_value = backend),
-        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
-    ):
-        with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+    exc_info = _shared_setup_1(request, training_route)
 
     assert exc_info.value.status_code == 422
     assert "separate eval_split" in exc_info.value.detail
@@ -327,18 +322,7 @@ def test_streaming_start_rejects_missing_max_steps():
         max_steps = 0,
     )
 
-    backend = SimpleNamespace(
-        current_job_id = None,
-        is_training_active = lambda: False,
-        start_training = lambda **kwargs: pytest.fail("backend should not start"),
-    )
-
-    with (
-        patch.object(training_route, "get_training_backend", return_value = backend),
-        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
-    ):
-        with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+    exc_info = _shared_setup_1(request, training_route)
 
     assert exc_info.value.status_code == 422
     assert "max_steps" in exc_info.value.detail
@@ -361,18 +345,7 @@ def test_streaming_start_rejects_embedding_models():
         max_steps = 10,
     )
 
-    backend = SimpleNamespace(
-        current_job_id = None,
-        is_training_active = lambda: False,
-        start_training = lambda **kwargs: pytest.fail("backend should not start"),
-    )
-
-    with (
-        patch.object(training_route, "get_training_backend", return_value = backend),
-        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
-    ):
-        with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+    exc_info = _shared_setup_1(request, training_route)
 
     assert exc_info.value.status_code == 400
     assert "embedding" in exc_info.value.detail
@@ -588,18 +561,7 @@ def test_streaming_start_rejects_local_datasets():
     # Bypass Pydantic's local-path validation by injecting directly after construction.
     object.__setattr__(request, "local_datasets", ["/some/local/file.jsonl"])
 
-    backend = SimpleNamespace(
-        current_job_id = None,
-        is_training_active = lambda: False,
-        start_training = lambda **kwargs: pytest.fail("backend should not start"),
-    )
-
-    with (
-        patch.object(training_route, "get_training_backend", return_value = backend),
-        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
-    ):
-        with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+    exc_info = _shared_setup_1(request, training_route)
 
     assert exc_info.value.status_code == 400
     assert "local" in exc_info.value.detail.lower() or "hf-only" in exc_info.value.detail.lower()

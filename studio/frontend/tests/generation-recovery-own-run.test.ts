@@ -16,10 +16,9 @@
 // mode: a run left claimed is a run this tab can never recover.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readText, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -28,8 +27,6 @@ const {
   isLiveGenerationRun,
   releaseLiveGenerationRun,
 } = await import("../src/features/chat/utils/chat-generation-recovery.ts");
-
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 
 test("a claimed run is reported as this tab's, and a released one is not", () => {
   assert.equal(isLiveGenerationRun("run-a"), false);
@@ -63,7 +60,7 @@ test("the recovery scheduler refuses a run this tab is streaming", () => {
   // Source-pinned: scheduleGenerationRecovery is not reachable from a test (it needs a live
   // aui view and the store), so the guard is asserted where it sits. It must come BEFORE the
   // scheduler registers itself as running, or the early return is unreachable.
-  const provider = read("../src/features/chat/runtime-provider.tsx");
+  const provider = readText("../src/features/chat/runtime-provider.tsx");
   const guard = provider.indexOf("if (isLiveGenerationRun(runId)) return;");
   const register = provider.indexOf("runtime.registerThreadServerCancel(threadId, serverCancel)");
 
@@ -79,7 +76,7 @@ test("the adapter claims the run BEFORE admission, not after the response", () =
   // claim does not stop one already running, because the scheduler only tests ownership at
   // startup. The run id is the client's own (`cancelId` is passed as `runId`), so there is no
   // reason to wait for the server to hand it back.
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   // Matched without the closing paren: the call carries an options object and wraps.
   const claim = adapter.indexOf("claimLiveGenerationRun(cancelId, resolvedThreadId!,");
   const admission = adapter.indexOf("generationRun = await createChatGenerationRunUntilAbort(");
@@ -105,7 +102,7 @@ test("the adapter claims the run BEFORE admission, not after the response", () =
 });
 
 test("the adapter claims the run and releases it in a finally", () => {
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
 
   assert.ok(
     adapter.includes("claimLiveGenerationRun(generationRunId, resolvedThreadId!)"),

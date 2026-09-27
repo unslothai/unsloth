@@ -77,10 +77,9 @@ type RecipeStudioState = {
   nextId: number;
   nextY: number;
   fitViewTick: number;
-  // Upload-uid directories whose owning block dropped them; server-side
-  // deletion is deferred until a save no longer references them, so a
-  // reload before autosave cannot leave a saved recipe pointing at
-  // deleted files.
+  // Upload-uid directories whose owning block dropped them; server-side deletion is deferred until
+  // a save no longer references them, so a reload before autosave cannot leave a saved recipe
+  // pointing at deleted files.
   pendingUploadCleanups: string[];
   queueUploadCleanup: (uid: string) => void;
   setSheetOpen: (open: boolean) => void;
@@ -451,7 +450,8 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         hf_split: "",
         hf_path: "",
         hf_token: "",
-        hf_endpoint: "https://huggingface.co",
+        // Blank so buildSeedConfig resolves the endpoint at build time.
+        hf_endpoint: "",
         local_file_name: "",
         unstructured_upload_uid:
           nextSourceType === "unstructured" ? makeUnstructuredUploadUid() : "",

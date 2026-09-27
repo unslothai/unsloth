@@ -32,10 +32,10 @@ const PREVIEWS: Record<Palette, Record<ResolvedTheme, PreviewColors>> = {
     },
     dark: {
       bg: "#181818",
-      sidebar: "#262626",
+      sidebar: "#272727",
       accent: "#17b88b",
-      text: "#b5b5b5",
-      border: "#303030",
+      text: "#dfdfdf",
+      border: "#3a3a3a",
     },
   },
   classic: {
@@ -48,10 +48,10 @@ const PREVIEWS: Record<Palette, Record<ResolvedTheme, PreviewColors>> = {
     },
     dark: {
       bg: "#181818",
-      sidebar: "#262626",
+      sidebar: "#272727",
       accent: "#4dabff",
-      text: "#b5b5b5",
-      border: "#303030",
+      text: "#dfdfdf",
+      border: "#3a3a3a",
     },
   },
   minimal: {
@@ -64,10 +64,10 @@ const PREVIEWS: Record<Palette, Record<ResolvedTheme, PreviewColors>> = {
     },
     dark: {
       bg: "#181818",
-      sidebar: "#262626",
+      sidebar: "#272727",
       accent: "#ededed",
-      text: "#a8a8a8",
-      border: "#303030",
+      text: "#dfdfdf",
+      border: "#3a3a3a",
     },
   },
 };
@@ -127,10 +127,9 @@ export function PaletteCards() {
             onClick={() => setPalette(opt.value)}
             aria-pressed={active}
             data-palette-value={opt.value}
-            // The active ring is CSS-driven off html[data-palette] (see
-            // .palette-card in index.css) so it moves in the same style
-            // pass that swaps the tokens; keying it off React state leaves
-            // the ring on the old card until the app finishes re-rendering.
+            // The active ring is CSS-driven off html[data-palette] (see .palette-card in index.css)
+            // so it moves in the same style pass that swaps the tokens; keying it off React state
+            // leaves the ring on the old card until the app finishes re-rendering.
             className="palette-card flex flex-col gap-2 rounded-xl border border-border p-2.5 text-left transition-colors focus-visible:border-ring focus-visible:outline-none"
           >
             <PalettePreview colors={PREVIEWS[opt.value][resolved]} />

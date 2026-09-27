@@ -16,6 +16,7 @@ import pytest
 
 import core.inference.diffusion_precision as dp
 from core.inference.diffusion_precision import (
+    _cast_fp8_dynamic,
     TE_QUANT_FP8,
     TE_QUANT_FP8_DYNAMIC,
     TE_QUANT_INT8,
@@ -25,6 +26,8 @@ from core.inference.diffusion_precision import (
     _keep_bf16_block_fqns,
     effective_te_quant,
     normalize_te_quant,
+    resolve_te_quant_request,
+    te_quant_is_auto,
     quantize_text_encoders,
     te_quant_supported,
 )
@@ -81,6 +84,7 @@ def _stub_casters(monkeypatch, recorder):
     dtq.make_filter_fn = lambda min_features, exclude = (), *, require_bf16 = False: (
         lambda module, fqn = "": True
     )
+    dtq._quiet_config = lambda cls, **kw: cls(**kw)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", dtq)
 
 
@@ -321,6 +325,7 @@ def _stub_transformer_quant(monkeypatch, captured):
     dtq.TQ_FP8 = "fp8"
     dtq.DEFAULT_MIN_LINEAR_FEATURES = 512
     dtq._make_quant_config = lambda scheme, *a, **k: f"cfg:{scheme}"
+    dtq._quiet_config = lambda cls, **kw: cls(**kw)
     dtq.exclude_tokens_for_scheme = lambda scheme: ("modulation",)
 
     def _make_filter_fn(
@@ -519,3 +524,135 @@ def test_int8_without_a_schedule_reports_fp8_as_the_effective_mode():
     # Every other mode is its own effective mode, and absent stays absent.
     assert effective_te_quant(TE_QUANT_FP8_DYNAMIC, "z-image-turbo") == TE_QUANT_FP8_DYNAMIC
     assert effective_te_quant(None, "qwen-image") is None
+
+
+def test_nvfp4_te_cast_builds_its_config_through_quiet_config(monkeypatch):
+    """NVFP4 has no set_inductor_config knob, so the risk of routing it through _quiet_config is a TypeError."""
+    _stub_torch(monkeypatch, cc = (10, 0))
+    captured: dict = {}
+    _stub_transformer_quant(monkeypatch, captured)
+    seen: list = []
+    dtq = sys.modules["core.inference.diffusion_transformer_quant"]
+    dtq._quiet_config = lambda cls, **kw: seen.append((cls, kw)) or cls(**kw)
+    outcome = quantize_text_encoders(
+        types.SimpleNamespace(text_encoder = object()), _target(), mode = "nvfp4"
+    )
+    assert outcome.mode == TE_QUANT_NVFP4
+    assert len(seen) == 1 and seen[0][1] == {}
+    assert captured["config"] == "nvfp4cfg"
+
+
+def test_int8_and_fp8_dynamic_te_casts_reuse_the_quiet_factory(monkeypatch):
+    torch = _stub_torch(monkeypatch, cc = (10, 0))
+    captured: dict = {}
+    _stub_transformer_quant(monkeypatch, captured)
+    layers = torch.nn.ModuleList([object() for _ in range(8)])
+    enc = types.SimpleNamespace(_keep_in_fp32_modules = ["wo"])
+    enc.named_modules = lambda: [("model.layers", layers)]
+    _cast_int8_selective(enc, _target(), 3, 0)
+    assert captured["config"] == "cfg:int8"
+    _cast_fp8_dynamic(enc, _target())
+    assert captured["config"] == "cfg:fp8"
+
+
+def test_no_torchao_config_is_constructed_outside_quiet_config():
+    """Every torchao config must be built through ``_quiet_config``, whose default makes renders differ."""
+    import ast
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    files = sorted((backend / "core" / "inference").glob("*.py")) + [
+        backend / "core" / "training" / "diffusion_dit_trainer.py",
+    ]
+    offenders: list[str] = []
+    for path in files:
+        tree = ast.parse(path.read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.id
+                if isinstance(func, ast.Name)
+                else func.attr
+                if isinstance(func, ast.Attribute)
+                else ""
+            )
+            if not (name.endswith("WeightConfig") or name.endswith("WeightOnlyConfig")):
+                continue
+            offenders.append(f"{path.relative_to(backend)}:{node.lineno} {name}(...)")
+    assert not offenders, (
+        "torchao config constructed outside _quiet_config (pass the CLASS as its first argument instead):\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+# ── the text-encoder tri-state ───────────────────────────────────────────────────
+
+
+def test_unset_and_auto_are_the_only_spellings_that_invite_a_family_default():
+    """The tri-state hinges on telling "choose for me" from "leave it alone", and
+    ``normalize_te_quant`` deliberately folds both into None. ``te_quant_is_auto`` is what
+    recovers the distinction, so an opt-out must NOT read as auto or every "off" request
+    silently gets the family's scheme."""
+    for auto in (None, "", "   ", "auto", "AUTO", " Auto "):
+        assert te_quant_is_auto(auto) is True
+    for pinned in ("none", "off", "OFF", " None ", "fp8", "int8", "nvfp4", "fp8_dynamic"):
+        assert te_quant_is_auto(pinned) is False
+
+
+def test_an_unset_request_takes_the_family_scheme_and_is_marked_as_not_asked_for():
+    """The whole point: a family that hosts a pre-cast encoder answers an unset request with
+    it. ``auto_selected`` is the second half, and it is load-bearing rather than cosmetic --
+    it is what stops the loader refusing when the scheme does not engage."""
+    assert resolve_te_quant_request(None, "fp8") == ("fp8", True)
+    assert resolve_te_quant_request("auto", "fp8") == ("fp8", True)
+    assert resolve_te_quant_request("", "fp8") == ("fp8", True)
+
+
+def test_an_opt_out_still_pins_the_released_bf16_encoder():
+    """ "none"/"off" has to survive the new default, or the bf16 reference configuration
+    becomes unreachable and no comparison against it can be run."""
+    for opt_out in ("none", "off", " OFF "):
+        assert resolve_te_quant_request(opt_out, "fp8") == (None, False)
+
+
+def test_an_explicit_scheme_still_wins_over_the_family_default():
+    assert resolve_te_quant_request("int8", "fp8") == ("int8", False)
+    assert resolve_te_quant_request("nvfp4", "fp8") == ("nvfp4", False)
+    # And is still validated: a bad explicit value is refused cheaply, as before.
+    with pytest.raises(ValueError):
+        resolve_te_quant_request("int3", "fp8")
+
+
+def test_a_family_that_has_not_opted_in_keeps_todays_dense_bf16_default():
+    """Backwards compatibility for every family without ``te_quant_auto``: unset must still
+    mean the released encoder, not a scheme inferred from the fact that an artifact exists."""
+    for unset in (None, "auto", ""):
+        assert resolve_te_quant_request(unset, None) == (None, False)
+
+
+def test_a_typo_in_a_familys_own_default_is_refused_rather_than_passed_through():
+    """The field is code, not a request, so a bad value would otherwise reach
+    ``quantize_text_encoders`` as an unknown mode on EVERY default load of that family."""
+    with pytest.raises(ValueError):
+        resolve_te_quant_request(None, "fp9")
+
+
+def test_the_dense_opt_out_survives_the_image_request_schema_too():
+    """The normaliser accepting "none" is not enough: ``DiffusionLoadRequest`` is the API
+    boundary, and while its scheme list was fp8/fp8_dynamic/int8/nvfp4 only, omitting the field
+    was the ONLY way to ask for the released encoder. Once an omitted request can resolve to a
+    family scheme, that spelling stops meaning dense and the opt-out has to be sendable, or the
+    bf16 reference configuration is unreachable through the API."""
+    from pydantic import ValidationError
+
+    from models.inference import DiffusionLoadRequest
+
+    def _request(value):
+        return DiffusionLoadRequest(model_path = "Qwen/Qwen-Image-2.1", text_encoder_quant = value)
+
+    for accepted in (None, "auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"):
+        assert _request(accepted).text_encoder_quant == accepted
+    with pytest.raises(ValidationError):
+        _request("int3")

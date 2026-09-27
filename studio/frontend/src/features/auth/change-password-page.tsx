@@ -16,7 +16,7 @@ export function ChangePasswordPage() {
         length="70vh"
         className="opacity-35 dark:opacity-15"
       />
-      <Card className="relative z-10 w-full max-w-sm px-5 py-6 shadow-border ring-1 ring-border sm:px-6 sm:py-8">
+      <Card className="relative z-10 w-full max-w-sm rounded-[3rem] px-5 py-6 shadow-[0_8px_32px_rgba(0,0,0,0.06)] ring-0 dark:shadow-none sm:px-6 sm:py-8">
         <AuthForm mode="change-password" />
       </Card>
     </div>
