@@ -565,7 +565,12 @@ const digitLayout = memo((format) => {
 
 function placeDigits(number: number, format: string): string {
   const { dot, whole, part, first, places, grouped, zeros, before, after } = digitLayout(format);
-  const [intDigits = "", fracDigits = ""] = number.toFixed(places.length).split(".");
+  // Excel shows 15 significant digits and zeros after, as does toFixed (which takes at most 100
+  // places) once padded: a double holds no more.
+  const shown = number ? 14 - Math.floor(Math.log10(Math.abs(number))) : 100;
+  const [intDigits = "", fracDigits = ""] = number
+    .toFixed(Math.max(0, Math.min(places.length, shown, 100)))
+    .split(".");
   if (/e/i.test(intDigits)) return generalText(number);
   // No leading zero of its own: 0.5 in #.## shows .5.
   const significant = intDigits === "0" ? "" : intDigits;
@@ -587,7 +592,7 @@ function placeDigits(number: number, format: string): string {
     integer = out.join("");
   }
   if (dot === -1) return integer;
-  const digits = fracDigits.split("");
+  const digits = fracDigits.padEnd(places.length, "0").split("");
   // Trailing zeros: a # drops its own, a ? leaves a space.
   for (let i = places.length - 1; i >= 0 && digits[i] === "0" && places[i] !== "0"; i--) {
     digits[i] = emptyPlaceholder(places[i]!);
@@ -716,7 +721,8 @@ function formatScientific(value: number, format: string): string {
   const exponentFormat = format.slice(at + 2);
   const tokens: string[] = mantissaFormat.match(/"[^"]*"|\\.|[0#?.]|[^"\\0#?.]+/g) ?? [];
   const dot = tokens.indexOf(".");
-  const places = dot === -1 ? 0 : tokens.slice(dot + 1).filter(isPlaceholder).length;
+  // At most toExponential's 100 places; placeDigits pads the rest with zeros.
+  const places = Math.min(dot === -1 ? 0 : tokens.slice(dot + 1).filter(isPlaceholder).length, 100);
   // More than one integer placeholder steps the exponent by that many: ##0.0E+0 is engineering
   // notation, 12345 showing as 12.3E+3.
   const step = Math.max(1, (dot === -1 ? tokens : tokens.slice(0, dot)).filter(isPlaceholder).length);
@@ -1690,7 +1696,8 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
       break;
     }
     const doc = xml(part, path);
-    if (!doc) continue;
+    // The root's own flag, for one whose attributes lie past the prefix read above.
+    if (!doc || ["0", "false"].includes(doc.documentElement.getAttribute("show")?.trim() ?? "")) continue;
     const slideRelList = relationshipList(part, path);
     // A chart, diagram or picture is read as its frame comes, and let go after. One past the part
     // ceiling is left out, and the slide marked cut.

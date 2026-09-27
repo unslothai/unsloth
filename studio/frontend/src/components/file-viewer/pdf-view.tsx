@@ -4,8 +4,8 @@
 import { Spinner } from "@/components/ui/spinner";
 import { useT } from "@/i18n";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useState } from "react";
-import { Document, Page, pdfjs } from "react-pdf";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { Document, Page, pdfjs, usePageContext } from "react-pdf";
 import "react-pdf/dist/Page/TextLayer.css";
 import { useWidth } from "./use-width";
 
@@ -28,6 +28,9 @@ const PDF_OPTIONS = { maxImageSize: 64 * 1024 * 1024 };
 const MIN_PIXEL_RATIO = 0.1;
 // A page with more text runs than this shows without its text layer: each is a positioned span.
 const MAX_TEXT_ITEMS = 20_000;
+// Past this many drawing operations a page shows as unpreviewable: PDF.js holds each one it reads,
+// and a small stream can hold millions.
+const MAX_PAGE_OPERATIONS = 1_000_000;
 // Layout keeps even an extreme first page to a sane height until each page is measured.
 const clampAspect = (aspect: number) => Math.min(Math.max(aspect, 0.05), 20);
 
@@ -37,6 +40,59 @@ type PdfDocument = {
     streamTextContent(): ReadableStream<{ items: unknown[] }>;
   }>;
 };
+
+// Pages found past the operation bound, by document, so one scrolled back to is not drawn again.
+const overflowed = new WeakMap<object, Set<number>>();
+const PageOverflow = createContext<() => void>(() => {});
+
+/** react-pdf's canvas, drawn the same way, but stopped once a page passes MAX_PAGE_OPERATIONS. */
+function PdfCanvas() {
+  const context = usePageContext();
+  const onOverflow = useContext(PageOverflow);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const page = context?.page;
+  const scale = context?.scale ?? 1;
+  const rotate = context?.rotate ?? 0;
+  const ratio = context?.devicePixelRatio ?? 1;
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!page || !canvas) return;
+    const viewport = page.getViewport({ scale: scale * ratio, rotation: rotate });
+    const shown = page.getViewport({ scale, rotation: rotate });
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    canvas.style.width = `${Math.floor(shown.width)}px`;
+    canvas.style.height = `${Math.floor(shown.height)}px`;
+    let over = false;
+    const task = page.render({
+      canvas,
+      canvasContext: canvas.getContext("2d", { alpha: false })!,
+      viewport,
+      annotationMode: pdfjs.AnnotationMode.ENABLE,
+      operationsFilter: (index) => {
+        if (index < MAX_PAGE_OPERATIONS) return true;
+        if (!over) {
+          over = true;
+          queueMicrotask(() => task.cancel());
+        }
+        return false;
+      },
+    });
+    task.promise.catch(() => {
+      if (!over) return;
+      // Frees the operations read so far, once the stream behind them is stopped.
+      page.cleanup();
+      onOverflow();
+    });
+    return () => {
+      task.cancel();
+      // Zeroed, so the browser lets go of the bitmap at once.
+      canvas.width = 0;
+      canvas.height = 0;
+    };
+  }, [page, scale, rotate, ratio, onOverflow]);
+  return <canvas ref={canvasRef} className="block select-none" />;
+}
 
 /** One page, at its own shape and a resolution its canvas can hold. */
 function PdfPage({ pdf, index, width, aspect }: { pdf: PdfDocument; index: number; width: number; aspect: number }) {
@@ -75,6 +131,12 @@ function PdfPage({ pdf, index, width, aspect }: { pdf: PdfDocument; index: numbe
       live = false;
     };
   }, [pdf, index]);
+  const [tooLong, setTooLong] = useState<number | null>(null);
+  const markOverflow = useCallback(() => {
+    const pages = overflowed.get(pdf) ?? new Set<number>();
+    overflowed.set(pdf, pages.add(index));
+    setTooLong(index);
+  }, [pdf, index]);
   const pageAspect = own?.index === index ? own.aspect : null;
   if (pageAspect === null) return <div style={{ height: width * aspect }} />;
   const height = width * pageAspect;
@@ -84,7 +146,7 @@ function PdfPage({ pdf, index, width, aspect }: { pdf: PdfDocument; index: numbe
     MAX_CANVAS_SIDE / width,
     MAX_CANVAS_SIDE / height,
   );
-  if (!(ratio >= MIN_PIXEL_RATIO)) {
+  if (!(ratio >= MIN_PIXEL_RATIO) || tooLong === index || overflowed.get(pdf)?.has(index)) {
     return (
       <p className="flex items-center justify-center text-sm text-muted-foreground" style={{ height: width * clampAspect(pageAspect) }}>
         {t("library.preview.cannotPreview")}
@@ -92,14 +154,18 @@ function PdfPage({ pdf, index, width, aspect }: { pdf: PdfDocument; index: numbe
     );
   }
   return (
-    <Page
-      pageNumber={index + 1}
-      width={width}
-      devicePixelRatio={ratio}
-      renderAnnotationLayer={false}
-      renderTextLayer={selectable === index}
-      loading={<div style={{ height }} />}
-    />
+    <PageOverflow.Provider value={markOverflow}>
+      <Page
+        pageNumber={index + 1}
+        width={width}
+        devicePixelRatio={ratio}
+        renderMode="custom"
+        customRenderer={PdfCanvas}
+        renderAnnotationLayer={false}
+        renderTextLayer={selectable === index}
+        loading={<div style={{ height }} />}
+      />
+    </PageOverflow.Provider>
   );
 }
 
