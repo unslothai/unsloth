@@ -55,6 +55,13 @@ _FRONTEND = Path(__file__).resolve().parents[2] / "frontend" / "src"
 # baked_loras belongs here for the same reason the other three do: promoting any of them into
 # image_gallery._REQUIRED_META would stop every PNG written before it existed from listing.
 _BUILD_KEYS = ("model_kind", "gguf_filename", "transformer_quant", "baked_loras")
+# Generation-time build knobs; additive like _BUILD_KEYS.
+_RUNTIME_BUILD_KEYS = (
+    "speed_mode",
+    "attention_backend",
+    "transformer_cache",
+    "cpu_offload",
+)
 
 
 # ── stub runtime (pared-down twin of test_diffusion_backend's) ────────────────
@@ -652,8 +659,28 @@ def test_the_recipe_popover_renders_the_build_fields():
     src = (_FRONTEND / "features" / "images" / "images-page.tsx").read_text(encoding = "utf-8")
     popover = src[src.index("function RecipePopover(") :]
     popover = popover[: popover.index("\ntype Busy")]
-    assert '<RecipeRow label="Quant" value={image.transformer_quant} />' in popover
+    assert '<RecipeRow label="Transformer" value={image.transformer_quant} />' in popover
     assert '<RecipeRow label="File" value={image.gguf_filename} mono />' in popover
+    assert '<RecipeRow label="Workflow" value={recipeWorkflowLabel(image.workflow)} />' in popover
+    assert "image.speed_mode" in popover
+    assert "image.attention_backend" in popover
+    assert "image.transformer_cache" in popover
     # Rendered conditionally, so an older PNG without them shows the rest of the recipe.
     for key in ("transformer_quant", "gguf_filename"):
         assert f"image.{key} ?" in popover
+
+
+def test_png_recipe_stamps_schema_version(tmp_gallery):
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    from core.inference.image_gallery import RECIPE_SCHEMA_VERSION
+
+    meta = {**_old_schema_meta(), "model_kind": "pipeline"}
+    record = gallery.save(Image.new("RGB", (16, 16), (10, 20, 30)), meta)
+    raw = (gallery.gallery_dir() / f"{record['id']}.png").read_bytes()
+    with Image.open(io.BytesIO(raw)) as im:
+        embedded = json.loads(im.text["unsloth"])
+    assert embedded["schema_version"] == RECIPE_SCHEMA_VERSION
+    for key in _RUNTIME_BUILD_KEYS:
+        assert key not in embedded

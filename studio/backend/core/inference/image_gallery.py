@@ -31,6 +31,8 @@ logger = get_logger(__name__)
 
 # PNG text-chunk key holding our structured recipe JSON.
 _META_KEY = "unsloth"
+# Bump when additive recipe keys change; absent on PNGs written before schema_version existed.
+RECIPE_SCHEMA_VERSION = 1
 # Image ids are file stems; restrict to safe chars so a crafted id can't escape the directory.
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -61,7 +63,8 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     from PIL.PngImagePlugin import PngInfo
 
     info = PngInfo()
-    info.add_text(_META_KEY, json.dumps(meta))
+    payload = {**meta, "schema_version": RECIPE_SCHEMA_VERSION}
+    info.add_text(_META_KEY, json.dumps(payload))
     info.add_text("parameters", _params_text(meta))
     buf = io.BytesIO()
     image.save(buf, format = "PNG", pnginfo = info)
