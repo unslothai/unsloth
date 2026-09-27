@@ -70,7 +70,7 @@ def test_plain_tensor_is_not_eligible():
 
 
 def test_install_noop_on_cpu_module():
-    from diffusers.models.attention import FeedForward
+    FeedForward = pytest.importorskip("diffusers.models.attention").FeedForward
 
     ff = FeedForward(64, 64, activation_fn = "gelu-approximate")
     assert fused.install(ff) == 0
@@ -143,7 +143,7 @@ def _quantized_ff(
     inner = 1024,
     seed = 0,
 ):
-    from diffusers.models.attention import FeedForward
+    FeedForward = pytest.importorskip("diffusers.models.attention").FeedForward
     from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
 
     torch.manual_seed(seed)
@@ -275,7 +275,7 @@ def test_swiglu_mlps_bit_identical_to_stock_eager(kind, monkeypatch):
     monkeypatch.setattr(fused, "_SWIGLU_ALL_LAYOUTS", True)
     torch.manual_seed(0)
     if kind == "diffusers_swiglu":
-        from diffusers.models.attention import FeedForward
+        FeedForward = pytest.importorskip("diffusers.models.attention").FeedForward
         ff = FeedForward(256, inner_dim = 512, activation_fn = "swiglu", bias = False)
     elif kind == "zimage":
         zmod = pytest.importorskip("diffusers.models.transformers.transformer_z_image")
@@ -339,7 +339,7 @@ def test_convrot_linears_keep_the_stock_forward(kind, monkeypatch):
         ff = _quantized_ff()
         lins = (ff.net[0].proj, ff.net[2])
     else:
-        from diffusers.models.attention import FeedForward
+        FeedForward = pytest.importorskip("diffusers.models.attention").FeedForward
 
         torch.manual_seed(0)
         ff = _quantize(
@@ -360,7 +360,7 @@ def test_convrot_linears_keep_the_stock_forward(kind, monkeypatch):
 
 def _swiglu_module(kind):
     if kind == "diffusers_swiglu":
-        from diffusers.models.attention import FeedForward
+        FeedForward = pytest.importorskip("diffusers.models.attention").FeedForward
         return FeedForward(256, inner_dim = 512, activation_fn = "swiglu", bias = False)
     if kind == "zimage":
         return pytest.importorskip("diffusers.models.transformers.transformer_z_image").FeedForward(
