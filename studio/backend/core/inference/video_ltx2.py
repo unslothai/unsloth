@@ -515,6 +515,19 @@ def load_ltx23_prequant_transformer(
         return None
 
 
+def disable_cudnn_benchmark() -> bool:
+    """Switch the process-wide cudnn.benchmark off (True when it changed)."""
+    try:
+        import torch
+
+        if not torch.backends.cudnn.benchmark:
+            return False
+        torch.backends.cudnn.benchmark = False
+        return True
+    except Exception:  # noqa: BLE001 -- optimisation only
+        return False
+
+
 def install_stg_compile_adapter(transformer: Any) -> int:
     """Make a regionally compiled LTX-2 block tolerate the STG pass.
 

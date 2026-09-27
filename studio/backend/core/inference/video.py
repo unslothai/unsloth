@@ -5253,6 +5253,13 @@ class VideoBackend:
             if fam.name == "ltx-2" and applied.get("compiled"):
                 from .video_ltx2 import install_stg_compile_adapter
                 install_stg_compile_adapter(getattr(view, fam.denoiser_attr, None))
+            if fam.name == "ltx-2" and applied.get("cudnn_benchmark"):
+                # LTX's only convs are the video VAE, audio VAE and vocoder: cudnn.benchmark measured no steady gain
+                # there (768x512x121 decode 0.55 vs 0.55 s) but a re-tune per new shape that made the first render
+                # 26.3 s instead of 10.0 s (vocoder 10.6 s, VAE 4.6 s). Restored at unload with the other flags.
+                from .video_ltx2 import disable_cudnn_benchmark
+                if disable_cudnn_benchmark():
+                    applied = {**applied, "cudnn_benchmark": False}
             if view is pipe:
                 attention_engaged = engaged
                 speed_optims = tuple(k for k, v in applied.items() if v)

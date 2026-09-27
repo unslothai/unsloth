@@ -11441,3 +11441,18 @@ def test_ltx2_regional_compile_is_static(fake_runtime, tmp_path, monkeypatch):
     assert getattr(dit, "_unsloth_compile_static", False) is True
     assert compile_dynamic(dit, True) is False
     assert compile_dynamic(types.SimpleNamespace(), True) is True
+
+
+def test_ltx2_load_turns_cudnn_benchmark_back_off(fake_runtime, tmp_path, monkeypatch):
+    # cudnn.benchmark only re-tunes LTX's VAE / vocoder convs per new shape (first render 26 s vs 10 s) for no steady
+    # gain, so an ltx-2 load drops it and does not report it as engaged.
+    from core.inference import video as video_mod, video_ltx2
+
+    monkeypatch.setattr(
+        video_mod, "apply_speed_optims", lambda *a, **k: {"cudnn_benchmark": True, "compiled": False}
+    )
+    calls = []
+    monkeypatch.setattr(video_ltx2, "disable_cudnn_benchmark", lambda: calls.append(1) or True)
+    backend = _load_ltx23_from_dir(tmp_path)
+    assert calls == [1]
+    assert "cudnn_benchmark" not in backend.status()["speed_optims"]
