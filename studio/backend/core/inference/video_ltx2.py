@@ -467,7 +467,6 @@ class _LTX23PrequantConfig:
     @staticmethod
     def from_config(config: Any) -> Any:
         from diffusers import LTX2VideoTransformer3DModel
-
         return LTX2VideoTransformer3DModel.from_config(config)
 
 
@@ -511,7 +510,9 @@ def load_ltx23_prequant_transformer(
         return None if module is None else (module, source)
     except Exception as exc:  # noqa: BLE001 -- a hosted checkpoint is an optimisation, never a blocker
         if logger is not None:
-            logger.warning("video.ltx23_prequant: %s failed, keeping the dense DiT: %s", scheme, exc)
+            logger.warning(
+                "video.ltx23_prequant: %s failed, keeping the dense DiT: %s", scheme, exc
+            )
         return None
 
 
@@ -550,7 +551,11 @@ def install_stg_compile_adapter(transformer: Any) -> int:
         if inner is None or getattr(inner, "_unsloth_stg_adapter", False):
             continue
 
-        def adapted(*args: Any, _inner: Any = inner, **kwargs: Any) -> Any:
+        def adapted(
+            *args: Any,
+            _inner: Any = inner,
+            **kwargs: Any,
+        ) -> Any:
             flag = kwargs.get("all_perturbed")
             if isinstance(flag, torch.Tensor):
                 kwargs["all_perturbed"] = bool(flag)

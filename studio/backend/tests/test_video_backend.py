@@ -11224,10 +11224,24 @@ def _guided_ltx_call(monkeypatch, pipe):
         + [
             inspect.Parameter(name, inspect.Parameter.KEYWORD_ONLY, default = None)
             for name in (
-                "prompt", "negative_prompt", "num_inference_steps", "guidance_scale", "width", "height",
-                "num_frames", "frame_rate", "generator", "sigmas", "callback_on_step_end", "stg_scale",
-                "modality_scale", "guidance_rescale", "audio_guidance_scale", "audio_stg_scale",
-                "audio_modality_scale", "audio_guidance_rescale",
+                "prompt",
+                "negative_prompt",
+                "num_inference_steps",
+                "guidance_scale",
+                "width",
+                "height",
+                "num_frames",
+                "frame_rate",
+                "generator",
+                "sigmas",
+                "callback_on_step_end",
+                "stg_scale",
+                "modality_scale",
+                "guidance_rescale",
+                "audio_guidance_scale",
+                "audio_stg_scale",
+                "audio_modality_scale",
+                "audio_guidance_rescale",
             )
         ]
     )
@@ -11273,9 +11287,15 @@ def test_ltx2_distilled_guidance_kwargs_follow_the_signature():
     # An older diffusers without the multimodal kwargs gets exactly the call it always did.
     assert ltx2_distilled_guidance_kwargs({"prompt": None, "guidance_scale": None}, 1.0) == {}
     full = ltx2_distilled_guidance_kwargs(
-        {"stg_scale": 0, "modality_scale": 0, "audio_guidance_scale": 0, "guidance_rescale": 0}, None
+        {"stg_scale": 0, "modality_scale": 0, "audio_guidance_scale": 0, "guidance_rescale": 0},
+        None,
     )
-    assert full == {"stg_scale": 0.0, "modality_scale": 1.0, "guidance_rescale": 0.0, "audio_guidance_scale": 1.0}
+    assert full == {
+        "stg_scale": 0.0,
+        "modality_scale": 1.0,
+        "guidance_rescale": 0.0,
+        "audio_guidance_scale": 1.0,
+    }
 
 
 def test_stg_compile_adapter_hands_the_block_a_python_bool():
@@ -11353,7 +11373,9 @@ def test_ltx23_prequant_source_resolves_the_hosted_fp8_only():
     assert source is not None and source.location == "unsloth/LTX-2.3-FP8"
     from core.inference.diffusion_prequant import candidate_filenames_of
 
-    assert "LTX-2.3-FP8.pt" in candidate_filenames_of(source)  # the artifact the repo actually hosts
+    assert "LTX-2.3-FP8.pt" in candidate_filenames_of(
+        source
+    )  # the artifact the repo actually hosts
     assert resolve_prequant_source(fam, "int8", base_repo = LTX23_PREQUANT_BASE) is None
     # The LTX-2 base pipeline has no hosted denoiser wired.
     assert resolve_prequant_source(fam, "fp8", base_repo = "Lightricks/LTX-2") is None
@@ -11390,7 +11412,9 @@ def _load_ltx23_single_file_fp8(tmp_path, monkeypatch, seeded):
 
 def test_ltx23_single_file_fp8_seeds_the_hosted_denoiser(fake_runtime, tmp_path, monkeypatch):
     seeded_dit = object()
-    source = types.SimpleNamespace(location = "unsloth/LTX-2.3-FP8", kind = "repo", filename = "LTX-2.3-FP8.pt")
+    source = types.SimpleNamespace(
+        location = "unsloth/LTX-2.3-FP8", kind = "repo", filename = "LTX-2.3-FP8.pt"
+    )
     backend, calls = _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (seeded_dit, source))
     assert calls["prequant"][0] == "fp8" and calls["prequant"][2] == "Lightricks/LTX-2"
     assert calls["override"] is seeded_dit
@@ -11449,7 +11473,9 @@ def test_ltx2_load_turns_cudnn_benchmark_back_off(fake_runtime, tmp_path, monkey
     from core.inference import video as video_mod, video_ltx2
 
     monkeypatch.setattr(
-        video_mod, "apply_speed_optims", lambda *a, **k: {"cudnn_benchmark": True, "compiled": False}
+        video_mod,
+        "apply_speed_optims",
+        lambda *a, **k: {"cudnn_benchmark": True, "compiled": False},
     )
     calls = []
     monkeypatch.setattr(video_ltx2, "disable_cudnn_benchmark", lambda: calls.append(1) or True)

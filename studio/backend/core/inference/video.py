@@ -307,11 +307,16 @@ def _ltx23_prequant_pick(
     fam: Any, model_kind: str, checkpoint_filename: Optional[str], pinned: Optional[str]
 ) -> bool:
     """An explicit fp8 on the bf16 LTX-2.3 distilled single file: served by the hosted pre-quantized DiT."""
-    if getattr(fam, "name", None) != "ltx-2" or model_kind != "single_file" or not checkpoint_filename:
+    if (
+        getattr(fam, "name", None) != "ltx-2"
+        or model_kind != "single_file"
+        or not checkpoint_filename
+    ):
         return False
     if pinned != TQ_FP8:
         return False
     from .video_ltx2 import ltx23_prequant_eligible
+
     return ltx23_prequant_eligible(checkpoint_filename)
 
 
@@ -4831,7 +4836,6 @@ class VideoBackend:
                     and dense_transformer_supported(target)
                 ):
                     from .video_ltx2 import load_ltx23_prequant_transformer
-
                     seeded = load_ltx23_prequant_transformer(
                         fam,
                         ltx23_scheme,
@@ -6929,6 +6933,7 @@ class VideoBackend:
                         sigma_ctx = ltx23_verbatim_sigmas(pipe)
                 if fam.name == "ltx-2":
                     from .video_ltx2 import ltx2_distilled_guidance_kwargs, ltx2_distilled_ids
+
                     # A distilled DiT is sampled unguided; newer diffusers defaults would add STG + modality passes.
                     if ltx2_distilled_ids(state.gguf_filename, state.repo_id, state.base_repo):
                         kwargs.update(ltx2_distilled_guidance_kwargs(call_params, guidance))
