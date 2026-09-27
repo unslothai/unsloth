@@ -3062,6 +3062,9 @@ class _VisionBatchSession:
             logit_bias = request.get("logit_bias"),
             stop = request.get("stop"),
         )
+        if plan.images:
+            # As on the one-reply path: the tower gets the headroom, under the lock this session holds.
+            backend._release_vlm_snapshots()
         try:
             row_number = self.stream.add(
                 GenerationRequest(
@@ -5404,6 +5407,8 @@ class MLXInferenceBackend:
         )
 
         with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+            if any(plan.images for plan in plans):
+                self._release_vlm_snapshots()
             logger.info(
                 "Generating %d vision replies as one batch: images=%d, max_tokens=%s, model=%s",
                 len(plans),
