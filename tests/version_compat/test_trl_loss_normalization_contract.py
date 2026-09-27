@@ -101,6 +101,20 @@ def test_explicit_loss_type_still_wins():
     assert cfg.loss_type == "chunked_nll", "explicit loss_type was clobbered"
 
 
+def test_dr_grpo_turns_off_reward_scaling_by_default():
+    """TRL >= 0.22 defaults scale_rewards to "group" (= True), so dr_grpo must override both."""
+    import unsloth  # noqa: F401
+    import trl
+
+    def scale(**kwargs):
+        return trl.GRPOConfig(output_dir = "unused", loss_type = "dr_grpo", **kwargs).scale_rewards
+
+    for kwargs in ({}, {"scale_rewards": True}, {"scale_rewards": "group"}):
+        assert scale(**kwargs) in (False, "none"), f"dr_grpo with {kwargs} still scales rewards"
+    assert scale(scale_rewards = None) in (True, "group"), "None should keep group scaling"
+    assert scale(scale_rewards = "batch") == "batch", "an explicit batch scaling was clobbered"
+
+
 def _pristine_sft_config_cls():
     """TRL's own SFTConfig, not the generated subclass patching rebinds over it."""
     import trl

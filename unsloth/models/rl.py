@@ -2672,6 +2672,19 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         RLTrainer_post += vllm_chat_template_sync
 
+    # TRL >= 1.7 writes router_aux_loss_coef to the config after MoE CausalLMs cached it at init; nll loss reads the stale copy.
+    if trainer_file == "sft_trainer":
+        RLTrainer_post += (
+            "if hasattr(self, 'aux_loss_enabled') and hasattr(getattr(self, 'model', None), 'modules'):\n"
+            "    for _module in self.model.modules():\n"
+            "        _config = getattr(_module, 'config', None)\n"
+            "        if 'router_aux_loss_coef' in vars(_module) and hasattr(_config, 'get_text_config'):\n"
+            "            _coef = getattr(_config.get_text_config(), 'router_aux_loss_coef', None)\n"
+            "            if _coef is not None:\n"
+            "                _module.router_aux_loss_coef = _coef\n"
+            "pass\n"
+        )
+
     # TRL >= 0.28 builds SamplingParams inside VLLMGeneration, which never sees args; hand it the user's vllm_sampling_params so the generate wrapper in rl_replacements.py can apply them.
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
@@ -2842,6 +2855,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += pad_to_multiple_of
 
     # Check for loss_type = dr_grpo and scale_rewards for GRPO; DAPO uses per-token loss, so BNPO loss is used. See huggingface/trl#3130 (comment 2746947835).
+    # TRL >= 0.22 defaults scale_rewards to "group" (= True).
     if "loss_type" in call_args and "scale_rewards" in call_args:
         check_dr_grpo = (
             "if loss_type.lower() == 'dr_grpo':\n"
@@ -2851,8 +2865,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "if loss_type.lower() == 'dr_grpo':\n"
             "    if scale_rewards == None:\n"
             "        scale_rewards = True\n"
-            "    elif scale_rewards == True:\n"
-            "        print('Unsloth: The Dr GRPO paper recommends setting `scale_rewards` to False! Will override. Set it to `None` to force False.')\n"
+            "    elif scale_rewards == True or scale_rewards == 'group':\n"
+            "        print('Unsloth: The Dr GRPO paper recommends setting `scale_rewards` to False! Will override. Set it to `None` to keep scaling.')\n"
             "        scale_rewards = False\n"
             "elif loss_type.lower() == 'dapo':\n"
             "    if mask_truncated_completions != True:\n"
