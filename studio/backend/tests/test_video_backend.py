@@ -11450,7 +11450,7 @@ def test_ltx23_prequant_source_resolves_the_hosted_fp8_only():
     assert resolve_prequant_source(fam, "fp8", base_repo = "Lightricks/LTX-2") is None
 
 
-def _load_ltx23_single_file_fp8(tmp_path, monkeypatch, seeded):
+def _load_ltx23_single_file_fp8(tmp_path, monkeypatch, seeded, memory_mode = None):
     from core.inference import video as video_mod, video_ltx2
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
@@ -11475,6 +11475,7 @@ def _load_ltx23_single_file_fp8(tmp_path, monkeypatch, seeded):
         base_repo = "Lightricks/LTX-2",
         family_override = "ltx-2",
         transformer_quant = "fp8",
+        memory_mode = memory_mode,
     )
     return backend, calls
 
@@ -11599,13 +11600,18 @@ def test_download_plan_stages_the_hosted_fp8_dit_for_the_ltx23_distilled_single_
             "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
         },
     )
+    from core.inference import video as video_mod
 
-    def _plan(filename, quant):
+    supported = [True]
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: supported[0])
+
+    def _plan(filename, quant, memory_mode = None):
         return VideoBackend().download_plan(
             "Lightricks/LTX-2.3",
             gguf_filename = filename,
             family_override = "ltx-2",
             transformer_quant = quant,
+            memory_mode = memory_mode,
         )
 
     by_repo = {
@@ -11621,6 +11627,16 @@ def test_download_plan_stages_the_hosted_fp8_dit_for_the_ltx23_distilled_single_
     ):
         repos = {e["repo_id"] for e in _plan(filename, quant)["entries"]}
         assert "unsloth/LTX-2.3-FP8" not in repos, (filename, quant)
+    # A load that falls back to bf16 (precision fallback on) never opens the 19 GB artifact: not staged either.
+    for memory_mode in ("balanced", "low_vram"):
+        repos = {
+            e["repo_id"]
+            for e in _plan("ltx-2.3-22b-distilled.safetensors", "fp8", memory_mode)["entries"]
+        }
+        assert "unsloth/LTX-2.3-FP8" not in repos, memory_mode
+    supported[0] = False
+    repos = {e["repo_id"] for e in _plan("ltx-2.3-22b-distilled.safetensors", "fp8")["entries"]}
+    assert "unsloth/LTX-2.3-FP8" not in repos
 
 
 class _StopAfterPrefetch(Exception):
@@ -11647,6 +11663,8 @@ def test_the_ltx23_fp8_load_prefetches_the_hosted_dit_under_its_cancel_event(tmp
         raise _StopAfterPrefetch()
 
     monkeypatch.setattr(video_ltx2, "is_ltx23_checkpoint", lambda path: True)
+    supported = [True]
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: supported[0])
     monkeypatch.setattr(backend, "_fetch_denoiser_prequant", _fetch)
     monkeypatch.setattr(backend, "_estimate_download_bytes", lambda *a, **k: None)
     monkeypatch.setattr(backend, "_predownload_base", _stop)
@@ -11675,6 +11693,36 @@ def test_the_ltx23_fp8_load_prefetches_the_hosted_dit_under_its_cancel_event(tmp
         _cancel_event = cancel,
     )
     assert fetched == []
+    # Precision fallback lets these loads through on bf16, which never opens the hosted DiT: no 19 GB prefetch.
+    for token, memory_mode, card_ok in ((9, "balanced", True), (10, "low_vram", True), (11, None, False)):
+        supported[0] = card_ok
+        backend._load_token = token
+        backend._run_load(
+            repo_id = str(tmp_path),
+            gguf_filename = "ltx-2.3-22b-distilled.safetensors",
+            family_override = "ltx-2",
+            transformer_quant = "fp8",
+            memory_mode = memory_mode,
+            local_files_only = True,
+            _load_token = token,
+            _cancel_event = cancel,
+        )
+        assert fetched == [], (memory_mode, card_ok)
+
+
+def test_ltx23_fp8_under_a_forced_offload_prices_and_loads_the_bf16_dit(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # balanced offloads the DiT regardless of size, so with precision fallback on the load runs bf16: the plan is
+    # priced at the bf16 DiT and the hosted seed is never attempted, even where a (stubbed) plan keeps it resident.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+    priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 100_000)
+    backend, calls = _load_ltx23_single_file_fp8(
+        tmp_path, monkeypatch, (object(), None), memory_mode = "balanced"
+    )
+    assert "prequant" not in calls and calls["override"] is None
+    assert priced and all(mib >= 40_000 for mib in priced)
+    backend.unload()
 
 
 def test_ltx23_selective_read_skips_the_dit(tmp_path):

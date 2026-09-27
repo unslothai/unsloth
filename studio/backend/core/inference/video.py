@@ -320,6 +320,59 @@ def _ltx23_prequant_pick(
     return ltx23_prequant_eligible(checkpoint_filename)
 
 
+def _ltx23_prequant_serves(
+    fam: Any,
+    model_kind: str,
+    checkpoint_filename: Optional[str],
+    pinned: Optional[str],
+    *,
+    target: Any,
+    memory_mode: Optional[str],
+) -> bool:
+    """``_ltx23_prequant_pick`` on a load that can seed the hosted DiT: a torchao-capable target and a memory request
+    that keeps the DiT resident (torchao tensors do not survive the offload hooks). The staging, the download plan, the
+    pricing and the injection all read this, so the ~19 GB artifact is never fetched for a load that falls back to bf16
+    (UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK). A measured offload is only known inside the load."""
+    return (
+        _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned)
+        and not _memory_request_forces_offload(memory_mode, False)
+        and bool(dense_transformer_supported(target))
+    )
+
+
+def _ltx23_prequant_serves_on_card(
+    fam: Any,
+    model_kind: str,
+    checkpoint_filename: Optional[str],
+    transformer_quant: Optional[str],
+    *,
+    memory_mode: Optional[str],
+    gpu_ordinal: Optional[int],
+) -> bool:
+    """``_ltx23_prequant_serves`` before the load, asked of the card it will use. An unanswerable probe keeps the pick."""
+    pinned = normalize_transformer_quant(transformer_quant)
+    if not _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned):
+        return False
+    try:
+        # SCOPED, not pinned: a pooled worker thread must not keep this request's card.
+        with diffusion_device_scope(gpu_ordinal):
+            target = (
+                resolve_diffusion_device_target()
+                if gpu_ordinal is None
+                else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+            )
+            return _ltx23_prequant_serves(
+                fam,
+                model_kind,
+                checkpoint_filename,
+                pinned,
+                target = target,
+                memory_mode = memory_mode,
+            )
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _assert_video_precision_for_target(
     fam: Any,
     target: Any,
@@ -2208,11 +2261,13 @@ class VideoBackend:
             )
             # The explicit fp8 on the LTX-2.3 distilled single file seeds a hosted DiT from a third repo: fetch it here,
             # under this load's cancel event, not inline inside the assembly (and claim it against a mid-load delete).
-            if _ltx23_prequant_pick(
+            if _ltx23_prequant_serves_on_card(
                 fam,
                 kind,
                 kwargs.get("gguf_filename"),
-                normalize_transformer_quant(kwargs.get("transformer_quant")),
+                kwargs.get("transformer_quant"),
+                memory_mode = kwargs.get("memory_mode"),
+                gpu_ordinal = kwargs.get("gpu_ordinal"),
             ):
                 from .video_ltx2 import LTX23_PREQUANT_BASE
 
@@ -3862,8 +3917,13 @@ class VideoBackend:
             )
             if dq_repo:
                 total += add(dq_repo, dq_files)
-            elif _ltx23_prequant_pick(
-                fam, kind, gguf_filename, normalize_transformer_quant(transformer_quant)
+            elif _ltx23_prequant_serves_on_card(
+                fam,
+                kind,
+                gguf_filename,
+                transformer_quant,
+                memory_mode = load_kwargs.get("memory_mode"),
+                gpu_ordinal = load_kwargs.get("gpu_ordinal"),
             ):
                 # The LTX-2.3 distilled single file under an explicit fp8 seeds the hosted DiT from its own repo (the
                 # file itself is still read for its connectors / VAEs / vocoder).
@@ -4599,12 +4659,13 @@ class VideoBackend:
         # An explicit fp8 on the bf16 LTX-2.3 distilled single file is served by the hosted pre-quantized DiT (the 2.3
         # assembly below seeds it), so price the plan at that DiT: at the bf16 file size a card where fp8 fits resident
         # plans an offload, skips the seed and refuses the pick only after the eviction.
-        ltx23_prequant_pick = (
-            transformer_mib is not None
-            and _ltx23_prequant_pick(
-                fam, kind, gguf_filename, normalize_transformer_quant(transformer_quant)
-            )
-            and dense_transformer_supported(target)
+        ltx23_prequant_pick = transformer_mib is not None and _ltx23_prequant_serves(
+            fam,
+            kind,
+            gguf_filename,
+            normalize_transformer_quant(transformer_quant),
+            target = target,
+            memory_mode = memory_mode,
         )
         ltx23_dense_transformer_mib = transformer_mib
         if ltx23_prequant_pick and _QUANT_STEADY_FACTOR.get(TQ_FP8) is not None:
