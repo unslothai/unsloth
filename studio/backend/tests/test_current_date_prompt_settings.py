@@ -401,8 +401,6 @@ class TestResearchSystemPrompt:
 
 
 class TestConversationStartDate:
-    """A thread's system line keeps the day it started; later days ride on the newest user turn."""
-
     @staticmethod
     def _threads(monkeypatch, threads):
         import storage.studio_db as studio_db

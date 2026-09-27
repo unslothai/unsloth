@@ -13641,7 +13641,7 @@ def _last_searchable_text(messages):
 
 
 def _last_user_text(conversation: list[dict]) -> str:
-    """Plain text of the most recent user turn (text parts only), without Studio's date note."""
+    """Plain text of the most recent user turn (text parts only)."""
     for msg in reversed(conversation):
         if msg.get("role") != "user":
             continue

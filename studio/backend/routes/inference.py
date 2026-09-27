@@ -6059,8 +6059,7 @@ def _is_folded_tool_json(text: Any) -> bool:
 
 
 def _is_folded_tool_result(content: Any) -> bool:
-    # fold_tool_results_into_user turns a tool result into a user turn for tool-role-less templates;
-    # a follow-up coalesced onto it is the user's text, so only a turn that is ALL result counts.
+    # only a turn that is ALL folded result: a follow-up coalesced onto one is the user's text.
     if isinstance(content, list):
         texts = [
             p.get("text")
@@ -6099,7 +6098,6 @@ def _append_current_date_note(
             new_content: Any = f"{note}\n\n{content}"
             has_text = bool(content.strip())
         elif isinstance(content, list):
-            # a tool-result-only turn is protocol, not something the user said.
             if content and all(
                 isinstance(p, dict) and p.get("type") == "tool_result" for p in content
             ):
