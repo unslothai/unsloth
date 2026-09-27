@@ -77,6 +77,7 @@ def _select(
     *,
     has_vision_config = True,
     text_only = False,
+    auto_model = transformers.AutoModelForCausalLM,
 ):
     calls = []
     fake_processor = _stub(auto_processor_result, calls, "AutoProcessor")
@@ -85,7 +86,7 @@ def _select(
     if has_vision_config:
         config.vision_config = types.SimpleNamespace()
     namespace = {
-        "auto_model": transformers.AutoModelForCausalLM,
+        "auto_model": auto_model,
         "auto_config": config,
         "text_only": text_only,
         "whisper_language": None,
@@ -139,6 +140,19 @@ def test_autoprocessor_that_resolves_to_a_tokenizer_is_not_kept():
     tok, err, calls = _select(_Tokenizer)
     assert isinstance(tok, _Tokenizer)
     assert [c[0] for c in calls][-1] == "AutoTokenizer"
+
+
+def test_automodel_only_vlm_uses_repo_autoprocessor():
+    """DeepSeek-OCR style auto_map with only AutoModel."""
+    tok, err, calls = _select(_Processor, auto_model = transformers.AutoModel)
+    assert isinstance(tok, _Processor)
+
+
+def test_sequence_classification_vlm_keeps_tokenizer():
+    """Gemma 3 with num_labels: native multimodal config, text classification head."""
+    tok, err, calls = _select(_Processor, auto_model = transformers.AutoModelForSequenceClassification)
+    assert isinstance(tok, _Tokenizer)
+    assert [c[0] for c in calls] == ["AutoTokenizer"]
 
 
 def test_text_model_never_tries_autoprocessor():
