@@ -21,6 +21,8 @@ from .utils import (
     torch_amp_custom_bwd,
 )
 
+_is_compiling = torch.compiler.is_compiling
+
 
 class LoRA_MLP(torch.autograd.Function):
     """
@@ -175,7 +177,9 @@ class LoRA_MLP(torch.autograd.Function):
 
         # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
         upW = fast_dequantize(upW.t(), upW_quant)
-        dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
+        # Reusing X's storage for dX is an eager memory saving only: torch 2.11's AOT autograd
+        # rejects a backward that mutates a forward input which requires grad.
+        dX = torch.matmul(df, upW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del upW
         dX.addmm_(df @ upB.t(), upA.t(), alpha = upS)
 
@@ -457,7 +461,7 @@ class LoRA_QKV(torch.autograd.Function):
 
         # Combine the per-projection derivatives into dX.
         QW = fast_dequantize(QW.t(), QW_quant)
-        dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
+        dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del QW
         dX.addmm_(dQ @ QB.t(), QA.t(), alpha = QS)
 
