@@ -271,9 +271,57 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             o = o * inv_scale
         tl.store(o_ptr + o_off, o.to(o_ptr.dtype.element_ty), mask = m)
 
+    @triton.jit
+    def _dcae_up_add(
+        h_ptr, hb_ptr, x_ptr, out_ptr,
+        c, Cin, F, H, W, Fo, rep,
+        hsb, hsc, hst, hsh, hsw, xsb, xsc, xst, xsh, xsw,
+        TEMPORAL: tl.constexpr, HAS_HB: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
+    ):  # fmt: skip
+        # HunyuanVideo-1.5 upsample: depth-to-space of the conv output + the repeat_interleave'd shortcut, one pass
+        pid_p = tl.program_id(0)
+        bf = tl.program_id(1)
+        pid_c = tl.program_id(2)
+        fo = bf % Fo
+        b = bf // Fo
+        Wo = 2 * W
+        p = pid_p * BLOCK_P + tl.arange(0, BLOCK_P)
+        pm = p < 4 * H * W
+        ho = p // Wo
+        wo = p - ho * Wo
+        hh = ho // 2
+        ww = wo // 2
+        ph = (ho - hh * 2) * 2 + (wo - ww * 2)  # r2i * 2 + r3i
+        ci = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+        cm = ci < c
+        m = pm[:, None] & cm[None, :]
+        if TEMPORAL:
+            if fo == 0:
+                f = fo * 0
+                pk = ph[:, None] * (2 * c) + ci[None, :]
+                xk = ph[:, None] * (Cin // 4) + ci[None, :] // (rep // 2)
+            else:
+                f = 1 + (fo - 1) // 2
+                r1 = (fo - 1) % 2
+                pk = (r1 * 4 + ph)[:, None] * c + ci[None, :]
+                xk = pk // rep
+        else:
+            f = fo
+            pk = ph[:, None] * c + ci[None, :]
+            xk = pk // rep
+        pix_h = b.to(tl.int64) * hsb + f.to(tl.int64) * hst + (hh.to(tl.int64) * hsh + ww.to(tl.int64) * hsw)[:, None]
+        v = tl.load(h_ptr + pix_h + pk.to(tl.int64) * hsc, mask = m, other = 0.0).to(tl.float32)
+        if HAS_HB:
+            v = v + tl.load(hb_ptr + pk, mask = m, other = 0.0).to(tl.float32)
+        v = v.to(out_ptr.dtype.element_ty).to(tl.float32)  # the stock conv output is rounded before the add
+        pix_x = b.to(tl.int64) * xsb + f.to(tl.int64) * xst + (hh.to(tl.int64) * xsh + ww.to(tl.int64) * xsw)[:, None]
+        xv = tl.load(x_ptr + pix_x + xk.to(tl.int64) * xsc, mask = m, other = 0.0).to(tl.float32)
+        o_off = (bf.to(tl.int64) * (4 * H * W) + p.to(tl.int64))[:, None] * c + ci[None, :]
+        tl.store(out_ptr + o_off, (v + xv).to(out_ptr.dtype.element_ty), mask = m)
+
     return types.SimpleNamespace(
         gn_partials = _gn_partials, gn_combine = _gn_combine, gn_apply = _gn_apply, rms_act = _rms_act,
-        bias_residual = _bias_residual,
+        bias_residual = _bias_residual, dcae_up_add = _dcae_up_add,
     )
 
 
@@ -723,8 +771,9 @@ def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
 
 
 def uninstall(vae: Any) -> None:
-    if getattr(vae.__dict__.get("tiled_decode"), "_unsloth_vae_fused", False):
-        del vae.tiled_decode
+    for attr in ("tiled_decode", "blend_v", "blend_h", "blend_t"):
+        if getattr(vae.__dict__.get(attr), "_unsloth_vae_fused", False):
+            delattr(vae, attr)
     for module in vae.modules():
         if getattr(getattr(module, "forward", None), "_unsloth_vae_fused", False) or getattr(
             module, "_unsloth_vae_fused", False
@@ -735,6 +784,7 @@ def uninstall(vae: Any) -> None:
                 pass
             module.__dict__.pop("_unsloth_vae_fused", None)
             module.__dict__.pop("_unsloth_vae_fused_failed", None)
+        module.__dict__.pop("prepare_causal_attention_mask", None)
 
 
 # ----------------------------------------------------------------------------------------------------------------
@@ -1114,6 +1164,45 @@ def _fast_hv_norm_act(norm: Any) -> Any:
     return fast
 
 
+def hv_upsample(up: Any, x: Any) -> Any:
+    """``HunyuanVideo15Upsample.forward``: conv, then depth-to-space + repeat_interleave shortcut + add in one pass."""
+    torch = _torch()
+    k = _kernels()
+    conv = up.conv
+    h = hv_conv(conv, x, with_bias = False)
+    b, cin, f, hh, ww = x.shape
+    cp = h.shape[1]
+    temporal = bool(up.add_temporal_upsample)
+    factor = 8 if temporal else 4
+    c = cp // factor
+    rep = int(up.repeats)
+    if cp % factor or (temporal and (f < 1 or rep % 2 or cin % 4)) or rep * cin != factor * c:
+        raise ValueError("hv_upsample: unexpected shapes")
+    fo = 1 + (f - 1) * 2 if temporal else f
+    out = torch.empty((b, fo, 2 * hh, 2 * ww, c), dtype = x.dtype, device = x.device)
+    block_c = min(128, _next_pow2(c))
+    block_p = max(1, 4096 // block_c)
+    grid = ((4 * hh * ww + block_p - 1) // block_p, b * fo, (c + block_c - 1) // block_c)
+    bias = conv.conv.bias
+    k.dcae_up_add[grid](
+        h, bias if bias is not None else h, x, out, c, cin, f, hh, ww, fo, rep, *h.stride(), *x.stride(),
+        TEMPORAL = temporal, HAS_HB = bias is not None, BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
+    )  # fmt: skip
+    return out.permute(0, 4, 1, 2, 3)
+
+
+def _hv_causal_mask(n_frame: int, n_hw: int, dtype: Any, device: Any, batch_size: Any = None) -> Any:
+    """Vectorised ``prepare_causal_attention_mask`` (the stock one launches one fill kernel per token row: 80k fills
+    per 848x480x121 decode). Same values: 0 where key frame <= query frame, else -inf."""
+    torch = _torch()
+    frame = torch.arange(n_frame * n_hw, device = device) // n_hw
+    mask = torch.where(frame[None, :] <= frame[:, None], torch.zeros((), dtype = dtype, device = device),
+                       torch.full((), float("-inf"), dtype = dtype, device = device))  # fmt: skip
+    if batch_size is not None:
+        mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
+    return mask
+
+
 def install_hv15_vae(vae: Any, logger: Any = None) -> int:
     torch = _torch()
     if vae is None or not runtime_ok():
@@ -1145,9 +1234,32 @@ def install_hv15_vae(vae: Any, logger: Any = None) -> int:
         for module in part.modules():
             if "forward" in module.__dict__:
                 continue
+            name = type(module).__name__
+            if name.endswith("Upsample") and _hv_conv_ok(getattr(module, "conv", None)) and hasattr(module, "repeats"):
+                _guard(module, lambda x, _m = module: hv_upsample(_m, x), _stock_forward(module), "upsample", logger)
+                n += 1
+            elif name.endswith("AttnBlock") and callable(getattr(module, "prepare_causal_attention_mask", None)):
+                module.prepare_causal_attention_mask = _hv_causal_mask
+                n += 1
+        for module in part.modules():
+            if "forward" in module.__dict__:
+                continue
             if type(module).__name__.endswith("CausalConv3d") and _hv_conv_ok(module):
                 _guard(module, _fast_hv_conv(module), _stock_forward(module), "causal conv", logger)
                 n += 1
+    return n
+
+
+def install_vectorised_blend(vae: Any) -> int:
+    """Replace a VAE's per-row python ``blend_v`` / ``blend_h`` / ``blend_t`` loops (extent x 4 launches each) with
+    the bit-identical one-pass :func:`blend_seam`."""
+    n = 0
+    for name, dim in (("blend_v", -2), ("blend_h", -1), ("blend_t", -3)):
+        if callable(getattr(vae, name, None)) and name not in vae.__dict__:
+            fn = lambda a, b, blend_extent, _d = dim: blend_seam(a, b, blend_extent, _d)  # noqa: E731
+            fn._unsloth_vae_fused = True
+            setattr(vae, name, fn)
+            n += 1
     return n
 
 
@@ -1159,5 +1271,6 @@ def install(vae: Any, logger: Any = None, level: str = "fused") -> int:
     if name in _WAN_VAES:
         return install_wan_vae(vae, logger)
     if name == "AutoencoderKLHunyuanVideo15":
-        return install_hv15_vae(vae, logger)
+        n = install_hv15_vae(vae, logger)
+        return n + (install_vectorised_blend(vae) if n else 0)
     return 0
