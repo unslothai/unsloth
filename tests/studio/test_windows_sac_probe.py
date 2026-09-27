@@ -2453,3 +2453,27 @@ if (Test-Path -LiteralPath $pending) { throw 'original revert left pending claim
 Write-Host 'pending-self recovery passed'
 """,
     )
+
+
+def test_unc_runtime_events_match_the_nt_network_path(tmp_path):
+    _drive(
+        tmp_path,
+        ["Get-ScopeTail"],
+        r"""
+$tail = Get-ScopeTail '\\fileserver\models\llama.cpp'
+foreach ($subject in @(
+    '\\fileserver\models\llama.cpp\ggml.dll',
+    '\Device\Mup\fileserver\models\llama.cpp\ggml.dll',
+    '\Device\LanmanRedirector\fileserver\models\llama.cpp\ggml.dll'
+)) {
+    if ($subject -notlike "*$tail*") { throw "selected runtime excluded: $subject" }
+}
+foreach ($subject in @(
+    '\Device\Mup\another-server\models\llama.cpp\ggml.dll',
+    '\Device\Mup\fileserver\other-share\llama.cpp\ggml.dll',
+    '\Device\Mup\fileserver\models\llama.cpp-other\ggml.dll'
+)) {
+    if ($subject -like "*$tail*") { throw "unrelated runtime included: $subject" }
+}
+""",
+    )

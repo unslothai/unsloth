@@ -379,6 +379,8 @@ function Get-ScopeTail([string] $root) {
     if (-not $trimmed) {
         throw "cannot scope CodeIntegrity events to '${root}': a runtime or venv at the root of a volume leaves no path tail, so every event on this machine would be counted as an Unsloth verdict. Move it into a subdirectory, point UNSLOTH_LLAMA_CPP_PATH or LLAMA_SERVER_PATH at that, and run this label again from prepare."
     }
+    # UNC names reach CodeIntegrity through \Device\Mup\server\share, with one separator before the server; the DOS spelling has two.
+    if ($trimmed.StartsWith('\\')) { $trimmed = $trimmed.Substring(1) }
     return ([Management.Automation.WildcardPattern]::Escape($trimmed) + '\')
 }
 
